@@ -1,0 +1,82 @@
+From 9096344d8a9b7ff1568bb9bb3486bf9ad27ae294 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 13:40:03 -0400
+Subject: [PATCH 10/25] httpd/web: fix multipart boundary overflow + 3
+ format-string sinks (H2/C8/M10/M11)
+
+- H2: inc_uploadImg() copied an entire 1024-byte upload line into
+  boundary[POST_BOUNDARY_LENGTH] via strncpy(...,strlen(buf)); clamp the
+  length to sizeof(boundary)-1 and NUL-terminate so an overlong multipart
+  boundary line can no longer smash the stack.
+- C8: ej_cgi_get() passed a request-derived CGI value as the websWrite
+  format string; use "%s". (Currently unregistered/unreferenced in this
+  tree, fixed defensively to remove the format-string primitive.)
+- M10: ftpServerTree_cgi() wrote a helper reply driven by the request
+  'path' var as a format string; use "%s".
+- M11: the feedback fb_fail_content path wrote an nvram-assembled buffer
+  (attacker-set fb_* fields) as a format string in both the DSL and
+  non-DSL branches; use "%s".
+
+web.c cannot be fully compiled in this env (openssl opensslconf.h generated-
+header cascade, environmental). Edits are localized; the H2 construct was
+syntax-checked standalone (clean, no warnings).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 60e3be09bc..6cef9a5517 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -2647,7 +2647,7 @@ ej_dump(int eid, webs_t wp, int argc, char_t **argv)
+ 				, nvram_safe_get("dsllog_fwver")
+ 				, nvram_safe_get("fb_comment")
+ 				);
+-			ret += websWrite(wp, buf);
++			ret += websWrite(wp, "%s", buf);	/* M11: buf holds attacker-set fb_* nvram; not a format string */
+ 		}
+ 	}
+ #else /* RTCONFIG_DSL */
+@@ -2689,7 +2689,7 @@ ej_dump(int eid, webs_t wp, int argc, char_t **argv)
+ 				, nvram_safe_get("firmver"), nvram_safe_get("buildno"), nvram_safe_get("extendno")
+ 				, nvram_safe_get("fb_comment")
+ 				);
+-			ret += websWrite(wp, buf);
++			ret += websWrite(wp, "%s", buf);	/* M11: buf holds attacker-set fb_* nvram; not a format string */
+ 		}
+ 	}
+ #endif /* RTCONFIG_DSL */
+@@ -12788,7 +12788,7 @@ ftpServerTree_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 		return 0;
+ 	}
+ 	else
+-		websWrite(wp,buf);
++		websWrite(wp,"%s",buf);	/* M10: buf is helper reply driven by request 'path'; never a format string */
+ 
+ 	return 0;
+ }
+@@ -15494,8 +15494,12 @@ int inc_uploadImg(FILE * stream, int *len, uint32 *imageLen)
+                 }
+ 
+ 		if(strncmp(buf, "------", 6) == 0) {
++			size_t blen = strlen(buf);
++			if (blen >= sizeof(boundary))		/* H2: clamp so strncpy can't overflow boundary[] */
++				blen = sizeof(boundary) - 1;
+ 			memset(boundary, 0, sizeof(boundary));
+-			strncpy(boundary, buf, strlen(buf));
++			strncpy(boundary, buf, blen);
++			boundary[blen] = '\0';
+ 			boundaryLen = strlen(buf) - 2;
+ 		}
+ 
+@@ -32570,7 +32574,7 @@ void ej_cgi_get(int eid, webs_t wp, int argc, char **argv)
+ 
+ 	for (i = 0; i < argc; ++i) {
+ 		v = get_cgi(argv[i]);
+-		if (v) ret += websWrite(wp, v);
++		if (v) ret += websWrite(wp, "%s", v);	/* C8: never use request data as a format string */
+ 	}
+ }
+ 

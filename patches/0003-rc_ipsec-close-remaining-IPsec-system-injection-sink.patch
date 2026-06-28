@@ -1,0 +1,92 @@
+From 5048c990d79cbf561a8f1ff923e6c840a22f3e3a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 10:26:25 -0400
+Subject: [PATCH 03/25] rc_ipsec: close remaining IPsec system() injection
+ sinks (N3/N4)
+
+- add_upnp_port: build the three miniupnpc-new invocations via eval() argv instead of system() with a snprintf string (WAN ifname/IP and nvram duration were tainted); drop the now-unused cmd buffer.
+
+- _get_my_ip_by_subnet: validate the profile-derived subnet token before it reaches the grep shell pipeline (was command-injectable via nvram ipsec_profile subnets).
+
+- vpnc route-copy loop: skip route lines containing shell metacharacters before passing them to system().
+
+Local-only branch; not pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rc_ipsec.c | 41 +++++++++++++++++++++++++-------
+ 1 file changed, 32 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
+index 37023d3baf..5ee9f4e209 100644
+--- a/release/src/router/rc/rc_ipsec.c
++++ b/release/src/router/rc/rc_ipsec.c
+@@ -2583,7 +2583,6 @@ int scan_upnpclist(char *filename, upnpc_list_t target, char *output_duration, i
+ 
+ void add_upnp_port(int type)
+ {
+-	char cmd[256] = {0};
+ 	char protocol[4] = "UDP";
+ 	char duration[16] = "86400"; //You can set it "86400000" if you want.
+ 	char prefix[16] = {0};
+@@ -2621,13 +2620,22 @@ void add_upnp_port(int type)
+ 	snprintf(target.extPort, sizeof(target.extPort), "%d", nvram_get_int("ipsec_isakmp_ext_port"));
+ 	snprintf(target.intPort, sizeof(target.intPort), "%d", nvram_get_int("ipsec_isakmp_port"));
+ 
+-	snprintf(cmd, sizeof(cmd), "miniupnpc-new -m %s -i -a %s %d %d %s %s", wan_ifname, wan_ipaddr, nvram_get_int("ipsec_isakmp_port"), nvram_get_int("ipsec_isakmp_ext_port"), protocol, duration);
+-	system(cmd);
+-	snprintf(cmd, sizeof(cmd), "miniupnpc-new -m %s -i -a %s %d %d %s %s", wan_ifname, wan_ipaddr, nvram_get_int("ipsec_nat_t_port"), nvram_get_int("ipsec_nat_t_ext_port"), protocol, duration);
+-	system(cmd);
+-
+-	snprintf(cmd, sizeof(cmd), "miniupnpc-new -m eth0 -i -f %s", UPNPC_OUTPUT_FILE);
+-	system(cmd);
++	{
++		char isakmp_port[8], isakmp_ext[8], natt_port[8], natt_ext[8];
++		/* hardening (N3): issue the UPnP-IGD requests via eval() argv so the
++		 * WAN-derived interface/IP and the nvram-set duration can never be
++		 * parsed as a shell command. */
++		snprintf(isakmp_port, sizeof(isakmp_port), "%d", nvram_get_int("ipsec_isakmp_port"));
++		snprintf(isakmp_ext,  sizeof(isakmp_ext),  "%d", nvram_get_int("ipsec_isakmp_ext_port"));
++		snprintf(natt_port,   sizeof(natt_port),   "%d", nvram_get_int("ipsec_nat_t_port"));
++		snprintf(natt_ext,    sizeof(natt_ext),    "%d", nvram_get_int("ipsec_nat_t_ext_port"));
++
++		eval("miniupnpc-new", "-m", wan_ifname, "-i", "-a", wan_ipaddr,
++		     isakmp_port, isakmp_ext, protocol, duration);
++		eval("miniupnpc-new", "-m", wan_ifname, "-i", "-a", wan_ipaddr,
++		     natt_port, natt_ext, protocol, duration);
++		eval("miniupnpc-new", "-m", "eth0", "-i", "-f", UPNPC_OUTPUT_FILE);
++	}
+ 
+ 	r = scan_upnpclist(UPNPC_OUTPUT_FILE, target, NULL, 0);
+ 	if(r == 1)
+@@ -3319,7 +3327,13 @@ static void _ipsec_updown_host_net_cli(int unit)
+ 				fp = fopen("/tmp/route_tmp", "r");
+ 				if(fp) {
+ 					while(fgets(buf, sizeof(buf), fp)) {
+-						snprintf(cmd, sizeof(cmd), "ip route add %s table %s ", trim_r(buf), table_str);
++						trim_r(buf);
++						/* hardening (N4): the route line is normally just IPs/
++						 * ifnames, but it still reaches a shell via system() -
++						 * skip any line bearing shell metacharacters. */
++						if (buf[strcspn(buf, ";|&$`\\<>()\n\r\"'")] != '\0')
++							continue;
++						snprintf(cmd, sizeof(cmd), "ip route add %s table %s ", buf, table_str);
+ 						//_dprintf("[%s]\n", cmd);
+ 						system(cmd);
+ 					}
+@@ -3431,6 +3445,15 @@ static void _get_my_ip_by_subnet(const char* subnet, char *ip, size_t len, int v
+ 		*p = '\0';
+ 	}
+ 
++	/* hardening (N4): 'network' is interpolated unquoted into a grep shell
++	 * pipeline and derives from nvram IPsec-profile subnets. Require a strict
++	 * IP/host token so a crafted subnet cannot inject commands. */
++	if (!ipsec_token_is_strict(network)) {
++		if (ip && len)
++			ip[0] = '\0';
++		return;
++	}
++
+ 	if (v6) {
+ 		snprintf(buf, sizeof(buf), "ip -6 route show table local | grep %s | awk '{print $2}' > /tmp/ipsec_my_subnet", network);
+ 		system(buf);

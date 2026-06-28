@@ -1,0 +1,348 @@
+From c950d8cf353dc47d663fd3b0d7d9b7a3bc971e21 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 10:06:37 -0400
+Subject: [PATCH 01/25] rc_ipsec: eliminate IPsec command-injection + buffer
+ overflows (C2/C3/C7/M1)
+
+Harden the CA/cert handling that embeds nvram-supplied data in generated shell scripts and openssl args:
+
+- cert_import: run cp/openssl via eval() argv (no shell); validate the .p12 filename; feed the import password through -password file: instead of a shell arg; bound the basename copy (fixes the strlen-4 underflow).
+
+- gen_cert: validate remote_id (ddns_hostname_x/WAN IP) as a strict host/IP token and strip shell metachars from the CA CN before writing generate.sh.
+
+- ca_txt_parse: bounded, NUL-safe field copies (no more 32-byte overflow) + snprintf the nvram read; sanitize DN/SAN identity fields.
+
+- ca_gen: write the export password to a 0600 file and reference it via -password file: instead of pass:%s.
+
+Local-only branch; not pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rc_ipsec.c | 260 ++++++++++++++++++++++---------
+ 1 file changed, 188 insertions(+), 72 deletions(-)
+
+diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
+index 257ffd7d73..1f58129b10 100644
+--- a/release/src/router/rc/rc_ipsec.c
++++ b/release/src/router/rc/rc_ipsec.c
+@@ -6,6 +6,7 @@
+ #include <shutils.h>
+ #include <syslog.h>
+ #include <errno.h>
++#include <ctype.h>
+ #include <sys/stat.h>
+ #include <network_utility.h>
+ #include "rc_ipsec.h"
+@@ -822,13 +823,82 @@ int rc_ipsec_ca_fileidx_available_get()
+ }
+ 
+ /*return value : ca_file's index*/
++/* ===================================================================
++ * Security hardening helpers (BE96U)
++ * These exist to stop nvram/cert-supplied data from injecting commands or
++ * overflowing buffers when CA/IPsec fields are later embedded in generated
++ * shell scripts or openssl arguments. See SECURITY-ISSUES.md (C2/C3/C7).
++ * =================================================================== */
++
++/* Copy from src into dst (capacity dst_sz, always NUL-terminated) up to but
++ * not including `delim`, stopping early at end-of-string. Returns a pointer to
++ * the delimiter (or terminating NUL) in src so the caller can continue parsing.
++ * Unlike the original hand-rolled loops this can never run past either buffer. */
++static char *ipsec_copy_field(char *dst, size_t dst_sz, char *src, char delim)
++{
++    size_t i = 0;
++    if(dst_sz == 0)
++        return src;
++    while(*src != '\0' && *src != delim){
++        if(i < dst_sz - 1)
++            dst[i++] = *src;
++        src++;
++    }
++    dst[i] = '\0';
++    return src;
++}
++
++/* Strip characters that could break out of a double-quoted shell context.
++ * Used for DN text that legitimately contains '=', ',', and spaces, so we
++ * only remove the quote/expansion/escape/newline metacharacters. In-place. */
++static void ipsec_strip_shell_meta(char *s)
++{
++    char *r = s, *w = s;
++    if(s == NULL)
++        return;
++    for(; *r != '\0'; r++){
++        if(*r=='"' || *r=='`' || *r=='$' || *r=='\\' || *r=='\n' || *r=='\r')
++            continue;
++        *w++ = *r;
++    }
++    *w = '\0';
++}
++
++/* Reduce s in-place to a strict host/IP/identity allowlist, dropping anything
++ * else. The result is safe to use even unquoted in a shell command. */
++static void ipsec_strict_token(char *s)
++{
++    char *r = s, *w = s;
++    if(s == NULL)
++        return;
++    for(; *r != '\0'; r++){
++        if(isalnum((unsigned char)*r) || *r=='.' || *r=='_' || *r=='-' || *r==':')
++            *w++ = *r;
++    }
++    *w = '\0';
++}
++
++/* Predicate form of the strict allowlist: 1 if s is non-empty and contains
++ * only safe host/IP/identity characters, else 0. */
++static int ipsec_token_is_strict(const char *s)
++{
++    if(s == NULL || *s == '\0')
++        return 0;
++    for(; *s != '\0'; s++){
++        if(!(isalnum((unsigned char)*s) || *s=='.' || *s=='_' || *s=='-' || *s==':'))
++            return 0;
++    }
++    return 1;
++}
++
+ int rc_ipsec_ca_txt_parse()
+ {
+     char buf[SZ_BUF];
+-    char *p_tmp = NULL, *p_buf = NULL; 
++    char *p_tmp = NULL, *p_buf = NULL;
+     int file_idx = 0;
+     /*ca index star from 0*/
+-    sprintf(buf, "%s", nvram_safe_get("ca_manage_profile"));
++    /* hardening: bound the copy so an over-long nvram value can't overflow buf */
++    snprintf(buf, sizeof(buf), "%s", nvram_safe_get("ca_manage_profile"));
+     p_buf = &buf[0];
+    
+     file_idx = rc_ipsec_ca_fileidx_available_get();
+@@ -838,27 +908,22 @@ int rc_ipsec_ca_txt_parse()
+         return file_idx;
+     }
+  
+-    p_tmp = (char *)&(ca_tab[file_idx].p12_pwd[0]);
+-    while('>' != *p_buf){
+-        *p_tmp = *p_buf;
+-        p_tmp++;
+-        p_buf++;
+-    }
+-    *p_tmp = '\0';
+-    
+-    p_tmp = (char *)&(ca_tab[file_idx].ca_txt[0]);
+-    while('>' != *(++p_buf)){
+-        *p_tmp = *p_buf;
+-        p_tmp++;
+-    }
+-    *p_tmp = '\0';
+-
+-    p_tmp = (char *)&(ca_tab[file_idx].san[0]);
+-    while('\0' != *(++p_buf)){
+-        *p_tmp = *p_buf;
+-        p_tmp++;
+-    }
+-    *p_tmp = '\0';
++    /* hardening: bounded copies (can't overflow the fixed struct fields) plus
++     * sanitize the identity fields that later feed pki/openssl in ca_gen.
++     * p12_pwd is left raw here; ca_gen hands it to openssl via a -password
++     * file: argument so the password never reaches a shell. */
++    p_buf = ipsec_copy_field(ca_tab[file_idx].p12_pwd,
++                             sizeof(ca_tab[file_idx].p12_pwd), p_buf, '>');
++    if('>' == *p_buf) p_buf++;
++
++    p_buf = ipsec_copy_field(ca_tab[file_idx].ca_txt,
++                             sizeof(ca_tab[file_idx].ca_txt), p_buf, '>');
++    ipsec_strip_shell_meta(ca_tab[file_idx].ca_txt); /* DN, embedded in "..." */
++    if('>' == *p_buf) p_buf++;
++
++    p_buf = ipsec_copy_field(ca_tab[file_idx].san,
++                             sizeof(ca_tab[file_idx].san), p_buf, '\0');
++    ipsec_strict_token(ca_tab[file_idx].san);        /* SAN, used unquoted */
+     /*to re-parsing root CA cert for server,client cert*/
+     p_tmp = (char *)&(ca_tab[file_idx].ca_cert[0]);
+     p_buf = (char *)&(ca_tab[file_idx].ca_txt[0]);
+@@ -899,7 +964,7 @@ int rc_ipsec_ca_gen()
+                "openssl pkcs12 -export -inkey %s%d_cliKey.pem "
+                " -in %s%d_cliCert.pem -name \"client Cert\" "
+                " -certfile %s%d_asusCert.pem -caname \"ASUS Root CA\""
+-               " -out %s%d_cliCert.p12 -password pass:%s\n",
++               " -out %s%d_cliCert.p12 -password file:%s%d_p12gen.pwd\n",
+                FILE_PATH_CA_GEN_SH, file_idx, 
+                file_idx, ca_tab[file_idx].ca_txt,
+                file_idx,file_idx, file_idx, file_idx,
+@@ -908,11 +973,25 @@ int rc_ipsec_ca_gen()
+                file_idx, ca_tab[file_idx].ca_cert, FILE_PATH_CA_ETC, file_idx,
+                FILE_PATH_CA_ETC, file_idx, FILE_PATH_CA_ETC, file_idx,
+                FILE_PATH_CA_ETC, file_idx, FILE_PATH_CA_ETC, file_idx,
+-               ca_tab[file_idx].p12_pwd);
++               FILE_PATH_CA_ETC, file_idx);
+     if(NULL != fp){
+         fclose(fp);
+     }
+ 	chmod(FILE_PATH_CA_GEN_SH, 0777);
++    /* hardening: write the export password to a 0600 file for the generated
++     * script's -password file: argument, so it is never a shell token. */
++    {
++        FILE *fp_pwd = NULL;
++        char pwd_path[SZ_BUF];
++        snprintf(pwd_path, sizeof(pwd_path), "%s%d_p12gen.pwd",
++                 FILE_PATH_CA_ETC, file_idx);
++        fp_pwd = fopen(pwd_path, "w");
++        if(NULL != fp_pwd){
++            fprintf(fp_pwd, "%s", ca_tab[file_idx].p12_pwd);
++            fclose(fp_pwd);
++            chmod(pwd_path, 0600);
++        }
++    }
+     return file_idx;
+ }
+ 
+@@ -952,56 +1031,82 @@ void rc_ipsec_ca_import(uint32_t ca_type, FILE *fp)
+ void rc_ipsec_cert_import(char *asus_cert, char *ipsec_cli_cert,
+                           char *ipsec_cli_key, char *pks12)
+ {
+-    char *p_file = NULL;
+-    char cmd[SZ_BUF], tmp[SZ_MIN];
+-    if(NULL != asus_cert){
+-        memset(cmd, 0, sizeof(char) * SZ_BUF);
+-        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/cacerts/", asus_cert);
+-        system(cmd);
+-    }
+-    if(NULL != ipsec_cli_cert){
+-        memset(cmd, 0, sizeof(char) * SZ_BUF);
+-        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/certs/", ipsec_cli_cert);
+-        system(cmd);
+-    }
+-    if(NULL != ipsec_cli_key){
+-        memset(cmd, 0, sizeof(char) * SZ_BUF);
+-        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/private/", ipsec_cli_key);
+-        system(cmd);
++    char p_file[SZ_MIN];
++    char in_path[SZ_BUF], out_path[SZ_BUF], pwd_path[SZ_BUF], pw_arg[SZ_BUF];
++    char *pwd = NULL;
++    FILE *fp = NULL;
++    size_t base_len, i;
++
++    /* hardening: each of these copies a (possibly nvram-supplied) path; run cp
++     * through eval() argv so the path can never be parsed as a shell command. */
++    if(NULL != asus_cert)
++        eval("cp", "-r", asus_cert, "/tmp/etc/ipsec.d/cacerts/");
++    if(NULL != ipsec_cli_cert)
++        eval("cp", "-r", ipsec_cli_cert, "/tmp/etc/ipsec.d/certs/");
++    if(NULL != ipsec_cli_key)
++        eval("cp", "-r", ipsec_cli_key, "/tmp/etc/ipsec.d/private/");
++
++    if(NULL == pks12)
++        return;
++
++    /* hardening: the PKCS#12 filename builds several file paths. Require a plain
++     * "<name>.p12" with safe filename characters so it cannot traverse
++     * directories or inject, and copy the basename into a bounded buffer (the
++     * original strncpy was unbounded and underflowed for names shorter than 4). */
++    base_len = strlen(pks12);
++    if(base_len <= 4 || 0 != strcmp(pks12 + base_len - 4, ".p12")){
++        logmessage("ipsec", "pkcs12 import rejected: bad filename");
++        return;
+     }
+-    if(NULL != pks12){
+-        if(NULL != nvram_safe_get("ca_manage_profile")){
+-            DBG(("pks12:%s", pks12));
+-            p_file = &tmp[0];
+-            memset(p_file, '\0', sizeof(char) * SZ_MIN);
+-            strncpy(p_file, pks12, strlen(pks12) - 4); /*4 : strlen(p12)*/
+-            sprintf(cmd, "echo %s > "FILE_PATH_CA_ETC"%s.pwd", 
+-                    nvram_safe_get("ca_manage_profile"), p_file);
+-            system(cmd);
+-            memset(cmd, 0, sizeof(char) * SZ_BUF);
+-            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -clcerts -out "
+-                             "/tmp/etc/ipsec.d/certs/%s.pem -password pass:%s", 
+-                             FILE_PATH_CA_ETC, pks12, p_file, 
+-                             nvram_safe_get("ca_manage_profile"));
+-            DBG((cmd));
+-            system(cmd);
+-            memset(cmd, 0, sizeof(char) * SZ_BUF);
+-            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -cacerts -out "
+-                             "/tmp/etc/ipsec.d/cacerts/%s.pem"
+-                             " -password pass:%s",
+-                             FILE_PATH_CA_ETC, pks12, p_file,
+-                             nvram_safe_get("ca_manage_profile"));
+-            DBG((cmd));
+-            system(cmd);
+-            memset(cmd, 0, sizeof(char) * SZ_BUF);
+-            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -out "
+-                    "/tmp/etc/ipsec.d/certs/%s.pem -nodes -password pass:%s",
+-                     FILE_PATH_CA_ETC, pks12, p_file,
+-                     nvram_safe_get("ca_manage_profile"));
+-            DBG((cmd));
+-            system(cmd);
++    base_len -= 4;                          /* strip ".p12" */
++    if(base_len >= sizeof(p_file))
++        base_len = sizeof(p_file) - 1;
++    for(i = 0; i < base_len; i++){
++        char c = pks12[i];
++        if(!(isalnum((unsigned char)c) || c=='.' || c=='_' || c=='-')){
++            logmessage("ipsec", "pkcs12 import rejected: bad filename");
++            return;
+         }
++        p_file[i] = c;
+     }
++    p_file[base_len] = '\0';
++
++    /* hardening: write the import password to a 0600 file and hand it to openssl
++     * via -password file: rather than placing the (arbitrary) password on a
++     * shell command line. Keeps it out of any shell and out of the process list. */
++    pwd = nvram_safe_get("ca_manage_profile");
++    snprintf(pwd_path, sizeof(pwd_path), "%s%s.pwd", FILE_PATH_CA_ETC, p_file);
++    fp = fopen(pwd_path, "w");
++    if(NULL == fp){
++        logmessage("ipsec", "pkcs12 import: cannot create password file");
++        return;
++    }
++    fprintf(fp, "%s", pwd);
++    fclose(fp);
++    chmod(pwd_path, 0600);
++
++    snprintf(in_path, sizeof(in_path), "%s%s", FILE_PATH_CA_ETC, pks12);
++    snprintf(pw_arg, sizeof(pw_arg), "file:%s", pwd_path);
++
++    /* client certs -> certs/<name>.pem */
++    snprintf(out_path, sizeof(out_path),
++             "/tmp/etc/ipsec.d/certs/%s.pem", p_file);
++    eval("openssl", "pkcs12", "-in", in_path, "-clcerts",
++         "-out", out_path, "-password", pw_arg);
++
++    /* CA certs -> cacerts/<name>.pem */
++    snprintf(out_path, sizeof(out_path),
++             "/tmp/etc/ipsec.d/cacerts/%s.pem", p_file);
++    eval("openssl", "pkcs12", "-in", in_path, "-cacerts",
++         "-out", out_path, "-password", pw_arg);
++
++    /* full chain, private key unencrypted -> certs/<name>.pem */
++    snprintf(out_path, sizeof(out_path),
++             "/tmp/etc/ipsec.d/certs/%s.pem", p_file);
++    eval("openssl", "pkcs12", "-in", in_path, "-out", out_path,
++         "-nodes", "-password", pw_arg);
++
++    unlink(pwd_path);   /* don't leave the import password on disk */
+     return;
+ }
+ 
+@@ -1070,6 +1175,17 @@ void rc_ipsec_gen_cert(int skip_checking)
+     }else
+         strlcpy(remote_id, ddns_name, sizeof(remote_id));
+ 
++    /* hardening: remote_id (DDNS hostname or WAN IP) and device_cn are written
++     * into a generated shell script that is run as root. The WAN-IP path is
++     * already validated above; the DDNS path was not. Require remote_id to be a
++     * strict host/IP token, and strip shell metacharacters from the cosmetic CN,
++     * so a crafted ddns_hostname_x (or hostname) cannot inject commands. */
++    if(!ipsec_token_is_strict(remote_id)){
++        logmessage("ipsec", "CA generation aborted: unsafe identity");
++        return;
++    }
++    ipsec_strip_shell_meta(device_cn);
++
+     fp = fopen(FILE_PATH_CA_ETC"generate.sh", "w");
+     if(NULL != fp){
+         fprintf(fp, "#!/bin/sh\n\n");

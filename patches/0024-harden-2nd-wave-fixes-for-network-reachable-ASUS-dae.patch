@@ -1,0 +1,462 @@
+From 59619bbdfaf8f00e793323c1695da0035658a7ca Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 28 Jun 2026 10:43:37 -0400
+Subject: [PATCH 24/25] harden: 2nd-wave fixes for network-reachable ASUS
+ daemons (Tier 1+2)
+
+Second audit pass over ASUS-authored userspace that ships in the RT-BE96U
+image but was outside the first audit (httpd/rc/shared/libdisk). Findings
+reachability-triaged against config_rt-be96u + the built rootfs + rc start
+paths; only in-build, reachable issues fixed here.
+
+Tier 1 - root command/config injection (libovpn, same class as the IPsec fixes):
+- openvpn_control.c ovpn_client_up_handler(): the OpenVPN client up/route-up
+  handler runs as root and built `ip route ...` strings with system() from
+  env vars the REMOTE VPN SERVER controls (route_network/netmask/gateway/
+  metric_%d, trusted_ip, route_net_gateway, route_vpn_gateway, dev). Replace
+  system() with eval() argv exec and validate every token (inet_pton for IPs,
+  strict-numeric metric, alnum dev). Pushed foreign-option DOMAIN is now
+  charset-validated before it is written into the dnsmasq config (was a
+  newline-injection into a root daemon's config).
+- openvpn_setup.c update_ovpn_profie_remote(): sed+system() with the DDNS
+  hostname (nvram ddns_hostname_x/_username_x); substitute a safe placeholder
+  unless the address is a clean host/IP.
+- openvpn_setup.c: verify-x509-name (nvram cn) now rejected if it contains
+  quote/backslash/newline (config-directive injection -> script-security/up);
+  ccd_val client name validated against path traversal and its addr/netmask
+  required to be clean IPv4 before becoming route/iroute directives.
+
+Tier 2 - memory safety in network-listening daemons:
+- snooper/igmp.c accept_igmp(): bound the IP header-length advance (ip_hl) so
+  the unsigned (end-ptr) length can't underflow past every size check; bound
+  the IGMPv3 group-record walk (attacker nsrcs/auxwords) against packet end.
+- urlfilterd/filter.c: thread the captured length into updateOffset(), bound
+  the IPv4/IPv6 header-length pointer math, and copy the (non-NUL-terminated)
+  NFQUEUE payload into a bounded, terminated buffer before the strstr() scans.
+- lltdc/src/qospktio.c qos_probe(): the 802.1p reflect path computed the copy
+  length against g_txbuf while the source pointer is in g_rxbuf, underflowing
+  size_t into an OOB write; measure the offset against g_rxbuf and clamp the
+  copy and tx_write length to TXBUFSZ.
+- wsdd2/wsd.c: guard the unchecked strstr("\r\n") result (NULL-deref DoS from
+  a TCP `POST ` with no CRLF on 3702).
+- wsdd2/llmnr.c: bound the LLMNR name label walk and the qtype/qclass reads
+  against the received packet (OOB read on UDP 5355).
+
+Verified: full `make rt-be96u` rebuild on the gcc-10.3 toolchain; all 7 files
+compile and link with zero new warnings; nand_squashfs image repackaged.
+Local branch be96u-only only; never pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/libovpn/openvpn_control.c | 82 ++++++++++++++++----
+ release/src/router/libovpn/openvpn_setup.c   | 57 +++++++++++++-
+ release/src/router/lltdc/src/qospktio.c      | 20 ++++-
+ release/src/router/snooper/igmp.c            | 12 +++
+ release/src/router/urlfilterd/filter.c       | 28 ++++++-
+ release/src/router/wsdd2/llmnr.c             | 14 ++++
+ release/src/router/wsdd2/wsd.c               |  4 +
+ 7 files changed, 190 insertions(+), 27 deletions(-)
+
+diff --git a/release/src/router/libovpn/openvpn_control.c b/release/src/router/libovpn/openvpn_control.c
+index c789fd7962..c359e99de8 100644
+--- a/release/src/router/libovpn/openvpn_control.c
++++ b/release/src/router/libovpn/openvpn_control.c
+@@ -261,6 +261,40 @@ void ovpn_client_down_handler(int unit)
+ }
+ 
+ 
++/* hardening: validate VPN-server-pushed tokens before they reach ip(8) argv
++ * or a config file.  network/netmask/gateway/metric/trusted_ip/route_* and the
++ * foreign-option DOMAIN all come from getenv() populated by the remote OpenVPN
++ * server, so they are fully attacker-controlled. */
++static int ovpn_str_is_num(const char *s)
++{
++	if (!s || !*s)
++		return 0;
++	for (; *s; s++)
++		if (!isdigit((unsigned char)*s))
++			return 0;
++	return 1;
++}
++
++static int ovpn_dev_valid(const char *s)
++{
++	if (!s || !*s)
++		return 0;
++	for (; *s; s++)
++		if (!isalnum((unsigned char)*s))
++			return 0;
++	return 1;
++}
++
++static int ovpn_domain_safe(const char *s)
++{
++	if (!s || !*s)
++		return 0;
++	for (; *s; s++)
++		if (!(isalnum((unsigned char)*s) || *s == '.' || *s == '-' || *s == '_'))
++			return 0;
++	return 1;
++}
++
+ void ovpn_client_up_handler(int unit)
+ {
+ 	char buffer[128];
+@@ -339,13 +373,22 @@ void ovpn_client_up_handler(int unit)
+ 				break;
+ 
+ 			if ( (inet_pton(AF_INET, network_env, &network) == 1)
+-			    && (inet_pton(AF_INET, netmask_env, &netmask) == 1)) {
+-
+-				snprintf(buffer, sizeof (buffer),"/usr/sbin/ip route add %s/%s via %s dev %s %s %s table ovpnc%d",
+-			                network_env, netmask_env, gateway_env, dev_env, (metric_env ? "metric" : ""), (metric_env ? metric_env : ""), unit);
++			    && (inet_pton(AF_INET, netmask_env, &netmask) == 1)
++			    && (inet_pton(AF_INET, gateway_env, &network) == 1)
++			    && ovpn_dev_valid(dev_env)
++			    && (!metric_env || ovpn_str_is_num(metric_env)) ) {
++				char destbuf[40], tablebuf[16];
++				snprintf(destbuf, sizeof(destbuf), "%s/%s", network_env, netmask_env);
++				snprintf(tablebuf, sizeof(tablebuf), "ovpnc%d", unit);
++				if (metric_env && *metric_env)
++					eval("/usr/sbin/ip", "route", "add", destbuf, "via", gateway_env,
++					     "dev", dev_env, "metric", metric_env, "table", tablebuf);
++				else
++					eval("/usr/sbin/ip", "route", "add", destbuf, "via", gateway_env,
++					     "dev", dev_env, "table", tablebuf);
+ 				if (verb >= 3)
+-					logmessage("openvpn-routing","Add pushed route: %s", buffer);
+-				system(buffer);
++					logmessage("openvpn-routing","Add pushed route: %s via %s dev %s table %s",
++					           destbuf, gateway_env, dev_env, tablebuf);
+ 			}
+ 		}
+ 
+@@ -362,24 +405,29 @@ void ovpn_client_up_handler(int unit)
+ 			remote_env = getenv("trusted_ip");
+ 			localgw = getenv("route_net_gateway");
+ 
+-			if (remote_env && localgw) {
+-				snprintf(buffer, sizeof (buffer), "/usr/sbin/ip route add %s/32 via %s table ovpnc%d",
+-					remote_env, localgw, unit);
++			if (remote_env && localgw
++			    && inet_pton(AF_INET, remote_env, &network) == 1
++			    && inet_pton(AF_INET, localgw, &netmask) == 1) {
++				char destbuf[40], tablebuf[16];
++				snprintf(destbuf, sizeof(destbuf), "%s/32", remote_env);
++				snprintf(tablebuf, sizeof(tablebuf), "ovpnc%d", unit);
++				eval("/usr/sbin/ip", "route", "add", destbuf, "via", localgw, "table", tablebuf);
+ 				if (verb >= 6)
+-					logmessage("openvpn-routing", "Add route to remote endpoint: %s", buffer);
+-				system(buffer);
++					logmessage("openvpn-routing", "Add route to remote endpoint: %s via %s", destbuf, localgw);
+ 			} else {
+-				logmessage("openvpn-routing", "Missing remote IP or local gateway - cannot configure route");
++				logmessage("openvpn-routing", "Missing/invalid remote IP or local gateway - cannot configure route");
+ 			}
+ 
+ 			// Use VPN as default gateway
+ 			remotegw_env = getenv("route_vpn_gateway");
+-			if (remotegw_env) {
+-				snprintf(buffer, sizeof (buffer), "/usr/sbin/ip route replace default via %s dev %s table ovpnc%d",
+-				         remotegw_env, dev_env, unit);
++			if (remotegw_env && ovpn_dev_valid(dev_env)
++			    && inet_pton(AF_INET, remotegw_env, &network) == 1) {
++				char tablebuf[16];
++				snprintf(tablebuf, sizeof(tablebuf), "ovpnc%d", unit);
++				eval("/usr/sbin/ip", "route", "replace", "default", "via", remotegw_env,
++				     "dev", dev_env, "table", tablebuf);
+ 				if (verb >= 3)
+ 					logmessage("openvpn-routing","Setting client %d routing table's default route through the tunnel", unit);
+-				system(buffer);
+ 			} else {
+ 				logmessage("openvpn-routing","WARNING: no VPN gateway provided, routing might not work properly!");
+ 			}
+@@ -447,7 +495,7 @@ void ovpn_client_up_handler(int unit)
+ 				option2 = getenv(buffer);
+ 				if (!option2)
+ 					break;
+-				if (!strncmp(option2, "dhcp-option DOMAIN ", 19)) {
++				if (!strncmp(option2, "dhcp-option DOMAIN ", 19) && ovpn_domain_safe(&option2[19])) {
+ 					fprintf(fp_resolv, "server=/%s/%s\n", &option2[19], &option[16]);
+ 				}
+ 			}
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index d1b8da6e72..e7ac440683 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -132,6 +132,53 @@ void write_ovpn_client_dnsmasq_config(FILE* dnsmasq_conf) {
+ 	}
+ }
+ 
++/* hardening helpers: nvram-derived tokens that flow into a sed/shell command,
++ * a filename, or an OpenVPN config directive.  Restrict each to a character set
++ * that cannot break out of that context (no quotes, slashes, newlines, $, ;). */
++static int ovpn_host_safe(const char *s)
++{
++	if (!s || !*s)
++		return 0;
++	for (; *s; s++) {
++		if (!((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z') ||
++		      (*s >= '0' && *s <= '9') || *s == '.' || *s == '-'))
++			return 0;
++	}
++	return 1;
++}
++
++static int ovpn_ipv4_safe(const char *s)
++{
++	if (!s || !*s)
++		return 0;
++	for (; *s; s++)
++		if (!((*s >= '0' && *s <= '9') || *s == '.'))
++			return 0;
++	return 1;
++}
++
++static int ovpn_cname_safe(const char *s)
++{
++	if (!s || !*s || strstr(s, ".."))
++		return 0;
++	for (; *s; s++) {
++		if (!((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z') ||
++		      (*s >= '0' && *s <= '9') || *s == '.' || *s == '-' || *s == '_'))
++			return 0;
++	}
++	return 1;
++}
++
++static int ovpn_x509name_safe(const char *s)
++{
++	if (!s)
++		return 0;
++	for (; *s; s++)
++		if (*s == '"' || *s == '\\' || *s == '\n' || *s == '\r')
++			return 0;
++	return 1;
++}
++
+ char *get_ovpn_remote_address(char *buf, int len) {
+ 	const char *address;
+ 	char hostname[64];
+@@ -167,7 +214,7 @@ void update_ovpn_profie_remote()
+ 	for (unit = 1; unit <= OVPN_SERVER_MAX; unit++) {
+ 		snprintf(file_path, sizeof(file_path), "/etc/openvpn/server%d/client.ovpn", unit);
+ 		if (f_exists(file_path)) {
+-			snprintf(buffer, sizeof(buffer), "sed -i 's/remote [A-Za-z0-9.-]*/remote %s/ ' %s", get_ovpn_remote_address(address, sizeof(address)), file_path);
++			snprintf(buffer, sizeof(buffer), "sed -i 's/remote [A-Za-z0-9.-]*/remote %s/ ' %s", (ovpn_host_safe(get_ovpn_remote_address(address, sizeof(address))) ? address : "0.0.0.0"), file_path);
+ 			system(buffer);
+ 		}
+ 	}
+@@ -403,6 +450,12 @@ int ovpn_write_server_config(ovpn_sconf_t *sconf, int unit) {
+ 				continue;
+ 			}
+ 
++			/* hardening: cname becomes a filename in the ccd dir (reject path
++			 * traversal); addr/netmask become route/iroute directives (require
++			 * clean IPv4 text so a newline can't inject an arbitrary directive). */
++			if (!ovpn_cname_safe(cname) || !ovpn_ipv4_safe(addr) || !ovpn_ipv4_safe(netmask))
++				continue;
++
+ 			fp_ccd = fopen(cname, "a");
+ 			chmod(cname, S_IRUSR|S_IWUSR);
+ 
+@@ -623,7 +676,7 @@ int ovpn_write_client_config(ovpn_cconf_t *cconf, int unit) {
+ 			fprintf(fp, "key client.key\n");
+ 	}
+ 
+-	if (cconf->verify_x509_type) {
++	if (cconf->verify_x509_type && ovpn_x509name_safe(cconf->verify_x509_name)) {
+ 		fprintf(fp, "verify-x509-name \"%s\" ",  cconf->verify_x509_name);
+ 		switch(cconf->verify_x509_type) {
+ 			case 1:
+diff --git a/release/src/router/lltdc/src/qospktio.c b/release/src/router/lltdc/src/qospktio.c
+index 45b7358f54..b1b0cb2e21 100644
+--- a/release/src/router/lltdc/src/qospktio.c
++++ b/release/src/router/lltdc/src/qospktio.c
+@@ -555,16 +555,28 @@ qos_probe(void)
+             /* Add the rcv timestamp from the global save area */
+             cpy_hton64(&qprb_hdr->probe_rxstamp, &g_pktio_timestamp);
+ 
+-            /* Copy the payload */
+-            memcpy(&qprb_hdr->probe_payload, &g_qprb_hdr->probe_payload,
+-                   g_rcvd_pkt_len - (((uint8_t*)&g_qprb_hdr->probe_payload) - g_txbuf));
++            /* Copy the payload.  The payload offset must be measured against the
++             * RX buffer that g_qprb_hdr points into (NOT g_txbuf); using g_txbuf
++             * yields a wrong, size_t-underflowing length and an out-of-bounds
++             * write.  Also bound the copy so a crafted frame cannot run past the
++             * end of g_txbuf. */
++            {
++                size_t rx_off = (uint8_t*)&g_qprb_hdr->probe_payload - g_rxbuf;
++                size_t tx_off = (uint8_t*)&qprb_hdr->probe_payload - g_txbuf;
++                if (g_rcvd_pkt_len > rx_off && g_rcvd_pkt_len <= RXBUFSZ) {
++                    size_t payload_len = g_rcvd_pkt_len - rx_off;
++                    if (payload_len > (size_t)TXBUFSZ - tx_off)
++                        payload_len = (size_t)TXBUFSZ - tx_off;
++                    memcpy(&qprb_hdr->probe_payload, &g_qprb_hdr->probe_payload, payload_len);
++                }
++            }
+ 
+             /* Add the rtx timestamp just before sending */
+             get_timestamp(&g_pktio_timestamp);
+             cpy_hton64(&qprb_hdr->probe_rtxstamp, &g_pktio_timestamp);
+ 
+             /* and return the packet (4 bytes longer due to tags) - do not save in re_txbuf! */
+-            tx_write(g_txbuf, g_rcvd_pkt_len+4);
++            tx_write(g_txbuf, (g_rcvd_pkt_len + 4 <= TXBUFSZ) ? g_rcvd_pkt_len + 4 : TXBUFSZ);
+ 
+             IF_TRACED(TRC_PACKET)
+                 dbgprintf("qos_probegap: reflecting, with 802.1p priority of: %d, seq=%d -> " ETHERADDR_FMT "\n",
+diff --git a/release/src/router/snooper/igmp.c b/release/src/router/snooper/igmp.c
+index b5e2817c2f..eff0ea4f53 100644
+--- a/release/src/router/snooper/igmp.c
++++ b/release/src/router/snooper/igmp.c
+@@ -335,8 +335,15 @@ int accept_igmp(unsigned char *packet, int size, unsigned char *shost, int loopb
+ 	if (ptr > end - sizeof(*iph) ||
+ 	    iph->ip_p != IPPROTO_IGMP)
+ 		return 0;
++	/* bound the IP header length against the captured packet: ip_hl<5 is illegal,
++	 * and an over-long ihl or a small ip_len could push ptr past end and make the
++	 * unsigned (end - ptr) below underflow, bypassing every size check. */
++	if (iph->ip_hl < 5 || ptr + (iph->ip_hl << 2) > end)
++		return 0;
+ 	ptr += iph->ip_hl << 2;
+ 	end = MIN(end, (unsigned char *) iph + ntohs(iph->ip_len));
++	if (ptr > end)
++		return 0;
+ 
+ 	igmp.igmp = (struct igmp *) ptr;
+ 	igmp_len = end - ptr;
+@@ -368,6 +375,11 @@ int accept_igmp(unsigned char *packet, int size, unsigned char *shost, int loopb
+ 			if (ptr > end - sizeof(*grec))
+ 				break;
+ 			nsrcs = ntohs(grec->grec_nsrcs);
++			/* ensure the full record (8-byte header + nsrcs sources + aux data)
++			 * lies within the packet before reading grec_mca or advancing ptr;
++			 * nsrcs/grec_auxwords are attacker-controlled length fields. */
++			if ((unsigned char *) &grec->grec_src[nsrcs] + grec->grec_auxwords * 4 > end)
++				break;
+ 			switch (grec->grec_type) {
+ 			case IGMP3_ALLOW_NEW_SOURCES:
+ 				if (nsrcs == 0)
+diff --git a/release/src/router/urlfilterd/filter.c b/release/src/router/urlfilterd/filter.c
+index c48025bb82..1e2dc32e42 100644
+--- a/release/src/router/urlfilterd/filter.c
++++ b/release/src/router/urlfilterd/filter.c
+@@ -99,7 +99,7 @@ int get_url_info()
+ 	return 0;
+ }
+ 
+-static int updateOffset(uint8_t isIPv4, const char *data_p)
++static int updateOffset(uint8_t isIPv4, const char *data_p, int data_len)
+ {
+ 	const struct tcphdr *tcp;
+ 	int payload_offset;
+@@ -113,6 +113,8 @@ static int updateOffset(uint8_t isIPv4, const char *data_p)
+ 		const struct iphdr *iph;
+ 
+ 		iph = (const struct iphdr *)data_p;
++		if (iph->ihl < 5 || ((iph->ihl<<2) + (int)sizeof(struct tcphdr)) > data_len)
++			return -1;
+ 		tcp = (const struct tcphdr *)(data_p + (iph->ihl<<2));
+ 		payload_offset = ((iph->ihl)<<2) + (tcp->doff<<2);
+ 
+@@ -135,8 +137,12 @@ static int updateOffset(uint8_t isIPv4, const char *data_p)
+ 
+ 		do
+ 		{
++			if (payload_offset + (int)sizeof(struct ip6_ext) > data_len)
++				return -1;
+ 			if ( nextHdr == IPPROTO_TCP )
+ 			{
++					if (payload_offset + (int)sizeof(struct tcphdr) > data_len)
++						return -1;
+ 					tcp = (struct tcphdr *)ip_ext_p;
+ 					payload_offset += tcp->doff << 2;
+ 
+@@ -160,6 +166,7 @@ static int pkt_decision(struct nfq_data * payload)
+ {
+ 	char *data;
+ 	char *match, *folder, *url;
++	char httpbuf[1500];
+ 	PURL current;
+ 	int payload_offset, data_len;
+ 	struct iphdr *iph;
+@@ -180,15 +187,28 @@ static int pkt_decision(struct nfq_data * payload)
+ 
+ 	iph = (struct iphdr *)data;
+ 	isIPv4 = (iph->version == 4)?1:0;
+-	payload_offset = updateOffset(isIPv4, data);
++	if (data_len < (int)sizeof(struct iphdr))
++		return PKT_ACCEPT;
++
++	payload_offset = updateOffset(isIPv4, data, data_len);
+ 
+-	if (payload_offset < 0)
++	if (payload_offset < 0 || payload_offset >= data_len)
+ 	{
+ 		/* always accept the packet if error happens */
+ 		return PKT_ACCEPT;
+ 	}
+ 
+-	match = (char *)(data + payload_offset);
++	/* The NFQUEUE payload is not NUL-terminated.  Copy the HTTP portion into a
++	 * bounded, terminated buffer so the strstr() scans cannot read past the
++	 * captured packet (URLF-1/URLF-2). */
++	{
++		int avail = data_len - payload_offset;
++		if (avail > (int)sizeof(httpbuf) - 1)
++			avail = sizeof(httpbuf) - 1;
++		memcpy(httpbuf, data + payload_offset, avail);
++		httpbuf[avail] = '\0';
++	}
++	match = httpbuf;
+ 
+ 	if(strstr(match, "GET ") == NULL && strstr(match, "POST ") == NULL && strstr(match, "HEAD ") == NULL)
+ 	{
+diff --git a/release/src/router/wsdd2/llmnr.c b/release/src/router/wsdd2/llmnr.c
+index c32d5dbb09..d17cdbc953 100644
+--- a/release/src/router/wsdd2/llmnr.c
++++ b/release/src/router/wsdd2/llmnr.c
+@@ -185,6 +185,14 @@ static int llmnr_send_response(struct endpoint *ep, _saddr_t *sa,
+ 		}
+ 
+ 		/* append to the whole name */
++		/* bound this label (length + data) against the received packet so the
++		 * strncat() below and the pointer advance cannot run past in[inlen-1] */
++		if (in_name_p + 1 + *in_name_p >= in + inlen) {
++			DEBUG(1, L, "llmnr: label exceeds packet bounds");
++			free(in_name);
++			return -1;
++		}
++
+ 		in_name_len += *in_name_p + (*in_name ? 1 : 0); // '.' if not first
+ 
+ 		in_name = (char *) realloc(in_name, in_name_len + 1);
+@@ -214,6 +222,12 @@ static int llmnr_send_response(struct endpoint *ep, _saddr_t *sa,
+ 	 * this implementation only supports questions of type A
+ 	 * or AAAA
+ 	 */
++	/* qtype/qclass occupy in_name_p[1..4]; ensure they lie within the packet */
++	if (in_name_p + 5 > in + inlen) {
++		DEBUG(1, L, "llmnr: question section truncated");
++		free(in_name);
++		return -1;
++	}
+ 	qtype = in_name_p[1] * 256 + in_name_p[2];
+ 	if (qtype != DNS_TYPE_ANY && qtype != DNS_TYPE_A && qtype != DNS_TYPE_AAAA) {
+ 		DEBUG(1, L, "llmnr: record in question not of type ANY or A or AAAA: %#x", qtype);
+diff --git a/release/src/router/wsdd2/wsd.c b/release/src/router/wsdd2/wsd.c
+index 6bddfa6340..a65fcd1b8c 100644
+--- a/release/src/router/wsdd2/wsd.c
++++ b/release/src/router/wsdd2/wsd.c
+@@ -922,6 +922,10 @@ static int wsd_parse_http_header(int fd, struct endpoint *ep,
+ 	if (!endpointlen)
+ 		endpointlen = strlen(wsd_endpoint);
+ 
++	if (!eol) {
++		ep->errstr = __FUNCTION__ ": Malformed HTTP request line";
++		return 400;
++	}
+ 	*eol = '\0';
+ 	if (strncmp(p, "POST /", 6) != 0) {
+ 		ep->errstr = __FUNCTION__ ": Only POST method supported";

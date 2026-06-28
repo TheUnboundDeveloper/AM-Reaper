@@ -1,0 +1,95 @@
+From 23103270afd08bd4fd881b93d89d752c96a400fa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 13:45:11 -0400
+Subject: [PATCH 11/25] rc/udhcpc: bound stropt() against attacker DHCP option
+ length (H5)
+
+stropt() did stpncpy(buf, opt->data, opt->len) with opt->len an
+attacker-controlled DHCP option byte (0-255); callers in bound()/
+bound_lan() pass tmp[100], so a long VIVSO/opt125 sub-option overflowed
+the stack by up to ~156 bytes. Add a destination-size parameter and
+clamp the copy to bufsz-1, NUL-terminating; updated all 8 call sites to
+pass sizeof(dest).
+
+Scope: this path lives under #ifdef RTCONFIG_TR069/TR181, which are NOT
+enabled in the BE96U .config (verified: TR069 strings vivso/pvgcode/
+tr_acs_url absent from the built udhcpc.o), so H5 is not reachable in the
+BE96U firmware today -- same situation as H3/H4. Fixed defensively.
+Compiles clean (no new warnings at the edit sites) with the real
+userspace toolchain.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/udhcpc.c | 28 +++++++++++++++++-----------
+ 1 file changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/rc/udhcpc.c b/release/src/router/rc/udhcpc.c
+index a5b354d945..512de26b24 100644
+--- a/release/src/router/rc/udhcpc.c
++++ b/release/src/router/rc/udhcpc.c
+@@ -200,9 +200,15 @@ opt_get(const void *buf, size_t size, unsigned char id)
+ 
+ #ifdef RTCONFIG_TR069
+ static char
+-*stropt(const struct opt_hdr *opt, char *buf)
++*stropt(const struct opt_hdr *opt, char *buf, size_t bufsz)
+ {
+-	*stpncpy(buf, (char *)opt->data, opt->len) = '\0';
++	size_t n = opt->len;
++	if (bufsz == 0)
++		return buf;
++	if (n > bufsz - 1)		/* H5: clamp attacker-controlled opt->len (0-255) to dest size */
++		n = bufsz - 1;
++	memcpy(buf, (char *)opt->data, n);
++	buf[n] = '\0';
+ 	return buf;
+ }
+ 
+@@ -541,7 +547,7 @@ _dprintf("%s(%d): ifunit=%d, if=%s.\n", __func__, getpid(), ifunit, wan_ifname);
+ 		struct opt_hdr *opt;
+ 		char buf[256], *url = NULL, *userinfo, *host, *path, *ptr, *user, *pass;
+ 		if ((opt = opt_get(value, size, 1)) &&
+-		    (ptr = strstr(stropt(opt, buf), "://")) && ptr > buf)
++		    (ptr = strstr(stropt(opt, buf, sizeof(buf)), "://")) && ptr > buf)
+ 			url = trim_r(buf);
+ 		else if ((ptr = strstr(value, "://")) && ptr > value)
+ 			url = trim_r(value);
+@@ -574,8 +580,8 @@ _dprintf("%s(%d): ifunit=%d, if=%s.\n", __func__, getpid(), ifunit, wan_ifname);
+ 			free(userinfo);
+ 		}
+ 		if ((opt = opt_get(value, size, 2))) {
+-			//nvram_set(strcat_r(wanprefix, "tr_pvgcode", tmp), stropt(opt, buf));
+-			nvram_set("pvgcode", stropt(opt, buf));
++			//nvram_set(strcat_r(wanprefix, "tr_pvgcode", tmp), stropt(opt, buf, sizeof(buf)));
++			nvram_set("pvgcode", stropt(opt, buf, sizeof(buf)));
+ 		}
+ 		free(value);
+ 	}
+@@ -590,10 +596,10 @@ _dprintf("%s(%d): ifunit=%d, if=%s.\n", __func__, getpid(), ifunit, wan_ifname);
+ 			char vivso[6 + 64 + 64 + 3];
+ 			char *ptr = vivso;
+ 			char *end = ptr + sizeof(vivso);
+-			ptr += snprintf(ptr, end - ptr, "%s,", stropt(oui, tmp));
+-			ptr += snprintf(ptr, end - ptr, "%s,", stropt(serial, tmp));
++			ptr += snprintf(ptr, end - ptr, "%s,", stropt(oui, tmp, sizeof(tmp)));
++			ptr += snprintf(ptr, end - ptr, "%s,", stropt(serial, tmp, sizeof(tmp)));
+ 			if ((class = opt_get(viopt->data, viopt->len, 6)))
+-				ptr += snprintf(ptr, end - ptr, "%s", stropt(class, tmp));
++				ptr += snprintf(ptr, end - ptr, "%s", stropt(class, tmp, sizeof(tmp)));
+ 			nvram_set("vivso", vivso);
+ 		}
+ 		free(value);
+@@ -1301,10 +1307,10 @@ bound_lan(void)
+ 			char vivso[6 + 64 + 64 + 3];
+ 			char *ptr = vivso;
+ 			char *end = ptr + sizeof(vivso);
+-			ptr += snprintf(ptr, end - ptr, "%s,", stropt(oui, tmp));
+-			ptr += snprintf(ptr, end - ptr, "%s,", stropt(serial, tmp));
++			ptr += snprintf(ptr, end - ptr, "%s,", stropt(oui, tmp, sizeof(tmp)));
++			ptr += snprintf(ptr, end - ptr, "%s,", stropt(serial, tmp, sizeof(tmp)));
+ 			if ((class = opt_get(viopt->data, viopt->len, 6)))
+-				ptr += snprintf(ptr, end - ptr, "%s", stropt(class, tmp));
++				ptr += snprintf(ptr, end - ptr, "%s", stropt(class, tmp, sizeof(tmp)));
+ 			nvram_set("vivso", vivso);
+ 		}
+ 		free(value);

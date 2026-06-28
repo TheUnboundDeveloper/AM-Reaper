@@ -1,0 +1,36 @@
+From 5ed5029f7867e39ba4a75314bd80cf578906aaab Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 14:14:57 -0400
+Subject: [PATCH 18/25] rc/init: remove shell from log_wlstat_dir cleanup (M3)
+
+At boot, init cleared log_wlstat_dir via system("rm -rf %s", nvram) with
+the path interpolated into a shell command (only partly blunted by the
+d_exists()+"/jffs" prefix guard). Use eval("rm","-rf",dir) so the nvram
+value is passed as a single argv element and never reaches a shell.
+
+(M22 -- the DSL-AX82U "optus" branch that derives the admin password from
+the factory Wi-Fi PSK -- is under case MODEL_DSLAX82U / #if defined(DSL_AX82U)
+and is not compiled or reachable on the BE96U build, so it is left as-is.)
+
+Compiles clean with the real userspace toolchain.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/init.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index eda814c955..488408ceaa 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -2531,9 +2531,7 @@ misc_defaults(int restore_defaults)
+ 	if (strlen(nvram_safe_get("log_wlstat_dir")) &&
+ 		d_exists(nvram_safe_get("log_wlstat_dir")) &&
+ 		!strncmp(nvram_safe_get("log_wlstat_dir"), "/jffs", 5)) {
+-		char cmd[128];
+-		snprintf(cmd, sizeof(cmd), "rm -rf %s", nvram_safe_get("log_wlstat_dir"));
+-		system(cmd);
++		eval("rm", "-rf", nvram_safe_get("log_wlstat_dir"));	/* M3: argv exec, no shell-injection via log_wlstat_dir */
+ 	}
+ #endif
+ 	nvram_unset("wait_httpd");

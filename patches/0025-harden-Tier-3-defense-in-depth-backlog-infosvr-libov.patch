@@ -1,0 +1,222 @@
+From 4b9439fd6826bf22fc4072839a076acdb6016dd9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 28 Jun 2026 11:01:43 -0400
+Subject: [PATCH 25/25] harden: Tier-3 defense-in-depth backlog (infosvr,
+ libovpn, libcodb, rstats, lanauth)
+
+Lower-severity hardening from the 2nd-wave audit; all in-build, all verified by
+a full `make rt-be96u` rebuild (gcc-10.3) with zero new warnings at edit sites.
+
+- infosvr/common.c: GETINFO response builders strcpy/sprintf -> strlcpy/snprintf
+  (SSID/NetMask/ProductID/FirmwareVersion/PrinterInfo) using sizeof(field).
+- libcodb/codb_utils.c: get_backup_db_path_by_datetime built the path with
+  source-length strncpy/strncat + sprintf(file_name[40]) into a MAX_FILE_PATH
+  (125) buffer -> latent overflow; rebuilt with sized snprintf. (Note: ~6 sibling
+  path builders in this file share the same pattern; left as follow-up.)
+- libovpn/openvpn_config.c + amvpn_routing.c: custom-config + VPN-director rule
+  files written group-rw (0660) -> 0600 (owner only).
+- libovpn/openvpn_options.c: fix format/arg mismatch in the residual-parse-state
+  logmessage; sanitize the connecting client's username/addresses before they are
+  written to client_status (strips control/markup/delimiter chars -> no stored
+  corruption/markup feed to the UI).
+- libovpn/openvpn_setup.c: unlink the predictable /tmp/ovpn_client_key_%d before
+  openvpn writes the tls-crypt-v2 secret (drop pre-planted symlink/file).
+- rstats/rstats.c: get/set_meter_file used sizeof(pointer) as the I/O length
+  (under-read/write to 4 bytes) -> use the real 64-byte size.
+- lanauth/lanauth.c: zero the challenge buffer before each server read so a short
+  reply can't leave stale bytes that auth1()/auth2() then hash.
+
+Local branch be96u-only only; never pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/infosvr/common.c          | 12 ++++++------
+ release/src/router/lanauth/lanauth.c         |  3 +++
+ release/src/router/libcodb/codb_utils.c      | 11 ++++++-----
+ release/src/router/libovpn/amvpn_routing.c   |  2 +-
+ release/src/router/libovpn/openvpn_config.c  |  2 +-
+ release/src/router/libovpn/openvpn_options.c | 18 +++++++++++++++++-
+ release/src/router/libovpn/openvpn_setup.c   |  4 ++++
+ release/src/router/rstats/rstats.c           |  4 ++--
+ 8 files changed, 40 insertions(+), 16 deletions(-)
+ mode change 100755 => 100644 release/src/router/infosvr/common.c
+ mode change 100755 => 100644 release/src/router/libcodb/codb_utils.c
+ mode change 100755 => 100644 release/src/router/rstats/rstats.c
+
+diff --git a/release/src/router/infosvr/common.c b/release/src/router/infosvr/common.c
+old mode 100755
+new mode 100644
+index bc31230ce2..bb938d8c57
+--- a/release/src/router/infosvr/common.c
++++ b/release/src/router/infosvr/common.c
+@@ -327,16 +327,16 @@ char *processPacket(int sockfd, char *pdubuf, unsigned short cli_port, char *cli
+ 			if (strlen(nvram_safe_get("u2ec_mfg")) && strlen(nvram_safe_get("u2ec_device")))
+ 			{
+ 				if (strstr(nvram_safe_get("u2ec_device"), nvram_safe_get("u2ec_mfg")))
+-					sprintf(ginfo->PrinterInfo, "%s", nvram_safe_get("u2ec_device"));
++					snprintf(ginfo->PrinterInfo, sizeof(ginfo->PrinterInfo), "%s", nvram_safe_get("u2ec_device"));
+ 				else
+-					sprintf(ginfo->PrinterInfo, "%s %s", nvram_safe_get("u2ec_mfg"), nvram_safe_get("u2ec_device"));
++					snprintf(ginfo->PrinterInfo, sizeof(ginfo->PrinterInfo), "%s %s", nvram_safe_get("u2ec_mfg"), nvram_safe_get("u2ec_device"));
+ 			}
+ #endif
+ 		     get_discovery_ssid(ssid_g, sizeof(ssid_g));
+-   		     strcpy(ginfo->SSID, ssid_g);
+-		     strcpy(ginfo->NetMask, get_lan_netmask());
+-		     strcpy(ginfo->ProductID, productid_g);	// disable for tmp
+-		     strcpy(ginfo->FirmwareVersion, firmver_g); // disable for tmp
++   		     strlcpy(ginfo->SSID, ssid_g, sizeof(ginfo->SSID));
++		     strlcpy(ginfo->NetMask, get_lan_netmask(), sizeof(ginfo->NetMask));
++		     strlcpy(ginfo->ProductID, productid_g, sizeof(ginfo->ProductID));	// disable for tmp
++		     strlcpy(ginfo->FirmwareVersion, firmver_g, sizeof(ginfo->FirmwareVersion)); // disable for tmp
+ 		     memcpy(ginfo->MacAddress, mac, 6);
+ 		     ginfo->sw_mode = get_sw_mode();
+ #ifdef WAVESERVER    // eric++
+diff --git a/release/src/router/lanauth/lanauth.c b/release/src/router/lanauth/lanauth.c
+index 2b3f85fe3a..194cb5ac8c 100644
+--- a/release/src/router/lanauth/lanauth.c
++++ b/release/src/router/lanauth/lanauth.c
+@@ -168,6 +168,9 @@ int main(int argc, char **argv) {
+ 		if (ch != 1) continue;
+ 		/* main loop of challenge-response authorization */
+ 		while(1) {
++			/* zero before each read so a short/partial server reply can't leave
++			 * stale bytes that auth1()/auth2() then hash via challenge[0]. */
++			memset(challenge, 0, sizeof(challenge));
+ 			if (!tmread(challenge, sizeof(challenge), 240)) {
+ 				close(sock);
+ 				if (curlevel == 0xff) sleep(5);
+diff --git a/release/src/router/libcodb/codb_utils.c b/release/src/router/libcodb/codb_utils.c
+old mode 100755
+new mode 100644
+index 917a1a8d79..c13663e4f5
+--- a/release/src/router/libcodb/codb_utils.c
++++ b/release/src/router/libcodb/codb_utils.c
+@@ -145,13 +145,14 @@ static int get_backup_db_path_by_datetime(const char* db_name, const char* db_ve
+ 
+     while (pch_db_version!=NULL) {
+ 
+-        char file_name[40] = "\0";
++        char file_name[64] = "\0";
+ 
+-        sprintf(file_name, "%lu_%s_%s.db", timestamp_day, db_name, pch_db_version);
++        /* bounded build: db_name/db_version may originate from an HTTP query,
++         * and the old strncpy/strncat used source lengths (not dest space) into
++         * a MAX_FILE_PATH(125) buffer -> overflow.  Use sized snprintf. */
++        snprintf(file_name, sizeof(file_name), "%lu_%s_%s.db", timestamp_day, db_name, pch_db_version);
+ 
+-        strncpy(db_file_path, db_bakcup_path, strlen(db_bakcup_path));
+-        strncat(db_file_path, "/", 1);
+-        strncat(db_file_path, file_name, strlen(file_name));
++        snprintf(db_file_path, MAX_FILE_PATH, "%s/%s", db_bakcup_path, file_name);
+ 
+         if (access(db_file_path, F_OK)==0) {
+             // fprintf(stdout, "find it(db_file_path=%s)!!\n", db_file_path);
+diff --git a/release/src/router/libovpn/amvpn_routing.c b/release/src/router/libovpn/amvpn_routing.c
+index f5f48fca90..39c7ab8acf 100644
+--- a/release/src/router/libovpn/amvpn_routing.c
++++ b/release/src/router/libovpn/amvpn_routing.c
+@@ -522,7 +522,7 @@ int amvpn_set_policy_rules(char* buffer)
+ 		mkdir(OVPN_FS_PATH, S_IRWXU);
+ 
+ 	snprintf(filename, sizeof(filename), "%s/vpndirector_rulelist", OVPN_FS_PATH);
+-	if (f_write(filename, buffer, strlen(buffer), 0, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP) < 0)
++	if (f_write(filename, buffer, strlen(buffer), 0, S_IRUSR|S_IWUSR) < 0)
+ 		return -1;
+ 
+ 	return 0;
+diff --git a/release/src/router/libovpn/openvpn_config.c b/release/src/router/libovpn/openvpn_config.c
+index 1415d37962..6136940693 100644
+--- a/release/src/router/libovpn/openvpn_config.c
++++ b/release/src/router/libovpn/openvpn_config.c
+@@ -427,7 +427,7 @@ int set_ovpn_custom(ovpn_type_t type, int unit, char* buffer)
+ 		mkdir(OVPN_FS_PATH, S_IRWXU);
+ 
+ 	snprintf(filename, sizeof(filename), "%s/vpn_%s%d_custom3", OVPN_FS_PATH, typeStr, unit);
+-	if (f_write(filename, buffer, strlen(buffer), 0,  S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP) < 0)
++	if (f_write(filename, buffer, strlen(buffer), 0,  S_IRUSR|S_IWUSR) < 0)
+ 		return -1;
+ 
+ 	return 0;
+diff --git a/release/src/router/libovpn/openvpn_options.c b/release/src/router/libovpn/openvpn_options.c
+index 2d87571c84..f442910af7 100644
+--- a/release/src/router/libovpn/openvpn_options.c
++++ b/release/src/router/libovpn/openvpn_options.c
+@@ -247,7 +247,7 @@ parse_line (const char *line, char *p[], const int n, const int line_num)
+ 	}
+ 	if (state != STATE_INITIAL)
+ 	{
+-		logmessage ("OVPN", "Options error: Residual parse state (%d) in %d", line_num);
++		logmessage ("OVPN", "Options error: Residual parse state (%d) in %d", state, line_num);
+ 		return 0;
+ 	}
+ 
+@@ -707,6 +707,21 @@ read_config_file (const char *file, int unit)
+ 	return ret;
+ }
+ 
++/* The OpenVPN status file holds the connecting client's chosen username and
++ * addresses; they are written space-delimited into client_status and later
++ * rendered by the web UI.  Replace anything that isn't a safe printable token
++ * char (and the space delimiter) so a client can't corrupt the record or feed
++ * markup downstream. */
++static void ovpn_status_clean(char *s)
++{
++	for (; s && *s; s++) {
++		unsigned char c = (unsigned char)*s;
++		if (c < 0x21 || c > 0x7e || c == '<' || c == '>' ||
++		    c == '"' || c == '\'' || c == '&' || c == '%')
++			*s = '_';
++	}
++}
++
+ void parse_openvpn_status(int unit)
+ {
+ 	FILE *fpi, *fpo;
+@@ -736,6 +751,7 @@ void parse_openvpn_status(int unit)
+ 
+ 				while ((token = strsep(&bufPtr, ","))) {
+ 					field++;
++					ovpn_status_clean(token);
+ 					if (field == 3) {		// Real Address
+ 						if(*token)
+ 							fprintf(fpo, "%s ", token);
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index e7ac440683..eff74417f5 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -1357,6 +1357,10 @@ char* ovpn_generate_client_key(ovpn_type_t type, int unit, char *buffer, int len
+ 	ovpn_get_runtime_filename(OVPN_TYPE_SERVER, unit, OVPN_SERVER_STATIC, server_key_file, sizeof(server_key_file));
+ 
+ 	snprintf(client_key_file, sizeof(client_key_file), "/tmp/ovpn_client_key_%d", unit);
++	/* predictable /tmp path holds a tls-crypt-v2 secret; drop any pre-planted
++	 * file/symlink so a local user can't redirect or pre-seed it before openvpn
++	 * writes (and we read) the key. */
++	unlink(client_key_file);
+ 
+ 	if (eval("openvpn", "--tls-crypt-v2", server_key_file, "--genkey", "tls-crypt-v2-client", client_key_file) != 0) {
+ 		logmessage("openvpn", "Failed to generate tls-crypt-v2 client key for server %d", unit);
+diff --git a/release/src/router/rstats/rstats.c b/release/src/router/rstats/rstats.c
+old mode 100755
+new mode 100644
+index ba8177f386..5a7a1da2c7
+--- a/release/src/router/rstats/rstats.c
++++ b/release/src/router/rstats/rstats.c
+@@ -262,7 +262,7 @@ void get_meter_file(char *meter_buf)
+ #ifdef CONFIG_BCMWL5 
+ 	FILE *fp;
+         if (fp=fopen(ISP_METER_FILE, "r")) {
+-                fgets(meter_buf, sizeof(meter_buf), fp);
++                fgets(meter_buf, 64, fp);
+                 fclose(fp);
+ 	}
+ #else
+@@ -283,7 +283,7 @@ int set_meter_file(char *meter_buf)
+                fclose(fp);
+ 	}
+ #else
+-	FWrite(meter_buf, RA_OFFSET_ISP_METER, sizeof(meter_buf));
++	FWrite(meter_buf, RA_OFFSET_ISP_METER, 64);
+ #endif
+ 	return 1;
+ }

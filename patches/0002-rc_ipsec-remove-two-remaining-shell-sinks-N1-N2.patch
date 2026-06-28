@@ -1,0 +1,99 @@
+From f817f8b31dec2315f7b84c0b4954093de7bb19b4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 10:14:14 -0400
+Subject: [PATCH 02/25] rc_ipsec: remove two remaining shell sinks (N1/N2)
+
+- rc_ipsec_ca_export: stop running the caller-supplied verify_pwd as a shell command (system(verify_pwd)); export now runs via eval() argv with the passphrase delivered through -passout file:. (Function had zero callers; neutralized the primitive.)
+
+- rc_ipsec_ca2ipsecd_cp: stop echoing the p12 password (unquoted) into the root-run CA script; write it directly to a 0600 file. Closes command injection via the ca_manage_profile password field.
+
+Local-only branch; not pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rc_ipsec.c | 58 +++++++++++++++++++++++++-------
+ 1 file changed, 46 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
+index 1f58129b10..37023d3baf 100644
+--- a/release/src/router/rc/rc_ipsec.c
++++ b/release/src/router/rc/rc_ipsec.c
+@@ -646,16 +646,30 @@ void rc_strongswan_conf_set()
+ 
+ void rc_ipsec_ca2ipsecd_cp(FILE *fp, uint32_t idx)
+ {
++    char pwd_path[SZ_BUF];
++    FILE *fp_pwd = NULL;
++
+     fprintf(fp, "cp -r %s%d_asusCert.pem /tmp/etc/ipsec.d/cacerts/\n"
+                 "cp -r %s%d_svrCert.pem /tmp/etc/ipsec.d/certs/\n"
+                 "cp -r %s%d_svrKey.pem /tmp/etc/ipsec.d/private/\n"
+                 "cp -r %s%d_cliCert.pem /tmp/etc/ipsec.d/certs/\n"
+-                "cp -r %s%d_cliKey.pem /tmp/etc/ipsec.d/private/\n"
+-                "echo %s > %s%d_p12.pwd\n",
++                "cp -r %s%d_cliKey.pem /tmp/etc/ipsec.d/private/\n",
+                 FILE_PATH_CA_ETC, idx, FILE_PATH_CA_ETC, idx,
+                 FILE_PATH_CA_ETC, idx, FILE_PATH_CA_ETC, idx,
+-                FILE_PATH_CA_ETC, idx, ca_tab[idx].p12_pwd,
+                 FILE_PATH_CA_ETC, idx);
++
++    /* hardening (N2): write the p12 password directly to a 0600 file instead of
++     * echoing it (unquoted) into this root-run shell script, where shell
++     * metacharacters in the ca_manage_profile password field would inject
++     * commands. p12_pwd is left un-sanitized upstream specifically so it can be
++     * delivered safely out-of-band like this. */
++    snprintf(pwd_path, sizeof(pwd_path), "%s%d_p12.pwd", FILE_PATH_CA_ETC, idx);
++    fp_pwd = fopen(pwd_path, "w");
++    if(NULL != fp_pwd){
++        fprintf(fp_pwd, "%s", ca_tab[idx].p12_pwd);
++        fclose(fp_pwd);
++        chmod(pwd_path, 0600);
++    }
+     return;
+ }
+ 
+@@ -1112,15 +1126,35 @@ void rc_ipsec_cert_import(char *asus_cert, char *ipsec_cli_cert,
+ 
+ void rc_ipsec_ca_export(char *verify_pwd)
+ {
+-    char cmd[SZ_BUF];
+-    if(NULL != verify_pwd){
+-        sprintf(&cmd[0], "openssl pkcs12 -export -inkey ipsec_cliKey.pem "
+-                " -in ipsec_cliCert.pem -name \"IPSEC client\" "
+-                " -certfile asusCert.pem -caname \"ASUS Root CA\""
+-                " -out ipsec_cliCert.p12");
+-        system(cmd);
+-        system(verify_pwd);
+-    }
++    char pwd_path[SZ_BUF], pass_arg[SZ_BUF];
++    FILE *fp = NULL;
++
++    if(NULL == verify_pwd)
++        return;
++
++    /* hardening (N1): verify_pwd is the export passphrase, NOT a command. The
++     * original ran system(verify_pwd), i.e. executed the caller-supplied string
++     * as a shell command. Write it to a 0600 file and feed it to openssl via
++     * -passout file: using argv exec, so nothing reaches a shell. */
++    snprintf(pwd_path, sizeof(pwd_path), "%sca_export.pwd", FILE_PATH_CA_ETC);
++    fp = fopen(pwd_path, "w");
++    if(NULL == fp)
++        return;
++    fprintf(fp, "%s", verify_pwd);
++    fclose(fp);
++    chmod(pwd_path, 0600);
++    snprintf(pass_arg, sizeof(pass_arg), "file:%s", pwd_path);
++
++    eval("openssl", "pkcs12", "-export",
++         "-inkey", "ipsec_cliKey.pem",
++         "-in", "ipsec_cliCert.pem",
++         "-name", "IPSEC client",
++         "-certfile", "asusCert.pem",
++         "-caname", "ASUS Root CA",
++         "-out", "ipsec_cliCert.p12",
++         "-passout", pass_arg);
++
++    unlink(pwd_path);
+     return;
+ }
+ 

@@ -1,0 +1,85 @@
+From 28e7ebc511eaa6ee569d2b6275b169103d4952d0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 14:11:44 -0400
+Subject: [PATCH 17/25] shared/wlif_utils: negative-index write, malloc check,
+ ssid NUL-term (H13/M17/M18)
+
+- H13: wl_wlif_save_wpa_settings() stripped the wpa_supplicant quotes with
+  creds->ssid[len-2]/creds->nw_key[len-2]; an empty ("") or single-char
+  value made len < 2 and wrote at index -1/-2 (before the buffer). Clamp
+  the terminator index to 0 when len < 2 and add an explicit tail NUL.
+- M17: wl_wlif_block_mac() dereferenced the result of malloc() without a
+  NULL check; return FALSE on allocation failure.
+- M18: get_wsec() in wlif_utils.c and wlif_utils_ax.c used
+  strncpy(info->ssid, x, MAX_SSID_LEN), leaving info->ssid (char[33])
+  unterminated on a 32-byte SSID. Use strlcpy(sizeof). wlif_utils_ax.o is
+  built for BE96U (OBJS += wlif_utils_ax.o), so both are fixed.
+
+Compiles clean with the real userspace toolchain; no warnings at the
+edited sites.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/wlif_utils.c    | 12 ++++++++----
+ release/src/router/shared/wlif_utils_ax.c |  4 ++--
+ 2 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/shared/wlif_utils.c b/release/src/router/shared/wlif_utils.c
+index 9c78e37008..4cc3ecfd7e 100644
+--- a/release/src/router/shared/wlif_utils.c
++++ b/release/src/router/shared/wlif_utils.c
+@@ -597,10 +597,10 @@ get_wsec(wsec_info_t *info, unsigned char *mac, char *osifname)
+ 	memcpy(info->ea, mac, ETHER_ADDR_LEN);
+ 	/* ssid */
+ 	if (wds && wds_wsec)
+-		strncpy(info->ssid, wds_ssid, MAX_SSID_LEN);
++		strlcpy(info->ssid, wds_ssid, sizeof(info->ssid));	/* M18: ensure NUL-term */
+ 	else {
+ 		value = nvram_safe_get(strlcat_r(wl_prefix, "ssid", comb, sizeof(comb)));
+-		strncpy(info->ssid, value, MAX_SSID_LEN);
++		strlcpy(info->ssid, value, sizeof(info->ssid));		/* M18 */
+ 	}
+ 	/* auth */
+ 	if (nvram_match(strlcat_r(wl_prefix, "auth", comb, sizeof(comb)), "1"))
+@@ -982,6 +982,8 @@ int wl_wlif_block_mac(void *hdl, char *ifname, struct ether_addr addr, int timeo
+ 
+ 	if (timeout != 0) {
+ 		data = (static_maclist_t *) malloc(sizeof(static_maclist_t));
++		if (data == NULL)	/* M17: malloc may fail */
++			return FALSE;
+ 		strncpy(data->ifname, ifname, IFNAMSIZ - 1);
+ 		data->ifname[IFNAMSIZ - 1] = '\0';
+ 		data->flag = flag;
+@@ -1466,11 +1468,13 @@ wl_wlif_save_wpa_settings(char *type, char *val, wlif_wps_nw_creds_t *creds)
+ 	} else if (strstr(type, "ssid")) {
+ 		len = strlen(val) > (WLIF_SSID_MAX_SZ + 1) ? WLIF_SSID_MAX_SZ + 1 : strlen(val);
+ 		strncpy(creds->ssid, val + 1, sizeof(creds->ssid) -1);
+-		creds->ssid[len - 2 /* for " at the start and end of string */]  = '\0';
++		creds->ssid[sizeof(creds->ssid) - 1] = '\0';
++		creds->ssid[(len >= 2) ? (len - 2) : 0] = '\0';	/* H13: avoid creds->ssid[-1]/[-2] on empty/short value */
+ 	} else if (strstr(type, "psk")) {
+ 		len = strlen(val) > (WLIF_PSK_MAX_SZ + 1) ? WLIF_PSK_MAX_SZ + 1 : strlen(val);
+ 		strncpy(creds->nw_key, val + 1, sizeof(creds->nw_key) -1);
+-		creds->nw_key[len - 2 /* for " at the start and end of string */] = '\0';
++		creds->nw_key[sizeof(creds->nw_key) - 1] = '\0';
++		creds->nw_key[(len >= 2) ? (len - 2) : 0] = '\0';	/* H13 */
+ 	} else if (strstr(type, "key_mgmt")) {
+ 		if (strstr(val, "WPA-PSK")) {
+ 			creds->akm |= WLIF_WPA_AKM_PSK;
+diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shared/wlif_utils_ax.c
+index 47a8429bb5..f23dbbdea7 100644
+--- a/release/src/router/shared/wlif_utils_ax.c
++++ b/release/src/router/shared/wlif_utils_ax.c
+@@ -429,10 +429,10 @@ get_wsec(wsec_info_t *info, unsigned char *mac, char *osifname)
+ 	memcpy(info->ea, mac, ETHER_ADDR_LEN);
+ 	/* ssid */
+ 	if (wds && wds_wsec)
+-		strncpy(info->ssid, wds_ssid, MAX_SSID_LEN);
++		strlcpy(info->ssid, wds_ssid, sizeof(info->ssid));	/* M18: ensure NUL-term */
+ 	else {
+ 		value = nvram_safe_get(strlcat_r(wl_prefix, "ssid", comb, sizeof(comb)));
+-		strncpy(info->ssid, value, MAX_SSID_LEN);
++		strlcpy(info->ssid, value, sizeof(info->ssid));		/* M18 */
+ 	}
+ 	/* auth */
+ 	if (nvram_match(strlcat_r(wl_prefix, "auth", comb, sizeof(comb)), "1"))

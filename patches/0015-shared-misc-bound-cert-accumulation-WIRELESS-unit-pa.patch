@@ -1,0 +1,66 @@
+From 7f831fa82aaab9c180722801c8a17fd23520b71d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 14:04:18 -0400
+Subject: [PATCH 15/25] shared/misc: bound cert accumulation + WIRELESS unit
+ parse (H11/M16)
+
+- H11: set_crt_parsed() appended an uploaded cert/key file line-by-line
+  into buffer[8000] via strncpy with no remaining-space check, so a large
+  file smashed the stack. Track used space and bail (-EINVAL) before any
+  line would exceed the buffer; copy with memcpy once bounded.
+- M16: netdev_calc() computed snprintf size as len = p1 - p2 from pointer
+  math over wl_ifnames and passed it as the unit_buf[8] size; a malformed
+  wl_ifnames could make len > 8 and overflow. Clamp len to sizeof(unit_buf)
+  and initialize idx.
+
+(M13 from the audit is actually dec_str in shared/shutils.c, not misc.c;
+it will be handled with the shutils crypto cluster.)
+
+Compiles clean with the real userspace toolchain; no warnings at the
+edited sites.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/misc.c | 16 +++++++++-------
+ 1 file changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 3d1f826325..3d4551a24b 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -3290,12 +3290,13 @@ unsigned int netdev_calc(char *ifname, char *ifname_desc, unsigned long long *rx
+ 		if(strcmp(word, ifname) == 0) {
+ 			if(strncmp(ifname, "wl", 2) == 0){
+ 				char unit_buf[8], *p1, *p2;
+-				int len, idx;
++				int len, idx = 0;
+ 
+ 				p1 = strchr(word, '.');
+ 				p2 = strchr(word, 'l');
+ 				len = p1 - p2;
+ 				if(len > 0){
++					if(len > (int)sizeof(unit_buf)) len = sizeof(unit_buf);	/* M16: clamp snprintf size to unit_buf */
+ 					snprintf(unit_buf, len, "%s", p2+1);
+ 					idx = atoi(unit_buf);
+ 				}
+@@ -3932,13 +3933,14 @@ int set_crt_parsed(const char *name, char *file_path)
+ 			return -EINVAL;
+ 		}
+ 		p += strlen(buffer);
+-		//if( *(p-1) == '\n' )
+-			//*(p-1) = '>';
+ 		while(fgets(buffer2, sizeof(buffer2), fp)) {
+-			strncpy(p, buffer2, strlen(buffer2));
+-			p += strlen(buffer2);
+-			//if( *(p-1) == '\n' )
+-				//*(p-1) = '>';
++			size_t blen = strlen(buffer2);
++			if(blen >= sizeof(buffer) - (size_t)(p - buffer)) {	/* H11: refuse to overflow buffer[8000] */
++				fclose(fp);
++				return -EINVAL;
++			}
++			memcpy(p, buffer2, blen);
++			p += blen;
+ 		}
+ 		*p = '\0';
+ 		nvram_set(name, buffer);

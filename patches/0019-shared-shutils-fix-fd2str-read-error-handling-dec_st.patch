@@ -1,0 +1,74 @@
+From f3a624705863c297500bdf997d135b074b69c146 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 14:17:51 -0400
+Subject: [PATCH 19/25] shared/shutils: fix fd2str read-error handling +
+ dec_str over-read (M14/M13)
+
+- M14: fd2str() declared the read() return as size_t, so a read error
+  (-1) became SIZE_MAX: the `if (n < 0)` check was dead, count wrapped,
+  and the trailing buf[count] write went out of bounds. Use ssize_t for
+  the read count, break on error, and null-check realloc.
+- M13: dec_str() did memcpy(buf, ec_str, DATA_WORDS_LEN+1), over-reading
+  a shorter source. Bound the copy with strnlen(ec_str, DATA_WORDS_LEN);
+  the +1 byte was overwritten by buf[DATA_WORDS_LEN]=0 immediately after,
+  so behavior is unchanged for valid input.
+
+(M20 keyless enc_str/dec_str scheme and M21 MAC-derived generate_wireless_key
+are crypto-design weaknesses with stored-value/compat impact; deferred for a
+design decision, not patched here.)
+
+Compiles clean with the real userspace toolchain; no warnings at the
+edited sites.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/shutils.c | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/shared/shutils.c b/release/src/router/shared/shutils.c
+index c161d22906..b7c50d6cf2 100644
+--- a/release/src/router/shared/shutils.c
++++ b/release/src/router/shared/shutils.c
+@@ -170,17 +170,25 @@ void dbg(const char * format, ...)
+ char *
+ fd2str(int fd)
+ {
+-	char *buf = NULL;
+-	size_t count = 0, n;
++	char *buf = NULL, *nbuf;
++	size_t count = 0;
++	ssize_t n;	/* M14: was size_t, so a read() error (-1) was never detected and count wrapped */
+ 
+ 	do {
+-		buf = realloc(buf, count + 512);
++		nbuf = realloc(buf, count + 512);
++		if (nbuf == NULL) {
++			free(buf);
++			buf = NULL;
++			break;
++		}
++		buf = nbuf;
+ 		n = read(fd, buf + count, 512);
+ 		if (n < 0) {
+ 			free(buf);
+ 			buf = NULL;
++			break;
+ 		}
+-		count += n;
++		count += (size_t)n;
+ 	} while (n == 512);
+ 
+ 	close(fd);
+@@ -2244,10 +2252,11 @@ char *enc_str(char *str, char *enc_buf)
+ char *dec_str(char *ec_str, char *dec_buf)
+ {
+         unsigned char buf[DATA_WORDS_LEN + 1];
++        size_t n = strnlen(ec_str, DATA_WORDS_LEN);	/* M13: don't read past a short source (the +1 byte was discarded anyway) */
+ 
+         memset(buf, 0, sizeof(buf));
+         memset(dec_buf, 0, DATA_WORDS_LEN);
+-        memcpy(buf, ec_str, DATA_WORDS_LEN+1);
++        memcpy(buf, ec_str, n);
+         buf[DATA_WORDS_LEN] = 0;
+         shortstr_decrypt(buf, (unsigned char *) dec_buf, used_shift);
+ 

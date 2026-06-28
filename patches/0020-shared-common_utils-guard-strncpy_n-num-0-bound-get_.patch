@@ -1,0 +1,48 @@
+From 5519cb4ba037830cb70ac5a6cc0b773e5c070345 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 14:19:20 -0400
+Subject: [PATCH 20/25] shared/common_utils: guard strncpy_n(num==0) + bound
+ get_hex_data (M12/M15)
+
+- M12: strncpy_n() computed num-1 unconditionally; num==0 wrapped to
+  SIZE_MAX (huge strncpy) and wrote destination[-1]. Return early when
+  num==0.
+- M15: get_hex_data() read 2*len bytes from data_str with no source-length
+  check; clamp len to strlen(data_str)/2 so it can't over-read. (Its sibling
+  hex_to_bytes already clamps to strlen/2.)
+
+Compiles clean with the real userspace toolchain; no warnings at the
+edited sites.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/common_utils.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/shared/common_utils.c b/release/src/router/shared/common_utils.c
+index 658cccd934..82212799f7 100644
+--- a/release/src/router/shared/common_utils.c
++++ b/release/src/router/shared/common_utils.c
+@@ -49,7 +49,10 @@
+ char*
+ strncpy_n(char *destination, const char *source, size_t num)
+ {
+-	char *ret = strncpy(destination, source, num - 1);
++	char *ret;
++	if (num == 0)			/* M12: avoid num-1 wrapping to SIZE_MAX and destination[-1] */
++		return destination;
++	ret = strncpy(destination, source, num - 1);
+ 	destination[num - 1] = '\0';
+ 	return ret;
+ }
+@@ -153,6 +156,10 @@ get_hex_data(uchar *data_str, uchar *hex_data, int len)
+ 	uchar val;
+ 	int idx;
+ 	char hexstr[3] = {0};
++	int avail = (int)(strlen((char*)data_str) / 2);	/* M15: don't read past the source */
++
++	if (len > avail)
++		len = avail;
+ 
+ 	src = data_str;
+ 	dest = hex_data;

@@ -1,0 +1,145 @@
+From 433d00879770e018faef9cabbb8dd299384fe718 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 10:38:16 -0400
+Subject: [PATCH 04/25] rc: fix WAN/NTP/Samba command injection (H3/H4/H7/M7)
+
+- multi_wan.c / multi_wan_ipv6.c: gate the resolv.conf grep on is_valid_ip(wan_dns); an upstream-DHCP-supplied DNS token can no longer reach the shell (and a bogus nameserver is never appended).
+
+- ntp.c: validate the nvram-set NTP server with is_valid_hostname()/is_valid_ip() before the nslookup shell call.
+
+- usb.c: add shell_dquote_escape() (escapes \ " $ backtick) and run Samba account name+password through it before the smbpasswd system() call, in both the PMS and acc_list paths. Previous escapers left $ and backtick active, allowing /backtick RCE as root.
+
+Local-only branch; not pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/multi_wan.c      |  4 ++--
+ release/src/router/rc/multi_wan_ipv6.c |  2 +-
+ release/src/router/rc/ntp.c            |  6 ++++--
+ release/src/router/rc/usb.c            | 29 ++++++++++++++++++++++----
+ 4 files changed, 32 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/multi_wan.c b/release/src/router/rc/multi_wan.c
+index 33c8d6f5a0..2670a60893 100644
+--- a/release/src/router/rc/multi_wan.c
++++ b/release/src/router/rc/multi_wan.c
+@@ -1848,7 +1848,7 @@ void mtwan_append_s46_resolvconf_ipv4(int wan_unit)
+ 		strlcpy(wan_dns_buf, nvram_pf_safe_get(wan_prefix, "dns"), sizeof(wan_dns_buf));
+ 		if (wan_dns_buf[0]) {
+ 			foreach (wan_dns, wan_dns_buf, next_dns) {
+-				if (doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {
++				if (is_valid_ip(wan_dns) > 0 && doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) { /* hardening H3: only act on a validated IP, never let an upstream-supplied DNS token reach the shell */
+ 					fp = fopen("/tmp/resolv.conf", "a");
+ 					if(fp) {
+ 						fprintf(fp, "nameserver %s\n", wan_dns);
+@@ -1861,7 +1861,7 @@ void mtwan_append_s46_resolvconf_ipv4(int wan_unit)
+ 			strlcpy(wan_dns_buf, nvram_pf_safe_get(wan_prefix, "xdns"), sizeof(wan_dns_buf));
+ 			if (wan_dns_buf[0]) {
+ 				foreach (wan_dns, wan_dns_buf, next_dns) {
+-					if (doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {
++					if (is_valid_ip(wan_dns) > 0 && doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) { /* hardening H3: only act on a validated IP, never let an upstream-supplied DNS token reach the shell */
+ 						fp = fopen("/tmp/resolv.conf", "a");
+ 						if(fp) {
+ 							fprintf(fp, "nameserver %s\n", wan_dns);
+diff --git a/release/src/router/rc/multi_wan_ipv6.c b/release/src/router/rc/multi_wan_ipv6.c
+index 22f27bd25e..6b53be045a 100644
+--- a/release/src/router/rc/multi_wan_ipv6.c
++++ b/release/src/router/rc/multi_wan_ipv6.c
+@@ -403,7 +403,7 @@ void mtwan_append_s46_resolvconf_ipv6(int wan_unit)
+ 	case WAN_OCNVC:
+ 		strlcpy(wan_dns_buf, nvram_safe_get(ipv6_nvname_by_unit("ipv6_get_dns", wan_unit)), sizeof(wan_dns_buf));
+ 		foreach (wan_dns, wan_dns_buf, next_dns) {
+-			if (doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {
++			if (is_valid_ip(wan_dns) > 0 && doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) { /* hardening H4: only act on a validated IP, never let an upstream-supplied DNS token reach the shell */
+ 				fp = fopen("/tmp/resolv.conf", "a");
+ 				if(fp) {
+ 					fprintf(fp, "nameserver %s\n", wan_dns);
+diff --git a/release/src/router/rc/ntp.c b/release/src/router/rc/ntp.c
+index 3a7a25d83b..3ae98fcbb9 100644
+--- a/release/src/router/rc/ntp.c
++++ b/release/src/router/rc/ntp.c
+@@ -256,7 +256,9 @@ int ntp_main(int argc, char *argv[])
+ #endif
+ 			if(strcmp(server, DEFAULT_NTP_SERVER)) //customer setting
+ 			{
+-				ret = doSystem("nslookup %s &> /dev/null", server);
++				/* hardening M7: server is nvram-set (ntp_server0/1); only run the
++				 * DNS lookup for a valid hostname/IP so it can't inject a shell command. */
++				ret = (is_valid_hostname(server) || is_valid_ip(server) > 0) ? doSystem("nslookup %s &> /dev/null", server) : -1;
+ 				if (ret == 0)
+ 				_eval(args, NULL, 0, &pid);
+ 				strlcpy(server, DEFAULT_NTP_SERVER, sizeof(server));
+@@ -276,7 +278,7 @@ int ntp_main(int argc, char *argv[])
+ 				strlcpy(server, nvram_safe_get("ntp_server0"), sizeof(server));
+ 			}
+ 		} else {
+-			ret = doSystem("nslookup %s &> /dev/null", server);
++			ret = (is_valid_hostname(server) || is_valid_ip(server) > 0) ? doSystem("nslookup %s &> /dev/null", server) : -1; /* hardening M7: validate nvram ntp server before shell lookup */
+ 			if (ret == 0)
+ 			_eval(args, NULL, 0, &pid);
+ 
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 2d057e9f89..f24eefa48f 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3472,6 +3472,27 @@ start_write_smb_conf(void)
+ 	system("/sbin/write_smb_conf");
+ }
+ 
++/* hardening (H7): escape a string for safe inclusion *inside double quotes* in
++ * a /bin/sh command line. Backslash-escapes \ " $ and ` so a Samba account name
++ * or password containing $(...) or `...` cannot inject commands via system().
++ * The previous str_escape_quotes()/suit_double_quote() left $ and ` active. */
++static void shell_dquote_escape(char *dst, const char *src, int dst_sz)
++{
++	int w = 0;
++	if(dst_sz <= 0)
++		return;
++	for(; src && *src != '\0' && w < dst_sz - 1; src++){
++		char c = *src;
++		if(c=='\\' || c=='"' || c=='$' || c=='`'){
++			if(w + 2 > dst_sz - 1)
++				break;
++			dst[w++] = '\\';
++		}
++		dst[w++] = c;
++	}
++	dst[w] = '\0';
++}
++
+ void
+ start_samba(void)
+ {
+@@ -3575,12 +3596,12 @@ start_samba(void)
+ 		memset(char_user, 0, 64);
+ 		ascii_to_char_safe(char_user, follow_account->name, 64);
+ 		memset(suit_user, 0, 64);
+-		suit_double_quote(suit_user, char_user, 64);
++		shell_dquote_escape(suit_user, char_user, 64); /* hardening H7 */
+ 
+ 		memset(char_passwd, 0, 64);
+ 		ascii_to_char_safe(char_passwd, follow_account->passwd, 64);
+ 		memset(suit_passwd, 0, 64);
+-		suit_double_quote(suit_passwd, char_passwd, 64);
++		shell_dquote_escape(suit_passwd, char_passwd, 64); /* hardening H7 */
+ 
+ #if defined(RTCONFIG_SAMBA36X)
+ 		// use samba-3.6.x_opwrt to replace from samba-3.6.x
+@@ -3615,7 +3636,7 @@ start_samba(void)
+ 			memset(char_user, 0, 64);
+ 			ascii_to_char_safe(char_user, tmp_ascii_user, 64);
+ 			memset(suit_user, 0, 64);
+-			str_escape_quotes(suit_user, char_user, 64);
++			shell_dquote_escape(suit_user, char_user, 64); /* hardening H7 */
+ #ifdef RTCONFIG_NVRAM_ENCRYPT
+ 			char dec_passwd[64];
+ 			memset(dec_passwd, 0, sizeof(dec_passwd));
+@@ -3630,7 +3651,7 @@ start_samba(void)
+ #endif
+ 
+ 			memset(suit_passwd, 0, 64);
+-			str_escape_quotes(suit_passwd, char_passwd, 64);
++			shell_dquote_escape(suit_passwd, char_passwd, 64); /* hardening H7 */
+ 
+ #if defined(RTCONFIG_TUXERA_SMBD)
+ 			if(st_samba_mode == 2 || st_samba_mode == 4)

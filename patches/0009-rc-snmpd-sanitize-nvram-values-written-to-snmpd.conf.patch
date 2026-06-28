@@ -1,0 +1,129 @@
+From cbbbb83db349a09242611c1f6960ab1c70a18e3f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 13:35:07 -0400
+Subject: [PATCH 09/25] rc/snmpd: sanitize nvram values written to snmpd.conf
+ (C4/H9)
+
+Add snmp_sanitize() which strips CR/LF and other control chars, and run
+every attacker-influenceable nvram value through it before writing
+/tmp/snmpd.conf:
+- C4: roCommunity/rwCommunity/sysName/sysLocation/sysContact could embed a
+  newline to start a fresh net-snmp directive (extend/exec/pass) that runs
+  a shell on OID poll -> root RCE.
+- H9: http_username and the SNMPv3 v3_auth_passwd/v3_priv_passwd could
+  inject extra createUser/rwuser lines.
+snmpd IS built for BE96U (RTCONFIG_SNMPD=y in .config). Compiles clean
+with the real userspace toolchain (zero new warnings).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/snmpd.c | 67 +++++++++++++++++++++++++++--------
+ 1 file changed, 52 insertions(+), 15 deletions(-)
+
+diff --git a/release/src/router/rc/snmpd.c b/release/src/router/rc/snmpd.c
+index 021baec2c7..ce6e7c15d0 100644
+--- a/release/src/router/rc/snmpd.c
++++ b/release/src/router/rc/snmpd.c
+@@ -29,11 +29,33 @@
+ //#include <errno.h>
+ //#include <sys/stat.h>
+ 
++/* Strip CR/LF and other control characters from an nvram value before it is
++ * written into /tmp/snmpd.conf. A raw newline would let an attacker-set value
++ * (community strings, sysName/Location/Contact, SNMPv3 user/passwords) start a
++ * fresh net-snmp directive line such as extend/exec/pass -> shell RCE on poll
++ * (C4), or inject extra createUser/rwuser lines (H9). Copies src into dst
++ * (capacity dsize), dropping any byte < 0x20 or == 0x7f; always NUL-terminates. */
++static void snmp_sanitize(char *dst, size_t dsize, const char *src)
++{
++	size_t j = 0;
++
++	if (dsize == 0)
++		return;
++	for (; src && *src && j + 1 < dsize; src++) {
++		unsigned char c = (unsigned char)*src;
++		if (c < 0x20 || c == 0x7f)
++			continue;	/* drop CR/LF/TAB and other control chars */
++		dst[j++] = (char)c;
++	}
++	dst[j] = '\0';
++}
++
+ void start_snmpd(void)
+ {
+ 	int ret = 0;
+ 	FILE *fp;
+ 	char user[35], authType[5], privType[5], authPwd[256], privPwd[256];
++	char cval[256];
+ 
+ 	if (!nvram_match("snmpd_enable", "1")) {
+ 		return;
+@@ -51,11 +73,11 @@ void start_snmpd(void)
+ 	memset(privType, 0x0, 5);
+ 	memset(authPwd, 0x0, 256);
+ 	memset(privPwd, 0x0, 256);
+-	snprintf(user, sizeof(user), "%s", nvram_safe_get("http_username"));
+-	snprintf(authType, sizeof(authType), "%s", nvram_safe_get("v3_auth_type"));
+-	snprintf(authPwd, sizeof(authPwd), "%s", nvram_safe_get("v3_auth_passwd"));
+-	snprintf(privType, sizeof(privType), "%s", nvram_safe_get("v3_priv_type"));
+-	snprintf(privPwd, sizeof(privPwd), "%s", nvram_safe_get("v3_priv_passwd"));
++	snmp_sanitize(user, sizeof(user), nvram_safe_get("http_username"));
++	snmp_sanitize(authType, sizeof(authType), nvram_safe_get("v3_auth_type"));
++	snmp_sanitize(authPwd, sizeof(authPwd), nvram_safe_get("v3_auth_passwd"));
++	snmp_sanitize(privType, sizeof(privType), nvram_safe_get("v3_priv_type"));
++	snmp_sanitize(privPwd, sizeof(privPwd), nvram_safe_get("v3_priv_passwd"));
+ 
+ 	cprintf("write config for snmpd!\n");
+ 
+@@ -81,11 +103,17 @@ void start_snmpd(void)
+ 	else
+ 		cprintf("Wrong SNMPv3 Authentication type!!\n");
+ 
+-	if(strlen(nvram_safe_get("roCommunity")))
+-		fprintf(fp, "rocommunity %s default\n", nvram_safe_get("roCommunity"));
++	if(strlen(nvram_safe_get("roCommunity"))) {
++		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("roCommunity"));
++		if(cval[0])
++			fprintf(fp, "rocommunity %s default\n", cval);
++	}
+ 
+-	if(strlen(nvram_safe_get("rwCommunity")))
+-		fprintf(fp, "rwcommunity %s default\n", nvram_safe_get("rwCommunity"));
++	if(strlen(nvram_safe_get("rwCommunity"))) {
++		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("rwCommunity"));
++		if(cval[0])
++			fprintf(fp, "rwcommunity %s default\n", cval);
++	}
+ 
+ #if 0
+ 	fprintf(fp, "com2sec	defROnlyUser	default	%s\n", nvram_get("roCommunity"));
+@@ -99,14 +127,23 @@ void start_snmpd(void)
+ 	fprintf(fp, "access	RWGroup		\"\"	any	noauth	exact	all	all	none\n");
+ #endif
+ 
+-	if(strlen(nvram_safe_get("sysName")))
+-		fprintf(fp, "sysName %s\n", nvram_safe_get("sysName"));
++	if(strlen(nvram_safe_get("sysName"))) {
++		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("sysName"));
++		if(cval[0])
++			fprintf(fp, "sysName %s\n", cval);
++	}
+ 
+-	if(strlen(nvram_safe_get("sysLocation")))
+-		fprintf(fp, "sysLocation %s\n", nvram_safe_get("sysLocation"));
++	if(strlen(nvram_safe_get("sysLocation"))) {
++		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("sysLocation"));
++		if(cval[0])
++			fprintf(fp, "sysLocation %s\n", cval);
++	}
+ 
+-	if(strlen(nvram_safe_get("sysContact")))
+-		fprintf(fp, "sysContact %s\n", nvram_safe_get("sysContact"));
++	if(strlen(nvram_safe_get("sysContact"))) {
++		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("sysContact"));
++		if(cval[0])
++			fprintf(fp, "sysContact %s\n", cval);
++	}
+ 
+ 	append_custom_config("snmpd.conf", fp);
+ 	fclose(fp);

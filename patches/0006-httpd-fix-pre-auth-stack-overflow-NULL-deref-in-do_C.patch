@@ -1,0 +1,69 @@
+From 54c17164cba955c1b8946e93f6af0a762765b39a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 27 Jun 2026 11:40:59 -0400
+Subject: [PATCH 06/25] httpd: fix pre-auth stack overflow + NULL deref in
+ do_CoBrand_img (C1/H1)
+
+do_CoBrand_img is registered for the wildcard image patterns
+(**.png/**.gif/**.jpg/**.svg) with auth=NULL, so it runs pre-authentication
+with the request path as url:
+
+- C1: bound the extension copy (was an unbounded sprintf of the URL's
+  ".<ext>" into file_extension[32]) and bail when the URL has no '.'
+  (the NULL dotPosition was dereferenced).
+- H1: bound the lowercase copy of nvram odmpid into lowercase_pid[32] and
+  NUL-terminate the destination (was unbounded and terminated the wrong
+  buffer).
+
+Verified: standalone AddressSanitizer harness shows no overflow on a
+200-char extension and no crash on a no-extension URL.
+
+Local-only branch; not pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f2247ae14e..60e3be09bc 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -27392,14 +27392,25 @@ static void do_CoBrand_img(char *url, FILE *stream)
+ 	char lowercase_pid[32] = {0};
+ 	char *p;
+ 
++	/* hardening (C1): this handler is reachable pre-auth via the wildcard image
++	 * patterns; if the request URL has no '.' there is no extension to serve, so
++	 * bail rather than dereference a NULL dotPosition or build a bogus path. */
++	if(dotPosition == NULL)
++		goto cobrand_out;
++
++	/* hardening (H1): bound the lowercase copy of nvram 'odmpid' to the
++	 * destination and NUL-terminate it (the original overran lowercase_pid[32]
++	 * for a long odmpid and terminated the wrong buffer). */
+ 	p = odmpid;
+-	for(i = 0; i < strlen(odmpid); i++){
+-		lowercase_pid[i] = tolower(*p);
++	for(i = 0; i < (int)strlen(odmpid) && i < (int)sizeof(lowercase_pid) - 1; i++){
++		lowercase_pid[i] = tolower((unsigned char)*p);
+ 		p++;
+ 	}
+-	*p = '\0';
++	lowercase_pid[i] = '\0';
+ 
+-	sprintf(file_extension, "%s", dotPosition);
++	/* hardening (C1): bound the extension copy (was an unbounded sprintf into
++	 * file_extension[32] from the request URL). */
++	snprintf(file_extension, sizeof(file_extension), "%s", dotPosition);
+ 	*dotPosition = '\0';
+ 
+ 	if(strlen(odmpid) > 0 && strcmp(odmpid, productid))
+@@ -27453,6 +27464,7 @@ static void do_CoBrand_img(char *url, FILE *stream)
+ 	HTTPD_DBG("[web.c] %s(%d): do_CoBrand_img: %s\n", __FUNCTION__, __LINE__, path);
+ 	do_file(path, stream);
+ 
++cobrand_out:
+ 	if(productid)
+ 		free(productid);
+ 

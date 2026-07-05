@@ -194,6 +194,45 @@ security logic that upstream also edits. For each conflict:
 Resolve, `git add`, `git rebase --continue`. Do the C files in small batches and
 build between batches if a conflict looked risky.
 
+### Post-rebase: audit for silent double-fixes
+
+A rebase conflict only fires when reaper's fix and an upstream fix touch the
+**same lines**. When upstream fixed the same vulnerability in a *different* spot,
+git applies both cleanly and says nothing - leaving a silent **double-fix**:
+redundant at best; a compounded off-by-one, a double-validation that rejects valid
+input, or a now-dead branch at worst. git cannot detect this - you must, with
+`REAPER-FIXES.md` as the checklist. Run this **after the whole rebase completes,
+before building**:
+
+```sh
+NEW=import/<ver>
+# Net reaper delta vs the NEW upstream, C/H only. Every hunk here should be a fix
+# upstream does NOT already have; a hunk that duplicates protection already present
+# in $NEW is a double-fix.
+git diff $NEW..HEAD -- '*.c' '*.h'
+# Which reaper commits still land on each co-edited file:
+for f in $(git diff --name-only $NEW..HEAD -- '*.c' '*.h'); do
+  echo "== $f =="; git log --oneline $NEW..HEAD -- "$f"
+done
+```
+
+Then walk every `REAPER-FIXES.md` ID and open its target function in the merged
+tree; confirm the vulnerability is closed **exactly once**:
+
+- upstream now closes it **and** reaper adds a second guard -> **drop reaper's
+  hunk** (edit it out / amend the commit) and note it in `REAPER-FIXES.md`;
+- only reaper closes it -> keep it;
+- both close it partially -> reconcile into **one** guard, never stack two.
+
+Tell-tale double-fixes to look for: two adjacent length clamps on the same buffer,
+the same nvram value sanitized twice, a reaper `strlcpy` sitting next to an
+upstream `strlcpy`/`snprintf` of the same field, or a validation branch that is now
+unreachable. `git blame` the region to separate the two solutions - reaper hunks
+carry the reaper author, upstream hunks carry the ASUS/Merlin author.
+
+This audit plus the build + boot + security retest (section 9) is what turns "git
+did not complain" into assurance that each vulnerability is fixed exactly once.
+
 ---
 
 ## 8. Step 4 - re-assert pristineness and re-apply the theme hook

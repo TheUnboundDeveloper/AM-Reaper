@@ -4,7 +4,7 @@
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — and produce a flashable image that can be shared with other security-conscious BE96U owners.
 
-> ~56 security issues fixed across two audit rounds (command-injection, memory-safety, and defense-in-depth), each compile/link-verified by a full firmware build. See **[REAPER-FIXES.md](REAPER-FIXES.md)**.
+> ~70+ security issues fixed across four audit rounds (command-injection, memory-safety, and defense-in-depth), each compile/link-verified by a full firmware build. See **[docs/REAPER-FIXES.md](docs/REAPER-FIXES.md)**.
 
 ---
 
@@ -14,9 +14,12 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 
 **In the repo:**
 - **[`patches/`](patches/)** — the hardening, as patch files you apply onto an upstream Asuswrt-Merlin checkout.
-- **[`REAPER-FIXES.md`](REAPER-FIXES.md)** — the authoritative fix list (per-finding, with commit hashes).
-- **[`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md)** — package-update candidates + enterprise feature ideas.
-- **[`docs/`](docs/)** — `PROJECT.md` (overview) and `DEV-SETUP.md` (the hard-won build/edit/verify guide), plus the retained upstream `License` / `README.proprietary` / `Changelog-3006.txt`.
+- **[`docs/`](docs/)** — all project documentation:
+  - [`REAPER-FIXES.md`](docs/REAPER-FIXES.md) — the authoritative fix list (per-finding, with commit hashes).
+  - [`RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) — what each published image contains.
+  - [`PROJECT.md`](docs/PROJECT.md) (overview) and [`DEV-SETUP.md`](docs/DEV-SETUP.md) (the hard-won build/edit/verify guide).
+  - [`GPL-MERGE.md`](docs/GPL-MERGE.md) (maintainer rebase guide) and [`ENTERPRISE-ROADMAP.md`](docs/ENTERPRISE-ROADMAP.md) (package-update candidates + feature ideas).
+  - Retained upstream originals: `README.proprietary` / `Changelog-3006.txt` (the GPL text is at the repo root: [`LICENSE`](LICENSE)).
 
 **Not in the repo (externally sourced — see [docs/DEV-SETUP.md](docs/DEV-SETUP.md) § "Get the inputs"):**
 - The **upstream firmware source** — clone `RMerl/asuswrt-merlin.ng` at tag `3006.102.8-beta2`.
@@ -36,4 +39,6 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 
 ## Legal
 
-GPL components are GPL (`docs/License`); publish your changes if you redistribute. The **proprietary components are licensed for genuine ASUS hardware only** (`docs/README.proprietary`) and are intentionally **not** included here. This fork targets the RT-BE96U exclusively.
+GPL components are GPL ([`LICENSE`](LICENSE)); publish your changes if you redistribute. The **proprietary components are licensed for genuine ASUS hardware only** (`docs/README.proprietary`) and are intentionally **not** included here. This fork targets the RT-BE96U exclusively.
+
+Security reports: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).

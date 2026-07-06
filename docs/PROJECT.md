@@ -2,7 +2,7 @@
 
 A security-hardened, single-model fork of **Asuswrt-Merlin** focused exclusively on the **ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**.
 
-> This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals (`License`, `README.proprietary`, `Changelog-3006.txt`) are preserved verbatim in this `docs/` folder for reference and GPL compliance.
+> This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder.
 
 ---
 
@@ -16,7 +16,7 @@ A security-hardened, single-model fork of **Asuswrt-Merlin** focused exclusively
 ## Scope & hard rules
 
 - **One model: RT-BE96U.** The tree was stripped of the other BE sibling models; built from `release/src-rt-5.04behnd.4916`, target `rt-be96u`.
-- **Never push.** Work lives on the local `be96u-only` branch; `origin` is the upstream/mirror.
+- **The vendor tree is never redistributed.** The hardening is maintained as patches (this repo's `patches/`) on top of the upstream `3006.102.8-beta2` tag; the multi-GB source checkout stays local to each developer.
 - **Don't modify the closed blobs.** Broadcom WiFi drivers and prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, `spwenc`, the Broadcom `hostapd`/`wpa_supplicant` forks) are out of scope and treated as documented residual risk. Harden the userspace around them.
 
 ## Relationship to upstream Asuswrt-Merlin
@@ -28,11 +28,11 @@ Most of the source we patch is **shared across many Broadcom-HND Merlin models**
 
 ## Relevant stock features (already in the build)
 
-Carried over from Asuswrt-Merlin and present in the BE96U image: user scripts (firewall/services events), cron, customizable service configs, **Entware** add-on support (via `amtm`), `nano`, NTP daemon, SNMP, OpenVPN client/server (hardened here) + WireGuard + IPsec/strongSwan, **VPN Director** policy routing, **DNS Director**, **Cake SQM QoS**, Tor, ipset, USB sharing (Samba/minidlna/vsftpd/AFP), traffic stats. See [`ENTERPRISE-ROADMAP.md`](../ENTERPRISE-ROADMAP.md) for what's in-tree-but-not-yet-enabled and what's worth adding.
+Carried over from Asuswrt-Merlin and present in the BE96U image: user scripts (firewall/services events), cron, customizable service configs, **Entware** add-on support (via `amtm`), `nano`, NTP daemon, SNMP, OpenVPN client/server (hardened here) + WireGuard + IPsec/strongSwan, **VPN Director** policy routing, **DNS Director**, **Cake SQM QoS**, Tor, ipset, USB sharing (Samba/minidlna/vsftpd/AFP), traffic stats. See [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md) for what's in-tree-but-not-yet-enabled and what's worth adding.
 
 ## Security status
 
-See [`REAPER-FIXES.md`](../REAPER-FIXES.md) for the authoritative fix list (Round 1 + Round 2: command-injection, memory-safety, and defense-in-depth fixes across `httpd`, `rc`, `shared`, `libdisk`, `libovpn`, `snooper`, `urlfilterd`, `lltdc`, `wsdd2`, `infosvr`, `libcodb`, and more — all compile/link-verified). The prebuilt blobs remain a binary-RE-only coverage gap.
+See [`REAPER-FIXES.md`](REAPER-FIXES.md) for the authoritative fix list (all audit rounds: command-injection, memory-safety, and defense-in-depth fixes across `httpd`, `rc`, `shared`, `libdisk`, `libovpn`, `snooper`, `urlfilterd`, `lltdc`, `wsdd2`, `infosvr`, `libcodb`, and more — all compile/link-verified). The prebuilt blobs remain a binary-RE-only coverage gap.
 
 ## Installation / flashing (summary)
 
@@ -45,7 +45,7 @@ Flash the **`…_nand_squashfs.pkgtb`** (firmware-only) image via **Administrati
 
 ## Legal
 
-- **GPL:** the GPL portions are under the GPL (see [`License`](License)). If you redistribute, publish your changes to the GPL code.
+- **GPL:** the GPL portions are under the GPL (see [`LICENSE`](../LICENSE)). If you redistribute, publish your changes to the GPL code.
 - **Proprietary components** (ASUS / Broadcom / Trend Micro / Tuxera and possibly others) are **licensed for use on genuine ASUS hardware only** — using them on other manufacturers' hardware is forbidden and may be illegal in your jurisdiction (see [`README.proprietary`](README.proprietary)). This fork is for the RT-BE96U; do not port the blobs elsewhere.
 - **No warranty:** provided as-is. This is a community hardening effort with no guarantee — use at your own risk, and keep a recovery path ready when flashing.
 - **Privacy:** the only automatic phone-home in the base firmware is the new-version availability check, which can be disabled in the webui (Administration → Firmware Upgrade → auto-check off).

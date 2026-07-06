@@ -204,12 +204,12 @@ What "good" looks like:
 
 ## 8. Where things live
 
-- **Fix list / what's been hardened:** [`REAPER-FIXES.md`](../REAPER-FIXES.md) (repo root)
-- **Roadmap (package updates, enterprise features):** [`ENTERPRISE-ROADMAP.md`](../ENTERPRISE-ROADMAP.md) (repo root)
+- **Fix list / what's been hardened:** [`REAPER-FIXES.md`](REAPER-FIXES.md) (this `docs/` folder)
+- **Release notes (per published image):** [`RELEASE-NOTES.md`](RELEASE-NOTES.md)
+- **Roadmap (package updates, enterprise features):** [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md)
 - **The hardening changes:** [`patches/`](../patches/) — applied onto the upstream source (see "Get the inputs" above)
 - **Flashable images:** not in git (build artifacts) — built into `release/src-rt-5.04behnd.4916/targets/96813GW/RT-BE96U_…_nand_squashfs.pkgtb`, and published on the repo's **GitHub Releases** for end users who only want to flash.
-- **AI-agent context:** repo-root `CLAUDE.md`
-- **Upstream originals (reference/GPL compliance):** `License`, `README.proprietary`, `Changelog-3006.txt` (kept in this `docs/` folder)
+- **Upstream originals (reference/GPL compliance):** [`LICENSE`](../LICENSE) (repo root), plus `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder
 
 ---
 

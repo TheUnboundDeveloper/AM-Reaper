@@ -20,7 +20,7 @@ They touch only the shared open-source userspace (`release/src/router/{httpd, rc
 
 ## What each patch is
 
-The filenames carry the summary; the full per-finding mapping (which CVE-class each fixes, with severities) is in [`../REAPER-FIXES.md`](../REAPER-FIXES.md). Roughly:
+The filenames carry the summary; the full per-finding mapping (which CVE-class each fixes, with severities) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly:
 
 - `0001`–`0021` — **Round 1** hardening (IPsec/rc command-injection, httpd pre-auth overflow, snmpd/nvparse/usb/shared memory-safety, format strings, temp-file races, perms).
 - `0022` — build branding (`BUILDREV=-reaper`).
@@ -28,5 +28,5 @@ The filenames carry the summary; the full per-finding mapping (which CVE-class e
 
 ## Notes
 
-- **`0023` is intentionally absent.** That commit only added the project docs (`REAPER-FIXES.md`, `CLAUDE.md`) to the tree — those ship as files in this repo, so it isn't included as a source patch. `git am patches/*.patch` applies the rest in order regardless of the gap.
+- **`0023` is intentionally absent.** That commit only added project documentation to the tree — the docs ship in this repo's [`docs/`](../docs/) instead, so it isn't included as a source patch. `git am patches/*.patch` applies the rest in order regardless of the gap.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted to keep this set small and focused on the security changes.

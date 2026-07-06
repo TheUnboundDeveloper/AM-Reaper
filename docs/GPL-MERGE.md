@@ -27,6 +27,7 @@ to merge:
 | 2 | **Theme styling** | `www/reaper/*` (additive), `www/reaper_shell.asp`, `www/Main_ReaperDash.asp` | Never (reaper-owned files upstream doesn't ship) |
 | 3 | **SPA-bundle recolor** (deferred) | `www/sysdep/FUNCTION/RWD_UI/rwd_component.css`, `.../SDN/SDN/sdn.css`, `.../SDN/SDN/mlo.css` | Only if upstream edits those 3 files (recolor-only, easy to redo) |
 | 4 | **C hardening** | ~46 `.c`/`.h` under `httpd/ rc/ shared/ libovpn/ libcodb/ ...` | The **real merge work** - genuine logic edits (see section 7 + Appendix A) |
+| 5 | **Package CVE backports** | bundled third-party pkgs, e.g. avahi (`avahi-core/rr.c`, `avahi-common/{domain,alternative}.c`) | Almost never - these packages are ASUS-frozen; conflicts only if a drop re-imports the package tarball, then re-check each backport vs the new version (same double-fix audit as section 7). See `REAPER-FIXES.md` -> "Package CVE backports" |
 
 Plus one special commit:
 

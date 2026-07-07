@@ -138,10 +138,14 @@ Hardening targets the **ASUS/Merlin-authored userspace**. The items below are
   web admin disabled; every downstream sink is hardened regardless. Watch for
   ASUS firmware/blob updates.
 
-**Dormant unless you enable AiCloud:**
-- AiCloud is **off by default** (`RTCONFIG_WEBDAV` not built). Do **not** enable
-  it without first fixing the predictable sharelink token, mod_webdav path
-  traversal, and `df|grep` popen (`REAPER-FIXES.md` T6-T8).
+**AiCloud — disabled and abandoned (do not re-enable):**
+- AiCloud was **gutted and disabled on purpose** because of several high-severity
+  findings (a time-seeded/brute-forceable sharelink token, mod_webdav path
+  traversal, and a `df|grep` popen — `REAPER-FIXES.md` T6-T8). `RTCONFIG_WEBDAV`
+  and `RTCONFIG_CLOUDSYNC` are off, so the stack is inert. It is **not** a
+  fix-then-enable feature; **do not re-enable it.** The `AICLOUD_TUNNEL` flag and
+  the `mod_aicloud_*`/`mod_webdav` objects still ship in v1.0 and are slated for
+  **full removal** in a later revision.
 
 **Lower-priority latent hardening** (bounded/unreachable today) and design
 decisions (default admin credentials, mitigated by the forced first-boot QIS

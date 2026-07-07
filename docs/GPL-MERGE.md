@@ -275,7 +275,7 @@ cd release/src-rt-5.04behnd.4916 && nice make rt-be96u -j1     # ~25-30 min full
 
 Success criteria (verify all): log has `Done! Image 96813GW has been built`,
 `MAKE_EXIT=0`, `reaper_inject.o` links into httpd, and the fresh
-`RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb` mtime is newer than the build
+`RT-BE96U_3006_102.8_Reaper_v1.0_nand_squashfs.pkgtb` mtime is newer than the build
 start. Then verify the staged rootfs (`targets/96813GW/fs/www` is **minified** -
 grep, do not diff):
 

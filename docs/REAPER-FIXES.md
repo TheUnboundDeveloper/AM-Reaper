@@ -3,7 +3,7 @@
 Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 
 - **Base version:** 3006.102.8_beta2
-- **Custom version string:** `3006.102.8_reaper` (image: `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb`)
+- **Custom version string:** `3006.102.8_Reaper_v1.0` (image: `RT-BE96U_3006_102.8_Reaper_v1.0_nand_squashfs.pkgtb`)
 - **Branch:** `be96u-only` (local only — never pushed upstream)
 - **Release:** **v1.0 (2026-07-07).** Image sha256 `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`). Contents: hardening rounds 1-4 + round-3 injection pass + avahi CVE backport + T1-T4 latent hardening + the v1.0 pre-release audit fixes, plus both Hardware QoS engines and the Reaper UI. The predecessor image `b81e482c` was flashed to the physical RT-BE96U 2026-07-05 and ran clean; v1.0's QoS + UI additions were validated on metal through 2026-07-07.
 - **Build target / applicable model:** **RT-BE96U only.** This tree was stripped to the RT-BE96U (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware, but this hardened image is produced for the RT-BE96U exclusively. The "Model" column reflects what this build delivers.

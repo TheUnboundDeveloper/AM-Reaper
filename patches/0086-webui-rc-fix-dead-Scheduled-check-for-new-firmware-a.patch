@@ -1,0 +1,78 @@
+From 3efc903f245e91a0d4ab3e7a669a9ab046a162d9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 7 Jul 2026 14:53:37 -0400
+Subject: [PATCH] webui/rc: fix dead 'Scheduled check for new firmware
+ availability' setting; default off
+
+The Firmware Upgrade page's scheduled-check radios had no default selection
+and selections were silently dropped: the entire feature is gated on
+RTCONFIG_MERLINUPDATE, which upstream 3006.102.8-beta2 ships disabled. With
+the flag off, the firmware_check_enable nvram default is compiled out, so
+httpd validate_apply() rejects the page's instant-apply nvramSet and
+nvram_match() never checks a radio.
+
+- config_base: enable RTCONFIG_MERLINUPDATE (compiles in the nvram default,
+  the notification-only watchdog nightly check, and installs
+  merlin_webs_update.sh as /usr/sbin/webs_update.sh; rc_support gains
+  'update' / loses 'noupdate')
+- shared/defaults.c: firmware_check_enable default 1 -> 0 (reaper policy:
+  no scheduled check / no outbound update traffic unless the user opts in)
+- merlin_webs_update.sh: sanitize non-numeric extendno (e.g. 'Reaper') to 0
+  so the -lt version tests cannot error
+
+No Apply button is needed by design: the radios apply instantly via
+httpApi.nvramSet. Selecting Yes enables a nightly (~2AM+rand) check against
+the Asuswrt-Merlin manifest, notification-only; retained as the future hook
+for a reaper update endpoint.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/config_base                            | 2 +-
+ release/src/router/rom/webs_scripts/merlin_webs_update.sh | 4 ++++
+ release/src/router/shared/defaults.c                      | 2 +-
+ 3 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/config_base b/release/src/router/config_base
+index bd81de9e32..692519c987 100644
+--- a/release/src/router/config_base
++++ b/release/src/router/config_base
+@@ -528,7 +528,7 @@ RTCONFIG_SYSSTATE=y
+ # RTCONFIG_NANO is not set
+ # RTCONFIG_NFS is not set
+ # RTCONFIG_IGD2 is not set
+-# RTCONFIG_MERLINUPDATE is not set
++RTCONFIG_MERLINUPDATE=y
+ # RTCONFIG_VPN_FUSION_MERLIN is not set
+ RTCONFIG_NTPD=y
+ # RTCONFIG_AHS is not set
+diff --git a/release/src/router/rom/webs_scripts/merlin_webs_update.sh b/release/src/router/rom/webs_scripts/merlin_webs_update.sh
+index 3c26ff0e97..092942e8de 100755
+--- a/release/src/router/rom/webs_scripts/merlin_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/merlin_webs_update.sh
+@@ -19,6 +19,10 @@ current_base=$(nvram get firmver | sed "s/\.//g")
+ current_firm=$(nvram get buildno | cut -d. -f1)
+ current_buildno=$(nvram get buildno | cut -d. -f2)
+ current_extendno=$(nvram get extendno | sed "s/-g.*//" | sed "s/_.*//" | sed "s/alpha\|beta/-1/")
++# reaper: non-numeric extendno (e.g. "reaper") would break the -lt tests below
++case "$current_extendno" in
++	''|*[!0-9-]*) current_extendno=0 ;;
++esac
+ 
+ # get firmware information
+ forsq=$(nvram get apps_sq)
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index cfbc775a9f..aef0c61cb5 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5098,7 +5098,7 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 
+ #ifdef RTCONFIG_MERLINUPDATE
+-	{ "firmware_check_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "firmware_check_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ 
+ #ifdef RTCONFIG_SSH
+-- 
+2.25.1
+

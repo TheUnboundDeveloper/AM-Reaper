@@ -24,7 +24,7 @@ Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 
 Every Critical/High/Medium/Low present in the RT-BE96U-built source is fixed except the three deferred design items (H15, M20, M21).
 
-Bundled third-party **package CVE backports** (avahi 0.8 mDNS DoS — CVE-2023-38469/-38470/-38473) are tracked in the [Package CVE backports](#package-cve-backports--bundled-system-libraries-2026-07-05) section. Items that are **still open and must be worked** (known-vulnerable EOL libraries, the closed-source blob auth boundary, and the AiCloud feature-gated set) plus lower-priority latent hardening are catalogued with severities in [Open security items still requiring work](#open-security-items-still-requiring-work-2026-07-05) at the end of this file.
+Bundled third-party **package CVE backports** (avahi 0.8 mDNS DoS — CVE-2023-38469/-38470/-38473) are tracked in the [Package CVE backports](#package-cve-backports--bundled-system-libraries-2026-07-05) section. Items that are **still open and must be worked** (known-vulnerable EOL libraries, the closed-source blob auth boundary) plus the **abandoned AiCloud set** (disabled by decision, pending removal) and lower-priority latent hardening are catalogued with severities in [Open security items still requiring work](#open-security-items-still-requiring-work-2026-07-05) at the end of this file.
 
 Rounds 1–2 (C/H/M/L/N above) audited the stock ASUS/Merlin userspace for the buffer-overflow and command-injection classes. A **[round-3 injection pass](#round-3--injection-class-fixes-post-feature-security-pass)** (`R3-1…R3-4`) closed four more config/rule/SQL-injection sinks found after the QoS + UI work landed, and a later **[Audit round 4](#audit-round-4--self-review-of-reaper-introduced-changes-2026-07-04)** re-reviewed the *reaper-authored* changes (UI flip, Hardware QoS) for regressions we introduced — 2 real defects + 2 defense-in-depth fixes (R4-1…R4-4). Firmware-correctness fixes made alongside the Hardware QoS feature are recorded in [Firmware correctness fixes](#firmware-correctness-fixes--qos-activation--flow-cache), and the final pre-ship review in [v1.0 pre-release audit](#v10-pre-release-audit-2026-07-07).
 
@@ -327,7 +327,7 @@ are in the tables further down (referenced by ID).
 |---|---|---|---|---|---|
 | **1 — active** | Known unpatched CVEs in frozen EOL system libraries (**OpenSSL 1.1.1w** first — it is in the remote TLS path; then Samba 3.6.x, net-snmp 5.7.2, lighttpd 1.4.39, expat 2.0.1, libgcrypt 1.5.1) | shipping image | ASUS froze these versions; upstream CVEs are unpatched here | Surgical ABI-preserving CVE backport (as done for avahi) **or** wait for an ASUS version bump | **T10** |
 | **2 — watch ASUS** | Auth / token / session core and web input filter live in closed-source blobs (`web_hook.o`, `priv_webapi.o`) that cannot be source-verified | auth boundary | no source — not fixable in this tree | **Monitor ASUS firmware/blob updates**; mitigate by keeping remote admin off + hardened downstream sinks | **T9** |
-| **3 — before enabling AiCloud** | Predictable sharelink token, mod_webdav path traversal, `df\|grep` popen | AiCloud (OFF by default) | dormant now; become live the moment AiCloud is enabled | Fix in source **before** shipping any AiCloud-enabled variant | **T6, T7, T8** |
+| **3 — abandoned, pending removal** | Predictable sharelink token, mod_webdav path traversal, `df\|grep` popen | AiCloud (deliberately disabled) | AiCloud was **gutted and abandoned** *because of* these high-severity findings; `WEBDAV`/`CLOUDSYNC` are off so the stack is inert, but the vulnerable `mod_aicloud_*`/`mod_webdav` `.so` still ship and `AICLOUD_TUNNEL=y` | **Do not re-enable.** Slated for full removal in a later revision; not to be fixed-and-shipped | **T6, T7, T8** |
 
 Everything below this callout is lower priority: latent low-risk hardening,
 same-origin defense-in-depth, and design decisions. None is a confirmed
@@ -353,17 +353,26 @@ the write only if a size assumption is ever violated. Built clean
 |---|---|---|---|---|
 | T5 | Low | `www/Main_ReaperDash.asp:693,736,895` | Dashboard `eval(x.responseText)` on three stock ASUS telemetry endpoints (`cpuInfo`/`memInfo`, `curr_cpuTemp`, `get_wan_lan_status`). Authenticated, same-origin, numeric/status payloads (no user strings) — not exploitable. | **DEFERRED (decision 2026-07-05).** Those endpoints emit JS assignments, not JSON, so `eval`→`JSON.parse` does not apply and `eval`→`new Function` is the same code-exec class (cosmetic). The genuine fix is an `httpApi`-hook rewrite that cannot be validated off-device — not worth the regression risk on live dashboard telemetry for a non-exploitable item. Revisit during an on-device dashboard pass. |
 
-### OPEN (feature-gated) — MUST fix before enabling AiCloud ("Tier E")
+### ABANDONED — AiCloud disabled by decision, pending removal ("Tier E")
 
-`RTCONFIG_WEBDAV` is **off** (AiCloud full stack not compiled), but
-`mod_webdav.so` ships and `RTCONFIG_AICLOUD_TUNNEL=y`, so these become live the
-moment AiCloud is enabled.
+**AiCloud is not a future feature of this build.** It was **gutted and disabled
+on purpose and is abandoned**, precisely because of the high-severity findings
+below — do **not** re-enable it and do **not** treat T6-T8 as a "fix then ship"
+backlog. `RTCONFIG_WEBDAV` and `RTCONFIG_CLOUDSYNC` are **off**, so the stack is
+inert in v1.0.
 
-| ID | Sev (if enabled) | Component | Finding | Suggested remediation |
+Residual to remove: `RTCONFIG_AICLOUD_TUNNEL=y` is still set and the module
+objects still ship in the image — `mod_webdav.so`, `mod_aicloud_invite.so`,
+`mod_aicloud_sharelink.so`, `mod_aicloud_auth.so` (`fs/usr/lib/`). A later
+revision will strip the tunnel flag and these objects. The findings stay
+catalogued here as the **justification for abandonment** and because the
+vulnerable objects remain on disk until that removal lands.
+
+| ID | Sev (if it were enabled) | Component | Finding | Note |
 |---|---|---|---|---|
-| T6 | High | AiCloud sharelink | Share token = `sprintf("AICLOUD%d", abs(time(0)))` — time-seeded, brute-forceable. | Generate from a CSPRNG (`/dev/urandom`), >= 128-bit, before any AiCloud-enabled image. |
-| T7 | High | mod_webdav (lighttpd) | Path-traversal in the webdav request-path handling. | Backport upstream lighttpd webdav hardening; normalize + confine paths; require auth. |
-| T8 | Med | AiCloud disk-usage | `popen("df ... \| grep ...")` helper. | Replace with `statvfs()` — no shell. |
+| T6 | High | AiCloud sharelink | Share token = `sprintf("AICLOUD%d", abs(time(0)))` — time-seeded, brute-forceable. | One of the reasons AiCloud was abandoned. Not being fixed — the feature is going away. |
+| T7 | High | mod_webdav (lighttpd) | Path-traversal in the webdav request-path handling. | Ditto — abandonment justification, not a remediation target. |
+| T8 | Med | AiCloud disk-usage | `popen("df ... \| grep ...")` helper. | Ditto. |
 
 ### OPEN (residual) — accepted risk, documented; not code-fixable in this tree
 
@@ -382,6 +391,7 @@ moment AiCloud is enabled.
 
 > Method note: findings are from a `grep`-based sink scan plus targeted reads,
 > not a formal proof of absence. **T1-T4 are now fixed** (commit `f9c6d316e7`);
-> **T5 is a documented deferral**. What remains open is the priority callout at
-> the top of this section — prioritise T6-T8 only if AiCloud is enabled, and T10
-> by reachability (OpenSSL first).
+> **T5 is a documented deferral**; **T6-T8 (AiCloud) are abandoned** — resolved
+> by removing the feature, not by patching it. The real open backlog is the
+> priority callout at the top of this section: T10 by reachability (OpenSSL
+> first) and T9 by watching ASUS.

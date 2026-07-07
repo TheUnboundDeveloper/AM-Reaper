@@ -55,6 +55,12 @@ by ID in `REAPER-FIXES.md`.
   IP-range translator, list dedup, and the DHCP RFC3397 handler) as
   defense-in-depth — no behavior change, overflow-safe if a size assumption is
   ever violated.
+- **v1.0 pre-release code audit** (full multi-agent sweep of the Reaper-authored
+  C and web UI): no Critical/High found. Closed the remaining unbounded
+  `strncpy` sites in the QoS `ip_range_checker` (a stock pattern that could
+  overflow a stack buffer on a malformed rule address) and a HW-QoS Classful
+  edge where a blank upload bandwidth throttled every class; plus minor UI
+  polish.
 
 Reusable fix patterns, per-ID commit trail, and reachability triage are in
 `REAPER-FIXES.md`.
@@ -163,8 +169,8 @@ Built with the RT-BE96U userspace toolchain (gcc-10.3, 32-bit ARM) via
 
 | Artifact | SHA-256 |
 |---|---|
-| `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb` (flash this) | `73ccf360e46778d393cbcb46d4bd4f64798b3b99cd00c5f7000de99eab2a8c3a` |
-| `RT-BE96U_3006_102.8_reaper_nand_squashfs_loader.pkgtb` (recovery) | `9712912972d4e4ad0def882beaeb9bbf10726a79e0afee611a257ea41b2c9805` |
+| `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb` (flash this) | `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` |
+| `RT-BE96U_3006_102.8_reaper_nand_squashfs_loader.pkgtb` (recovery) | `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165` |
 
 > Status (v1.0): validated on the physical RT-BE96U — security hardening
 > rounds 1–4 + latent T1–T4, the avahi CVE backport, both Hardware QoS

@@ -16,7 +16,7 @@ git am /path/to/ASUS-Merlin-Reaper/patches/*.patch
 
 They touch only the shared open-source userspace (`release/src/router/{httpd, rc, shared, www, libovpn, snooper, urlfilterd, lltdc, wsdd2, infosvr, libcodb, avahi, …}`), so they apply cleanly to a stock tree. Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md).
 
-## What the series contains (84 patches, v1.0)
+## What the series contains (85 patches, v1.0)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -28,6 +28,7 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - `0034`–`0065` — **Reaper UI + branding**: `3006.102.8_reaper` version, Smart Connect master toggle, REAPER banner/recolor passes, live-wired dashboard, shell architecture, AiMesh/Captive-Portal/Ookla theming, the HW-QoS activation fix (`qos_type` nvram length), on-device review rounds 1–2.
 - `0066`–`0070` — **Hardening round 4** (self-review of Reaper-authored code), on-device review round 3, and the **mergeability refactor**: theme moved to a single httpd serve-time injection filter; stock pages/CSS reverted to pristine.
 - `0071`–`0084` — Phase-B CSS de-inline completion, **avahi 0.8 CVE backport** (mDNS DoS), **latent buffer hardening T1–T4**, login-page theme, **Hardware QoS v2 — Classful** (`qos_type=11`, per-class hardware queues), and the v1.0 UI/QoS polish (incl. the `qos_type` apply-gate raise for type 11).
+- `0085` — **v1.0 pre-release audit fixes**: bound the remaining `strncpy` sites in the QoS `ip_range_checker` (stack-overflow guard on malformed rule addresses), a HW-QoS Classful blank-bandwidth guard, and minor UI polish.
 
 ## Notes
 

@@ -1,0 +1,94 @@
+From 015d6926331d34c9dbafdc2bc9710c86b3aee6a2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 2 Jul 2026 11:26:42 -0400
+Subject: [PATCH] reaper dash: fix UPnP nvram source + MWL main-SSID resolution
+
+UPnP posture row now reads wan0_upnp_enable (global upnp_enable is dead legacy, defaults 1 -> false Enabled). Wireless tiles resolve the broadcast SSID via sdn_rl MAINFH -> apm<idx>_ssid/_enable/_dut_list through appGet (RTCONFIG_MULTILAN_MWL stores the user SSID in AP-Main profiles; physical wlX_ssid holds an internal onboarding ID); falls back to wlX_ssid on non-MWL configs.
+---
+ release/src/router/www/Main_ReaperDash.asp | 60 +++++++++++++++++++---
+ 1 file changed, 52 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index f4c173fa79..cdf9f5e4d4 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -423,7 +423,7 @@ var SSI = {
+   ddns_host:'<% nvram_get("ddns_hostname_x"); %>',
+   fw4:      '<% nvram_get("fw_enable_x"); %>',
+   fw6:      '<% nvram_get("ipv6_fw_enable"); %>',
+-  upnp:     '<% nvram_get("upnp_enable"); %>',
++  upnp:     '<% nvram_get("wan0_upnp_enable"); %>',
+   wps:      '<% nvram_get("wps_enable"); %>',
+   telnet:   '<% nvram_get("telnetd_enable"); %>',
+   ssh:      '<% nvram_get("sshd_enable"); %>',
+@@ -668,16 +668,60 @@ function pollClients(){
+ (function(){ var sel=$id('cl_filter'); if(sel){ sel.addEventListener('change',renderClients); renderClients(); } })();
+ pollClients(); setInterval(pollClients, 10000);
+ 
+-/* ---- wireless radio tiles from wlX_radio / wlX_ssid (config) ---- */
++/* ---- wireless radio tiles ----
++   On this FW (RTCONFIG_MULTILAN_MWL) the broadcast SSID lives in the SDN MAINFH
++   profile (apmX_ssid); physical wlX_ssid holds an internal onboarding ID.
++   Resolve sdn_rl -> MAINFH -> apm<idx>_ssid/_dut_list (band bitmask: 1=2.4G,
++   2/4/8=5G, 16/32/64=6G); fall back to wlX_ssid on non-MWL configs. */
+ (function(){
+-  var map={'2':'w24','1':'w5','4':'w6'};
+-  for(var i=0;i<WL.length;i++){
+-    var w=WL[i], tid=map[w.nband]; if(!tid) continue;
+-    var tile=$id(tid); if(!tile) continue;
+-    var on=(w.radio==='1');
++  var map={'2':{id:'w24',bits:1},'1':{id:'w5',bits:14},'4':{id:'w6',bits:112}};
++  function setTile(nband, ssid){
++    var mm=map[nband]; if(!mm) return;
++    var tile=$id(mm.id); if(!tile) return;
++    var w=null;
++    for(var i=0;i<WL.length;i++) if(WL[i].nband===nband) w=WL[i];
++    var on = w ? (w.radio==='1') : false;
+     tile.className='port'+(on?' up':'');
+-    var sub=tile.querySelector('.ps'); if(sub) sub.textContent=on?(w.ssid||'On'):'Radio off';
++    var sub=tile.querySelector('.ps'); if(sub) sub.textContent = on ? (ssid||'On') : 'Radio off';
+   }
++  function fallback(){ for(var i=0;i<WL.length;i++) setTile(WL[i].nband, WL[i].ssid); }
++  function appGetAscii(names, cb){
++    var hook=[];
++    for(var i=0;i<names.length;i++) hook.push('nvram_char_to_ascii('+names[i]+','+names[i]+')');
++    var x=new XMLHttpRequest();
++    x.open('GET','/appGet.cgi?hook='+hook.join('%3B')+'&_='+(new Date()).getTime(),true);
++    x.onreadystatechange=function(){
++      if(x.readyState!==4) return;
++      if(x.status!==200){ cb(null); return; }
++      try{ cb(JSON.parse(x.responseText)); }catch(e){ cb(null); }
++    };
++    x.send();
++  }
++  appGetAscii(['sdn_rl'], function(r){
++    if(!r || !r.sdn_rl){ fallback(); return; }
++    var entries=decodeURIComponent(r.sdn_rl).split('<'), fh=[];
++    for(var i=0;i<entries.length;i++){
++      var f=entries[i].split('>');
++      if(f.length>5 && f[1]==='MAINFH') fh.push(f[5]);
++    }
++    if(!fh.length){ fallback(); return; }
++    var names=[];
++    for(var i=0;i<fh.length;i++) names.push('apm'+fh[i]+'_ssid','apm'+fh[i]+'_enable','apm'+fh[i]+'_dut_list');
++    appGetAscii(names, function(a){
++      if(!a){ fallback(); return; }
++      var done={};
++      for(var i=0;i<fh.length;i++){
++        var idx=fh[i];
++        var en=decodeURIComponent(a['apm'+idx+'_enable']||'');
++        var ssid=decodeURIComponent(a['apm'+idx+'_ssid']||'');
++        var dut=decodeURIComponent(a['apm'+idx+'_dut_list']||'').split('<');
++        var mask=(dut[1] ? parseInt(dut[1].split('>')[1]||'0',10) : 0)||0;
++        if(en!=='1' || !ssid) continue;
++        for(var nb in map){ if((mask & map[nb].bits) && !done[nb]){ done[nb]=1; setTile(nb, ssid); } }
++      }
++      for(var j=0;j<WL.length;j++){ if(WL[j].nband && !done[WL[j].nband]) setTile(WL[j].nband, WL[j].ssid); }
++    });
++  });
+ })();
+ 
+ /* ---- live ethernet link states via /ajax_ethernet_ports.asp (ATE Get_WanLanStatus) ---- */
+-- 
+2.25.1
+

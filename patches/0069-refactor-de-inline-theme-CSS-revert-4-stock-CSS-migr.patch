@@ -1,0 +1,64 @@
+From c4918470e218fb69bea3647b0f563e3178d09001 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 5 Jul 2026 16:27:21 -0400
+Subject: [PATCH] refactor: de-inline theme CSS - revert 4 stock CSS, migrate
+ recolors
+
+With httpd serve-time injection reaching every depth, consolidate the recolors
+of 4 stock CSS files into the additive reaper/reaper_content.css (new sections
+15-16) and revert the stock files to byte-identical-with-upstream:
+  form_style.css, index_style.css,
+  device-map/clientlist.css, device-map/device-map.css.
+
+Deferred: the 3 SDN/MLO SPA-bundle CSS files (RWD_UI/rwd_component.css,
+SDN/sdn.css, SDN/mlo.css) stay inline-recolored pending the on-device SPA
+validation pass - that SPA re-injects theme-variant CSS at runtime after the
+httpd-injected stylesheet, so a clean revert is not verifiable off-device.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../src/router/www/reaper/reaper_content.css  | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index cc29374acc..da2efd02bd 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -435,3 +435,34 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+ #game_priority_enable:checked ~ .container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
+ #game_priority_enable ~ .container::after{background-color:#2a2a30!important;border:1px solid rgba(255,255,255,.18)!important}
+ #game_priority_enable ~ .container div{color:#ECE7DB!important;position:relative;z-index:1}
++
++/* ---------- 15. Phase-B migration: recolors relocated from now-pristine stock
++   CSS (form_style.css, index_style.css). The stock files revert to upstream; the
++   reaper look for the selectors NOT already covered by earlier sections lives
++   here. Body/.banner1/.menu are already themed or hidden (section 1). ---------- */
++/* form_style.css: Network-map sub-tabs (device-map/clients|compatibility|internet.asp).
++   base .tab_NW is dark via section 8; restore the crimson hover + active states
++   (stock teal #4F5B5F). */
++.tab_NW:hover,.tab_NW:hover span{background:#7A1212!important}
++.tabclick_NW,.tabclick_NW span{background:#B81414!important}
++/* index_style.css: the .content wrapper carried a repeating middown_bg.png texture;
++   neutralize it to the theme base. .tab border was stock light-blue #8AA6BE. */
++table.content{background-image:none!important;background-color:#08080a!important}
++.tab{border:1px solid rgba(225,6,0,.30)!important}
++
++/* ---------- 16. Phase-B migration: device-map/clientlist.css + device-map.css
++   appended reaper block relocated here (those files revert to pristine). Client
++   icon tiles are already dark via section 9; these are the selectors section 9/12
++   did not cover: red device/vendor glyphs + the "View List" modal (.RT skin). ---------- */
++i[class^='type'],i[class*=' type'],i[class^='vendor-icon'],i[class*=' vendor-icon']{background-color:#E10600!important}
++.clientlist_viewlist .client_icon>div{background-color:#000!important;border-color:#330000!important;box-shadow:none!important}
++.clientlist_viewlist .card,.clientlist_viewlist .card.client_list .table,
++.clientlist_viewlist.RT .card.client_list .table,.clientlist_viewlist .card.client_list table,
++.client_info_detail_block,.client_info,.card-body,.card-header{background-color:#0f0f12!important;color:#ECE7DB!important}
++.clientlist_viewlist .card.client_list table,.client_list .mac-repeat{background-color:#0c0c0f!important}
++.segmented_picker,.segmented_picker_option{background:#141418!important;color:#B7B1A4!important}
++.segmented_picker_option.active{background:#2a0507!important;color:#ECE7DB!important}
++.input-client-name,.clientlist_viewlist.RT .input-client-name{background:#000!important;color:#ECE7DB!important;border-color:rgba(255,255,255,.14)!important}
++.ipMethodTag,.clientlist_viewlist.RT .ipMethodTag{background-color:#2a2a30!important;color:#ECE7DB!important}
++.card-header .arrow_icon,.clientlist_viewlist.RT .arrow_icon{background-color:#ECE7DB!important}
++.clientlist_viewlist .btn-export{background:#E10600!important;color:#fff!important}
+-- 
+2.25.1
+

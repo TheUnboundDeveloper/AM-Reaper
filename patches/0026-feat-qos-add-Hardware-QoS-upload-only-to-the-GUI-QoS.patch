@@ -1,0 +1,155 @@
+From 3342a3169355a9d36123c071175aeeeb217b4dee Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 29 Jun 2026 13:22:12 -0400
+Subject: [PATCH] feat(qos): add Hardware QoS (upload-only) to the GUI QoS type
+ selector
+
+Exposes qos_type=10 (Runner egress TM PI2 AQM + shaper, accelerator stays
+on) as a selectable option on QoS_EZQoS.asp alongside Traditional / Adaptive
+/ Bandwidth-Limiter / Cake. Backend (start_hwqos, IS_HWQOS, add_iQosRules
+exemption) already shipped in 83ae8ed774; this adds the missing GUI plumbing.
+
+- hwqos_support gate (HND/aarch64)
+- "Hardware QoS (Upload only)" radio, value=10, revealed when supported
+- description row stating it is UPLOAD-ONLY and keeps NAT acceleration on,
+  pointing users at Cake for download shaping
+- change_qos_type(10): shows upload field, hides download, shows the note
+- validForm: requires upload bandwidth, forces qos_ibw=0 (no download)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/QoS_EZQoS.asp | 76 ++++++++++++++++++++++++++++
+ 1 file changed, 76 insertions(+)
+
+diff --git a/release/src/router/www/QoS_EZQoS.asp b/release/src/router/www/QoS_EZQoS.asp
+index 74e539f6e0..4c1e2140ee 100644
+--- a/release/src/router/www/QoS_EZQoS.asp
++++ b/release/src/router/www/QoS_EZQoS.asp
+@@ -309,6 +309,9 @@
+         var select_all_checked = 0;
+         var machine_name = '<% get_machine_name(); %>';
+         var codel_support = (machine_name.search(/arm|aarch64/) == -1) ? false : true;
++        // Hardware-accelerated QoS (qos_type=10): PI2 AQM + shaper programmed in the Broadcom
++        // Runner egress TM. UPLOAD ONLY; keeps the flow accelerator on (no CPU bottleneck).
++        var hwqos_support = (machine_name.search(/arm|aarch64/) == -1) ? false : true;
+         /* ATM, overhead, pmu, label */
+         var overhead_presets = [["1", "48", "0", "Conservative default"],
+             ["0", "42", "84", "Ethernet with VLAN"],
+@@ -578,6 +581,10 @@
+             } else {
+                 $('#cake_desc').hide();
+             }
++            if (hwqos_support) {
++                document.getElementById('hwqos_type').style.display = "";
++                document.getElementById('hwqos_type_label').style.display = "";
++            }
+             $('#radio_qos_enable').iphoneSwitch(iphoneSwitchStatus,
+                 function () {
+                     document.form.qos_enable.value = "1";
+@@ -605,6 +612,7 @@
+                     document.form.ark_qoe_enable = "0";
+                     show_up_down(0);
+                     document.getElementById('qos_type_tr').style.display = "none";
++                    document.getElementById('hwqos_desc_tr').style.display = "none";
+                     document.getElementById('bandwidth_setting_tr').style.display = "none";
+                     document.getElementById('list_table').style.display = "none";
+                     document.getElementById('qoe_iframe').style.display = "none";
+@@ -776,6 +784,27 @@
+                         return false;
+                 }
+ 
++                if (qos_type == 10) {	// Hardware QoS: upload-only. Validate upload bandwidth, force download to 0.
++                    if (document.form.obw.value.length == 0 || document.form.obw.value == 0) {
++                        alert("<#QoS_invalid_zero#>");
++                        document.form.obw.focus();
++                        return false;
++                    }
++                    if (!validator.rangeFloat(document.form.obw, 0, 9999999999, ""))
++                        return false;
++                    if (qos_xobw_orig > 0 && (qos_xobw_orig / 1024).toFixed(2) < parseFloat(document.form.obw.value)) {
++                        alert("<#value_lower_than#> " + (qos_xobw_orig / 1024).toFixed(2));
++                        document.form.obw.focus();
++                        document.form.obw.select();
++                        return false;
++                    }
++                    document.form.qos_obw.disabled = false;
++                    document.form.qos_ibw.disabled = false;
++                    document.form.qos_obw.value = document.form.obw.value * 1024;
++                    document.form.qos_ibw.value = 0;	// upload-only; no download shaping
++                    return true;
++                }
++
+                 if (qos_type != 2) {	//not Bandwidth Limiter
+ 
+                     if ((((qos_type == 1  || qos_type == 9) && document.form.bw_setting_name[1].checked == true) || qos_type == 0 || qos_type == 3) && (document.form.obw.value.length == 0 || document.form.obw.value == 0)) {		// To check field is 0 && Traditional QoS
+@@ -1084,6 +1113,8 @@
+             if (value == "1" && (based_modelid == "RT-AC85U" || based_modelid == "RT-AC85P" || based_modelid == "RT-AC65U")) {	//Force change to 0
+                 value = 0;
+             }
++            if (document.getElementById('hwqos_desc_tr'))	// reset HW QoS note; re-shown only for value==10
++                document.getElementById('hwqos_desc_tr').style.display = "none";
+             if (value == 0) {		//Traditional QoS
+                 document.form.qos_enable.value = "1";
+                 document.getElementById('int_type').checked = false;
+@@ -1260,6 +1291,40 @@
+                 }
+                  show_settings("NonAdaptive");
+                  document.getElementById('qos_apply_btn').style.display = "block";
++            } else if (value == 10) {		// Hardware QoS (upload-only, Runner egress TM PI2 + shaper)
++                document.form.qos_enable.value = "1";
++                document.getElementById('int_type').checked = false;
++                document.getElementById('trad_type').checked = false;
++                document.getElementById('bw_limit_type').checked = false;
++                document.getElementById('cake_type').checked = false;
++                document.getElementById('hwqos_type').checked = true;
++                if (geforceNow_support)
++                    document.getElementById('GeForce_type').checked = false;
++                document.getElementById('bandwidth_setting_tr').style.display = "none";
++                document.getElementById('list_table').style.display = "none";
++                document.getElementById('qoe_iframe').style.display = "none";
++                // upload-only: show the upload field, hide download (this mode does not shape download)
++                show_up_down(1);
++                document.getElementById('download_tr').style.display = "none";
++                if (mtwancfg_support)
++                    document.getElementById('download2_tr').style.display = "none";
++                document.getElementById('hwqos_desc_tr').style.display = "";
++                // overhead / MPU are not used by the hardware shaper
++                if (codel_support || cake_support)
++                    document.getElementById('qos_overhead_tr').style.display = "none";
++                if (cake_support) {
++                    document.getElementById('qos_mpu').style.display = "none";
++                    document.getElementById('qos_mpu_label').style.display = "none";
++                }
++                if (document.form.qos_type_orig.value == 10 && document.form.qos_enable_orig.value != 0) {
++                    document.form.action_script.value = "restart_qos;restart_firewall";
++                } else {
++                    document.form.action_script.value = "reboot";
++                    document.form.next_page.value = "QoS_EZQoS.asp";
++                    document.form.action_wait.value = "<% get_default_reboot_time(); %>";
++                }
++                show_settings("NonAdaptive");
++                document.getElementById('qos_apply_btn').style.display = "block";
+             } else {
+                 return;
+             }
+@@ -2218,6 +2283,17 @@
+                                                                                                       href="javascript:void(0);"
+                                                                                                       onClick="openHint(50, 32);"><label
+                                                             for="cake_type">Cake</label></a>
++                                                        <input id="hwqos_type" name="qos_type_radio" value="10"
++                                                               onClick="change_qos_type(this.value);" style="display: none;" type="radio" <% nvram_match("qos_type", "10","checked"); %>><label
++                                                            id="hwqos_type_label" style="display:none;"
++                                                            for="hwqos_type">Hardware QoS (Upload only)</label>
++                                                    </td>
++                                                </tr>
++                                                <tr id="hwqos_desc_tr" style="display:none">
++                                                    <td colspan="3">
++                                                        <div class="formfontdesc" style="color:#FFCC00;line-height:18px;margin:5px 0;">
++                                                            <b>Hardware QoS &mdash; upload only.</b> Shapes <b>upload</b> traffic inside the router's hardware packet accelerator (Broadcom Runner) using PI2 active queue management, eliminating upload bufferbloat <b>without</b> disabling NAT acceleration &mdash; all CPU cores stay idle even at full line rate. Enter your <b>upload</b> bandwidth below. <u>Download is not shaped by this mode.</u> For download bufferbloat control, use <b>Cake</b> instead (it manages both directions, but runs in software with NAT acceleration disabled).
++                                                        </div>
+                                                     </td>
+                                                 </tr>
+                                                 <tr id="qos_overhead_tr" style="display:none">
+-- 
+2.25.1
+

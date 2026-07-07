@@ -1,0 +1,73 @@
+From 1dea1dde5b82908abbd499435de903752cccdfc6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 5 Jul 2026 18:25:29 -0400
+Subject: [PATCH] gui: fix 3 live-use theme issues (USB icon, GameBoost toggle,
+ SDN scrollbar)
+
+- Network-map USB icon: a plugged drive showed the sprite's card/tile behind the
+  circle. index.asp check_status() sets background-size:100% inline, which scales
+  the 85x280 sprite so its framed background shows; force background-size:auto so
+  a connected drive renders as the same clean circle as the empty slot.
+- GameBoost Gear Accelerator toggle showed BOTH "ON" and "OFF": section-14 gave
+  the labels z-index:1, lifting both above the .container::after knob. Drop the
+  z-index/position lift (keep the bone color) so the knob covers the inactive
+  label and only the active one shows.
+- SDN/MLO SPA (and other body.body_rwd RWD pages) showed a redundant inner
+  scrollbar: resize_iframe_height sizes the iframe to .container+30px, but the
+  injected body padding pushed content a few px over and html{overflow-y:auto}
+  drew a scrollbar. Scope overflow-y:hidden to html:has(.body_rwd) so the shell's
+  page scrollbar controls it; the iframe already fits the content.
+
+Theme-only (reaper_content.css). Validate on the next flash.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../src/router/www/reaper/reaper_content.css   | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index dc615f77e4..a338ce5a18 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -109,6 +109,13 @@ div[style*="margin-top:-140px"],div[style*="margin-top: -140px"]{margin-top:0!im
+    html element; if the restore path stalls the framed page can never scroll
+    again (VPN Status symptom) - keep vertical scrolling available */
+ html{overflow-y:auto!important}
++/* ...but the RWD SPA pages (SDN/MLO/AdGuard/Multi-WAN etc., body.body_rwd) are
++   auto-sized to their content by resize_iframe_height (rwd_component.js:
++   .container height + 30px bottom margin), so the injected body padding pushed
++   them a few px past that and forced a redundant inner scrollbar on top of the
++   shell's page scrollbar. Hide the inner one - the iframe already fits the
++   content and the 30px margin is the buffer. */
++html:has(.body_rwd){overflow-y:hidden!important}
+ /* GameBoost Gear Accelerator ON/OFF toggle: labels overflow the 50px halves
+    with the wider Inter body font - condensed Rajdhani at a tighter size */
+ .switch .container{font-family:'Rajdhani',system-ui,sans-serif!important}
+@@ -232,7 +239,11 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+    lit state whose filled interior hue-rotates to a washed salmon "fill". Pin to
+    the dark sprite state and drop the filter so a plugged drive reads as a clean
+    dark (black) tile with a white drive glyph, per user request. */
+-.iconUSBdisk,.iconM2{background-position:0% 0%!important;filter:none!important}
++/* the connected state also sets background-size:100% inline (index.asp
++   check_status), which scales the sprite so its card/tile frame shows behind the
++   circle; force natural size so a plugged drive renders as the same clean circle
++   as the empty slot. */
++.iconUSBdisk,.iconM2{background-position:0% 0%!important;background-size:auto!important;filter:none!important}
+ .statusbody,.NM_radius_bottom_container{background:#0f0f12!important}
+ .statusTitle{background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important;
+   font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;letter-spacing:.08em!important}
+@@ -434,7 +445,10 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+ #game_priority_enable ~ .container{background:#1a1a1f!important}
+ #game_priority_enable:checked ~ .container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
+ #game_priority_enable ~ .container::after{background-color:#2a2a30!important;border:1px solid rgba(255,255,255,.18)!important}
+-#game_priority_enable ~ .container div{color:#ECE7DB!important;position:relative;z-index:1}
++/* keep the labels bone but do NOT lift them above the knob: the .container::after
++   knob must cover the inactive label so only the active one shows (was showing
++   both ON and OFF because z-index:1 raised both labels over the knob). */
++#game_priority_enable ~ .container div{color:#ECE7DB!important}
+ 
+ /* ---------- 15. Phase-B migration: recolors relocated from now-pristine stock
+    CSS (form_style.css, index_style.css). The stock files revert to upstream; the
+-- 
+2.25.1
+

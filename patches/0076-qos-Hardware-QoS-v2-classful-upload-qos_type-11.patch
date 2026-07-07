@@ -1,0 +1,350 @@
+From 621174e2a34f4eacedf0f0c27b59ee05b0b8bb4b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 6 Jul 2026 15:53:05 -0400
+Subject: [PATCH] qos: Hardware QoS v2 - classful upload (qos_type=11)
+
+Per-class hardware upload QoS on the Runner egress TM, keeping the flow
+accelerator ON. Reuses the Traditional QoS classification engine
+unmodified: add_qos_rules() CONNMARK classes land in skb->mark bits
+[2:0], which are the Broadcom SKBMARK queue field (bcm_skb_defines.h)
+that the flow cache copies into the Runner flow entry at flow creation,
+steering accelerated flows into per-class WAN egress queues
+(class N -> qid N; unclassified -> qid 0; LAN/mcast class -> qid 6).
+
+start_hwqos_classful() programs PI2 AQM on qids 0-6 plus per-queue
+shaper caps from the qos_orates class ceil percentages of qos_obw
+(qid 0/6 capped at full OBW). No port-aggregate shaper exists in the
+egress TM, so the GUI note tells users to keep ceils summing ~100%
+for a strict total cap.
+
+- shared.h: IS_HWQOS_CLASSFUL() (qos_enable=1 && qos_type=11)
+- init-broadcom.c: classful exempted from fc_disable/runner_disable
+- qos.c: add_iQosRules dispatches classful -> add_qos_rules (rules
+  regenerate with every firewall mangle rebuild, so they survive
+  service restarts); start_iQos -> start_hwqos_classful()
+- rc.h: prototype
+- QoS_EZQoS.asp: radio value 11 below the v1 radio (same hwqos_support
+  gate), upload-only validation shared with type 10, classful desc
+  note, engine-switch lands on the T.QoS rules editor
+
+Steering mechanism verified against source (SKBMARK_GET_Q consumers in
+rdpa_mw_blog_parse.c); on-metal probe showed CLASSIFY/skb->priority is
+NOT honored on this platform, hence the mark-bits design. On-device
+validation pending: per-queue counters, SP service order across qids,
+and cap accuracy under load.
+---
+ release/src/router/rc/qos.c                   | 104 +++++++++++++++++-
+ release/src/router/rc/rc.h                    |   1 +
+ release/src/router/rc/sysdeps/init-broadcom.c |   8 +-
+ release/src/router/shared/shared.h            |   1 +
+ release/src/router/www/QoS_EZQoS.asp          |  63 ++++++++++-
+ 5 files changed, 169 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 562cfa3a81..07e80ff902 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2686,10 +2686,14 @@ int add_iQosRules(char *pcWANIF)
+ 
+ 	if (pcWANIF == NULL || nvram_get_int("qos_type") == 1) return -1;
+ 
+-	/* HW QoS shapes in the hardware egress TM (no iptables/tc classification needed) */
++	/* Plain HW QoS shapes in the hardware egress TM (no iptables/tc classification
++	 * needed). Classful HW QoS DOES need the T.QoS classification rules: their
++	 * CONNMARK classes land in skb->mark bits [2:0] (= the Broadcom SKBMARK queue
++	 * field), which the flow cache copies into the Runner flow entry, steering
++	 * accelerated flows into the matching per-class egress queue. */
+ 	if (IS_HWQOS()) return -1;
+ 
+-	if (IS_TQOS()) {
++	if (IS_TQOS() || IS_HWQOS_CLASSFUL()) {
+ 		status = add_qos_rules(pcWANIF);
+ 	}
+ 	else if (IS_BW_QOS()) {
+@@ -2752,6 +2756,9 @@ int start_iQos(void)
+ 	else if (IS_HWQOS()) {
+ 		status = start_hwqos();
+ 	}
++	else if (IS_HWQOS_CLASSFUL()) {
++		status = start_hwqos_classful();
++	}
+ #endif
+ 
+ /* OPPO */
+@@ -3006,4 +3013,97 @@ int start_hwqos(void)
+ 
+ 	return 0;
+ }
++
++/*
++ * Hardware-accelerated classful QoS (upload).
++ *
++ * Extends start_hwqos() from one shaped queue to per-class egress queues on
++ * the WAN port. Classification reuses the Traditional QoS engine untouched:
++ * add_qos_rules() CONNMARKs each connection with its class (1..5 from rule
++ * prio 0..4 = highest..lowest; 6 = LAN/multicast) and restores it to
++ * skb->mark bits [2:0] on egress. Those bits are the Broadcom SKBMARK queue
++ * field (bcm_skb_defines.h), which the flow cache records into the Runner
++ * flow entry at flow-creation time, so hardware-accelerated flows egress
++ * through the queue matching their class: class N -> WAN egress qid N.
++ * Unclassified traffic (mark 0) uses qid 0.
++ *
++ * Each class queue gets PI2 AQM plus a shaper cap taken from the class ceil
++ * percentage in qos_orates ("rate-ceil,..." per prio, T.QoS format) applied
++ * to qos_obw; qid 0 and qid 6 are capped at the full qos_obw. The egress TM
++ * has no port-aggregate shaper, so strict aggregate control needs class
++ * ceils that sum to <= 100%.
++ *
++ * Like plain HW QoS this keeps the flow accelerator ENABLED (exempted from
++ * fc_disable/runner_disable in hnd_nat_ac_init()). Upload only: download
++ * egresses per-LAN/WLAN-port and cannot be aggregate-shaped here (use Cake).
++ * Ordering matters: setqdropalg rewrites the queue config and clears the
++ * shaper, so the drop algorithm MUST be programmed before the shaper.
++ */
++int start_hwqos_classful(void)
++{
++	FILE *f;
++	unsigned int obw, rate, ceil, cap;
++	int i, qid;
++	char *buf, *g, *p;
++	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
++	const char *q;
++
++	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
++
++	/* same shell-safety guard as start_hwqos: wan_ifname is single-quoted in
++	 * the generated root script; reject anything that isn't a plain interface
++	 * name and fall back to an empty (inert) WANIF rather than emit it. */
++	for (q = wan_ifname; *q; q++) {
++		if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
++		      (*q >= '0' && *q <= '9') || *q == '.' || *q == '_' || *q == '-')) {
++			wan_ifname = "";
++			break;
++		}
++	}
++
++	if ((f = fopen(qosfn, "w")) == NULL) return -2;
++
++	fprintf(f,
++		"#!/bin/sh\n"
++		"WANIF='%s'\n\n"
++		"case \"$1\" in\n"
++		"start)\n",
++		wan_ifname
++	);
++
++	/* class queues 1..5: PI2 + ceil% of OBW from qos_orates (prio order 0..4) */
++	g = buf = strdup(nvram_safe_get("qos_orates"));
++	for (i = 0; i < 5; ++i) {
++		if ((!g) || ((p = strsep(&g, ",")) == NULL)) break;
++		if (sscanf(p, "%u-%u", &rate, &ceil) != 2) continue;
++		qid = i + 1;
++		cap = (ceil >= 1 && ceil < 100) ? calc(obw, ceil) : obw;
++		fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid %d --dropalg 4\n", qid);
++		if (cap > 0)
++			fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --shapingrate %u\n", qid, cap);
++	}
++	free(buf);
++
++	/* qid 0 (unclassified) and qid 6 (LAN/multicast class): PI2 + full OBW cap */
++	fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid 0 --dropalg 4\n");
++	fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid 6 --dropalg 4\n");
++	if (obw > 0) {
++		fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid 0 --shapingrate %u\n", obw);
++		fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid 6 --shapingrate %u\n", obw);
++	}
++
++	fprintf(f, "\t;;\nstop)\n");
++	for (qid = 0; qid <= 6; qid++) {
++		fprintf(f, "\ttmctl setqshaper  --devtype 0 --if $WANIF --qid %d --shapingrate 0\n", qid);
++		fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid %d --dropalg 0\n", qid);
++	}
++	fprintf(f, "\t;;\n*)\nesac\n");
++
++	fclose(f);
++	chmod(qosfn, 0755);
++	run_custom_script("qos-start", 120, "init", NULL);
++	eval((char *)qosfn, "start");
++
++	return 0;
++}
+ #endif
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 5efe60fcc6..c15a4e7051 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -1929,6 +1929,7 @@ extern void wan_add_resolv_dnsmasq_ipv6(FILE* fp, int wan6_unit);
+ #ifdef HND_ROUTER
+ extern int start_cake(void);
+ extern int start_hwqos(void);
++extern int start_hwqos_classful(void);
+ #endif
+ extern void set_codel_patch(void);
+ extern void remove_codel_patch(void);
+diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
+index d3bfd8336c..1105f80bfb 100644
+--- a/release/src/router/rc/sysdeps/init-broadcom.c
++++ b/release/src/router/rc/sysdeps/init-broadcom.c
+@@ -18718,11 +18718,11 @@ void hnd_nat_ac_init(int bootup)
+ {
+ 	int routing_mode = is_routing_enabled();
+ 
+-	// A.QOS / HW QoS : not to disable fc (HW QoS shapes in the Runner egress TM, so keep the flow accelerator on)
+-	nvram_set_int("fc_disable", nvram_get_int("fc_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_HWQOS() && !IS_RB_QOS()) ? 1 : 0);
++	// A.QOS / HW QoS (plain + classful) : not to disable fc (HW QoS shapes in the Runner egress TM, so keep the flow accelerator on)
++	nvram_set_int("fc_disable", nvram_get_int("fc_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_HWQOS() && !IS_HWQOS_CLASSFUL() && !IS_RB_QOS()) ? 1 : 0);
+ 
+-	// A.QOS / HW QoS : no need to disable runner
+-	nvram_set_int("runner_disable", nvram_get_int("runner_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_HWQOS() && !IS_RB_QOS()) ? 1 : 0);
++	// A.QOS / HW QoS (plain + classful) : no need to disable runner
++	nvram_set_int("runner_disable", nvram_get_int("runner_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_HWQOS() && !IS_HWQOS_CLASSFUL() && !IS_RB_QOS()) ? 1 : 0);
+ 
+ #ifdef RTCONFIG_HND_ROUTER_BE_4916
+ 	/*
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 2171dc465d..e9eb4518d8 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -323,6 +323,7 @@ static inline char *wan_if_eth(void)
+ #define IS_RB_QOS()             (nvram_get_int("rb_enable") == 1)   // Router Boost QoS (OPPO)
+ #define IS_CAKE_QOS()		(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 9)   // Cake QoS
+ #define IS_HWQOS()		(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 10)  // Hardware QoS (Runner egress TM: PI2 AQM + shaper, keeps flow accelerator on)
++#define IS_HWQOS_CLASSFUL()	(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11)  // Hardware QoS classful (T.QoS classification marks -> per-class Runner egress queues, accelerator on)
+ 
+ /* Guest network mark */
+ #if defined(RTCONFIG_HND_ROUTER_BE_4916)
+diff --git a/release/src/router/www/QoS_EZQoS.asp b/release/src/router/www/QoS_EZQoS.asp
+index b6aa27abb7..e289097c24 100644
+--- a/release/src/router/www/QoS_EZQoS.asp
++++ b/release/src/router/www/QoS_EZQoS.asp
+@@ -584,8 +584,11 @@
+             if (hwqos_support) {
+                 document.getElementById('hwqos_type').style.display = "";
+                 document.getElementById('hwqos_type_label').style.display = "";
++                document.getElementById('hwqosc_type').style.display = "";
++                document.getElementById('hwqosc_type_label').style.display = "";
+             } else {
+                 $('#hwqos_desc_li').hide();
++                $('#hwqosc_desc_li').hide();
+             }
+             $('#radio_qos_enable').iphoneSwitch(iphoneSwitchStatus,
+                 function () {
+@@ -593,7 +596,7 @@
+                     if (document.form.qos_enable_orig.value != "1") {
+                         if (document.getElementById('int_type').checked == true && adaptiveqos_support)
+                             document.form.next_page.value = "QoS_EZQoS.asp";
+-                        else if (document.getElementById('trad_type').checked)		//Traditional QoS
++                        else if (document.getElementById('trad_type').checked || document.getElementById('hwqosc_type').checked)		//Traditional QoS / HW QoS Classful (same rules editor)
+                             document.form.next_page.value = "Advanced_QOSUserRules_Content.asp";
+                     }
+ 
+@@ -615,6 +618,7 @@
+                     show_up_down(0);
+                     document.getElementById('qos_type_tr').style.display = "none";
+                     document.getElementById('hwqos_desc_tr').style.display = "none";
++                    document.getElementById('hwqosc_desc_tr').style.display = "none";
+                     document.getElementById('bandwidth_setting_tr').style.display = "none";
+                     document.getElementById('list_table').style.display = "none";
+                     document.getElementById('qoe_iframe').style.display = "none";
+@@ -786,7 +790,7 @@
+                         return false;
+                 }
+ 
+-                if (qos_type == 10) {	// Hardware QoS: upload-only. Validate upload bandwidth, force download to 0.
++                if (qos_type == 10 || qos_type == 11) {	// Hardware QoS (plain or classful): upload-only. Validate upload bandwidth, force download to 0.
+                     if (document.form.obw.value.length == 0 || document.form.obw.value == 0) {
+                         alert("<#QoS_invalid_zero#>");
+                         document.form.obw.focus();
+@@ -1117,6 +1121,8 @@
+             }
+             if (document.getElementById('hwqos_desc_tr'))	// reset HW QoS note; re-shown only for value==10
+                 document.getElementById('hwqos_desc_tr').style.display = "none";
++            if (document.getElementById('hwqosc_desc_tr'))	// reset HW QoS Classful note; re-shown only for value==11
++                document.getElementById('hwqosc_desc_tr').style.display = "none";
+             if (value == 0) {		//Traditional QoS
+                 document.form.qos_enable.value = "1";
+                 document.getElementById('int_type').checked = false;
+@@ -1327,6 +1333,41 @@
+                 }
+                 show_settings("NonAdaptive");
+                 document.getElementById('qos_apply_btn').style.display = "block";
++            } else if (value == 11) {		// Hardware QoS - Classful (per-class Runner egress queues, upload-only)
++                document.form.qos_enable.value = "1";
++                document.getElementById('int_type').checked = false;
++                document.getElementById('trad_type').checked = false;
++                document.getElementById('bw_limit_type').checked = false;
++                document.getElementById('cake_type').checked = false;
++                document.getElementById('hwqos_type').checked = false;
++                document.getElementById('hwqosc_type').checked = true;
++                if (geforceNow_support)
++                    document.getElementById('GeForce_type').checked = false;
++                document.getElementById('bandwidth_setting_tr').style.display = "none";
++                document.getElementById('list_table').style.display = "none";
++                document.getElementById('qoe_iframe').style.display = "none";
++                // upload-only: show the upload field, hide download (this mode does not shape download)
++                show_up_down(1);
++                document.getElementById('download_tr').style.display = "none";
++                if (mtwancfg_support)
++                    document.getElementById('download2_tr').style.display = "none";
++                document.getElementById('hwqosc_desc_tr').style.display = "";
++                // overhead / MPU are not used by the hardware shaper
++                if (codel_support || cake_support)
++                    document.getElementById('qos_overhead_tr').style.display = "none";
++                if (cake_support) {
++                    document.getElementById('qos_mpu').style.display = "none";
++                    document.getElementById('qos_mpu_label').style.display = "none";
++                }
++                if (document.form.qos_type_orig.value == 11 && document.form.qos_enable_orig.value != 0) {
++                    document.form.action_script.value = "restart_qos;restart_firewall";
++                } else {
++                    document.form.action_script.value = "reboot";
++                    document.form.next_page.value = "Advanced_QOSUserRules_Content.asp";
++                    document.form.action_wait.value = "<% get_default_reboot_time(); %>";
++                }
++                show_settings("NonAdaptive");
++                document.getElementById('qos_apply_btn').style.display = "block";
+             } else {
+                 return;
+             }
+@@ -2214,6 +2255,13 @@
+                                                                         <div>Shapes upload traffic inside the router's hardware packet accelerator (PI2 queue management) to remove upload bufferbloat while keeping NAT acceleration on and the CPU idle. Only upload is shaped &mdash; for download control, use Cake instead.
+                                                                         </div>
+                                                                     </li>
++                                                                    <li id="hwqosc_desc_li">
++                                                                        <div style="font-weight:bolder;font-size:14px;">
++                                                                            Hardware QoS &mdash; Classful (Upload only)
++                                                                        </div>
++                                                                        <div>Hardware QoS plus priorities: your QoS rules sort upload traffic into classes, each with its own hardware queue and bandwidth cap &mdash; NAT acceleration stays on. Only upload is shaped &mdash; for download control, use Cake instead.
++                                                                        </div>
++                                                                    </li>
+                                                                 </ul>
+                                                             </div>
+                                                         </td>
+@@ -2297,6 +2345,10 @@
+                                                                onClick="change_qos_type(this.value);" style="display: none;" type="radio" <% nvram_match("qos_type", "10","checked"); %>><label
+                                                             id="hwqos_type_label" style="display:none;"
+                                                             for="hwqos_type">Hardware QoS (Upload only)</label></span>
++                                                        <span id="hwqosc_type_wrap" style="white-space:nowrap;"><input id="hwqosc_type" name="qos_type_radio" value="11"
++                                                               onClick="change_qos_type(this.value);" style="display: none;" type="radio" <% nvram_match("qos_type", "11","checked"); %>><label
++                                                            id="hwqosc_type_label" style="display:none;"
++                                                            for="hwqosc_type">Hardware QoS &mdash; Classful (Upload only)</label></span>
+                                                     </td>
+                                                 </tr>
+                                                 <tr id="hwqos_desc_tr" style="display:none">
+@@ -2306,6 +2358,13 @@
+                                                         </div>
+                                                     </td>
+                                                 </tr>
++                                                <tr id="hwqosc_desc_tr" style="display:none">
++                                                    <td colspan="3">
++                                                        <div class="formfontdesc" style="color:#FFCC00;line-height:18px;margin:5px 0;">
++                                                            <b>Hardware QoS Classful &mdash; upload only.</b> Adds per-class priority queues to Hardware QoS: your <b>QoS rules</b> (same editor as Traditional QoS) sort upload traffic into up to 5 classes, each mapped to its own hardware egress queue with PI2 queue management and a bandwidth cap from the class ceiling percentages &mdash; still <b>without</b> disabling NAT acceleration. Classification is applied when a connection starts. Enter your <b>upload</b> bandwidth below; class caps are percentages of it (for a strict total limit, keep the ceilings summing to about 100%). <u>Download is not shaped by this mode</u> &mdash; use <b>Cake</b> for download control.
++                                                        </div>
++                                                    </td>
++                                                </tr>
+                                                 <tr id="qos_overhead_tr" style="display:none">
+                                                     <th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50, 28);">WAN packet overhead</a></th>
+                                                     <td colspan="2">
+-- 
+2.25.1
+

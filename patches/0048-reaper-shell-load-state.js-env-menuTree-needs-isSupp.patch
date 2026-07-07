@@ -1,0 +1,87 @@
+From 0491942ac1f1830a13464bb7b5895f92971e8f81 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 2 Jul 2026 21:33:40 -0400
+Subject: [PATCH] reaper shell: load state.js env (menuTree needs isSupport et
+ al), inject content css into every framed page, rail fallback + double-build
+ guard
+
+---
+ release/src/router/www/reaper_shell.asp | 48 +++++++++++++++++++++++--
+ 1 file changed, 46 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 9c1a2a25fb..8559449ba6 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -4,7 +4,10 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>REAPER &mdash; Settings</title>
+-<script type="text/javascript" src="/require/require.min.js"></script>
++<!-- state.js provides the globals menuTree.js needs (isSupport, naming vars,
++     rc_support flags) and document.writes require.min.js itself -->
++<script type="text/javascript" src="/js/jquery.js"></script>
++<script type="text/javascript" src="/state.js"></script>
+ <style>
+ /* REAPER settings shell: owns topbar + rail geometry; stock pages load
+    unmodified into the frame (all settings preserved); /reaper/reaper_content.css
+@@ -148,6 +151,7 @@ function loadPage(page){
+ 
+ function buildRail(menuTree){
+   var rail=$id('rail');
++  if(rail.querySelectorAll('a.item').length) return;   /* already built (fallback vs late require) */
+   var exMenus=[], exTabs=[];
+   try{ exMenus=menuTree.exclude.menus()||[]; }catch(e){}
+   try{ exTabs=menuTree.exclude.tabs()||[]; }catch(e){}
+@@ -182,7 +186,47 @@ function buildRail(menuTree){
+   loadPage(initial || DEFAULT_PAGE);
+ }
+ 
+-require(['/require/modules/menuTree.js'], function(menuTree){ buildRail(menuTree); });
++/* every page framed by the shell gets the reaper content theme, pilot or not:
++   inject the stylesheet on load if the page does not already carry it */
++(function(){
++  var f=$id('page_frame');
++  if(!f) return;
++  f.addEventListener('load', function(){
++    try{
++      var d=this.contentDocument;
++      if(!d || d.querySelector('link[href*="reaper_content"]')) return;
++      var l=d.createElement('link');
++      l.rel='stylesheet'; l.type='text/css'; l.href='/reaper/reaper_content.css';
++      (d.head||d.documentElement).appendChild(l);
++    }catch(e){}
++  });
++})();
++
++/* rail from menuTree.js; if that fails for any reason, fall back to a minimal
++   static menu so the rail is never blank */
++function railFallback(){
++  if(document.querySelectorAll('#rail a.item').length) return;
++  buildRail({
++    list:[
++      {menuName:'General', index:'menu_Split', tab:[{url:'NULL',tabName:'__HIDE__'}]},
++      {menuName:'Network Map', index:'menu_Index', tab:[{url:'index.asp',tabName:'__HIDE__'}]},
++      {menuName:'Advanced Settings', index:'menu_Split', tab:[{url:'NULL',tabName:'__HIDE__'}]},
++      {menuName:'Wireless', index:'menu_Wireless', tab:[{url:'Advanced_Wireless_Content.asp',tabName:'General'}]},
++      {menuName:'LAN', index:'menu_LAN', tab:[{url:'Advanced_LAN_Content.asp',tabName:'LAN IP'}]},
++      {menuName:'WAN', index:'menu_WAN', tab:[{url:'Advanced_WAN_Content.asp',tabName:'Internet Connection'}]},
++      {menuName:'Firewall', index:'menu_Firewall', tab:[{url:'Advanced_BasicFirewall_Content.asp',tabName:'General'}]},
++      {menuName:'Administration', index:'menu_Setting', tab:[{url:'Advanced_System_Content.asp',tabName:'System'}]},
++      {menuName:'System Log', index:'menu_Log', tab:[{url:'Main_LogStatus_Content.asp',tabName:'General Log'}]}
++    ],
++    exclude:{menus:function(){return[];},tabs:function(){return[];}}
++  });
++}
++try{
++  require(['/require/modules/menuTree.js'], function(menuTree){
++    try{ buildRail(menuTree); }catch(e){ railFallback(); }
++  }, function(){ railFallback(); });
++  setTimeout(railFallback, 4000);
++}catch(e){ railFallback(); }
+ 
+ /* logout / reboot (stock mechanisms, shell-owned) */
+ (function(){
+-- 
+2.25.1
+

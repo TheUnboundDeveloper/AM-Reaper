@@ -1,5 +1,6 @@
 # RT-BE96U "Reaper" — Release Notes
 
+**Release:** v1.0 (2026-07-07)
 **Firmware:** `RT-BE96U 3006.102.8_Reaper`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
 **Model:** ASUS RT-BE96U **only** (WiFi 7, Broadcom BCM4916/BCM6813)
@@ -68,8 +69,22 @@ the Broadcom Runner **with the flow accelerator left on** — solving the stock
 either/or (accelerator OR software QoS). Proven on live hardware: at a 20 Mbit
 cap, upload packet loss went 6.5% → 0% and loaded latency 71 ms → 30 ms
 (bufferbloat eliminated) with all four cores under 2% and HW acceleration still
-enabled. Selectable in the QoS GUI; clearly labelled upload-only (download-side
-aggregate AQM is pointed at software CAKE, which is also compiled in).
+enabled; re-validated at a 2.1 Gbit cap. Selectable in the QoS GUI; clearly
+labelled upload-only (download-side aggregate AQM is pointed at software CAKE,
+which is also compiled in).
+
+### Hardware QoS — Classful (upload-only), validated on metal
+A fourth engine (`qos_type=11`) extends Hardware QoS with per-class priority
+queues: the Traditional-QoS rules editor classifies upload traffic into up to 5
+classes, each mapped to its own Runner egress queue with PI2 AQM and a
+per-class bandwidth ceiling — still with the flow accelerator on. Validated
+end-to-end on the physical RT-BE96U: 7-queue PI2/shaper programming, class-mark
+→ hardware-queue steering on accelerated flows, priority order under
+saturating load. Two properties to know: (1) classification is fixed when a
+connection starts, so **"transferred"-range rules do not reclassify long
+flows** — build rules on device IP/MAC, port, or protocol instead; (2) queues
+are capped individually with **no aggregate shaper**, so for a strict total
+limit keep the class ceilings summing to ~100%.
 
 ### Reaper UI — full rebrand and redesign
 Matte-black + crimson theme across the entire web UI: a live-wired landing
@@ -148,13 +163,14 @@ Built with the RT-BE96U userspace toolchain (gcc-10.3, 32-bit ARM) via
 
 | Artifact | SHA-256 |
 |---|---|
-| `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb` (flash this) | `b81e482cb3e027b1e7980b8376dda9d181a75532d75dc9cd200607b02de96e51` |
-| `RT-BE96U_3006_102.8_reaper_nand_squashfs_loader.pkgtb` (recovery) | `34eb84ff1f9a73740cdbbf687c4921f46f00cf3a2a983d06e94b5de6860ea240` |
+| `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb` (flash this) | `73ccf360e46778d393cbcb46d4bd4f64798b3b99cd00c5f7000de99eab2a8c3a` |
+| `RT-BE96U_3006_102.8_reaper_nand_squashfs_loader.pkgtb` (recovery) | `9712912972d4e4ad0def882beaeb9bbf10726a79e0afee611a257ea41b2c9805` |
 
-> Status: this image includes the avahi CVE backport **and the T1-T4 latent
-> buffer hardening**. On-device validation of the latest theme pass, the avahi
-> fix (confirm mDNS/`.local` discovery still resolves), and normal WAN/DHCP +
-> QoS operation is pending final sign-off before public release.
+> Status (v1.0): validated on the physical RT-BE96U — security hardening
+> rounds 1–4 + latent T1–T4, the avahi CVE backport, both Hardware QoS
+> engines (v1 global and v2 Classful, end-to-end on metal), and the Reaper
+> UI at all page depths. Both HW QoS engines and the serve-time theme
+> kill-switch (`reaper_inject=0`) are confirmed working on this image line.
 
 ---
 

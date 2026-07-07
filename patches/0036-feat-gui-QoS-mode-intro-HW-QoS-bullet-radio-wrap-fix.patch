@@ -1,0 +1,106 @@
+From b442039aaa64fdd936910619830d5ce56746a044 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 30 Jun 2026 05:56:58 -0400
+Subject: [PATCH] feat(gui): QoS mode intro + HW-QoS bullet/radio-wrap fix +
+ Smart Connect disclaimer
+
+QoS_EZQoS.asp:
+- add intro sentence above the QoS mode descriptions
+- add a Hardware QoS (Upload only) bullet to the mode list (hidden when unsupported)
+- keep the qos_type=10 radio glued to its label so the pair wraps to the next row together
+
+Advanced_Smart_Connect.asp:
+- show a band-steering disclaimer when Smart Connect is off (shared SSID -> device may
+  stay on a suboptimal band; set a device band preference or reconnect; separate SSIDs)
+- repeat the caveat in the disable confirmation dialog
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Advanced_Smart_Connect.asp |  8 +++++++-
+ release/src/router/www/QoS_EZQoS.asp              | 14 ++++++++++++--
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index 8995f73b6e..13778f8cd1 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -937,6 +937,9 @@ function setupSmartConnectToggle(){
+ 	else{
+ 		btn.value = 'Enable Smart Connect';
+ 		btn.title = 'Turn Smart Connect (band steering) back on for all radios';
++		// Surface the band-steering caveat while Smart Connect is off.
++		var disc = document.getElementById('scDisableDisclaimer');
++		if(disc) disc.style.display = '';
+ 		// Grey out the rule set: nothing on this page applies while Smart Connect is off.
+ 		var div = document.getElementById('bsd_steering_div');
+ 		if(div){
+@@ -950,7 +953,7 @@ function toggleSmartConnect(){
+ 	var setObj = {};
+ 
+ 	if(isSmartConnectEnabled()){
+-		if(!confirm('Disable Smart Connect?\n\nBand steering will be turned off and every Smart Connect control on this page is deactivated. Each radio (2.4 / 5 / 6 GHz) keeps broadcasting its current SSID independently.\n\nWireless will restart.')){
++		if(!confirm('Disable Smart Connect?\n\nBand steering will be turned off and every Smart Connect control on this page is deactivated. Each radio (2.4 / 5 / 6 GHz) keeps broadcasting its current SSID independently.\n\nNote: if your radios share the same SSID, a device may stay on a less-than-optimal band (e.g. 2.4 GHz instead of 5 / 6 GHz). Set a preferred band on the device, or disconnect/reconnect to re-select; give each band its own SSID to make the choice explicit.\n\nWireless will restart.')){
+ 			return;
+ 		}
+ 		setObj['smart_connect_x'] = '0';
+@@ -1019,6 +1022,9 @@ function toggleSmartConnect(){
+ 			<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
+ 			<div class="formfontdesc"><#smart_connect_hint#></div>
+ 			<div style="text-align:right;margin-top:-36px;padding-bottom:3px;"><input type="button" id="smartConnectToggle" class="button_gen" style="margin-right:8px;" value="Smart Connect" onClick="toggleSmartConnect();"><input type="button" class="button_gen" value="<#View_List#>" onClick="showClientlistModal()"></div>
++			<div id="scDisableDisclaimer" class="formfontdesc" style="display:none;color:#FFCC00;line-height:18px;margin:10px 5px;padding:8px 10px;border:1px solid #FFCC00;border-radius:4px;background:rgba(255,204,0,0.06);">
++				<b>Heads up &mdash; Smart Connect is off.</b> Band steering no longer moves your devices between the 2.4 / 5 / 6 GHz radios. If those radios share the same SSID, a device may stay connected to a less-than-optimal band (for example 2.4 GHz instead of 5 GHz or 6 GHz). Set a preferred band on the device itself if that option is available; if it is not, disconnect and reconnect to the Wi-Fi to let the device re-select the preferred band. To make the choice explicit, give each band its own separate SSID.
++			</div>
+ 			<div id="bsd_steering_div">
+ 				<table cellspacing="0" cellpadding="4" bordercolor="#6b8fa3" border="1" align="center" width="100%" class="FormTable" style="margin-top:10px">
+ 					<thead>
+diff --git a/release/src/router/www/QoS_EZQoS.asp b/release/src/router/www/QoS_EZQoS.asp
+index 4c1e2140ee..b6aa27abb7 100644
+--- a/release/src/router/www/QoS_EZQoS.asp
++++ b/release/src/router/www/QoS_EZQoS.asp
+@@ -584,6 +584,8 @@
+             if (hwqos_support) {
+                 document.getElementById('hwqos_type').style.display = "";
+                 document.getElementById('hwqos_type_label').style.display = "";
++            } else {
++                $('#hwqos_desc_li').hide();
+             }
+             $('#radio_qos_enable').iphoneSwitch(iphoneSwitchStatus,
+                 function () {
+@@ -2168,6 +2170,7 @@
+                                                         <td style="font-size: 14px;">
+                                                             <div id="function_desc" class="formfontdesc"
+                                                                  style="line-height:20px;">
++                                                                <div style="margin-bottom:10px;">QoS (Quality of Service) prioritizes and shapes your network traffic so important activities stay responsive when the connection is busy. Choose the mode below that best fits your needs &mdash; each one balances traffic control, latency, and hardware acceleration differently:</div>
+                                                                 <ul style="display: flex; flex-direction: column; gap: 10px;">
+                                                                     <li id="function_int_desc">
+                                                                         <div style="font-weight: bolder;font-size: 14px;">
+@@ -2204,6 +2207,13 @@
+                                                                         <div>Automatic queue management algorithm that takes care of ensuring fairness in traffic queueing without requiring manual configuration.
+                                                                         </div>
+                                                                     </li>
++                                                                    <li id="hwqos_desc_li">
++                                                                        <div style="font-weight:bolder;font-size:14px;">
++                                                                            Hardware QoS (Upload only)
++                                                                        </div>
++                                                                        <div>Shapes upload traffic inside the router's hardware packet accelerator (PI2 queue management) to remove upload bufferbloat while keeping NAT acceleration on and the CPU idle. Only upload is shaped &mdash; for download control, use Cake instead.
++                                                                        </div>
++                                                                    </li>
+                                                                 </ul>
+                                                             </div>
+                                                         </td>
+@@ -2283,10 +2293,10 @@
+                                                                                                       href="javascript:void(0);"
+                                                                                                       onClick="openHint(50, 32);"><label
+                                                             for="cake_type">Cake</label></a>
+-                                                        <input id="hwqos_type" name="qos_type_radio" value="10"
++                                                        <span id="hwqos_type_wrap" style="white-space:nowrap;"><input id="hwqos_type" name="qos_type_radio" value="10"
+                                                                onClick="change_qos_type(this.value);" style="display: none;" type="radio" <% nvram_match("qos_type", "10","checked"); %>><label
+                                                             id="hwqos_type_label" style="display:none;"
+-                                                            for="hwqos_type">Hardware QoS (Upload only)</label>
++                                                            for="hwqos_type">Hardware QoS (Upload only)</label></span>
+                                                     </td>
+                                                 </tr>
+                                                 <tr id="hwqos_desc_tr" style="display:none">
+-- 
+2.25.1
+

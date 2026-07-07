@@ -1,0 +1,40 @@
+From 2dcc66f2d606ccfb29daf4dfd7e3a9b942c3153c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 29 Jun 2026 13:28:27 -0400
+Subject: [PATCH] fix(qos): flush stale flow-cache entries when QoS is disabled
+
+Disabling QoS (qos_enable=0; restart_qos) tore down tc + iptables via
+stop_iQos()/del_iQosRules() but never flushed the Broadcom flow
+accelerator, leaving previously-offloaded flows with stale dstentry
+refs. Result: the kernel spammed "blog_get_dstentry_by_id: N callbacks
+suppressed" until a reboot. The enable path goes through fc_fini()
+(fc disable + flush), but the disable path (IS_NON_AQOS() false ->
+fc_disable=0) only ran fc_init() = fc enable, never a flush.
+
+Add an HND-guarded `fc flush` after del_iQosRules() in the qos STOP
+branch so the accelerator is cleared on disable, no reboot needed.
+The web-GUI QoS toggle hits this same restart_qos path, so downstream
+users are covered too.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 674f28e508..cb2e91941c 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -18479,6 +18479,9 @@ check_ddr_done:
+ 			stop_dpi_engine_service(0);
+ #endif
+ 			del_iQosRules();
++#ifdef HND_ROUTER
++			eval("fc", "flush");	// flush stale offloaded flows on QoS disable; fixes blog_get_dstentry_by_id spam (no reboot needed)
++#endif
+ 		}
+ 		if(action & RC_SERVICE_START) {
+ #if defined(RTCONFIG_QCA) || \
+-- 
+2.25.1
+

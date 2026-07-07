@@ -1,0 +1,449 @@
+From 63246848131382cb525ee846408c0271b01aa448 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 2 Jul 2026 13:29:59 -0400
+Subject: [PATCH] reaper dash: IPv6 internet card + client-list v6, Mode pill
+ in topbar, ASCII-safe text
+
+Internet card per approved mock: IPv4/IPv6 header chips, dual-stack v6 line + Gateway(v6)/DNS(v6) meta row, v6-only hero promotion; driven by wan_ipv6_network() hook; connected state counts either stack. Client rows: IPv4 - IPv6 (ip6_prefix||ip6 from networkmap) - MAC. Operation Mode moved to topbar pill between WAN and Uptime. All non-ASCII chars replaced with entities/JS escapes because the www packaging minifier strips non-ASCII bytes (affected every prior build: middots/em-dashes/degree signs silently deleted).
+---
+ release/src/router/www/Main_ReaperDash.asp | 183 +++++++++++++--------
+ 1 file changed, 112 insertions(+), 71 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index ce34525ed5..a981bd683d 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -3,7 +3,7 @@
+ <head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+-<title>REAPER — Dashboard</title>
++<title>REAPER &mdash; Dashboard</title>
+ <style>
+ /* self-hosted fonts (offline; no CDN) */
+ @font-face{font-family:'Rajdhani';font-weight:500;font-display:swap;src:url('/fonts/rajdhani-500.woff2') format('woff2')}
+@@ -43,11 +43,11 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .cl-filter{margin-top:14px;width:100%;background:#000;border:1px solid var(--line-soft);color:var(--bone);font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.04em;padding:9px 10px;border-radius:8px;outline:none;cursor:pointer}
+ .cl-filter:focus{border-color:var(--line)}
+ /* fixed height (not max-height): the card must not grow/shrink with the device
+-   count — the row it shares with Security Posture stays constant; scrollbar handles overflow */
++   count &mdash; the row it shares with Security Posture stays constant; scrollbar handles overflow */
+ .cl-list{margin-top:10px;height:170px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
+ .cl-item{border:1px solid var(--line-soft);border-radius:8px;padding:8px 10px;background:rgba(255,255,255,.015)}
+ .cl-item .cn{color:var(--bone);font-size:13px;font-weight:500}
+-.cl-item .cd{color:var(--steel);font-size:11px;margin-top:3px}
++.cl-item .cd{color:var(--steel);font-size:11px;margin-top:3px;word-break:break-all}
+ .cl-item .cd .mono{color:var(--bone-dim)}
+ .eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
+ 
+@@ -108,6 +108,17 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .hero{display:grid;grid-template-columns:1.1fr 1fr;gap:20px;align-items:center}
+ .big{font-family:var(--hdr);font-weight:700;color:var(--bone);line-height:1}
+ .wanip{font-size:30px;letter-spacing:.02em}
++/* ipv6: protocol chips, secondary v6 address line, v6-only hero sizing */
++.stacks{display:flex;gap:6px}
++.chip{font-family:var(--hdr);font-size:10px;font-weight:600;letter-spacing:.14em;padding:4px 9px;border-radius:6px;text-transform:uppercase;white-space:nowrap}
++.chip.up{color:var(--jade);border:1px solid rgba(79,178,134,.35);background:rgba(79,178,134,.08)}
++.chip.off{color:var(--steel);border:1px solid var(--line-soft);background:rgba(255,255,255,.015)}
++.v6line{display:none;align-items:baseline;gap:8px;margin-top:8px;flex-wrap:wrap}
++.v6line .k{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--steel);flex:0 0 auto}
++.v6line .v{font-family:var(--hdr);font-weight:600;color:var(--bone);font-size:14px;letter-spacing:.02em;word-break:break-all;line-height:1.3}
++.wanip.v6only{font-size:19px;word-break:break-all;line-height:1.25}
++.meta.tight{margin-top:12px}
++.meta .m .v.small{font-size:13px;word-break:break-all;line-height:1.3}
+ .state{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+ .state .lbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.16em;color:var(--jade);font-weight:600;font-size:13px}
+ .meta{display:flex;gap:26px;margin-top:16px;flex-wrap:wrap}
+@@ -237,8 +248,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+   <!-- LEFT RAIL (always expanded; menu mirrors the current firmware) -->
+   <aside class="rail">
+-    <div class="wordmark"><span class="a">ASUS</span> <span class="d">·</span> <span class="m">Merlin</span> <span class="d">·</span> <span class="r">Reaper</span></div>
+-    <div class="railsearch"><input type="text" placeholder="Search — coming soon" disabled></div>
++    <div class="wordmark"><span class="a">ASUS</span> <span class="d">&middot;</span> <span class="m">Merlin</span> <span class="d">&middot;</span> <span class="r">Reaper</span></div>
++    <div class="railsearch"><input type="text" placeholder="Search &mdash; coming soon" disabled></div>
+ 
+     <div class="grp">General</div>
+     <nav class="nav">
+@@ -273,12 +284,13 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   <!-- MAIN -->
+   <main>
+     <header class="top">
+-      <a class="brand" href="#" title="REAPER — RT-BE96U"><img src="/images/REAPER.png" alt="ASUS RT-BE96U REAPER"></a>
++      <a class="brand" href="#" title="REAPER &mdash; RT-BE96U"><img src="/images/REAPER.png" alt="ASUS RT-BE96U REAPER"></a>
+       <div class="pills">
+-        <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k">WAN</span><span class="v" id="p_wan">—</span></div>
+-        <div class="pill"><span class="k">Uptime</span><span class="v mono" id="p_uptime">—</span></div>
+-        <div class="pill"><span class="k">Firmware</span><span class="v mono" id="p_fw">—</span></div>
+-        <div class="pill"><span class="k">Clients</span><span class="v mono" id="p_clients">—</span></div>
++        <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k">WAN</span><span class="v" id="p_wan">&mdash;</span></div>
++        <div class="pill"><span class="k">Mode</span><span class="v" id="i_opmode">&mdash;</span></div>
++        <div class="pill"><span class="k">Uptime</span><span class="v mono" id="p_uptime">&mdash;</span></div>
++        <div class="pill"><span class="k">Firmware</span><span class="v mono" id="p_fw">&mdash;</span></div>
++        <div class="pill"><span class="k">Clients</span><span class="v mono" id="p_clients">&mdash;</span></div>
+         <div class="pill"><span class="k">Mesh Nodes</span><span class="v mono" id="p_mesh">0</span></div>
+       </div>
+       <div class="spacer"></div>
+@@ -291,37 +303,41 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+         <!-- INTERNET -->
+         <section class="card col4">
+-          <div class="head"><h3>Internet</h3></div>
++          <div class="head"><h3>Internet</h3>
++            <div class="stacks"><span class="chip off" id="chip4">IPv4</span><span class="chip off" id="chip6">IPv6</span></div>
++          </div>
+           <div>
+-            <div class="state"><span class="dot" id="i_dot"></span><span class="lbl" id="i_state">—</span></div>
+-            <div class="big wanip mono" id="i_wanip">—</div>
++            <div class="state"><span class="dot" id="i_dot"></span><span class="lbl" id="i_state">&mdash;</span></div>
++            <div class="big wanip mono" id="i_wanip">&mdash;</div>
++            <div class="v6line" id="i_v6line"><span class="k">IPv6</span><span class="v mono" id="i_wan6"></span></div>
+             <div class="meta">
+-              <div class="m"><div class="k">Gateway</div><div class="v mono" id="i_gw">—</div></div>
+-              <div class="m"><div class="k">DNS</div><div class="v mono" id="i_dns">—</div></div>
++              <div class="m" id="i_gw_m"><div class="k">Gateway</div><div class="v mono" id="i_gw">&mdash;</div></div>
++              <div class="m" id="i_dns_m"><div class="k">DNS</div><div class="v mono" id="i_dns">&mdash;</div></div>
+               <div class="m"><div class="k">DDNS</div><div class="v" id="i_ddns" style="color:var(--steel)">Not Active</div></div>
+             </div>
+-            <div class="meta" style="margin-top:12px">
+-              <div class="m"><div class="k">Operation Mode</div><div class="v" id="i_opmode">—</div></div>
++            <div class="meta tight" id="i_v6meta" style="display:none">
++              <div class="m"><div class="k">Gateway (v6)</div><div class="v mono small" id="i_gw6">&mdash;</div></div>
++              <div class="m"><div class="k">DNS (v6)</div><div class="v mono small" id="i_dns6">&mdash;</div></div>
+             </div>
+           </div>
+         </section>
+ 
+         <!-- SYSTEM -->
+         <section class="card col4">
+-          <div class="head"><h3>System</h3><span class="eyebrow">4-core · BCM4916</span></div>
++          <div class="head"><h3>System</h3><span class="eyebrow">4-core &middot; BCM4916</span></div>
+           <div class="meters">
+             <div class="meter">
+-              <div class="dial" id="m_cpu" style="--v:0;--c:var(--crimson)"><div class="txt">—<small>load</small></div></div>
++              <div class="dial" id="m_cpu" style="--v:0;--c:var(--crimson)"><div class="txt">&mdash;<small>load</small></div></div>
+               <div class="cap">CPU</div>
+               <div class="cores" id="m_cores"><i></i><i></i><i></i><i></i></div>
+             </div>
+             <div class="meter">
+-              <div class="dial" id="m_ram" style="--v:0;--c:var(--bone)"><div class="txt" style="color:var(--bone)">—<small>used</small></div></div>
++              <div class="dial" id="m_ram" style="--v:0;--c:var(--bone)"><div class="txt" style="color:var(--bone)">&mdash;<small>used</small></div></div>
+               <div class="cap">RAM</div>
+-              <div class="sub" id="m_ram_sub" style="margin-top:8px">—</div>
++              <div class="sub" id="m_ram_sub" style="margin-top:8px">&mdash;</div>
+             </div>
+             <div class="meter">
+-              <div class="dial" id="m_temp" style="--v:0;--c:var(--amber)"><div class="txt">--<small>°C temp</small></div></div>
++              <div class="dial" id="m_temp" style="--v:0;--c:var(--amber)"><div class="txt">--<small>&deg;C temp</small></div></div>
+               <div class="cap">Thermal</div>
+               <div class="sub" id="m_temp_sub" style="color:var(--jade);margin-top:8px">CPU</div>
+             </div>
+@@ -332,10 +348,10 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         <section class="card col4">
+           <div class="head"><h3>Storage</h3></div>
+           <div class="stg">
+-            <div class="ring" id="st_ring" style="--v:0"><b class="mono" id="st_pct">—</b></div>
++            <div class="ring" id="st_ring" style="--v:0"><b class="mono" id="st_pct">&mdash;</b></div>
+             <div class="d">
+               <div class="t" id="st_name">No USB storage</div>
+-              <div class="s" id="st_sub">—</div>
++              <div class="s" id="st_sub">&mdash;</div>
+               <div class="s" id="st_extra" style="color:var(--jade);margin-top:6px;display:none"></div>
+             </div>
+           </div>
+@@ -346,36 +362,36 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+           <div class="head"><h3>Security Posture</h3></div>
+           <div class="rows two">
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></div>
+-              <div><div class="name">Wi-Fi Encryption</div><div class="sub2" id="s_wifi_sub">—</div></div></div><span class="tag ok" id="s_wifi_tag">—</span></div>
++              <div><div class="name">Wi-Fi Encryption</div><div class="sub2" id="s_wifi_sub">&mdash;</div></div></div><span class="tag ok" id="s_wifi_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/></svg></div>
+-              <div><div class="name">Firewall (SPI)</div><div class="sub2" id="s_fw_sub">Inbound blocked · IPv4 + IPv6 firewall on</div></div></div><span class="tag ok" id="s_fw_tag">Active</span></div>
++              <div><div class="name">Firewall (SPI)</div><div class="sub2" id="s_fw_sub">&mdash;</div></div></div><span class="tag ok" id="s_fw_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+-              <div><div class="name">Remote / Cloud Access</div><div class="sub2" id="s_rc_sub">—</div></div></div><span class="tag ok" id="s_rc_tag">—</span></div>
++              <div><div class="name">Remote / Cloud Access</div><div class="sub2" id="s_rc_sub">&mdash;</div></div></div><span class="tag ok" id="s_rc_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg></div>
+-              <div><div class="name">Admin Login</div><div class="sub2" id="s_adm_sub">—</div></div></div><span class="tag ok" id="s_adm_tag">—</span></div>
++              <div><div class="name">Admin Login</div><div class="sub2" id="s_adm_sub">&mdash;</div></div></div><span class="tag ok" id="s_adm_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg></div>
+-              <div><div class="name">JFFS Partition</div><div class="sub2" id="s_jffs_sub">—</div></div></div><span class="tag ok" id="s_jffs_tag">—</span></div>
++              <div><div class="name">JFFS Partition</div><div class="sub2" id="s_jffs_sub">&mdash;</div></div></div><span class="tag ok" id="s_jffs_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
+-              <div><div class="name">SSH Access</div><div class="sub2" id="s_ssh_sub">—</div></div></div><span class="tag ok" id="s_ssh_tag">—</span></div>
++              <div><div class="name">SSH Access</div><div class="sub2" id="s_ssh_sub">&mdash;</div></div></div><span class="tag ok" id="s_ssh_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
+-              <div><div class="name">UPnP</div><div class="sub2" id="s_upnp_sub">—</div></div></div><span class="tag ok" id="s_upnp_tag">—</span></div>
++              <div><div class="name">UPnP</div><div class="sub2" id="s_upnp_sub">&mdash;</div></div></div><span class="tag ok" id="s_upnp_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
+-              <div><div class="name">WPS</div><div class="sub2" id="s_wps_sub">—</div></div></div><span class="tag ok" id="s_wps_tag">—</span></div>
++              <div><div class="name">WPS</div><div class="sub2" id="s_wps_sub">&mdash;</div></div></div><span class="tag ok" id="s_wps_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></div>
+-              <div><div class="name">QoS</div><div class="sub2" id="s_qos_sub">—</div></div></div><span class="tag ok" id="s_qos_tag">—</span></div>
++              <div><div class="name">QoS</div><div class="sub2" id="s_qos_sub">&mdash;</div></div></div><span class="tag ok" id="s_qos_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12h6"/></svg></div>
+-              <div><div class="name">DDoS Protection</div><div class="sub2" id="s_dos_sub">—</div></div></div><span class="tag ok" id="s_dos_tag">—</span></div>
++              <div><div class="name">DDoS Protection</div><div class="sub2" id="s_dos_sub">&mdash;</div></div></div><span class="tag ok" id="s_dos_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
+-              <div><div class="name">MLO (Multi-Link)</div><div class="sub2" id="s_mlo_sub">—</div></div></div><span class="tag ok" id="s_mlo_tag">—</span></div>
++              <div><div class="name">MLO (Multi-Link)</div><div class="sub2" id="s_mlo_sub">&mdash;</div></div></div><span class="tag ok" id="s_mlo_tag">&mdash;</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
+-              <div><div class="name">DNS Rebind + DNSSEC</div><div class="sub2" id="s_dnsr_sub">—</div></div></div><span class="tag ok" id="s_dnsr_tag">—</span></div>
++              <div><div class="name">DNS Rebind + DNSSEC</div><div class="sub2" id="s_dnsr_sub">&mdash;</div></div></div><span class="tag ok" id="s_dnsr_tag">&mdash;</span></div>
+           </div>
+         </section>
+ 
+         <!-- CLIENTS -->
+         <section class="card col4">
+           <div class="head"><h3>Clients</h3><a class="link" href="#">View List</a></div>
+-          <div class="cbig"><span class="n mono" id="c_total">—</span><span class="u">connected</span></div>
++          <div class="cbig"><span class="n mono" id="c_total">&mdash;</span><span class="u">connected</span></div>
+           <div class="bands">
+             <div class="band"><span class="bl">6 GHz</span><span class="bar"><i id="b6i" style="width:0%"></i></span><span class="bn mono" id="b6n">0</span></div>
+             <div class="band"><span class="bl">5 GHz</span><span class="bar"><i id="b5i" style="width:0%"></i></span><span class="bn mono" id="b5n">0</span></div>
+@@ -397,33 +413,33 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+           <div class="conngroup"><span class="cglabel">Wireless</span><span class="cgline"></span></div>
+           <div class="ports">
+-            <div class="port" id="w24"><div class="pn">2.4 GHz</div><div class="ps">—</div><div class="led"></div></div>
+-            <div class="port" id="w5"><div class="pn">5 GHz</div><div class="ps">—</div><div class="led"></div></div>
+-            <div class="port" id="w6"><div class="pn">6 GHz</div><div class="ps">—</div><div class="led"></div></div>
++            <div class="port" id="w24"><div class="pn">2.4 GHz</div><div class="ps">&mdash;</div><div class="led"></div></div>
++            <div class="port" id="w5"><div class="pn">5 GHz</div><div class="ps">&mdash;</div><div class="led"></div></div>
++            <div class="port" id="w6"><div class="pn">6 GHz</div><div class="ps">&mdash;</div><div class="led"></div></div>
+           </div>
+ 
+           <div class="conngroup"><span class="cglabel">Ethernet</span><span class="cgline"></span></div>
+           <div class="ports" id="eth_ports">
+-            <div class="port"><div class="pn">—</div><div class="ps">reading…</div><div class="led"></div></div>
++            <div class="port"><div class="pn">&mdash;</div><div class="ps">reading&hellip;</div><div class="led"></div></div>
+           </div>
+ 
+           <div class="conngroup"><span class="cglabel">USB</span><span class="cgline"></span></div>
+           <div class="ports" id="usb_ports">
+-            <div class="port"><div class="pn">—</div><div class="ps">reading…</div><div class="led"></div></div>
++            <div class="port"><div class="pn">&mdash;</div><div class="ps">reading&hellip;</div><div class="led"></div></div>
+           </div>
+         </section>
+ 
+         <!-- ROUTER IDENTITY -->
+         <section class="card col4">
+-          <div class="head"><h3>Router ID</h3><span class="eyebrow" id="rid_model">—</span></div>
++          <div class="head"><h3>Router ID</h3><span class="eyebrow" id="rid_model">&mdash;</span></div>
+           <div class="idrows">
+-            <div class="idrow"><span class="k">LAN IP</span><span class="v mono" id="rid_lanip">—</span></div>
+-            <div class="idrow"><span class="k">PIN Code</span><span class="v mono" id="rid_pin">—</span></div>
+-            <div class="idrow" id="rid_sn_row"><span class="k">Serial Number</span><span class="v mono" id="rid_sn">—</span></div>
+-            <div class="idrow"><span class="k">LAN MAC</span><span class="v mono" id="rid_lanmac">—</span></div>
+-            <div class="idrow"><span class="k">2.4 GHz MAC</span><span class="v mono" id="rid_mac24">—</span></div>
+-            <div class="idrow"><span class="k">5 GHz MAC</span><span class="v mono" id="rid_mac5">—</span></div>
+-            <div class="idrow"><span class="k">6 GHz MAC</span><span class="v mono" id="rid_mac6">—</span></div>
++            <div class="idrow"><span class="k">LAN IP</span><span class="v mono" id="rid_lanip">&mdash;</span></div>
++            <div class="idrow"><span class="k">PIN Code</span><span class="v mono" id="rid_pin">&mdash;</span></div>
++            <div class="idrow" id="rid_sn_row"><span class="k">Serial Number</span><span class="v mono" id="rid_sn">&mdash;</span></div>
++            <div class="idrow"><span class="k">LAN MAC</span><span class="v mono" id="rid_lanmac">&mdash;</span></div>
++            <div class="idrow"><span class="k">2.4 GHz MAC</span><span class="v mono" id="rid_mac24">&mdash;</span></div>
++            <div class="idrow"><span class="k">5 GHz MAC</span><span class="v mono" id="rid_mac5">&mdash;</span></div>
++            <div class="idrow"><span class="k">6 GHz MAC</span><span class="v mono" id="rid_mac6">&mdash;</span></div>
+           </div>
+         </section>
+ 
+@@ -471,13 +487,14 @@ var SSI = {
+   serial:   '<% nvram_get("serial_no"); %>',
+   lanmac:   '<% get_lan_hwaddr(); %>'
+ };
+-/* per-radio config (BE96U: wl0=2.4 GHz, wl1=5 GHz, wl2=6 GHz — labelled via nband) */
++/* per-radio config (BE96U: wl0=2.4 GHz, wl1=5 GHz, wl2=6 GHz &mdash; labelled via nband) */
+ var WL = [
+   {nband:'<% nvram_get("wl0_nband"); %>', radio:'<% nvram_get("wl0_radio"); %>', auth:'<% nvram_get("wl0_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl0_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl0_ssid"); %>')},
+   {nband:'<% nvram_get("wl1_nband"); %>', radio:'<% nvram_get("wl1_radio"); %>', auth:'<% nvram_get("wl1_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl1_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl1_ssid"); %>')},
+   {nband:'<% nvram_get("wl2_nband"); %>', radio:'<% nvram_get("wl2_radio"); %>', auth:'<% nvram_get("wl2_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl2_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl2_ssid"); %>')}
+ ];
+ var USBINFO = <% get_usb_info(); %>;
++var WAN6 = <% wan_ipv6_network(); %>;   /* {status, Connection_Type, IPv6_Address, Link_Local_Address, IPv6_Gateway, DNS_Servers} */
+ var UPSTR = "<% sysuptime(); %>";
+ var OPMODE = [<% get_operation_mode(); %>][0];   /* "rt"/"rp"/"ap"/"mb"/"ew2"/"ew5"/"hs"/"wisp" */
+ function $id(id){return document.getElementById(id);}
+@@ -488,31 +505,54 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+     var fwstr = (SSI.firmver||'').replace(/\./g,'') + '.' + (SSI.buildno||'');
+     if(SSI.extendno && SSI.extendno!=='0') fwstr += '_'+cap(SSI.extendno);
+     if(fwstr.length>2) setTxt('p_fw', fwstr);
+-    /* WAN state from wan0_state_t (2 = connected), guarded against stale/0.0.0.0 IP */
++    /* WAN state: IPv4 from wan0_state_t (2 = connected, non-0.0.0.0 IP),
++       IPv6 from wan_ipv6_network(). Card renders per the ipv6 mock:
++       v4-only = today, dual = v6 line + v6 meta row, v6-only = v6 hero. */
+     var wanUp = (SSI.wan_state==='2') && !!SSI.wanip && SSI.wanip!=='0.0.0.0';
+-    setTxt('p_wan', wanUp?'Connected':'Disconnected');
++    var v6addr = String((WAN6 && WAN6.IPv6_Address) || '').split('/')[0];
++    var v6up = !!(WAN6 && WAN6.status==='1' && v6addr);
++    var anyUp = wanUp || v6up;
++    setTxt('p_wan', anyUp?'Connected':'Disconnected');
+     var istate=$id('i_state');
+-    if(istate){ istate.textContent = wanUp?'Connected':'Disconnected'; if(!wanUp) istate.style.color='var(--danger)'; }
+-    if(!wanUp){
++    if(istate){ istate.textContent = anyUp?'Connected':'Disconnected'; if(!anyUp) istate.style.color='var(--danger)'; }
++    if(!anyUp){
+       var idot=$id('i_dot'), pdot=$id('p_wan_dot');
+       if(idot){ idot.style.background='var(--danger)'; idot.style.boxShadow='none'; }
+       if(pdot){ pdot.style.background='var(--danger)'; pdot.style.boxShadow='none'; }
+     }
++    var c4=$id('chip4'), c6=$id('chip6');
++    if(c4){ c4.className='chip '+(wanUp?'up':'off'); c4.textContent = wanUp?'IPv4':'IPv4 off'; }
++    if(c6){ c6.className='chip '+(v6up?'up':'off'); c6.textContent = v6up?'IPv6':'IPv6 off'; }
+     if(wanUp) setTxt('i_wanip', SSI.wanip);
+     if(SSI.gw && SSI.gw!=='0.0.0.0')  setTxt('i_gw', SSI.gw);
+     if(SSI.dns) setTxt('i_dns', String(SSI.dns).split(' ')[0]);
++    if(v6up){
++      if(wanUp){
++        var vl=$id('i_v6line'); if(vl) vl.style.display='flex';
++        setTxt('i_wan6', v6addr);
++      } else {
++        /* IPv6-only: promote v6 to the hero slot, drop the v4 gateway/DNS cells */
++        var hero=$id('i_wanip'); if(hero){ hero.className='big wanip mono v6only'; hero.textContent=v6addr; }
++        var g4m=$id('i_gw_m'), d4m=$id('i_dns_m');
++        if(g4m) g4m.style.display='none';
++        if(d4m) d4m.style.display='none';
++      }
++      var vm=$id('i_v6meta'); if(vm) vm.style.display='flex';
++      setTxt('i_gw6', String(WAN6.IPv6_Gateway||''));
++      setTxt('i_dns6', String(WAN6.DNS_Servers||'').split(' ')[0]);
++    }
+     var dd = (SSI.ddns_en==='1' && SSI.ddns_host) ? SSI.ddns_host : 'Not Active';
+     var de = $id('i_ddns'); if(de){ de.textContent = dd; de.style.color = (dd==='Not Active')?'var(--steel)':'var(--bone)'; }
+ 
+     /* operation mode via get_operation_mode() (sw_mode + wlc_psta/wlc_express/mlo_rp resolved by httpd) */
+     var opNames={rt:'Wireless Router',rp:'Repeater',ap:'Access Point',mb:'Media Bridge',ew2:'Express Way 2.4 GHz',ew5:'Express Way 5 GHz',hs:'Hotspot',wisp:'WISP'};
+     setTxt('i_opmode', opNames[OPMODE] || String(OPMODE||'').toUpperCase());
+-    if(SSI.model) document.title = SSI.model + ' — REAPER';
++    if(SSI.model) document.title = SSI.model + ' &mdash; REAPER';
+ 
+     /* firewall: IPv4 fw_enable_x + IPv6 ipv6_fw_enable */
+     var f4=(SSI.fw4==='1'), f6=(SSI.fw6==='1'), fp=[];
+     if(f4) fp.push('IPv4'); if(f6) fp.push('IPv6');
+-    var fsub=$id('s_fw_sub'); if(fsub) fsub.textContent = fp.length ? ('Inbound blocked · '+fp.join(' + ')+' firewall on') : 'Firewall disabled';
++    var fsub=$id('s_fw_sub'); if(fsub) fsub.textContent = fp.length ? ('Inbound blocked \u00b7 '+fp.join(' + ')+' firewall on') : 'Firewall disabled';
+     var ftag=$id('s_fw_tag'); if(ftag){ ftag.textContent = f4?'Active':'Off'; ftag.className='tag '+(f4?'ok':'warn'); }
+ 
+     /* posture toggles from nvram (UPnP/WPS/Telnet enabled = weaker; DoS on = stronger) */
+@@ -532,7 +572,7 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+     else if(sshv==='2'){ setTag('s_ssh_tag','LAN only','ok'); setTxt('s_ssh_sub','LAN-only access'); }
+     else { setTag('s_ssh_tag','WAN open','warn'); setTxt('s_ssh_sub','Reachable from WAN'); }
+ 
+-    /* Wi-Fi encryption — per enabled radio from wlX_auth_mode_x; worst state wins the tag */
++    /* Wi-Fi encryption &mdash; per enabled radio from wlX_auth_mode_x; worst state wins the tag */
+     function encInfo(a){
+       switch(a){
+         case 'psk2':     return {t:'WPA2',c:'ok'};
+@@ -555,25 +595,25 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+       if(encRank[einf.c]>encRank[encWorst]) encWorst=einf.c;
+     }
+     if(encParts.length){
+-      setTxt('s_wifi_sub', encParts.join(' · '));
++      setTxt('s_wifi_sub', encParts.join(' \u00b7 '));
+       setTag('s_wifi_tag', encWorst==='ok'?'Secure':(encWorst==='warn'?'Mixed':'Open'), encWorst);
+     }
+ 
+     /* remote / cloud access: misc_http_x (WAN admin) + enable_cloudsync */
+     var wanAdmin=(SSI.wan_admin==='1'), cloudOn=(SSI.cloud==='1');
+-    setTxt('s_rc_sub', (wanAdmin?'WAN admin ENABLED':'WAN admin off')+' · '+(cloudOn?'cloud sync on':'no cloud sync'));
++    setTxt('s_rc_sub', (wanAdmin?'WAN admin ENABLED':'WAN admin off')+' \u00b7 '+(cloudOn?'cloud sync on':'no cloud sync'));
+     setTag('s_rc_tag', (wanAdmin||cloudOn)?'Exposed':'Disabled', (wanAdmin||cloudOn)?'warn':'ok');
+ 
+     /* admin login: http_enable (0 http / 1 https / 2 both) + WAN reachability */
+     var hev=String(SSI.http_en), proto = hev==='1'?'HTTPS only':(hev==='2'?'HTTP + HTTPS':'HTTP only');
+-    setTxt('s_adm_sub', proto+' · '+(wanAdmin?'WAN reachable':'LAN-only'));
++    setTxt('s_adm_sub', proto+' \u00b7 '+(wanAdmin?'WAN reachable':'LAN-only'));
+     if(wanAdmin) setTag('s_adm_tag','WAN open','warn');
+     else if(hev!=='1') setTag('s_adm_tag','HTTP on','warn');
+     else setTag('s_adm_tag','Locked','ok');
+ 
+     /* JFFS: jffs2_on + jffs2_scripts */
+     var jOn=(SSI.jffs==='1'), jSc=(SSI.jffs_sc==='1');
+-    setTxt('s_jffs_sub', jOn?('Mounted · custom scripts '+(jSc?'on':'off')):'Not mounted');
++    setTxt('s_jffs_sub', jOn?('Mounted \u00b7 custom scripts '+(jSc?'on':'off')):'Not mounted');
+     setTag('s_jffs_tag', jOn?'Mounted':'Off', jOn?'ok':'warn');
+ 
+     /* MLO: mld_enable */
+@@ -583,7 +623,7 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+ 
+     /* DNS rebind protection + DNSSEC */
+     var nrOn=(SSI.norebind==='1'), dsOn=(SSI.dnssec==='1');
+-    setTxt('s_dnsr_sub', (nrOn?'Rebind block on':'Rebind block off')+' · '+(dsOn?'DNSSEC validate':'DNSSEC off'));
++    setTxt('s_dnsr_sub', (nrOn?'Rebind block on':'Rebind block off')+' \u00b7 '+(dsOn?'DNSSEC validate':'DNSSEC off'));
+     setTag('s_dnsr_tag', (nrOn&&dsOn)?'On':((nrOn||dsOn)?'Partial':'Off'), (nrOn&&dsOn)?'ok':'warn');
+ 
+     /* router identity card (per-band MACs from wlX_hwaddr; MWL fronthaul VIF
+@@ -597,7 +637,7 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+     var macMap={'2':'rid_mac24','1':'rid_mac5','4':'rid_mac6'};
+     for(var mi=0; mi<WL.length; mi++){ if(WL[mi].nband && WL[mi].hwaddr) setTxt(macMap[WL[mi].nband], WL[mi].hwaddr); }
+ 
+-    /* uptime from sysuptime (/proc/uptime) — offset-proof, ticks locally */
++    /* uptime from sysuptime (/proc/uptime) &mdash; offset-proof, ticks locally */
+     var UPS = String(UPSTR).replace(/\s*since boot\s*$/i,'').trim();
+     function relSec(s){ var b=0; var dm=s.match(/(\d+)\s*d/i); if(dm)b+=(+dm[1])*86400; var cm=s.match(/(\d+):(\d{2})(?::(\d{2}))?/); if(cm){ b+=(+cm[1])*3600+(+cm[2])*60+(+(cm[3]||0)); return b; } function g(re){var m=s.match(re);return m?+m[1]:0;} return b+g(/(\d+)\s*h/i)*3600+g(/(\d+)\s*m(?!o)/i)*60+g(/(\d+)\s*s/i); }
+     var up0=relSec(UPS), t0=Date.now();
+@@ -658,7 +698,7 @@ function setTemp(t){
+   var d=$id('m_temp'); if(!d) return;
+   var pct=Math.max(0,Math.min(100,Math.round((t-30)/(95-30)*100)));
+   d.style.setProperty('--v', pct);
+-  var el=d.querySelector('.txt'); if(el) el.innerHTML=Math.round(t)+'<small>°C temp</small>';
++  var el=d.querySelector('.txt'); if(el) el.innerHTML=Math.round(t)+'<small>&deg;C temp</small>';
+ }
+ function pollTemp(){
+   var x=new XMLHttpRequest();
+@@ -672,13 +712,13 @@ function pollTemp(){
+ pollTemp(); setInterval(pollTemp, 5000);
+ 
+ /* ---- live clients via /appGet.cgi?hook=get_clientlist() (networkmap data) ----
+-   isWL is band-coded: 0 wired · 1 2.4G · 2/3 5G · 4/5 6G */
++   isWL is band-coded: 0 wired \u00b7 1 2.4G \u00b7 2/3 5G \u00b7 4/5 6G */
+ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+ var LIVE_CLIENTS={'6':[],'5':[],'24':[],'eth':[]};
+ function renderClients(){
+   var sel=$id('cl_filter'); if(!sel) return;
+   var list=LIVE_CLIENTS[sel.value]||[], h='';
+-  for(var i=0;i<list.length;i++){ h+='<div class="cl-item"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span> &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div>'; }
++  for(var i=0;i<list.length;i++){ h+='<div class="cl-item"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span>'+(list[i].ip6?' &middot; <span class="mono">'+esc(list[i].ip6)+'</span>':'')+' &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div>'; }
+   if(!h) h='<div class="cd" style="padding:8px">No devices</div>';
+   var box=$id('cl_list'); if(box) box.innerHTML=h;
+ }
+@@ -701,7 +741,8 @@ function pollClients(){
+         var w=parseInt(c.isWL||'0',10);
+         var k=(w===1)?'24':(w===2||w===3)?'5':(w===4||w===5)?'6':'eth';
+         var nm=(c.nickName&&String(c.nickName).length)?c.nickName:((c.name&&String(c.name).length)?c.name:macs[i]);
+-        b[k].push({n:nm, ip:(c.ip&&c.ip!=='offline')?c.ip:'—', m:macs[i]});
++        var v6=(c.ip6_prefix&&String(c.ip6_prefix).length)?c.ip6_prefix:(c.ip6||'');   /* global v6, else link-local */
++        b[k].push({n:nm, ip:(c.ip&&c.ip!=='offline')?c.ip:'\u2014', ip6:String(v6).split('/')[0], m:macs[i]});
+       }
+       var total=b['6'].length+b['5'].length+b['24'].length+b['eth'].length;
+       LIVE_CLIENTS=b;
+@@ -794,7 +835,7 @@ pollClients(); setInterval(pollClients, 10000);
+ })();
+ 
+ /* ---- live ethernet link states via /ajax_ethernet_ports.asp (ATE Get_WanLanStatus) ---- */
+-var SPEEDMAP={'t':'10 Mbps','M':'100 Mbps','G':'1 Gbps','Q':'2.5 Gbps','F':'5 Gbps','T':'10 Gbps','X':'—'};
++var SPEEDMAP={'t':'10 Mbps','M':'100 Mbps','G':'1 Gbps','Q':'2.5 Gbps','F':'5 Gbps','T':'10 Gbps','X':'&mdash;'};
+ function pollPorts(){
+   var x=new XMLHttpRequest();
+   x.open('GET','/ajax_ethernet_ports.asp?_='+(new Date()).getTime(),true);
+@@ -814,7 +855,7 @@ function pollPorts(){
+       var h='';
+       for(var i=0;i<keys.length;i++){
+         var code=sp[keys[i]], up=(code!=='X');
+-        h+='<div class="port'+(up?' up':'')+((keys[i].indexOf('WAN')===0)?' wan':'')+'"><div class="pn">'+esc(keys[i])+'</div><div class="ps">'+(up?((SPEEDMAP[code]||code)+' · up'):'—')+'</div><div class="led"></div></div>';
++        h+='<div class="port'+(up?' up':'')+((keys[i].indexOf('WAN')===0)?' wan':'')+'"><div class="pn">'+esc(keys[i])+'</div><div class="ps">'+(up?((SPEEDMAP[code]||code)+' \u00b7 up'):'&mdash;')+'</div><div class="led"></div></div>';
+       }
+       var box=$id('eth_ports'); if(box) box.innerHTML=h;
+     }catch(e){}
+@@ -854,7 +895,7 @@ pollPorts(); setInterval(pollPorts, 5000);
+       setTxt('st_pct',pct+'%');
+       setTxt('st_name',name||'USB storage');
+       var freeGB=(size-used)/1048576, totGB=size/1048576;
+-      setTxt('st_sub', freeGB.toFixed(freeGB<10?1:0)+' GB free / '+totGB.toFixed(totGB<10?1:0)+' GB'+(fmt?(' · '+fmt):''));
++      setTxt('st_sub', freeGB.toFixed(freeGB<10?1:0)+' GB free / '+totGB.toFixed(totGB<10?1:0)+' GB'+(fmt?(' \u00b7 '+fmt):''));
+       if(n>1){ var ex=$id('st_extra'); if(ex){ ex.style.display='block'; ex.textContent=(n-1)+' more disk'+(n>2?'s':'')+' attached'; } }
+     }
+   }catch(e){}
+-- 
+2.25.1
+

@@ -1,0 +1,68 @@
+From 9052d7dd6f088a73982de31261fa5d9ce1601677 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 2 Jul 2026 12:44:49 -0400
+Subject: [PATCH] reaper dash: QoS posture row (replaces Telnet) + drop preview
+ footer
+
+QoS row: qos_enable tag + mode name from qos_type (0 Traditional / 1 Adaptive / 2 Bandwidth Limiter / 9 Cake / 10 Hardware QoS per IS_HWQOS in shared.h). Footer preview note removed for final version.
+---
+ release/src/router/www/Main_ReaperDash.asp | 20 +++++++++++---------
+ 1 file changed, 11 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 50cbc3aa6c..ce34525ed5 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -361,8 +361,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+               <div><div class="name">UPnP</div><div class="sub2" id="s_upnp_sub">—</div></div></div><span class="tag ok" id="s_upnp_tag">—</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
+               <div><div class="name">WPS</div><div class="sub2" id="s_wps_sub">—</div></div></div><span class="tag ok" id="s_wps_tag">—</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></div>
+-              <div><div class="name">Telnet</div><div class="sub2" id="s_telnet_sub">—</div></div></div><span class="tag ok" id="s_telnet_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></div>
++              <div><div class="name">QoS</div><div class="sub2" id="s_qos_sub">—</div></div></div><span class="tag ok" id="s_qos_tag">—</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12h6"/></svg></div>
+               <div><div class="name">DDoS Protection</div><div class="sub2" id="s_dos_sub">—</div></div></div><span class="tag ok" id="s_dos_tag">—</span></div>
+             <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
+@@ -428,9 +428,6 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         </section>
+ 
+       </div>
+-      <div style="margin-top:14px;color:#4a4d51;font-size:11px;letter-spacing:.03em">
+-        All panels live — data read from the router (nvram · /proc · networkmap · disk monitor). Clients refresh every 10 s, Ethernet ports every 5 s, CPU/RAM every 1 s, thermal every 5 s.
+-      </div>
+     </div>
+   </main>
+ </div>
+@@ -452,7 +449,8 @@ var SSI = {
+   fw6:      '<% nvram_get("ipv6_fw_enable"); %>',
+   upnp:     '<% nvram_get("wan0_upnp_enable"); %>',
+   wps:      '<% nvram_get("wps_enable"); %>',
+-  telnet:   '<% nvram_get("telnetd_enable"); %>',
++  qos_en:   '<% nvram_get("qos_enable"); %>',
++  qos_type: '<% nvram_get("qos_type"); %>',
+   ssh:      '<% nvram_get("sshd_enable"); %>',
+   dos:      '<% nvram_get("fw_dos_x"); %>',
+   http_en:  '<% nvram_get("http_enable"); %>',
+@@ -519,11 +517,15 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+ 
+     /* posture toggles from nvram (UPnP/WPS/Telnet enabled = weaker; DoS on = stronger) */
+     function setTag(id,txt,cls){ var t=$id(id); if(t){ t.textContent=txt; t.className='tag '+cls; } }
+-    var upnpOn=(SSI.upnp==='1'), wpsOn=(SSI.wps==='1'), telOn=(SSI.telnet==='1'), dosOn=(SSI.dos==='1');
++    var upnpOn=(SSI.upnp==='1'), wpsOn=(SSI.wps==='1'), dosOn=(SSI.dos==='1');
+     setTag('s_upnp_tag', upnpOn?'Enabled':'Disabled', upnpOn?'warn':'ok'); setTxt('s_upnp_sub', upnpOn?'Auto port-mapping on':'No auto port-mapping');
+     setTag('s_wps_tag', wpsOn?'Enabled':'Disabled', wpsOn?'warn':'ok'); setTxt('s_wps_sub', wpsOn?'Push-button pairing on':'Pairing disabled');
+-    if(SSI.telnet===''){ setTag('s_telnet_tag','Removed','ok'); setTxt('s_telnet_sub','Not present in this firmware'); }
+-    else { setTag('s_telnet_tag', telOn?'Enabled':'Disabled', telOn?'warn':'ok'); setTxt('s_telnet_sub', telOn?'Cleartext shell open':'Cleartext shell off'); }
++
++    /* QoS: qos_enable + qos_type (0 Traditional / 1 Adaptive / 2 Bandwidth Limiter / 9 Cake / 10 Hardware) */
++    var qosOn=(SSI.qos_en==='1');
++    var qosModes={'0':'Traditional QoS','1':'Adaptive QoS','2':'Bandwidth Limiter','9':'Cake','10':'Hardware QoS'};
++    setTag('s_qos_tag', qosOn?'Enabled':'Disabled', 'ok');
++    setTxt('s_qos_sub', qosOn ? (qosModes[SSI.qos_type]||('Type '+SSI.qos_type)) : 'No traffic shaping');
+     setTag('s_dos_tag', dosOn?'On':'Off', dosOn?'ok':'warn'); setTxt('s_dos_sub', dosOn?'SYN-flood / port-scan guard':'Not enabled');
+     var sshv=String(SSI.ssh||'0');
+     if(sshv==='0'){ setTag('s_ssh_tag','Disabled','ok'); setTxt('s_ssh_sub','SSH server off'); }
+-- 
+2.25.1
+

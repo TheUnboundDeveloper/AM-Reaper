@@ -1,0 +1,173 @@
+From 3a7531a9c71555286de9e891dc617c9987ac5c25 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 2 Jul 2026 12:16:56 -0400
+Subject: [PATCH] reaper dash: Router ID card, operation mode, mesh-node pill,
+ fixed-height client list
+
+Router ID card (col4, right of Connections now col8): LAN IP (lan_ipaddr_t||lan_ipaddr), PIN (secret_code), serial (serial_no, row hidden when unset), LAN MAC (get_lan_hwaddr hook), per-band MACs (wlX_hwaddr by nband, overridden by MWL fronthaul VIF MACs from get_cfg_clientlist apXg_fh like stock router_status.asp). Internet card: Operation Mode line from get_operation_mode() hook (rt/rp/ap/mb/ew2/ew5/hs/wisp). Topbar: Mesh Nodes pill = get_cfg_clientlist length-1. Clients device list height fixed at 170px so the Clients/Security-Posture grid row no longer grows with device count.
+---
+ release/src/router/www/Main_ReaperDash.asp | 79 ++++++++++++++++++++--
+ 1 file changed, 73 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index cdf9f5e4d4..50cbc3aa6c 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -42,7 +42,9 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ /* clients filter + scrollable device list */
+ .cl-filter{margin-top:14px;width:100%;background:#000;border:1px solid var(--line-soft);color:var(--bone);font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.04em;padding:9px 10px;border-radius:8px;outline:none;cursor:pointer}
+ .cl-filter:focus{border-color:var(--line)}
+-.cl-list{margin-top:10px;max-height:210px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
++/* fixed height (not max-height): the card must not grow/shrink with the device
++   count — the row it shares with Security Posture stays constant; scrollbar handles overflow */
++.cl-list{margin-top:10px;height:170px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
+ .cl-item{border:1px solid var(--line-soft);border-radius:8px;padding:8px 10px;background:rgba(255,255,255,.015)}
+ .cl-item .cn{color:var(--bone);font-size:13px;font-weight:500}
+ .cl-item .cd{color:var(--steel);font-size:11px;margin-top:3px}
+@@ -172,6 +174,13 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .stg .d .t{color:var(--bone);font-weight:600;font-size:14px}
+ .stg .d .s{color:var(--steel);font-size:11px;margin-top:3px}
+ 
++/* router identity */
++.idrows{display:flex;flex-direction:column}
++.idrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
++.idrow:last-child{border-bottom:0}
++.idrow .k{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);white-space:nowrap}
++.idrow .v{font-family:var(--hdr);font-weight:600;font-size:14px;color:var(--bone);letter-spacing:.05em;text-align:right;word-break:break-all}
++
+ /* connections */
+ .ports{display:flex;gap:10px;flex-wrap:wrap}
+ .port{flex:1;min-width:104px;border:1px solid var(--line-soft);border-radius:10px;padding:12px;background:rgba(255,255,255,.015);text-align:center}
+@@ -270,6 +279,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         <div class="pill"><span class="k">Uptime</span><span class="v mono" id="p_uptime">—</span></div>
+         <div class="pill"><span class="k">Firmware</span><span class="v mono" id="p_fw">—</span></div>
+         <div class="pill"><span class="k">Clients</span><span class="v mono" id="p_clients">—</span></div>
++        <div class="pill"><span class="k">Mesh Nodes</span><span class="v mono" id="p_mesh">0</span></div>
+       </div>
+       <div class="spacer"></div>
+       <button class="btn">Reboot</button>
+@@ -290,6 +300,9 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+               <div class="m"><div class="k">DNS</div><div class="v mono" id="i_dns">—</div></div>
+               <div class="m"><div class="k">DDNS</div><div class="v" id="i_ddns" style="color:var(--steel)">Not Active</div></div>
+             </div>
++            <div class="meta" style="margin-top:12px">
++              <div class="m"><div class="k">Operation Mode</div><div class="v" id="i_opmode">—</div></div>
++            </div>
+           </div>
+         </section>
+ 
+@@ -379,7 +392,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         </section>
+ 
+         <!-- CONNECTIONS (all modalities) -->
+-        <section class="card col12">
++        <section class="card col8">
+           <div class="head"><h3>Connections</h3><span class="eyebrow">Link status</span></div>
+ 
+           <div class="conngroup"><span class="cglabel">Wireless</span><span class="cgline"></span></div>
+@@ -400,6 +413,20 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+           </div>
+         </section>
+ 
++        <!-- ROUTER IDENTITY -->
++        <section class="card col4">
++          <div class="head"><h3>Router ID</h3><span class="eyebrow" id="rid_model">—</span></div>
++          <div class="idrows">
++            <div class="idrow"><span class="k">LAN IP</span><span class="v mono" id="rid_lanip">—</span></div>
++            <div class="idrow"><span class="k">PIN Code</span><span class="v mono" id="rid_pin">—</span></div>
++            <div class="idrow" id="rid_sn_row"><span class="k">Serial Number</span><span class="v mono" id="rid_sn">—</span></div>
++            <div class="idrow"><span class="k">LAN MAC</span><span class="v mono" id="rid_lanmac">—</span></div>
++            <div class="idrow"><span class="k">2.4 GHz MAC</span><span class="v mono" id="rid_mac24">—</span></div>
++            <div class="idrow"><span class="k">5 GHz MAC</span><span class="v mono" id="rid_mac5">—</span></div>
++            <div class="idrow"><span class="k">6 GHz MAC</span><span class="v mono" id="rid_mac6">—</span></div>
++          </div>
++        </section>
++
+       </div>
+       <div style="margin-top:14px;color:#4a4d51;font-size:11px;letter-spacing:.03em">
+         All panels live — data read from the router (nvram · /proc · networkmap · disk monitor). Clients refresh every 10 s, Ethernet ports every 5 s, CPU/RAM every 1 s, thermal every 5 s.
+@@ -439,16 +466,22 @@ var SSI = {
+   usb1:     '<% nvram_get("usb_path1"); %>',
+   usb1_spd: '<% nvram_get("usb_path1_speed"); %>',
+   usb2:     '<% nvram_get("usb_path2"); %>',
+-  usb2_spd: '<% nvram_get("usb_path2_speed"); %>'
++  usb2_spd: '<% nvram_get("usb_path2_speed"); %>',
++  lanip:    '<% nvram_get("lan_ipaddr"); %>',
++  lanip_t:  '<% nvram_get("lan_ipaddr_t"); %>',
++  pin:      '<% nvram_get("secret_code"); %>',
++  serial:   '<% nvram_get("serial_no"); %>',
++  lanmac:   '<% get_lan_hwaddr(); %>'
+ };
+ /* per-radio config (BE96U: wl0=2.4 GHz, wl1=5 GHz, wl2=6 GHz — labelled via nband) */
+ var WL = [
+-  {nband:'<% nvram_get("wl0_nband"); %>', radio:'<% nvram_get("wl0_radio"); %>', auth:'<% nvram_get("wl0_auth_mode_x"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl0_ssid"); %>')},
+-  {nband:'<% nvram_get("wl1_nband"); %>', radio:'<% nvram_get("wl1_radio"); %>', auth:'<% nvram_get("wl1_auth_mode_x"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl1_ssid"); %>')},
+-  {nband:'<% nvram_get("wl2_nband"); %>', radio:'<% nvram_get("wl2_radio"); %>', auth:'<% nvram_get("wl2_auth_mode_x"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl2_ssid"); %>')}
++  {nband:'<% nvram_get("wl0_nband"); %>', radio:'<% nvram_get("wl0_radio"); %>', auth:'<% nvram_get("wl0_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl0_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl0_ssid"); %>')},
++  {nband:'<% nvram_get("wl1_nband"); %>', radio:'<% nvram_get("wl1_radio"); %>', auth:'<% nvram_get("wl1_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl1_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl1_ssid"); %>')},
++  {nband:'<% nvram_get("wl2_nband"); %>', radio:'<% nvram_get("wl2_radio"); %>', auth:'<% nvram_get("wl2_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl2_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl2_ssid"); %>')}
+ ];
+ var USBINFO = <% get_usb_info(); %>;
+ var UPSTR = "<% sysuptime(); %>";
++var OPMODE = [<% get_operation_mode(); %>][0];   /* "rt"/"rp"/"ap"/"mb"/"ew2"/"ew5"/"hs"/"wisp" */
+ function $id(id){return document.getElementById(id);}
+ function setTxt(id,v){var el=$id(id); if(el&&v) el.textContent=v;}
+ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+@@ -472,6 +505,10 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+     if(SSI.dns) setTxt('i_dns', String(SSI.dns).split(' ')[0]);
+     var dd = (SSI.ddns_en==='1' && SSI.ddns_host) ? SSI.ddns_host : 'Not Active';
+     var de = $id('i_ddns'); if(de){ de.textContent = dd; de.style.color = (dd==='Not Active')?'var(--steel)':'var(--bone)'; }
++
++    /* operation mode via get_operation_mode() (sw_mode + wlc_psta/wlc_express/mlo_rp resolved by httpd) */
++    var opNames={rt:'Wireless Router',rp:'Repeater',ap:'Access Point',mb:'Media Bridge',ew2:'Express Way 2.4 GHz',ew5:'Express Way 5 GHz',hs:'Hotspot',wisp:'WISP'};
++    setTxt('i_opmode', opNames[OPMODE] || String(OPMODE||'').toUpperCase());
+     if(SSI.model) document.title = SSI.model + ' — REAPER';
+ 
+     /* firewall: IPv4 fw_enable_x + IPv6 ipv6_fw_enable */
+@@ -547,6 +584,17 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+     setTxt('s_dnsr_sub', (nrOn?'Rebind block on':'Rebind block off')+' · '+(dsOn?'DNSSEC validate':'DNSSEC off'));
+     setTag('s_dnsr_tag', (nrOn&&dsOn)?'On':((nrOn||dsOn)?'Partial':'Off'), (nrOn&&dsOn)?'ok':'warn');
+ 
++    /* router identity card (per-band MACs from wlX_hwaddr; MWL fronthaul VIF
++       MACs override them async via get_cfg_clientlist below) */
++    setTxt('rid_model', SSI.model);
++    setTxt('rid_lanip', SSI.lanip_t || SSI.lanip);
++    setTxt('rid_pin', SSI.pin);
++    if(SSI.serial) setTxt('rid_sn', SSI.serial);
++    else { var snr=$id('rid_sn_row'); if(snr) snr.style.display='none'; }
++    setTxt('rid_lanmac', SSI.lanmac);
++    var macMap={'2':'rid_mac24','1':'rid_mac5','4':'rid_mac6'};
++    for(var mi=0; mi<WL.length; mi++){ if(WL[mi].nband && WL[mi].hwaddr) setTxt(macMap[WL[mi].nband], WL[mi].hwaddr); }
++
+     /* uptime from sysuptime (/proc/uptime) — offset-proof, ticks locally */
+     var UPS = String(UPSTR).replace(/\s*since boot\s*$/i,'').trim();
+     function relSec(s){ var b=0; var dm=s.match(/(\d+)\s*d/i); if(dm)b+=(+dm[1])*86400; var cm=s.match(/(\d+):(\d{2})(?::(\d{2}))?/); if(cm){ b+=(+cm[1])*3600+(+cm[2])*60+(+(cm[3]||0)); return b; } function g(re){var m=s.match(re);return m?+m[1]:0;} return b+g(/(\d+)\s*h/i)*3600+g(/(\d+)\s*m(?!o)/i)*60+g(/(\d+)\s*s/i); }
+@@ -724,6 +772,25 @@ pollClients(); setInterval(pollClients, 10000);
+   });
+ })();
+ 
++/* ---- MWL fronthaul per-band MACs: get_cfg_clientlist[0] apXg_fh (same source
++   as stock router_status.asp) overrides the wlX_hwaddr values when present ---- */
++(function(){
++  var x=new XMLHttpRequest();
++  x.open('GET','/appGet.cgi?hook=get_cfg_clientlist()&_='+(new Date()).getTime(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||x.status!==200) return;
++    try{
++      var j=JSON.parse(x.responseText);
++      var nodes=j.get_cfg_clientlist;
++      if(nodes && nodes.length) setTxt('p_mesh', String(Math.max(0, nodes.length-1)));  /* [0] = this router (CAP); rest = mesh nodes */
++      var cap=(nodes && nodes[0]) || null; if(!cap) return;
++      var m={'ap2g':'rid_mac24','ap5g':'rid_mac5','ap6g':'rid_mac6'};
++      for(var k in m){ if(cap[k+'_ssid_fh'] && cap[k+'_fh']) setTxt(m[k], cap[k+'_fh']); }
++    }catch(e){}
++  };
++  x.send();
++})();
++
+ /* ---- live ethernet link states via /ajax_ethernet_ports.asp (ATE Get_WanLanStatus) ---- */
+ var SPEEDMAP={'t':'10 Mbps','M':'100 Mbps','G':'1 Gbps','Q':'2.5 Gbps','F':'5 Gbps','T':'10 Gbps','X':'—'};
+ function pollPorts(){
+-- 
+2.25.1
+

@@ -1,10 +1,10 @@
 # RT-BE96U "Reaper" — Release Notes
 
 **Release:** v1.0 (2026-07-07)
-**Firmware:** `RT-BE96U 3006.102.8_Reaper`
+**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.0`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
 **Model:** ASUS RT-BE96U **only** (WiFi 7, Broadcom BCM4916/BCM6813)
-**Flash image:** `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb`
+**Flash image:** `RT-BE96U_3006_102.8_Reaper_v1.0_nand_squashfs.pkgtb`
 
 > A security-hardened, rebranded build of Asuswrt-Merlin for the RT-BE96U. This
 > document is the release summary; the exhaustive security detail lives in
@@ -105,6 +105,18 @@ reflash.
 OpenVPN, WireGuard, CAKE QoS, SNMP, IPv6, USB storage / Samba / FTP / media
 server, AiMesh, SDN/MLO, Smart Connect — all from the 3006.102.8 base.
 
+### Scheduled firmware-availability check — fixed, opt-in, default off
+The "Scheduled check for new firmware availability" setting on the Firmware
+Upgrade page was dead UI in the 3006.102.8 base (no default selection, choices
+silently dropped): the whole feature is gated on `RTCONFIG_MERLINUPDATE`, which
+upstream ships disabled. Reaper enables the machinery so the setting persists
+(the radios are instant-apply by design — no Apply button), and sets the
+**default to No**: the router performs **no scheduled check and no outbound
+update traffic unless you opt in**. When enabled, a nightly check (~2 AM +
+random offset) compares against the Asuswrt-Merlin update manifest and raises a
+notification only — Reaper never auto-upgrades. The hook is retained as the
+future attachment point for a Reaper-specific update endpoint.
+
 ---
 
 ## 4. For maintainers — mergeability
@@ -156,7 +168,7 @@ password change) are also listed in `REAPER-FIXES.md`.
 ## 6. Install & recovery
 
 1. Log in to the router web UI → **Administration → Firmware Upgrade**.
-2. Upload **`RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb`** — the firmware
+2. Upload **`RT-BE96U_3006_102.8_Reaper_v1.0_nand_squashfs.pkgtb`** — the firmware
    image. **Do not** flash the `..._loader.pkgtb` (that is recovery-only).
 3. Let the router reboot. On first boot, complete QIS and **set a strong,
    non-default admin password** (this is the mitigation for the default-creds
@@ -173,8 +185,8 @@ Built with the RT-BE96U userspace toolchain (gcc-10.3, 32-bit ARM) via
 
 | Artifact | SHA-256 |
 |---|---|
-| `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb` (flash this) | `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` |
-| `RT-BE96U_3006_102.8_reaper_nand_squashfs_loader.pkgtb` (recovery) | `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165` |
+| `RT-BE96U_3006_102.8_Reaper_v1.0_nand_squashfs.pkgtb` (flash this) | `2c2ec9d7a0ffa2eca2b26ad4cc211b27aa9be9fbf855f5720c65101c1915e8a9` |
+| `RT-BE96U_3006_102.8_Reaper_v1.0_nand_squashfs_loader.pkgtb` (recovery) | `249e6860042e0955086cacad0a0fa2d4f6ecf2301ae760fcd6176dbc032540ec` |
 
 > Status (v1.0): validated on the physical RT-BE96U — security hardening
 > rounds 1–4 + latent T1–T4, the avahi CVE backport, both Hardware QoS

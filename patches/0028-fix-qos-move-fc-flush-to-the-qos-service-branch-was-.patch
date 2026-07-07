@@ -1,0 +1,47 @@
+From 3a6024710c716ea7ed41a51dcfc55c39d7a7e592 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 29 Jun 2026 14:46:53 -0400
+Subject: [PATCH] fix(qos): move fc flush to the qos service branch (was in
+ pms_device)
+
+The previous commit (2dcc66f2d6) inserted `eval("fc","flush")` after the
+WRONG del_iQosRules(): the pms_device service stop-block, whose stop
+sequence is byte-identical to the qos branch. The GUI/CLI QoS toggle
+goes through the `qos` service (restart_qos), so the flush was not
+running where the blog_get_dstentry_by_id spam actually occurs.
+
+Move it to the qos branch stop path (after del_iQosRules), and revert
+pms_device to its original form. Found during the post-change audit.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index cb2e91941c..65254fbfe9 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -18479,9 +18479,6 @@ check_ddr_done:
+ 			stop_dpi_engine_service(0);
+ #endif
+ 			del_iQosRules();
+-#ifdef HND_ROUTER
+-			eval("fc", "flush");	// flush stale offloaded flows on QoS disable; fixes blog_get_dstentry_by_id spam (no reboot needed)
+-#endif
+ 		}
+ 		if(action & RC_SERVICE_START) {
+ #if defined(RTCONFIG_QCA) || \
+@@ -19890,6 +19887,9 @@ check_ddr_done:
+ 			stop_dpi_engine_service(0);
+ #endif
+ 			del_iQosRules();
++#ifdef HND_ROUTER
++			eval("fc", "flush");	// flush stale offloaded flows on QoS disable; fixes blog_get_dstentry_by_id spam (no reboot needed)
++#endif
+ 		}
+ 		if(action & RC_SERVICE_START) {
+ #ifdef HND_ROUTER
+-- 
+2.25.1
+

@@ -139,6 +139,8 @@ After the UI "flip", the Hardware-QoS feature, and hardening rounds 1–3, the *
 
 **Mock-validated:** R4-4 confirmed end-to-end — a hostile `ddns_hostname_x` value `evil'><img src=x onerror=…>` is served fully percent-encoded inside the JS literal (no breakout) and renders as inert text in the Internet card; the dashboard is otherwise intact.
 
+**Addendum (2026-07-06) — gate regression fixed:** the `ac418baf9d` QoS apply numeric gate (httpd/web.c) rejected any `qos_type > 10`, written when HW QoS v1 (type 10) was the highest engine. HW QoS Classful (type 11, added later) was silently dropped on every GUI apply — Classful never persisted while v1 kept working (syslog-only `reject out-of-range qos_type=11`, confirmed on metal). Cap raised to 11 in commit `6ee4cf49ad`. Lesson: a new `qos_type` engine must clear **three** gates — the `defaults.c` CKN_STR length, this numeric-range gate, and the `rc` dispatch (`add_iQosRules`/`start_iQos`/`hnd_nat_ac_init`).
+
 ---
 
 ## Mergeability refactor (2026-07-05)

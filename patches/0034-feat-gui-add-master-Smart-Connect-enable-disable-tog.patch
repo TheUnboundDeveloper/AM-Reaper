@@ -1,0 +1,110 @@
+From 8f560e59b1dfac2441828a8ce2288e3fdeaeb99a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 29 Jun 2026 20:40:43 -0400
+Subject: [PATCH] feat(gui): add master Smart Connect enable/disable toggle
+
+Adds a stateful toggle button on the Smart Connect Rule page
+(Advanced_Smart_Connect.asp), placed left of "View List". It flips
+smart_connect_x between 0 (off) and 1 (full-band on) and restarts
+wireless, fully disabling all band-steering daemons and greying out
+the rule controls when off. For Smart Connect v2 it also resets
+smart_connect_selif_x to select all available bands on enable.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../src/router/www/Advanced_Smart_Connect.asp | 65 ++++++++++++++++++-
+ 1 file changed, 64 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index db8e9cbd65..8995f73b6e 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -129,6 +129,7 @@ let phyRate = [1148, 4804, 4804, 4804];
+ 
+ function initial(){
+ 	show_menu();
++	setupSmartConnectToggle();
+ 	genBand();
+ 	genSteerLoadBalance();
+ 	genSteerBWUtilization();		// Steering Trigger BW Utilization
+@@ -912,6 +913,68 @@ function showClientlistModal(){
+ 	const clientlistModal = new ClientlistModel();
+ 	clientlistModal.show();
+ }
++
++/*
++	Master Smart Connect on/off toggle.
++	smart_connect_x: 0 = Disabled (each radio broadcasts independently, no band steering),
++	                 1/2/3 = Enabled (see SMRTCONN_* in shared.h). The whole Steering /
++	                 STA / Interface-Qualify / Bounce-Detect rule set on this page only takes
++	                 effect while smart_connect_x != 0, so turning it off here disables every
++	                 Smart Connect function and control at once.
++*/
++function isSmartConnectEnabled(){
++	return parseInt(variable['smart_connect_x']) > 0;
++}
++
++function setupSmartConnectToggle(){
++	var btn = document.getElementById('smartConnectToggle');
++	if(!btn) return;
++
++	if(isSmartConnectEnabled()){
++		btn.value = 'Disable Smart Connect';
++		btn.title = 'Turn off Smart Connect (band steering) for all radios';
++	}
++	else{
++		btn.value = 'Enable Smart Connect';
++		btn.title = 'Turn Smart Connect (band steering) back on for all radios';
++		// Grey out the rule set: nothing on this page applies while Smart Connect is off.
++		var div = document.getElementById('bsd_steering_div');
++		if(div){
++			div.style.opacity = '0.4';
++			div.style.pointerEvents = 'none';
++		}
++	}
++}
++
++function toggleSmartConnect(){
++	var setObj = {};
++
++	if(isSmartConnectEnabled()){
++		if(!confirm('Disable Smart Connect?\n\nBand steering will be turned off and every Smart Connect control on this page is deactivated. Each radio (2.4 / 5 / 6 GHz) keeps broadcasting its current SSID independently.\n\nWireless will restart.')){
++			return;
++		}
++		setObj['smart_connect_x'] = '0';
++	}
++	else{
++		if(!confirm('Enable Smart Connect?\n\nAll radios will be steered as one Smart Connect group.\n\nWireless will restart.')){
++			return;
++		}
++		setObj['smart_connect_x'] = '1';	// SMRTCONN_FULL_BANDS
++		if(typeof smart_connect_v2_support !== 'undefined' && smart_connect_v2_support){
++			// v2 selects participating bands via a bitmask; (re)select every available band.
++			setObj['smart_connect_selif_x'] = '' + (Math.pow(2, bandList.length) - 1);
++		}
++	}
++
++	setObj['action_mode'] = 'apply';
++	setObj['rc_service'] = 'restart_wireless';
++	httpApi.nvramSet(setObj, function(){
++		showLoading(10);
++		setTimeout(function(){
++			location.reload();
++		}, 10000);
++	});
++}
+ </script>
+ </head>
+ 
+@@ -955,7 +1018,7 @@ function showClientlistModal(){
+ 			<div class="formfonttitle"><#menu5_1#> - <#smart_connect_rule#></div>
+ 			<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
+ 			<div class="formfontdesc"><#smart_connect_hint#></div>
+-			<div style="text-align:right;margin-top:-36px;padding-bottom:3px;"><input type="button" class="button_gen" value="<#View_List#>" onClick="showClientlistModal()"></div>
++			<div style="text-align:right;margin-top:-36px;padding-bottom:3px;"><input type="button" id="smartConnectToggle" class="button_gen" style="margin-right:8px;" value="Smart Connect" onClick="toggleSmartConnect();"><input type="button" class="button_gen" value="<#View_List#>" onClick="showClientlistModal()"></div>
+ 			<div id="bsd_steering_div">
+ 				<table cellspacing="0" cellpadding="4" bordercolor="#6b8fa3" border="1" align="center" width="100%" class="FormTable" style="margin-top:10px">
+ 					<thead>
+-- 
+2.25.1
+

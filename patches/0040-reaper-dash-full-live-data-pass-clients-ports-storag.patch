@@ -1,0 +1,776 @@
+From d91dac247e1251cb27ed4a0cbbf7fdd87c4a420b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 2 Jul 2026 10:09:53 -0400
+Subject: [PATCH] =?UTF-8?q?reaper=20dash:=20full=20live-data=20pass=20?=
+ =?UTF-8?q?=E2=80=94=20clients/ports/storage/posture=20wired,=20no=20sampl?=
+ =?UTF-8?q?e=20data?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+get_clientlist (10s) for clients+bands+device list; ajax_ethernet_ports (5s) for link states; get_usb_info SSI for storage; wlX radio/ssid/auth tiles + posture rows (misc_http_x, http_enable, enable_cloudsync, jffs2, mld_enable, dns_norebind, dnssec); wan0_state_t connected check; telnet row = removed-from-firmware; per-core CPU bars; all baked-in sample values replaced with placeholders.
+---
+ release/src/router/www/Main_ReaperDash.asp | 751 +++++++++++++++++++++
+ 1 file changed, 751 insertions(+)
+ create mode 100644 release/src/router/www/Main_ReaperDash.asp
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+new file mode 100644
+index 0000000000..f4c173fa79
+--- /dev/null
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -0,0 +1,751 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>REAPER — Dashboard</title>
++<style>
++/* self-hosted fonts (offline; no CDN) */
++@font-face{font-family:'Rajdhani';font-weight:500;font-display:swap;src:url('/fonts/rajdhani-500.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C; --crimson-dim:#7A0C0C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:
++    radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(900px 600px at 120% 120%,rgba(225,6,0,.06),transparent 55%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased}
++body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.035;z-index:9;
++  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>")}
++h1,h2,h3,h4,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.mono{font-variant-numeric:tabular-nums}
++/* page scrollbar: black track, crimson thumb */
++html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
++::-webkit-scrollbar{width:12px;height:12px}
++::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:var(--crimson);border-radius:8px;border:2px solid #000}
++::-webkit-scrollbar-thumb:hover{background:var(--crimson-deep)}
++/* clients filter + scrollable device list */
++.cl-filter{margin-top:14px;width:100%;background:#000;border:1px solid var(--line-soft);color:var(--bone);font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.04em;padding:9px 10px;border-radius:8px;outline:none;cursor:pointer}
++.cl-filter:focus{border-color:var(--line)}
++.cl-list{margin-top:10px;max-height:210px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
++.cl-item{border:1px solid var(--line-soft);border-radius:8px;padding:8px 10px;background:rgba(255,255,255,.015)}
++.cl-item .cn{color:var(--bone);font-size:13px;font-weight:500}
++.cl-item .cd{color:var(--steel);font-size:11px;margin-top:3px}
++.cl-item .cd .mono{color:var(--bone-dim)}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++
++/* ---------- shell / always-expanded rail ---------- */
++.app{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
++.rail{background:linear-gradient(180deg,#0c0c0f,#08080a);border-right:1px solid var(--line-soft);
++  display:flex;flex-direction:column;padding:14px 12px;gap:2px}
++.wordmark{font-family:var(--hdr);font-weight:700;font-size:21px;letter-spacing:.02em;line-height:1.15;padding:4px 6px 12px;text-align:center}
++.wordmark .a{color:var(--bone)} .wordmark .m{color:var(--bone-dim)} .wordmark .r{color:var(--crimson)} .wordmark .d{color:var(--crimson)}
++.railsearch{margin:2px 4px 8px}
++.railsearch input{width:100%;background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);
++  padding:9px 11px;font-family:var(--body);font-size:12px;outline:none}
++.railsearch input:focus{border-color:var(--line)}
++.railsearch input:disabled{opacity:.4;cursor:not-allowed}
++.grp{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.2em;font-size:10px;color:var(--steel);padding:12px 10px 4px}
++.nav{display:flex;flex-direction:column;gap:2px;width:100%}
++.nav a{display:flex;align-items:center;gap:12px;height:40px;border-radius:9px;color:var(--steel);
++  text-decoration:none;justify-content:flex-start;padding:0 12px;position:relative;transition:.15s}
++.nav a .ni{width:20px;flex:0 0 20px;display:grid;place-items:center}
++.nav a svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7}
++.nav a .nl{font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap}
++.nav a:hover{color:var(--bone);background:var(--panel)}
++.nav a.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
++.nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
++
++/* ---------- topbar ---------- */
++.top{display:flex;align-items:center;gap:18px;padding:12px 22px;flex-wrap:wrap;
++  border-bottom:1px solid var(--line-soft);box-shadow:0 1px 0 rgba(225,6,0,.12);
++  background:#040405;position:sticky;top:0;z-index:10}
++.brand{display:flex;align-items:center;flex:0 0 auto;text-decoration:none}
++.brand img{height:46px;width:auto;display:block}
++.pills{display:flex;gap:10px;flex-wrap:wrap}
++.pill{display:flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid var(--line-soft);border-radius:8px;background:var(--panel);font-size:12px}
++.pill .k{color:var(--steel);text-transform:uppercase;letter-spacing:.12em;font-size:10px}
++.pill .v{color:var(--bone);font-family:var(--hdr);font-weight:600;letter-spacing:.03em}
++.dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15)}
++.spacer{flex:1}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:12px;
++  padding:9px 16px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone-dim);cursor:pointer;transition:.15s}
++.btn:hover{color:var(--bone);border-color:var(--line)}
++.btn.crit{color:#fff;border-color:var(--crimson-dim);background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
++.btn.crit:hover{filter:brightness(1.08)}
++
++/* ---------- grid / cards ---------- */
++.wrap{padding:22px}
++.grid{display:grid;gap:16px;grid-template-columns:repeat(12,1fr)}
++.card{background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line-soft);
++  border-radius:14px;padding:18px;position:relative;overflow:hidden}
++.card::before{content:"";position:absolute;left:0;top:0;height:2px;width:100%;background:linear-gradient(90deg,var(--crimson),transparent 40%)}
++.card .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:10px}
++.card .head h3{font-size:15px;text-transform:uppercase;letter-spacing:.14em;font-weight:600}
++.link{font-family:var(--hdr);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--crimson);text-decoration:none;border:1px solid var(--line);padding:5px 10px;border-radius:7px;white-space:nowrap}
++.link:hover{background:rgba(225,6,0,.10)}
++.col3{grid-column:span 3}.col4{grid-column:span 4}.col5{grid-column:span 5}
++.col6{grid-column:span 6}.col7{grid-column:span 7}.col8{grid-column:span 8}.col12{grid-column:span 12}
++
++/* hero internet */
++.hero{display:grid;grid-template-columns:1.1fr 1fr;gap:20px;align-items:center}
++.big{font-family:var(--hdr);font-weight:700;color:var(--bone);line-height:1}
++.wanip{font-size:30px;letter-spacing:.02em}
++.state{display:flex;align-items:center;gap:10px;margin-bottom:6px}
++.state .lbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.16em;color:var(--jade);font-weight:600;font-size:13px}
++.meta{display:flex;gap:26px;margin-top:16px;flex-wrap:wrap}
++.meta .m .k{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel)}
++.meta .m .v{font-family:var(--hdr);font-size:16px;color:var(--bone);margin-top:3px}
++.speeds{display:flex;gap:22px}
++.spd{flex:1}
++.spd .k{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--steel);display:flex;align-items:center;gap:6px}
++.spd .v{font-family:var(--hdr);font-weight:700;font-size:26px;color:var(--bone);margin-top:2px}
++.spd .v small{font-size:12px;color:var(--bone-dim);font-weight:500;letter-spacing:.05em}
++.arrow{width:0;height:0}
++.dl .arrow{border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--jade)}
++.ul .arrow{border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:7px solid var(--crimson)}
++.spark{margin-top:12px}
++
++/* meters */
++.meters{display:flex;gap:16px;justify-content:space-between;flex-wrap:wrap}
++.meter{text-align:center;flex:1;min-width:90px}
++.dial{--v:0;--c:var(--crimson);width:92px;height:92px;border-radius:50%;margin:0 auto;
++  background:conic-gradient(var(--c) calc(var(--v)*1%),rgba(255,255,255,.06) 0);display:grid;place-items:center;position:relative}
++.dial::after{content:"";position:absolute;inset:9px;border-radius:50%;background:var(--panel)}
++.dial .txt{position:relative;z-index:1;font-family:var(--hdr);font-weight:700;font-size:20px;color:var(--bone)}
++.dial .txt small{display:block;font-size:9px;letter-spacing:.14em;color:var(--steel);text-transform:uppercase;font-weight:500}
++.meter .cap{margin-top:9px;font-family:var(--hdr);text-transform:uppercase;letter-spacing:.14em;font-size:12px;color:var(--bone-dim)}
++.sub{font-size:10px;color:var(--steel)}
++.cores{display:flex;gap:5px;justify-content:center;margin-top:8px}
++.cores i{width:8px;height:22px;border-radius:2px;background:rgba(255,255,255,.08);display:block}
++
++/* security rows */
++.rows{display:flex;flex-direction:column;gap:10px}
++.rows.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
++.srow{display:flex;align-items:center;justify-content:space-between;padding:11px 12px;border:1px solid var(--line-soft);border-radius:10px;background:rgba(255,255,255,.015);gap:10px}
++.srow .l{display:flex;align-items:center;gap:11px;min-width:0}
++.ico{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:#000;border:1px solid var(--line);flex:0 0 30px}
++.ico svg{width:16px;height:16px;stroke:var(--crimson);fill:none;stroke-width:1.7}
++.srow .name{color:var(--bone);font-weight:500;font-size:13px}
++.srow .sub2{color:var(--steel);font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.tag{font-family:var(--hdr);font-size:11px;letter-spacing:.08em;text-transform:uppercase;padding:5px 10px;border-radius:6px;font-weight:600;white-space:nowrap}
++.tag.ok{color:var(--jade);border:1px solid rgba(79,178,134,.35);background:rgba(79,178,134,.08)}
++.tag.warn{color:var(--amber);border:1px solid rgba(224,169,59,.35);background:rgba(224,169,59,.08)}
++.tag.danger{color:#fff;border:1px solid var(--danger);background:rgba(255,59,48,.18)}
++.posture .score{font-family:var(--hdr);font-weight:700;font-size:13px;letter-spacing:.12em;padding:5px 12px;border-radius:7px;text-transform:uppercase}
++.posture .hardened{color:var(--jade);border:1px solid rgba(79,178,134,.45);background:rgba(79,178,134,.10)}
++.legend{margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft);display:flex;flex-direction:row;flex-wrap:wrap;gap:8px 22px;font-size:11px;color:var(--steel)}
++.legend b{font-family:var(--hdr);letter-spacing:.1em}
++
++/* clients */
++.cbig{display:flex;align-items:baseline;gap:10px}
++.cbig .n{font-family:var(--hdr);font-weight:700;font-size:44px;color:var(--bone);line-height:1}
++.cbig .u{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel)}
++.bands{margin-top:14px;display:flex;flex-direction:column;gap:9px}
++.band{display:grid;grid-template-columns:56px 1fr 28px;align-items:center;gap:10px;font-size:11px}
++.band .bl{font-family:var(--hdr);letter-spacing:.08em;color:var(--bone-dim)}
++.bar{height:7px;border-radius:4px;background:rgba(255,255,255,.06);overflow:hidden}
++.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--crimson),var(--crimson-deep))}
++.band .bn{text-align:right;font-family:var(--hdr);color:var(--bone);font-weight:600}
++
++/* storage */
++.stg{display:flex;align-items:center;gap:16px}
++.stg .ring{--v:0;width:76px;height:76px;border-radius:50%;position:relative;flex:0 0 76px;
++  background:conic-gradient(var(--crimson) calc(var(--v)*1%),rgba(255,255,255,.06) 0);display:grid;place-items:center}
++.stg .ring::after{content:"";position:absolute;width:58px;height:58px;border-radius:50%;background:var(--panel)}
++.stg .ring b{position:relative;z-index:1;font-family:var(--hdr);color:var(--bone);font-size:15px}
++.stg .d .t{color:var(--bone);font-weight:600;font-size:14px}
++.stg .d .s{color:var(--steel);font-size:11px;margin-top:3px}
++
++/* connections */
++.ports{display:flex;gap:10px;flex-wrap:wrap}
++.port{flex:1;min-width:104px;border:1px solid var(--line-soft);border-radius:10px;padding:12px;background:rgba(255,255,255,.015);text-align:center}
++.port .pn{font-family:var(--hdr);font-weight:700;color:var(--bone);font-size:15px}
++.port .ps{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);margin-top:5px}
++.port .led{width:9px;height:9px;border-radius:50%;margin:8px auto 0;background:rgba(255,255,255,.12)}
++.port.up .led{background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15)}
++.port.up{border-color:var(--line)}
++.port.wan .pn{color:var(--crimson)}
++.conngroup{display:flex;align-items:center;gap:6px;margin:4px 0 8px}
++.conngroup:not(:first-of-type){margin-top:16px}
++.cglabel{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.2em;font-size:10px;color:var(--steel)}
++.cgline{flex:1;height:1px;background:var(--line-soft)}
++
++/* ---------- responsive ---------- */
++@media (max-width:1180px){
++  .col8{grid-column:span 12}.col7{grid-column:span 12}
++  .col5{grid-column:span 7}.col4{grid-column:span 5}.col3{grid-column:span 4}
++}
++@media (max-width:900px){
++  .hero{grid-template-columns:1fr;gap:18px}
++  .col8,.col7,.col6,.col5,.col4,.col3{grid-column:span 12}
++  .rows.two{grid-template-columns:1fr}
++  .pills .pill:nth-child(n+3){display:none}
++}
++@media (max-width:680px){
++  .app{grid-template-columns:1fr}
++  .rail{position:sticky;top:0;height:auto;width:100%;flex-direction:row;align-items:center;
++    justify-content:flex-start;gap:4px;padding:8px 10px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line-soft)}
++  .wordmark{padding:0 10px 0 0;font-size:17px;white-space:nowrap;text-align:left}
++  .railsearch,.grp{display:none}
++  .nav{flex-direction:row;width:auto}
++  .nav a .nl{display:none}
++  .nav a{padding:0 10px}
++  .nav a.on::before{left:8px;right:8px;top:0;bottom:auto;width:auto;height:2px}
++  .top{gap:12px;padding:10px 14px}
++  .brand img{height:36px}
++  .pills{order:3;width:100%}
++  .pills .pill:nth-child(n+3){display:flex}
++  .spacer{display:none}
++  .wrap{padding:14px}
++  .wanip{font-size:24px}
++}
++@media (max-width:430px){
++  .ports .port{flex:1 1 calc(50% - 5px);min-width:0}
++  .cbig .n{font-size:36px}
++  .pills .pill{flex:1 1 calc(50% - 5px)}
++  .btn{flex:1 1 auto}
++}
++</style>
++</head>
++<body>
++<div class="app">
++
++  <!-- LEFT RAIL (always expanded; menu mirrors the current firmware) -->
++  <aside class="rail">
++    <div class="wordmark"><span class="a">ASUS</span> <span class="d">·</span> <span class="m">Merlin</span> <span class="d">·</span> <span class="r">Reaper</span></div>
++    <div class="railsearch"><input type="text" placeholder="Search — coming soon" disabled></div>
++
++    <div class="grp">General</div>
++    <nav class="nav">
++      <a class="on"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span class="nl">Network Map</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg></span><span class="nl">AiMesh</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl">Network</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg></span><span class="nl">AiProtection</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg></span><span class="nl">Parental Controls</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl">Adaptive QoS</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl">Traffic Analyzer</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="9" rx="4"/><path d="M8 12v-2M7 12h2M15.5 12h.01M18 13.5h.01"/></svg></span><span class="nl">Game</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg></span><span class="nl">Open NAT</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg></span><span class="nl">USB Application</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span class="nl">System Info</span></a>
++    </nav>
++
++    <div class="grp">Advanced Settings</div>
++    <nav class="nav">
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg></span><span class="nl">Wireless</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><rect x="3" y="10" width="18" height="8" rx="2"/><path d="M7 10V6h10v4"/></svg></span><span class="nl">LAN</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18"/><path d="M16 4l4 2-2 4"/></svg></span><span class="nl">WAN</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/></svg></span><span class="nl">Amazon Alexa</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M9 14h.01M12 12v3M15 11v4"/></svg></span><span class="nl">IPv6</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M12 9v6M9 12h6"/></svg></span><span class="nl">VPN</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/><path d="M4 9h16M9 5v4M15 5v4"/></svg></span><span class="nl">Firewall</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></span><span class="nl">Administration</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M9 9h6M9 13h6M9 17h4"/></svg></span><span class="nl">System Log</span></a>
++      <a><span class="ni"><svg viewBox="0 0 24 24"><path d="M14 7a3 3 0 0 0-4 4l-6 6 2 2 6-6a3 3 0 0 0 4-4l-2 2-2-2z"/></svg></span><span class="nl">Network Tools</span></a>
++    </nav>
++  </aside>
++
++  <!-- MAIN -->
++  <main>
++    <header class="top">
++      <a class="brand" href="#" title="REAPER — RT-BE96U"><img src="/images/REAPER.png" alt="ASUS RT-BE96U REAPER"></a>
++      <div class="pills">
++        <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k">WAN</span><span class="v" id="p_wan">—</span></div>
++        <div class="pill"><span class="k">Uptime</span><span class="v mono" id="p_uptime">—</span></div>
++        <div class="pill"><span class="k">Firmware</span><span class="v mono" id="p_fw">—</span></div>
++        <div class="pill"><span class="k">Clients</span><span class="v mono" id="p_clients">—</span></div>
++      </div>
++      <div class="spacer"></div>
++      <button class="btn">Reboot</button>
++      <button class="btn crit">Logout</button>
++    </header>
++
++    <div class="wrap">
++      <div class="grid">
++
++        <!-- INTERNET -->
++        <section class="card col4">
++          <div class="head"><h3>Internet</h3></div>
++          <div>
++            <div class="state"><span class="dot" id="i_dot"></span><span class="lbl" id="i_state">—</span></div>
++            <div class="big wanip mono" id="i_wanip">—</div>
++            <div class="meta">
++              <div class="m"><div class="k">Gateway</div><div class="v mono" id="i_gw">—</div></div>
++              <div class="m"><div class="k">DNS</div><div class="v mono" id="i_dns">—</div></div>
++              <div class="m"><div class="k">DDNS</div><div class="v" id="i_ddns" style="color:var(--steel)">Not Active</div></div>
++            </div>
++          </div>
++        </section>
++
++        <!-- SYSTEM -->
++        <section class="card col4">
++          <div class="head"><h3>System</h3><span class="eyebrow">4-core · BCM4916</span></div>
++          <div class="meters">
++            <div class="meter">
++              <div class="dial" id="m_cpu" style="--v:0;--c:var(--crimson)"><div class="txt">—<small>load</small></div></div>
++              <div class="cap">CPU</div>
++              <div class="cores" id="m_cores"><i></i><i></i><i></i><i></i></div>
++            </div>
++            <div class="meter">
++              <div class="dial" id="m_ram" style="--v:0;--c:var(--bone)"><div class="txt" style="color:var(--bone)">—<small>used</small></div></div>
++              <div class="cap">RAM</div>
++              <div class="sub" id="m_ram_sub" style="margin-top:8px">—</div>
++            </div>
++            <div class="meter">
++              <div class="dial" id="m_temp" style="--v:0;--c:var(--amber)"><div class="txt">--<small>°C temp</small></div></div>
++              <div class="cap">Thermal</div>
++              <div class="sub" id="m_temp_sub" style="color:var(--jade);margin-top:8px">CPU</div>
++            </div>
++          </div>
++        </section>
++
++        <!-- STORAGE -->
++        <section class="card col4">
++          <div class="head"><h3>Storage</h3></div>
++          <div class="stg">
++            <div class="ring" id="st_ring" style="--v:0"><b class="mono" id="st_pct">—</b></div>
++            <div class="d">
++              <div class="t" id="st_name">No USB storage</div>
++              <div class="s" id="st_sub">—</div>
++              <div class="s" id="st_extra" style="color:var(--jade);margin-top:6px;display:none"></div>
++            </div>
++          </div>
++        </section>
++
++        <!-- SECURITY POSTURE -->
++        <section class="card col8">
++          <div class="head"><h3>Security Posture</h3></div>
++          <div class="rows two">
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></div>
++              <div><div class="name">Wi-Fi Encryption</div><div class="sub2" id="s_wifi_sub">—</div></div></div><span class="tag ok" id="s_wifi_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/></svg></div>
++              <div><div class="name">Firewall (SPI)</div><div class="sub2" id="s_fw_sub">Inbound blocked · IPv4 + IPv6 firewall on</div></div></div><span class="tag ok" id="s_fw_tag">Active</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
++              <div><div class="name">Remote / Cloud Access</div><div class="sub2" id="s_rc_sub">—</div></div></div><span class="tag ok" id="s_rc_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg></div>
++              <div><div class="name">Admin Login</div><div class="sub2" id="s_adm_sub">—</div></div></div><span class="tag ok" id="s_adm_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg></div>
++              <div><div class="name">JFFS Partition</div><div class="sub2" id="s_jffs_sub">—</div></div></div><span class="tag ok" id="s_jffs_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
++              <div><div class="name">SSH Access</div><div class="sub2" id="s_ssh_sub">—</div></div></div><span class="tag ok" id="s_ssh_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
++              <div><div class="name">UPnP</div><div class="sub2" id="s_upnp_sub">—</div></div></div><span class="tag ok" id="s_upnp_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
++              <div><div class="name">WPS</div><div class="sub2" id="s_wps_sub">—</div></div></div><span class="tag ok" id="s_wps_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></div>
++              <div><div class="name">Telnet</div><div class="sub2" id="s_telnet_sub">—</div></div></div><span class="tag ok" id="s_telnet_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12h6"/></svg></div>
++              <div><div class="name">DDoS Protection</div><div class="sub2" id="s_dos_sub">—</div></div></div><span class="tag ok" id="s_dos_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
++              <div><div class="name">MLO (Multi-Link)</div><div class="sub2" id="s_mlo_sub">—</div></div></div><span class="tag ok" id="s_mlo_tag">—</span></div>
++            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
++              <div><div class="name">DNS Rebind + DNSSEC</div><div class="sub2" id="s_dnsr_sub">—</div></div></div><span class="tag ok" id="s_dnsr_tag">—</span></div>
++          </div>
++        </section>
++
++        <!-- CLIENTS -->
++        <section class="card col4">
++          <div class="head"><h3>Clients</h3><a class="link" href="#">View List</a></div>
++          <div class="cbig"><span class="n mono" id="c_total">—</span><span class="u">connected</span></div>
++          <div class="bands">
++            <div class="band"><span class="bl">6 GHz</span><span class="bar"><i id="b6i" style="width:0%"></i></span><span class="bn mono" id="b6n">0</span></div>
++            <div class="band"><span class="bl">5 GHz</span><span class="bar"><i id="b5i" style="width:0%"></i></span><span class="bn mono" id="b5n">0</span></div>
++            <div class="band"><span class="bl">2.4 GHz</span><span class="bar"><i id="b24i" style="width:0%"></i></span><span class="bn mono" id="b24n">0</span></div>
++            <div class="band"><span class="bl">Wired</span><span class="bar"><i id="beti" style="width:0%"></i></span><span class="bn mono" id="betn">0</span></div>
++          </div>
++          <select id="cl_filter" class="cl-filter" aria-label="Filter clients by connection">
++            <option value="6">6 GHz</option>
++            <option value="5">5 GHz</option>
++            <option value="24">2.4 GHz</option>
++            <option value="eth">Ethernet</option>
++          </select>
++          <div id="cl_list" class="cl-list"></div>
++        </section>
++
++        <!-- CONNECTIONS (all modalities) -->
++        <section class="card col12">
++          <div class="head"><h3>Connections</h3><span class="eyebrow">Link status</span></div>
++
++          <div class="conngroup"><span class="cglabel">Wireless</span><span class="cgline"></span></div>
++          <div class="ports">
++            <div class="port" id="w24"><div class="pn">2.4 GHz</div><div class="ps">—</div><div class="led"></div></div>
++            <div class="port" id="w5"><div class="pn">5 GHz</div><div class="ps">—</div><div class="led"></div></div>
++            <div class="port" id="w6"><div class="pn">6 GHz</div><div class="ps">—</div><div class="led"></div></div>
++          </div>
++
++          <div class="conngroup"><span class="cglabel">Ethernet</span><span class="cgline"></span></div>
++          <div class="ports" id="eth_ports">
++            <div class="port"><div class="pn">—</div><div class="ps">reading…</div><div class="led"></div></div>
++          </div>
++
++          <div class="conngroup"><span class="cglabel">USB</span><span class="cgline"></span></div>
++          <div class="ports" id="usb_ports">
++            <div class="port"><div class="pn">—</div><div class="ps">reading…</div><div class="led"></div></div>
++          </div>
++        </section>
++
++      </div>
++      <div style="margin-top:14px;color:#4a4d51;font-size:11px;letter-spacing:.03em">
++        All panels live — data read from the router (nvram · /proc · networkmap · disk monitor). Clients refresh every 10 s, Ethernet ports every 5 s, CPU/RAM every 1 s, thermal every 5 s.
++      </div>
++    </div>
++  </main>
++</div>
++
++<script>
++/* ---- real values injected server-side via SSI ---- */
++var SSI = {
++  model:    '<% nvram_get("productid"); %>',
++  firmver:  '<% nvram_get("firmver"); %>',
++  buildno:  '<% nvram_get("buildno"); %>',
++  extendno: '<% nvram_get("extendno"); %>',
++  wanip:    '<% nvram_get("wan0_ipaddr"); %>',
++  gw:       '<% nvram_get("wan0_gateway"); %>',
++  dns:      '<% nvram_get("wan0_dns"); %>',
++  wan_state:'<% nvram_get("wan0_state_t"); %>',
++  ddns_en:  '<% nvram_get("ddns_enable_x"); %>',
++  ddns_host:'<% nvram_get("ddns_hostname_x"); %>',
++  fw4:      '<% nvram_get("fw_enable_x"); %>',
++  fw6:      '<% nvram_get("ipv6_fw_enable"); %>',
++  upnp:     '<% nvram_get("upnp_enable"); %>',
++  wps:      '<% nvram_get("wps_enable"); %>',
++  telnet:   '<% nvram_get("telnetd_enable"); %>',
++  ssh:      '<% nvram_get("sshd_enable"); %>',
++  dos:      '<% nvram_get("fw_dos_x"); %>',
++  http_en:  '<% nvram_get("http_enable"); %>',
++  wan_admin:'<% nvram_get("misc_http_x"); %>',
++  cloud:    '<% nvram_get("enable_cloudsync"); %>',
++  jffs:     '<% nvram_get("jffs2_on"); %>',
++  jffs_sc:  '<% nvram_get("jffs2_scripts"); %>',
++  mlo:      '<% nvram_get("mld_enable"); %>',
++  norebind: '<% nvram_get("dns_norebind"); %>',
++  dnssec:   '<% nvram_get("dnssec_enable"); %>',
++  usb1:     '<% nvram_get("usb_path1"); %>',
++  usb1_spd: '<% nvram_get("usb_path1_speed"); %>',
++  usb2:     '<% nvram_get("usb_path2"); %>',
++  usb2_spd: '<% nvram_get("usb_path2_speed"); %>'
++};
++/* per-radio config (BE96U: wl0=2.4 GHz, wl1=5 GHz, wl2=6 GHz — labelled via nband) */
++var WL = [
++  {nband:'<% nvram_get("wl0_nband"); %>', radio:'<% nvram_get("wl0_radio"); %>', auth:'<% nvram_get("wl0_auth_mode_x"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl0_ssid"); %>')},
++  {nband:'<% nvram_get("wl1_nband"); %>', radio:'<% nvram_get("wl1_radio"); %>', auth:'<% nvram_get("wl1_auth_mode_x"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl1_ssid"); %>')},
++  {nband:'<% nvram_get("wl2_nband"); %>', radio:'<% nvram_get("wl2_radio"); %>', auth:'<% nvram_get("wl2_auth_mode_x"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl2_ssid"); %>')}
++];
++var USBINFO = <% get_usb_info(); %>;
++var UPSTR = "<% sysuptime(); %>";
++function $id(id){return document.getElementById(id);}
++function setTxt(id,v){var el=$id(id); if(el&&v) el.textContent=v;}
++function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
++(function(){
++  try{
++    var fwstr = (SSI.firmver||'').replace(/\./g,'') + '.' + (SSI.buildno||'');
++    if(SSI.extendno && SSI.extendno!=='0') fwstr += '_'+cap(SSI.extendno);
++    if(fwstr.length>2) setTxt('p_fw', fwstr);
++    /* WAN state from wan0_state_t (2 = connected), guarded against stale/0.0.0.0 IP */
++    var wanUp = (SSI.wan_state==='2') && !!SSI.wanip && SSI.wanip!=='0.0.0.0';
++    setTxt('p_wan', wanUp?'Connected':'Disconnected');
++    var istate=$id('i_state');
++    if(istate){ istate.textContent = wanUp?'Connected':'Disconnected'; if(!wanUp) istate.style.color='var(--danger)'; }
++    if(!wanUp){
++      var idot=$id('i_dot'), pdot=$id('p_wan_dot');
++      if(idot){ idot.style.background='var(--danger)'; idot.style.boxShadow='none'; }
++      if(pdot){ pdot.style.background='var(--danger)'; pdot.style.boxShadow='none'; }
++    }
++    if(wanUp) setTxt('i_wanip', SSI.wanip);
++    if(SSI.gw && SSI.gw!=='0.0.0.0')  setTxt('i_gw', SSI.gw);
++    if(SSI.dns) setTxt('i_dns', String(SSI.dns).split(' ')[0]);
++    var dd = (SSI.ddns_en==='1' && SSI.ddns_host) ? SSI.ddns_host : 'Not Active';
++    var de = $id('i_ddns'); if(de){ de.textContent = dd; de.style.color = (dd==='Not Active')?'var(--steel)':'var(--bone)'; }
++    if(SSI.model) document.title = SSI.model + ' — REAPER';
++
++    /* firewall: IPv4 fw_enable_x + IPv6 ipv6_fw_enable */
++    var f4=(SSI.fw4==='1'), f6=(SSI.fw6==='1'), fp=[];
++    if(f4) fp.push('IPv4'); if(f6) fp.push('IPv6');
++    var fsub=$id('s_fw_sub'); if(fsub) fsub.textContent = fp.length ? ('Inbound blocked · '+fp.join(' + ')+' firewall on') : 'Firewall disabled';
++    var ftag=$id('s_fw_tag'); if(ftag){ ftag.textContent = f4?'Active':'Off'; ftag.className='tag '+(f4?'ok':'warn'); }
++
++    /* posture toggles from nvram (UPnP/WPS/Telnet enabled = weaker; DoS on = stronger) */
++    function setTag(id,txt,cls){ var t=$id(id); if(t){ t.textContent=txt; t.className='tag '+cls; } }
++    var upnpOn=(SSI.upnp==='1'), wpsOn=(SSI.wps==='1'), telOn=(SSI.telnet==='1'), dosOn=(SSI.dos==='1');
++    setTag('s_upnp_tag', upnpOn?'Enabled':'Disabled', upnpOn?'warn':'ok'); setTxt('s_upnp_sub', upnpOn?'Auto port-mapping on':'No auto port-mapping');
++    setTag('s_wps_tag', wpsOn?'Enabled':'Disabled', wpsOn?'warn':'ok'); setTxt('s_wps_sub', wpsOn?'Push-button pairing on':'Pairing disabled');
++    if(SSI.telnet===''){ setTag('s_telnet_tag','Removed','ok'); setTxt('s_telnet_sub','Not present in this firmware'); }
++    else { setTag('s_telnet_tag', telOn?'Enabled':'Disabled', telOn?'warn':'ok'); setTxt('s_telnet_sub', telOn?'Cleartext shell open':'Cleartext shell off'); }
++    setTag('s_dos_tag', dosOn?'On':'Off', dosOn?'ok':'warn'); setTxt('s_dos_sub', dosOn?'SYN-flood / port-scan guard':'Not enabled');
++    var sshv=String(SSI.ssh||'0');
++    if(sshv==='0'){ setTag('s_ssh_tag','Disabled','ok'); setTxt('s_ssh_sub','SSH server off'); }
++    else if(sshv==='2'){ setTag('s_ssh_tag','LAN only','ok'); setTxt('s_ssh_sub','LAN-only access'); }
++    else { setTag('s_ssh_tag','WAN open','warn'); setTxt('s_ssh_sub','Reachable from WAN'); }
++
++    /* Wi-Fi encryption — per enabled radio from wlX_auth_mode_x; worst state wins the tag */
++    function encInfo(a){
++      switch(a){
++        case 'psk2':     return {t:'WPA2',c:'ok'};
++        case 'sae':      return {t:'WPA3',c:'ok'};
++        case 'psk2sae':  return {t:'WPA2/WPA3',c:'ok'};
++        case 'pskpsk2':  return {t:'WPA/WPA2',c:'warn'};
++        case 'psk':      return {t:'WPA',c:'warn'};
++        case 'owe':      return {t:'Enhanced Open',c:'warn'};
++        case 'open':     return {t:'OPEN',c:'danger'};
++        case 'wpa2': case 'wpa3': case 'wpawpa2': case 'wpa2wpa3': case 'suite-b': return {t:'Enterprise',c:'ok'};
++        default:         return {t:a||'?',c:'warn'};
++      }
++    }
++    function bandName(nb){ return nb==='2'?'2.4G':(nb==='4'?'6G':'5G'); }
++    var encParts=[], encWorst='ok', encRank={ok:0,warn:1,danger:2};
++    for(var wi=0; wi<WL.length; wi++){
++      var wcfg=WL[wi]; if(!wcfg.nband) continue;
++      if(wcfg.radio!=='1'){ encParts.push(bandName(wcfg.nband)+' off'); continue; }
++      var einf=encInfo(wcfg.auth); encParts.push(bandName(wcfg.nband)+' '+einf.t);
++      if(encRank[einf.c]>encRank[encWorst]) encWorst=einf.c;
++    }
++    if(encParts.length){
++      setTxt('s_wifi_sub', encParts.join(' · '));
++      setTag('s_wifi_tag', encWorst==='ok'?'Secure':(encWorst==='warn'?'Mixed':'Open'), encWorst);
++    }
++
++    /* remote / cloud access: misc_http_x (WAN admin) + enable_cloudsync */
++    var wanAdmin=(SSI.wan_admin==='1'), cloudOn=(SSI.cloud==='1');
++    setTxt('s_rc_sub', (wanAdmin?'WAN admin ENABLED':'WAN admin off')+' · '+(cloudOn?'cloud sync on':'no cloud sync'));
++    setTag('s_rc_tag', (wanAdmin||cloudOn)?'Exposed':'Disabled', (wanAdmin||cloudOn)?'warn':'ok');
++
++    /* admin login: http_enable (0 http / 1 https / 2 both) + WAN reachability */
++    var hev=String(SSI.http_en), proto = hev==='1'?'HTTPS only':(hev==='2'?'HTTP + HTTPS':'HTTP only');
++    setTxt('s_adm_sub', proto+' · '+(wanAdmin?'WAN reachable':'LAN-only'));
++    if(wanAdmin) setTag('s_adm_tag','WAN open','warn');
++    else if(hev!=='1') setTag('s_adm_tag','HTTP on','warn');
++    else setTag('s_adm_tag','Locked','ok');
++
++    /* JFFS: jffs2_on + jffs2_scripts */
++    var jOn=(SSI.jffs==='1'), jSc=(SSI.jffs_sc==='1');
++    setTxt('s_jffs_sub', jOn?('Mounted · custom scripts '+(jSc?'on':'off')):'Not mounted');
++    setTag('s_jffs_tag', jOn?'Mounted':'Off', jOn?'ok':'warn');
++
++    /* MLO: mld_enable */
++    var mloOn=(SSI.mlo==='1');
++    setTxt('s_mlo_sub', mloOn?'Wi-Fi 7 multi-link active':'Multi-link off');
++    setTag('s_mlo_tag', mloOn?'Enabled':'Disabled','ok');
++
++    /* DNS rebind protection + DNSSEC */
++    var nrOn=(SSI.norebind==='1'), dsOn=(SSI.dnssec==='1');
++    setTxt('s_dnsr_sub', (nrOn?'Rebind block on':'Rebind block off')+' · '+(dsOn?'DNSSEC validate':'DNSSEC off'));
++    setTag('s_dnsr_tag', (nrOn&&dsOn)?'On':((nrOn||dsOn)?'Partial':'Off'), (nrOn&&dsOn)?'ok':'warn');
++
++    /* uptime from sysuptime (/proc/uptime) — offset-proof, ticks locally */
++    var UPS = String(UPSTR).replace(/\s*since boot\s*$/i,'').trim();
++    function relSec(s){ var b=0; var dm=s.match(/(\d+)\s*d/i); if(dm)b+=(+dm[1])*86400; var cm=s.match(/(\d+):(\d{2})(?::(\d{2}))?/); if(cm){ b+=(+cm[1])*3600+(+cm[2])*60+(+(cm[3]||0)); return b; } function g(re){var m=s.match(re);return m?+m[1]:0;} return b+g(/(\d+)\s*h/i)*3600+g(/(\d+)\s*m(?!o)/i)*60+g(/(\d+)\s*s/i); }
++    var up0=relSec(UPS), t0=Date.now();
++    function p2(n){return(n<10?'0':'')+n;}
++    function upTick(){ var s=up0+Math.floor((Date.now()-t0)/1000); var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60); var el=$id('p_uptime'); if(el)el.textContent=d+'d '+p2(h)+':'+p2(m); }
++    if(up0>0){ upTick(); setInterval(upTick,20000); } else if(UPS){ setTxt('p_uptime', UPS); }
++  }catch(e){}
++})();
++
++/* ---- live CPU / RAM via /cpu_ram_status.asp ---- */
++function setDial(id,pct,unit){
++  var d=$id(id); if(!d) return;
++  pct=Math.max(0,Math.min(100,Math.round(pct)));
++  d.style.setProperty('--v', pct);
++  var t=d.querySelector('.txt'); if(t) t.innerHTML = pct+'%<small>'+unit+'</small>';
++}
++var _prevCpu=null, _prevCores=null;
++function pollSys(){
++  var x=new XMLHttpRequest();
++  x.open('GET','/cpu_ram_status.asp?_='+(new Date()).getTime(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||x.status!==200) return;
++    try{
++      var cpuInfo={}, memInfo={};
++      eval(x.responseText);              /* defines cpuInfo, memInfo */
++      var tot=0,use=0,per=[];
++      for(var k in cpuInfo){ var c=cpuInfo[k]; if(c&&c.total!=null){ tot+=Number(c.total); use+=Number(c.usage); per.push({t:Number(c.total),u:Number(c.usage)}); } }
++      if(tot>0){
++        var pct=0;
++        if(_prevCpu){ var dt=tot-_prevCpu.t, du=use-_prevCpu.u; pct = dt>0? du/dt*100 : 0; }
++        _prevCpu={t:tot,u:use};
++        setDial('m_cpu', pct, 'load');
++        var bars=$id('m_cores');
++        if(bars && _prevCores && _prevCores.length===per.length){
++          var bel=bars.getElementsByTagName('i');
++          for(var ci=0; ci<per.length && ci<bel.length; ci++){
++            var cdt=per[ci].t-_prevCores[ci].t, cdu=per[ci].u-_prevCores[ci].u;
++            var cp = cdt>0? Math.max(0,Math.min(100,cdu/cdt*100)) : 0;
++            bel[ci].style.background='rgba(225,6,0,'+(0.10+0.90*cp/100).toFixed(2)+')';
++          }
++        }
++        _prevCores=per;
++      }
++      if(memInfo && memInfo.total){
++        var mt=Number(memInfo.total);
++        var mu=Number(memInfo.simple_used!=null?memInfo.simple_used:(mt-Number(memInfo.simple_free!=null?memInfo.simple_free:memInfo.free)));
++        setDial('m_ram', mu/mt*100, 'used');
++        var elr=$id('m_ram_sub'); if(elr) elr.textContent=Math.round(mu/1024)+' / '+Math.round(mt/1024)+' MB';
++      }
++    }catch(e){}
++  };
++  x.send();
++}
++pollSys(); setInterval(pollSys, 1000);
++
++/* ---- live CPU temperature via /ajax_coretmp.asp ---- */
++function setTemp(t){
++  var d=$id('m_temp'); if(!d) return;
++  var pct=Math.max(0,Math.min(100,Math.round((t-30)/(95-30)*100)));
++  d.style.setProperty('--v', pct);
++  var el=d.querySelector('.txt'); if(el) el.innerHTML=Math.round(t)+'<small>°C temp</small>';
++}
++function pollTemp(){
++  var x=new XMLHttpRequest();
++  x.open('GET','/ajax_coretmp.asp?_='+(new Date()).getTime(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||x.status!==200) return;
++    try{ eval(x.responseText); var t=parseFloat(String(window.curr_cpuTemp||'').replace(/[^0-9.]/g,'')); if(t>0) setTemp(t); }catch(e){}
++  };
++  x.send();
++}
++pollTemp(); setInterval(pollTemp, 5000);
++
++/* ---- live clients via /appGet.cgi?hook=get_clientlist() (networkmap data) ----
++   isWL is band-coded: 0 wired · 1 2.4G · 2/3 5G · 4/5 6G */
++function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
++var LIVE_CLIENTS={'6':[],'5':[],'24':[],'eth':[]};
++function renderClients(){
++  var sel=$id('cl_filter'); if(!sel) return;
++  var list=LIVE_CLIENTS[sel.value]||[], h='';
++  for(var i=0;i<list.length;i++){ h+='<div class="cl-item"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span> &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div>'; }
++  if(!h) h='<div class="cd" style="padding:8px">No devices</div>';
++  var box=$id('cl_list'); if(box) box.innerHTML=h;
++}
++function setBand(barId,nId,count,total){
++  var b=$id(barId), n=$id(nId);
++  if(n) n.textContent=count;
++  if(b) b.style.width=(total>0?Math.round(count/total*100):0)+'%';
++}
++function pollClients(){
++  var x=new XMLHttpRequest();
++  x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+(new Date()).getTime(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||x.status!==200) return;
++    try{
++      var j=JSON.parse(x.responseText);
++      var cl=j.get_clientlist||j, macs=cl.maclist||[];
++      var b={'6':[],'5':[],'24':[],'eth':[]};
++      for(var i=0;i<macs.length;i++){
++        var c=cl[macs[i]]; if(!c || String(c.isOnline)!=='1') continue;
++        var w=parseInt(c.isWL||'0',10);
++        var k=(w===1)?'24':(w===2||w===3)?'5':(w===4||w===5)?'6':'eth';
++        var nm=(c.nickName&&String(c.nickName).length)?c.nickName:((c.name&&String(c.name).length)?c.name:macs[i]);
++        b[k].push({n:nm, ip:(c.ip&&c.ip!=='offline')?c.ip:'—', m:macs[i]});
++      }
++      var total=b['6'].length+b['5'].length+b['24'].length+b['eth'].length;
++      LIVE_CLIENTS=b;
++      setTxt('c_total',String(total)); setTxt('p_clients',String(total));
++      setBand('b6i','b6n',b['6'].length,total);
++      setBand('b5i','b5n',b['5'].length,total);
++      setBand('b24i','b24n',b['24'].length,total);
++      setBand('beti','betn',b['eth'].length,total);
++      renderClients();
++    }catch(e){}
++  };
++  x.send();
++}
++(function(){ var sel=$id('cl_filter'); if(sel){ sel.addEventListener('change',renderClients); renderClients(); } })();
++pollClients(); setInterval(pollClients, 10000);
++
++/* ---- wireless radio tiles from wlX_radio / wlX_ssid (config) ---- */
++(function(){
++  var map={'2':'w24','1':'w5','4':'w6'};
++  for(var i=0;i<WL.length;i++){
++    var w=WL[i], tid=map[w.nband]; if(!tid) continue;
++    var tile=$id(tid); if(!tile) continue;
++    var on=(w.radio==='1');
++    tile.className='port'+(on?' up':'');
++    var sub=tile.querySelector('.ps'); if(sub) sub.textContent=on?(w.ssid||'On'):'Radio off';
++  }
++})();
++
++/* ---- live ethernet link states via /ajax_ethernet_ports.asp (ATE Get_WanLanStatus) ---- */
++var SPEEDMAP={'t':'10 Mbps','M':'100 Mbps','G':'1 Gbps','Q':'2.5 Gbps','F':'5 Gbps','T':'10 Gbps','X':'—'};
++function pollPorts(){
++  var x=new XMLHttpRequest();
++  x.open('GET','/ajax_ethernet_ports.asp?_='+(new Date()).getTime(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||x.status!==200) return;
++    try{
++      var get_wan_lan_status={};
++      eval(x.responseText);              /* defines get_wan_lan_status */
++      var sp=(get_wan_lan_status&&get_wan_lan_status.portSpeed)||{};
++      var keys=[]; for(var k in sp) keys.push(k);
++      if(!keys.length) return;
++      keys.sort(function(a,b){
++        var aw=(a.indexOf('WAN')===0)?0:1, bw=(b.indexOf('WAN')===0)?0:1;
++        if(aw!==bw) return aw-bw;
++        return a.localeCompare(b,undefined,{numeric:true});
++      });
++      var h='';
++      for(var i=0;i<keys.length;i++){
++        var code=sp[keys[i]], up=(code!=='X');
++        h+='<div class="port'+(up?' up':'')+((keys[i].indexOf('WAN')===0)?' wan':'')+'"><div class="pn">'+esc(keys[i])+'</div><div class="ps">'+(up?((SPEEDMAP[code]||code)+' · up'):'—')+'</div><div class="led"></div></div>';
++      }
++      var box=$id('eth_ports'); if(box) box.innerHTML=h;
++    }catch(e){}
++  };
++  x.send();
++}
++pollPorts(); setInterval(pollPorts, 5000);
++
++/* ---- USB port tiles from usb_pathX nvram; storage usage from get_usb_info ---- */
++(function(){
++  function usbLabel(spd,dflt){ return spd==='5000'?'USB 3.0':(spd==='480'?'USB 2.0':dflt); }
++  var defs=[{v:SSI.usb1,s:SSI.usb1_spd,d:'USB 3.0'},{v:SSI.usb2,s:SSI.usb2_spd,d:'USB 2.0'}];
++  var h='';
++  for(var i=0;i<defs.length;i++){
++    var occ=!!defs[i].v;
++    h+='<div class="port'+(occ?' up':'')+'"><div class="pn">'+usbLabel(defs[i].s,defs[i].d)+'</div><div class="ps">'+(occ?esc(defs[i].v):'empty')+'</div><div class="led"></div></div>';
++  }
++  var box=$id('usb_ports'); if(box) box.innerHTML=h;
++})();
++(function(){
++  try{
++    var disks=USBINFO||[], size=0, used=0, name='', fmt='', n=0;
++    for(var i=0;i<disks.length;i++){
++      var d=disks[i]; if(parseInt(d.mountNumber||'0',10)<1) continue;
++      n++;
++      if(!name){ try{ name=decodeURIComponent(String(d.deviceName||'')); }catch(_){ name=String(d.deviceName||''); } }
++      var parts=d.partition||[];
++      for(var p=0;p<parts.length;p++){
++        if(parts[p].status==='unmounted') continue;
++        size+=Number(parts[p].size_int||0); used+=Number(parts[p].used_int||0);
++        if(!fmt && parts[p].format && parts[p].format!=='unknown') fmt=parts[p].format;
++      }
++    }
++    if(n>0 && size>0){
++      var pct=Math.max(0,Math.min(100,Math.round(used/size*100)));
++      var ring=$id('st_ring'); if(ring) ring.style.setProperty('--v',pct);
++      setTxt('st_pct',pct+'%');
++      setTxt('st_name',name||'USB storage');
++      var freeGB=(size-used)/1048576, totGB=size/1048576;
++      setTxt('st_sub', freeGB.toFixed(freeGB<10?1:0)+' GB free / '+totGB.toFixed(totGB<10?1:0)+' GB'+(fmt?(' · '+fmt):''));
++      if(n>1){ var ex=$id('st_extra'); if(ex){ ex.style.display='block'; ex.textContent=(n-1)+' more disk'+(n>2?'s':'')+' attached'; } }
++    }
++  }catch(e){}
++})();
++</script>
++</body>
++</html>
+-- 
+2.25.1
+

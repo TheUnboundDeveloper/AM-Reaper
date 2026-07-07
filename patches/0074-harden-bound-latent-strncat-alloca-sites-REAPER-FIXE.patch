@@ -1,0 +1,204 @@
+From f9c6d316e71b6d8fff798d5b6780ee38ce96b789 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 5 Jul 2026 22:54:21 -0400
+Subject: [PATCH] harden: bound latent strncat/alloca sites (REAPER-FIXES
+ T1-T4)
+
+Defense-in-depth for the latent buffer-handling backlog. The target buffers
+are pre-sized, so these do NOT change behavior in normal operation; they
+prevent overflow if an input/size assumption is ever violated.
+
+- T1 libcodb/cosql_utils.c: 16 strncat(dst,src,strlen(src)) sites bounded by
+  each buffer's own allocation-size variable (match_query_string_size,
+  sql_create_table_size, sql_insert_columns_size, sql_insert_values_size,
+  sql_query_columns_size, sql_query_size). The sql_query buffer only reserves
+  +1024 for WHERE clauses, so bounding adds real protection there.
+- T2 rc/qos.c ip_range_checker: the two strncat(new,...) calls bounded by len.
+- T3 shared/shutils.c remove_dups: strncat off-by-one fixed (-1 for the NUL).
+- T4 rc/udhcpc.c: both DHCP-RFC3397 alloca() sites capped at 2048 with a
+  bounded snprintf (removes stack-growth on a hostile DHCP search/domain).
+
+T5 (dashboard eval of ASUS telemetry endpoints) intentionally left as-is:
+those endpoints emit JS not JSON, eval->Function is the same class, and the
+httpApi rewrite cannot be validated off-device. Same-origin/authed/numeric =
+non-exploitable; rationale recorded in REAPER-FIXES.md.
+
+Full make rt-be96u: MAKE_EXIT=0, no errors, no new warnings at edited lines.
+---
+ release/src/router/libcodb/cosql_utils.c | 32 ++++++++++++------------
+ release/src/router/rc/qos.c              |  4 +--
+ release/src/router/rc/udhcpc.c           |  8 +++---
+ release/src/router/shared/shutils.c      |  4 +--
+ 4 files changed, 24 insertions(+), 24 deletions(-)
+
+diff --git a/release/src/router/libcodb/cosql_utils.c b/release/src/router/libcodb/cosql_utils.c
+index df60c44d34..ca86c1ca48 100644
+--- a/release/src/router/libcodb/cosql_utils.c
++++ b/release/src/router/libcodb/cosql_utils.c
+@@ -791,10 +791,10 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 		}
+ 		
+ 		if (strlen(match_query_string)>0) {
+-			strncat(match_query_string, split_string, strlen(split_string));
++			strncat(match_query_string, split_string, match_query_string_size - strlen(match_query_string));
+ 		}
+ 
+-		strncat(match_query_string, buff, strlen(buff));
++		strncat(match_query_string, buff, match_query_string_size - strlen(match_query_string));
+ 
+ 		match_columns++;
+ 	}
+@@ -1039,10 +1039,10 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 		}
+ 		
+ 		if (strlen(match_query_string)>0) {
+-			strncat(match_query_string, split_string, strlen(split_string));
++			strncat(match_query_string, split_string, match_query_string_size - strlen(match_query_string));
+ 		}
+ 
+-		strncat(match_query_string, buff, strlen(buff));
++		strncat(match_query_string, buff, match_query_string_size - strlen(match_query_string));
+ 
+ 		columns++;
+ 	}
+@@ -1335,7 +1335,7 @@ int cosql_create_table(sqlite3 *pdb, const char* db_version, int columns_count,
+ 			strncat(sql_create_table, ",", 1);
+ 		}
+ 
+-		strncat(sql_create_table, buff, strlen(buff));
++		strncat(sql_create_table, buff, sql_create_table_size - strlen(sql_create_table));
+ 
+ 		columns++;
+ 	}
+@@ -1802,8 +1802,8 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 			strncat(sql_insert_values, ",", 1);
+ 		}
+ 
+-		strncat(sql_column_names, buff_column_name, strlen(buff_column_name));
+-		strncat(sql_insert_values, buff_insert_value, strlen(buff_insert_value));
++		strncat(sql_column_names, buff_column_name, sql_insert_columns_size - strlen(sql_column_names));
++		strncat(sql_insert_values, buff_insert_value, sql_insert_values_size - strlen(sql_insert_values));
+ 
+ 		columns++;
+ 	}
+@@ -1988,7 +1988,7 @@ int cosql_get_column_values(sqlite3* pdb,
+ 				strncat(sql_column_names, ",", 1);
+ 			}
+ 
+-			strncat(sql_column_names, column_name, strlen(column_name));
++			strncat(sql_column_names, column_name, sql_query_columns_size - strlen(sql_column_names));
+ 		}
+ 
+ 		query_columns++;
+@@ -2009,19 +2009,19 @@ int cosql_get_column_values(sqlite3* pdb,
+ 
+ 	if (sql_and_where!=NULL && sql_or_where!=NULL) {
+ 		strncat(sql_query, " WHERE (", 8);
+-		strncat(sql_query, sql_and_where, strlen(sql_and_where));
++		strncat(sql_query, sql_and_where, sql_query_size - strlen(sql_query) - 1);
+ 		strncat(sql_query, ") AND (", 7);
+-		strncat(sql_query, sql_or_where, strlen(sql_or_where));
++		strncat(sql_query, sql_or_where, sql_query_size - strlen(sql_query) - 1);
+ 		strncat(sql_query, ")", 1);
+ 	}
+ 	else if (sql_and_where!=NULL) {
+ 		strncat(sql_query, " WHERE (", 8);
+-		strncat(sql_query, sql_and_where, strlen(sql_and_where));
++		strncat(sql_query, sql_and_where, sql_query_size - strlen(sql_query) - 1);
+ 		strncat(sql_query, ")", 1);
+ 	}
+ 	else if (sql_or_where!=NULL) {
+ 		strncat(sql_query, " WHERE (", 8);
+-		strncat(sql_query, sql_or_where, strlen(sql_or_where));
++		strncat(sql_query, sql_or_where, sql_query_size - strlen(sql_query) - 1);
+ 		strncat(sql_query, ")", 1);
+ 	}
+ 	else {
+@@ -2033,14 +2033,14 @@ int cosql_get_column_values(sqlite3* pdb,
+ 		memset(sql_between_data_time, 0, MAX_BUF_LEN);
+ 		format_sql_between_data_time(start_data_time, end_data_time, sql_between_data_time);
+ 
+-		strncat(sql_query, sql_between_data_time, strlen(sql_between_data_time));
++		strncat(sql_query, sql_between_data_time, sql_query_size - strlen(sql_query) - 1);
+ 	}
+ 
+ 	if (order_column_name!=NULL && order_by!=NULL) {
+ 		strncat(sql_query, " ORDER BY ", 10);
+-		strncat(sql_query, order_column_name, strlen(order_column_name));
++		strncat(sql_query, order_column_name, sql_query_size - strlen(sql_query) - 1);
+ 		strncat(sql_query, " ", 1);
+-		strncat(sql_query, order_by, strlen(order_by));
++		strncat(sql_query, order_by, sql_query_size - strlen(sql_query) - 1);
+ 	}
+ 	
+ 	if (limit>0) {
+@@ -2048,7 +2048,7 @@ int cosql_get_column_values(sqlite3* pdb,
+ 
+ 		char buf_limit[5];
+ 		snprintf(buf_limit, 5, "%d", limit);
+-		strncat(sql_query, buf_limit, strlen(buf_limit));
++		strncat(sql_query, buf_limit, sql_query_size - strlen(sql_query) - 1);
+ 	}
+ 	
+ 	codbg("sql_query=%s", sql_query);
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index c1f8138df4..562cfa3a81 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -259,10 +259,10 @@ static int ip_range_checker(char *old, char *new, int len)
+ 		QOSLOG("case 2: mask=%d, mask_addr=%x, host_start=%x, host_end=%x", mask, mask_addr, host_start, host_end);
+ 
+ 		start = inet_ntoa(inet_src);
+-		strncat(new, start, strlen(start));
++		strncat(new, start, len - strlen(new) - 1);
+ 		strncat(new, "-", 1);
+ 		end = inet_ntoa(inet_dst);
+-		strncat(new, end, strlen(end));
++		strncat(new, end, len - strlen(new) - 1);
+ 		QOSLOG("case 2: new=%s, end=%s", new, end);
+ 		ret = 1;
+ 		goto END;
+diff --git a/release/src/router/rc/udhcpc.c b/release/src/router/rc/udhcpc.c
+index 512de26b24..fdb3c640a6 100644
+--- a/release/src/router/rc/udhcpc.c
++++ b/release/src/router/rc/udhcpc.c
+@@ -496,8 +496,8 @@ _dprintf("%s(%d): ifunit=%d, if=%s.\n", __func__, getpid(), ifunit, wan_ifname);
+ 			char *domain, *result;
+ 			if ((domain = getenv("domain")) && *domain &&
+ 			    find_word(value, trim_r(domain)) == NULL) {
+-				result = alloca(strlen(domain) + strlen(value) + 2);
+-				sprintf(result, "%s %s", domain, value);
++				result = alloca((strlen(domain) + strlen(value) + 2) > 2048 ? 2048 : (strlen(domain) + strlen(value) + 2)); /* hardening T4: cap vs hostile DHCP option */
++				snprintf(result, (strlen(domain) + strlen(value) + 2) > 2048 ? 2048 : (strlen(domain) + strlen(value) + 2), "%s %s", domain, value);
+ 				value = result;
+ 			}
+ 			nvram_set(strcat_r(prefix, "domain", tmp), trim_r(value));
+@@ -766,8 +766,8 @@ renew(void)
+ 			char *domain, *result;
+ 			if ((domain = getenv("domain")) && *domain &&
+ 			    find_word(value, trim_r(domain)) == NULL) {
+-				result = alloca(strlen(domain) + strlen(value) + 2);
+-				sprintf(result, "%s %s", domain, value);
++				result = alloca((strlen(domain) + strlen(value) + 2) > 2048 ? 2048 : (strlen(domain) + strlen(value) + 2)); /* hardening T4: cap vs hostile DHCP option */
++				snprintf(result, (strlen(domain) + strlen(value) + 2) > 2048 ? 2048 : (strlen(domain) + strlen(value) + 2), "%s %s", domain, value);
+ 				value = result;
+ 			}
+ 			changed += nvram_set_check(strcat_r(prefix, "domain", tmp), trim_r(value));
+diff --git a/release/src/router/shared/shutils.c b/release/src/router/shared/shutils.c
+index 74052f9548..a5a2cef73e 100644
+--- a/release/src/router/shared/shutils.c
++++ b/release/src/router/shared/shutils.c
+@@ -1515,8 +1515,8 @@ remove_dups(char *inlist, int inlist_size)
+ 			}
+ 			else
+ 			{
+-				strncat(outlist, " ", inlist_size - strlen(outlist));
+-				strncat(outlist, name, inlist_size - strlen(outlist));
++				strncat(outlist, " ", inlist_size - strlen(outlist) - 1);
++				strncat(outlist, name, inlist_size - strlen(outlist) - 1);
+ 			}
+ 		}
+ 	}
+-- 
+2.25.1
+

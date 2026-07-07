@@ -1,0 +1,39 @@
+From 8421d9263d1b75c7627834a0e36fb8cdbee141ef Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 4 Jul 2026 07:55:47 -0400
+Subject: [PATCH] fix: Hardware QoS never activates - qos_type nvram capped at
+ 1 char
+
+httpd validate_apply -> nvram_check() rejects any posted value longer than
+the router_defaults CKN_STR len. qos_type was CKN_STR1, so the Hardware QoS
+value "10" (2 chars) was silently dropped (syslog-only message), leaving
+qos_type at its previous/default value 1 - the router then enabled Adaptive
+QoS instead, with no GUI error. Single-char types (0,2,9) were unaffected.
+
+Widen qos_type to CKN_STR2. Requires libshared+httpd rebuild (www-only
+build is not sufficient).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 2e394129d5..cfbc775a9f 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3073,9 +3073,9 @@ struct nvram_tuple router_defaults[] = {
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+-	{ "qos_type", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: Traditional */
++	{ "qos_type", "1", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: Traditional; STR2: qos_type=10 (Hardware QoS) is two chars, httpd nvram_check rejects it at STR1 */
+ #else
+-	{ "qos_type", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 0: Traditional */
++	{ "qos_type", "0", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 0: Traditional; STR2: see above */
+ #endif
+ 	{ "qos_method", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_sticky", "1", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-- 
+2.25.1
+

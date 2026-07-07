@@ -1,0 +1,51 @@
+From 0be89a48bde02ecdc9091c4920f2ccf5d53ae24e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 4 Jul 2026 08:18:07 -0400
+Subject: [PATCH] gui: fix Smart Connect off-disclaimer stuck visible while SC
+ is enabled
+
+reaper_content.css section-2 defense (.formfontdesc display:block!important)
+overrode the disclaimer box inline display:none, so the "Smart Connect is
+off" notice showed even with Smart Connect on. Add a CSS exception that
+respects deliberate inline hides, and hide the box explicitly with inline
+!important in the enabled branch of setupSmartConnectToggle().
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/Advanced_Smart_Connect.asp | 4 ++++
+ release/src/router/www/reaper/reaper_content.css  | 4 ++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index 059c350458..8e263ac4a2 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -933,6 +933,10 @@ function setupSmartConnectToggle(){
+ 	if(isSmartConnectEnabled()){
+ 		btn.value = 'Disable Smart Connect';
+ 		btn.title = 'Turn off Smart Connect (band steering) for all radios';
++		// inline !important: reaper_content.css force-shows .formfontdesc,
++		// which kept this box visible while Smart Connect was on
++		var disc = document.getElementById('scDisableDisclaimer');
++		if(disc) disc.style.setProperty('display', 'none', 'important');
+ 	}
+ 	else{
+ 		btn.value = 'Enable Smart Connect';
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index c4a1cbd661..3ca80cc426 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -30,6 +30,10 @@ table.content>tbody>tr>td:has(#mainMenu){display:none!important}
+ /* page title / description block: force visible as a defense against any
+    stock hide logic - these must always show at the top of the content */
+ .formfonttitle,.formfontdesc{display:block!important;visibility:visible!important;opacity:1!important}
++/* ...but respect deliberate inline hides: pages toggle state boxes (e.g. the
++   Smart Connect off disclaimer) via style.display - inline display:none means
++   the page logic wants it hidden right now */
++.formfontdesc[style*="display:none"],.formfontdesc[style*="display: none"]{display:none!important}
+ div.container{display:block!important}
+ 
+ /* ---------- 3. content panels ---------- */
+-- 
+2.25.1
+

@@ -1,0 +1,50 @@
+From df80314b5505f88cc4ba268115bdf52adfb4fe1c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 3 Jul 2026 13:05:02 -0400
+Subject: [PATCH] fix post-load content shift: state.js wraps content in -140px
+ div
+
+state.js browser_compatibility() re-wraps the whole content cell in a div
+with inline margin-top:-140px after menu setup (stock tucks content under
+the banner); inside the reaper shell that pulled every page 140px above
+the visible top about a second after load.
+
+- state.js: bail out of browser_compatibility() when parent.reaperShell
+  is set (mirrors the stock parent.webWrapper opt-out without dragging in
+  business-white.css)
+- reaper_shell.asp: declare var reaperShell = true
+- reaper_content.css: neutralize any div carrying inline margin-top:-140px
+  (important beats inline; attribute selector tracks the JS write) as a
+  second line of defense; verified via probe page in the local harness
+---
+ release/src/router/www/reaper/reaper_content.css | 4 ++++
+ release/src/router/www/state.js                  | 1 +
+ 2 files changed, 5 insertions(+)
+
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index d705ab6148..c973a7ddc5 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -88,3 +88,7 @@ a:hover{color:#E10600}
+ #NM_shift{margin-top:0!important}
+ table#FormTitle{margin-top:0!important}
+ table[bgcolor="#4d595d"],table[bgcolor="#4D595D"],td[bgcolor="#4d595d"]{background:transparent!important}
++/* state.js browser_compatibility() re-wraps the whole content cell in a div
++   with an inline margin-top:-140px AFTER load (tucks content under the stock
++   banner); important beats inline, attribute selector tracks the JS write */
++div[style*="margin-top:-140px"],div[style*="margin-top: -140px"]{margin-top:0!important}
+diff --git a/release/src/router/www/state.js b/release/src/router/www/state.js
+index 4a14b298eb..a25b3c8e7b 100644
+--- a/release/src/router/www/state.js
++++ b/release/src/router/www/state.js
+@@ -2339,6 +2339,7 @@ var isIE8 = navigator.userAgent.search("MSIE 8") > -1;
+ var isiOS = navigator.userAgent.search("iP") > -1; 
+ function browser_compatibility(){
+ 	if(parent.webWrapper) return false;
++	try{ if(parent.reaperShell) return false; }catch(e){}
+ 
+ 	if(isiOS){
+ 		var obj_inputBtn;
+-- 
+2.25.1
+

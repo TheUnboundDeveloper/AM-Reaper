@@ -1,0 +1,406 @@
+From 92eaafdc6a75b5280944169b9f211a0f00947ddf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 6 Jul 2026 14:14:40 -0400
+Subject: [PATCH] www: reaper-theme the sign-in page (Main_Login.asp)
+
+Replace the stock blue/teal login styling with the reaper design
+language: matte black bg with crimson radials + vignette + film grain,
+centered panel card with crimson top rule, REAPER wordmark, Rajdhani/
+Inter self-hosted fonts, black inputs with crimson focus, crimson
+gradient sign-in button, amber warning hints, dark panels for the
+logout/no-login views and captcha row.
+
+Style-block + title rewrite only: all DOM ids/classes and the whole
+login JS (nonce/SHA-256 flow, captcha, lockout states) are untouched.
+ASCII-only verified (0 non-ASCII bytes).
+---
+ release/src/router/www/Main_Login.asp | 372 +++++++-------------------
+ 1 file changed, 96 insertions(+), 276 deletions(-)
+
+diff --git a/release/src/router/www/Main_Login.asp b/release/src/router/www/Main_Login.asp
+index edea4bc32a..04901552c9 100644
+--- a/release/src/router/www/Main_Login.asp
++++ b/release/src/router/www/Main_Login.asp
+@@ -10,283 +10,103 @@
+ <link rel="icon" href="images/favicon.png">
+ <script type="text/javascript" src="/js/jquery.js"></script>
+ <script type="text/javascript" src="/js/https_redirect/https_redirect.js"></script>
+-<title>ASUS Login</title>
++<title>REAPER &mdash; Sign In</title>
+ <style>
+-html::-webkit-scrollbar{
+-    display: block;
+-    width: 4px;
+-    height: 4px;
+-    padding: 2px;
+-}
+-html::-webkit-scrollbar-thumb{
+-    background-color: #248DFF !important;   
+-    border-radius: 50px;
+-}
+-html::-webkit-scrollbar-track{
+-    background-color: #192229 !important;
+-}
+-body{
+-	font-family: Arial, MS UI Gothic, MS P Gothic, Microsoft Yahei UI, sans-serif;
+-}
+-.wrapper{
+-	background:url(images/New_ui/login_bg.png) #283437 no-repeat;
+-	background-size: 1280px 1076px;
+-	background-position: center 0%;
+-	margin: 0px; 
+-	background:#283437\9;
+-}
+-.title_name {
+-	font-size: 30pt;
+-	color:#93d2d9;
+-}
+-.prod_madelName{
+-	font-size: 20pt;
+-	color:#fff;
+-	margin-left:78px;
+-	margin-top: 10px;
+-}
+-.login_img{
+-	width:43px;
+-	height:43px;
+-	background-image: url('images/New_ui/icon_titleName.png');
+-	background-repeat: no-repeat;
+-}
+-.p1{
+-	font-size: 12pt;
+-	color:#fff;
+-	width:480px;
+-}
+-.button{
+-	background-color:#279FD9;
+-	border-radius: 4px ;
+-	transition: visibility 0s linear 0.218s,opacity 0.218s,background-color 0.218s;
+-	height: 48px;
+-	width: 200px;
+-	font-size: 14pt;
+-	color:#fff;
+-	text-align: center;
+-	float:right; 
+-	margin:25px 79px 0px 39px;
+-	line-height:48px;
+-}
+-.button:hover{
+-	cursor:pointer;
+-}
+-.button.disabled{
+-	filter: grayscale(100%) opacity(0.5);
+-    pointer-events: none;
+-}
+-.form_input{
+-	background-color:rgba(255,255,255,0.2);
+-	background-color:#576D73\9;
+-	border-radius: 4px;
+-	padding:13px 11px;
+-	width: 380px;
+-	border: 0;
+-	height:25px;
+-	color:#fff;
+-	font-size:18px;
+-}
+-.nologin{
+-	margin:10px 0px 0px 78px;
+-	background-color:rgba(255,255,255,0.2);
+-	padding:20px;
+-	line-height:18px;
+-	border-radius: 5px;
+-	width: 380px;
+-	border: 0;
+-	color:#FFF;
+-	color:#FFF\9; /* IE6 IE7 IE8 */
+-	font-size:16px;
+-}
+-.div_table{
+-	display:table;
+-}
+-.div_tr{
+-	display:table-row;
+-}
+-.div_td{
+-	display:table-cell;
+-}
+-.title_gap{
+-	margin:20px 0px 0px 78px;
+-}
+-.img_gap{
+-	padding-right:30px;
+-	vertical-align:middle;
+-}
+-.password_gap{
+-	margin:30px 0px 0px 78px;
+-}
+-.error_hint{
+-	color: rgb(255, 204, 0);
+-	margin:10px 0px -10px 78px; 
+-	font-size: 12px;
+-}
+-
+-.error_hint1{
+-	margin:40px 0px -10px 78px; 
+-	font-size: 24px;
+-	line-height:32px;
+-	width: 580px;
+-}
+-
+-.main_field_gap{
+-	margin:100px auto 0;
+-}
+-.warming_desc{
+-	font-size: 12px;
+-	margin:10px 0px -10px 78px;
+-	color:#FC0;
+-	width: 600px;
+-}
+-
+-#captcha_img_div{
+-	margin: 30px 0px 0px 30px;
+-	width: 160px;
+-	height: 60px;
+-	border-radius: 4px;
+-	background-color:#FFF;
+-	float: left;
+-}
+-
+-#captcha_pic{
+-	width: 90%;
+-	height:90%;
+-	margin: 3px 0px 0px 0px;
+-}
+-
+-#captcha_input_div{
+-	margin: 30px 0px 0px 78px;
+-	float: left;
+-}
+-
+-#captcha_text{
+-	width: 245px;
+-	background-color: rgba(255,255,255,0.2);
+-	background-color: #576D73\9;
+-	border-radius: 4px;
+-	padding: 15px 22px;
+-	border: 0;
+-	height: 30px;
+-	color: #fff;
+-	font-size: 28px;
+-}
+-
+-#reCaptcha{
+-	margin: 45px 0px 0px 10px;
+-	width: 30px;
+-	height: 30px;
+-	float: left;
+-	background-image: url("data:image/svg+xml;charset=US-ASCII,%3C%3Fxml%20version%3D%221.0%22%20encoding%3D%22iso-8859-1%22%3F%3E%0A%3C!DOCTYPE%20svg%20PUBLIC%20%22-%2F%2FW3C%2F%2FDTD%20SVG%201.1%2F%2FEN%22%20%22http%3A%2F%2Fwww.w3.org%2FGraphics%2FSVG%2F1.1%2FDTD%2Fsvg11.dtd%22%3E%0A%3Csvg%20version%3D%221.1%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20xmlns%3Axlink%3D%22http%3A%2F%2Fwww.w3.org%2F1999%2Fxlink%22%20width%3D%2232%22%20height%3D%2232%22%20viewBox%3D%220%200%2032%2032%22%3E%0A%3Cpath%20fill%3D%22%23ABB2BB%22%20d%3D%22M31.638%2022.702c-0.181-0.664-0.906-0.604-1.509-0.785l-1.208-0.423c0.966-1.992%201.087-3.321%201.087-5.555%200-8.211-6.642-14.853-14.853-14.853s-14.853%206.702-14.853%2014.913%206.641%2014.853%2014.853%2014.853c0.664%200%201.208-0.543%201.208-1.208s-0.543-1.208-1.208-1.208c-6.823%200-12.438-5.555-12.438-12.438s5.615-12.438%2012.438-12.438%2012.438%205.555%2012.438%2012.438c0%201.872-0.060%202.838-0.845%204.528l-0.906-0.785c-0.604-0.423-0.906-0.966-1.509-0.785-0.664%200.181-0.966%200.906-0.785%201.509l1.449%204.408c0.181%200.543%200.664%200.845%201.147%200.845%200.121%200%200.241%200%200.362-0.060l4.408-1.449c0.604-0.181%200.966-0.845%200.725-1.509v0z%22%3E%3C%2Fpath%3E%0A%3C%2Fsvg%3E%0A");
+-	background-repeat: no-repeat;
+-}
+-
+-/*for mobile device*/
+-@media screen and (max-width: 1000px){
+-	.title_name {
+-		font-size: 20pt;
+-		color:#93d2d9;
+-		margin-left:15px;
+-	}
+-	.prod_madelName{
+-		font-size: 13pt;
+-		margin-left: 15px;
+-	}
+-	.p1{
+-		font-size: 12pt;
+-		width:100%;
+-	}
+-	.login_img{
+-		background-size: 75%;
+-	}
+-	.form_input{	
+-		padding:10px 11px;
+-		width: 100%;
+-		height:30px;
+-		font-size:16px
+-	}
+-	.button{
+-		height: 50px;
+-		width: 100%;
+-		font-size: 14pt;
+-		text-align: center;
+-		float:right; 
+-		margin: 25px -22px 40px 15px;
+-		line-height:50px;
+-		padding-left: 7px;
+-	}
+-	.nologin{
+-		margin-left:10px; 
+-		padding:10px;
+-		line-height:18px;
+-		width: 100%;
+-		font-size:14px;
+-	}
+-	.error_hint{
+-		margin-left:10px; 
+-	}
+-	.error_hint1{
+-		width: 100%;
+-		font-size:14px;
+-	}
+-	.main_field_gap{
+-		width:80%;
+-		margin:30px 0 0 15px;
+-		/*margin:30px auto 0;*/
+-	}
+-	.title_gap{
+-		margin-left:15px; 
+-	}
+-	.password_gap{
+-		margin-left:15px; 
+-	}
+-	.img_gap{
+-		padding-right:0;
+-		vertical-align:middle;
+-	}
+-	.warming_desc{
+-		margin: 10px 15px;
+-		width: 100%; 
+-	}
+-
+-	#captcha_img_div{
+-		margin-left: 10px;
+-		width: 30%;
+-		height: 40px;
+-		border-radius: 4px;
+-		background-color:#FFF;
+-		float: left;
+-	}
+-
+-	#captcha_pic{
+-		width: 90%;
+-		height: 90%;
+-		margin: 2px 0px 0px 3px;
+-	}
+-
+-	#captcha_input_div{
+-		margin-left: 15px;
+-		width: 47%;
+-		height: 40px;
+-	}
+-
+-	#captcha_text{
+-		padding: 0px 11px;
+-		width: 80%;
+-		height: 40px;
+-		font-size: 16px
+-	}
+-
+-	#reCaptcha{
+-		margin-top: 35px;
+-	}
+-}
+-
+-@media screen and (max-width: 320px){
+-	#captcha_input_div{
+-		width: 44%;
+-	}
++/* self-hosted fonts (offline; no CDN) */
++@font-face{font-family:'Rajdhani';font-weight:500;font-display:swap;src:url('/fonts/rajdhani-500.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C; --crimson-dim:#7A0C0C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
++::-webkit-scrollbar{width:12px;height:12px}
++::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:var(--crimson);border-radius:8px;border:2px solid #000}
++::-webkit-scrollbar-thumb:hover{background:var(--crimson-deep)}
++body.wrapper{
++  font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:
++    radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(900px 600px at 120% 120%,rgba(225,6,0,.06),transparent 55%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;
++  min-height:100vh;display:flex;padding:24px 12px;
++}
++body.wrapper::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.035;z-index:9;
++  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>")}
++form[name="form"]{margin:auto}
++/* stock table-div structure recast as one centered card */
++.div_table{display:block}
++.div_td{display:block}
++.main_field_gap{margin:0;width:min(480px,94vw)}
++.div_tr{display:block;position:relative;overflow:hidden;border-radius:14px;
++  background:linear-gradient(180deg,var(--panel-2),var(--panel));
++  border:1px solid var(--line-soft);padding:30px 34px 34px;
++  box-shadow:0 18px 50px rgba(0,0,0,.5)}
++.div_tr::before{content:"";position:absolute;left:0;top:0;height:2px;width:100%;
++  background:linear-gradient(90deg,var(--crimson),transparent 40%)}
++/* header: REAPER wordmark over the sign-in title */
++.title_name{display:flex;flex-direction:column;align-items:center;gap:14px}
++.img_gap{padding:0}
++.login_img{width:340px;height:36px;background:url('images/REAPER.png') center/contain no-repeat}
++.signin_hint{font-family:var(--hdr);font-weight:600;font-size:19px;letter-spacing:.24em;
++  text-transform:uppercase;color:var(--bone);padding-left:.24em}
++.prod_madelName{margin:8px 0 0;text-align:center;font-family:var(--hdr);font-weight:600;
++  font-size:12px;letter-spacing:.26em;text-transform:uppercase;color:var(--steel);padding-left:.26em}
++.p1{width:auto;margin:0;color:var(--bone-dim);font-size:13px;line-height:1.5}
++.title_gap{margin:22px 0 0}
++.password_gap{margin:14px 0 0}
++.form_input{display:block;width:100%;height:auto;background:#000;
++  border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);
++  padding:12px 13px;font-family:var(--body);font-size:14px;outline:none;transition:border-color .15s}
++.form_input:focus{border-color:rgba(225,6,0,.45)}
++.form_input::placeholder{color:var(--steel)}
++.button{float:none;width:100%;height:46px;line-height:46px;margin:24px 0 0;
++  border-radius:8px;text-align:center;cursor:pointer;
++  font-family:var(--hdr);font-weight:600;font-size:14px;letter-spacing:.14em;text-transform:uppercase;
++  color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));
++  border:1px solid var(--crimson-dim);transition:filter .15s}
++.button:hover{filter:brightness(1.08)}
++.button.disabled{filter:grayscale(100%) opacity(.5);pointer-events:none}
++.error_hint{margin:12px 0 0;color:var(--amber);font-size:12px;line-height:1.5}
++.error_hint1{margin:18px 0 0;font-size:15px;line-height:1.55;width:auto}
++.error_hint a,.error_hint1 a{color:var(--amber)!important}
++.warming_desc{margin:12px 0 0;width:auto;color:var(--amber);font-size:12px;line-height:1.5}
++.nologin{margin:20px 0 0;width:auto;padding:18px;border-radius:10px;
++  background:rgba(255,255,255,.02);border:1px solid var(--line-soft);
++  color:var(--bone-dim);font-size:14px;line-height:1.55}
++.nologin a{color:var(--bone)!important}
++/* captcha row */
++#captcha_field{overflow:hidden}
++#captcha_input_div{float:left;margin:16px 12px 0 0}
++#captcha_text{width:150px;height:auto;background:#000;border:1px solid var(--line-soft);
++  border-radius:8px;color:var(--bone);padding:12px 13px;font-size:20px;letter-spacing:.2em;
++  font-family:var(--body);outline:none}
++#captcha_text:focus{border-color:rgba(225,6,0,.45)}
++#captcha_img_div{float:left;margin:16px 0 0;width:150px;height:52px;border-radius:8px;background:#FFF;overflow:hidden}
++#captcha_pic{width:100%;height:100%;margin:0;object-fit:contain}
++#reCaptcha{float:left;margin:28px 0 0 12px;width:30px;height:30px;cursor:pointer;opacity:.7;
++  background-image:url("data:image/svg+xml;charset=US-ASCII,%3C%3Fxml%20version%3D%221.0%22%20encoding%3D%22iso-8859-1%22%3F%3E%0A%3C!DOCTYPE%20svg%20PUBLIC%20%22-%2F%2FW3C%2F%2FDTD%20SVG%201.1%2F%2FEN%22%20%22http%3A%2F%2Fwww.w3.org%2FGraphics%2FSVG%2F1.1%2FDTD%2Fsvg11.dtd%22%3E%0A%3Csvg%20version%3D%221.1%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20xmlns%3Axlink%3D%22http%3A%2F%2Fwww.w3.org%2F1999%2Fxlink%22%20width%3D%2232%22%20height%3D%2232%22%20viewBox%3D%220%200%2032%2032%22%3E%0A%3Cpath%20fill%3D%22%23ABB2BB%22%20d%3D%22M31.638%2022.702c-0.181-0.664-0.906-0.604-1.509-0.785l-1.208-0.423c0.966-1.992%201.087-3.321%201.087-5.555%200-8.211-6.642-14.853-14.853-14.853s-14.853%206.702-14.853%2014.913%206.641%2014.853%2014.853%2014.853c0.664%200%201.208-0.543%201.208-1.208s-0.543-1.208-1.208-1.208c-6.823%200-12.438-5.555-12.438-12.438s5.615-12.438%2012.438-12.438%2012.438%205.555%2012.438%2012.438c0%201.872-0.060%202.838-0.845%204.528l-0.906-0.785c-0.604-0.423-0.906-0.966-1.509-0.785-0.664%200.181-0.966%200.906-0.785%201.509l1.449%204.408c0.181%200.543%200.664%200.845%201.147%200.845%200.121%200%200.241%200%200.362-0.060l4.408-1.449c0.604-0.181%200.966-0.845%200.725-1.509v0z%22%3E%3C%2Fpath%3E%0A%3C%2Fsvg%3E%0A");
++  background-repeat:no-repeat;background-size:26px}
++#reCaptcha:hover{opacity:1}
++@media screen and (max-width:480px){
++  .div_tr{padding:24px 18px 26px}
++  .login_img{width:260px;height:28px}
++  .signin_hint{font-size:16px}
++  #captcha_text{width:120px}
++  #captcha_img_div{width:120px}
+ }
+ </style>
+ <script>
+-- 
+2.25.1
+

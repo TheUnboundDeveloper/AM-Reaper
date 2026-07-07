@@ -1,0 +1,186 @@
+From 02b05ecf6e8f1ad2b6cf4e809cfc3a51eac2394e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 3 Jul 2026 16:38:42 -0400
+Subject: [PATCH] ui: fix recolor coverage + revert BW gauges + dashboard
+ topbar fit at 1080p
+
+- scrollbars: stock html::-webkit-scrollbar-thumb{#248DFF !important} in
+  form_style.css beat the section-1 pseudo rules on every page - the single
+  most visible "theme did not apply" item; now overridden at equal
+  specificity later in the cascade
+- recolor now covers the widgets stock builds blue that the first pass
+  missed: element.css input.switch toggles (bar + check svg), AiProtection/
+  Parental/AiDisk .clicked/.click pills, folderClicked, all *_Block_PC
+  dropdown hovers (#3366FF), button_gen_touch/titlebtn/actionButtonOK/
+  confirm_button blues, quotabar, jquery-ui slider, popup_content_container,
+  misc blue text (hintstyle2, FormTable_NWM spans, statustext, sub_title,
+  bandtext, blue_line, band_block, division-block, guest-network titles)
+- REVERTED per user: AdaptiveQoS_Bandwidth_Monitor data-viz recolors
+  (.speed-meter-100, #indicator_upload/#indicator_download, .traffic_bar) -
+  bandwidth gauges keep stock colors; recolor is now scoped to controls and
+  chrome only, never data visualizations
+- Main_ReaperDash: topbar no longer wraps at 1080p - nowrap row, brand 34px,
+  compact pills/buttons, low-priority pills drop at 1700/1450/1280px
+- reaper_shell.asp: commit the reaperShell=true opt-out flag that shipped in
+  build df80314b55 but was left uncommitted
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp    | 32 +++++++---
+ .../src/router/www/reaper/reaper_content.css  | 63 +++++++++++++++++--
+ release/src/router/www/reaper_shell.asp       |  1 +
+ 3 files changed, 82 insertions(+), 14 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index efe79a693a..3065ababf8 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -73,20 +73,23 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .nav a.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ .nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+ 
+-/* ---------- topbar ---------- */
+-.top{display:flex;align-items:center;gap:18px;padding:12px 22px;flex-wrap:wrap;
++/* ---------- topbar ----------
++   single row that must NOT wrap on desktop: brand and buttons stay fixed,
++   the pill strip shrinks between them (media queries below drop the
++   lowest-priority pills before anything can clip at 1080p widths) */
++.top{display:flex;align-items:center;gap:14px;padding:10px 18px;flex-wrap:nowrap;
+   border-bottom:1px solid var(--line-soft);box-shadow:0 1px 0 rgba(225,6,0,.12);
+   background:#040405;position:sticky;top:0;z-index:10}
+ .brand{display:flex;align-items:center;flex:0 0 auto;text-decoration:none}
+-.brand img{height:46px;width:auto;display:block}
+-.pills{display:flex;gap:10px;flex-wrap:wrap}
+-.pill{display:flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid var(--line-soft);border-radius:8px;background:var(--panel);font-size:12px}
+-.pill .k{color:var(--steel);text-transform:uppercase;letter-spacing:.12em;font-size:10px}
++.brand img{height:34px;width:auto;display:block}
++.pills{display:flex;gap:8px;flex-wrap:nowrap;min-width:0;overflow:hidden}
++.pill{display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--line-soft);border-radius:8px;background:var(--panel);font-size:11px;white-space:nowrap;flex:0 0 auto}
++.pill .k{color:var(--steel);text-transform:uppercase;letter-spacing:.12em;font-size:9px}
+ .pill .v{color:var(--bone);font-family:var(--hdr);font-weight:600;letter-spacing:.03em}
+-.dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15)}
++.dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15);flex:0 0 auto}
+ .spacer{flex:1}
+-.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:12px;
+-  padding:9px 16px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone-dim);cursor:pointer;transition:.15s}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11px;
++  padding:8px 13px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone-dim);cursor:pointer;transition:.15s;white-space:nowrap;flex:0 0 auto}
+ .btn:hover{color:var(--bone);border-color:var(--line)}
+ .btn.crit{color:#fff;border-color:var(--crimson-dim);background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
+ .btn.crit:hover{filter:brightness(1.08)}
+@@ -207,6 +210,15 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .cgline{flex:1;height:1px;background:var(--line-soft)}
+ 
+ /* ---------- responsive ---------- */
++@media (max-width:1700px){
++  .pills .pill:nth-child(n+6){display:none}   /* drop Mesh Nodes */
++}
++@media (max-width:1450px){
++  .pills .pill:nth-child(n+5){display:none}   /* drop Clients */
++}
++@media (max-width:1280px){
++  .pills .pill:nth-child(n+4){display:none}   /* drop Firmware */
++}
+ @media (max-width:1180px){
+   .col8{grid-column:span 12}.col7{grid-column:span 12}
+   .col5{grid-column:span 7}.col4{grid-column:span 5}.col3{grid-column:span 4}
+@@ -219,6 +231,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ }
+ @media (max-width:680px){
+   .app{grid-template-columns:1fr}
++  .top{flex-wrap:wrap}
++  .pills{flex-wrap:wrap;overflow:visible}
+   .rail{position:sticky;top:0;height:auto;width:100%;flex-direction:row;align-items:center;
+     justify-content:flex-start;gap:4px;padding:8px 10px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line-soft)}
+   .wordmark{padding:0 10px 0 0;font-size:17px;white-space:nowrap;text-align:left}
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 3bf9b47444..58dd0430c6 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -109,13 +109,66 @@ html{overflow-y:auto!important}
+ tr[bgcolor="#4D595D"],tr[bgcolor="#4d595d"]{background:transparent!important}
+ .contentM_qis{background-color:#0f0f12!important;border:1px solid rgba(225,6,0,.35)!important}
+ 
+-/* ---------- 7. recolor: stock blue/green accents -> reaper palette ---------- */
++/* ---------- 7. recolor: stock blue accents -> reaper palette ----------
++   CONTROLS AND CHROME ONLY. Data visualizations keep their stock colors:
++   bandwidth-monitor gauges/needles/bars, speedtest dial + rainbow scale,
++   traffic charts, signal meters, CPU/RAM core colors, status greens. */
++
++/* scrollbars: the stock html::-webkit-* rules in form_style.css carry
++   !important and higher specificity than the section-1 pseudo rules, so
++   every page still showed the stock blue thumb - beat them here */
++html::-webkit-scrollbar{display:block!important;width:12px!important;height:12px!important;padding:0!important}
++html::-webkit-scrollbar-thumb{background-color:#E10600!important;border:2px solid #000!important;border-radius:8px!important}
++html::-webkit-scrollbar-track{background-color:#000!important}
++
++/* toggle switches - all three stock mechanisms */
+ .switch input:checked~.container{background:linear-gradient(180deg,#E10600,#B3000C)!important}
+ .switch2 input:checked~.container{background:linear-gradient(180deg,#E10600,#B3000C)!important}
+ img.iphone_switch{filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(4) brightness(.95)}
+-.speed-meter-100{filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3.5) brightness(.9)}
+-#indicator_upload,#indicator_download{filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3)}
+-.traffic_bar{background-color:#E10600!important}
++input.switch:checked~.switch_container>.switch_bar{background-color:#E10600!important}
++input.switch:checked~.switch_container>.switch_bar+.switch_circle>div{filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(4)}
++
++/* selected pills / tab chips (AiProtection, Parental Controls, AiDisk) */
++.clicked{background-color:#E10600!important;box-shadow:0 0 6px rgba(225,6,0,.45)!important}
++.click:hover{background-color:rgba(225,6,0,.45)!important;box-shadow:none!important}
++.folderClicked{color:#E10600!important}
++
++/* dropdown suggestion lists + clickable rows: stock #3366FF hover */
++div[id$="_Block_PC"] div:hover,#ClientList_Block a:hover,#WDSAPList div:hover,
++.clientlist_dropdown div:hover,.clientlist_dropdown a:hover,
++.dns_server_list_dropdown div:hover,.dns_server_list_dropdown a:hover,
++#QoSList_Block div:hover,.table_clientlist_item:hover,
++.WL_MAC_Block div:hover,.WL_MAC_Block a:hover,
++.StatusClickHint_mouseover{background-color:#B3000C!important;color:#fff!important}
++
++/* buttons still on the stock blue gradient */
++.button_gen_touch,.titlebtn:hover,.button_gen_dis:hover,
++.confirm_button_gen_long_left:hover,.confirm_button_gen_long_right:hover{
++  background:linear-gradient(180deg,#2a0507,#160204)!important;
++  border-color:#E10600!important;color:#fff!important}
++.actionButtonOK{background-color:#E10600!important;color:#fff!important}
++.confirm_button:hover,.confirm_button:active{background:#B3000C!important}
++
++/* misc stock-blue text / borders */
++.hintstyle2,.hintstyle2:link,.hintstyle2:visited{color:#ECE7DB!important}
++.hintstyle2:hover{color:#E10600!important}
++.FormTable_NWM td span{color:#ECE7DB!important}
++.statustext{color:#B7B1A4!important}
++.sub_title{color:#ECE7DB!important}
++.inputinfo{color:#B7B1A4!important}
++.bandtext{color:#B7B1A4!important}
++.conn_status_hint>a{color:#E0A93B!important}
++.blue_line{background-color:#E10600!important;border-color:#E10600!important}
++.band_block{border-color:#E10600!important;color:#E10600!important}
++.division-block{border-left-color:#E10600!important}
++.guestNetwork_name_edited,.gnset_edit_titleName{color:#ECE7DB!important}
++.gnset_copySettingContent_txt{color:#E0A93B!important}
++.quotabar{background:linear-gradient(180deg,#E10600,#B3000C)!important}
++/* jquery-ui slider (network map and friends) */
++.ui-slider .ui-slider-range{background:#E10600!important}
++.ui-slider .ui-slider-handle{background:#ECE7DB!important;border-color:#E10600!important}
++/* popup containers on the stock blue-tinted gradient */
++.popup_container .popup_content_container{background:#0f0f12!important;border:1px solid rgba(225,6,0,.35)!important}
+ /* InternetSpeed wraps the speedtest in a bare div#FormTitle with an inline
+-   grey background - and deepen the recolored gauge tone */
++   grey background */
+ div#FormTitle{background-color:#0f0f12!important}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 0ade3bc35a..8d8fd7f5e0 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -133,6 +133,7 @@ var ICONS = {
+   _default:            '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/></svg>'
+ };
+ 
++var reaperShell = true;
+ function $id(id){return document.getElementById(id);}
+ function frameUrl(page){ return '/' + page; }
+ 
+-- 
+2.25.1
+

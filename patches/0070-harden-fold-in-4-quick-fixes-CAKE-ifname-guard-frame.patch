@@ -1,0 +1,178 @@
+From 74385b68d93af40fcc3451c624c6b248963a64cc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 5 Jul 2026 16:27:21 -0400
+Subject: [PATCH] harden: fold in 4 quick fixes (CAKE ifname guard, frameUrl
+ allow-list, dash encode, dead-fn rm)
+
+- rc/qos.c start_cake(): apply the R4-3 wan_ifname charset guard (the value is
+  single-quoted into the CAKE root script, same sink as start_hwqos).
+- www/reaper_shell.asp frameUrl(): replace the deny-list with the R4-2 allow-list
+  ^[A-Za-z0-9_.-]+\.(asp|html?)(\?...)?$ so the code matches REAPER-FIXES.md
+  (all 121 framed page URLs are .asp/.htm; DEFAULT_PAGE=index.asp).
+- www/Main_ReaperDash.asp: encode wan0_gateway/wan0_dns via nvram_char_to_ascii +
+  decodeURIComponent (extends R4-4).
+- shared/shutils.c: remove dead generate_wireless_key (0 callers) + both header
+  externs.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c                | 14 ++++++
+ release/src/router/shared/shared.h         |  1 -
+ release/src/router/shared/shutils.c        | 56 ----------------------
+ release/src/router/shared/shutils.h        |  1 -
+ release/src/router/www/Main_ReaperDash.asp |  4 +-
+ release/src/router/www/reaper_shell.asp    |  7 ++-
+ 6 files changed, 21 insertions(+), 62 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 1a8cbfcee3..c1f8138df4 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2855,6 +2855,20 @@ int start_cake(void)
+ 	snprintf(overheadstr, sizeof(overheadstr), "overhead %d mpu %d", nvram_get_int("qos_overhead"), nvram_get_int("qos_mpu"));
+ 
+ 	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
++	const char *p;
++
++	/* wan_ifname is single-quoted into ULIF/DLIF/MIF in the generated root
++	 * script; a literal quote (or any shell-unsafe char) would break out. It is
++	 * a kernel-derived token, but guard defensively (matches start_hwqos): reject
++	 * anything that isn't a plain interface name and fall back to an empty
++	 * (inert) value rather than emit it. */
++	for (p = wan_ifname; *p; p++) {
++		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
++		      (*p >= '0' && *p <= '9') || *p == '.' || *p == '_' || *p == '-')) {
++			wan_ifname = "";
++			break;
++		}
++	}
+ 
+ 	snprintf(nvnat, sizeof (nvnat), "wan%d_nat_x", wan_primary_ifunit());
+ 	nat = nvram_get_int(nvnat);
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index ef2017d3a5..2171dc465d 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -1089,7 +1089,6 @@ extern void shortstr_encrypt(unsigned char *src, unsigned char *dst, unsigned ch
+ extern void shortstr_decrypt(unsigned char *src, unsigned char *dst, unsigned char shift);
+ extern char *enc_str(char *str, char *enc_buf);
+ extern char *dec_str(char *ec_str, char *dec_buf);
+-extern int generate_wireless_key(unsigned char *key);
+ extern int strArgs(int argc, char **argv, char *fmt, ...);
+ extern char *trimNL(char *str);
+ extern char *get_process_name_by_pid(const int pid);
+diff --git a/release/src/router/shared/shutils.c b/release/src/router/shared/shutils.c
+index b7c50d6cf2..74052f9548 100644
+--- a/release/src/router/shared/shutils.c
++++ b/release/src/router/shared/shutils.c
+@@ -2263,62 +2263,6 @@ char *dec_str(char *ec_str, char *dec_buf)
+         return dec_buf;
+ }
+ 
+-int generate_wireless_key(unsigned char *key)
+-{
+-	int i;
+-	unsigned char ea[ETHER_ADDR_LEN];
+-	char *mac = nvram_safe_get("et1macaddr");
+-
+-	memset(key, 0, 32);
+-	ether_atoe(mac, ea);
+-
+-	sprintf((char *) key, "%x%x%x%x%x%x%x%x",
+-		(ea[2] & 0xf0) >> 4,
+-		(ea[2] & 0x0f),
+-		(ea[3] & 0xf0) >> 4,
+-		(ea[3] & 0x0f),
+-		(ea[4] & 0xf0) >> 4,
+-		(ea[4] & 0x0f),
+-		(ea[5] & 0xf0) >> 4,
+-		(ea[5] & 0x0f));
+-	key[8] = 0x0;
+-
+-	for (i = 0; i < 3; i++)
+-	{
+-		switch(key[i])
+-		{
+-			case '0': key[i] = 'a'; break;
+-			case '1': key[i] = 'b'; break;
+-			case '2': key[i] = 'c'; break;
+-			case '3': key[i] = 'd'; break;
+-			case '4': key[i] = 'e'; break;
+-			case '5': key[i] = 'f'; break;
+-			case '6': key[i] = 'g'; break;
+-			case '7': key[i] = 'h'; break;
+-			case '8': key[i] = 'j'; break;
+-			case '9': key[i] = 'k'; break;
+-		}
+-	}
+-
+-	for (i = 3; i < 8; i++)
+-	{
+-		switch(key[i])
+-		{
+-			case '0': key[i] = '1'; break;
+-			case 'a': key[i] = '2'; break;
+-			case 'b': key[i] = '3'; break;
+-			case 'c': key[i] = '4'; break;
+-			case 'd': key[i] = '5'; break;
+-			case 'e': key[i] = '7'; break;
+-			case 'f': key[i] = '8'; break;
+-		}
+-	}
+-
+-	printf("key:  %s (%d)\n", (char *)key, (int)strlen((const char *) key));
+-
+-	return 0;
+-}
+-
+ int
+ strArgs(int argc, char **argv, char *fmt, ...)
+ {
+diff --git a/release/src/router/shared/shutils.h b/release/src/router/shared/shutils.h
+index 2451e7a359..2280695ddc 100644
+--- a/release/src/router/shared/shutils.h
++++ b/release/src/router/shared/shutils.h
+@@ -647,7 +647,6 @@ typedef struct ping_result_s
+ 
+ extern void str_binit(struct strbuf *b, char *buf, unsigned int size);
+ extern int str_bprintf(struct strbuf *b, const char *fmt, ...);
+-extern int generate_wireless_key(unsigned char *key);
+ 
+ extern int strArgs(int argc, char **argv, char *fmt, ...);
+ extern char *trimNL(char *str);
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index a46e3305eb..aef92977c1 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -484,8 +484,8 @@ var SSI = {
+   buildno:  '<% nvram_get("buildno"); %>',
+   extendno: '<% nvram_get("extendno"); %>',
+   wanip:    '<% nvram_get("wan0_ipaddr"); %>',
+-  gw:       '<% nvram_get("wan0_gateway"); %>',
+-  dns:      '<% nvram_get("wan0_dns"); %>',
++  gw:       decodeURIComponent('<% nvram_char_to_ascii("", "wan0_gateway"); %>'),
++  dns:      decodeURIComponent('<% nvram_char_to_ascii("", "wan0_dns"); %>'),
+   wan_state:'<% nvram_get("wan0_state_t"); %>',
+   ddns_en:  '<% nvram_get("ddns_enable_x"); %>',
+   ddns_host:decodeURIComponent('<% nvram_char_to_ascii("", "ddns_hostname_x"); %>'),
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 6abdf7aa2d..e9ec5eca85 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -163,8 +163,11 @@ var ICONS = {
+ var reaperShell = true;
+ function $id(id){return document.getElementById(id);}
+ function frameUrl(page){
+-  /* keep the framed page same-origin: reject a leading slash or backslash and any url scheme so a hash fragment cannot steer the iframe off-origin */
+-  if(/^[\\/]/.test(page) || /^[^?]*:/.test(page)) page = DEFAULT_PAGE;
++  /* allow-list (matches REAPER-FIXES.md R4-2): only a bare same-origin page
++     filename, optionally with a query - no leading slash/backslash, no scheme,
++     no path. Anything else falls back to the dashboard so a hash fragment cannot
++     steer the iframe off-origin. */
++  if(!/^[A-Za-z0-9_.\-]+\.(asp|html?)(\?.*)?$/.test(page)) page = DEFAULT_PAGE;
+   return '/' + page;
+ }
+ 
+-- 
+2.25.1
+

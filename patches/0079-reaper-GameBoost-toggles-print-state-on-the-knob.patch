@@ -1,0 +1,54 @@
+From 5c2d3d7df4e88fd199e8406a68893ee8d182f127 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 6 Jul 2026 19:47:13 -0400
+Subject: [PATCH] reaper: GameBoost toggles - print state on the knob
+
+Third regression of the Gear Accelerator ON/OFF slider: the stock mechanism
+needs the ::after knob to cover the inactive table-cell label, but auto table
+layout collapses both labels to one side. Hide the cell labels and render
+ON/OFF as the knob content instead (also applied to the identical GearUP
+toggle) - deterministic regardless of table geometry.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../src/router/www/reaper/reaper_content.css  | 24 +++++++++----------
+ 1 file changed, 11 insertions(+), 13 deletions(-)
+
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 289dc5f798..a8430454eb 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -436,19 +436,17 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+    which is the wanted "black around the red icon" look). */
+ .client_list_bg .client_icon_bg.default_icon,
+ .client_list_bg .client_icon_bg.user_icon{background-color:#000!important}
+-/* GameBoost "Game Priority" wide ON/OFF slider (#game_priority_enable): its
+-   own .switch/.container/.container::after collided with the global toggle
+-   recolor, leaving grey-on-grey text hidden under the knob. The prior fix made
+-   BOTH the knob and the lifted labels bone, so the label under the knob was
+-   bone-on-bone = invisible. Give the knob a DARK neutral fill (with a border so
+-   it still reads as a knob) so the bone label stays readable on top of it. */
+-#game_priority_enable ~ .container{background:#1a1a1f!important}
+-#game_priority_enable:checked ~ .container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
+-#game_priority_enable ~ .container::after{background-color:#2a2a30!important;border:1px solid rgba(255,255,255,.18)!important}
+-/* keep the labels bone but do NOT lift them above the knob: the .container::after
+-   knob must cover the inactive label so only the active one shows (was showing
+-   both ON and OFF because z-index:1 raised both labels over the knob). */
+-#game_priority_enable ~ .container div{color:#ECE7DB!important}
++/* GameBoost "Game Priority" (#game_priority_enable) + "GearUP" (#gearup_enable)
++   wide ON/OFF sliders: the page-local .switch mechanism relies on the ::after
++   knob covering the inactive table-cell label, but auto table layout lets both
++   labels collapse to one side of the knob (third regression of this toggle).
++   Print the state ON the knob itself and hide the cell labels entirely -
++   deterministic regardless of table geometry. */
++#game_priority_enable ~ .container,#gearup_enable ~ .container{background:#1a1a1f!important}
++#game_priority_enable:checked ~ .container,#gearup_enable:checked ~ .container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
++#game_priority_enable ~ .container div div,#gearup_enable ~ .container div div{display:none!important}
++#game_priority_enable ~ .container::after,#gearup_enable ~ .container::after{content:'OFF'!important;box-sizing:border-box!important;background-color:#2a2a30!important;border:1px solid rgba(255,255,255,.18)!important;color:#ECE7DB!important;font-family:'Rajdhani',system-ui,sans-serif!important;font-size:15px!important;font-weight:600!important;letter-spacing:.06em!important;text-align:center!important;line-height:38px!important}
++#game_priority_enable:checked ~ .container::after,#gearup_enable:checked ~ .container::after{content:'ON'!important}
+ 
+ /* ---------- 15. Phase-B migration: recolors relocated from now-pristine stock
+    CSS (form_style.css, index_style.css). The stock files revert to upstream; the
+-- 
+2.25.1
+

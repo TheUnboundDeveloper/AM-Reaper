@@ -1,0 +1,225 @@
+From 102fc2c7032d72c62b8218fbca117e74d1a12c9a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 29 Jun 2026 15:49:53 -0400
+Subject: [PATCH] fix(libcodb): SQL identifier injection + source-bounded
+ strncpy
+
+- cosql_utils.c: the diag query "content" column list and the SUM/AVG
+  column_name reach SELECT/SUM/AVG as raw SQL identifiers. is_valid_text
+  permits ()%|,= and spaces, so an identifier like "1),(SELECT ..." gets
+  through (post-auth admin data exfiltration). Add a strict identifier
+  check ([A-Za-z_][A-Za-z0-9_]*) on the SELECT projection columns and on
+  cosql_{sum,avg}_{between_time,latest_count_limit} column_name.
+- codb_utils.c: replace the six strncpy(dst,src,strlen(src)) backup-path
+  copies (source-length bounded, no NUL terminator) with dest-bounded
+  snprintf.
+
+Round-3 audit Tier C8/D9.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/libcodb/codb_utils.c  | 12 ++---
+ release/src/router/libcodb/cosql_utils.c | 63 ++++++++++++++++++------
+ 2 files changed, 54 insertions(+), 21 deletions(-)
+ mode change 100755 => 100644 release/src/router/libcodb/cosql_utils.c
+
+diff --git a/release/src/router/libcodb/codb_utils.c b/release/src/router/libcodb/codb_utils.c
+index c13663e4f5..b98f260d83 100644
+--- a/release/src/router/libcodb/codb_utils.c
++++ b/release/src/router/libcodb/codb_utils.c
+@@ -632,7 +632,7 @@ int codb_content_query_json_field(char* db_name, int columns_count, char* column
+                 
+                 pdb_backup = cosql_open(find_backup_db_file_path);
+                 if (pdb_backup!=NULL) {
+-                    strncpy(backup_db_file_path, find_backup_db_file_path, strlen(find_backup_db_file_path));
++                    snprintf(backup_db_file_path, sizeof(backup_db_file_path), "%s", find_backup_db_file_path);	/* dest-bounded, always NUL-terminated */
+                     codbg("Open backup_db_file_path=%s", backup_db_file_path);
+                 }
+             }
+@@ -859,7 +859,7 @@ int codb_latest_content_query_json_field(char* db_name, int columns_count, char*
+                     
+                     pdb_backup = cosql_open(find_backup_db_file_path);
+                     if (pdb_backup!=NULL) {
+-                        strncpy(backup_db_file_path, find_backup_db_file_path, strlen(find_backup_db_file_path));
++                        snprintf(backup_db_file_path, sizeof(backup_db_file_path), "%s", find_backup_db_file_path);	/* dest-bounded, always NUL-terminated */
+                         codbg("Open backup_db_file_path=%s", backup_db_file_path);
+                     }
+                 }
+@@ -1044,7 +1044,7 @@ int codb_content_query_duration_json_field(char* db_name, int columns_count, cha
+                 
+                 pdb_backup = cosql_open(find_backup_db_file_path);
+                 if (pdb_backup!=NULL) {
+-                    strncpy(backup_db_file_path, find_backup_db_file_path, strlen(find_backup_db_file_path));
++                    snprintf(backup_db_file_path, sizeof(backup_db_file_path), "%s", find_backup_db_file_path);	/* dest-bounded, always NUL-terminated */
+                     fprintf(stderr, "Open backup_db_file_path=%s\n", backup_db_file_path);
+                 }
+             }
+@@ -1215,7 +1215,7 @@ int codb_avg_query_json_field(char* db_name, char* field_name, char* node_mac, i
+ 
+                     pdb_backup = cosql_open(find_backup_db_file_path);
+                     if (pdb_backup!=NULL) {
+-                        strncpy(backup_db_file_path, find_backup_db_file_path, strlen(find_backup_db_file_path));
++                        snprintf(backup_db_file_path, sizeof(backup_db_file_path), "%s", find_backup_db_file_path);	/* dest-bounded, always NUL-terminated */
+                         fprintf(stderr, "Open backup_db_file_path=%s\n", backup_db_file_path);
+                     }
+                 }
+@@ -1380,7 +1380,7 @@ int codb_eth_detect_traffic_data(char* node_mac, int is_bh, int start, int end,
+ 
+                     pdb_backup = cosql_open(find_backup_db_file_path);
+                     if (pdb_backup!=NULL) {
+-                        strncpy(backup_db_file_path, find_backup_db_file_path, strlen(find_backup_db_file_path));
++                        snprintf(backup_db_file_path, sizeof(backup_db_file_path), "%s", find_backup_db_file_path);	/* dest-bounded, always NUL-terminated */
+                         fprintf(stderr, "Open backup_db_file_path=%s\n", backup_db_file_path);
+                     }
+                 }
+@@ -1674,7 +1674,7 @@ int codb_count_active_client(char* node_mac, int start, int end, int duration, j
+ 
+                 pdb_backup = cosql_open(find_backup_db_file_path);
+                 if (pdb_backup!=NULL) {
+-                    strncpy(backup_db_file_path, find_backup_db_file_path, strlen(find_backup_db_file_path));
++                    snprintf(backup_db_file_path, sizeof(backup_db_file_path), "%s", find_backup_db_file_path);	/* dest-bounded, always NUL-terminated */
+                     fprintf(stderr, "open backup_db_file_path=%s\n", backup_db_file_path);
+                 }
+             }
+diff --git a/release/src/router/libcodb/cosql_utils.c b/release/src/router/libcodb/cosql_utils.c
+old mode 100755
+new mode 100644
+index e4d562b6b3..df60c44d34
+--- a/release/src/router/libcodb/cosql_utils.c
++++ b/release/src/router/libcodb/cosql_utils.c
+@@ -311,6 +311,23 @@ static int is_valid_text(const char* input)
+ 	return FORMAT_OK;
+ }
+ 
++/* Strict SQL identifier check: a bare column/table identifier must be [A-Za-z_][A-Za-z0-9_]*.
++ * is_valid_text() permits ()%|,= and spaces, which is unsafe for an identifier emitted raw
++ * into SELECT/SUM/AVG (sub-query injection). Use this wherever a value becomes a bare identifier. */
++static int is_valid_sql_identifier(const char* s)
++{
++	int i;
++	if (!s || !*s)
++		return FORMAT_ERROR;
++	if (!(isalpha((unsigned char)s[0]) || s[0]=='_'))
++		return FORMAT_ERROR;
++	for (i=0; s[i]; i++) {
++		if (!(isalnum((unsigned char)s[i]) || s[i]=='_'))
++			return FORMAT_ERROR;
++	}
++	return FORMAT_OK;
++}
++
+ static int is_valid_text_mac(const char* input) 
+ {
+ 	if(!input) {
+@@ -1965,7 +1982,7 @@ int cosql_get_column_values(sqlite3* pdb,
+ 	for (i=0; i<query_columns_count; i++) {
+ 		char *column_name = query_columns->name;
+ 
+-		if (column_name!=NULL && strlen(column_name)>0) {
++		if (column_name!=NULL && strlen(column_name)>0 && is_valid_sql_identifier(column_name)==FORMAT_OK) {
+ 
+ 			if (strlen(sql_column_names)>0) {
+ 				strncat(sql_column_names, ",", 1);
+@@ -2221,12 +2238,12 @@ int cosql_get_last_xth_double_value(sqlite3* pdb,
+ 	return COSQL_OK;
+ }
+ 
+-int cosql_sum_between_time(sqlite3* pdb, 
+-	int match_and_columns_count, sql_column_match_t* match_and_columns, 
+-	int match_or_columns_count, sql_column_match_t* match_or_columns, 
+-	const char* column_name, 
+-	int start_data_time, int end_data_time, 
+-	double* ret_value) 
++int cosql_sum_between_time(sqlite3* pdb,
++	int match_and_columns_count, sql_column_match_t* match_and_columns,
++	int match_or_columns_count, sql_column_match_t* match_or_columns,
++	const char* column_name,
++	int start_data_time, int end_data_time,
++	double* ret_value)
+ {
+ 	if (pdb == NULL) {
+ 		return COSQL_ERROR;
+@@ -2236,6 +2253,10 @@ int cosql_sum_between_time(sqlite3* pdb,
+ 		return COSQL_ERROR;
+ 	}
+ 
++	if (is_valid_sql_identifier(column_name)!=FORMAT_OK) {	/* column_name -> raw SELECT SUM(%s) identifier; reject injection */
++		return COSQL_ERROR;
++	}
++
+ 	if (start_data_time<=0 || end_data_time<=0 || start_data_time>end_data_time) {
+ 		return COSQL_ERROR;
+ 	}
+@@ -2315,8 +2336,8 @@ int cosql_avg_between_time(sqlite3* pdb,
+ 	int match_and_columns_count, sql_column_match_t* match_and_columns, 
+ 	int match_or_columns_count, sql_column_match_t* match_or_columns,
+ 	const char* column_name, 
+-	int start_data_time, int end_data_time, 
+-	double* ret_value) 
++	int start_data_time, int end_data_time,
++	double* ret_value)
+ {
+ 	if (pdb == NULL) {
+ 		return COSQL_ERROR;
+@@ -2326,6 +2347,10 @@ int cosql_avg_between_time(sqlite3* pdb,
+ 		return COSQL_ERROR;
+ 	}
+ 
++	if (is_valid_sql_identifier(column_name)!=FORMAT_OK) {	/* column_name -> raw SELECT AVG(%s) identifier; reject injection */
++		return COSQL_ERROR;
++	}
++
+ 	if (start_data_time<=0 || end_data_time<=0 || start_data_time>end_data_time) {
+ 		return COSQL_ERROR;
+ 	}
+@@ -2404,8 +2429,8 @@ int cosql_avg_between_time(sqlite3* pdb,
+ int cosql_sum_latest_count_limit(sqlite3* pdb, 
+ 	int match_and_columns_count, sql_column_match_t* match_and_columns, 
+ 	int match_or_columns_count, sql_column_match_t* match_or_columns,
+-	const char* column_name, int latest_count_limit, 
+-	double* ret_value) 
++	const char* column_name, int latest_count_limit,
++	double* ret_value)
+ {
+ 	if (pdb == NULL) {
+ 		return COSQL_ERROR;
+@@ -2415,6 +2440,10 @@ int cosql_sum_latest_count_limit(sqlite3* pdb,
+ 		return COSQL_ERROR;
+ 	}
+ 
++	if (is_valid_sql_identifier(column_name)!=FORMAT_OK) {	/* column_name -> raw SELECT SUM(%s) identifier; reject injection */
++		return COSQL_ERROR;
++	}
++
+ 	char* sql_and_where = NULL;
+ 	if (match_and_columns_count>0) {
+ 		sql_and_where = gen_match_query_string(match_and_columns_count, match_and_columns, sql_and_where, " AND ");
+@@ -2495,10 +2524,10 @@ int cosql_sum_latest_count_limit(sqlite3* pdb,
+ 	return COSQL_OK;
+ }
+ 
+-int cosql_avg_latest_count_limit(sqlite3* pdb, 
+-	int match_and_columns_count, sql_column_match_t* match_and_columns, 
+-	int match_or_columns_count, sql_column_match_t* match_or_columns, 
+-	const char* column_name, int latest_count_limit, 
++int cosql_avg_latest_count_limit(sqlite3* pdb,
++	int match_and_columns_count, sql_column_match_t* match_and_columns,
++	int match_or_columns_count, sql_column_match_t* match_or_columns,
++	const char* column_name, int latest_count_limit,
+ 	double* ret_value)
+ {
+ 
+@@ -2510,6 +2539,10 @@ int cosql_avg_latest_count_limit(sqlite3* pdb,
+ 		return COSQL_ERROR;
+ 	}
+ 
++	if (is_valid_sql_identifier(column_name)!=FORMAT_OK) {	/* column_name -> raw SELECT AVG(%s) identifier; reject injection */
++		return COSQL_ERROR;
++	}
++
+ 	char* sql_and_where = NULL;
+ 	if (match_and_columns_count>0) {
+ 		sql_and_where = gen_match_query_string(match_and_columns_count, match_and_columns, sql_and_where, " AND ");
+-- 
+2.25.1
+

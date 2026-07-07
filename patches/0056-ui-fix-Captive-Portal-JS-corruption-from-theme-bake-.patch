@@ -1,0 +1,123 @@
+From 5d12ccf916c80f6a3f4f3b4e738b656cebed1d49 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 3 Jul 2026 18:16:02 -0400
+Subject: [PATCH] ui: fix Captive Portal JS corruption from theme bake +
+ visual-audit fixes
+
+Full visual parity audit (113 pages x stock-vs-reaper screenshots, reviewed
+pairwise): 8 pages had defects, all fixed or triaged:
+
+- CRITICAL: Captive_Portal.asp / Captive_Portal_Advanced.asp - the UI-flip
+  bake injected the theme <link>+bounce before the FIRST </head>, which on
+  these two pages sits INSIDE a JavaScript splash-page template string
+  (html_landing / splash_page_adv_html). The raw quotes+newlines were a JS
+  syntax error in the shipped builds and the real document head never got
+  the theme (pages rendered fully stock). Repaired the template strings and
+  re-injected before the real (last) </head>. Swept all other pages: no
+  other multi-</head> victims.
+- AiProtection MaliciousSites/IPS/InfectedDevice (+_m): Security Event /
+  Threat Activities cards + events table paint grey via INLINE style
+  attributes - now matched with [style*=...] selectors (bgcolor rules never
+  applied to these)
+- Notification page Reminds box: shared .control_bg grey panel -> dark
+- Captive Portal panels: .gn_content, splash textarea/toolbar/step classes
+- QoS user rules: FormTable thead gradient moved from td to tr so multi-td
+  header rows no longer restart the gradient per cell
+Known-low (not fixed): Main_Analysis latency-chart canvas draws at stock
+740px width inside the wider themed panel.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/Captive_Portal.asp     |  6 +++---
+ .../router/www/Captive_Portal_Advanced.asp    |  6 +++---
+ .../src/router/www/reaper/reaper_content.css  | 21 ++++++++++++++++++-
+ 3 files changed, 26 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/www/Captive_Portal.asp b/release/src/router/www/Captive_Portal.asp
+index c5b1e72e00..202b97d5c9 100644
+--- a/release/src/router/www/Captive_Portal.asp
++++ b/release/src/router/www/Captive_Portal.asp
+@@ -1343,9 +1343,7 @@ function save_splash_page_content() {
+ 		html_landing += "return false;\n";
+ 		html_landing += "}\n";
+ 		html_landing += "<_TAG_END_>\n";
+-		html_landing += "<link rel="stylesheet" type="text/css" href="/reaper/reaper_content.css">
+-<script>if(self===top){var rp=location.pathname.split("/").pop()||"index.asp";location.replace(rp==="index.asp"?"/Main_ReaperDash.asp":"/reaper_shell.asp#"+rp+location.search);}</script>
+-</head>\n";
++		html_landing += "</head>\n";
+ 		html_landing += "<body onload='initial();' id='splash_body' class='splash_body'>\n";
+ 		if(terms_service_status) {
+ 			html_landing += "<div id='terms_service' class='terms_service'></div>\n";
+@@ -1835,6 +1833,8 @@ function check_gn_if_status(_subunit, _gn_array) {
+ }
+ </script>
+ 
++<link rel="stylesheet" type="text/css" href="/reaper/reaper_content.css">
++<script>if(self===top){var rp=location.pathname.split("/").pop()||"index.asp";location.replace(rp==="index.asp"?"/Main_ReaperDash.asp":"/reaper_shell.asp#"+rp+location.search);}</script>
+ </head>
+ 
+ <body onload="initial();" onunLoad="return unload_body();" class="bg">
+diff --git a/release/src/router/www/Captive_Portal_Advanced.asp b/release/src/router/www/Captive_Portal_Advanced.asp
+index 4d9bf28eb2..ee69b7b5da 100644
+--- a/release/src/router/www/Captive_Portal_Advanced.asp
++++ b/release/src/router/www/Captive_Portal_Advanced.asp
+@@ -3999,9 +3999,7 @@ function finishRule(flag) {
+ 	splash_page_adv_html += "return result ? 'rgb(' + parseInt(result[1], 16) + ',' + parseInt(result[2], 16) + ',' + parseInt(result[3], 16) + ')' : 'rgb(255,255,255)';\n";
+ 	splash_page_adv_html += "}\n";
+ 	splash_page_adv_html += "<_TAG_END_>\n";
+-	splash_page_adv_html += "<link rel="stylesheet" type="text/css" href="/reaper/reaper_content.css">
+-<script>if(self===top){var rp=location.pathname.split("/").pop()||"index.asp";location.replace(rp==="index.asp"?"/Main_ReaperDash.asp":"/reaper_shell.asp#"+rp+location.search);}</script>
+-</head>\n";
++	splash_page_adv_html += "</head>\n";
+ 	splash_page_adv_html += "<body id='component_body' onload='initial();' style='overflow-x:hidden;overflow-y:auto;background-color:#21333E;font-family:Arial,Helvetica,sans-serif;'>\n";
+ 	if(component_array['component_eula'])
+ 		splash_page_adv_html += "<div id='terms_service' class='terms_service'></div>\n";
+@@ -5032,6 +5030,8 @@ function remove_hint_msg() {
+ }
+ </script>
+ 
++<link rel="stylesheet" type="text/css" href="/reaper/reaper_content.css">
++<script>if(self===top){var rp=location.pathname.split("/").pop()||"index.asp";location.replace(rp==="index.asp"?"/Main_ReaperDash.asp":"/reaper_shell.asp#"+rp+location.search);}</script>
+ </head>
+ 
+ <body onload="initial();" onunLoad="return unload_body();" class="bg">
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index a1b457a966..c4a1cbd661 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -51,8 +51,12 @@ td[bgcolor="#4D595D"]{background:transparent!important}
+   border-color:rgba(255,255,255,.06)!important;font-weight:500!important;text-shadow:none!important}
+ .FormTable td,.FormTable_table td{background:#0c0c0f!important;color:#ECE7DB!important;
+   border-color:rgba(255,255,255,.06)!important}
++/* gradient lives on the ROW: multi-td header rows would restart the gradient
++   per cell (seen on QoS user rules) */
++.FormTable thead tr,.FormTable_table thead tr{
++  background:linear-gradient(90deg,rgba(225,6,0,.25),#141418)!important}
+ .FormTable thead td,.FormTable_table thead td{
+-  background:linear-gradient(90deg,rgba(225,6,0,.25),#141418)!important;color:#ECE7DB!important;
++  background:transparent!important;color:#ECE7DB!important;
+   font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;font-weight:600!important;
+   letter-spacing:.08em!important;text-shadow:none!important;border-color:rgba(255,255,255,.08)!important}
+ .hintstyle,.hintstyle:link,.hintstyle:visited{color:#ECE7DB!important}
+@@ -248,3 +252,18 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+ .table1px,.table1px th,.table1px tr,.table1px td{background-color:#0c0c0f!important;
+   border-color:rgba(255,255,255,.08)!important}
+ .usb_text,.status{color:#B7B1A4!important}
++
++/* ---------- 10. visual-audit fixes (113-page stock-vs-reaper review) ---------- */
++/* AiProtection event/activity cards + tables paint their grey fills via
++   INLINE style attributes, which the [bgcolor] rules never matched */
++[style*="background-color:#444f53"],[style*="background-color: #444f53"],
++[style*="background-color:#444F53"],[style*="background:#444f53"],
++[style*="background: #444f53"]{background-color:#141418!important}
++/* Captive Portal / Free WiFi panels */
++.gn_content{background-color:#0f0f12!important}
++.splash_textarea{background:#000!important;color:#ECE7DB!important}
++.captive_portal_adv_setting,.splash_page_toolbar_bg_right,.step_bg{background-color:#141418!important}
++.edit_text_content,.edit_text_tool_combine_select,
++.edit_text_tool_combine_input{background:#000!important;color:#ECE7DB!important}
++/* shared grey control panel (Notification "Reminds" box etc.) */
++.control_bg{background:#0f0f12!important;border:1px solid rgba(255,255,255,.06)!important}
+-- 
+2.25.1
+

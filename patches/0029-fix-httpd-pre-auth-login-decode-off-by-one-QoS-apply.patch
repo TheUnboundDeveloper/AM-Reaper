@@ -1,0 +1,66 @@
+From ac418baf9db34c3bd705ae63c581602136693e1f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 29 Jun 2026 15:49:51 -0400
+Subject: [PATCH] fix(httpd): pre-auth login decode off-by-one + QoS apply
+ numeric gate
+
+- login_cgi: b64_decode() can return a count equal to the destination
+  buffer size; the subsequent buf[l]='\0' then writes one NUL byte past
+  captcha_text[6] and authinfo[500]. Both are pre-auth (login.cgi /
+  login_v2.cgi), attacker-controlled length. Clamp l to sizeof-1.
+- validate_apply: defense-in-depth numeric charset gate on qos_obw/
+  qos_ibw/qos_obw1/qos_ibw1 (digits + '.') and qos_type (0..10) so
+  metacharacters can never reach the /tmp QoS shell-script generators.
+
+Round-3 audit Tier A + D10.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 0b022fedb0..e369b96276 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4875,6 +4875,21 @@ int validate_apply(webs_t wp, json_object *root)
+ 					continue;
+ 				}
+ 
++				/* Hardened defense-in-depth: QoS bandwidth/type values feed /tmp QoS shell-script
++				 * generation; allow only numeric chars (bandwidth may be fractional Mb/s*1024) so
++				 * shell/newline metacharacters can never reach the generated script. */
++				if((!strcmp(name, "qos_obw") || !strcmp(name, "qos_ibw") ||
++				    !strcmp(name, "qos_obw1") || !strcmp(name, "qos_ibw1")) &&
++				   *value && strspn(value, "0123456789.") != strlen(value)){
++					dbg("reject non-numeric %s=%s\n", name, value);
++					continue;
++				}
++				if(!strcmp(name, "qos_type") && *value &&
++				   (strspn(value, "0123456789") != strlen(value) || atoi(value) > 10)){
++					dbg("reject out-of-range qos_type=%s\n", value);
++					continue;
++				}
++
+ 				/* log no prefix nvram */
+ 				nvram_modify_log(name, nvram_safe_get(name), value, activity_obj);
+ 
+@@ -22180,6 +22195,7 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ #ifdef RTCONFIG_CAPTCHA
+ 	captcha_t = safe_get_cgi_json("login_captcha", root);
+ 	l = b64_decode( &(captcha_t[0]), (unsigned char*) captcha_text, sizeof(captcha_text) );
++	if (l >= (int)sizeof(captcha_text)) l = sizeof(captcha_text) - 1;	// b64_decode can return == size; avoid 1-byte OOB NUL write
+ 	captcha_text[l] = '\0';
+ #endif
+ 
+@@ -22239,6 +22255,7 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 	if(auth_version == HTTPD_AUTH_V1){
+ 		/* Decode it. */
+ 		l = b64_decode( &(authorization_t[0]), (unsigned char*) authinfo, sizeof(authinfo) );
++		if (l >= (int)sizeof(authinfo)) l = sizeof(authinfo) - 1;	// b64_decode can return == size; avoid 1-byte OOB NUL write
+ 		authinfo[l] = '\0';
+ 
+ 		authpass = strchr( authinfo, ':' );
+-- 
+2.25.1
+

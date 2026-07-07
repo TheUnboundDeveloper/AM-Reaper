@@ -1,0 +1,32 @@
+From 6ee4cf49adc910e589c883fd1dbf8dd924a3b48b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 6 Jul 2026 22:16:28 -0400
+Subject: [PATCH] httpd: raise qos_type apply gate to 11 (HW QoS classful)
+
+The ac418baf9d numeric gate capped qos_type at 10 (HW QoS v1, the highest
+engine at the time). HW QoS classful (621174e2a3) added type 11 - every GUI
+apply posting qos_type=11 was silently rejected, so Classful never persisted
+while v1 kept working. Same failure signature as the CKN_STR1 length bug,
+one validation layer up.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 648823292c..95f5f8d92c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4885,7 +4885,7 @@ int validate_apply(webs_t wp, json_object *root)
+ 					continue;
+ 				}
+ 				if(!strcmp(name, "qos_type") && *value &&
+-				   (strspn(value, "0123456789") != strlen(value) || atoi(value) > 10)){
++				   (strspn(value, "0123456789") != strlen(value) || atoi(value) > 11)){	/* 11 = HW QoS classful, the highest engine */
+ 					dbg("reject out-of-range qos_type=%s\n", value);
+ 					continue;
+ 				}
+-- 
+2.25.1
+

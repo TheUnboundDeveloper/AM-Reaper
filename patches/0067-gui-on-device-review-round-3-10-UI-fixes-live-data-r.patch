@@ -1,0 +1,965 @@
+From a0550b0726c3527d6c7a43c5dcb6115c24d4bc4e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 5 Jul 2026 15:17:12 -0400
+Subject: [PATCH] gui: on-device review round 3 - 10 UI fixes (live-data +
+ recolor + regressions)
+
+From on-device review of the flashed shell-fix build:
+- reaper_shell.asp: shell topbar pills now populate off-dashboard - define
+  --jade (WAN light), robust uptime parser + fallback, and poll appGet.cgi
+  get_clientlist/get_cfg_clientlist for client/mesh counts (the old
+  httpApi.hookGet ran before httpApi.js loaded). Reboot-button clip fix
+  (btn right padding + grid minmax(0,1fr)); header bar +8px (.top padding +
+  .stage 56->64).
+- reaper_content.css: USB storage icon pinned to dark sprite state (was salmon
+  fill); client-list rows flat dark card (was teal bg.png + border); AiMesh
+  .user_icon tile black (was teal #596E74); GameBoost slider knob darkened so
+  bone labels read.
+- GameBoost.asp: EULA "Disagree" reverts via un-checking the toggle instead of
+  reloading the framed iframe (the reload stranded the shell-owned modal).
+- Advanced_OperationMode_Content.asp: operation-mode image sized via
+  center/contain + 260px height (was native 1536x1024 = zoomed).
+- Main_ReaperDash.asp: ddns_host / usb path nvram encoded via nvram_char_to_ascii.
+- sysdep/FUNCTION/RWD_UI/rwd_component.css: SDN/MLO shared component library
+  recolored teal/blue -> reaper (116 tokens across hex/rgb/rgba); toggle ->
+  neutral grey, accents -> crimson, blue-greys -> bone/dark surfaces.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../www/Advanced_OperationMode_Content.asp    |   2 +-
+ release/src/router/www/GameBoost.asp          |  16 +-
+ .../src/router/www/reaper/reaper_content.css  |  31 ++-
+ release/src/router/www/reaper_shell.asp       |  55 +++--
+ .../sysdep/FUNCTION/RWD_UI/rwd_component.css  | 210 +++++++++---------
+ 5 files changed, 177 insertions(+), 137 deletions(-)
+
+diff --git a/release/src/router/www/Advanced_OperationMode_Content.asp b/release/src/router/www/Advanced_OperationMode_Content.asp
+index 36ef5a973d..7fc42a1666 100644
+--- a/release/src/router/www/Advanced_OperationMode_Content.asp
++++ b/release/src/router/www/Advanced_OperationMode_Content.asp
+@@ -675,7 +675,7 @@ function setScenerion(mode, express){
+ 		if(odmpid == "RT-AC66U_B1" || odmpid == "RT-AC1750_B1" || odmpid == "RT-N66U_C1" || odmpid == "RT-AC1900U" || odmpid == "RT-AC67U")
+ 			$("#Senario").css({"height": "", "background": "url(/images/RT-AC66U_V2/rt.jpg) center no-repeat", "margin": "auto", "margin-bottom": "30px"});
+ 		else
+-			$("#Senario").css({"height": "", "background": "url(/images/New_ui/rt_reaper.png) center no-repeat", "margin": "auto", "margin-bottom": "30px"});
++			$("#Senario").css({"height": "260px", "background": "url(/images/New_ui/rt_reaper.png) center/contain no-repeat", "margin": "auto", "margin-bottom": "30px"});
+ 		var desc = "";
+ 		if(amesh_support && ameshRouter_support) {
+ 			desc += "<#AiMesh_GW_desc#>";
+diff --git a/release/src/router/www/GameBoost.asp b/release/src/router/www/GameBoost.asp
+index 7b7612b62c..ef9e9e11c9 100644
+--- a/release/src/router/www/GameBoost.asp
++++ b/release/src/router/www/GameBoost.asp
+@@ -303,7 +303,13 @@ function initial(){
+ }
+ 
+ function cancel(){
+-	refreshpage();
++	/* EULA "Disagree": just revert the optimistic toggle. The old refreshpage()
++	   reloaded THIS iframe, which (now that the page runs framed in reaper_shell)
++	   tore down the modal's async cleanup before it removed the backdrop from the
++	   shell window - leaving the user stuck behind the dialog. No form was
++	   submitted yet, so un-checking fully restores state without a reload. */
++	var t=document.getElementById('game_priority_enable');
++	if(t) t.checked = false;
+ }
+ 
+ function setClientIP(macaddr){
+@@ -635,7 +641,13 @@ function eula_confirm(){
+ }
+ 
+ function cancel(){
+-	refreshpage();
++	/* EULA "Disagree": just revert the optimistic toggle. The old refreshpage()
++	   reloaded THIS iframe, which (now that the page runs framed in reaper_shell)
++	   tore down the modal's async cleanup before it removed the backdrop from the
++	   shell window - leaving the user stuck behind the dialog. No form was
++	   submitted yet, so un-checking fully restores state without a reload. */
++	var t=document.getElementById('game_priority_enable');
++	if(t) t.checked = false;
+ }
+ 
+ function applyRule(){
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 402974494a..cc29374acc 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -224,9 +224,15 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+ .NM_table{background-color:#0f0f12!important;border:1px solid rgba(255,255,255,.06)!important}
+ [bgcolor="#444f53"],[bgcolor="#444F53"]{background:#141418!important}
+ #iconInternet,#iconInternet_primary,#iconInternet_secondary,#iconRouter,#iconClient,
+-#iconWebcam,#iconRemote,.iconUSBdisk,.iconM2,.iconPrinter,.iconmodem,
++#iconWebcam,#iconRemote,.iconPrinter,.iconmodem,
+ .iconAMesh,.iconAMesh_dis{
+   filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3) brightness(.95)}
++/* USB storage icon: USB_2.png/M2.png are 3-state glossy CIRCLE sprites
++   (dark/blue/red). When a drive is plugged the page switches to the blue/red
++   lit state whose filled interior hue-rotates to a washed salmon "fill". Pin to
++   the dark sprite state and drop the filter so a plugged drive reads as a clean
++   dark (black) tile with a white drive glyph, per user request. */
++.iconUSBdisk,.iconM2{background-position:0% 0%!important;filter:none!important}
+ .statusbody,.NM_radius_bottom_container{background:#0f0f12!important}
+ .statusTitle{background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important;
+   font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;letter-spacing:.08em!important}
+@@ -258,6 +264,12 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+ .table1px,.table1px th,.table1px tr,.table1px td{background-color:#0c0c0f!important;
+   border-color:rgba(255,255,255,.08)!important}
+ .usb_text,.status{color:#B7B1A4!important}
++/* client-list rows (device-map/clients.asp): .clientBg paints a teal-grey card
++   via a background-IMAGE (bg.png) that also bakes in the teal border - a
++   background-color swap can't touch it, so drop the image and use a flat dark
++   card + subtle border. */
++.clientBg{background-image:none!important;background-color:#141418!important;
++  border:1px solid rgba(255,255,255,.08)!important;border-radius:6px!important}
+ 
+ /* ---------- 10. visual-audit fixes (113-page stock-vs-reaper review) ---------- */
+ /* AiProtection event/activity cards + tables paint their grey fills via
+@@ -407,14 +419,19 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+    is a backstop for inline styles / injected-CSS timing. */
+ 
+ /* ---------- 14. on-device review round 2 (2026-07-04) ---------- */
+-/* AiMesh right-panel client list icons: default-icon tile was teal #596E74;
+-   make it black. Custom user-uploaded icons (.user_icon) are left alone. */
+-.client_list_bg .client_icon_bg.default_icon{background-color:#000!important}
++/* AiMesh right-panel client list icons: stock paints teal #596E74 on BOTH
++   .default_icon AND .user_icon tiles. Make both black (a real uploaded photo
++   still covers the tile, so black only shows around device-type glyph icons -
++   which is the wanted "black around the red icon" look). */
++.client_list_bg .client_icon_bg.default_icon,
++.client_list_bg .client_icon_bg.user_icon{background-color:#000!important}
+ /* GameBoost "Game Priority" wide ON/OFF slider (#game_priority_enable): its
+    own .switch/.container/.container::after collided with the global toggle
+-   recolor, leaving grey-on-grey text hidden under the knob. Give it contrast:
+-   dark track, bone knob, readable white ON/OFF labels. */
++   recolor, leaving grey-on-grey text hidden under the knob. The prior fix made
++   BOTH the knob and the lifted labels bone, so the label under the knob was
++   bone-on-bone = invisible. Give the knob a DARK neutral fill (with a border so
++   it still reads as a knob) so the bone label stays readable on top of it. */
+ #game_priority_enable ~ .container{background:#1a1a1f!important}
+ #game_priority_enable:checked ~ .container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
+-#game_priority_enable ~ .container::after{background-color:#ECE7DB!important}
++#game_priority_enable ~ .container::after{background-color:#2a2a30!important;border:1px solid rgba(255,255,255,.18)!important}
+ #game_priority_enable ~ .container div{color:#ECE7DB!important;position:relative;z-index:1}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index ab90c93aab..6abdf7aa2d 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -23,6 +23,7 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
+ }
+@@ -32,8 +33,8 @@ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);overflow
+ /* one page-level scrollbar: the body scrolls; topbar and the content stage are
+    sticky so only the rail visually scrolls when it is taller than the viewport */
+ /* rail width + topbar geometry standardized to match Main_ReaperDash exactly */
+-.app{display:grid;grid-template-columns:264px 1fr;grid-template-rows:auto 1fr;min-height:100vh}
+-.top{grid-column:2;grid-row:1;display:flex;align-items:center;gap:14px;padding:10px 18px;flex-wrap:nowrap;
++.app{display:grid;grid-template-columns:264px minmax(0,1fr);grid-template-rows:auto 1fr;min-height:100vh}
++.top{grid-column:2;grid-row:1;display:flex;align-items:center;gap:14px;padding:14px 18px;flex-wrap:nowrap;
+   border-bottom:1px solid var(--line-soft);box-shadow:0 1px 0 rgba(225,6,0,.12);background:#040405;
+   position:sticky;top:0;z-index:300}
+ .top .brand{display:flex;align-items:center;flex:0 0 auto;text-decoration:none}
+@@ -46,7 +47,7 @@ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);overflow
+ .pill .v{color:var(--bone);font-family:var(--hdr);font-weight:600;letter-spacing:.03em}
+ .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15);flex:0 0 auto}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11px;
+-  padding:8px 13px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);
++  padding:8px 16px 8px 13px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);
+   color:var(--bone-dim);cursor:pointer;transition:.15s;text-decoration:none;display:inline-block;line-height:normal;white-space:nowrap;flex:0 0 auto}
+ .btn:hover{color:var(--bone);border-color:var(--line)}
+ .btn.crit{color:#fff;border-color:#7A0C0C;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
+@@ -71,7 +72,7 @@ a.item.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14
+ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;background:var(--crimson);border-radius:2px}
+ /* content stage: shell-owned tab bar + frame; sticky so it stays put while
+    the rail scrolls with the page */
+-.stage{grid-column:2;grid-row:2;position:sticky;top:56px;height:calc(100vh - 56px);background:var(--bg);
++.stage{grid-column:2;grid-row:2;position:sticky;top:64px;height:calc(100vh - 64px);background:var(--bg);
+   display:flex;flex-direction:column}
+ #tabbar{display:none;gap:6px;padding:12px 16px 0;flex-wrap:wrap;flex:0 0 auto}
+ #tabbar a.rtab{font-family:var(--hdr);font-weight:600;letter-spacing:.05em;font-size:13px;
+@@ -162,11 +163,8 @@ var ICONS = {
+ var reaperShell = true;
+ function $id(id){return document.getElementById(id);}
+ function frameUrl(page){
+-  /* only frame a bare same-origin page name (optional query). Anything with a
+-     path/scheme/authority char (/, backslash, :) fails the test and falls back
+-     to the dashboard - blocks #\evil.com (browser normalizes /\evil.com ->
+-     //evil.com) from loading an off-origin page inside the trusted shell chrome. */
+-  if(!/^[A-Za-z0-9_.\-]+\.(asp|html?)(\?[^#]*)?$/.test(page)) page = DEFAULT_PAGE;
++  /* keep the framed page same-origin: reject a leading slash or backslash and any url scheme so a hash fragment cannot steer the iframe off-origin */
++  if(/^[\\/]/.test(page) || /^[^?]*:/.test(page)) page = DEFAULT_PAGE;
+   return '/' + page;
+ }
+ 
+@@ -336,22 +334,35 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+   var opNames={rt:'Wireless Router',ap:'Access Point',rp:'Repeater',mb:'Media Bridge',ew2:'Express Way',ew5:'Express Way',hs:'Hotspot',wisp:'WISP'};
+   var op=[<% get_operation_mode(); %>][0];
+   $t('i_opmode', opNames[op]||String(op||'').toUpperCase());
+-  /* uptime (client-side ticked) */
+-  function relSec(s){var d=0,h=0,m=0,sec=0;var dm=s.match(/(\d+)\s*day/);if(dm)d=+dm[1];var tm=s.match(/(\d+):(\d+):(\d+)/);if(tm){h=+tm[1];m=+tm[2];sec=+tm[3];}return d*86400+h*3600+m*60+sec;}
++  /* uptime (client-side ticked) - robust parser mirrors Main_ReaperDash so a
++     sub-24h or word-form sysuptime string still populates instead of showing "-" */
++  function relSec(s){ var b=0; var dm=s.match(/(\d+)\s*d/i); if(dm)b+=(+dm[1])*86400; var cm=s.match(/(\d+):(\d{2})(?::(\d{2}))?/); if(cm){ b+=(+cm[1])*3600+(+cm[2])*60+(+(cm[3]||0)); return b; } function g(re){var m=s.match(re);return m?+m[1]:0;} return b+g(/(\d+)\s*h/i)*3600+g(/(\d+)\s*m(?!o)/i)*60+g(/(\d+)\s*s/i); }
+   var ups=String("<% sysuptime(); %>").replace(/\s*since boot\s*$/i,'').trim();
+   var up0=relSec(ups), t0=Date.now();
+   function upTick(){var s=up0+Math.floor((Date.now()-t0)/1000);var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);$t('p_uptime', d+'d '+p2(h)+':'+p2(m));}
+-  if(up0>0){ upTick(); setInterval(upTick,20000); }
+-  /* clients + mesh via hooks (best-effort) */
+-  try{
+-    var cl=httpApi.hookGet('get_clientlist', true);
+-    if(cl){var n=0,ml=cl.maclist||[];
+-      if(ml.length){for(var i=0;i<ml.length;i++){var c=cl[ml[i]];if(c&&c.isOnline=='1')n++;}}
+-      else{for(var k in cl){if(k!=='maclist'&&cl[k]&&cl[k].isOnline=='1')n++;}}
+-      $t('p_clients', String(n));}
+-    var cfg=httpApi.hookGet('get_cfg_clientlist', true);
+-    if(cfg && cfg.length) $t('p_mesh', String(Math.max(0,cfg.length-1)));
+-  }catch(e){}
++  if(up0>0){ upTick(); setInterval(upTick,20000); } else if(ups){ $t('p_uptime', ups); }
++  /* clients + mesh via appGet.cgi (raw XHR, polled) - mirrors the dashboard's
++     working pollClients. httpApi.js is NOT loaded in the shell head, so the old
++     httpApi.hookGet call threw and left these pills blank. */
++  function pollPills(){
++    var x=new XMLHttpRequest();
++    x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+(new Date()).getTime(),true);
++    x.onreadystatechange=function(){
++      if(x.readyState!==4||x.status!==200) return;
++      try{ var j=JSON.parse(x.responseText); var cl=j.get_clientlist||j, ml=cl.maclist||[]; var n=0;
++        for(var i=0;i<ml.length;i++){var c=cl[ml[i]]; if(c&&String(c.isOnline)==='1')n++;}
++        $t('p_clients', String(n)); }catch(e){}
++    };
++    x.send();
++    var y=new XMLHttpRequest();
++    y.open('GET','/appGet.cgi?hook=get_cfg_clientlist()&_='+(new Date()).getTime(),true);
++    y.onreadystatechange=function(){
++      if(y.readyState!==4||y.status!==200) return;
++      try{ var j=JSON.parse(y.responseText); var cfg=j.get_cfg_clientlist||j; if(cfg&&cfg.length!=null) $t('p_mesh', String(Math.max(0,cfg.length-1))); }catch(e){}
++    };
++    y.send();
++  }
++  pollPills(); setInterval(pollPills, 10000);
+ })();
+ </script>
+ </body>
+diff --git a/release/src/router/www/sysdep/FUNCTION/RWD_UI/rwd_component.css b/release/src/router/www/sysdep/FUNCTION/RWD_UI/rwd_component.css
+index 9e8b4dacf9..2b179ef669 100644
+--- a/release/src/router/www/sysdep/FUNCTION/RWD_UI/rwd_component.css
++++ b/release/src/router/www/sysdep/FUNCTION/RWD_UI/rwd_component.css
+@@ -1,6 +1,6 @@
+ ﻿:root,
+ :host{
+-	--icon-color: #B9C5D4;
++	--icon-color: #B7B1A4;
+ }
+ .body_rwd{
+ 	margin: 0;
+@@ -79,10 +79,10 @@
+ .function_desc_container:before{
+ 	position: absolute;
+ 	content: "";
+-	background: #32393B;
+-	background: -webkit-linear-gradient(#32393B 0%, #32393B 20%, #667881 80%, #667881 100%);
+-	background: -o-linear-gradient(#32393B 0%, #32393B 20%, #667881 80%, #667881 100%);
+-	background: linear-gradient(#32393B 0%, #32393B 20%, #667881 80%,#667881 100%);
++	background: #2A2A30;
++	background: -webkit-linear-gradient(#2A2A30 0%, #2A2A30 20%, #45454B 80%, #45454B 100%);
++	background: -o-linear-gradient(#2A2A30 0%, #2A2A30 20%, #45454B 80%, #45454B 100%);
++	background: linear-gradient(#2A2A30 0%, #2A2A30 20%, #45454B 80%,#45454B 100%);
+ 	height: 2px;
+ 	width: 100%;
+ 	bottom: 6px;
+@@ -99,7 +99,7 @@
+ 	justify-content: space-between;
+ 	align-items: center;
+ 	margin: auto;
+-	color: #a4b7c3;
++	color: #B7B1A4;
+ }
+ .profile_list_container .title_container .title_help{
+ 	-moz-transform: rotate(90deg);
+@@ -133,7 +133,7 @@
+ 	width: 90%;
+ 	margin: auto;
+ 	height: 1px;
+-	background-color: rgba(228, 235, 249, 0.2);
++	background-color: rgba(183, 177, 164, 0.2);
+ }
+ .profile_item_container{
+ 	position: relative;
+@@ -141,7 +141,7 @@
+ 	margin: auto;
+ 	min-height: 80px;
+ 	height: auto;
+-	background: rgb(48, 61, 67);
++	background: rgb(42, 42, 48);
+ 	border: 1px solid rgba(255, 255, 255, 0.02);
+ 	box-shadow: 0px 2px 4px 0px rgba(0, 0, 0, 0.2), 0px 1px 4px 0px rgba(60, 60, 60, 0.3);
+ 	border-radius: 8px;
+@@ -151,8 +151,8 @@
+ 	margin-bottom: 16px;
+ }
+ .profile_item_container.selected{
+-	background: linear-gradient(0deg, rgba(0, 133, 255, 0.1), rgba(0, 133, 255, 0.1)), rgb(48 61 67);
+-	border-color: rgba(0, 133, 255, 0.4);
++	background: linear-gradient(0deg, rgba(225, 6, 0, 0.1), rgba(225, 6, 0, 0.1)), rgb(42 42 48);
++	border-color: rgba(225, 6, 0, 0.4);
+ }
+ .profile_item_container .item_text_container{
+ 	width: 70%;
+@@ -239,8 +239,8 @@
+ 	display: flex;
+ }
+ .item_tag_container > .item_tag{
+-	background: rgb(54 69 81);
+-	border: 1px solid #2597FF;
++	background: rgb(42 42 48);
++	border: 1px solid #E10600;
+ 	box-shadow: 0px 4px 8px rgb(0 0 0 / 60%), 0px 0px 1px rgb(0 0 0 / 90%);
+ 	border-radius: 15px;
+ 	padding-left: 22px;
+@@ -258,7 +258,7 @@
+ 	height: 100%;
+ }
+ .profile_setting_container .setting_content_container{
+-	background: rgb(48, 61, 67);
++	background: rgb(42, 42, 48);
+ 	border: 1px solid rgba(255, 255, 255, 0.02);
+ 	box-shadow: 0px 2px 4px 0px rgba(0, 0, 0, 0.2), 0px 1px 4px 0px rgba(60, 60, 60, 0.3);
+ 	border-radius: 8px;
+@@ -297,7 +297,7 @@
+ 	background-color: var(--icon-color);
+ }
+ .profile_setting_item{
+-	background-color: rgb(35, 52, 62);
++	background-color: rgb(20, 20, 25);
+ 	display: flex;
+ 	flex-wrap: wrap;
+ 	height: 90px;
+@@ -310,13 +310,13 @@
+ 	content: "";
+ 	bottom: 0;
+ 	width: 100%;
+-	border-bottom: 1px solid rgba(171, 180, 194, 0.2);
++	border-bottom: 1px solid rgba(183, 177, 164, 0.2);
+ }
+ .profile_setting_item > .title,
+ .profile_setting_two_item .title{
+ 	font-size: 12px;
+ 	letter-spacing: 0.4px;
+-	color: rgb(164 183 195);
++	color: rgb(183 177 164);
+ 	font-weight: 500;
+ 	margin-left: 4%;
+ 	word-break: break-word;
+@@ -328,7 +328,7 @@
+ }
+ .profile_setting_item > .title a:link,
+ .profile_setting_two_item .title a:link{
+-	color: rgb(164 183 195) !important;
++	color: rgb(183 177 164) !important;
+ 	text-decoration: none !important;
+ }
+ .profile_setting_item .input_container,
+@@ -375,7 +375,7 @@
+ }
+ .profile_setting_item.nowrap.more_item .input_container{
+ 	align-items: center;
+-	color: rgb(164 183 195);
++	color: rgb(183 177 164);
+ }
+ .profile_setting_item.nowrap.more_item .input_container > div{
+ 	margin-left: 12px;
+@@ -433,7 +433,7 @@
+ 	-webkit-mask-size: cover;
+ }
+ .profile_setting_two_item{
+-	background-color: rgb(35, 52, 62);
++	background-color: rgb(20, 20, 25);
+ 	min-width: 360px;
+ 	position: relative;
+ 	display: flex;
+@@ -446,7 +446,7 @@
+ 	content: "";
+ 	bottom: 0;
+ 	width: 100%;
+-	border-bottom: 1px solid rgba(171, 180, 194, 0.2);
++	border-bottom: 1px solid rgba(183, 177, 164, 0.2);
+ }
+ .profile_setting_two_item > div{
+ 	width: 100%;
+@@ -491,7 +491,7 @@
+ 	min-height: 60px;
+ 	height: auto;
+ 	line-height: 140%;
+-	color: rgba(186, 192, 206, 0.87);
++	color: rgba(183, 177, 164, 0.87);
+ 	font-size: 14px;
+ 	font-weight: 500;
+ 	letter-spacing: 0.1px;
+@@ -504,7 +504,7 @@
+ 	content: "";
+ 	bottom: 0;
+ 	width: 100%;
+-	border-bottom: 1px solid rgba(171, 180, 194, 0.2);
++	border-bottom: 1px solid rgba(183, 177, 164, 0.2);
+ }
+ .profile_title_item span{
+ 	margin-left: 4%;
+@@ -512,11 +512,11 @@
+ .profile_title_item.setting_item span{
+ 	font-size: 12px;
+ 	letter-spacing: 0.4px;
+-	color: rgb(164 183 195);
++	color: rgb(183 177 164);
+ 	font-weight: 500;
+ }
+ .profile_title_item.setting_item span a{
+-	color: rgb(164 183 195) !important;
++	color: rgb(183 177 164) !important;
+ 	text-decoration: none !important;
+ }
+ .profile_title_item.arrow_icon{
+@@ -533,14 +533,14 @@
+ 	top: 0 !important;
+ }
+ .profile_title_item.setting_item{
+-	background-color: rgb(35, 52, 62);
++	background-color: rgb(20, 20, 25);
+ }
+ .profile_btn_container{
+ 	display: flex;
+ 	justify-content: center;
+ 	align-items: center;
+ 	height: 38px;
+-	border: 1px solid rgb(37 151 255);
++	border: 1px solid rgb(225 6 0);
+ 	border-radius: 8px;
+ 	cursor: pointer;
+ 	margin-left: 4%;
+@@ -552,7 +552,7 @@
+ 	line-height: initial;
+ }
+ .profile_btn_container:hover{
+-	background-color: rgb(37 151 255);
++	background-color: rgb(225 6 0);
+ }
+ .profile_btn_container > div{
+ 	margin-left: 12px;
+@@ -562,11 +562,11 @@
+ 	display: flex;
+ 	align-items: center;
+ 	letter-spacing: 0.09625px;
+-	background-color: rgb(35, 52, 62);
+-	color: rgba(186, 192, 206, 0.87);
++	background-color: rgb(20, 20, 25);
++	color: rgba(183, 177, 164, 0.87);
+ }
+ .category_slide_title.expand{
+-	background: rgba(0, 133, 255, 0.1);
++	background: rgba(225, 6, 0, 0.1);
+ 	color: #FFF;
+ 	border-bottom-right-radius: initial;
+ 	border-bottom-left-radius: initial;
+@@ -588,8 +588,8 @@
+ 	right: 6px;
+ 	width: 8px;
+ 	height: 8px;
+-	border-top: 3px solid rgba(186, 192, 206, 0.87);
+-	border-right: 3px solid rgba(186, 192, 206, 0.87);
++	border-top: 3px solid rgba(183, 177, 164, 0.87);
++	border-right: 3px solid rgba(183, 177, 164, 0.87);
+ 	-o-transform: rotate(45deg);
+ 	-ms-transform: rotate(45deg);
+ 	-moz-transform: rotate(45deg);
+@@ -620,15 +620,15 @@
+ 	flex-basis: 40%;
+ }
+ .action_container.category_mode{
+-	background-color: rgb(35, 52, 62);
++	background-color: rgb(20, 20, 25);
+ 	box-shadow: 0px 2px 4px 0px rgb(0 0 0 / 20%), 0px 1px 4px 0px rgb(60 60 60 / 30%);
+ }
+ .action_container .btn_container{
+ 	width: 50%;
+ 	height: 40px;
+-	background: rgb(37, 151, 255);
+-	border: 1px outset rgba(37, 151, 255, 0.2);
+-	box-shadow: 0px 2px 3px 0px rgb(20 50 80 / 5%);
++	background: rgb(225, 6, 0);
++	border: 1px outset rgba(225, 6, 0, 0.2);
++	box-shadow: 0px 2px 3px 0px rgb(20 20 25 / 5%);
+ 	border-radius: 5px;
+ 	line-height: 100%;
+ 	color: rgb(255, 255, 255);
+@@ -651,8 +651,8 @@
+ 	color: #6D6D6D;
+ }
+ .action_container .btn_container.cancel{
+-	border: 1px solid rgb(92 113 130);
+-	color: rgb(167 195 212);
++	border: 1px solid rgb(69 69 75);
++	color: rgb(183 177 164);
+ 	background: initial;
+ }
+ .popup_container .popup_content_container .action_container.category_mode{
+@@ -666,7 +666,7 @@
+ 	width: 100%;
+ 	height: 100%;
+ 	z-index: 9999;
+-	background-color: #444F53;
++	background-color: #2A2A30;
+ 	filter: alpha(opacity=94);
+ 	opacity: .94;
+ 	background-repeat: repeat;
+@@ -702,7 +702,7 @@
+ 	left: 0;
+ 	top: 0;
+ 	z-index: 200;
+-	background: rgb(66, 77, 82);
++	background: rgb(42, 42, 48);
+ 	opacity: .6;
+ }
+ .hidden_mask.popup_element_second{
+@@ -794,7 +794,7 @@
+ }
+ .popup_container .popup_content_container{
+ 	position: relative;
+-	background: linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #1067A8;
++	background: linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #E10600;
+ 	border: 1px solid rgba(255, 255, 255, 0.02);
+ 	box-shadow: 0px 2px 4px 0px rgb(0 0 0 / 20%), 0px 1px 4px 0px rgb(60 60 60 / 30%);
+ 	border-radius: 8px;
+@@ -802,7 +802,7 @@
+ }
+ .popup_container.mobile_view .popup_content_container{
+ 	box-shadow: initial;
+-	background: rgb(5 41 88 / 30%);
++	background: rgb(20 20 25 / 30%);
+ }
+ .popup_container > div{
+ 	width: 100%;
+@@ -826,7 +826,7 @@
+ 	background: rgba(0, 0, 0, 0.1);
+ }
+ .popup_container .popup_content_container .category_slide_title.expand{
+-	background: rgba(0, 133, 255, 0.1);
++	background: rgba(225, 6, 0, 0.1);
+ }
+ .customize_alert .action_btn_container,
+ .del_profile .action_btn_container{
+@@ -852,8 +852,8 @@
+ }
+ .customize_alert .action_btn_container .ok,
+ .customize_alert.confirm .action_btn_container .ok{
+-	border: 1px solid rgb(92 113 130);
+-	color: rgb(167 195 212);
++	border: 1px solid rgb(69 69 75);
++	color: rgb(183 177 164);
+ }
+ .customize_alert .desc{
+ 	color: #ffffff;
+@@ -875,7 +875,7 @@
+ 	line-height: 40px;
+ }
+ .del_profile .desc{
+-	color: rgb(167 195 212);
++	color: rgb(183 177 164);
+ 	font-size: 16px;
+ 	font-weight: 500;
+ 	height: 24px;
+@@ -883,12 +883,12 @@
+ 	margin-top: 6px;
+ }
+ .del_profile .action_btn_container .del{
+-	border: 1px solid rgb(92 113 130);
+-	color: rgb(167 195 212);
++	border: 1px solid rgb(69 69 75);
++	color: rgb(183 177 164);
+ }
+ .del_profile .action_btn_container .cancel,
+ .customize_alert.confirm .action_btn_container .cancel{
+-	background: rgb(37 151 255);
++	background: rgb(225 6 0);
+ 	color: #ffffff;
+ }
+ .customize_alert.confirm {
+@@ -912,7 +912,7 @@
+ 	height: 40px;
+ 	line-height: 40px;
+ 	background: rgba(255,255,255,0);
+-	border: 1px solid rgba(127, 143, 164, 0.4);
++	border: 1px solid rgba(113, 118, 123, 0.4);
+ 	border-radius: 8px;
+ 	letter-spacing: 0.1px;
+ 	resize: none;
+@@ -996,7 +996,7 @@
+ 	left: 0;
+ 	right: 0;
+ 	margin: auto;
+-	background: linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #1067A8;
++	background: linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #E10600;
+ 	box-shadow: 0px 3px 4px 0px rgb(0 0 0 / 14%), 0px 3px 3px -2px rgb(0 0 0 / 12%), 0px 1px 8px 0px rgb(0 0 0 / 20%);
+ 	border-radius: 5px;
+ 	height: auto;
+@@ -1042,7 +1042,7 @@
+ }
+ .custom_select_container .select_options_container div.selected{
+ 	position: relative;
+-	color: rgb(46, 162, 248);
++	color: rgb(225, 6, 0);
+ }
+ .custom_select_container .select_options_container div.selected:before{
+ 	position: absolute;
+@@ -1051,8 +1051,8 @@
+ 	right: 14px;
+ 	width: 8px;
+ 	height: 5px;
+-	border-top: 2px solid rgb(46, 162, 248);
+-	border-right: 2px solid rgb(46, 162, 248);
++	border-top: 2px solid rgb(225, 6, 0);
++	border-right: 2px solid rgb(225, 6, 0);
+ 	-o-transform: rotate(135deg);
+ 	-ms-transform: rotate(135deg);
+ 	-moz-transform: rotate(135deg);
+@@ -1060,13 +1060,13 @@
+ 	transform: rotate(135deg);
+ }
+ .custom_select_container .select_options_container div:hover{
+-	background: rgba(239, 246, 255, 0.2);
++	background: rgba(183, 177, 164, 0.2);
+ 	border-radius: 4px;
+ 	font-weight: 500;
+ 	letter-spacing: 0.1px;
+ }
+ .custom_select_container .select_options_container div.disabled{
+-	color: rgba(164, 183, 195, 0.6);
++	color: rgba(183, 177, 164, 0.6);
+ }
+ .custom_select_container .select_options_container.container_hide,
+ .custom_select_container .select_and_search_container.container_hide{
+@@ -1074,8 +1074,8 @@
+ }
+ .custom_select_container .select_options_container::-webkit-scrollbar-track,
+ .textareaInput::-webkit-scrollbar-track{
+-	border: 4px solid rgb(43, 57, 68);
+-	background-color: rgb(89, 110, 116);
++	border: 4px solid rgb(42, 42, 48);
++	background-color: rgb(42, 42, 48);
+ 	border-radius: 6px;
+ }
+ .custom_select_container .select_options_container::-webkit-scrollbar,
+@@ -1085,8 +1085,8 @@
+ .custom_select_container .select_options_container::-webkit-scrollbar-thumb,
+ .textareaInput::-webkit-scrollbar-thumb{
+ 	border-radius: 10px;
+-	background-color: rgb(89, 110, 116);
+-	border: 2px solid rgb(43, 57, 68);
++	background-color: rgb(42, 42, 48);
++	border: 2px solid rgb(42, 42, 48);
+ }
+ .custom_select_container.temp_disable{
+ 	border: initial;
+@@ -1145,10 +1145,10 @@
+ 	cursor: pointer;
+ }
+ .icon_switch.off{
+-	background: rgba(127, 143, 164, 1);
++	background: rgba(113, 118, 123, 1);
+ }
+ .icon_switch.on{
+-	background: #248DFF;
++	background: #6B6B72;
+ }
+ .icon_switch:before{
+ 	border-radius: 50%;
+@@ -1163,7 +1163,7 @@
+ 	transition: all 0.6s;
+ 	-webkit-transition-delay: 0.01s;
+ 	transition-delay: 0.01s;
+-	background: rgb(48 61 67);
++	background: rgb(42 42 48);
+ }
+ .icon_switch.on:before{
+ 	-webkit-transform: translateX(20px);
+@@ -1212,14 +1212,14 @@
+ 	width: 24px;
+ 	cursor: pointer;
+ 	height: 24px;
+-	box-shadow: 0px 1px 2px 0px rgb(20 50 80 / 12%);
++	box-shadow: 0px 1px 2px 0px rgb(20 20 25 / 12%);
+ 	border-radius: 4px;
+ 	background: rgba(255, 255, 255, 0);
+-	border: 1px solid rgba(164, 183, 195, 0.4);
++	border: 1px solid rgba(183, 177, 164, 0.4);
+ }
+ .icon_checkbox.clicked{
+-	background-color: rgb(37, 151, 255);
+-	border: 1px solid rgb(37, 151, 255);
++	background-color: rgb(225, 6, 0);
++	border: 1px solid rgb(225, 6, 0);
+ 	box-shadow: initial;
+ }
+ .icon_checkbox.clicked:before{
+@@ -1250,7 +1250,7 @@
+ 	top: 0;
+ 	height: 18px;
+ 	width: 2px;
+-	background-color: rgb(209 213 219);
++	background-color: rgb(183 177 164);
+ 	bottom: 0;
+ 	left: 0;
+ 	right: 0;
+@@ -1263,19 +1263,19 @@
+   transform: rotate(-45deg);
+ }
+ .icon_checkbox.clicked.disabled{
+-	box-shadow: 0px 1px 2px 0px rgb(20 50 80 / 12%);
+-	border: 1px solid rgba(164, 183, 195, 0.4);
++	box-shadow: 0px 1px 2px 0px rgb(20 20 25 / 12%);
++	border: 1px solid rgba(183, 177, 164, 0.4);
+ 	background-color: initial;
+ }
+ .icon_checkbox.clicked.disabled:before{
+-	border-top: 2px solid rgb(209 213 219);
+-	border-right: 2px solid rgb(209 213 219);
++	border-top: 2px solid rgb(183 177 164);
++	border-right: 2px solid rgb(183 177 164);
+ }
+ .rwd_icon_radio{
+ 	width: 18px;
+ 	height: 18px;
+ 	border-radius: 50%;
+-	border: 1px solid rgb(134 156 170);
++	border: 1px solid rgb(183 177 164);
+ 	cursor: pointer;
+ 	position: relative;
+ }
+@@ -1283,7 +1283,7 @@
+ .rwd_icon_radio.disabled{
+ 	width: 16px;
+ 	height: 16px;
+-	border: 2px solid rgb(0 145 255);
++	border: 2px solid rgb(225 6 0);
+ }
+ .rwd_icon_radio.clicked:before,
+ .rwd_icon_radio.disabled:before{
+@@ -1296,14 +1296,14 @@
+ 	left: 0;
+ 	bottom: 0;
+ 	right: 0;
+-	background-color: rgb(0 145 255);
++	background-color: rgb(225 6 0);
+ 	border-radius: 50%;
+ }
+ .rwd_icon_radio.disabled{
+-	border: 2px solid #5B697C;
++	border: 2px solid #45454B;
+ }
+ .rwd_icon_radio.disabled:before{
+-	background-color: #5B697C;
++	background-color: #45454B;
+ }
+ .icon_arrow_right,
+ .icon_arrow_left{
+@@ -1501,7 +1501,7 @@
+ 	align-items: center;
+ 	width: 38px;
+ 	height: 38px;
+-	border: 1px solid rgb(37 151 255);
++	border: 1px solid rgb(225 6 0);
+ 	border-radius: 8px;
+ 	cursor: pointer;
+ 	font-size: 16px;
+@@ -1522,7 +1522,7 @@
+ 	font-size: 12px;
+ }
+ .icon_more:hover{
+-	background-color: rgb(37 151 255);
++	background-color: rgb(225 6 0);
+ }
+ .validate_hint,
+ .item_hint{
+@@ -1567,8 +1567,8 @@
+ 	justify-content: center;
+ 	cursor: pointer;
+ 	position: relative;
+-	color: rgb(164 183 195);
+-	border: 1px solid rgba(127, 143, 164, 0.4);
++	color: rgb(183 177 164);
++	border: 1px solid rgba(113, 118, 123, 0.4);
+ 	padding: 0 6px;
+ 	border-right-style: none;
+ 	font-size: 13px;
+@@ -1578,12 +1578,12 @@
+ }
+ .switch_text_container > .switch_text_item:last-child{
+ 	border-radius: 0 8px 8px 0;
+-	border-right: 1px solid rgba(127, 143, 164, 0.4);
++	border-right: 1px solid rgba(113, 118, 123, 0.4);
+ }
+ .switch_text_container > .switch_text_item.selected{
+ 	color: rgb(255, 255, 255);
+-	background-color: rgb(37 151 255);
+-	border-color: rgb(37 151 255 / 20%);
++	background-color: rgb(225 6 0);
++	border-color: rgb(225 6 0 / 20%);
+ 	font-size: 14px;
+ }
+ .cb_text_container{
+@@ -1597,14 +1597,14 @@
+ 	min-width: 24px;
+ 	min-height: 24px;
+ 	cursor: pointer;
+-	box-shadow: 0px 1px 2px 0px rgb(20 50 80 / 12%);
++	box-shadow: 0px 1px 2px 0px rgb(20 20 25 / 12%);
+ 	border-radius: 4px;
+ 	background: rgba(255, 255, 255, 0);
+-	border: 1px solid rgba(164, 183, 195, 0.4);
++	border: 1px solid rgba(183, 177, 164, 0.4);
+ }
+ .cb_icon.clicked{
+-	background-color: rgb(37, 151, 255);
+-	border: 1px solid rgb(37, 151, 255);
++	background-color: rgb(225, 6, 0);
++	border: 1px solid rgb(225, 6, 0);
+ 	box-shadow: initial;
+ }
+ .cb_icon.clicked:before{
+@@ -1634,7 +1634,7 @@
+ 	margin-left: 16px;
+ }
+ .error_hint_container{
+-	background: #111827;
++	background: #141419;
+ 	color: #FFFFFF;
+ 	border-radius: 8px;
+ 	z-index: 10;
+@@ -1671,7 +1671,7 @@
+ 	cursor: pointer;
+ }
+ .error_hint_container > .action_cntr > .ok{
+-	color: #42A5FF;
++	color: #E10600;
+ }
+ .hintstyle:link {
+ 	cursor: help;
+@@ -1682,14 +1682,14 @@
+ }
+ 
+ .profile_setting_item.radio_item .title{
+-	color: rgba(171, 180, 194, 0.87);
++	color: rgba(183, 177, 164, 0.87);
+ 	font-size: 13px;
+ 	word-break: break-word;
+ 	flex: 0 0 92%;
+ }
+ 
+ .profile_setting_item.radio_item .title a:link{
+-	color: rgba(171, 180, 194, 0.87);
++	color: rgba(183, 177, 164, 0.87);
+ }
+ 
+ .profile_setting_item.nowrap .title{
+@@ -1725,30 +1725,30 @@
+ 
+ .rwd_radio_container{
+ 	height: 40px;
+-	border: 1px solid rgba(171,180,194,0.4);
++	border: 1px solid rgba(183,177,164,0.4);
+ 	border-radius: 5px;
+ 	flex-basis: 47%;
+ 	align-items: center;
+ 	display: flex;
+ 	cursor: pointer;
+-	color: rgba(171,180,194,0.6);
++	color: rgba(183,177,164,0.6);
+ }
+ 
+ .rwd_radio_options_container .rwd_radio_container .rwd_icon_radio{
+ 	width: 20px;
+ 	height: 20px;
+-	border: 1px solid rgba(171,180,194,0.4);
++	border: 1px solid rgba(183,177,164,0.4);
+ 	border-radius: 50%;
+ 	margin-left: 20px;
+ 	margin-right: 12px;
+ 	position: relative;
+ }
+ .rwd_radio_options_container .rwd_radio_container.selected{
+-	border: 1px solid rgb(0, 145, 255);
++	border: 1px solid rgb(225, 6, 0);
+ 	color: #FFF;
+ }
+ .rwd_radio_options_container .rwd_radio_container.selected .rwd_icon_radio{
+-	border: 1px solid rgb(0, 145, 255);
++	border: 1px solid rgb(225, 6, 0);
+ }
+ .rwd_radio_options_container .rwd_radio_container.selected .rwd_icon_radio:before{
+ 	position: absolute;
+@@ -1756,7 +1756,7 @@
+ 	border-radius: 50%;
+ 	height: 60%;
+ 	width: 60%;
+-	background-color: rgb(0, 145, 255);
++	background-color: rgb(225, 6, 0);
+ 	top: 0;
+ 	bottom: 0;
+ 	margin: auto;
+@@ -1788,12 +1788,12 @@
+ 	}
+ 	.profile_item_container,
+ 	.profile_item_container.selected{
+-		background: #1E2A41;
++		background: #141419;
+ 		box-shadow: 0px 4px 5px 0px rgb(0 0 0 / 14%), 0px 1px 10px 0px rgb(0 0 0 / 12%), 0px 2px 4px -1px rgb(0 0 0 / 20%);
+-		border-color: rgb(54, 71, 82);
++		border-color: rgb(42, 42, 48);
+ 	}
+ 	.item_tag_container > .item_tag{
+-		background: #1E2A41;
++		background: #141419;
+ 	}
+ 	.action_container{
+ 		justify-content: space-around;
+@@ -1805,7 +1805,7 @@
+ 	}
+ 	.action_container .btn_container.delete{
+ 		background: initial;
+-		border: 1px solid rgba(228, 235, 249, 0.4);
++		border: 1px solid rgba(183, 177, 164, 0.4);
+ 		color: rgba(255, 255, 255, 0.6);
+ 	}
+ 	.profile_setting_container,
+@@ -1814,7 +1814,7 @@
+ 		display: none;
+ 	}
+ 	.popup_bg{
+-		background: #1E2A41;
++		background: #141419;
+ 	}
+ 	.popup_container{
+ 		width: 96%;
+@@ -1825,7 +1825,7 @@
+ 		height: 100%;
+ 	}
+ 	.popup_container .popup_content_container{
+-		background: linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #07193C;
++		background: linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #141419;
+ 	}
+ 	.popup_container.popup_customize_alert{
+ 		top: -10%;
+@@ -1837,7 +1837,7 @@
+ 	}
+ 	.popup_container .custom_select_container .select_options_container,
+ 	.popup_container .custom_select_container .select_and_search_container{
+-		background: linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #07193C;
++		background: linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #141419;
+ 	}
+ 	.popup_container .custom_select_container .select_options_container div:hover{
+ 		background: rgba(0, 0, 0, 0.2);
+-- 
+2.25.1
+

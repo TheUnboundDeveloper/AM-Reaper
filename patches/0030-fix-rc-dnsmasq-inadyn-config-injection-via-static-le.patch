@@ -1,0 +1,104 @@
+From 9716b7adf53de0c1349d0280781680ab35a9ef23 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 29 Jun 2026 15:49:52 -0400
+Subject: [PATCH] fix(rc): dnsmasq/inadyn config-injection via static-lease
+ MAC, lan_domain, ddns host
+
+Root-owned config files were built from nvram with no newline/metachar
+validation, allowing directive injection (post-auth):
+- write_static_leases / Yandex: ether_atoe() returns true without
+  requiring end-of-string after 6 octets, so a MAC with a trailing
+  newline + injected dnsmasq directive passed. Re-emit the canonical
+  MAC (ether_etoa) at the sink instead of the raw nvram value.
+- start_dnsmasq: lan_domain was written raw to domain=/local=/dhcp-option
+  while write_etc_hosts already validates it; mirror is_valid_domainname.
+- start_ddns: ddns_hostname_x (host) was written unescaped into
+  inadyn.conf (which supports exec/checkip-command) while user/passwd
+  were escaped; reject non-hostname values (also fixes the cache path).
+
+Round-3 audit Tier B3/B4/B5.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 65254fbfe9..ea7c07a9d7 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -1839,6 +1839,8 @@ void start_dnsmasq(void)
+ 
+ 	/* lan domain */
+ 	value = nvram_safe_get("lan_domain");
++	if (*value && !is_valid_domainname(value))	// reject newline/metachars -> dnsmasq directive injection
++		value = "";
+ 	if (*value) {
+ 		fprintf(fp, "domain=%s\n"
+ 			    "expand-hosts\n", value);	// expand hostnames in hosts file
+@@ -1975,6 +1977,8 @@ void start_dnsmasq(void)
+ 
+ 		/* LAN Domain */
+ 		value = nvram_safe_get("lan_domain");
++		if (*value && !is_valid_domainname(value))	// reject newline/metachars -> dnsmasq directive injection
++			value = "";
+ 		if (*value)
+ 			fprintf(fp, "dhcp-option=lan,15,%s\n", value);
+ 
+@@ -2159,12 +2163,15 @@ void start_dnsmasq(void)
+ 			/* DNS server per client */
+ 			nv = nvp = strdup(nvram_safe_get("yadns_rulelist"));
+ 			while (nv && (b = strsep(&nvp, "<")) != NULL) {
++				char mac_buf[18];
+ 				if (vstrsep(b, ">", &name, &mac, &mode, &enable) < 3)
+ 					continue;
+ 				if (enable && safe_atoi(enable) == 0)
+ 					continue;
+ 				if (!*mac || !*mode || !ether_atoe(mac, ea))
+ 					continue;
++				ether_etoa(ea, mac_buf);	// canonical MAC (prevent dnsmasq config injection via trailing bytes)
++				mac = mac_buf;
+ 				dnsmode = safe_atoi(mode);
+ 				/* Skip incorrect and default levels */
+ 				if (dnsmode < YADNS_FIRST || dnsmode >= YADNS_COUNT || dnsmode == defmode)
+@@ -2198,6 +2205,8 @@ void start_dnsmasq(void)
+ 
+ 		/* LAN Domain */
+ 		value = nvram_safe_get("lan_domain");
++		if (*value && !is_valid_domainname(value))	// reject newline/metachars -> dnsmasq directive injection
++			value = "";
+ 		if (*value)
+ 			fprintf(fp, "dhcp-option=lan,option6:24,%s\n", value);
+ #if defined(RTCONFIG_IPV6) && (defined(RTAX82_XD6) || defined(RTAX82_XD6S) || defined(XD6_V2) || defined(ET12))
+@@ -4913,6 +4922,7 @@ void write_static_leases(FILE *fp)
+ 
+ 	/* Parsing dhcp_staticlist nvram variable. */
+ 	while ((b = strsep(&nvp, "<")) != NULL) {
++		char mac_buf[18];
+ 		dns = NULL;
+ 		hostname = NULL;
+ 		if ((vstrsep(b, ">", &mac, &ip, &dns, &hostname) < 2))
+@@ -4920,6 +4930,8 @@ void write_static_leases(FILE *fp)
+ 
+ 		if (!ether_atoe(mac, ea))
+ 			continue;
++		ether_etoa(ea, mac_buf);	// ether_atoe accepts trailing bytes (incl. newline); re-emit canonical MAC to prevent dnsmasq config injection
++		mac = mac_buf;
+ 
+ 		if (dns) {
+ 			struct in_addr in4;
+@@ -5172,6 +5184,11 @@ start_ddns(char *caller, int isAidisk)
+ 		user = nvram_safe_get("ddns_hostname_x"); /* The username is also the hostname in HE.NET */
+ #endif
+ 	host = nvram_safe_get("ddns_hostname_x");
++	/* host is written UNescaped into inadyn.conf (hostname = %s) and into the cache filename;
++	 * inadyn supports exec/checkip-command directives, so an embedded newline = root command
++	 * injection. Reject anything that is not a valid hostname. */
++	if (*host && !is_valid_domainname(host))
++		host = "";
+ 
+ 	snprintf(prefix, sizeof(prefix), "wan%d_", unit);
+ 	wan_ip = nvram_safe_get(strcat_r(prefix, "ipaddr", tmp));
+-- 
+2.25.1
+

@@ -1,0 +1,133 @@
+From 994724f10f2d3b82e60db9bd36dd9a1a20b0da66 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 4 Jul 2026 18:00:29 -0400
+Subject: [PATCH] harden: audit round 4 - fix 2 regressions + 2 hardenings from
+ reaper self-review
+
+Re-reviewed the reaper-authored changes (UI flip, Hardware QoS, hardening
+rounds 1-3) for security issues introduced by our own work.
+
+- httpd/web.c: the round-3 login b64_decode clamp (ac418baf9d) guarded the
+  >= size return but not the -1 malformed-input return, so a non-base64
+  login_captcha / login_authorization forced l == -1 and wrote buf[-1]='\0'
+  (pre-auth 1-byte stack underflow). Add `if (l < 0) l = 0;` at both sites.
+- www/reaper_shell.asp: frameUrl() framed location.hash into the iframe src
+  with only a '/' prefix; #\evil.com normalises to //evil.com, loading an
+  off-origin page inside the trusted shell chrome (phishing; cross-origin so
+  no data/DOM access). Allow-list the fragment to a bare .asp/.htm page name,
+  else fall back to the dashboard.
+- rc/qos.c: start_hwqos wrote wan_ifname into the generated root QoS script
+  single-quoted but with no charset guard (kernel-derived, not realistically
+  attacker-settable). Reject any non-[A-Za-z0-9._-] ifname -> inert empty WANIF.
+- www/Main_ReaperDash.asp: ddns_host / usb path nvram interpolated raw into JS
+  string literals (admin-set / physical-access -> self-XSS at worst). Encode via
+  nvram_char_to_ascii("",name) + decodeURIComponent, matching the SSID handling.
+  Mock-validated end-to-end against a hostile ddns hostname.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             |  6 ++++--
+ release/src/router/rc/qos.c                | 13 +++++++++++++
+ release/src/router/www/Main_ReaperDash.asp |  6 +++---
+ release/src/router/www/reaper_shell.asp    |  9 ++++++++-
+ 4 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index e369b96276..648823292c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22195,7 +22195,8 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ #ifdef RTCONFIG_CAPTCHA
+ 	captcha_t = safe_get_cgi_json("login_captcha", root);
+ 	l = b64_decode( &(captcha_t[0]), (unsigned char*) captcha_text, sizeof(captcha_text) );
+-	if (l >= (int)sizeof(captcha_text)) l = sizeof(captcha_text) - 1;	// b64_decode can return == size; avoid 1-byte OOB NUL write
++	if (l < 0) l = 0;	// b64_decode returns -1 on malformed input; avoid buf[-1] underflow write
++	else if (l >= (int)sizeof(captcha_text)) l = sizeof(captcha_text) - 1;	// b64_decode can return == size; avoid 1-byte OOB NUL write
+ 	captcha_text[l] = '\0';
+ #endif
+ 
+@@ -22255,7 +22256,8 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 	if(auth_version == HTTPD_AUTH_V1){
+ 		/* Decode it. */
+ 		l = b64_decode( &(authorization_t[0]), (unsigned char*) authinfo, sizeof(authinfo) );
+-		if (l >= (int)sizeof(authinfo)) l = sizeof(authinfo) - 1;	// b64_decode can return == size; avoid 1-byte OOB NUL write
++		if (l < 0) l = 0;	// b64_decode returns -1 on malformed input; avoid buf[-1] underflow write
++		else if (l >= (int)sizeof(authinfo)) l = sizeof(authinfo) - 1;	// b64_decode can return == size; avoid 1-byte OOB NUL write
+ 		authinfo[l] = '\0';
+ 
+ 		authpass = strchr( authinfo, ':' );
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index d520633953..1a8cbfcee3 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2947,9 +2947,22 @@ int start_hwqos(void)
+ 	FILE *f;
+ 	unsigned int obw;
+ 	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
++	const char *p;
+ 
+ 	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
+ 
++	/* wan_ifname is single-quoted in the generated root script; a literal quote
++	 * (or any shell-unsafe char) would break out. wanX_ifname is a kernel-derived
++	 * token, but guard defensively: reject anything that isn't a plain interface
++	 * name and fall back to an empty (inert) WANIF rather than emit it. */
++	for (p = wan_ifname; *p; p++) {
++		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
++		      (*p >= '0' && *p <= '9') || *p == '.' || *p == '_' || *p == '-')) {
++			wan_ifname = "";
++			break;
++		}
++	}
++
+ 	if ((f = fopen(qosfn, "w")) == NULL) return -2;
+ 
+ 	fprintf(f,
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index db51c0c9a8..a46e3305eb 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -488,7 +488,7 @@ var SSI = {
+   dns:      '<% nvram_get("wan0_dns"); %>',
+   wan_state:'<% nvram_get("wan0_state_t"); %>',
+   ddns_en:  '<% nvram_get("ddns_enable_x"); %>',
+-  ddns_host:'<% nvram_get("ddns_hostname_x"); %>',
++  ddns_host:decodeURIComponent('<% nvram_char_to_ascii("", "ddns_hostname_x"); %>'),
+   fw4:      '<% nvram_get("fw_enable_x"); %>',
+   fw6:      '<% nvram_get("ipv6_fw_enable"); %>',
+   upnp:     '<% nvram_get("wan0_upnp_enable"); %>',
+@@ -505,9 +505,9 @@ var SSI = {
+   mlo:      '<% nvram_get("mld_enable"); %>',
+   norebind: '<% nvram_get("dns_norebind"); %>',
+   dnssec:   '<% nvram_get("dnssec_enable"); %>',
+-  usb1:     '<% nvram_get("usb_path1"); %>',
++  usb1:     decodeURIComponent('<% nvram_char_to_ascii("", "usb_path1"); %>'),
+   usb1_spd: '<% nvram_get("usb_path1_speed"); %>',
+-  usb2:     '<% nvram_get("usb_path2"); %>',
++  usb2:     decodeURIComponent('<% nvram_char_to_ascii("", "usb_path2"); %>'),
+   usb2_spd: '<% nvram_get("usb_path2_speed"); %>',
+   lanip:    '<% nvram_get("lan_ipaddr"); %>',
+   lanip_t:  '<% nvram_get("lan_ipaddr_t"); %>',
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 5dcd09e0da..ab90c93aab 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -161,7 +161,14 @@ var ICONS = {
+ 
+ var reaperShell = true;
+ function $id(id){return document.getElementById(id);}
+-function frameUrl(page){ return '/' + page; }
++function frameUrl(page){
++  /* only frame a bare same-origin page name (optional query). Anything with a
++     path/scheme/authority char (/, backslash, :) fails the test and falls back
++     to the dashboard - blocks #\evil.com (browser normalizes /\evil.com ->
++     //evil.com) from loading an off-origin page inside the trusted shell chrome. */
++  if(!/^[A-Za-z0-9_.\-]+\.(asp|html?)(\?[^#]*)?$/.test(page)) page = DEFAULT_PAGE;
++  return '/' + page;
++}
+ 
+ var MENULIST=[], EXTABS=[];   /* set by buildRail; used for the shell tab bar */
+ 
+-- 
+2.25.1
+

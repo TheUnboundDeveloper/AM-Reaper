@@ -1,0 +1,165 @@
+From 7e31549af20a81fec9680a9a60a1f4bf18986230 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 5 Jul 2026 21:43:54 -0400
+Subject: [PATCH] security: backport avahi 0.8 mDNS reachable-assertion DoS
+ fixes
+
+avahi-daemon auto-starts (RTCONFIG_MDNS) and listens on UDP 5353; a
+crafted mDNS packet could trip a reachable assertion and abort the
+daemon -- a DoS of local service discovery (no RCE). Backport the
+upstream production-code fixes:
+
+- CVE-2023-38469  avahi-core/rr.c: reject TXT rdata exceeding
+  AVAHI_DNS_RDATA_MAX in avahi_record_is_valid  (upstream a337a1ba)
+- CVE-2023-38470  avahi-common/domain.c: require >= 2 bytes before the
+  separator write, and bail when avahi_escape_label returns NULL
+  (upstream 94cb6489 + 20dec84b)
+- CVE-2023-38473  avahi-common/alternative.c: unescape the input label
+  before deriving and re-escaping the alternative host name
+  (upstream b448c9f7)
+
+Not applicable: CVE-2023-38471/-38472/-1981 are D-Bus-API paths and this
+build is configured --disable-dbus. Deferred: CVE-2024-52615/-52616
+(wide-area.c) -- inactive on an mDNS-only build and 52615 is an invasive
+socket-lifecycle refactor.
+
+Production-code hunks only (upstream unit-test hunks omitted; no runtime
+effect). Verified by full `make rt-be96u` (MAKE_EXIT=0, image built);
+libavahi-core, libavahi-common and avahi-daemon relinked with no errors.
+---
+ .../router/avahi/avahi-common/alternative.c   | 27 +++++++++++++------
+ .../src/router/avahi/avahi-common/domain.c    |  5 ++--
+ release/src/router/avahi/avahi-core/rr.c      |  9 ++++++-
+ 3 files changed, 30 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/avahi/avahi-common/alternative.c b/release/src/router/avahi/avahi-common/alternative.c
+index b3d39f0ed9..a094e6d767 100644
+--- a/release/src/router/avahi/avahi-common/alternative.c
++++ b/release/src/router/avahi/avahi-common/alternative.c
+@@ -49,15 +49,20 @@ static void drop_incomplete_utf8(char *c) {
+ }
+ 
+ char *avahi_alternative_host_name(const char *s) {
++    char label[AVAHI_LABEL_MAX], alternative[AVAHI_LABEL_MAX*4+1];
++    char *alt, *r, *ret;
+     const char *e;
+-    char *r;
++    size_t len;
+ 
+     assert(s);
+ 
+     if (!avahi_is_valid_host_name(s))
+         return NULL;
+ 
+-    if ((e = strrchr(s, '-'))) {
++    if (!avahi_unescape_label(&s, label, sizeof(label)))
++        return NULL;
++
++    if ((e = strrchr(label, '-'))) {
+         const char *p;
+ 
+         e++;
+@@ -74,19 +79,18 @@ char *avahi_alternative_host_name(const char *s) {
+ 
+     if (e) {
+         char *c, *m;
+-        size_t l;
+         int n;
+ 
+         n = atoi(e)+1;
+         if (!(m = avahi_strdup_printf("%i", n)))
+             return NULL;
+ 
+-        l = e-s-1;
++        len = e-label-1;
+ 
+-        if (l >= AVAHI_LABEL_MAX-1-strlen(m)-1)
+-            l = AVAHI_LABEL_MAX-1-strlen(m)-1;
++        if (len >= AVAHI_LABEL_MAX-1-strlen(m)-1)
++            len = AVAHI_LABEL_MAX-1-strlen(m)-1;
+ 
+-        if (!(c = avahi_strndup(s, l))) {
++        if (!(c = avahi_strndup(label, len))) {
+             avahi_free(m);
+             return NULL;
+         }
+@@ -100,7 +104,7 @@ char *avahi_alternative_host_name(const char *s) {
+     } else {
+         char *c;
+ 
+-        if (!(c = avahi_strndup(s, AVAHI_LABEL_MAX-1-2)))
++        if (!(c = avahi_strndup(label, AVAHI_LABEL_MAX-1-2)))
+             return NULL;
+ 
+         drop_incomplete_utf8(c);
+@@ -109,6 +113,13 @@ char *avahi_alternative_host_name(const char *s) {
+         avahi_free(c);
+     }
+ 
++    alt = alternative;
++    len = sizeof(alternative);
++    ret = avahi_escape_label(r, strlen(r), &alt, &len);
++
++    avahi_free(r);
++    r = avahi_strdup(ret);
++
+     assert(avahi_is_valid_host_name(r));
+ 
+     return r;
+diff --git a/release/src/router/avahi/avahi-common/domain.c b/release/src/router/avahi/avahi-common/domain.c
+index 3b1ab68349..88c6f0114a 100644
+--- a/release/src/router/avahi/avahi-common/domain.c
++++ b/release/src/router/avahi/avahi-common/domain.c
+@@ -201,7 +201,7 @@ char *avahi_normalize_name(const char *s, char *ret_s, size_t size) {
+         }
+ 
+         if (!empty) {
+-            if (size < 1)
++            if (size < 2)
+                 return NULL;
+ 
+             *(r++) = '.';
+@@ -210,7 +210,8 @@ char *avahi_normalize_name(const char *s, char *ret_s, size_t size) {
+         } else
+             empty = 0;
+ 
+-        avahi_escape_label(label, strlen(label), &r, &size);
++        if (!(avahi_escape_label(label, strlen(label), &r, &size)))
++            return NULL;
+     }
+ 
+     return ret_s;
+diff --git a/release/src/router/avahi/avahi-core/rr.c b/release/src/router/avahi/avahi-core/rr.c
+index 7fa0beebf6..b03a24cb32 100644
+--- a/release/src/router/avahi/avahi-core/rr.c
++++ b/release/src/router/avahi/avahi-core/rr.c
+@@ -32,6 +32,7 @@
+ #include <avahi-common/malloc.h>
+ #include <avahi-common/defs.h>
+ 
++#include "dns.h"
+ #include "rr.h"
+ #include "log.h"
+ #include "util.h"
+@@ -688,11 +689,17 @@ int avahi_record_is_valid(AvahiRecord *r) {
+         case AVAHI_DNS_TYPE_TXT: {
+ 
+             AvahiStringList *strlst;
++            size_t used = 0;
+ 
+-            for (strlst = r->data.txt.string_list; strlst; strlst = strlst->next)
++            for (strlst = r->data.txt.string_list; strlst; strlst = strlst->next) {
+                 if (strlst->size > 255 || strlst->size <= 0)
+                     return 0;
+ 
++                used += 1+strlst->size;
++                if (used > AVAHI_DNS_RDATA_MAX)
++                    return 0;
++            }
++
+             return 1;
+         }
+     }
+-- 
+2.25.1
+

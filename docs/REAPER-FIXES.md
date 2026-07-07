@@ -5,7 +5,7 @@ Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 - **Base version:** 3006.102.8_beta2
 - **Custom version string:** `3006.102.8_reaper` (image: `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb`)
 - **Branch:** `be96u-only` (local only — never pushed upstream)
-- **Current release image (ON METAL):** sha256 `b81e482c…` (code tip `f9c6d316e7`) — rounds 1-4 + avahi CVE backport + T1-T4 latent hardening. **Flashed to the physical RT-BE96U 2026-07-05, running clean** (no debug-category log issues); per-feature spot-checks ongoing.
+- **Release:** **v1.0 (2026-07-07).** Image sha256 `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`). Contents: hardening rounds 1-4 + round-3 injection pass + avahi CVE backport + T1-T4 latent hardening + the v1.0 pre-release audit fixes, plus both Hardware QoS engines and the Reaper UI. The predecessor image `b81e482c` was flashed to the physical RT-BE96U 2026-07-05 and ran clean; v1.0's QoS + UI additions were validated on metal through 2026-07-07.
 - **Build target / applicable model:** **RT-BE96U only.** This tree was stripped to the RT-BE96U (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware, but this hardened image is produced for the RT-BE96U exclusively. The "Model" column reflects what this build delivers.
 
 > Scope note: a few items are present in the source but **not compiled/active** in the RT-BE96U build (gated off by config). They were fixed defensively where cheap, and are flagged below.
@@ -26,7 +26,7 @@ Every Critical/High/Medium/Low present in the RT-BE96U-built source is fixed exc
 
 Bundled third-party **package CVE backports** (avahi 0.8 mDNS DoS — CVE-2023-38469/-38470/-38473) are tracked in the [Package CVE backports](#package-cve-backports--bundled-system-libraries-2026-07-05) section. Items that are **still open and must be worked** (known-vulnerable EOL libraries, the closed-source blob auth boundary, and the AiCloud feature-gated set) plus lower-priority latent hardening are catalogued with severities in [Open security items still requiring work](#open-security-items-still-requiring-work-2026-07-05) at the end of this file.
 
-Rounds 1–3 (C/H/M/L/N above) audited the stock ASUS/Merlin userspace. A later **[Audit round 4](#audit-round-4--self-review-of-reaper-introduced-changes-2026-07-04)** re-reviewed the *reaper-authored* changes (UI flip, Hardware QoS) for regressions we introduced — 2 real defects + 2 defense-in-depth fixes (R4-1…R4-4).
+Rounds 1–2 (C/H/M/L/N above) audited the stock ASUS/Merlin userspace for the buffer-overflow and command-injection classes. A **[round-3 injection pass](#round-3--injection-class-fixes-post-feature-security-pass)** (`R3-1…R3-4`) closed four more config/rule/SQL-injection sinks found after the QoS + UI work landed, and a later **[Audit round 4](#audit-round-4--self-review-of-reaper-introduced-changes-2026-07-04)** re-reviewed the *reaper-authored* changes (UI flip, Hardware QoS) for regressions we introduced — 2 real defects + 2 defense-in-depth fixes (R4-1…R4-4). Firmware-correctness fixes made alongside the Hardware QoS feature are recorded in [Firmware correctness fixes](#firmware-correctness-fixes--qos-activation--flow-cache), and the final pre-ship review in [v1.0 pre-release audit](#v10-pre-release-audit-2026-07-07).
 
 ---
 
@@ -102,6 +102,19 @@ All rows apply to **RT-BE96U**. "Commit" is the short hash on `be96u-only`.
 | N3 | rc/rc_ipsec.c | `miniupnpc-new` from WAN values via `system` — `eval` argv | 5048c990d7 |
 | N4 | rc/rc_ipsec.c | residual `system()` grep/route sinks — validate/skip metachars | 5048c990d7 |
 
+### Round 3 — injection-class fixes (post-feature security pass)
+
+A second injection-focused sweep run after the Hardware QoS and UI work landed,
+covering config-file, iptables, SQL, and pre-auth-decode sinks that the first
+two rounds did not reach.
+
+| ID | Sev | Component | Fix | Commit |
+|---|---|---|---|---|
+| R3-1 | High | rc/services.c | dnsmasq/inadyn **config-injection** — a newline in a static-lease MAC/hostname, `lan_domain`, or the DDNS host could inject extra `dnsmasq.conf`/inadyn directives; reject values containing CR/LF/config metacharacters at the sink | 9716b7adf5 |
+| R3-2 | High | rc/firewall.c | **iptables-restore rule injection** — firewall rule-list fields written into the `iptables-restore` batch could inject rules/commands; validate and escape the rule-list fields before emission | a23ed46d5c |
+| R3-3 | Medium | libcodb/codb_utils.c, cosql_utils.c | **SQL identifier injection** in the libcodb query builder (Traffic Analyzer / app-stats DB) + source-bounded `strncpy` on the same paths | 102fc2c703 |
+| R3-4 | Medium (pre-auth) | httpd/web.c | Pre-auth **login base64 decode off-by-one** (`b64_decode` high-side clamp) on `login_captcha`/`login_authorization`; the paired `-1` malformed-input underflow was the round-4 follow-up (R4-1). The same commit added the QoS-apply numeric gate (see [Firmware correctness fixes](#firmware-correctness-fixes--qos-activation--flow-cache)). | ac418baf9d |
+
 ---
 
 ## Deferred — design decisions (NOT patched)
@@ -140,6 +153,28 @@ After the UI "flip", the Hardware-QoS feature, and hardening rounds 1–3, the *
 **Mock-validated:** R4-4 confirmed end-to-end — a hostile `ddns_hostname_x` value `evil'><img src=x onerror=…>` is served fully percent-encoded inside the JS literal (no breakout) and renders as inert text in the Internet card; the dashboard is otherwise intact.
 
 **Addendum (2026-07-06) — gate regression fixed:** the `ac418baf9d` QoS apply numeric gate (httpd/web.c) rejected any `qos_type > 10`, written when HW QoS v1 (type 10) was the highest engine. HW QoS Classful (type 11, added later) was silently dropped on every GUI apply — Classful never persisted while v1 kept working (syslog-only `reject out-of-range qos_type=11`, confirmed on metal). Cap raised to 11 in commit `6ee4cf49ad`. Lesson: a new `qos_type` engine must clear **three** gates — the `defaults.c` CKN_STR length, this numeric-range gate, and the `rc` dispatch (`add_iQosRules`/`start_iQos`/`hnd_nat_ac_init`).
+
+---
+
+## Firmware correctness fixes — QoS activation & flow-cache
+
+Not vulnerabilities, but functional-correctness fixes made while building the
+Hardware QoS feature; several are input-validation-adjacent (an over-length or
+out-of-range value being silently dropped). Recorded here so the fix list is
+complete through v1.0.
+
+| ID | Component | Problem | Fix | Commit |
+|---|---|---|---|---|
+| F1 | shared/defaults.c | **HW QoS never activated.** `qos_type` was `CKN_STR1` (max 1 char); `httpd`'s `nvram_check` silently dropped the 2-char value `"10"` (over-length), so selecting Hardware QoS fell back to Adaptive. | `qos_type` → `CKN_STR2` (both `#if` branches); requires a full libshared+httpd build | 8421d9263d |
+| F2 | httpd/web.c | **QoS-apply numeric gate too tight.** The apply path rejected any `qos_type > 10` (written when v1 was the highest engine), so HW QoS **Classful** (type 11) was silently dropped and never persisted. | raise the cap to 11; the digit-only `strspn` guard (the real anti-injection check) is unchanged | 6ee4cf49ad |
+| F3 | rc/services.c | **Stale flow-cache after disabling QoS.** Offloaded flows lingered, spamming `blog_get_dstentry_by_id`, until a reboot. | `eval("fc","flush")` in the QoS **stop** branch (moved out of the wrong `pms_device` branch) — no reboot needed | 2dcc66f2d6, 3a6024710c |
+| F4 | rc/qos.c | `start_cake()` bandwidth printed with `%d` (signed) for an unsigned value. | `%d` → `%u` | c267a089b0 |
+
+> Note: F1 and F2 are the same class of bug one layer apart — a new `qos_type`
+> engine must clear **three** gates: the `defaults.c` CKN_STR length (F1), the
+> `web.c` numeric-range gate (F2), and the `rc` dispatch (`add_iQosRules` /
+> `start_iQos` / `hnd_nat_ac_init`). Both were found by "the engine silently
+> reverts to Adaptive on apply."
 
 ---
 
@@ -221,6 +256,26 @@ CVE-2022-37434 fix, and `curl 8.17.0` / `dnsmasq 2.93` are current.
 
 ---
 
+## v1.0 pre-release audit (2026-07-07)
+
+Before tagging v1.0, all reaper-authored C and web-UI code was swept a final
+time by a multi-agent review (HW QoS C, httpd C, dashboard/shell JS, QoS GUI
+JS). **No Critical/High found**; the httpd injection filter (`reaper_inject.c`),
+the `qos_type` gate, and the login-decode clamps were re-confirmed clean. Two
+code fixes and minor UI polish resulted (commit `52afc5436f`, patch `0085`).
+
+| ID | Sev | Component | Finding | Fix |
+|---|---|---|---|---|
+| R5-1 | Medium (admin/physical) | rc/qos.c `ip_range_checker` | Four unbounded `strncpy` into `a[4]`/`head[16]` could overflow the stack on a malformed QoS-rule address (`12345.1.1.*`, or a 5-octet address). A stock Asuswrt pattern the T2 `strncat` hardening had left — now exercised by HW QoS Classful rules. | Reject over-length octets (`>= sizeof a`) / addresses (`len_total >= sizeof head`) **before** each copy. **Completes T2** (the same function's `strncat` sites were bounded earlier). |
+| R5-2 | Low | rc/qos.c `start_hwqos_classful` | With `qos_obw=0`, `calc()` floors to 2, so every 1–99% class was shaped to ~2 kbit instead of left unshaped. GUI `validForm` already requires non-zero bandwidth, so it is an nvram-edge only. | Gate the class shapers on `obw > 0` (matches `start_hwqos`). |
+
+**Also (cosmetic, not tabled):** dashboard browser-tab title emitted a literal
+`&mdash;` (JS string context → `—`); the unused secondary-WAN upload field
+is hidden under HW QoS on dual-WAN. Verdict: v1.0 is sound — no remote or
+pre-auth defect in the default configuration.
+
+---
+
 ## Verification
 Each changed file was compiled with the real RT-BE96U userspace toolchain (gcc-10.3, 32-bit ARM) and confirmed to build clean with no new warnings at the edit sites; `rc_ipsec.c` additionally passed a warning-diff vs the pre-hardening baseline. The **round-4** fixes were validated by a full end-to-end `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"), with all four changes confirmed present in the staged rootfs (`web.c`/`qos.c` recompiled into httpd/rc; both www edits in the minified `fs/www`), plus the mock-router XSS round-trip above. Image sha256 `c76aac232b2eca251403640c02ccc7bb0426d4fe763fabc97547727d16a3d8fa`.
 
@@ -235,6 +290,17 @@ defensive C edits broke runtime behavior. Per-feature spot-checks continue over
 time: Traffic Analyzer / app-stats pages (libcodb SQL builder, T1), a QoS rule
 with an IP range (T2), DHCP domain/search rendering (T4), mDNS `.local`
 discovery (avahi), and theme at all page depths (SDN/MLO SPA).
+
+The **v1.0 audit fixes (R5-1/R5-2, commit `52afc5436f`)** were validated by a
+full `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `rc`
+(`qos.o`) recompiled and both www edits staged into the minified `fs/www`. The
+final **v1.0 release image** is sha256
+`fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader
+`e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`) — the image
+distributed as the v1.0 GitHub release. Both Hardware QoS engines (v1 `qos_type=10`
+global and v2 `qos_type=11` Classful) were validated end-to-end on the physical
+RT-BE96U through 2026-07-07 (queue programming, class-mark → hardware-queue
+steering, priority order, accelerator stays on).
 
 ---
 
@@ -277,7 +343,7 @@ the write only if a size assumption is ever violated. Built clean
 | ID | Sev | File | Was | Fix |
 |---|---|---|---|---|
 | T1 | Low | `libcodb/cosql_utils.c` (16 sites) | `strncat(dst, src, strlen(src))` — bounded by *source* length, i.e. unbounded append | Each site bounded by its buffer's own allocation-size var (`match_query_string_size`, `sql_create_table_size`, `sql_insert_columns_size`, `sql_insert_values_size`, `sql_query_columns_size`, `sql_query_size`). The `sql_query` buffer reserves only `+1024` for WHERE clauses, so this adds real protection. |
-| T2 | Low | `rc/qos.c` `ip_range_checker` | `strncat(new, s, strlen(s))` | bounded by the `new` buffer size (`len`) |
+| T2 | Low | `rc/qos.c` `ip_range_checker` | `strncat(new, s, strlen(s))` | bounded by the `new` buffer size (`len`). The same function's unbounded `strncpy` sites were closed in the v1.0 audit — see **R5-1**. |
 | T3 | Info | `shared/shutils.c` `remove_dups` | `strncat(outlist, x, inlist_size - strlen(outlist))` off-by-one | added `- 1` for the NUL |
 | T4 | Low | `rc/udhcpc.c` (both DHCP-RFC3397 sites) | `alloca(strlen(domain)+strlen(value)+2)` on DHCP-supplied strings | `alloca` capped at 2048 + bounded `snprintf` (removes stack-growth on a hostile DHCP `search`/`domain`) |
 

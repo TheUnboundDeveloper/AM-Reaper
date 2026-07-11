@@ -1,0 +1,888 @@
+From 9b16f49cf1f024cc4fa24aa86c9d89bab9de6d3f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 00:07:09 -0400
+Subject: [PATCH] rc/httpd/webui: v1.2.8 - QoS v3 (aggregate cap, guaranteed
+ minimums, DSCP trust, live stats) + native Traffic Manager page
+
+Engine (type 11 upgraded in place; on-metal tmctl capability probe 2026-07-10
+confirmed the Runner TM supports all of this unexposed):
+- rc/qos.c start_hwqos_classful: emit --minrate from the min half of the
+  qos_orates pairs (v2 parsed and ignored it); guarantee clamped to its
+  ceiling. Port shaper pinned to qos_obw after queue setup = true aggregate
+  cap (ceilings become burst allowances; combined egress can no longer spill
+  into the ISP buffer when several classes saturate). Stop branch resets the
+  port shaper and clears minrates with the ceilings.
+- rc/qos.c add_qos_rules: DSCP trust block (qos_dscp_trust=1 + classful only)
+  mapping EF/CS5-7->Q1, CS4/AF4x->Q2, CS3/AF3x->Q3, CS1->Q5, placed after
+  explicit user rules and before the default catch-all; v4+v6.
+- shared/defaults.c: qos_pshaper=1, qos_minrates=1 (kill-switch semantics:
+  literal "0" = off), qos_dscp_trust=0 (policy toggle - LAN hosts influence
+  their own class - so opt-in).
+
+httpd:
+- web.c do_reaper_qos_stats_cgi + reaper_qos_stats.cgi (do_auth): tmctl
+  getqstats for WAN qids 0..6 as JSON; no request input consumed, ifname
+  charset-guarded like start_hwqos.
+- reaper_inject.c: skip-list Reaper_QoS.asp (native page, own chrome).
+
+www:
+- NEW Reaper_QoS.asp: dashboard-native Traffic Manager page. Mode cards with
+  plain-language descriptions (Off/Classful/HW/Cake/Traditional/BwLimiter;
+  Adaptive retired with the DPI stack), bandwidth panel with measured-rate
+  guidance, classful editor (order/name/min/ceiling + live per-class rate and
+  drop columns via 3s stats poll), three feature toggles (neutral grey), FAQ
+  tuning-guide fly-out (8 sections incl. suggested WFH/gamer/office setups).
+  Validation: all-zero ceilings rejected (U2 carried over), min>ceiling
+  clamped, min-sum>100 blocked, ceiling-sum warning only when the aggregate
+  cap is off. Same-mode edits apply live (restart_qos;restart_firewall);
+  mode/enable switches confirm-then-reboot (stock HND accelerator semantics).
+- reaper_shell.asp: frame CSS injector now skips pages carrying
+  <meta name="reaper-native"> - convention for self-themed native pages.
+- menuTrees/menuTree.js + Main_ReaperDash.asp rail: QoS tab -> Reaper_QoS.asp
+  (stock QoS_EZQoS.asp still ships, linked for the BW-limiter editor).
+
+Mock-validated (render + FAQ fly-out). EXTENDNO=Reaper_v1.2.8.
+Metal tests owed: getportshaper/getqcfg show cap+minrates after apply; DSCP
+toggle classifies an EF flow to Q1; live stats move under a bulk upload;
+engine-switch reboot path; U2 editor guards; stock page still reachable.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/reaper_inject.c      |   3 +
+ release/src/router/httpd/web.c                |  48 ++
+ release/src/router/rc/qos.c                   |  66 ++-
+ release/src/router/shared/defaults.c          |   6 +
+ release/src/router/www/Main_ReaperDash.asp    |   2 +-
+ release/src/router/www/Reaper_QoS.asp         | 550 ++++++++++++++++++
+ release/src/router/www/reaper_shell.asp       |   4 +-
+ .../router/www/require/menuTrees/menuTree.js  |   6 +-
+ 9 files changed, 676 insertions(+), 11 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_QoS.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 3408a63c81..ac4005141d 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.7
++EXTENDNO=Reaper_v1.2.8
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index f8cdacfeda..941e47fa9d 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -51,6 +51,9 @@ static const char REAPER_BLOCK[] =
+ static const char *reaper_skip[] = {
+ 	"Main_ReaperDash.asp",
+ 	"reaper_shell.asp",
++	/* reaper-native pages carry their own chrome + a self bounce; injecting
++	   reaper_content.css (written for stock pages) would fight their CSS */
++	"Reaper_QoS.asp",
+ 	"Main_Login.asp",
+ 	"Nologin.asp",
+ 	/* Captive_Portal* embed a </head> INSIDE a <script> splash template before
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index e14a9e01ad..f4daed5124 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21599,6 +21599,53 @@ do_set_ASUS_NEW_EULA_cgi(char *url, FILE *stream)
+ /* reaper v1.2.7: do_set_ASUS_EULA_cgi removed - legacy app-only EULA setter with zero www callers;
+  * EULA pre-signed in defaults.c. The modern set_ASUS_NEW_EULA.cgi path is KEPT (QIS wizard/AiMesh + httpApi.newEula). */
+ 
++/* reaper QoS v3: per-class egress queue counters for the Reaper_QoS.asp live
++ * stats tiles. Reads tmctl getqstats for WAN qids 0..6 and emits JSON. No
++ * request input is consumed (url ignored); the only interpolated value is the
++ * kernel-provided WAN ifname, charset-guarded like rc/qos.c start_hwqos. */
++static void
++do_reaper_qos_stats_cgi(char *url, FILE *stream)
++{
++	int qid, active;
++	const char *ifname = "";
++	const char *q;
++	char cmd[160], line[160];
++	FILE *p;
++
++	active = (nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11);
++	websWrite(stream, "{\"enabled\":%d", active ? 1 : 0);
++
++	if (active) {
++		ifname = get_wan_ifname(wan_primary_ifunit());
++		for (q = ifname; *q; q++) {
++			if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
++			      (*q >= '0' && *q <= '9') || *q == '.' || *q == '_' || *q == '-')) {
++				ifname = "";
++				break;
++			}
++		}
++	}
++
++	if (active && *ifname) {
++		for (qid = 0; qid <= 6; qid++) {
++			unsigned long long txp = 0, txb = 0, dp = 0, db = 0;
++			snprintf(cmd, sizeof(cmd), "tmctl getqstats --devtype 0 --if %s --qid %d", ifname, qid);
++			if ((p = popen(cmd, "r")) != NULL) {
++				while (fgets(line, sizeof(line), p)) {
++					if (sscanf(line, " txPackets: %llu", &txp) == 1) continue;
++					if (sscanf(line, " txBytes: %llu", &txb) == 1) continue;
++					if (sscanf(line, " droppedPackets: %llu", &dp) == 1) continue;
++					if (sscanf(line, " droppedBytes: %llu", &db) == 1) continue;
++				}
++				pclose(p);
++			}
++			websWrite(stream, ",\"q%d\":{\"txp\":%llu,\"txb\":%llu,\"dp\":%llu,\"db\":%llu}",
++				qid, txp, txb, dp, db);
++		}
++	}
++	websWrite(stream, "}");
++}
++
+ static void
+ do_unreg_ASUSDDNS_cgi(char *url, FILE *stream)
+ {
+@@ -28678,6 +28725,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "upgrade.cgi*", "text/html", no_cache_IE7, do_upgrade_post, do_upgrade_cgi, do_auth},
+ 	{ "upload.cgi*", "text/html", no_cache_IE7, do_upload_post, do_upload_cgi, do_auth },
+ 	/* reaper v1.2.7: set_ASUS_EULA.cgi endpoint removed (legacy app-only setter; EULA pre-signed in defaults.c) */
++	{ "reaper_qos_stats.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
+ 	{ "set_ASUS_NEW_EULA.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_NEW_EULA_cgi, do_auth },
+ 	{ "set_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_privacy_policy_cgi, do_auth },
+ 	{ "get_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_ASUS_privacy_policy_cgi, do_auth },
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 79d6a693a6..c34ed17c06 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -914,6 +914,36 @@ static int add_qos_rules(char *pcWANIF)
+ 	}
+ 	free(buf);
+ 
++	/* reaper QoS v3: DSCP trust (qos_dscp_trust=1, HW classful engine only).
++	 * Map the standard DiffServ classes onto the 5 upload classes AFTER the
++	 * explicit user rules (an admin rule always wins) and BEFORE the default
++	 * catch-all (DSCP beats only "unmatched"). The connection takes the class
++	 * of its first marked packet (gum bit set, no re-detection) - consistent
++	 * with the documented HW-offload freeze semantics for type 11. */
++	if (IS_HWQOS_CLASSFUL() && nvram_match("qos_dscp_trust", "1")) {
++		static const struct { const char *dscp; int cls; } dscp_map[] = {
++			{ "EF", 1 }, { "CS7", 1 }, { "CS6", 1 }, { "CS5", 1 },	/* voice / interactive     -> Q1 */
++			{ "CS4", 2 }, { "AF41", 2 }, { "AF42", 2 }, { "AF43", 2 },	/* video conf / gaming     -> Q2 */
++			{ "CS3", 3 }, { "AF31", 3 }, { "AF32", 3 }, { "AF33", 3 },	/* streaming / signaling   -> Q3 */
++			{ "CS1", 5 },						/* scavenger / bulk        -> Q5 */
++		};
++		int di;
++		for (di = 0; di < (int)(sizeof(dscp_map)/sizeof(dscp_map[0])); di++) {
++			fprintf(fn, "-A QOSO -m dscp --dscp-class %s -j CONNMARK %s 0x%x/0x%x\n",
++				dscp_map[di].dscp, action, dscp_map[di].cls|class_gum, class_mask|class_gum);
++			if (manual_return)
++				fprintf(fn, "-A QOSO -m dscp --dscp-class %s -j RETURN\n", dscp_map[di].dscp);
++#ifdef RTCONFIG_IPV6
++			if (fn_ipv6 && ipv6_enabled()) {
++				fprintf(fn_ipv6, "-A QOSO -m dscp --dscp-class %s -j CONNMARK %s 0x%x/0x%x\n",
++					dscp_map[di].dscp, action, dscp_map[di].cls|class_gum, class_mask|class_gum);
++				if (manual_return)
++					fprintf(fn_ipv6, "-A QOSO -m dscp --dscp-class %s -j RETURN\n", dscp_map[di].dscp);
++			}
++#endif
++		}
++	}
++
+ 	/* The default class */
+ 	i = nvram_get_int("qos_default");
+ 	if ((i < 0) || (i > 4)) i = 3;  // "lowest"
+@@ -3063,13 +3093,16 @@ int start_hwqos(void)
+ int start_hwqos_classful(void)
+ {
+ 	FILE *f;
+-	unsigned int obw, rate, ceil, cap;
+-	int i, qid;
++	unsigned int obw, rate, ceil, cap, minr;
++	int i, qid, minrates;
+ 	char *buf, *g, *p;
+ 	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
+ 	const char *q;
+ 
+ 	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
++	/* v3 kill-switch semantics (mirror reaper_inject/get_index_page):
++	 * unset or any value other than literal "0" = on, "0" = off. */
++	minrates = !nvram_match("qos_minrates", "0");
+ 
+ 	/* same shell-safety guard as start_hwqos: wan_ifname is single-quoted in
+ 	 * the generated root script; reject anything that isn't a plain interface
+@@ -3092,7 +3125,10 @@ int start_hwqos_classful(void)
+ 		wan_ifname
+ 	);
+ 
+-	/* class queues 1..5: PI2 + ceil% of OBW from qos_orates (prio order 0..4) */
++	/* class queues 1..5: PI2 + min%/ceil% of OBW from qos_orates (prio order 0..4).
++	 * v3: the min half of each "min-ceil" pair (ignored by v2) is now emitted as
++	 * a committed rate (--minrate) - lower classes keep a guaranteed floor while
++	 * the SP scheduler lets higher classes take the rest (CBWFQ model). */
+ 	g = buf = strdup(nvram_safe_get("qos_orates"));
+ 	for (i = 0; i < 5; ++i) {
+ 		if ((!g) || ((p = strsep(&g, ",")) == NULL)) break;
+@@ -3102,9 +3138,16 @@ int start_hwqos_classful(void)
+ 		 * matching start_hwqos. (calc() floors to 2, so without this guard a
+ 		 * blank OBW would throttle every 1..99%% class to ~2 kbit.) */
+ 		cap = (obw > 0 && ceil >= 1 && ceil < 100) ? calc(obw, ceil) : obw;
++		minr = (minrates && obw > 0 && rate >= 1 && rate <= 100) ? calc(obw, rate) : 0;
++		if (cap > 0 && minr > cap)
++			minr = cap;	/* a guarantee can never exceed the ceiling */
+ 		fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid %d --dropalg 4\n", qid);
+-		if (cap > 0)
+-			fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --shapingrate %u\n", qid, cap);
++		if (cap > 0) {
++			if (minr > 0)
++				fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --minrate %u --shapingrate %u\n", qid, minr, cap);
++			else
++				fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --shapingrate %u\n", qid, cap);
++		}
+ 	}
+ 	free(buf);
+ 
+@@ -3116,9 +3159,20 @@ int start_hwqos_classful(void)
+ 		fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid 6 --shapingrate %u\n", obw);
+ 	}
+ 
++	/* v3: aggregate cap - port shaper pinned to OBW. With the whole port held
++	 * at the configured upload, per-class ceilings become safe burst
++	 * allowances: they may sum past 100%% without the combined egress ever
++	 * exceeding OBW (the ISP buffer stays out of the game even when several
++	 * classes saturate at once). qos_pshaper="0" kills. */
++	if (obw > 0 && !nvram_match("qos_pshaper", "0"))
++		fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate %u\n", obw);
++
+ 	fprintf(f, "\t;;\nstop)\n");
++	fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate 0\n");
+ 	for (qid = 0; qid <= 6; qid++) {
+-		fprintf(f, "\ttmctl setqshaper  --devtype 0 --if $WANIF --qid %d --shapingrate 0\n", qid);
++		/* reset minrate along with the ceiling - a bare "--shapingrate 0"
++		 * would leave a stale committed rate configured on the queue */
++		fprintf(f, "\ttmctl setqshaper  --devtype 0 --if $WANIF --qid %d --minrate 0 --shapingrate 0\n", qid);
+ 		fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid %d --dropalg 0\n", qid);
+ 	}
+ 	fprintf(f, "\t;;\n*)\nesac\n");
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 38d2d65621..cb2824ba31 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3072,6 +3072,12 @@ struct nvram_tuple router_defaults[] = {
+ 
+ 	{ "qos_orates", "80-100,10-100,5-100,3-100,2-95,0-0,0-0,0-0,0-0,0-0", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_class_names", "Gaming,Web/VoIP,Streaming,Downloads,Default", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },  /* reaper: HW QoS Classful editor labels (UI-only; engine reads qos_orates) */
++	/* reaper QoS v3 (HW classful, qos_type 11): aggregate port shaper + per-class
++	 * committed rates default ON ("0" = kill-switch); DSCP trust is a policy
++	 * choice (LAN hosts influence their own class) and defaults OFF. */
++	{ "qos_pshaper", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 aggregate cap: port shaper at qos_obw */
++	{ "qos_minrates", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 guaranteed minimums from qos_orates min half */
++	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index d97fbb3d42..6dd6a7a6be 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -270,7 +270,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+       <a href="/reaper_shell.asp#AiMesh.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg></span><span class="nl">AiMesh</span></a>
+       <a href="/reaper_shell.asp#SDN.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl">Network</span></a>
+       <a href="/reaper_shell.asp#ParentalControl.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg></span><span class="nl">Parental Controls</span></a>
+-      <a href="/reaper_shell.asp#QoS_EZQoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl">Traffic Manager</span></a>
++      <a href="/reaper_shell.asp#Reaper_QoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl">Traffic Manager</span></a>
+       <a href="/reaper_shell.asp#Main_TrafficMonitor_realtime.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl">Traffic Monitor</span></a>
+       <a href="/reaper_shell.asp#Main_GameServer_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg></span><span class="nl">Open NAT</span></a>
+       <a href="/reaper_shell.asp#APP_Installation.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg></span><span class="nl">USB Application</span></a>
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+new file mode 100644
+index 0000000000..ece0f24290
+--- /dev/null
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -0,0 +1,550 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; Traffic Manager</title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;padding:22px 26px 60px}
++h1,h2,h3,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.mono{font-variant-numeric:tabular-nums}
++html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
++::-webkit-scrollbar{width:12px;height:12px}
++::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:var(--crimson);border-radius:8px;border:2px solid #000}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++a{color:var(--bone-dim)} a:hover{color:var(--bone)}
++
++.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
++.pagehead h1{font-size:24px;font-weight:700}
++.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
++  padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
++.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--steel)}
++.pill.on .dot{background:var(--jade)} .pill.on{color:var(--bone)}
++.spacer{flex:1}
++.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
++  font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;
++  padding:9px 18px;cursor:pointer;transition:.15s;text-transform:uppercase}
++.btn:hover{border-color:var(--line)}
++.btn.primary{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++.btn.primary:hover{filter:brightness(1.1)}
++.btn.ghost{background:transparent}
++
++.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:18px 20px;margin-bottom:18px}
++.panel h2{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:4px}
++.panel .sub{font-size:12.5px;color:var(--steel);margin:2px 0 14px;line-height:1.5}
++
++/* mode cards */
++.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px}
++.mode{border:1px solid var(--line-soft);border-radius:12px;background:var(--panel-2);padding:14px 15px;cursor:pointer;transition:.15s;position:relative}
++.mode:hover{border-color:var(--line)}
++.mode.sel{border-color:var(--crimson);background:linear-gradient(180deg,rgba(225,6,0,.10),var(--panel-2))}
++.mode.sel::after{content:"SELECTED";position:absolute;top:10px;right:12px;font-family:var(--hdr);font-size:9px;letter-spacing:.18em;color:var(--crimson)}
++.mode h3{font-size:15px;font-weight:700;margin-bottom:6px;padding-right:20px}
++.mode p{font-size:12px;line-height:1.5;color:var(--bone-dim);margin:0 0 10px}
++.tags{display:flex;flex-wrap:wrap;gap:5px}
++.tag{font-family:var(--hdr);font-weight:600;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
++  border:1px solid var(--line-soft);border-radius:5px;padding:2.5px 7px;color:var(--steel)}
++.tag.good{color:var(--jade);border-color:rgba(79,178,134,.35)}
++.tag.warn{color:var(--amber);border-color:rgba(224,169,59,.35)}
++.mode .rec{position:absolute;top:-9px;left:12px;background:var(--crimson);color:#fff;font-family:var(--hdr);
++  font-weight:700;font-size:9px;letter-spacing:.15em;border-radius:4px;padding:2px 7px}
++
++/* bandwidth */
++.bwrow{display:flex;gap:26px;flex-wrap:wrap}
++.bwfield label{display:block;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:6px}
++.bwfield input{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);
++  font-family:var(--body);font-size:14px;padding:9px 11px;width:150px;outline:none}
++.bwfield input:focus{border-color:var(--line)}
++.bwfield .unit{margin-left:7px;color:var(--steel);font-size:12px}
++.hint{font-size:12px;color:var(--steel);line-height:1.55;margin-top:10px}
++.hint b{color:var(--bone-dim);font-weight:600}
++
++/* toggles - NEUTRAL GREY by design (an ON toggle in brand red reads as an alert) */
++.togglerow{display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid var(--line-soft)}
++.togglerow:first-of-type{border-top:none}
++.tswitch{position:relative;flex:0 0 42px;height:22px;margin-top:2px}
++.tswitch input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:2}
++.tswitch .track{position:absolute;inset:0;background:#26262b;border:1px solid var(--line-soft);border-radius:999px;transition:.15s}
++.tswitch .track::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#6a6f75;transition:.15s}
++.tswitch input:checked ~ .track{background:#3a3f45}
++.tswitch input:checked ~ .track::after{left:22px;background:#c9cdd2}
++.tmeta .tname{font-family:var(--hdr);font-weight:600;font-size:13.5px;letter-spacing:.05em;color:var(--bone)}
++.tmeta .tdesc{font-size:12px;color:var(--steel);line-height:1.5;margin-top:2px}
++
++/* class editor */
++table.classes{width:100%;border-collapse:collapse;margin-top:6px}
++table.classes th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
++  color:var(--steel);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line-soft)}
++table.classes td{padding:9px 10px;border-bottom:1px solid var(--line-soft);font-size:13px;color:var(--bone-dim)}
++table.classes tr:last-child td{border-bottom:none}
++table.classes input[type=text]{background:#000;border:1px solid var(--line-soft);border-radius:7px;color:var(--bone);
++  font-family:var(--body);font-size:13px;padding:7px 9px;outline:none}
++table.classes input[type=text]:focus{border-color:var(--line)}
++.qbadge{font-family:var(--hdr);font-weight:700;font-size:12px;color:var(--bone)}
++.qnote{font-size:10px;color:var(--steel);letter-spacing:.05em}
++.arrows span{cursor:pointer;color:var(--steel);font-size:15px;padding:0 4px;user-select:none}
++.arrows span:hover{color:var(--bone)}
++.statcell{font-size:12px}
++.statcell .rate{color:var(--bone);font-weight:500}
++.statcell .drops{color:var(--steel)} .statcell .drops.hot{color:var(--amber)}
++
++/* extra queue tiles */
++.xq{display:flex;gap:12px;margin-top:14px;flex-wrap:wrap}
++.xq .xt{flex:1;min-width:180px;border:1px solid var(--line-soft);border-radius:10px;background:var(--panel-2);padding:10px 13px}
++.xq .xt .xn{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
++.xq .xt .xv{font-size:13px;color:var(--bone-dim);margin-top:4px}
++
++/* links row */
++.linksrow{font-size:12.5px;line-height:1.7}
++
++/* FAQ fly-out */
++.scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s;z-index:40}
++.scrim.open{opacity:1;pointer-events:auto}
++.flyout{position:fixed;top:0;right:-460px;width:440px;max-width:92vw;height:100vh;background:var(--panel);
++  border-left:1px solid var(--line);z-index:41;transition:right .22s ease;display:flex;flex-direction:column}
++.flyout.open{right:0}
++.flyout .fhead{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line-soft)}
++.flyout .fhead h2{font-size:16px;font-weight:700;flex:1}
++.flyout .fclose{cursor:pointer;color:var(--steel);font-size:20px;line-height:1;padding:2px 6px}
++.flyout .fclose:hover{color:var(--bone)}
++.flyout .fbody{overflow-y:auto;padding:6px 18px 40px}
++.flyout details{border-bottom:1px solid var(--line-soft);padding:2px 0}
++.flyout summary{cursor:pointer;font-family:var(--hdr);font-weight:600;font-size:13.5px;letter-spacing:.04em;color:var(--bone);
++  padding:12px 2px;list-style:none;position:relative;padding-right:22px}
++.flyout summary::-webkit-details-marker{display:none}
++.flyout summary::after{content:"+";position:absolute;right:4px;top:10px;color:var(--steel);font-size:16px}
++.flyout details[open] summary::after{content:"\2013"}
++.flyout .fc{font-size:12.5px;line-height:1.65;color:var(--bone-dim);padding:0 2px 14px}
++.flyout .fc b{color:var(--bone);font-weight:600}
++.flyout .fc ul{margin:6px 0;padding-left:18px}
++.flyout .fc li{margin:4px 0}
++.flyout .fc .fx{color:var(--jade)}
++
++/* applying overlay */
++.applying{position:fixed;inset:0;background:rgba(0,0,0,.78);display:none;z-index:60;place-items:center}
++.applying.show{display:grid}
++.applying .abox{text-align:center}
++.applying .abox h2{font-size:18px;margin-bottom:8px}
++.applying .abox p{color:var(--steel);font-size:13px}
++</style>
++</head>
++<body>
++<script>
++/* Reaper-native page: standalone hits get the shell chrome (fragment passes the shell allow-list) */
++if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
++</script>
++
++<div class="pagehead">
++  <div>
++    <div class="eyebrow">Traffic Manager</div>
++    <h1>Quality of Service</h1>
++  </div>
++  <span class="pill" id="engpill"><span class="dot"></span><span id="engpill_t">Loading</span></span>
++  <div class="spacer"></div>
++  <button type="button" class="btn ghost" onclick="faqOpen()">FAQ / Tuning Guide</button>
++  <button type="button" class="btn primary" onclick="applyQoS()">Apply</button>
++</div>
++
++<div class="panel">
++  <h2>Mode</h2>
++  <div class="sub">Pick how upload/download traffic is shaped. Changing the mode (or turning QoS on) reboots the router so the flow accelerator can be reconfigured; edits within a mode apply live.</div>
++  <div class="modes" id="modes"></div>
++</div>
++
++<div class="panel" id="bwpanel">
++  <h2>Bandwidth</h2>
++  <div class="sub">The shaper must own the bottleneck. Set upload to 90&ndash;95% of what a speed test <i>measures</i> (not the plan rate) &mdash; if this equals or exceeds what the line really delivers, the ISP buffer takes over and QoS barely engages.</div>
++  <div class="bwrow">
++    <div class="bwfield">
++      <label>Upload (obw)</label>
++      <input type="text" id="bw_up" maxlength="7"><span class="unit">Mb/s</span>
++    </div>
++    <div class="bwfield">
++      <label>Download (ibw)</label>
++      <input type="text" id="bw_dn" maxlength="7"><span class="unit">Mb/s</span>
++      <div class="qnote" style="margin-top:5px">Used by Traditional / Bandwidth Limiter / Cake. Hardware QoS shapes upload only.</div>
++    </div>
++  </div>
++</div>
++
++<div class="panel" id="clpanel" style="display:none">
++  <h2>Classes &mdash; priority, guarantees, ceilings</h2>
++  <div class="sub">Top row is served first (strict priority). <b>Min %</b> is a guaranteed floor under load; <b>Ceiling %</b> is the most a class may ever take. With the aggregate cap on, ceilings may total over 100% &mdash; they become burst allowances inside the capped upload.</div>
++
++  <div class="togglerow">
++    <label class="tswitch"><input type="checkbox" id="tg_pshaper"><span class="track"></span></label>
++    <div class="tmeta">
++      <div class="tname">Aggregate cap (port shaper)</div>
++      <div class="tdesc">Holds the whole WAN port at the upload figure above, so combined class traffic can never spill into the ISP buffer &mdash; even when several classes saturate at once. Leave on unless you are debugging.</div>
++    </div>
++  </div>
++  <div class="togglerow">
++    <label class="tswitch"><input type="checkbox" id="tg_minrates"><span class="track"></span></label>
++    <div class="tmeta">
++      <div class="tname">Guaranteed minimums</div>
++      <div class="tdesc">Enforces the Min % column as a committed rate per class. Guarantees only matter under contention; they must total 100% or less.</div>
++    </div>
++  </div>
++  <div class="togglerow">
++    <label class="tswitch"><input type="checkbox" id="tg_dscp"><span class="track"></span></label>
++    <div class="tmeta">
++      <div class="tname">Trust DSCP marking</div>
++      <div class="tdesc">Maps standard DiffServ classes from LAN devices (EF/CS5+ to Q1, AF4x to Q2, AF3x to Q3, CS1 scavenger to Q5) ahead of the default class. Your explicit rules always win. Off by default: any LAN host can influence its own priority when this is on.</div>
++    </div>
++  </div>
++
++  <table class="classes">
++    <thead><tr>
++      <th style="width:64px">Order</th><th>Class name</th><th style="width:110px">Queue</th>
++      <th style="width:90px">Min %</th><th style="width:90px">Ceiling %</th>
++      <th style="width:130px">Rate (live)</th><th style="width:110px">Drops</th>
++    </tr></thead>
++    <tbody id="ctbody"></tbody>
++  </table>
++
++  <div class="xq">
++    <div class="xt"><div class="xn">Unclassified (Q0)</div><div class="xv statcell" id="xq0">&ndash;</div></div>
++    <div class="xt"><div class="xn">LAN / Multicast (Q6)</div><div class="xv statcell" id="xq6">&ndash;</div></div>
++    <div class="xt"><div class="xn">AQM</div><div class="xv">PI2 on every queue &mdash; drops rise briefly when a class is held to its rate; that is the system working.</div></div>
++  </div>
++</div>
++
++<div class="panel linksrow" id="linkspanel">
++  <h2>Related pages</h2>
++  <div class="sub" style="margin-bottom:6px">Classification and per-device controls stay on their existing pages:</div>
++  <a href="/Advanced_QOSUserRules_Content.asp">Classification rules (match by IP / MAC / port / protocol)</a> &middot;
++  <a href="/Advanced_QOSUserPrio_Content.asp">Traditional QoS priorities</a> &middot;
++  <a href="/QoS_EZQoS.asp">Stock QoS page (Bandwidth Limiter per-device editor)</a>
++  <div class="hint">Rule of thumb: match on <b>IP, MAC, port or protocol</b> &mdash; not transferred-bytes. Accelerated flows keep the class of their first packet, so byte-count rules misclassify long flows.</div>
++</div>
++
++<!-- FAQ fly-out -->
++<div class="scrim" id="scrim" onclick="faqClose()"></div>
++<aside class="flyout" id="flyout" aria-label="FAQ and tuning guide">
++  <div class="fhead"><h2>FAQ / Tuning Guide</h2><span class="fclose" onclick="faqClose()">&times;</span></div>
++  <div class="fbody">
++    <details open>
++      <summary>Which mode should I pick?</summary>
++      <div class="fc">
++        <ul>
++          <li><b>HW QoS Classful</b> &mdash; the recommended default. Five priority classes, guaranteed minimums, hardware AQM, and the NAT accelerator stays on (full multi-gigabit routing).</li>
++          <li><b>Hardware QoS</b> &mdash; single-queue version: one upload cap + AQM, no classes. Simplest possible bufferbloat fix.</li>
++          <li><b>Cake</b> &mdash; best <i>download</i> bufferbloat control, but it is software: the NAT accelerator turns off and one CPU core does all shaping. Fine below ~1 Gb/s.</li>
++          <li><b>Traditional</b> &mdash; the classic software engine. Accelerator off. Only if you need its exact semantics.</li>
++          <li><b>Bandwidth Limiter</b> &mdash; not bufferbloat control; hard per-device speed caps (guest devices, kids' devices).</li>
++        </ul>
++      </div>
++    </details>
++    <details>
++      <summary>How do I set the bandwidth figure?</summary>
++      <div class="fc">Run a few speed tests at a quiet hour, take the <b>lowest consistent upload</b>, and enter 90&ndash;95% of it. The point is that <b>this router</b> must be the bottleneck: if the value is at or above what the line truly delivers, queueing happens in the ISP's equipment where nothing here can manage it. Too low just wastes headroom.</div>
++    </details>
++    <details>
++      <summary>Priority vs Minimum vs Ceiling &mdash; what does each do?</summary>
++      <div class="fc">
++        <b>Priority (row order)</b>: under contention the top class is served first, completely. Rank by latency-sensitivity, not importance.<br><br>
++        <b>Min %</b>: a floor the class is guaranteed when the link is saturated. Idle guarantees cost nothing. Mins must total 100% or less &mdash; you cannot promise more than the link.<br><br>
++        <b>Ceiling %</b>: the most the class may take, ever. The ceiling on a <i>high</i>-priority class is what protects everyone below it from starvation &mdash; never give Q1 100%.
++      </div>
++    </details>
++    <details>
++      <summary>Suggested setups</summary>
++      <div class="fc">
++        <b>Work-from-home</b> (calls first):
++        <ul><li>Q1 Web/VoIP &mdash; min 15 / ceil 20</li><li>Q2 Gaming &mdash; min 5 / ceil 10</li><li>Q3 Streaming &mdash; min 10 / ceil 30</li><li>Q4 Default &mdash; min 20 / ceil 50</li><li>Q5 Downloads &mdash; min 10 / ceil 95</li></ul>
++        <b>Gamer</b>: move Gaming to Q1 (min 10 / ceil 15), VoIP Q2.<br>
++        <b>Small office</b>: raise Default's min (most traffic is unclassified there) and keep bulk backup jobs in Q5 with a high ceiling &mdash; bottom priority makes them yield instantly when anyone needs the line.
++      </div>
++    </details>
++    <details>
++      <summary>Why do bulk classes get a HIGH ceiling?</summary>
++      <div class="fc">Strict priority already makes the bottom class yield the moment anything above it wants the line. A high ceiling (95%) simply lets backups saturate an otherwise idle link. Low priority + high ceiling is the correct combination for bulk; a low ceiling would only slow it down at 3 a.m. for no one's benefit.</div>
++    </details>
++    <details>
++      <summary>What does DSCP trust actually do?</summary>
++      <div class="fc">IP packets carry a 6-bit DiffServ field many applications set voluntarily (Teams/Zoom mark voice EF, video AF4x). With the toggle on, marked traffic is classified by that field <b>after</b> your explicit rules and <b>before</b> the default class. It is off by default because any LAN device can mark its own packets &mdash; a torrent client claiming EF would ride Q1. Turn it on when you broadly trust the devices on the LAN (typical WFH/office), keep it off on networks with untrusted clients.</div>
++    </details>
++    <details>
++      <summary>How do I verify it is working?</summary>
++      <div class="fc">Saturate the upload (large cloud backup) and watch the live columns: the bulk class rate should pin near its ceiling, <span class="fx">drops on the bulk queue should tick up</span> (PI2 holding it to rate), and a simultaneous speed test or call should stay responsive. If nothing changes, the bandwidth figure is probably above what the line really delivers.</div>
++    </details>
++    <details>
++      <summary>Why is hardware QoS upload-only?</summary>
++      <div class="fc">The hardware traffic manager sits on the WAN <i>egress</i> (upload) side. Download shaping in hardware is per-port on this platform, which cannot express one aggregate policy for the internet link. If download bufferbloat is your main problem, Cake handles both directions &mdash; at the cost of the NAT accelerator (throughput tops out near 1 Gb/s).</div>
++    </details>
++  </div>
++</aside>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t">Applying</h2><p id="ap_p">Settings are being applied.</p></div></div>
++
++<iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_QoS.asp">
++  <input type="hidden" name="next_page" value="Reaper_QoS.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="">
++  <input type="hidden" name="action_wait" value="15">
++  <input type="hidden" name="qos_enable" value="">
++  <input type="hidden" name="qos_type" value="">
++  <input type="hidden" name="qos_obw" value="" disabled>
++  <input type="hidden" name="qos_ibw" value="" disabled>
++  <input type="hidden" name="qos_orates" value="" disabled>
++  <input type="hidden" name="qos_class_names" value="" disabled>
++  <input type="hidden" name="qos_pshaper" value="" disabled>
++  <input type="hidden" name="qos_minrates" value="" disabled>
++  <input type="hidden" name="qos_dscp_trust" value="" disabled>
++</form>
++
++<script>
++/* ---------- nvram bootstrap (R4-4 pattern: user text via char_to_ascii) ---------- */
++var NV = {
++  enable:  '<% nvram_get("qos_enable"); %>',
++  type:    '<% nvram_get("qos_type"); %>',
++  obw:     '<% nvram_get("qos_obw"); %>',
++  ibw:     '<% nvram_get("qos_ibw"); %>',
++  orates:  decodeURIComponent('<% nvram_char_to_ascii("", "qos_orates"); %>'),
++  cnames:  decodeURIComponent('<% nvram_char_to_ascii("", "qos_class_names"); %>'),
++  pshaper: '<% nvram_get("qos_pshaper"); %>',
++  minrates:'<% nvram_get("qos_minrates"); %>',
++  dscp:    '<% nvram_get("qos_dscp_trust"); %>'
++};
++
++/* ---------- mode model (qos_type 1/Adaptive is retired with the DPI stack) ---------- */
++var MODES = [
++  {key:'off', type:null, name:'Off', desc:'No traffic shaping. Full accelerator throughput; upload bursts will queue in the ISP buffer (bufferbloat under load).',
++   tags:[['Accel on','good'],['No control','']]},
++  {key:'11', type:'11', name:'HW QoS Classful', rec:true, desc:'Five priority classes with guaranteed minimums and per-class ceilings, shaped in hardware with PI2 AQM. Accelerator stays on.',
++   tags:[['Accel on','good'],['Upload only',''],['Classes + guarantees','good']]},
++  {key:'10', type:'10', name:'Hardware QoS', desc:'Single hardware queue: one upload cap plus AQM. The simplest bufferbloat fix, no classes.',
++   tags:[['Accel on','good'],['Upload only',''],['No classes','']]},
++  {key:'9', type:'9', name:'Cake', desc:'Software shaper with excellent download control. Turns the NAT accelerator off; expect roughly 1 Gb/s ceiling with CPU-bound shaping.',
++   tags:[['Accel OFF','warn'],['Up + Down','good']]},
++  {key:'0', type:'0', name:'Traditional QoS', desc:'The classic software engine with rule-based classes. Turns the NAT accelerator off.',
++   tags:[['Accel OFF','warn'],['Up + Down','']]},
++  {key:'2', type:'2', name:'Bandwidth Limiter', desc:'Hard per-device speed caps rather than smart sharing. Configure device limits on the stock page (link below).',
++   tags:[['Per-device caps',''],['Not bufferbloat','warn']]}
++];
++var sel = (NV.enable === '1') ? String(NV.type) : 'off';
++if (sel !== 'off' && !MODES.some(function(m){return m.key===sel;})) sel = 'off'; /* unknown/retired type */
++
++function renderModes(){
++  var host = document.getElementById('modes'); host.innerHTML = '';
++  for (var i=0;i<MODES.length;i++){ (function(m){
++    var d = document.createElement('div');
++    d.className = 'mode' + (sel===m.key ? ' sel' : '');
++    var h = '';
++    if (m.rec) h += '<span class="rec">RECOMMENDED</span>';
++    h += '<h3>'+m.name+'</h3><p>'+m.desc+'</p><div class="tags">';
++    for (var t=0;t<m.tags.length;t++) h += '<span class="tag '+(m.tags[t][1]||'')+'">'+m.tags[t][0]+'</span>';
++    h += '</div>';
++    d.innerHTML = h;
++    d.onclick = function(){ sel = m.key; renderModes(); syncPanels(); };
++    host.appendChild(d);
++  })(MODES[i]); }
++}
++function syncPanels(){
++  document.getElementById('clpanel').style.display = (sel === '11') ? '' : 'none';
++  var on = (NV.enable === '1');
++  var pill = document.getElementById('engpill');
++  pill.className = 'pill' + (on ? ' on' : '');
++  var mm = null;
++  for (var i=0;i<MODES.length;i++) if (MODES[i].key === String(NV.type)) mm = MODES[i];
++  document.getElementById('engpill_t').textContent = on ? ('Running: ' + (mm ? mm.name : ('Type '+NV.type))) : 'Shaping off';
++}
++
++/* ---------- bandwidth (nvram kbps <-> UI Mb/s, stock x1024 convention) ---------- */
++function kb2mb(k){ k = parseInt(k,10)||0; return k ? (Math.round(k/1024*10)/10) : ''; }
++function mb2kb(m){ m = parseFloat(m)||0; return Math.round(m*1024); }
++document.getElementById('bw_up').value = kb2mb(NV.obw);
++document.getElementById('bw_dn').value = kb2mb(NV.ibw);
++
++/* ---------- class editor ---------- */
++var DEFN = ['Gaming','Web/VoIP','Streaming','Downloads','Default'];
++function parseOrates(){
++  var parts = (NV.orates||'').split(','), mins=[], ceils=[];
++  for (var i=0;i<5;i++){
++    var seg = (parts[i]||'0-0').split('-');
++    mins.push(parseInt(seg[0],10)||0);
++    ceils.push(seg.length>1 ? (parseInt(seg[1],10)||0) : 0);
++  }
++  var d = (NV.cnames||'').split(','), names=[];
++  for (var j=0;j<5;j++) names.push((d[j]&&d[j].length)?d[j]:DEFN[j]);
++  return {mins:mins, ceils:ceils, names:names};
++}
++function buildEditor(){
++  var tb = document.getElementById('ctbody'); tb.innerHTML='';
++  var m = parseOrates();
++  for (var i=0;i<5;i++){
++    var tr = document.createElement('tr');
++    tr.innerHTML =
++      '<td class="arrows"><span onclick="rowMove(this,-1)" title="move up">&#9650;</span><span onclick="rowMove(this,1)" title="move down">&#9660;</span></td>'
++      +'<td><input type="text" maxlength="24" style="width:170px" value="'+String(m.names[i]).replace(/"/g,'&quot;')+'"></td>'
++      +'<td><span class="qbadge qb"></span> <span class="qnote qn"></span></td>'
++      +'<td><input type="text" maxlength="3" style="width:56px" value="'+m.mins[i]+'" onblur="clampPct(this)"></td>'
++      +'<td><input type="text" maxlength="3" style="width:56px" value="'+m.ceils[i]+'" onblur="clampPct(this)"></td>'
++      +'<td class="statcell"><span class="rate">&ndash;</span></td>'
++      +'<td class="statcell"><span class="drops">&ndash;</span></td>';
++    tb.appendChild(tr);
++  }
++  renumber();
++}
++function clampPct(o){ var v=parseInt(o.value,10); if(isNaN(v)||v<0)v=0; if(v>100)v=100; o.value=v; }
++function renumber(){
++  var rows = document.querySelectorAll('#ctbody tr');
++  for (var i=0;i<rows.length;i++){
++    rows[i].querySelector('.qb').textContent = 'Q'+(i+1);
++    rows[i].querySelector('.qn').textContent = i===0?'served first':(i===rows.length-1?'served last':'');
++  }
++}
++function rowMove(sp,dir){
++  var tr = sp.parentNode.parentNode, tb = tr.parentNode;
++  if (dir<0 && tr.previousElementSibling) tb.insertBefore(tr, tr.previousElementSibling);
++  else if (dir>0 && tr.nextElementSibling) tb.insertBefore(tr.nextElementSibling, tr);
++  renumber();
++}
++function serializeClasses(){
++  var rows = document.querySelectorAll('#ctbody tr'); if(!rows.length) return null;
++  var mins=[], ceils=[], names=[], csum=0, msum=0;
++  for (var i=0;i<rows.length;i++){
++    var ins = rows[i].getElementsByTagName('input');
++    names.push((ins[0].value||('Class'+(i+1))).replace(/,/g,' ').replace(/</g,'').replace(/>/g,''));
++    var mn = parseInt(ins[1].value,10); if(isNaN(mn)||mn<0)mn=0; if(mn>100)mn=100;
++    var cl = parseInt(ins[2].value,10); if(isNaN(cl)||cl<0)cl=0; if(cl>100)cl=100;
++    if (mn > cl && cl > 0){ mn = cl; ins[1].value = mn; } /* a floor above the ceiling is meaningless */
++    mins.push(mn); ceils.push(cl); msum+=mn; csum+=cl;
++  }
++  if (csum === 0){ alert('At least one class must have a non-zero upload ceiling (%).'); return null; }
++  if (document.getElementById('tg_minrates').checked && msum > 100){
++    alert('Guaranteed minimums total '+msum+'%. Guarantees cannot exceed 100% of the upload - lower the Min values (or switch off Guaranteed minimums).');
++    return null;
++  }
++  if (!document.getElementById('tg_pshaper').checked && csum > 100 &&
++      !confirm('Ceilings total '+csum+'% and the aggregate cap is OFF: several busy classes together can exceed the upload figure and re-enter the ISP buffer. Continue?'))
++    return null;
++  var pairs=[]; for (var j=0;j<10;j++) pairs.push(j<5 ? (mins[j]+'-'+ceils[j]) : '0-0');
++  return { orates: pairs.join(','), names: names.join(',') };
++}
++
++/* ---------- live stats ---------- */
++var lastStats = null, lastT = 0;
++function fmtRate(bps){
++  if (bps >= 1e9) return (Math.round(bps/1e8)/10)+' Gb/s';
++  if (bps >= 1e6) return (Math.round(bps/1e5)/10)+' Mb/s';
++  if (bps >= 1e3) return (Math.round(bps/100)/10)+' kb/s';
++  return Math.round(bps)+' b/s';
++}
++function pollStats(){
++  if (!(NV.enable==='1' && String(NV.type)==='11')) return;
++  var x = new XMLHttpRequest();
++  x.open('GET','/reaper_qos_stats.cgi?_='+Date.now(), true);
++  x.onreadystatechange = function(){
++    if (x.readyState!==4 || x.status!==200) return;
++    var d; try{ d = JSON.parse(x.responseText); }catch(e){ return; }
++    if (!d.enabled) return;
++    var now = Date.now();
++    var rows = document.querySelectorAll('#ctbody tr');
++    for (var i=0;i<5;i++){
++      var q = d['q'+(i+1)]; if(!q || !rows[i]) continue;
++      var rateEl = rows[i].querySelector('.rate'), dropEl = rows[i].querySelector('.drops');
++      if (lastStats && lastStats['q'+(i+1)] && now>lastT){
++        var bps = Math.max(0,(q.txb - lastStats['q'+(i+1)].txb))*8000/(now-lastT);
++        rateEl.textContent = fmtRate(bps);
++        var dd = q.dp - lastStats['q'+(i+1)].dp;
++        dropEl.textContent = q.dp + (dd>0 ? ' (+'+dd+')' : '');
++        dropEl.className = 'drops' + (dd>0 ? ' hot' : '');
++      } else rateEl.textContent = '...';
++    }
++    var xq = [['q0','xq0'],['q6','xq6']];
++    for (var k=0;k<xq.length;k++){
++      var qq = d[xq[k][0]], el = document.getElementById(xq[k][1]);
++      if (qq && el){
++        var r = '';
++        if (lastStats && lastStats[xq[k][0]] && now>lastT)
++          r = fmtRate(Math.max(0,(qq.txb-lastStats[xq[k][0]].txb))*8000/(now-lastT))+' &middot; ';
++        el.innerHTML = r + qq.dp + ' drops';
++      }
++    }
++    lastStats = d; lastT = now;
++  };
++  x.send();
++}
++setInterval(pollStats, 3000);
++
++/* ---------- apply ---------- */
++function applyQoS(){
++  var f = document.form;
++  var wasOn = (NV.enable==='1'), wasType = String(NV.type);
++  var nowOn = (sel !== 'off'), nowType = nowOn ? sel : wasType;
++
++  f.qos_enable.value = nowOn ? '1' : '0';
++  f.qos_type.value = nowType;
++
++  var up = document.getElementById('bw_up').value, dn = document.getElementById('bw_dn').value;
++  if (nowOn && (sel==='10'||sel==='11') && !(parseFloat(up)>0) &&
++      !confirm('No upload bandwidth is set. Hardware QoS will enable AQM but cannot shape without it. Continue anyway?')) return;
++  f.qos_obw.disabled = false; f.qos_obw.value = up==='' ? '' : String(mb2kb(up));
++  f.qos_ibw.disabled = false; f.qos_ibw.value = dn==='' ? '' : String(mb2kb(dn));
++
++  if (sel === '11'){
++    var s = serializeClasses(); if (!s) return;
++    f.qos_orates.disabled=false;      f.qos_orates.value = s.orates;
++    f.qos_class_names.disabled=false; f.qos_class_names.value = s.names;
++    f.qos_pshaper.disabled=false;     f.qos_pshaper.value = document.getElementById('tg_pshaper').checked ? '1':'0';
++    f.qos_minrates.disabled=false;    f.qos_minrates.value = document.getElementById('tg_minrates').checked ? '1':'0';
++    f.qos_dscp_trust.disabled=false;  f.qos_dscp_trust.value = document.getElementById('tg_dscp').checked ? '1':'0';
++  }
++
++  /* stock HND semantics: same enable+type (or turning off) restarts live;
++     an engine switch / fresh enable reconfigures the accelerator = reboot */
++  var live = (wasOn === nowOn && (!nowOn || wasType === nowType)) || (wasOn && !nowOn);
++  if (live){
++    f.action_script.value = 'restart_qos;restart_firewall';
++    f.action_wait.value = '15';
++  } else {
++    if (!confirm('Changing the QoS mode reboots the router so the flow accelerator can be reconfigured. Reboot now?')) return;
++    f.action_script.value = 'reboot';
++    f.action_wait.value = '<% get_default_reboot_time(); %>';
++  }
++  document.getElementById('ap_t').textContent = live ? 'Applying' : 'Rebooting';
++  document.getElementById('ap_p').textContent = live ? 'Settings are being applied. This page will refresh.' :
++    'The router is rebooting to switch QoS engines. This page will refresh when it is back.';
++  document.getElementById('applying').className = 'applying show';
++  f.submit();
++  var wait = (parseInt(f.action_wait.value,10)||15) + 5;
++  setTimeout(function(){ location.reload(); }, wait*1000);
++}
++
++/* ---------- FAQ fly-out ---------- */
++function faqOpen(){ document.getElementById('flyout').className='flyout open'; document.getElementById('scrim').className='scrim open'; }
++function faqClose(){ document.getElementById('flyout').className='flyout'; document.getElementById('scrim').className='scrim'; }
++document.addEventListener('keydown', function(e){ if(e.key==='Escape') faqClose(); });
++
++/* ---------- init ---------- */
++document.getElementById('tg_pshaper').checked = (NV.pshaper !== '0');
++document.getElementById('tg_minrates').checked = (NV.minrates !== '0');
++document.getElementById('tg_dscp').checked = (NV.dscp === '1');
++renderModes(); syncPanels(); buildEditor(); pollStats();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index ae90e67eb7..41c4fae630 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -265,7 +265,9 @@ function buildRail(menuTree){
+   f.addEventListener('load', function(){
+     try{
+       var d=this.contentDocument;
+-      if(!d || d.querySelector('link[href*="reaper_content"]')) return;
++      /* reaper-native pages (meta reaper-native) carry their own full theme;
++         reaper_content.css targets STOCK markup and would fight them */
++      if(!d || d.querySelector('link[href*="reaper_content"]') || d.querySelector('meta[name="reaper-native"]')) return;
+       var l=d.createElement('link');
+       l.rel='stylesheet'; l.type='text/css'; l.href='/reaper/reaper_content.css';
+       (d.head||d.documentElement).appendChild(l);
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 15883dabb9..6df50a45b0 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -99,8 +99,10 @@ define(function(){
+ 				menuName: "<#Menu_TrafficManager#>",
+ 				index: "menu_BandwidthMonitor", 
+ 				tab: [
+-					{url: "QoS_EZQoS.asp", tabName: "<#menu5_3_2#>"},
+-					{url: "AdaptiveQoS_ROG.asp", tabName: "<table style='margin-top:-7px;'><tr><td><img src='/images/ROG_Logo.png' style='border:0px;width:32px;'></td><td>ROG First</td></tr></table>"}, 
++					/* reaper QoS v3: the QoS tab is the reaper-native page; the stock
++					   QoS_EZQoS.asp still ships and is linked from it (BW-limiter editor) */
++					{url: "Reaper_QoS.asp", tabName: "<#menu5_3_2#>"},
++					{url: "AdaptiveQoS_ROG.asp", tabName: "<table style='margin-top:-7px;'><tr><td><img src='/images/ROG_Logo.png' style='border:0px;width:32px;'></td><td>ROG First</td></tr></table>"},
+ 					{url: "Main_Spectrum_Content.asp", tabName: "<#Spectrum_title#>"},
+ 					{url: "AdaptiveQoS_InternetSpeed.asp", tabName: "<#InternetSpeed#>"},
+ 					{url: "Advanced_QOSUserPrio_Content.asp", tabName: "__INHERIT__"},
+-- 
+2.25.1
+

@@ -1,0 +1,170 @@
+From fc4eb4ef69c30a7d43af8a74e9ac62165c472bb6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 10 Jul 2026 11:26:57 -0400
+Subject: [PATCH] version: Reaper_v1.2.5 (code-scan hardening + perf)
+
+Full-codebase security/correctness scan of the cumulative reaper diff.
+Confirmed fixes:
+- httpd/reaper_inject.c: strip query string before the inject skip-list
+  match (Main_Login.asp?x / Captive_Portal.asp?x evaded the skip list and
+  got the bounce block injected -> broke login / corrupted captive splash).
+- httpd/web.c inc_uploadImg: derive boundaryLen from the CLAMPED boundary
+  length, not strlen(buf); a >256-byte multipart boundary previously drove
+  OOB strncmp reads and an imageSizeEst underflow.
+- rc/qos.c add_qos_rules: charset-guard the qos_rulelist port field (now on
+  the active classful HW-QoS path) before it is emitted into an iptables
+  multiport match, mirroring the firewall.c hardening.
+Performance:
+- reaper_inject.c: bulk-fwrite the post-</head> remainder instead of a
+  per-byte fputc loop (runs on every HTML response); drop redundant tolower.
+- Main_ReaperDash.asp: CPU/RAM dashboard poll 1000ms -> 2500ms.
+---
+ release/src-rt/version.conf                |  2 +-
+ release/src/router/httpd/reaper_inject.c   | 32 ++++++++++++++++------
+ release/src/router/httpd/web.c             |  6 +++-
+ release/src/router/rc/qos.c                | 12 ++++++++
+ release/src/router/www/Main_ReaperDash.asp |  2 +-
+ 5 files changed, 43 insertions(+), 11 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index f152aa2b45..f68ae9ccd7 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.4
++EXTENDNO=Reaper_v1.2.5
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 63bf353c35..f8cdacfeda 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -97,6 +97,8 @@ static int reaper_page_ext(const char *b)
+ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ {
+ 	const char *b, *v;
++	char name[128];
++	size_t n;
+ 	int i;
+ 
+ 	/* runtime kill-switch: unset/nonzero = inject, explicit "0" = skip */
+@@ -114,8 +116,17 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 	b = b ? b + 1 : file;
+ 	if (!reaper_page_ext(b))
+ 		return 0;
++	/* Strip any query string before the skip-list match: reaper_page_ext
++	 * compares on the query-stripped name, so the skip list must too, else
++	 * "Main_Login.asp?x"/"Captive_Portal.asp?x" evade the list and get the
++	 * bounce injected (breaks login; corrupts the captive splash script). */
++	n = strcspn(b, "?");
++	if (n >= sizeof(name))
++		n = sizeof(name) - 1;
++	memcpy(name, b, n);
++	name[n] = '\0';
+ 	for (i = 0; reaper_skip[i]; i++)
+-		if (strcasecmp(b, reaper_skip[i]) == 0)
++		if (strcasecmp(name, reaper_skip[i]) == 0)
+ 			return 0;
+ 
+ 	return 1;
+@@ -134,21 +145,26 @@ static ssize_t reaper_cookie_write(void *cookie, const char *buf, size_t size)
+ 	struct reaper_filt *st = (struct reaper_filt *)cookie;
+ 	size_t i;
+ 
++	/* Once injected, the generator already batched its output — pass the
++	 * whole chunk through in one fwrite instead of a per-byte fputc loop.
++	 * </head> sits near the top of the document, so this is ~99% of a page. */
++	if (st->done)
++		return fwrite(buf, 1, size, st->dst) == size ? (ssize_t)size : -1;
++
+ 	for (i = 0; i < size; i++) {
+ 		unsigned char c = (unsigned char)buf[i];
+ 
+-		if (st->done) {
+-			fputc(c, st->dst);
+-			continue;
+-		}
+-
+-		if (tolower(c) == tolower((unsigned char)REAPER_TAG[st->hlen])) {
++		if (tolower(c) == (unsigned char)REAPER_TAG[st->hlen]) {
+ 			st->hold[st->hlen++] = (char)c;
+ 			if (st->hlen == REAPER_TAGLEN) {	/* full </head> held */
+ 				fwrite(REAPER_BLOCK, 1, sizeof(REAPER_BLOCK) - 1, st->dst);
+ 				fwrite(st->hold, 1, REAPER_TAGLEN, st->dst);
+ 				st->done = 1;
+ 				st->hlen = 0;
++				/* flush the remainder of this chunk in one shot */
++				if (i + 1 < size)
++					fwrite(buf + i + 1, 1, size - i - 1, st->dst);
++				return (ssize_t)size;
+ 			}
+ 			continue;
+ 		}
+@@ -158,7 +174,7 @@ static ssize_t reaper_cookie_write(void *cookie, const char *buf, size_t size)
+ 			fwrite(st->hold, 1, st->hlen, st->dst);
+ 			st->hlen = 0;
+ 		}
+-		if (tolower(c) == tolower((unsigned char)REAPER_TAG[0]))
++		if (tolower(c) == (unsigned char)REAPER_TAG[0])
+ 			st->hold[st->hlen++] = (char)c;
+ 		else
+ 			fputc(c, st->dst);
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 94645e14c1..f625e16640 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -15515,7 +15515,11 @@ int inc_uploadImg(FILE * stream, int *len, uint32 *imageLen)
+ 			memset(boundary, 0, sizeof(boundary));
+ 			strncpy(boundary, buf, blen);
+ 			boundary[blen] = '\0';
+-			boundaryLen = strlen(buf) - 2;
++			/* derive boundaryLen from the CLAMPED length, not strlen(buf):
++			 * a boundary line longer than boundary[] would otherwise leave
++			 * boundaryLen > the stored bytes, driving later strncmp() OOB
++			 * reads and an imageSizeEst underflow. */
++			boundaryLen = (blen >= 2) ? (int)(blen - 2) : 0;
+ 		}
+ 
+                 *len -= strlen(buf);
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 835542f6b3..79d6a693a6 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -682,6 +682,18 @@ static int add_qos_rules(char *pcWANIF)
+ 		class_num = safe_atoi(prio);
+ 		if ((class_num < 0) || (class_num > 4)) continue;
+ 
++		/* reaper: the port field is emitted verbatim into an iptables
++		 * "-m multiport --dport %s" match that is applied via
++		 * iptables-restore. Reject any rule whose port carries a
++		 * character outside the multiport grammar (digits , : -) so a
++		 * crafted qos_rulelist cannot inject an arbitrary rule line.
++		 * (addr is validated by address_format_checker; proto is only
++		 * ever strcmp'd; transferred is parsed with atol.) */
++		if (*port && strspn(port, "0123456789,:-") != strlen(port)) {
++			QOSLOG("[qos] port \"%s\" has illegal chars, skipping rule", port);
++			continue;
++		}
++
+ 		i = 1 << class_num;
+ 		++class_num;
+ 
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 5caa939160..d97fbb3d42 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -716,7 +716,7 @@ function pollSys(){
+   };
+   x.send();
+ }
+-pollSys(); setInterval(pollSys, 1000);
++pollSys(); setInterval(pollSys, 2500);
+ 
+ /* ---- live CPU temperature via /ajax_coretmp.asp ---- */
+ function setTemp(t){
+-- 
+2.25.1
+

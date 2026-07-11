@@ -1,0 +1,50 @@
+From daf97bb1ef21253215d7a537e427e5bf01a4f537 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 9 Jul 2026 17:49:54 -0400
+Subject: [PATCH] reaper css: center + upscale the USB ring sprite around the
+ drive button (triage item 9)
+
+The uniform-frame rule pins ring and button to frame 1 at natural size,
+leaving the hand-made white_05 ring (74px circle at cx47.5) offset from and
+barely larger than the 73px button (cx42) - on metal the ring crossed the
+button and the sprite opaque black canvas showed as a square. Fix is
+geometry-only on the ring layer (no filter on the owner asset, rule 16):
+background-size 116%, position -10px -5px, mix-blend-mode:screen to melt the
+black canvas into any dark backdrop.
+
+Validated on a pixel-exact mock harness reproducing the on-metal CSS
+semantics; verify on the network map with a drive plugged after next flash.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/reaper/reaper_content.css | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 86b5f94214..30092e1815 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -248,8 +248,18 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+    USER-AUTHORED dark-background recolor (white_05.gif, same 95x276 frame
+    geometry). Theme-gated by construction: this file is only injected when
+    reaper_inject=1, so the stock UI / kill-switch keeps white_04. Do NOT
+-   apply any color filter to this sprite - it is hand-made artwork. */
+-[id^="ring_USBdisk"]{background-image:url("/images/New_ui/networkmap/white_05.gif")!important}
++   apply any color filter to this sprite - it is hand-made artwork.
++   Geometry fix (item 9): the rule above pins both divs to frame 1 at natural
++   size, which left the ring circle (74px @ cx47.5) offset from and barely
++   larger than the 73px button (cx42). Upscale + reposition the ring bg so it
++   encircles the button concentrically (must stay AFTER the .iconUSBdisk rule
++   - equal specificity, order decides). screen-blend melts the sprite's opaque
++   black canvas into any dark backdrop (same pattern as the #Senario blend);
++   it composites the whole tile, but over near-black page bgs the button art
++   shifts <2% - imperceptible. */
++[id^="ring_USBdisk"]{background-image:url("/images/New_ui/networkmap/white_05.gif")!important;
++  background-size:116% auto!important;background-position:-10px -5px!important;
++  mix-blend-mode:screen}
+ .statusbody,.NM_radius_bottom_container{background:#0f0f12!important}
+ .statusTitle{background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important;
+   font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;letter-spacing:.08em!important}
+-- 
+2.25.1
+

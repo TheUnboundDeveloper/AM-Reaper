@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U, as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, both Hardware QoS engines, and the Reaper UI.
+The complete **Reaper** series for the RT-BE96U (**138 patches, v1.0 → v1.4.1**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -9,31 +9,59 @@ git clone https://github.com/RMerl/asuswrt-merlin.ng.git
 cd asuswrt-merlin.ng
 git checkout 3006.102.8-beta2
 
-# git am is REQUIRED (4 patches carry git binary payloads - fonts, logo,
-# USB ring sprite - which plain `patch` cannot apply):
-git am /path/to/ASUS-Merlin-Reaper/patches/*.patch
+# git am --keep-cr is REQUIRED:
+#  - --keep-cr: several third-party files (e.g. lltdc) have CRLF line endings, so
+#    the patch context carries CR. Without --keep-cr, git strips it and the patch
+#    fails to apply (at lltdc/src/qospktio.c).
+#  - git am (not plain `patch`): 4 patches carry git binary payloads (fonts, logo,
+#    USB ring sprite) that `patch` cannot apply.
+git am --keep-cr /path/to/ASUS-Merlin-Reaper/patches/*.patch
 ```
 
-They touch only the shared open-source userspace (`release/src/router/{httpd, rc, shared, www, libovpn, snooper, urlfilterd, lltdc, wsdd2, infosvr, libcodb, avahi, …}`), so they apply cleanly to a stock tree. Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md).
+Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (87 patches, v1.0)
+## What the series contains (138 patches, v1.0 → v1.4.1)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
+### v1.0 — hardening + QoS + UI baseline (`0001`–`0087`)
 - `0001`–`0021` — **Hardening round 1** (IPsec/rc command injection, httpd pre-auth overflow, snmpd/nvparse/usb/shared memory safety, format strings, temp-file races, perms).
 - `0022` — build branding (`BUILDREV=-reaper`).
 - `0023`–`0024` — **Hardening round 2** (network-reachable ASUS daemons; Tier-3 defense-in-depth: infosvr, libovpn, libcodb, rstats, lanauth).
 - `0025`–`0028` — **Hardware QoS v1** (`qos_type=10`): Runner PI2 AQM + shaper with the flow accelerator on; GUI selector; flow-cache flush fixes.
 - `0029`–`0033` — **Hardening round 3** (pre-auth login decode, QoS apply gate, dnsmasq/inadyn/iptables config-injection, libcodb SQL identifiers, CAKE format fix).
-- `0034`–`0065` — **Reaper UI + branding**: `3006.102.8_reaper` version, Smart Connect master toggle, REAPER banner/recolor passes, live-wired dashboard, shell architecture, AiMesh/Captive-Portal/Ookla theming, the HW-QoS activation fix (`qos_type` nvram length), on-device review rounds 1–2.
+- `0034`–`0065` — **Reaper UI + branding**: Smart Connect master toggle, REAPER banner/recolor passes, live-wired dashboard, shell architecture, AiMesh/Captive-Portal/Ookla theming, the HW-QoS activation fix (`qos_type` nvram length), on-device review rounds 1–2.
 - `0066`–`0070` — **Hardening round 4** (self-review of Reaper-authored code), on-device review round 3, and the **mergeability refactor**: theme moved to a single httpd serve-time injection filter; stock pages/CSS reverted to pristine.
-- `0071`–`0084` — Phase-B CSS de-inline completion, **avahi 0.8 CVE backport** (mDNS DoS), **latent buffer hardening T1–T4**, login-page theme, **Hardware QoS v2 — Classful** (`qos_type=11`, per-class hardware queues), and the v1.0 UI/QoS polish (incl. the `qos_type` apply-gate raise for type 11).
-- `0085` — **v1.0 pre-release audit fixes**: bound the remaining `strncpy` sites in the QoS `ip_range_checker` (stack-overflow guard on malformed rule addresses), a HW-QoS Classful blank-bandwidth guard, and minor UI polish.
-- `0086` — **scheduled firmware-check fix**: enable `RTCONFIG_MERLINUPDATE` (upstream ships it off, leaving the Firmware Upgrade page's "Scheduled check" radios dead — no default, selections dropped by `validate_apply`), with the `firmware_check_enable` default flipped to **0**: no scheduled check or outbound update traffic unless the user opts in. Notification-only when enabled; extendno sanitized in `merlin_webs_update.sh`.
-- `0087` — version bump to **`3006.102.8_Reaper_v1.0`** (`EXTENDNO` in `version.conf`).
+- `0071`–`0084` — Phase-B CSS de-inline completion, **avahi 0.8 CVE backport** (mDNS DoS), **latent buffer hardening T1–T4**, login-page theme, **Hardware QoS v2 — Classful** (`qos_type=11`), v1.0 UI/QoS polish.
+- `0085` — **v1.0 pre-release audit fixes**: bound the QoS `ip_range_checker` `strncpy` sites, a HW-QoS Classful blank-bandwidth guard, minor UI polish.
+- `0086` — **scheduled firmware-check fix**: enable `RTCONFIG_MERLINUPDATE`, `firmware_check_enable` default **0** (no outbound update traffic unless opted in; notification-only).
+- `0087` — version bump to **`3006.102.8_Reaper_v1.0`**.
+
+### v1.1 → v1.2 — de-cloud / attack-surface removal (`0088`–`0115`)
+- `0088`–`0091` — remove **Amazon Alexa / Google Assistant**; keep IFTTT-referenced symbols compiled for the kept blobs; begin **AiProtection (Trend Micro `bwdpi` DPI)** removal.
+- `0092`–`0096` — v1.1-beta1; inert `bwdpi` blob shims (no-DPI stubs, `amas_lib.o` stubs, `libbwdpi.so` wrapper, `CLIENT_DETAIL_INFO_TABLE` shmem-ABI pin) so the kept prebuilt blobs still link.
+- `0097`–`0100` — QoS menu rename (**Adaptive QoS → Traffic Manager**), drop dead bwdpi tabs, dashboard label; v1.1-beta2.
+- `0101`–`0104` — lighttpd → captive-portal-only payload; **remove AiCloud / WebDAV / CloudSync** (Phase 1.3); v1.1-beta3.
+- `0105`–`0107` — **AiDisk de-wizard** (Phase 1.4), repoint entry points to USB File Sharing; v1.1-beta4.
+- `0108`–`0109` — **remove the AAE / `mastiff` cloud tunnel**, restore the local Ookla Speedtest (Phase 1.5); v1.1-beta5.
+- `0110`–`0115` — un-gate `libws.so` from the removed tunnel flag; serve `.woff2`/favicon; post-login dashboard landing; **v1.2** (drop beta label); disable the UU game-accelerator plugin; theme-inject only `.asp`/`.htm` (never CGI).
+
+### v1.2.1 → v1.2.9 — polish, more removals, QoS v3/v4 (`0116`–`0132`)
+- `0116`–`0129` — v1.2.1–v1.2.6 point releases: post-login landing fix; **remove the `asd` phone-home daemon** (keep `libasc`); hide dead surfaces left by removals; frame auto-grow; USB ring sprite; GUI theming sweeps; code-scan hardening + perf; a WPS-backhaul-BSS gate (and its revert); `qos_type` apply-gate hardening.
+- `0130` — **v1.2.7**: remove the first-boot **QIS EULA / privacy-consent** surface (keep the AiMesh add-node wizard); SNMP token guard.
+- `0131` — **v1.2.8 — Hardware QoS v3** (aggregate cap, guaranteed minimums, DSCP trust, live per-class stats).
+- `0132` — **v1.2.9 — Hardware QoS v4** (per-class WRR weights + experimental L4S).
+
+### v1.3 — Traffic Analyzer (`0133`–`0136`)
+- `0133` — **v1.3.0**: Traffic Analyzer (`rtrafd` collector + native page: per-device/network/class history, top talkers, quota, WAN probe, RAM/JFFS/USB storage).
+- `0134`–`0136` — v1.3.1 offload-accurate per-device/network (reads the Runner flow table), v1.3.2 endpoint fix, v1.3.3 1-second dual-cadence live view + poll selector.
+
+### v1.4 — AI Advisor (`0137`–`0138`)
+- `0137` — **v1.4.0**: AI Advisor — read-only LAN MCP server (`rmcpd`), off by default, LAN-only, arming-code gated.
+- `0138` — **v1.4.1**: AI Advisor **Mode B** (optional USB key) + the clean **with/without-MCP two-build split** (`RTCONFIG_REAPER_MCP`).
 
 ## Notes
 
-- **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches. The series is numbered sequentially with no gaps.
+- **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted.
-- Regenerated for **v1.0** (2026-07-07) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`.
+- Regenerated for **v1.4.1** (2026-07-11) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr`.

@@ -1,0 +1,69 @@
+From fea4302aab0d052c3977ae7c2141e18e82d0724a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 7 Jul 2026 18:43:15 -0400
+Subject: [PATCH] httpd: keep add_ifttt_flag compiled unconditionally
+ (web_hook.o blob dep)
+
+With RTCONFIG_IFTTT/ALEXA/GOOGLE_ASST all off, add_ifttt_flag() compiled
+out, but the closed-source prebuild/web_hook.o references it from
+auth_check -> httpd link failed (undefined reference). nm scan of the
+httpd/libwebapi/rc prebuilt blobs shows this is the ONLY symbol they
+need from the voice-assistant-gated code, so drop the guard around this
+3-line helper (it only preloads IFTTTUSERAGENT into the user_agent
+buffer; inert when the voice features are gone).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/httpd.c | 6 ++----
+ release/src/router/httpd/httpd.h | 3 +--
+ 2 files changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 7b6b24a301..83b0553098 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -261,9 +261,8 @@ static void handle_request(void);
+ void send_login_page(int fromapp_flag, int error_status, char* url, char* file, int lock_time, int logintry);
+ void page_default_redirect(int fromapp_flag, char* url);
+ int check_user_agent(char* user_agent);
+-#if defined(RTCONFIG_IFTTT) || defined(RTCONFIG_ALEXA) || defined(RTCONFIG_GOOGLE_ASST)
++/* always compiled: prebuild/web_hook.o (closed blob) references it from auth_check */
+ void add_ifttt_flag(void);
+-#endif
+ #ifdef RTCONFIG_NEW_PHYMAP
+ extern int save_iptv_port(char *isp);
+ #endif
+@@ -877,14 +876,13 @@ int web_write(const char *buffer, int len, FILE *stream)
+ 	return r;
+ }
+ 
+-#if defined(RTCONFIG_IFTTT) || defined(RTCONFIG_ALEXA) || defined(RTCONFIG_GOOGLE_ASST)
++/* always compiled: prebuild/web_hook.o (closed blob) references it from auth_check */
+ void add_ifttt_flag(void){
+ 
+ 	memset(user_agent, 0, sizeof(user_agent));
+ 	snprintf(user_agent, sizeof(user_agent), "%s",IFTTTUSERAGENT);
+ 	return;
+ }
+-#endif
+ 
+ #if 0
+ void
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+index 5be23bd085..38e78f92d1 100644
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -520,9 +520,8 @@ extern time_t login_timestamp_cache;
+ extern int hook_get_json;
+ extern char wl_band_list[8][8];
+ extern int check_user_agent(char* user_agent);
+-#if defined(RTCONFIG_IFTTT) || defined(RTCONFIG_ALEXA) || defined(RTCONFIG_GOOGLE_ASST)
++/* always compiled: prebuild/web_hook.o (closed blob) references it from auth_check */
+ extern void add_ifttt_flag(void);
+-#endif
+ extern char HTTPD_LOGIN_FAIL_LAN[32];
+ extern char HTTPD_LOGIN_FAIL_WAN[32];
+ extern char HTTPD_LAST_LOGIN_FAIL_TS[32];
+-- 
+2.25.1
+

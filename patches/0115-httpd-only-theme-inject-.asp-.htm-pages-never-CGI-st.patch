@@ -1,0 +1,67 @@
+From d7f0d3f32e77f38365b92488cd2584b6c3e76d10 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 9 Jul 2026 08:56:10 -0400
+Subject: [PATCH] httpd: only theme-inject *.asp/*.htm pages, never CGI stub
+ responses
+
+The reaper_inject filter matched any text/html handler output, including
+login_v2.cgi's post-login meta-refresh stub (uppercase </HEAD>, matched
+case-insensitively). The injected bounce script ran before the meta-refresh
+and replaced the location with reaper_shell.asp#login_v2.cgi; the shell's
+iframe allow-list rejects .cgi and fell back to index.asp, so login never
+reached Main_ReaperDash.asp (get_index_page patch was correct but never got
+to act). Gate injection on a query-stripped .asp/.htm/.html basename; this
+also keeps the bounce out of QIS_default.cgi/page_default.cgi bootstrap
+responses (first-boot wizard).
+---
+ release/src/router/httpd/reaper_inject.c | 27 ++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index bba5c99071..63bf353c35 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -69,6 +69,31 @@ struct reaper_filt {
+ 	char	 hold[REAPER_TAGLEN];
+ };
+ 
++/* True when the (query-stripped) basename ends in .asp/.htm/.html. CGI
++ * endpoints also answer as text/html but emit tiny redirect stubs
++ * (login.cgi/login_v2.cgi meta-refresh, QIS_default.cgi, page_default.cgi);
++ * injecting the bounce there hijacks the post-login redirect into
++ * reaper_shell.asp#login_v2.cgi before the meta-refresh can fire. */
++static int reaper_page_ext(const char *b)
++{
++	char name[128];
++	const char *dot;
++	size_t n;
++
++	n = strcspn(b, "?");
++	if (n == 0 || n >= sizeof(name))
++		return 0;
++	memcpy(name, b, n);
++	name[n] = '\0';
++
++	dot = strrchr(name, '.');
++	if (!dot)
++		return 0;
++	dot++;
++	return strcasecmp(dot, "asp") == 0 || strcasecmp(dot, "htm") == 0 ||
++	       strcasecmp(dot, "html") == 0;
++}
++
+ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ {
+ 	const char *b, *v;
+@@ -87,6 +112,8 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 
+ 	b = strrchr(file, '/');
+ 	b = b ? b + 1 : file;
++	if (!reaper_page_ext(b))
++		return 0;
+ 	for (i = 0; reaper_skip[i]; i++)
+ 		if (strcasecmp(b, reaper_skip[i]) == 0)
+ 			return 0;
+-- 
+2.25.1
+

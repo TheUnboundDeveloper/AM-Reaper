@@ -1,0 +1,98 @@
+From fbe46debc3bcd246cd6aceebc91dbd6cfe38f3a7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 11:23:02 -0400
+Subject: [PATCH] httpd/webui: v1.3.2 - fix Traffic Analyzer endpoint serving
+ live.json for every window (renderHist crash on non-array wan)
+
+Symptom: all history windows blank + the QoS-off class message never showed.
+Console: 'wan.map is not a function' in renderHist. m5.json was fine (valid,
+real data); the CGI was serving live.json for EVERY window request.
+
+Cause: do_reaper_traffic_cgi read the window via strstr(url, "f="), but httpd
+(httpd.c ~1493) strips the query string from url before the output handler
+runs, so f= was never found and want fell through to the 'live' default.
+renderHist then received a live payload whose wan is an object {rx_bps,tx_bps},
+and .map() threw before drawing anything (which also suppressed the QoS-off
+gate message that draws later in the same function).
+
+Fix:
+- web.c do_reaper_traffic_cgi: read the window with get_cgi("f") - the paired
+  do_html_post_and_get input handler parses the query into the cgi table before
+  this output handler runs. Still matched against the fixed 5-literal allowlist
+  so the served path is never request-controlled.
+- www/Reaper_Traffic.asp renderHist: treat a non-array wan as empty
+  (Array.isArray guard) so a mismatched/bad payload can never throw and blank
+  the whole page again.
+
+Collector itself was already confirmed working on metal (live.json top-talkers
+showed real per-client up/down bytes). EXTENDNO=Reaper_v1.3.2. Metal test:
+the 24h/14d/etc. windows draw WAN + per-class + per-network + top-devices from
+history; QoS-off shows the class gate message.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf               |  2 +-
+ release/src/router/httpd/web.c            | 14 +++++++++-----
+ release/src/router/www/Reaper_Traffic.asp |  4 +++-
+ 3 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 53a8015d6e..272d2f9cc6 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.3.1
++EXTENDNO=Reaper_v1.3.2
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 5578c3883d..f9dc718cf4 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21655,16 +21655,20 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ 	static const char *wins[] = { "live", "m5", "hour", "day", "month", NULL };
+ 	char path[48], buf[4096];
+ 	const char *want = "live";
+-	char *q;
++	char *fp;
+ 	FILE *f;
+ 	size_t n;
+ 	int i;
+ 
+-	if ((q = strstr(url, "f=")) != NULL) {
++	/* the query string is stripped from `url` before this output handler runs
++	 * (httpd.c splits at '?'), but the paired do_html_post_and_get input handler
++	 * already parsed it into the cgi table - read the window name from there.
++	 * Matched against the fixed allowlist so the served path is one of five
++	 * literals, never request-controlled. */
++	fp = get_cgi("f");
++	if (fp) {
+ 		for (i = 0; wins[i]; i++) {
+-			size_t l = strlen(wins[i]);
+-			if (strncmp(q + 2, wins[i], l) == 0 &&
+-			    (q[2 + l] == '\0' || q[2 + l] == '&')) {
++			if (strcmp(fp, wins[i]) == 0) {
+ 				want = wins[i];
+ 				break;
+ 			}
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 90817df1c2..197df576c3 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -361,7 +361,9 @@ function renderLive(d){
+ 
+ /* ---- render history window ---- */
+ function renderHist(d){
+-  var wan=d.wan||[], rx=wan.map(function(p){return p[0];}), tx=wan.map(function(p){return p[1];});
++  /* defensive: a history payload always has an array wan; never let a bad/
++     mismatched response (e.g. a live payload) throw and blank the whole page */
++  var wan=Array.isArray(d.wan)?d.wan:[], rx=wan.map(function(p){return p[0];}), tx=wan.map(function(p){return p[1];});
+   var step=d.step||300, div=step>0?step:2592000;
+   var rxbps=rx.map(function(v){return v*8/div;}), txbps=tx.map(function(v){return v*8/div;});
+   var maxv=Math.max(1,Math.max.apply(null,rxbps),Math.max.apply(null,txbps));
+-- 
+2.25.1
+

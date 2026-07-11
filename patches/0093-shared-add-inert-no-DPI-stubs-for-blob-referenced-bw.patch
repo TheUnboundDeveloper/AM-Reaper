@@ -1,0 +1,61 @@
+From 905d1ca53e302c8cf6187975598576d2a6a6501b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 7 Jul 2026 20:17:32 -0400
+Subject: [PATCH] shared: add inert no-DPI stubs for blob-referenced bwdpi
+ symbols
+
+With RTCONFIG_BWDPI off, the whole body of shared/bwdpi_utils.c compiles
+out and -lbwdpi is dropped, but the closed blobs amas_lib.o (AMAS) and
+nt_mail.o (Notification Center) still reference check_wrs_switch,
+check_bwdpi_nvram_setting, check_tdts_module_exist and get_fw_user_list
+(httpd web.c also calls check_tdts_module_exist) -> rc link failed with
+exactly these four undefined. Add an #else branch with inert stubs that
+report the DPI engine as disabled/not present (0 / 0 / 0 / -1). With
+BWDPI on the real implementations take over; the stubs vanish.
+
+Same pattern as the Phase-1.1 add_ifttt_flag blob dependency.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/shared/bwdpi_utils.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/release/src/router/shared/bwdpi_utils.c b/release/src/router/shared/bwdpi_utils.c
+index 6251533ca2..1cc71b0eff 100644
+--- a/release/src/router/shared/bwdpi_utils.c
++++ b/release/src/router/shared/bwdpi_utils.c
+@@ -221,6 +221,31 @@ void tm_recycle_stuck_process()
+ 		}
+ 	}
+ }
++#else
++/* inert stubs: the closed blobs amas_lib.o / nt_mail.o (and web.c) still
++ * reference these when the DPI engine is compiled out; real versions live
++ * above / in libbwdpi. All report "disabled / not present". */
++int check_wrs_switch()
++{
++	return 0;
++}
++
++int check_bwdpi_nvram_setting()
++{
++	return 0;
++}
++
++int check_tdts_module_exist()
++{
++	return 0;
++}
++
++int get_fw_user_list(void *output, unsigned int *used_len)
++{
++	(void)output;
++	(void)used_len;
++	return -1;
++}
+ #endif
+ 
+ /*
+-- 
+2.25.1
+

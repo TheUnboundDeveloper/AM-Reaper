@@ -1,0 +1,82 @@
+From d4ce4f974ef47f8c7b29e030df5dd317cb308992 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 10 Jul 2026 22:03:14 -0400
+Subject: [PATCH] httpd/qos: harden qos_type apply gate + validate HW-QoS
+ classful ceilings (U1+U2)
+
+Reaper_v1.2.6 (rebuilt; the reverted wl0.4 attempt no longer occupies this slot).
+- U1 web.c validate_apply: reject qos_type longer than 2 chars before atoi(),
+  closing the atoi() overflow where an all-digit value > INT_MAX could bypass
+  the > 11 range check (previously only backstopped by the CKN_STR2 nvram check).
+- U2 QoS_EZQoS.asp hwqoscSerialize(): return a bool and abort submit on it -
+  reject all-zero class ceilings (would starve every upload class) and warn on a
+  >100% total, instead of silently writing a well-formed-but-broken qos schema.
+---
+ release/src-rt/version.conf          |  2 +-
+ release/src/router/httpd/web.c       |  2 +-
+ release/src/router/www/QoS_EZQoS.asp | 12 ++++++++----
+ 3 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index f68ae9ccd7..e2c861caee 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.5
++EXTENDNO=Reaper_v1.2.6
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f625e16640..343a03bdbd 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4885,7 +4885,7 @@ int validate_apply(webs_t wp, json_object *root)
+ 					continue;
+ 				}
+ 				if(!strcmp(name, "qos_type") && *value &&
+-				   (strspn(value, "0123456789") != strlen(value) || atoi(value) > 11)){	/* 11 = HW QoS classful, the highest engine */
++				   (strlen(value) > 2 || strspn(value, "0123456789") != strlen(value) || atoi(value) > 11)){	/* 11 = HW QoS classful, the highest engine; len>2 guards atoi() overflow (U1) */
+ 					dbg("reject out-of-range qos_type=%s\n", value);
+ 					continue;
+ 				}
+diff --git a/release/src/router/www/QoS_EZQoS.asp b/release/src/router/www/QoS_EZQoS.asp
+index 17b2fbe27f..a1c5803bc0 100644
+--- a/release/src/router/www/QoS_EZQoS.asp
++++ b/release/src/router/www/QoS_EZQoS.asp
+@@ -1048,7 +1048,7 @@
+         function submitQoS() {
+             document.form.ark_qoe_enable.value = "0";
+             if (validForm()) {
+-                if (document.form.qos_type.value == 11) hwqoscSerialize();
++                if (document.form.qos_type.value == 11 && !hwqoscSerialize()) return;
+                 if (document.form.qos_enable.value == "1" && document.form.qos_type.value == "1" && document.form.TM_EULA.value == "0") {
+                     if (policy_status.TM == 0 || policy_status.TM_time == '') {
+                         const policyModal = new PolicyModalComponent({
+@@ -2621,14 +2621,18 @@ function hwqoscMove(img,dir){
+   hwqoscRenumber();
+ }
+ function hwqoscSerialize(){
+-  var rows=document.querySelectorAll('#qos_prio_tbody tr');if(!rows.length)return;
+-  var ceils=[],names=[];
++  var rows=document.querySelectorAll('#qos_prio_tbody tr');if(!rows.length)return true;
++  var ceils=[],names=[],sum=0;
+   for(var i=0;i<rows.length;i++){var ins=rows[i].getElementsByTagName('input');
+     names.push((ins[0].value||('Class'+(i+1))).replace(/,/g,' ').replace(/</g,'').replace(/>/g,''));
+-    var v=parseInt(ins[1].value,10);if(isNaN(v)||v<0)v=0;if(v>100)v=100;ceils.push(v);}
++    var v=parseInt(ins[1].value,10);if(isNaN(v)||v<0)v=0;if(v>100)v=100;ceils.push(v);sum+=v;}
++  /* U2: reject all-zero (would starve every upload class) and warn on over-100% total */
++  if(sum===0){alert('At least one class must have a non-zero upload ceiling (%).');return false;}
++  if(sum>100&&!confirm('Class upload ceilings total '+sum+'% (over 100% of the upload). They will be capped to the available upload. Continue?'))return false;
+   var pairs=[];for(var j=0;j<10;j++)pairs.push(j<ceils.length?((HWQOSC_MIN_TMPL[j]||0)+'-'+ceils[j]):'0-0');
+   var oi=document.getElementById('qos_orates_input');oi.disabled=false;oi.value=pairs.join(',');
+   var ni=document.getElementById('qos_class_names_input');ni.disabled=false;ni.value=names.join(',');
++  return true;
+ }
+ </script>
+ </body>
+-- 
+2.25.1
+

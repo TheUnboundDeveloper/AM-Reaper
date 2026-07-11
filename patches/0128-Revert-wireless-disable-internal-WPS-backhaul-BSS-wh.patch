@@ -1,0 +1,108 @@
+From 064541754b209b8a1ec09b012b2919e5cee88102 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 10 Jul 2026 21:49:10 -0400
+Subject: [PATCH] Revert "wireless: disable internal WPS backhaul BSS when
+ unused"
+
+This reverts commit 5676f53b0ad138e01c68df30b06579063b58c35e.
+---
+ release/src-rt/version.conf      |  2 +-
+ release/src/router/rc/wireless.c | 63 --------------------------------
+ 2 files changed, 1 insertion(+), 64 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index e2c861caee..f68ae9ccd7 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.6
++EXTENDNO=Reaper_v1.2.5
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/wireless.c b/release/src/router/rc/wireless.c
+index 40c92b9193..5478e26033 100644
+--- a/release/src/router/rc/wireless.c
++++ b/release/src/router/rc/wireless.c
+@@ -67,68 +67,6 @@ int wds_enable(void)
+ #ifdef CONFIG_BCMWL5
+ extern int restore_defaults_g;
+ 
+-/* reaper: The AiMesh onboarding / dedicated-backhaul VIF (the obvif subunit, e.g.
+- * wl0.4) is provisioned with WPS+EAP even when no feature actually uses it. The
+- * Broadcom hostapd config generator (prebuilt hostapd_config_be.o, no source) then
+- * emits a wps_state/eap_server block for it and hostapd logs RADIUS accounting init.
+- * We can't edit the blob, but its inputs are plain nvram: gate the onboarding VIF's
+- * wps_mode by ACTIVE feature state, here in the wireless (re)start path BEFORE the
+- * blob regenerates /tmp/wlX_hapd.conf -- so the WPS block is never generated (not a
+- * post-hoc "bss down"). Bidirectional + keyed on obvif_set so enabling AiMesh/MLO/DWB
+- * later restores WPS for onboarding. Uses ONLY active-state indicators, never
+- * capability/readiness flags (amas_support/amas_ready/dwb_band/mssid_subunit). */
+-static int reaper_internal_bss_required(void)
+-{
+-	if (nvram_match("wps_enable", "1"))		/* user WPS actively running */
+-		return 1;
+-#ifdef RTCONFIG_AMAS
+-	if (is_cap() || nvram_get_int("re_mode") == 1)	/* active AiMesh CAP or RE */
+-		return 1;
+-#endif
+-#ifdef RTCONFIG_DWB
+-	{
+-		int m = nvram_get_int("dwb_mode");	/* dedicated wireless backhaul on */
+-		if (m == 1 || m == 3)
+-			return 1;
+-	}
+-#endif
+-#ifdef RTCONFIG_MLO
+-	if (nvram_match("mld_enable", "1"))		/* MLO actively enabled */
+-		return 1;
+-#endif
+-	return 0;
+-}
+-
+-static void reaper_gate_onboarding_bss(void)
+-{
+-	char prefix[32], tmp[64], *name;
+-	int unit, sub, n, required, provisioned;
+-
+-	sub = (nvram_get_int("re_mode") == 1)
+-		? nvram_get_int("obvif_re_subunit")
+-		: nvram_get_int("obvif_cap_subunit");
+-	if (sub <= 0)				/* no onboarding VIF on this box */
+-		return;
+-
+-	required    = reaper_internal_bss_required();
+-	provisioned = nvram_get_int("obvif_set");	/* set_onboarding_vif_security() ran */
+-
+-	n = num_of_wl_if();
+-	if (n <= 0 || n > MAX_NR_WL_IF)
+-		n = MAX_NR_WL_IF;
+-
+-	for (unit = 0; unit < n; unit++) {
+-		snprintf(prefix, sizeof(prefix), "wl%d.%d_", unit, sub);
+-		name = strcat_r(prefix, "wps_mode", tmp);
+-		if (!required) {
+-			if (nvram_match(name, "enabled"))
+-				nvram_set(name, "disabled");
+-		} else if (provisioned && nvram_match(name, "disabled")) {
+-			nvram_set(name, "enabled");	/* feature active: restore for onboarding */
+-		}
+-	}
+-}
+-
+ int
+ start_nas(void)
+ {
+@@ -141,7 +79,6 @@ start_nas(void)
+ 	{
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ 		if (!nvram_match("hapd_enable", "0")) {
+-			reaper_gate_onboarding_bss();	/* suppress unused onboarding/backhaul WPS BSS before hapd conf gen */
+ 			start_hapd_wpasupp(0);
+ 			start_wps_pbcd();
+ 			return 0;
+-- 
+2.25.1
+

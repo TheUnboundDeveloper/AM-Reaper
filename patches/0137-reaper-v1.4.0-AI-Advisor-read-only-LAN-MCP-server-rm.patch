@@ -1,0 +1,1656 @@
+From f4f93b04c12b7582c33689e226c3c047ac3fe680 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 13:31:52 -0400
+Subject: [PATCH] reaper v1.4.0: AI Advisor - read-only LAN MCP server (rmcpd)
+
+Optional, off-by-default, second-factor-gated read-only Model Context
+Protocol server so a user's own AI client (with the user's own API key)
+can audit and explain this router's configuration and traffic. The API
+key never touches the router; the daemon only ever reads and recommends.
+
+Fencing (the one deliberate inbound-listener exception in an otherwise
+listener-free build):
+- rmcpd never starts from the boot path; it runs only after an explicit,
+  code-gated ARM action writes /tmp/reaper_mcp/session, so every reboot
+  comes up dark. It refuses to start without that session file.
+- LAN-only: binds lan_ipaddr, adds a LAN-bridge iptables accept rule at
+  start and tears it down on every exit; Bearer token on every request;
+  self-terminates on session timeout, Disable, or repeated auth failure.
+- Read-only: nine curated read tools; no write/apply tool exists.
+- Secrets never leave: nvram whitelist + secret-fragment scrubber + log
+  redaction as a second choke point.
+
+Second factor (arming code): stored only as salt + PBKDF2-HMAC-SHA256;
+the code lives off-box. Admin session AND the code are required to arm;
+rotating the code requires proving the current one, so stolen admin
+access alone cannot enable the advisor. 5 failures lock arming 15 min.
+
+Whole module gated on RTCONFIG_REAPER_MCP (declared in config/config.in;
+on in owner builds, strippable for distributed images).
+
+Files: new rmcpd/{rmcpd.c,Makefile}; router Makefile obj + rules; rc
+start_rmcp/stop_rmcp + notify_rc dispatch (never boot-started); nvram
+rmcp_* defaults; httpd reaper_mcp.cgi arming control plane; native
+Reaper_Advisor.asp + menu + dashboard rail; version -> Reaper_v1.4.0.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/Makefile                   |   7 +
+ release/src/router/config/config.in           |   4 +
+ release/src/router/config_base                |   5 +
+ release/src/router/httpd/web.c                | 250 ++++++
+ release/src/router/rc/rc.h                    |   4 +
+ release/src/router/rc/services.c              |  42 +
+ release/src/router/rmcpd/Makefile             |  49 ++
+ release/src/router/rmcpd/rmcpd.c              | 784 ++++++++++++++++++
+ release/src/router/shared/defaults.c          |  13 +
+ release/src/router/www/Main_ReaperDash.asp    |   1 +
+ release/src/router/www/Reaper_Advisor.asp     | 264 ++++++
+ .../router/www/require/menuTrees/menuTree.js  |  11 +-
+ 13 files changed, 1434 insertions(+), 2 deletions(-)
+ create mode 100644 release/src/router/rmcpd/Makefile
+ create mode 100644 release/src/router/rmcpd/rmcpd.c
+ create mode 100644 release/src/router/www/Reaper_Advisor.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 32abca06b2..999b19dcee 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.3.3
++EXTENDNO=Reaper_v1.4.0
+ 
+ RCNO=0
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index a9632d1185..7cd2ec9c63 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1199,6 +1199,8 @@ endif
+ endif
+ # reaper v1.3.0: traffic collector (per-client/per-net/per-class history + probe)
+ obj-y += rtrafd
++# reaper v1.4.0: read-only LAN MCP advisor (off by default, never boot-started)
++obj-$(RTCONFIG_REAPER_MCP) += rmcpd json-c
+ ifeq ($(RTCONFIG_DSL),y)
+ obj-y += spectrum
+ endif
+@@ -6395,6 +6397,11 @@ rtrafd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rtrafd-install:
+ 	$(MAKE) -C rtrafd INSTALLDIR=$(INSTALLDIR)/rtrafd install
+ 
++rmcpd: nvram$(BCMEX)$(EX7) shared json-c $(if $(BCM_502L07P2),ethctl_lib)
++
++rmcpd-install:
++	$(MAKE) -C rmcpd INSTALLDIR=$(INSTALLDIR)/rmcpd install
++
+ dropbear/config.h.in: $(if $(RTCONFIG_PROTECTION_SERVER),protect_srv-stage,)
+ 
+ dropbear/config.h: dropbear/config.h.in
+diff --git a/release/src/router/config/config.in b/release/src/router/config/config.in
+index defb2a034c..c67d663c1b 100644
+--- a/release/src/router/config/config.in
++++ b/release/src/router/config/config.in
+@@ -2191,6 +2191,10 @@ config RTCONFIG_MERLINUPDATE
+ 	bool "Check for new firmware version - Merlin-only"
+ 	default n
+ 
++config RTCONFIG_REAPER_MCP
++	bool "Reaper AI Advisor - read-only LAN MCP server (rmcpd)"
++	default n
++
+ config RTCONFIG_VPN_FUSION_MERLIN
+ 	bool "Implements Merlin-specific code with Fusion enabled"
+ 	depends on RTCONFIG_VPN_FUSION
+diff --git a/release/src/router/config_base b/release/src/router/config_base
+index 57a4f9ce82..d8ebbe3acf 100644
+--- a/release/src/router/config_base
++++ b/release/src/router/config_base
+@@ -538,6 +538,11 @@ RTCONFIG_NTPD=y
+ # passive shared lib (no daemon/phone-home of its own). The config-gen macro
+ # preserves this value when neither ASD nor AHS is set.
+ RTCONFIG_LIBASC=y
++# reaper v1.4.0: read-only LAN MCP advisor (rmcpd). OFF BY DEFAULT at runtime and
++# NEVER started from the boot path; this flag only compiles the module in. Set to
++# "is not set" to strip the whole advisor from a distributed image. Owner builds
++# ship it in (=y); it adds no boot-time listener - see file-memory ai-hook-concept.
++RTCONFIG_REAPER_MCP=y
+ RTCONFIG_DNSSEC=y
+ # RTCONFIG_DNSSEC_OPENSSL is not set
+ RTCONFIG_DNSSEC_NETTLE=y
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f9dc718cf4..d7e315d098 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -208,6 +208,12 @@ static void do_jffsupload_post(char *url, FILE *stream, int len, char *boundary)
+ #endif
+ #include <webapi.h>
+ 
++#ifdef RTCONFIG_REAPER_MCP
++#include <openssl/evp.h>
++#include <openssl/rand.h>
++#include <openssl/crypto.h>
++#endif
++
+ #ifdef RTCONFIG_HTTPS
+ #include <openssl/x509.h>
+ #include <openssl/pem.h>
+@@ -21684,6 +21690,247 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ 	fclose(f);
+ }
+ 
++#ifdef RTCONFIG_REAPER_MCP
++/* reaper v1.4.0: arming control plane for the read-only MCP advisor (rmcpd).
++ *
++ * This endpoint is the SECOND FACTOR gate. The advisor daemon never runs at boot
++ * and refuses to start without an armed session file; only a successful "arm"
++ * here (admin session AND the out-of-band arming code) writes that file and asks
++ * rc to launch the daemon. The arming code is NEVER stored - only its salt and
++ * PBKDF2-HMAC-SHA256 hash, so a flash-dump attacker gets an uncrackable hash and
++ * still cannot arm. Repeated wrong codes lock arming for 15 minutes.
++ *
++ * Actions (GET param "action"): status | provision | deprovision | arm | disarm.
++ * The arming token and connection snippet are returned once, on a successful arm. */
++
++#define RMCP_ITER	120000
++#define RMCP_STATE_DIR	"/tmp/reaper_mcp"
++#define RMCP_SESSION	RMCP_STATE_DIR "/session"
++#define RMCP_LOCK_SECS	900
++#define RMCP_MAX_FAIL	5
++
++static void rmcp_hex(const unsigned char *in, int n, char *out)
++{
++	static const char *h = "0123456789abcdef";
++	int i;
++	for (i = 0; i < n; i++) {
++		out[i * 2]     = h[(in[i] >> 4) & 0xf];
++		out[i * 2 + 1] = h[in[i] & 0xf];
++	}
++	out[n * 2] = 0;
++}
++
++static int rmcp_unhex(const char *hex, unsigned char *out, int maxout)
++{
++	int n = 0;
++	while (hex[0] && hex[1] && n < maxout) {
++		char b[3] = { hex[0], hex[1], 0 };
++		out[n++] = (unsigned char)strtol(b, NULL, 16);
++		hex += 2;
++	}
++	return n;
++}
++
++/* PBKDF2-HMAC-SHA256(code, salt) -> 32-byte digest, hex-encoded into hashhex */
++static int rmcp_kdf(const char *code, const unsigned char *salt, int saltlen, char *hashhex)
++{
++	unsigned char dk[32];
++	if (PKCS5_PBKDF2_HMAC(code, strlen(code), salt, saltlen, RMCP_ITER,
++			      EVP_sha256(), sizeof(dk), dk) != 1)
++		return -1;
++	rmcp_hex(dk, sizeof(dk), hashhex);
++	return 0;
++}
++
++static void
++do_reaper_mcp_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++	time_t now = time(NULL);
++	long lock_until = strtol(nvram_safe_get("rmcp_lock_until"), NULL, 10);
++	int provisioned = (nvram_safe_get("rmcp_code_hash")[0] != 0);
++
++	if (!action) action = "status";
++
++	if (!strcmp(action, "status")) {
++		int armed = f_exists(RMCP_SESSION);
++		long expiry = 0;
++		if (armed) {
++			char *sess = file2str(RMCP_SESSION);
++			if (sess) {
++				char *e = strstr(sess, "expiry=");
++				if (e) expiry = strtol(e + 7, NULL, 10);
++				free(sess);
++			}
++		}
++		websWrite(stream, "{\"provisioned\":%d,\"armed\":%d,\"expiry\":%ld,"
++			"\"now\":%ld,\"port\":%s,\"timeout\":%s,\"lan_ip\":\"%s\","
++			"\"locked\":%d,\"lock_until\":%ld}",
++			provisioned, armed ? 1 : 0, expiry, (long)now,
++			nvram_safe_get("rmcp_port"), nvram_safe_get("rmcp_timeout"),
++			nvram_safe_get("lan_ipaddr"),
++			(lock_until > now) ? 1 : 0, lock_until);
++		return;
++	}
++
++	if (!strcmp(action, "provision")) {
++		char *code = get_cgi("code");
++		unsigned char salt[16];
++		char salthex[40], hashhex[80];
++		if (!code || strlen(code) < 12) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"code must be at least 12 characters\"}");
++			return;
++		}
++		/* SECOND-FACTOR INTEGRITY: rotating an existing code requires proving you
++		 * know the current one. This is what makes admin-session access alone
++		 * insufficient to enable the advisor - an attacker who stole the admin
++		 * password still cannot silently replace the arming code and arm. First-
++		 * time provisioning (no code set yet) is open; a factory reset is the
++		 * only other way to clear a forgotten code. Lockout applies here too. */
++		if (provisioned) {
++			char *oldcode = get_cgi("oldcode");
++			unsigned char osalt[32];
++			char ocalc[80];
++			const char *ostored = nvram_safe_get("rmcp_code_hash");
++			int oslen;
++			if (lock_until > now) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"locked - too many failures\",\"lock_until\":%ld}", lock_until);
++				return;
++			}
++			oslen = rmcp_unhex(nvram_safe_get("rmcp_code_salt"), osalt, sizeof(osalt));
++			if (!oldcode || oslen <= 0 || rmcp_kdf(oldcode, osalt, oslen, ocalc) != 0 ||
++			    strlen(ocalc) != strlen(ostored) ||
++			    CRYPTO_memcmp(ocalc, ostored, strlen(ostored)) != 0) {
++				int f = atoi(nvram_safe_get("rmcp_fails")) + 1;
++				char fb[8]; snprintf(fb, sizeof(fb), "%d", f);
++				nvram_set("rmcp_fails", fb);
++				if (f >= RMCP_MAX_FAIL) {
++					char lb[16]; snprintf(lb, sizeof(lb), "%ld", (long)(now + RMCP_LOCK_SECS));
++					nvram_set("rmcp_lock_until", lb);
++				}
++				nvram_commit();
++				websWrite(stream, "{\"ok\":0,\"error\":\"current code required to rotate\"}");
++				return;
++			}
++		}
++		if (RAND_bytes(salt, sizeof(salt)) != 1) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"rng failure\"}");
++			return;
++		}
++		rmcp_hex(salt, sizeof(salt), salthex);
++		if (rmcp_kdf(code, salt, sizeof(salt), hashhex) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"kdf failure\"}");
++			return;
++		}
++		nvram_set("rmcp_code_salt", salthex);
++		nvram_set("rmcp_code_hash", hashhex);
++		nvram_set("rmcp_fails", "0");
++		nvram_set("rmcp_lock_until", "0");
++		nvram_commit();
++		logmessage("rmcpd", "arming code provisioned");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (!strcmp(action, "deprovision")) {
++		/* clearing the code also disarms any live session */
++		unlink(RMCP_SESSION);
++		notify_rc("stop_rmcp");
++		nvram_set("rmcp_code_salt", "");
++		nvram_set("rmcp_code_hash", "");
++		nvram_set("rmcp_fails", "0");
++		nvram_set("rmcp_lock_until", "0");
++		nvram_commit();
++		logmessage("rmcpd", "arming code cleared, advisor disabled");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (!strcmp(action, "arm")) {
++		char *code = get_cgi("code");
++		unsigned char salt[32], token[16];
++		char calc[80], tokhex[40];
++		const char *stored = nvram_safe_get("rmcp_code_hash");
++		int saltlen, fails, timeout;
++		FILE *sf;
++
++		if (!provisioned) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"not provisioned - set an arming code first\"}");
++			return;
++		}
++		if (lock_until > now) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"arming locked - too many failures\",\"lock_until\":%ld}", lock_until);
++			return;
++		}
++		if (!code) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"code required\"}");
++			return;
++		}
++		saltlen = rmcp_unhex(nvram_safe_get("rmcp_code_salt"), salt, sizeof(salt));
++		if (saltlen <= 0 || rmcp_kdf(code, salt, saltlen, calc) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"verify failed\"}");
++			return;
++		}
++		/* constant-time compare of the two hex digests */
++		if (strlen(calc) != strlen(stored) ||
++		    CRYPTO_memcmp(calc, stored, strlen(stored)) != 0) {
++			fails = atoi(nvram_safe_get("rmcp_fails")) + 1;
++			char fb[8]; snprintf(fb, sizeof(fb), "%d", fails);
++			nvram_set("rmcp_fails", fb);
++			if (fails >= RMCP_MAX_FAIL) {
++				char lb[16]; snprintf(lb, sizeof(lb), "%ld", (long)(now + RMCP_LOCK_SECS));
++				nvram_set("rmcp_lock_until", lb);
++				logmessage("rmcpd", "arming locked after %d failed attempts", fails);
++			}
++			nvram_commit();
++			websWrite(stream, "{\"ok\":0,\"error\":\"incorrect code\",\"fails\":%d}", fails);
++			return;
++		}
++		/* success: mint a session token and start the daemon */
++		nvram_set("rmcp_fails", "0");
++		nvram_set("rmcp_lock_until", "0");
++		nvram_commit();
++		if (RAND_bytes(token, sizeof(token)) != 1) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"rng failure\"}");
++			return;
++		}
++		rmcp_hex(token, sizeof(token), tokhex);
++		timeout = atoi(nvram_safe_get("rmcp_timeout"));
++		if (timeout < 15 || timeout > 240) timeout = 60;
++
++		mkdir(RMCP_STATE_DIR, 0700);
++		sf = fopen(RMCP_SESSION, "w");
++		if (!sf) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"cannot write session\"}");
++			return;
++		}
++		fchmod(fileno(sf), 0600);
++		fprintf(sf, "token=%s\nexpiry=%ld\nclient=%s\n",
++			tokhex, (long)(now + timeout * 60), nvram_safe_get("rmcp_client"));
++		fclose(sf);
++
++		notify_rc("start_rmcp");
++		logmessage("rmcpd", "advisor armed for %d minutes", timeout);
++		websWrite(stream, "{\"ok\":1,\"token\":\"%s\",\"lan_ip\":\"%s\",\"port\":%s,"
++			"\"expiry\":%ld,\"url\":\"http://%s:%s/mcp\"}",
++			tokhex, nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"),
++			(long)(now + timeout * 60),
++			nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"));
++		return;
++	}
++
++	if (!strcmp(action, "disarm")) {
++		unlink(RMCP_SESSION);
++		notify_rc("stop_rmcp");
++		logmessage("rmcpd", "advisor disarmed by user");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
++}
++#endif	/* RTCONFIG_REAPER_MCP */
++
+ static void
+ do_unreg_ASUSDDNS_cgi(char *url, FILE *stream)
+ {
+@@ -28765,6 +29012,9 @@ struct mime_handler mime_handlers[] =
+ 	/* reaper v1.2.7: set_ASUS_EULA.cgi endpoint removed (legacy app-only setter; EULA pre-signed in defaults.c) */
+ 	{ "reaper_qos_stats.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
+ 	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
++#ifdef RTCONFIG_REAPER_MCP
++	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
++#endif
+ 	{ "set_ASUS_NEW_EULA.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_NEW_EULA_cgi, do_auth },
+ 	{ "set_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_privacy_policy_cgi, do_auth },
+ 	{ "get_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_ASUS_privacy_policy_cgi, do_auth },
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index ecdbe77e47..b97ecf61c0 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2975,6 +2975,10 @@ extern void stop_httpd(void);
+ extern void stop_rstats(void);
+ extern void stop_rtraf(void);	/* reaper v1.3.0 traffic collector */
+ extern void start_rtraf(void);
++#ifdef RTCONFIG_REAPER_MCP
++extern void stop_rmcp(void);	/* reaper v1.4.0 read-only MCP advisor */
++extern void start_rmcp(void);	/* NOTE: never called from the boot path */
++#endif
+ extern void stop_autodet(void);
+ extern void start_autodet(void);
+ extern int wps_band_ssid_broadcast_off(int wps_band);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 3d1bcab56f..d836419c6a 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7107,6 +7107,9 @@ stop_misc(void)
+ 	stop_snooper();
+ 	stop_rstats();
+ 	stop_rtraf();	/* reaper v1.3.0 */
++#ifdef RTCONFIG_REAPER_MCP
++	stop_rmcp();	/* reaper v1.4.0 - ensure the advisor never survives a service teardown */
++#endif
+ #ifdef RTCONFIG_DSL
+ 	stop_spectrum(); //Ren
+ #endif //For DSL-N55U
+@@ -7599,6 +7602,38 @@ start_rtraf(void)
+ 	xstart("rtrafd");
+ }
+ 
++#ifdef RTCONFIG_REAPER_MCP
++/* reaper v1.4.0: read-only LAN MCP advisor. This is the ONE deliberate inbound
++ * listener in an otherwise listener-free build, so it is fenced hard:
++ *   - NEVER launched from start_services / the boot path (this build comes up
++ *     dark every reboot). It starts ONLY on an explicit user ARM action, which
++ *     the httpd arming endpoint services by writing /tmp/reaper_mcp/session and
++ *     then notify_rc("start_rmcp").
++ *   - the daemon itself refuses to run without that armed session file, binds
++ *     lan_ipaddr only, and self-terminates on the arming timeout / Disable.
++ * Disable just kills it; the session file + iptables rule are torn down by the
++ * daemon's own atexit/signal cleanup. */
++void
++stop_rmcp(void)
++{
++	if (pids("rmcpd"))
++		killall_tk("rmcpd");
++}
++
++void
++start_rmcp(void)
++{
++	stop_rmcp();
++	if (!is_routing_enabled()) return;
++	/* the armed session file is the gate - no file, no daemon */
++	if (!f_exists("/tmp/reaper_mcp/session")) {
++		logmessage("rmcpd", "start requested with no armed session - ignoring");
++		return;
++	}
++	xstart("rmcpd");
++}
++#endif
++
+ //Ren.B
+ #ifdef RTCONFIG_DSL
+ void stop_spectrum(void)
+@@ -21423,6 +21458,13 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rtraf();
+ 		if(action & RC_SERVICE_START) start_rtraf();
+ 	}
++#ifdef RTCONFIG_REAPER_MCP
++	else if (strcmp(script, "rmcp") == 0)
++	{
++		if(action & RC_SERVICE_STOP) stop_rmcp();
++		if(action & RC_SERVICE_START) start_rmcp();
++	}
++#endif
+ 	else if (strcmp(script, "conntrack") == 0)
+ 	{
+ 		setup_conntrack();
+diff --git a/release/src/router/rmcpd/Makefile b/release/src/router/rmcpd/Makefile
+new file mode 100644
+index 0000000000..74e1c2f65e
+--- /dev/null
++++ b/release/src/router/rmcpd/Makefile
+@@ -0,0 +1,49 @@
++include ../common.mak
++
++CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared -I$(TOP)/json-c
++LDFLAGS	= -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared
++LDFLAGS += -L$(TOP)/json-c/.libs -ljson-c
++ifeq ($(RTCONFIG_BCM_502L07P2),y)
++LDFLAGS += -L$(TOP_PLATFORM)/ethctl_lib -lethctl
++endif
++ifeq ($(HND_ROUTER),y)
++LDFLAGS += -L$(TOP_PLATFORM)/wlcsm -lwlcsm
++endif
++
++ifeq ($(RTCONFIG_BCMARM),y)
++CFLAGS += -I$(SRCBASE)/shared/bcmwifi/include -DTYPEDEF_FLOAT_T
++CFLAGS += -I$(SRCBASE)/common/include
++endif
++
++OBJS = rmcpd.o
++
++all: rmcpd
++
++rmcpd: $(OBJS)
++	@echo " [rmcpd] CC -o $@"
++	$(CC) $(LDFLAGS) -o $@ $(OBJS)
++
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f rmcpd .*.depend
++	rm -f *.o
++
++install: all
++	@echo " [rmcpd] Installing..."
++	install -D rmcpd $(INSTALLDIR)/bin/rmcpd
++	$(STRIP) $(INSTALLDIR)/bin/rmcpd
++
++%.o: %.c .%.depend
++	@echo " [rmcpd] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.depend: $(OBJS:%.o=%.c)
++	@$(CC) $(CFLAGS) -M $^ > .depend
++
++.%.depend: %.c
++	@$(CC) $(CFLAGS) -M $< > $@
++
++-include $(OBJS:%.o=.%.depend)
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+new file mode 100644
+index 0000000000..e6fe0829af
+--- /dev/null
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -0,0 +1,784 @@
++/*
++ * rmcpd - Reaper Advisor: read-only Model Context Protocol server (v1)
++ *
++ * PHILOSOPHY (see file-memory ai-hook-concept): reaper is a de-cloud, anti
++ * phone-home, physical-access-only hardening fork. This daemon is the ONE
++ * deliberate exception to "no inbound listeners", and it is fenced hard:
++ *
++ *   - OFF BY DEFAULT and NEVER started from the boot path. It runs only after
++ *     an explicit, second-factor-gated ARM action in the GUI, which writes the
++ *     session file this daemon requires to start at all.
++ *   - LAN-ONLY. Binds lan_ipaddr (never 0.0.0.0 / WAN); an INPUT accept rule is
++ *     added on the LAN bridge at start and removed on every exit path.
++ *   - READ-ONLY. It exposes curated read tools only - no write/apply tool
++ *     exists, not even a disabled one. The user's own AI client (with the
++ *     user's own API key) connects and advises; the human applies changes.
++ *   - EPHEMERAL. It self-terminates on session expiry (the GUI arming timeout),
++ *     on explicit Disable, or on repeated auth failure. Arming state lives in
++ *     /tmp only, so every reboot comes up dark.
++ *   - SECRETS NEVER LEAVE. Every nvram value passes a whitelist; every output
++ *     passes a scrubber for secret-shaped keys/values (PSKs, passwords, keys).
++ *
++ * The API key stays on the user's machine; nothing here talks to any cloud.
++ * Protocol: MCP Streamable HTTP - JSON-RPC 2.0 over HTTP POST /mcp, stateless
++ * responses (no SSE). Single client, tiny bounded parser, Bearer-token auth.
++ */
++
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE	/* strcasestr */
++#endif
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdarg.h>
++#include <string.h>
++#include <strings.h>
++#include <unistd.h>
++#include <stdint.h>
++#include <time.h>
++#include <signal.h>
++#include <syslog.h>
++#include <errno.h>
++#include <ctype.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <sys/select.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++
++#include <json.h>	/* json-c umbrella; Makefile adds -I$(TOP)/json-c */
++
++#include <bcmnvram.h>
++#include <shutils.h>
++#include <shared.h>
++
++#define STATE_DIR	"/tmp/reaper_mcp"
++#define SESSION_FILE	STATE_DIR "/session"	/* token=<hex> expiry=<epoch> client=<ip> */
++#define DEF_PORT	5199
++#define MAX_BADAUTH	5		/* self-kill after this many bad tokens */
++#define REQ_MAX		65536		/* max request bytes we will read */
++#define TICK_SECS	1		/* accept/expiry poll cadence */
++#define TOOLOUT_MAX	(256 * 1024)	/* cap on a single tool's text output */
++
++#define PROTO_VER	"2024-11-05"	/* MCP protocol revision we speak */
++
++static volatile sig_atomic_t g_stop = 0;
++static int   g_added_rule = 0;
++static char  g_lan_ip[32] = "";
++static char  g_client_ip[32] = "";	/* pin, or "" for any LAN host */
++static int   g_port = DEF_PORT;
++static char  g_token[80] = "";
++static time_t g_expiry = 0;
++static int   g_badauth = 0;
++
++/* ------------------------------------------------------------------ */
++/* lifecycle: iptables fence + cleanup                                 */
++/* ------------------------------------------------------------------ */
++
++static const char *lan_ifname(void)
++{
++	char *lif = nvram_safe_get("lan_ifname");
++	return (lif && *lif) ? lif : "br0";
++}
++
++/* Insert / remove the single LAN-only accept rule. We shell out to the same
++ * iptables the rest of rc uses; args are daemon-controlled (ifname/ip/port),
++ * never request-derived, and the port/ip are numeric-validated below. */
++static void fence_rule(const char *op /* "-I" or "-D" */)
++{
++	char cmd[256];
++	const char *src = (g_client_ip[0] ? g_client_ip : "");
++
++	if (src[0])
++		snprintf(cmd, sizeof(cmd),
++			"iptables %s INPUT -i %s -s %s -p tcp --dport %d -j ACCEPT",
++			op, lan_ifname(), src, g_port);
++	else
++		snprintf(cmd, sizeof(cmd),
++			"iptables %s INPUT -i %s -p tcp --dport %d -j ACCEPT",
++			op, lan_ifname(), g_port);
++	system(cmd);
++}
++
++static void cleanup(void)
++{
++	if (g_added_rule) {
++		fence_rule("-D");
++		g_added_rule = 0;
++	}
++	unlink(SESSION_FILE);
++}
++
++static void on_signal(int sig)
++{
++	(void)sig;
++	g_stop = 1;
++}
++
++/* ------------------------------------------------------------------ */
++/* session file: written by the httpd arming endpoint before we start  */
++/* ------------------------------------------------------------------ */
++
++static int load_session(void)
++{
++	FILE *f = fopen(SESSION_FILE, "r");
++	char line[256];
++
++	if (!f)
++		return -1;
++	while (fgets(line, sizeof(line), f)) {
++		char *nl = strchr(line, '\n');
++		if (nl) *nl = 0;
++		if (!strncmp(line, "token=", 6))
++			snprintf(g_token, sizeof(g_token), "%s", line + 6);
++		else if (!strncmp(line, "expiry=", 7))
++			g_expiry = (time_t)strtoll(line + 7, NULL, 10);
++		else if (!strncmp(line, "client=", 7))
++			snprintf(g_client_ip, sizeof(g_client_ip), "%s", line + 7);
++	}
++	fclose(f);
++	if (!g_token[0] || g_expiry <= 0)
++		return -1;
++	return 0;
++}
++
++/* Accept only dotted-quad in the client pin, else drop the pin (defensive:
++ * the file is root-written, but never build a shell arg we didn't validate). */
++static void sanitize_client_ip(void)
++{
++	struct in_addr a;
++	if (g_client_ip[0] && inet_aton(g_client_ip, &a) != 1)
++		g_client_ip[0] = 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* redaction: the single choke point every output passes through       */
++/* ------------------------------------------------------------------ */
++
++/* nvram keys safe to surface verbatim. Deny-by-default: anything not here is
++ * never emitted by get_nvram. Deliberately excludes every secret-bearing key
++ * (wl*_wpa_psk, http_passwd, *_key, vpn/radius/ddns creds, tokens). */
++static const char *NV_WHITELIST[] = {
++	"productid", "firmver", "buildno", "extendno", "odmpid", "territory_code",
++	"lan_ipaddr", "lan_netmask", "lan_proto", "lan_domain",
++	"wan_proto", "wan0_proto", "wan_ifname",
++	"dhcp_enable_x", "dhcp_start", "dhcp_end", "dhcp_lease",
++	"time_zone", "ntp_server0", "ntp_server1",
++	"wl0_ssid", "wl1_ssid", "wl2_ssid",
++	"wl0_auth_mode_x", "wl1_auth_mode_x", "wl2_auth_mode_x",
++	"wl0_crypto", "wl1_crypto", "wl2_crypto",
++	"wl0_channel", "wl1_channel", "wl2_channel",
++	"wl0_bw", "wl1_bw", "wl2_bw",
++	"wl0_closed", "wl1_closed", "wl2_closed",
++	"smart_connect_x", "smart_connect_v2",
++	"qos_enable", "qos_type", "qos_ibw", "qos_obw", "qos_bw_rulelist",
++	"fw_enable_x", "fw_log_x", "misc_http_x", "misc_httpport_x",
++	"upnp_enable", "wan0_upnp_enable", "wan1_upnp_enable",
++	"dmz_ip", "vts_enable_x",
++	"sshd_enable", "sshd_port",
++	"rtraf_enable", "rtraf_path", "rtraf_cap_gb",
++	"reaper_inject",
++	NULL
++};
++
++static int nv_whitelisted(const char *key)
++{
++	int i;
++	for (i = 0; NV_WHITELIST[i]; i++)
++		if (!strcmp(key, NV_WHITELIST[i]))
++			return 1;
++	return 0;
++}
++
++/* Secret-shaped key fragments. If get_nvram is ever pointed at a key that
++ * matches one of these it is dropped even were it whitelisted - belt and
++ * suspenders so the whitelist can never leak a secret by accident. */
++static const char *SECRET_FRAG[] = {
++	"psk", "passwd", "password", "_key", "wpa_", "radius", "secret",
++	"token", "crt", "cert", "privkey", "_ca", "cablekey", "cusootpw", NULL
++};
++
++static int key_is_secret(const char *key)
++{
++	int i;
++	char lo[128];
++	size_t j;
++	for (j = 0; key[j] && j < sizeof(lo) - 1; j++)
++		lo[j] = tolower((unsigned char)key[j]);
++	lo[j] = 0;
++	for (i = 0; SECRET_FRAG[i]; i++)
++		if (strstr(lo, SECRET_FRAG[i]))
++			return 1;
++	return 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* small output buffer for building a tool's text payload             */
++/* ------------------------------------------------------------------ */
++
++typedef struct { char *p; size_t len, cap; int truncated; } sbuf_t;
++
++static void sb_init(sbuf_t *s)
++{
++	s->cap = 8192;
++	s->len = 0;
++	s->truncated = 0;
++	s->p = malloc(s->cap);
++	if (s->p) s->p[0] = 0;
++}
++
++static void sb_add(sbuf_t *s, const char *data, size_t n)
++{
++	if (!s->p || s->truncated)
++		return;
++	if (s->len + n >= TOOLOUT_MAX) {
++		s->truncated = 1;
++		return;
++	}
++	if (s->len + n + 1 > s->cap) {
++		size_t nc = s->cap * 2;
++		char *np;
++		while (nc < s->len + n + 1) nc *= 2;
++		np = realloc(s->p, nc);
++		if (!np) { s->truncated = 1; return; }
++		s->p = np;
++		s->cap = nc;
++	}
++	memcpy(s->p + s->len, data, n);
++	s->len += n;
++	s->p[s->len] = 0;
++}
++
++static void sb_puts(sbuf_t *s, const char *str) { sb_add(s, str, strlen(str)); }
++
++static void sb_printf(sbuf_t *s, const char *fmt, ...)
++{
++	char tmp[1024];
++	va_list ap;
++	int n;
++	va_start(ap, fmt);
++	n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
++	va_end(ap);
++	if (n > 0)
++		sb_add(s, tmp, (size_t)n < sizeof(tmp) ? (size_t)n : sizeof(tmp) - 1);
++}
++
++static void sb_free(sbuf_t *s) { free(s->p); s->p = NULL; }
++
++/* append a JSON-string-escaped copy of src */
++static void sb_json_str(sbuf_t *s, const char *src)
++{
++	const unsigned char *u = (const unsigned char *)src;
++	char esc[8];
++	if (!src) { sb_puts(s, "null"); return; }
++	sb_puts(s, "\"");
++	for (; *u; u++) {
++		switch (*u) {
++		case '\"': sb_puts(s, "\\\""); break;
++		case '\\': sb_puts(s, "\\\\"); break;
++		case '\n': sb_puts(s, "\\n"); break;
++		case '\r': sb_puts(s, "\\r"); break;
++		case '\t': sb_puts(s, "\\t"); break;
++		default:
++			if (*u < 0x20) {
++				snprintf(esc, sizeof(esc), "\\u%04x", *u);
++				sb_puts(s, esc);
++			} else {
++				char c = (char)*u;
++				sb_add(s, &c, 1);
++			}
++		}
++	}
++	sb_puts(s, "\"");
++}
++
++/* read a small file (proc/tmp) into the sbuf, capped */
++static void sb_addfile(sbuf_t *s, const char *path, size_t cap)
++{
++	FILE *f = fopen(path, "r");
++	char buf[2048];
++	size_t got = 0, n;
++	if (!f) { sb_puts(s, "(unavailable)"); return; }
++	while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
++		if (got + n > cap) n = cap - got;
++		sb_add(s, buf, n);
++		got += n;
++		if (got >= cap) break;
++	}
++	fclose(f);
++}
++
++/* run a fixed (non-request-derived) command, capture stdout into sbuf */
++static void sb_addcmd(sbuf_t *s, const char *cmd, size_t cap)
++{
++	FILE *p = popen(cmd, "r");
++	char buf[2048];
++	size_t got = 0, n;
++	if (!p) { sb_puts(s, "(command unavailable)"); return; }
++	while ((n = fread(buf, 1, sizeof(buf), p)) > 0) {
++		if (got + n > cap) n = cap - got;
++		sb_add(s, buf, n);
++		got += n;
++		if (got >= cap) break;
++	}
++	pclose(p);
++}
++
++/* emit one whitelisted nvram key as a JSON "key":"value" pair (or skip) */
++static void sb_nv_pair(sbuf_t *s, const char *key, int *first)
++{
++	const char *v;
++	if (!nv_whitelisted(key) || key_is_secret(key))
++		return;
++	v = nvram_safe_get(key);
++	if (!*first) sb_puts(s, ",");
++	*first = 0;
++	sb_json_str(s, key);
++	sb_puts(s, ":");
++	sb_json_str(s, v);
++}
++
++/* ------------------------------------------------------------------ */
++/* the tools                                                           */
++/* ------------------------------------------------------------------ */
++
++static void tool_overview(sbuf_t *s)
++{
++	int first = 1;
++	sb_puts(s, "{");
++	sb_nv_pair(s, "productid", &first);
++	sb_nv_pair(s, "firmver", &first);
++	sb_nv_pair(s, "buildno", &first);
++	sb_nv_pair(s, "extendno", &first);
++	sb_puts(s, ",\"uptime\":"); { sbuf_t t; sb_init(&t); sb_addfile(&t, "/proc/uptime", 64);
++		/* first token only */ if (t.p) { char *sp = strchr(t.p, ' '); if (sp) *sp = 0; }
++		sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, ",\"loadavg\":"); { sbuf_t t; sb_init(&t); sb_addfile(&t, "/proc/loadavg", 96);
++		if (t.p) { char *nl = strchr(t.p, '\n'); if (nl) *nl = 0; } sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, ",\"meminfo\":"); { sbuf_t t; sb_init(&t); sb_puts(&t, ""); sb_addcmd(&t, "grep -E '^(MemTotal|MemFree|MemAvailable):' /proc/meminfo", 256);
++		sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, "}");
++}
++
++static void tool_wireless(sbuf_t *s)
++{
++	static const char *keys[] = {
++		"wl0_ssid", "wl0_auth_mode_x", "wl0_crypto", "wl0_channel", "wl0_bw", "wl0_closed",
++		"wl1_ssid", "wl1_auth_mode_x", "wl1_crypto", "wl1_channel", "wl1_bw", "wl1_closed",
++		"wl2_ssid", "wl2_auth_mode_x", "wl2_crypto", "wl2_channel", "wl2_bw", "wl2_closed",
++		"smart_connect_x", "smart_connect_v2", NULL };
++	int first = 1, i;
++	sb_puts(s, "{");
++	for (i = 0; keys[i]; i++)
++		sb_nv_pair(s, keys[i], &first);
++	sb_puts(s, "}");
++	/* NOTE: PSKs are intentionally absent - only security MODE is surfaced. */
++}
++
++static void tool_clients(sbuf_t *s)
++{
++	sb_puts(s, "{\"arp\":");
++	{ sbuf_t t; sb_init(&t); sb_addfile(&t, "/proc/net/arp", 8192); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, ",\"dhcp_leases\":");
++	{ sbuf_t t; sb_init(&t); sb_addfile(&t, "/var/lib/misc/dnsmasq.leases", 8192); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, "}");
++}
++
++static void tool_qos(sbuf_t *s)
++{
++	int first = 1;
++	static const char *keys[] = { "qos_enable", "qos_type", "qos_ibw", "qos_obw", "qos_bw_rulelist", NULL };
++	int i;
++	sb_puts(s, "{\"config\":{");
++	for (i = 0; keys[i]; i++)
++		sb_nv_pair(s, keys[i], &first);
++	sb_puts(s, "},\"stats_hint\":\"per-class live counters via Reaper_QoS.asp / reaper_qos_stats.cgi when qos_type=11\"}");
++}
++
++static void tool_traffic(sbuf_t *s, const char *win)
++{
++	static const char *wins[] = { "live", "m5", "hour", "day", "month", NULL };
++	const char *want = "live";
++	char path[64];
++	int i;
++	for (i = 0; wins[i]; i++)
++		if (win && !strcmp(win, wins[i])) { want = wins[i]; break; }
++	snprintf(path, sizeof(path), "/tmp/rtraf/%s.json", want);
++	sb_addfile(s, path, 200 * 1024);
++}
++
++static void tool_firewall(sbuf_t *s)
++{
++	sb_puts(s, "{\"filter\":");
++	{ sbuf_t t; sb_init(&t); sb_addcmd(&t, "iptables -S 2>/dev/null", 32768); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, ",\"nat_forwards\":");
++	{ sbuf_t t; sb_init(&t); sb_addcmd(&t, "iptables -t nat -S 2>/dev/null | grep -Ei 'DNAT|VSERVER|dport'", 16384); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, "}");
++}
++
++static void tool_nvram(sbuf_t *s)
++{
++	int i, first = 1;
++	sb_puts(s, "{");
++	for (i = 0; NV_WHITELIST[i]; i++)
++		sb_nv_pair(s, NV_WHITELIST[i], &first);
++	sb_puts(s, "}");
++}
++
++static void tool_logs(sbuf_t *s)
++{
++	/* syslog tail; redact anything that looks like a secret assignment */
++	sb_addcmd(s, "tail -n 200 /tmp/syslog.log 2>/dev/null | "
++		"sed -E 's/(psk|password|passwd|key|secret|token)=[^ ]+/\\1=<redacted>/Ig'",
++		48 * 1024);
++}
++
++static void tool_audit(sbuf_t *s)
++{
++	/* Composed posture snapshot - the AI's main entree. */
++	sb_puts(s, "{\"overview\":");   tool_overview(s);
++	sb_puts(s, ",\"wireless\":");   tool_wireless(s);
++	sb_puts(s, ",\"qos\":");        tool_qos(s);
++	sb_puts(s, ",\"firewall\":");   tool_firewall(s);
++	sb_puts(s, ",\"key_settings\":"); tool_nvram(s);
++	sb_puts(s, "}");
++}
++
++/* dispatch a tools/call by name; returns 0 if handled, -1 if unknown tool */
++static int run_tool(const char *name, struct json_object *args, sbuf_t *out)
++{
++	if (!strcmp(name, "get_overview"))        { tool_overview(out); return 0; }
++	if (!strcmp(name, "get_wireless_status")) { tool_wireless(out); return 0; }
++	if (!strcmp(name, "get_clients"))         { tool_clients(out); return 0; }
++	if (!strcmp(name, "get_qos"))             { tool_qos(out); return 0; }
++	if (!strcmp(name, "get_traffic")) {
++		struct json_object *w = NULL;
++		const char *win = NULL;
++		if (args && json_object_object_get_ex(args, "window", &w))
++			win = json_object_get_string(w);
++		tool_traffic(out, win);
++		return 0;
++	}
++	if (!strcmp(name, "get_firewall_summary")) { tool_firewall(out); return 0; }
++	if (!strcmp(name, "get_nvram"))            { tool_nvram(out); return 0; }
++	if (!strcmp(name, "get_logs"))             { tool_logs(out); return 0; }
++	if (!strcmp(name, "get_settings_audit"))   { tool_audit(out); return 0; }
++	return -1;
++}
++
++/* the tools/list catalog (static JSON) */
++static const char *TOOLS_CATALOG =
++"["
++"{\"name\":\"get_overview\",\"description\":\"Router model, firmware, uptime, load, memory.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_wireless_status\",\"description\":\"Per-radio SSID, security MODE (never the PSK), channel, width.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_clients\",\"description\":\"Connected clients from ARP and DHCP leases.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_qos\",\"description\":\"QoS engine, type, and bandwidth configuration.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_traffic\",\"description\":\"Traffic Analyzer snapshot for a window.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"string\",\"enum\":[\"live\",\"m5\",\"hour\",\"day\",\"month\"]}}}},"
++"{\"name\":\"get_firewall_summary\",\"description\":\"iptables filter rules and NAT forwards summary.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_nvram\",\"description\":\"Curated non-secret configuration keys (secrets are never included).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_logs\",\"description\":\"Recent system log lines, secrets redacted.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_settings_audit\",\"description\":\"Composed security-posture snapshot for auditing and explanation.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"
++"]";
++
++/* ------------------------------------------------------------------ */
++/* HTTP + JSON-RPC                                                     */
++/* ------------------------------------------------------------------ */
++
++static void http_send(int fd, int code, const char *status, const char *body, size_t blen)
++{
++	char hdr[256];
++	int n = snprintf(hdr, sizeof(hdr),
++		"HTTP/1.1 %d %s\r\n"
++		"Content-Type: application/json\r\n"
++		"Content-Length: %zu\r\n"
++		"Connection: close\r\n"
++		"\r\n", code, status, blen);
++	if (n > 0) write(fd, hdr, n);
++	if (body && blen) write(fd, body, blen);
++}
++
++static void http_error(int fd, int code, const char *status, const char *msg)
++{
++	char body[256];
++	int n = snprintf(body, sizeof(body), "{\"error\":%s}", "\"err\"");
++	(void)msg;
++	http_send(fd, code, status, body, n > 0 ? (size_t)n : 0);
++}
++
++/* Build a JSON-RPC result envelope wrapping a tools/call text content. */
++static void send_rpc_result_raw(int fd, struct json_object *id, const char *raw_json_result)
++{
++	sbuf_t o;
++	sb_init(&o);
++	sb_puts(&o, "{\"jsonrpc\":\"2.0\",\"id\":");
++	sb_puts(&o, id ? json_object_to_json_string(id) : "null");
++	sb_puts(&o, ",\"result\":");
++	sb_puts(&o, raw_json_result);
++	sb_puts(&o, "}");
++	http_send(fd, 200, "OK", o.p ? o.p : "{}", o.len);
++	sb_free(&o);
++}
++
++static void send_rpc_error(int fd, struct json_object *id, int code, const char *message)
++{
++	sbuf_t o;
++	sb_init(&o);
++	sb_puts(&o, "{\"jsonrpc\":\"2.0\",\"id\":");
++	sb_puts(&o, id ? json_object_to_json_string(id) : "null");
++	sb_printf(&o, ",\"error\":{\"code\":%d,\"message\":", code);
++	sb_json_str(&o, message);
++	sb_puts(&o, "}}");
++	http_send(fd, 200, "OK", o.p ? o.p : "{}", o.len);
++	sb_free(&o);
++}
++
++static void handle_rpc(int fd, const char *body)
++{
++	struct json_object *root, *jid = NULL, *jmethod = NULL, *jparams = NULL;
++	const char *method;
++
++	root = json_tokener_parse(body);
++	if (!root) { http_error(fd, 400, "Bad Request", "parse"); return; }
++
++	json_object_object_get_ex(root, "id", &jid);
++	json_object_object_get_ex(root, "method", &jmethod);
++	json_object_object_get_ex(root, "params", &jparams);
++	method = jmethod ? json_object_get_string(jmethod) : "";
++
++	if (!strcmp(method, "initialize")) {
++		sbuf_t r; sb_init(&r);
++		sb_puts(&r, "{\"protocolVersion\":\"" PROTO_VER "\","
++			"\"capabilities\":{\"tools\":{}},"
++			"\"serverInfo\":{\"name\":\"reaper-advisor\",\"version\":\"1.0\"},"
++			"\"instructions\":\"Read-only Reaper router advisor. All tools are read-only; "
++			"recommend changes for the human to apply. Secrets are never exposed.\"}");
++		send_rpc_result_raw(fd, jid, r.p ? r.p : "{}");
++		sb_free(&r);
++	} else if (!strcmp(method, "ping")) {
++		send_rpc_result_raw(fd, jid, "{}");
++	} else if (!strncmp(method, "notifications/", 14)) {
++		/* JSON-RPC notification - no id, no response body expected */
++		http_send(fd, 202, "Accepted", "", 0);
++	} else if (!strcmp(method, "tools/list")) {
++		sbuf_t r; sb_init(&r);
++		sb_puts(&r, "{\"tools\":");
++		sb_puts(&r, TOOLS_CATALOG);
++		sb_puts(&r, "}");
++		send_rpc_result_raw(fd, jid, r.p ? r.p : "{}");
++		sb_free(&r);
++	} else if (!strcmp(method, "tools/call")) {
++		struct json_object *jname = NULL, *jargs = NULL;
++		const char *tname;
++		sbuf_t tout, r;
++		if (!jparams || !json_object_object_get_ex(jparams, "name", &jname)) {
++			send_rpc_error(fd, jid, -32602, "missing tool name");
++			json_object_put(root);
++			return;
++		}
++		json_object_object_get_ex(jparams, "arguments", &jargs);
++		tname = json_object_get_string(jname);
++		sb_init(&tout);
++		if (run_tool(tname, jargs, &tout) != 0) {
++			send_rpc_error(fd, jid, -32601, "unknown tool");
++			sb_free(&tout);
++			json_object_put(root);
++			return;
++		}
++		syslog(LOG_NOTICE, "rmcpd: tools/call %s (%zu bytes%s)",
++			tname, tout.len, tout.truncated ? ", truncated" : "");
++		/* wrap the tool text as MCP content */
++		sb_init(&r);
++		sb_puts(&r, "{\"content\":[{\"type\":\"text\",\"text\":");
++		sb_json_str(&r, tout.p ? tout.p : "");
++		sb_puts(&r, "}],\"isError\":false}");
++		send_rpc_result_raw(fd, jid, r.p ? r.p : "{}");
++		sb_free(&r);
++		sb_free(&tout);
++	} else {
++		send_rpc_error(fd, jid, -32601, "method not found");
++	}
++	json_object_put(root);
++}
++
++/* returns 1 if the request carried the correct Bearer token */
++static int check_auth(const char *headers)
++{
++	const char *h = strcasestr(headers, "\nauthorization:");
++	const char *b;
++	char got[128];
++	size_t i = 0;
++	if (!h) return 0;
++	h += 15;
++	while (*h == ' ' || *h == '\t') h++;
++	if (strncasecmp(h, "bearer ", 7)) return 0;
++	b = h + 7;
++	while (*b && *b != '\r' && *b != '\n' && i < sizeof(got) - 1)
++		got[i++] = *b++;
++	got[i] = 0;
++	/* length-first compare to keep it simple; token is 128-bit random hex */
++	if (strlen(got) != strlen(g_token)) return 0;
++	return strcmp(got, g_token) == 0 ? 1 : 0;
++}
++
++static void serve_conn(int fd)
++{
++	char *req = malloc(REQ_MAX + 1);
++	size_t total = 0;
++	ssize_t n;
++	char *hdr_end, *body;
++	long clen = 0;
++	const char *cl;
++
++	if (!req) { close(fd); return; }
++
++	/* read headers (and whatever body arrives with them) */
++	while (total < REQ_MAX) {
++		n = read(fd, req + total, REQ_MAX - total);
++		if (n <= 0) break;
++		total += n;
++		req[total] = 0;
++		if (strstr(req, "\r\n\r\n")) {
++			/* have full header block; check if we still need more body */
++			hdr_end = strstr(req, "\r\n\r\n");
++			cl = strcasestr(req, "\ncontent-length:");
++			if (cl) clen = strtol(cl + 16, NULL, 10);
++			if (clen < 0) clen = 0;
++			if ((size_t)((hdr_end + 4) - req) + (size_t)clen <= total)
++				break;
++		}
++	}
++	req[total] = 0;
++
++	hdr_end = strstr(req, "\r\n\r\n");
++	if (!hdr_end) { http_error(fd, 400, "Bad Request", "hdr"); free(req); close(fd); return; }
++
++	/* method + path: only POST /mcp is served */
++	if (strncmp(req, "POST ", 5) || !strstr(req, " /mcp")) {
++		http_error(fd, 404, "Not Found", "path");
++		free(req); close(fd); return;
++	}
++
++	if (!check_auth(req)) {
++		if (++g_badauth >= MAX_BADAUTH) {
++			syslog(LOG_CRIT, "rmcpd: %d bad tokens - self-terminating", g_badauth);
++			g_stop = 1;
++		}
++		http_error(fd, 401, "Unauthorized", "auth");
++		free(req); close(fd); return;
++	}
++	g_badauth = 0;
++
++	body = hdr_end + 4;
++	handle_rpc(fd, body);
++	free(req);
++	close(fd);
++}
++
++/* ------------------------------------------------------------------ */
++/* main                                                                */
++/* ------------------------------------------------------------------ */
++
++int main(int argc, char **argv)
++{
++	int ls;
++	struct sockaddr_in sa;
++	int one = 1;
++	char *pv;
++
++	(void)argc; (void)argv;
++	openlog("rmcpd", 0, LOG_DAEMON);
++
++	if (load_session() != 0) {
++		syslog(LOG_ERR, "rmcpd: no valid armed session - refusing to start");
++		return 1;
++	}
++	sanitize_client_ip();
++
++	snprintf(g_lan_ip, sizeof(g_lan_ip), "%s", nvram_safe_get("lan_ipaddr"));
++	if (!g_lan_ip[0]) {
++		syslog(LOG_ERR, "rmcpd: no lan_ipaddr - refusing to start");
++		return 1;
++	}
++	pv = nvram_safe_get("rmcp_port");
++	if (pv && *pv) {
++		int p = atoi(pv);
++		if (p >= 1024 && p <= 65535) g_port = p;
++	}
++
++	signal(SIGTERM, on_signal);
++	signal(SIGINT,  on_signal);
++	signal(SIGPIPE, SIG_IGN);
++
++	ls = socket(AF_INET, SOCK_STREAM, 0);
++	if (ls < 0) { syslog(LOG_ERR, "rmcpd: socket: %m"); return 1; }
++	setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
++
++	memset(&sa, 0, sizeof(sa));
++	sa.sin_family = AF_INET;
++	sa.sin_port = htons(g_port);
++	/* LAN-ONLY: bind the LAN address explicitly, never INADDR_ANY */
++	if (inet_aton(g_lan_ip, &sa.sin_addr) != 1) {
++		syslog(LOG_ERR, "rmcpd: bad lan_ipaddr %s", g_lan_ip);
++		close(ls);
++		return 1;
++	}
++	if (bind(ls, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
++		syslog(LOG_ERR, "rmcpd: bind %s:%d: %m", g_lan_ip, g_port);
++		close(ls);
++		return 1;
++	}
++	if (listen(ls, 4) < 0) {
++		syslog(LOG_ERR, "rmcpd: listen: %m");
++		close(ls);
++		return 1;
++	}
++
++	fence_rule("-I");
++	g_added_rule = 1;
++	atexit(cleanup);
++
++	syslog(LOG_NOTICE, "rmcpd: armed, read-only advisor on %s:%d, session ends in %ld min",
++		g_lan_ip, g_port, (long)((g_expiry - time(NULL)) / 60));
++
++	while (!g_stop) {
++		fd_set rf;
++		struct timeval tv;
++		int r;
++		time_t now = time(NULL);
++
++		if (now >= g_expiry) {
++			syslog(LOG_NOTICE, "rmcpd: session expired - locking the door");
++			break;
++		}
++		FD_ZERO(&rf);
++		FD_SET(ls, &rf);
++		tv.tv_sec = TICK_SECS;
++		tv.tv_usec = 0;
++		r = select(ls + 1, &rf, NULL, NULL, &tv);
++		if (r < 0) {
++			if (errno == EINTR) continue;
++			break;
++		}
++		if (r == 0) continue;
++		if (FD_ISSET(ls, &rf)) {
++			struct sockaddr_in ca;
++			socklen_t cl = sizeof(ca);
++			int cfd = accept(ls, (struct sockaddr *)&ca, &cl);
++			if (cfd < 0) continue;
++			/* defense in depth atop iptables: enforce client pin here too */
++			if (g_client_ip[0]) {
++				char peer[32];
++				snprintf(peer, sizeof(peer), "%s", inet_ntoa(ca.sin_addr));
++				if (strcmp(peer, g_client_ip)) { close(cfd); continue; }
++			}
++			serve_conn(cfd);
++		}
++	}
++
++	close(ls);
++	cleanup();
++	syslog(LOG_NOTICE, "rmcpd: stopped");
++	closelog();
++	return 0;
++}
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index a884537031..022f4abd18 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3086,6 +3086,19 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "rtraf_path", "", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* history store: "" = RAM, "jffs", "usb" (rstats_path-style choice) */
+ 	{ "rtraf_probe", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* opt-in WAN latency probe target (empty = off; no forced outbound) */
+ 	{ "rtraf_cap_gb", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* monthly WAN quota in GB (0 = off); warns via syslog at 80/100% */
++
++	/* reaper v1.4.0: read-only LAN MCP advisor (rmcpd). No runtime enable flag by
++	 * design - the daemon runs ONLY while an armed session file exists in /tmp, so
++	 * a reboot always comes up dark. These persist ONLY the provisioning config:
++	 * the arming code is stored as salt + PBKDF2-HMAC-SHA256 hash (the code itself
++	 * lives off-box), the LAN port, and the session timeout. No secret is stored. */
++	{ "rmcp_port", "5199", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* LAN listen port (1024-65535) */
++	{ "rmcp_timeout", "60", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* arming session timeout, minutes (15-240) */
++	{ "rmcp_code_salt", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* hex salt for the arming-code KDF */
++	{ "rmcp_code_hash", "", CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* PBKDF2-HMAC-SHA256 of the arming code (hex); code never stored */
++	{ "rmcp_client", "", CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* optional single-client IP pin (empty = any LAN host) */
++	{ "rmcp_fails", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* arming-code failure counter (lockout after 5) */
++	{ "rmcp_lock_until", "0", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* epoch until which arming is locked */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 04cbed7607..fd70b939e4 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -272,6 +272,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+       <a href="/reaper_shell.asp#ParentalControl.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg></span><span class="nl">Parental Controls</span></a>
+       <a href="/reaper_shell.asp#Reaper_QoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl">Traffic Manager</span></a>
+       <a href="/reaper_shell.asp#Reaper_Traffic.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl">Traffic Analyzer</span></a>
++      <a href="/reaper_shell.asp#Reaper_Advisor.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 1 5 5c0 2-1 3-2 4s-1 2-1 3H10c0-1 0-2-1-3S7 10 7 8a5 5 0 0 1 5-5z"/><path d="M10 20h4"/></svg></span><span class="nl">AI Advisor</span></a>
+       <a href="/reaper_shell.asp#Main_GameServer_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg></span><span class="nl">Open NAT</span></a>
+       <a href="/reaper_shell.asp#APP_Installation.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg></span><span class="nl">USB Application</span></a>
+       <a href="/reaper_shell.asp#Tools_Sysinfo.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span class="nl">System Info</span></a>
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+new file mode 100644
+index 0000000000..d7622f0938
+--- /dev/null
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -0,0 +1,264 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; AI Advisor</title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line-soft:rgba(255,255,255,.06); --line:rgba(225,6,0,.16);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;padding:22px 26px 60px}
++h1,h2,h3,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++a{color:var(--bone-dim)} a:hover{color:var(--bone)}
++.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:8px;flex-wrap:wrap}
++.pagehead h1{font-size:24px;font-weight:700}
++.spacer{flex:1}
++.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
++  padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
++.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--steel)}
++.pill.armed .dot{background:var(--jade);box-shadow:0 0 8px var(--jade)}
++.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
++  font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;padding:9px 16px;cursor:pointer;text-transform:uppercase}
++.btn:hover{border-color:var(--line)}
++.btn.primary{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++.btn.ghost{background:transparent}
++.btn:disabled{opacity:.4;cursor:not-allowed}
++.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:18px 20px;margin-bottom:16px;max-width:820px}
++.panel h2{font-size:17px;font-weight:700;margin-bottom:4px}
++.panel .sub{font-size:12.5px;color:var(--steel);margin-bottom:14px}
++.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
++label.fld{display:block;font-size:12px;color:var(--bone-dim);margin-bottom:5px}
++input[type=text],input[type=password],input[type=number]{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:8px;
++  color:var(--bone);font-family:var(--body);font-size:14px;padding:9px 12px;min-width:240px}
++input:focus{outline:none;border-color:var(--line)}
++.note{font-size:12.5px;line-height:1.55}
++.banner{border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,rgba(225,6,0,.06),transparent);
++  padding:14px 16px;margin-bottom:18px;max-width:820px}
++.banner ul{margin:8px 0 0;padding-left:18px}
++.banner li{margin:3px 0;font-size:12.5px}
++.creds{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px;padding:12px 14px;margin-top:12px}
++.creds .k{font-size:11px;color:var(--steel);text-transform:uppercase;letter-spacing:.1em}
++.creds .v{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--bone);word-break:break-all;margin:2px 0 10px}
++pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px;padding:12px 14px;overflow-x:auto;
++  font-size:12px;color:var(--bone-dim);white-space:pre;max-width:100%}
++.count{font-family:var(--hdr);font-size:15px;color:var(--amber)}
++.msg{font-size:12.5px;margin-top:8px;min-height:16px}
++.msg.err{color:var(--crimson)}
++.msg.ok{color:var(--jade)}
++.hide{display:none!important}
++.hr{height:1px;background:var(--line-soft);margin:16px 0;border:0}
++.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
++@media(max-width:680px){.grid2{grid-template-columns:1fr}}
++</style>
++</head>
++<body>
++<div class="pagehead">
++  <div class="eyebrow">Reaper</div>
++  <h1>AI Advisor</h1>
++  <span id="statePill" class="pill"><span class="dot"></span><span id="stateTxt">Dark</span></span>
++  <div class="spacer"></div>
++  <button class="btn ghost" onclick="loadStatus()">Refresh</button>
++</div>
++
++<div class="banner note">
++  A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
++  configuration and traffic to audit and explain it &mdash; nothing more.
++  <ul>
++    <li><b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.</li>
++    <li><b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.</li>
++    <li><b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.</li>
++    <li><b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.</li>
++    <li><b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.</li>
++    <li><b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.</li>
++  </ul>
++</div>
++
++<!-- PROVISION -->
++<div class="panel">
++  <h2>1 &middot; Arming code</h2>
++  <div class="sub">A second factor stored only as a one-way hash. Keep the code in your password manager; the router never keeps the code itself.</div>
++  <div id="provState" class="note"></div>
++  <div class="row" id="oldRow" style="display:none">
++    <div>
++      <label class="fld" for="oldcode">Current code (required to rotate)</label>
++      <input type="password" id="oldcode" autocomplete="off" placeholder="current arming code">
++    </div>
++  </div>
++  <div class="row">
++    <div>
++      <label class="fld" for="code">Set / rotate arming code (min 12 chars)</label>
++      <input type="text" id="code" autocomplete="off" spellcheck="false" placeholder="paste or generate">
++    </div>
++    <button class="btn" onclick="genCode()">Generate</button>
++    <button class="btn primary" onclick="provision()">Save code</button>
++    <button class="btn ghost" onclick="deprovision()">Clear</button>
++  </div>
++  <div id="provMsg" class="msg"></div>
++</div>
++
++<!-- SETTINGS -->
++<div class="panel">
++  <h2>2 &middot; Settings</h2>
++  <div class="sub">Applied on save. The daemon reads these when you arm.</div>
++  <div class="grid2">
++    <div><label class="fld" for="port">LAN port (1024&ndash;65535)</label><input type="number" id="port" min="1024" max="65535"></div>
++    <div><label class="fld" for="timeout">Session timeout (15&ndash;240 min)</label><input type="number" id="timeout" min="15" max="240"></div>
++    <div><label class="fld" for="client">Pin to one client IP (optional)</label><input type="text" id="client" placeholder="e.g. 192.168.50.20 (blank = any LAN host)"></div>
++  </div>
++  <div class="row"><button class="btn" onclick="saveSettings()">Save settings</button></div>
++  <div id="setMsg" class="msg"></div>
++</div>
++
++<!-- ARM -->
++<div class="panel">
++  <h2>3 &middot; Arm the advisor</h2>
++  <div class="sub">Opens the door for one timed session. The door locks itself when the timer ends or you disable it.</div>
++  <div class="row">
++    <div><label class="fld" for="armcode">Arming code</label><input type="password" id="armcode" autocomplete="off" placeholder="your code"></div>
++    <button class="btn primary" id="armBtn" onclick="arm()">Arm</button>
++    <button class="btn ghost" id="disarmBtn" onclick="disarm()">Disable now</button>
++  </div>
++  <div id="armMsg" class="msg"></div>
++
++  <div id="armedBox" class="creds hide">
++    <div class="k">Session ends in</div><div class="v"><span id="countdown" class="count">&mdash;</span></div>
++    <div class="k">Endpoint (MCP, Streamable HTTP)</div><div class="v" id="epUrl">&mdash;</div>
++    <div class="k">Bearer token (shown once)</div><div class="v" id="epTok">&mdash;</div>
++    <hr class="hr">
++    <div class="k">Claude Desktop config snippet</div>
++    <pre class="snip" id="snip">&mdash;</pre>
++    <button class="btn" onclick="copySnip()">Copy snippet</button>
++    <div class="note" style="margin-top:10px;color:var(--steel)">
++      Point your AI client at the endpoint with this token. Some clients need the
++      <span class="mono">mcp-remote</span> bridge for plain HTTP MCP servers.
++    </div>
++  </div>
++</div>
++
++<script>
++var CGI = '/reaper_mcp.cgi';
++var lastToken = '', endExpiry = 0, ticker = null, provisionedNow = false;
++
++function esc(s){return (s==null?'':(''+s)).replace(/[<>&"]/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c];});}
++function post(action, params){
++  var body = 'action=' + encodeURIComponent(action);
++  if(params) for(var k in params) body += '&' + k + '=' + encodeURIComponent(params[k]);
++  return fetch(CGI, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body})
++    .then(function(r){return r.text();}).then(function(t){ try{return JSON.parse(t);}catch(e){return {ok:0,error:'bad response'};} });
++}
++
++function setMsg(id, text, cls){ var e=document.getElementById(id); e.textContent=text||''; e.className='msg'+(cls?(' '+cls):''); }
++
++function fmtLeft(sec){ if(sec<0)sec=0; var m=Math.floor(sec/60), s=sec%60; return m+'m '+(s<10?'0':'')+s+'s'; }
++
++function loadStatus(){
++  post('status').then(function(d){
++    var pill=document.getElementById('statePill'), txt=document.getElementById('stateTxt');
++    if(d.armed){ pill.className='pill armed'; txt.textContent='Armed'; endExpiry=d.expiry; startTicker(); document.getElementById('armedBox').classList.remove('hide'); }
++    else { pill.className='pill'; txt.textContent='Dark'; document.getElementById('armedBox').classList.add('hide'); stopTicker(); }
++    document.getElementById('provState').innerHTML = d.provisioned
++      ? '<span style="color:var(--jade)">An arming code is set.</span> Rotating it requires the current code.'
++      : '<span style="color:var(--amber)">No arming code yet.</span> Set one before you can arm.';
++    document.getElementById('oldRow').style.display = d.provisioned ? '' : 'none';
++    provisionedNow = !!d.provisioned;
++    if(d.port) document.getElementById('port').value=d.port;
++    if(d.timeout) document.getElementById('timeout').value=d.timeout;
++    document.getElementById('armBtn').disabled = !d.provisioned || (d.locked?true:false);
++    if(d.locked) setMsg('armMsg','Arming is temporarily locked after repeated wrong codes.','err');
++  });
++}
++
++function genCode(){
++  var a=new Uint8Array(16); (crypto||window.crypto).getRandomValues(a);
++  var abc='0123456789ABCDEFGHJKMNPQRSTVWXYZ', out='';
++  for(var i=0;i<a.length;i++){ out+=abc[a[i]&31]; if(i%4===3 && i<a.length-1) out+='-'; }
++  document.getElementById('code').value=out;
++}
++
++function provision(){
++  var code=document.getElementById('code').value.trim();
++  if(code.length<12){ setMsg('provMsg','Code must be at least 12 characters.','err'); return; }
++  var p={code:code};
++  if(provisionedNow){
++    var oc=document.getElementById('oldcode').value;
++    if(!oc){ setMsg('provMsg','Enter the current code to rotate.','err'); return; }
++    p.oldcode=oc;
++  }
++  post('provision',p).then(function(d){
++    if(d.ok){ setMsg('provMsg','Saved. Store this code safely - it is not recoverable from the router.','ok'); document.getElementById('code').value=''; document.getElementById('oldcode').value=''; loadStatus(); }
++    else setMsg('provMsg', d.error||'Failed.', 'err');
++  });
++}
++
++function deprovision(){
++  if(!confirm('Clear the arming code and disable the advisor?')) return;
++  post('deprovision').then(function(d){ setMsg('provMsg', d.ok?'Cleared.':'Failed.', d.ok?'ok':'err'); loadStatus(); });
++}
++
++function saveSettings(){
++  var port=parseInt(document.getElementById('port').value,10);
++  var to=parseInt(document.getElementById('timeout').value,10);
++  var cl=document.getElementById('client').value.trim();
++  if(!(port>=1024&&port<=65535)){ setMsg('setMsg','Port must be 1024-65535.','err'); return; }
++  if(!(to>=15&&to<=240)){ setMsg('setMsg','Timeout must be 15-240 minutes.','err'); return; }
++  var f=new FormData();
++  f.append('action_mode','apply'); f.append('rmcp_port',''+port); f.append('rmcp_timeout',''+to); f.append('rmcp_client',cl);
++  fetch('/applyapp.cgi',{method:'POST',body:new URLSearchParams(f)}).then(function(){ setMsg('setMsg','Saved.','ok'); });
++}
++
++function arm(){
++  var code=document.getElementById('armcode').value;
++  if(!code){ setMsg('armMsg','Enter your arming code.','err'); return; }
++  setMsg('armMsg','Arming...','');
++  post('arm',{code:code}).then(function(d){
++    document.getElementById('armcode').value='';
++    if(!d.ok){ setMsg('armMsg', d.error||'Arming failed.', 'err'); loadStatus(); return; }
++    setMsg('armMsg','Armed. The door is open until the timer ends.','ok');
++    lastToken=d.token; endExpiry=d.expiry;
++    document.getElementById('epUrl').textContent=d.url;
++    document.getElementById('epTok').textContent=d.token;
++    document.getElementById('snip').textContent=buildSnip(d.url,d.token);
++    document.getElementById('armedBox').classList.remove('hide');
++    startTicker(); loadStatus();
++  });
++}
++
++function disarm(){ post('disarm').then(function(){ setMsg('armMsg','Disabled. The door is locked.','ok'); lastToken=''; loadStatus(); }); }
++
++function buildSnip(url,tok){
++  return '{\n  "mcpServers": {\n    "reaper-router": {\n      "url": "'+url+'",\n      "headers": { "Authorization": "Bearer '+tok+'" }\n    }\n  }\n}';
++}
++function copySnip(){ var t=document.getElementById('snip').textContent; if(navigator.clipboard) navigator.clipboard.writeText(t); }
++
++function startTicker(){ stopTicker(); ticker=setInterval(tick,1000); tick(); }
++function stopTicker(){ if(ticker){clearInterval(ticker);ticker=null;} }
++function tick(){
++  var left=endExpiry-Math.floor(Date.now()/1000);
++  document.getElementById('countdown').textContent=fmtLeft(left);
++  if(left<=0){ stopTicker(); loadStatus(); }
++}
++
++loadStatus();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 80f489fa3d..3339a54554 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -133,7 +133,16 @@ define(function(){
+ 					{url: "TrafficAnalyzer_Statistic.asp", tabName: "<#Statistic#>"},
+ 					{url: "AdaptiveQoS_TrafficLimiter.asp", tabName: "Traffic Limiter"},
+                                         {url: "NULL", tabName: "__INHERIT__"}
+-				] 
++				]
++			},
++			/* reaper v1.4.0: read-only AI Advisor (LAN MCP). Off by default, armed by the user. */
++			{
++				menuName: "AI Advisor",
++				index: "menu_ReaperAdvisor",
++				tab: [
++					{url: "Reaper_Advisor.asp", tabName: "AI Advisor"},
++					{url: "NULL", tabName: "__INHERIT__"}
++				]
+ 			},
+ 			{
+ 				menuName: "<#Game_Boost#>",
+-- 
+2.25.1
+

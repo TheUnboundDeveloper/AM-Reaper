@@ -1,0 +1,418 @@
+From dc87b43db16617e2c10b0942b7f070b3ba0ad2b6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 14:05:00 -0400
+Subject: [PATCH] reaper v1.4.1: AI Advisor Mode B (optional USB key) + clean
+ two-build split
+
+MODE B - optional USB physical key, additive to the arming code (never a
+replacement). Off unless the user enrolls one.
+- Enroll: router generates a 256-bit reaper.key onto the inserted stick and
+  stores only its SHA-256 (rmcp_usb_hash); the key lives on the stick.
+- Arm: when enrolled, arming also requires the matching stick present; the
+  matched keyfile path is written into the session file.
+- Removal locks the door: rmcpd stats the keyfile each tick and self-kills
+  the instant the stick is pulled (mount vanishes). No hotplug wiring.
+- httpd: usb_enroll/usb_unenroll actions + arm-time key check + status flag;
+  GUI gains an optional USB-key card. nvram rmcp_usb_enable/rmcp_usb_hash.
+
+TWO-BUILD SPLIT COMPLETENESS - the without-MCP image must carry ZERO MCP
+trace, so close the non-C gaps left in v1.4.0:
+- shared/defaults.c: the rmcp_* nvram block is now inside
+  #ifdef RTCONFIG_REAPER_MCP (was unconditional).
+- www/Makefile: when RTCONFIG_REAPER_MCP is off, delete Reaper_Advisor.asp
+  and strip the AI-Advisor menu entry (menuTree.js, JS-comment markers) and
+  the dashboard rail link (Main_ReaperDash.asp, matched by href - the
+  minifier strips HTML comments so marker-based ranges do not survive there).
+Verified by a full flag-off build: no rmcpd binary, no Advisor page, zero
+menu/rail/rc/httpd/nvram MCP references, flag #undef in the header.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/web.c                | 130 +++++++++++++++++-
+ release/src/router/rmcpd/rmcpd.c              |  11 ++
+ release/src/router/shared/defaults.c          |  12 +-
+ release/src/router/www/Makefile               |  13 ++
+ release/src/router/www/Reaper_Advisor.asp     |  32 ++++-
+ .../router/www/require/menuTrees/menuTree.js  |   5 +-
+ 7 files changed, 195 insertions(+), 10 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 999b19dcee..cb612caba4 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.0
++EXTENDNO=Reaper_v1.4.1
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index d7e315d098..8fd1ea8228 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21742,6 +21742,64 @@ static int rmcp_kdf(const char *code, const unsigned char *salt, int saltlen, ch
+ 	return 0;
+ }
+ 
++/* Mode B (optional USB key) helpers. SHA-256 a file -> hex (64 chars). */
++static int rmcp_sha256_file(const char *path, char *hexout)
++{
++	FILE *f = fopen(path, "rb");
++	EVP_MD_CTX *ctx;
++	unsigned char buf[4096], md[32];
++	unsigned int mdlen = 0;
++	size_t n;
++	if (!f) return -1;
++	if (!(ctx = EVP_MD_CTX_new())) { fclose(f); return -1; }
++	EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
++	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++		EVP_DigestUpdate(ctx, buf, n);
++	EVP_DigestFinal_ex(ctx, md, &mdlen);
++	EVP_MD_CTX_free(ctx);
++	fclose(f);
++	rmcp_hex(md, 32, hexout);
++	return 0;
++}
++
++/* first writable /tmp/mnt/<vol> mountpoint (where we can drop the keyfile) */
++static int rmcp_usb_writable_dir(char *out, size_t outsz)
++{
++	DIR *d = opendir("/tmp/mnt");
++	struct dirent *e;
++	if (!d) return -1;
++	while ((e = readdir(d))) {
++		char p[288];
++		if (e->d_name[0] == '.') continue;
++		snprintf(p, sizeof(p), "/tmp/mnt/%s", e->d_name);
++		if (access(p, W_OK) == 0) { snprintf(out, outsz, "%s", p); closedir(d); return 0; }
++	}
++	closedir(d);
++	return -1;
++}
++
++/* scan mounted USB volumes for a reaper.key whose SHA-256 == wanthash */
++static int rmcp_usb_find_key(const char *wanthash, char *out, size_t outsz)
++{
++	DIR *d = opendir("/tmp/mnt");
++	struct dirent *e;
++	int found = -1;
++	if (!d) return -1;
++	while ((e = readdir(d)) != NULL && found != 0) {
++		char kp[300], h[80];
++		if (e->d_name[0] == '.') continue;
++		snprintf(kp, sizeof(kp), "/tmp/mnt/%s/reaper.key", e->d_name);
++		if (access(kp, R_OK) != 0) continue;
++		if (rmcp_sha256_file(kp, h) == 0 && strlen(h) == strlen(wanthash) &&
++		    CRYPTO_memcmp(h, wanthash, strlen(wanthash)) == 0) {
++			snprintf(out, outsz, "%s", kp);
++			found = 0;
++		}
++	}
++	closedir(d);
++	return found;
++}
++
+ static void
+ do_reaper_mcp_cgi(char *url, FILE *stream)
+ {
+@@ -21763,13 +21821,15 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 				free(sess);
+ 			}
+ 		}
++		int usb_enrolled = (nvram_get_int("rmcp_usb_enable") == 1 &&
++				    nvram_safe_get("rmcp_usb_hash")[0] != 0);
+ 		websWrite(stream, "{\"provisioned\":%d,\"armed\":%d,\"expiry\":%ld,"
+ 			"\"now\":%ld,\"port\":%s,\"timeout\":%s,\"lan_ip\":\"%s\","
+-			"\"locked\":%d,\"lock_until\":%ld}",
++			"\"locked\":%d,\"lock_until\":%ld,\"usb_enrolled\":%d}",
+ 			provisioned, armed ? 1 : 0, expiry, (long)now,
+ 			nvram_safe_get("rmcp_port"), nvram_safe_get("rmcp_timeout"),
+ 			nvram_safe_get("lan_ipaddr"),
+-			(lock_until > now) ? 1 : 0, lock_until);
++			(lock_until > now) ? 1 : 0, lock_until, usb_enrolled);
+ 		return;
+ 	}
+ 
+@@ -21846,10 +21906,56 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	/* Mode B: enroll an OPTIONAL USB key as an additional arming factor. The
++	 * router generates the key, writes it to the stick, and keeps only its hash
++	 * - the key material lives on the stick, off the router (like the code). */
++	if (!strcmp(action, "usb_enroll")) {
++		char dir[288], kp[300], hexh[80];
++		unsigned char key[32];
++		FILE *kf;
++		if (rmcp_usb_writable_dir(dir, sizeof(dir)) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"no writable USB drive found - insert a USB stick first\"}");
++			return;
++		}
++		if (RAND_bytes(key, sizeof(key)) != 1) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"rng failure\"}");
++			return;
++		}
++		snprintf(kp, sizeof(kp), "%s/reaper.key", dir);
++		kf = fopen(kp, "wb");
++		if (!kf) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"cannot write to USB\"}");
++			return;
++		}
++		fchmod(fileno(kf), 0600);
++		fwrite(key, 1, sizeof(key), kf);
++		fclose(kf);
++		if (rmcp_sha256_file(kp, hexh) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"hash failure\"}");
++			return;
++		}
++		nvram_set("rmcp_usb_hash", hexh);
++		nvram_set("rmcp_usb_enable", "1");
++		nvram_commit();
++		logmessage("rmcpd", "USB key enrolled as optional 2nd arming factor");
++		websWrite(stream, "{\"ok\":1,\"volume\":\"%s\"}", dir);
++		return;
++	}
++
++	if (!strcmp(action, "usb_unenroll")) {
++		nvram_set("rmcp_usb_hash", "");
++		nvram_set("rmcp_usb_enable", "0");
++		nvram_commit();
++		logmessage("rmcpd", "USB key 2nd factor removed (code-only arming)");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
+ 	if (!strcmp(action, "arm")) {
+ 		char *code = get_cgi("code");
+ 		unsigned char salt[32], token[16];
+ 		char calc[80], tokhex[40];
++		char usbkey_line[320] = "";	/* Mode B: "usbkey=<path>\n" or empty */
+ 		const char *stored = nvram_safe_get("rmcp_code_hash");
+ 		int saltlen, fails, timeout;
+ 		FILE *sf;
+@@ -21886,6 +21992,18 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"incorrect code\",\"fails\":%d}", fails);
+ 			return;
+ 		}
++		/* Mode B: if a USB key is enrolled, it must be present to arm. Record the
++		 * matched keyfile path in the session so rmcpd can watch it and lock the
++		 * door the instant the stick is pulled. Code was already verified above;
++		 * this is the ADDITIONAL factor, never a replacement. */
++		if (nvram_get_int("rmcp_usb_enable") == 1) {
++			char kp[300];
++			if (rmcp_usb_find_key(nvram_safe_get("rmcp_usb_hash"), kp, sizeof(kp)) != 0) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"enrolled USB key not found - insert your key to arm\"}");
++				return;
++			}
++			snprintf(usbkey_line, sizeof(usbkey_line), "usbkey=%s\n", kp);
++		}
+ 		/* success: mint a session token and start the daemon */
+ 		nvram_set("rmcp_fails", "0");
+ 		nvram_set("rmcp_lock_until", "0");
+@@ -21905,12 +22023,14 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 			return;
+ 		}
+ 		fchmod(fileno(sf), 0600);
+-		fprintf(sf, "token=%s\nexpiry=%ld\nclient=%s\n",
+-			tokhex, (long)(now + timeout * 60), nvram_safe_get("rmcp_client"));
++		fprintf(sf, "token=%s\nexpiry=%ld\nclient=%s\n%s",
++			tokhex, (long)(now + timeout * 60), nvram_safe_get("rmcp_client"),
++			usbkey_line);
+ 		fclose(sf);
+ 
+ 		notify_rc("start_rmcp");
+-		logmessage("rmcpd", "advisor armed for %d minutes", timeout);
++		logmessage("rmcpd", "advisor armed for %d minutes%s", timeout,
++			usbkey_line[0] ? " (USB key required)" : "");
+ 		websWrite(stream, "{\"ok\":1,\"token\":\"%s\",\"lan_ip\":\"%s\",\"port\":%s,"
+ 			"\"expiry\":%ld,\"url\":\"http://%s:%s/mcp\"}",
+ 			tokhex, nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"),
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index e6fe0829af..edd4c22dca 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -71,6 +71,7 @@ static int   g_port = DEF_PORT;
+ static char  g_token[80] = "";
+ static time_t g_expiry = 0;
+ static int   g_badauth = 0;
++static char  g_usbkey[256] = "";	/* Mode B: enrolled keyfile path, or "" if code-only */
+ 
+ /* ------------------------------------------------------------------ */
+ /* lifecycle: iptables fence + cleanup                                 */
+@@ -136,6 +137,8 @@ static int load_session(void)
+ 			g_expiry = (time_t)strtoll(line + 7, NULL, 10);
+ 		else if (!strncmp(line, "client=", 7))
+ 			snprintf(g_client_ip, sizeof(g_client_ip), "%s", line + 7);
++		else if (!strncmp(line, "usbkey=", 7))
++			snprintf(g_usbkey, sizeof(g_usbkey), "%s", line + 7);
+ 	}
+ 	fclose(f);
+ 	if (!g_token[0] || g_expiry <= 0)
+@@ -751,6 +754,14 @@ int main(int argc, char **argv)
+ 			syslog(LOG_NOTICE, "rmcpd: session expired - locking the door");
+ 			break;
+ 		}
++		/* Mode B: if a USB key gated this session, its removal locks the door
++		 * immediately (pulling the stick unmounts it, so the keyfile vanishes).
++		 * Existence is the signal - the hash was proven at arm time; you cannot
++		 * remove the stick to clone/swap it without tripping this. */
++		if (g_usbkey[0] && access(g_usbkey, R_OK) != 0) {
++			syslog(LOG_CRIT, "rmcpd: USB key removed - locking the door");
++			break;
++		}
+ 		FD_ZERO(&rf);
+ 		FD_SET(ls, &rf);
+ 		tv.tv_sec = TICK_SECS;
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 022f4abd18..0d390c15af 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3087,11 +3087,14 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "rtraf_probe", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* opt-in WAN latency probe target (empty = off; no forced outbound) */
+ 	{ "rtraf_cap_gb", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* monthly WAN quota in GB (0 = off); warns via syslog at 80/100% */
+ 
++#ifdef RTCONFIG_REAPER_MCP
+ 	/* reaper v1.4.0: read-only LAN MCP advisor (rmcpd). No runtime enable flag by
+ 	 * design - the daemon runs ONLY while an armed session file exists in /tmp, so
+ 	 * a reboot always comes up dark. These persist ONLY the provisioning config:
+ 	 * the arming code is stored as salt + PBKDF2-HMAC-SHA256 hash (the code itself
+-	 * lives off-box), the LAN port, and the session timeout. No secret is stored. */
++	 * lives off-box), the LAN port, and the session timeout. No secret is stored.
++	 * GATED: the without-MCP build never carries these keys at all (owner rule:
++	 * the MCP-less image must have zero MCP trace, not a disabled remnant). */
+ 	{ "rmcp_port", "5199", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* LAN listen port (1024-65535) */
+ 	{ "rmcp_timeout", "60", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* arming session timeout, minutes (15-240) */
+ 	{ "rmcp_code_salt", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* hex salt for the arming-code KDF */
+@@ -3099,6 +3102,13 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "rmcp_client", "", CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* optional single-client IP pin (empty = any LAN host) */
+ 	{ "rmcp_fails", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* arming-code failure counter (lockout after 5) */
+ 	{ "rmcp_lock_until", "0", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* epoch until which arming is locked */
++	/* Mode B (optional USB physical key, v1.4.1): ADDS to the arming code, never
++	 * replaces it. Off unless the user enrolls a key. Only the keyfile's SHA-256
++	 * is stored; the key material lives on the stick. When enrolled, arming also
++	 * requires the stick present and rmcpd self-kills the instant it is removed. */
++	{ "rmcp_usb_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = USB key required to arm (opt-in) */
++	{ "rmcp_usb_hash", "", CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* SHA-256 (hex) of the enrolled keyfile; key itself lives on the stick */
++#endif
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index c4e1faf016..4c8c54770d 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -817,6 +817,19 @@ endif
+ 	rm -f $(INSTALLDIR)/www/GameBoost_Tencent.asp
+ 	rm -f $(INSTALLDIR)/www/game_accelerator_tencent.html
+ 
++# reaper v1.4.0: without-MCP build carries ZERO AI-Advisor trace (owner rule: the
++# MCP-less image must never have had the code, not hidden/disabled). When
++# RTCONFIG_REAPER_MCP is off, delete the native page and strip the menu entry +
++# dashboard rail link via their build-time markers. The C side (rmcpd, rc, httpd
++# CGI, nvram defaults) is already absent by #ifdef; this covers the static www.
++ifneq ($(RTCONFIG_REAPER_MCP), y)
++	rm -f $(INSTALLDIR)/www/Reaper_Advisor.asp
++	sed -i '/RMCP_MENU_BEGIN/,/RMCP_MENU_END/d' $(INSTALLDIR)/www/require/menuTrees/menuTree.js
++	# Main_ReaperDash.asp: the minifier strips HTML comments, so match the rail
++	# anchor by its unique href (one anchor per line) rather than comment markers.
++	sed -i '\|reaper_shell.asp#Reaper_Advisor.asp|d' $(INSTALLDIR)/www/Main_ReaperDash.asp
++endif
++
+ ifneq ($(RTCONFIG_TC_GAME_ACC), y)
+ 	rm -f $(INSTALLDIR)/www/Advanced_TencentDownloadAcceleration.asp
+ endif
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index d7622f0938..2ecf039fac 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -116,9 +116,22 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+   <div id="provMsg" class="msg"></div>
+ </div>
+ 
++<!-- USB KEY (optional 2nd factor) -->
++<div class="panel">
++  <h2>2 &middot; USB key <span style="color:var(--steel);font-weight:400;font-size:13px">(optional)</span></h2>
++  <div class="sub">An optional second factor <b>on top of</b> the arming code. When enrolled, arming also needs this exact USB stick inserted, and pulling it locks the advisor instantly. The key is generated onto the stick; the router keeps only its fingerprint.</div>
++  <div id="usbState" class="note"></div>
++  <div class="row">
++    <button class="btn primary" onclick="usbEnroll()">Enroll USB key</button>
++    <button class="btn ghost" onclick="usbUnenroll()">Remove USB key</button>
++  </div>
++  <div class="note" style="color:var(--steel)">Insert a USB stick first. Enrolling writes <span class="mono">reaper.key</span> to it &mdash; keep that stick safe; it is required to arm.</div>
++  <div id="usbMsg" class="msg"></div>
++</div>
++
+ <!-- SETTINGS -->
+ <div class="panel">
+-  <h2>2 &middot; Settings</h2>
++  <h2>3 &middot; Settings</h2>
+   <div class="sub">Applied on save. The daemon reads these when you arm.</div>
+   <div class="grid2">
+     <div><label class="fld" for="port">LAN port (1024&ndash;65535)</label><input type="number" id="port" min="1024" max="65535"></div>
+@@ -131,7 +144,7 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+ 
+ <!-- ARM -->
+ <div class="panel">
+-  <h2>3 &middot; Arm the advisor</h2>
++  <h2>4 &middot; Arm the advisor</h2>
+   <div class="sub">Opens the door for one timed session. The door locks itself when the timer ends or you disable it.</div>
+   <div class="row">
+     <div><label class="fld" for="armcode">Arming code</label><input type="password" id="armcode" autocomplete="off" placeholder="your code"></div>
+@@ -181,6 +194,9 @@ function loadStatus(){
+       : '<span style="color:var(--amber)">No arming code yet.</span> Set one before you can arm.';
+     document.getElementById('oldRow').style.display = d.provisioned ? '' : 'none';
+     provisionedNow = !!d.provisioned;
++    document.getElementById('usbState').innerHTML = d.usb_enrolled
++      ? '<span style="color:var(--jade)">A USB key is enrolled.</span> Arming will also require the stick inserted.'
++      : '<span style="color:var(--steel)">No USB key enrolled.</span> Arming uses the code only.';
+     if(d.port) document.getElementById('port').value=d.port;
+     if(d.timeout) document.getElementById('timeout').value=d.timeout;
+     document.getElementById('armBtn').disabled = !d.provisioned || (d.locked?true:false);
+@@ -215,6 +231,18 @@ function deprovision(){
+   post('deprovision').then(function(d){ setMsg('provMsg', d.ok?'Cleared.':'Failed.', d.ok?'ok':'err'); loadStatus(); });
+ }
+ 
++function usbEnroll(){
++  setMsg('usbMsg','Writing key to USB...','');
++  post('usb_enroll').then(function(d){
++    if(d.ok){ setMsg('usbMsg','Enrolled on '+esc(d.volume)+'. Keep this stick safe - it is now required to arm.','ok'); loadStatus(); }
++    else setMsg('usbMsg', d.error||'Failed.', 'err');
++  });
++}
++function usbUnenroll(){
++  if(!confirm('Remove the USB key requirement? Arming will use the code only.')) return;
++  post('usb_unenroll').then(function(d){ setMsg('usbMsg', d.ok?'Removed. Code-only arming.':'Failed.', d.ok?'ok':'err'); loadStatus(); });
++}
++
+ function saveSettings(){
+   var port=parseInt(document.getElementById('port').value,10);
+   var to=parseInt(document.getElementById('timeout').value,10);
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 3339a54554..ebe65b4c23 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -135,7 +135,9 @@ define(function(){
+                                         {url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
+-			/* reaper v1.4.0: read-only AI Advisor (LAN MCP). Off by default, armed by the user. */
++			/*RMCP_MENU_BEGIN reaper v1.4.0: AI Advisor (LAN MCP), off by default. This whole
++			  block is stripped at install time in the without-MCP build (www/Makefile) so
++			  that image carries no MCP menu entry at all - not hidden, absent. */
+ 			{
+ 				menuName: "AI Advisor",
+ 				index: "menu_ReaperAdvisor",
+@@ -144,6 +146,7 @@ define(function(){
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
++			/*RMCP_MENU_END*/
+ 			{
+ 				menuName: "<#Game_Boost#>",
+ 				index: "menu_GameBoost", 
+-- 
+2.25.1
+

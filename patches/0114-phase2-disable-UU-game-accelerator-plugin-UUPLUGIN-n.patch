@@ -1,0 +1,59 @@
+From a38e8cddf3a3143f63538f66897795dba0948ec8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 8 Jul 2026 20:16:09 -0400
+Subject: [PATCH] phase2: disable UU game-accelerator plugin (UUPLUGIN=n) +
+ link shim
+
+Drops the Tencent UU accelerator from the RT-BE96U target.mak stanza.
+exec_uu() (the daemon launch) was called only in the NTP-sync path under
+#ifdef RTCONFIG_UUPLUGIN, so it compiles out cleanly.
+
+LINK-TRAP SHIM (shared/Makefile): kept prebuilt blobs libwebapi.so,
+rc/private.o and priv_webapi.o import uu_model_check() unconditionally.
+That symbol is provided by the 2KB self-contained prebuilt uu_utils.o,
+previously gated on GEARUPPLUGIN||UUPLUGIN. Un-gate it so libshared always
+exports uu_model_check (same pattern as the Phase 1.5 aae_ipc.o un-gate);
+uu_utils.o carries no daemon/phone-home code, only a model-capability query.
+Without this the rc link fails (undefined reference to uu_model_check).
+
+ASD and CONNDIAG/DBLOG remain deferred (prebuilt link trap / AMAS coupling).
+---
+ release/src-rt/target.mak          | 2 +-
+ release/src/router/shared/Makefile | 7 +++++--
+ 2 files changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/release/src-rt/target.mak b/release/src-rt/target.mak
+index 97132cefbb..e7b49bd21e 100644
+--- a/release/src-rt/target.mak
++++ b/release/src-rt/target.mak
+@@ -333,7 +333,7 @@ export RT-BE96U += BUILD_NAME="RT-BE96U" EXT_PHY="BCM84880" NVSIZE="192" DHDAP=y
+ 		TRACEROUTE=y FORCE_AUTO_UPGRADE=n SW_HW_AUTH=y HD_SPINDOWN=y ASPMD=n BCM_MEVENT=n BCMEVENTD=y BCM_APPEVENTD=n \
+ 		LETSENCRYPT=y VPN_FUSION=y JFFS_NVRAM=y NVRAM_ENCRYPT=y BCM_CEVENTD=y UTF8_SSID=y I2CTOOLS=y AMAS=y \
+ 		DBLOG=y ETHOBD=y CFGSYNC_LOCSYNC=y CONNDIAG=y NFCM=n DNSQUERY_INTERCEPT=y IPSEC=STRONGSWAN IPSEC_SRVCLI_ONLY=SRV \
+-		DWB=y OPEN_NAT=y AMASDB=n CRASHLOG=y WATCH_REINIT=n BW160M=y BRCM_HOSTAPD=y UUPLUGIN=y IPERF3=y INFO_EXAP=y BCN_RPT=y \
++		DWB=y OPEN_NAT=y AMASDB=n CRASHLOG=y WATCH_REINIT=n BW160M=y BRCM_HOSTAPD=y UUPLUGIN=n IPERF3=y INFO_EXAP=y BCN_RPT=y \
+ 		BTM_11V=y INTERNETCTRL=y ASD=y AHS=n FRS_LIVE_UPDATE=n ASUSCTRL=y HAS_6G=y CAPTCHA=y OUTFOX=y GAME_MODE=y \
+ 		AMAS_ETHDETECT=y INSTANT_GUARD=y AVBLCHAN=y FRONTHAUL_DWB=y BCM_CLED=y BONDING=y BONDING_WAN=y ACL96=y LACP=y \
+ 		OWE_TRANS=y EXTEND_LIMIT=y LED_BTN=y WIREGUARD=y BCMBSD_V2=y AURALED_NIGHT=y AURALED=y \
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index eed2ff15ec..3e51844a01 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -592,9 +592,12 @@ ifeq ($(RTCONFIG_NVSW_IN_JFFS),y)
+ OBJS += nvsw.o
+ endif
+ 
+-ifeq ($(or $(RTCONFIG_GEARUPPLUGIN), $(RTCONFIG_UUPLUGIN)), y)
++# Reaper: uu_utils.o provides uu_model_check(), which kept prebuilt blobs
++# (libwebapi.so, rc/private.o, priv_webapi.o) import unconditionally. It is a
++# 2KB self-contained capability query (no UU daemon / phone-home), so keep it
++# always-linked even with UUPLUGIN removed - otherwise those blobs fail to link.
++# The actual UU accelerator (exec_uu) stays compiled out via #ifdef in ntp.
+ OBJS += $(if $(wildcard uu_utils.c),uu_utils.o,prebuild/uu_utils.o)
+-endif
+ 
+ ifeq ($(RTCONFIG_MXL_826XX),y)
+ CFLAGS += -I$(TOP)/libhostapi/switch_hostapi/src \
+-- 
+2.25.1
+

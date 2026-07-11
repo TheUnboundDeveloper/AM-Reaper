@@ -1,0 +1,1543 @@
+From 3602db6b405cdea4ddfc9a8b5b2789ccad97219b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 8 Jul 2026 13:09:33 -0400
+Subject: [PATCH] www: delete AiDisk 4-step wizard pages (Phase 1.4)
+
+Remove the wizard launcher www/aidisk.asp and the wizard-only pages under
+www/aidisk/: Aidisk-1..4.asp, Aidisk-1_help.asp, ASUS_DDNS_TOS.asp,
+initial_account.asp. These are the FTP+asuscomm-DDNS onboarding flow; the
+DDNS auto-enable wiring lived entirely in Aidisk-4.asp/aidisk.asp and dies
+with them (generic inadyn DDNS subsystem untouched). KEPT in www/aidisk/:
+the account/folder/permission Tier-2 pages + pop*/set_*/switch_* dialogs +
+shared AiDisk_style.css/aidisk.css that Advanced_AiDisk_samba/ftp/NFS use.
+Entry-point repoint + rebrand follows in the next commit.
+---
+ release/src/router/www/aidisk.asp             | 341 ------------------
+ .../src/router/www/aidisk/ASUS_DDNS_TOS.asp   |  73 ----
+ release/src/router/www/aidisk/Aidisk-1.asp    | 186 ----------
+ .../src/router/www/aidisk/Aidisk-1_help.asp   |  25 --
+ release/src/router/www/aidisk/Aidisk-2.asp    | 276 --------------
+ release/src/router/www/aidisk/Aidisk-3.asp    | 310 ----------------
+ release/src/router/www/aidisk/Aidisk-4.asp    | 223 ------------
+ .../src/router/www/aidisk/initial_account.asp |  26 --
+ 8 files changed, 1460 deletions(-)
+ delete mode 100644 release/src/router/www/aidisk.asp
+ delete mode 100644 release/src/router/www/aidisk/ASUS_DDNS_TOS.asp
+ delete mode 100644 release/src/router/www/aidisk/Aidisk-1.asp
+ delete mode 100644 release/src/router/www/aidisk/Aidisk-1_help.asp
+ delete mode 100644 release/src/router/www/aidisk/Aidisk-2.asp
+ delete mode 100644 release/src/router/www/aidisk/Aidisk-3.asp
+ delete mode 100644 release/src/router/www/aidisk/Aidisk-4.asp
+ delete mode 100644 release/src/router/www/aidisk/initial_account.asp
+
+diff --git a/release/src/router/www/aidisk.asp b/release/src/router/www/aidisk.asp
+deleted file mode 100644
+index 233ab99f38..0000000000
+--- a/release/src/router/www/aidisk.asp
++++ /dev/null
+@@ -1,341 +0,0 @@
+-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<html xmlns:v>
+-<head>
+-<meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title><#Web_Title#> - <#menu3#></title>
+-<link rel="stylesheet" type="text/css" href="index_style.css"> 
+-<link rel="stylesheet" type="text/css" href="form_style.css">
+-<script type="text/javascript" src="/js/jquery.js"></script>
+-<script type="text/javascript" src="/state.js"></script>
+-<script type="text/javascript" src="/popup.js"></script>
+-<script type="text/javascript" src="/help.js"></script>
+-<script>
+-<% get_AiDisk_status(); %>
+-var account_num;
+-//var accounts;
+-var pools = [];
+-var folderlist = [];
+-var page = parseInt('<% get_parameter("page"); %>'-'0');
+-
+-function initial(){
+-	show_menu();
+-	document.getElementById("statusframe").style.display = "block";
+-	
+-	if(page == 2)
+-		show_iframe("aidisk/Aidisk-2.asp");
+-	else if(page == 3)
+-		show_iframe("aidisk/Aidisk-3.asp");
+-	else if(page == 4)
+-		show_iframe("aidisk/Aidisk-4.asp");
+-	else
+-		show_iframe("aidisk/Aidisk-1.asp");
+-	
+-	if(document.getElementById("dummyShareway").value == "")
+-		document.getElementById("dummyShareway").value = 0;
+-}
+-
+-function show_iframe(src){
+-	document.getElementById("sub_frame").src = "";
+-	
+-	setTimeout('document.getElementById("sub_frame").src = \"'+src+'\";', 1);
+-}
+-
+-function show_iframe_page(iframe_id){
+-	if(iframe_id)
+-		if(document.getElementById(iframe_id))
+-			return document.getElementById(iframe_id).src;
+-	
+-	return "";
+-}
+-
+-function show_help_iframe(page_num){
+-}
+-
+-function big_help_td(){
+-	document.getElementById("help_td").style.width = "300px";
+-	document.getElementById("statusframe").style.width = "300px";
+-}
+-
+-function restore_help_td(){
+-	document.getElementById("hint_body").style.display = "block"; //avoid this block to be hide when open ASUS TOS in step2
+-	document.getElementById("help_td").style.width = "170px";
+-	document.getElementById("statusframe").style.width = "200px";
+-}
+-
+-/*function get_account_parameter(){
+-	account_num = document.getElementById("accountNum").value;
+-	
+-	accounts = new Array(account_num);
+-	
+-	for(var i = 0; i < account_num; ++i){
+-		accounts[i] = new Array(3);
+-		
+-		accounts[i][0] = document.getElementById("account"+i).value;
+-		accounts[i][1] = document.getElementById("passwd"+i).value;
+-		accounts[i][2] = document.getElementById("permission"+i).value;
+-	}
+-}//*/
+-
+-function initialAccount(){
+-	document.applyForm.action = "/aidisk/initial_account.asp";
+-	
+-	document.applyForm.submit();
+-}
+-
+-function resultOfInitialAccount(){
+-	if(document.getElementById("dummyShareway").value == "1")
+-		createAccount();
+-	else{
+-		submitChangeAllFolderPermission('<% nvram_char_to_ascii("", "http_username"); %>', "3", "ftp");
+-	}
+-}
+-
+-function createAccount(){
+-	//if(accounts[0]){
+-		document.applyForm.protocol.value = "";
+-		document.applyForm.pool.value = "";
+-		document.applyForm.folder.value = "";
+-		document.applyForm.permission.value = "";
+-		
+-		document.applyForm.action = "/aidisk/create_account.asp";
+-		document.applyForm.account.value = document.getElementById("account1").value;
+-		document.applyForm.password.value = document.getElementById("passwd1").value;
+-		
+-		document.applyForm.submit();
+-}
+-
+-function resultOfCreateAccount(){
+-	submitChangeAllFolderPermission(document.getElementById("account1").value, document.getElementById("permission1").value, "ftp");
+-}
+-
+-function submitChangePermission(account, permission, protocol){
+-	if(pools && pools.length > 0){
+-		if(folderlist && folderlist.length > 0){
+-			document.applyForm.password.value = "";
+-			
+-			document.applyForm.action = "/aidisk/set_account_permission.asp";
+-			document.applyForm.account.value = account;
+-			document.applyForm.pool.value = pools[0];
+-			if(folderlist[0] == "")
+-				document.applyForm.folder.disabled = 1;
+-			else{
+-				document.applyForm.folder.disabled = 0;
+-				document.applyForm.folder.value = folderlist[0];
+-			}
+-			document.applyForm.protocol.value = protocol;
+-			document.applyForm.permission.value = permission;
+-			document.applyForm.flag.value = "aidisk_wizard";
+-			
+-			folderlist.shift();
+-			
+-			document.applyForm.submit();
+-			return;
+-		}
+-		else{
+-			pools.shift();
+-			
+-			if(pools && pools.length > 0){
+-				folderlist = get_sharedfolder_in_pool(pools[0]);
+-			
+-				submitChangePermission(account, permission, protocol);
+-				return;
+-			}
+-		}
+-	}
+-	
+-	if(document.getElementById("dummyShareway").value == "1"){
+-		document.getElementById("dummyShareway").value = "";
+-
+-	 	require(['/require/modules/diskList.js'], function(diskList){
+-			pools = [];
+-			for(var i=0; i < usbDevicesList.length; i++){
+-				for(var j=0; j < usbDevicesList[i].partition.length; j++){
+-					pools.push(usbDevicesList[i].partition[j].mountPoint);
+-				}
+-			}
+-			if(pools && pools.length > 0)
+-				folderlist = get_sharedfolder_in_pool(pools[0]);
+-			
+-			submitChangePermission('<% nvram_char_to_ascii("", "http_username"); %>', "3", "ftp");
+-	 	});
+-	}
+-	else
+-		switchShareMode("ftp", "account");
+-}
+-
+-function submitChangeAllFolderPermission(account, permission, protocol){
+-	
+-	if(document.getElementById("dummyShareway").value == "1"){
+-		document.getElementById("dummyShareway").value = "";
+-		document.applyForm.password.value = "";
+-		document.applyForm.action = "/aidisk/set_account_all_folder_permission.asp";
+-		document.applyForm.account.value = account;
+-		document.applyForm.folder.disabled = 0;
+-		document.applyForm.protocol.value = protocol;
+-		document.applyForm.permission.value = permission;
+-		document.applyForm.flag.value = "aidisk_wizard";
+-		document.applyForm.submit();
+-	}
+-	else {
+-		switchShareMode("ftp", "account");
+-	}
+-}
+-
+-function switchShareMode(protocol, mode){
+-	document.applyForm.account.value = "";
+-	document.applyForm.pool.value = "";
+-	document.applyForm.folder.value = "";
+-	document.applyForm.permission.value = "";
+-	
+-	document.applyForm.action = "/aidisk/switch_share_mode.asp";
+-	document.applyForm.protocol.value = protocol;
+-	document.applyForm.mode.value = mode;
+-	
+-	document.applyForm.submit();
+-}
+-
+-function resultOfSwitchShareMode(){
+-	switchAppStatus("ftp", "on");
+-}
+-
+-function switchAppStatus(protocol, flag){
+-	document.applyForm.mode.value = "";
+-	
+-	document.applyForm.action = "/aidisk/switch_AiDisk_app.asp";
+-	document.applyForm.protocol.value = protocol;
+-	document.applyForm.flag.value = flag;
+-	
+-	document.applyForm.submit();
+-}
+-
+-function resultOfSwitchAppStatus(error_msg){
+-	finish_dummyway_setting();
+-}
+-
+-function finish_dummyway_setting(){
+-	switchDDNS();
+-}
+-
+-function switchDDNS(){
+-	document.ddnsForm.ddns_enable_x.value = getASUSDDNS_enable();
+-	document.ddnsForm.current_page.value = document.parameterForm.next_page.value;
+-	
+-	document.ddnsForm.submit();
+-}
+-
+-var ddns_enable_x = '<% nvram_get("ddns_enable_x"); %>';
+-
+-function setASUSDDNS_enable(flag){
+-		this.ddns_enable_x = flag;
+-}
+-
+-function getASUSDDNS_enable(){
+-	return this.ddns_enable_x;
+-}
+-</script>
+-</head>
+-
+-<body onload="initial();" onunload="return unload_body();" class="bg">
+-<div id="TopBanner"></div>
+-
+-<div id="Loading" class="popup_bg"></div>
+-
+-<iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0" scrolling="no"></iframe>
+-
+-<form method="post" name="applyForm" id="applyForm" action="" target="hidden_frame">
+-<input type="hidden" name="dummyShareway" id="dummyShareway" value="<% nvram_get("dummyShareway"); %>">
+-<input type="hidden" name="account" id="account" value="">
+-<input type="hidden" name="password" id="password" value="">
+-<input type="hidden" name="protocol" id="protocol" value="">
+-<input type="hidden" name="mode" id="mode" value="">
+-<input type="hidden" name="pool" id="pool" value="">
+-<input type="hidden" name="folder" id="folder" value="">
+-<input type="hidden" name="permission" id="permission" value="">
+-<input type="hidden" name="flag" id="flag" value="on">
+-</form>
+-
+-<form method="post" name="ddnsForm" id="ddnsForm" action="/start_apply.htm" target="hidden_frame">
+-<input type="hidden" name="current_page" value="">
+-<input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="">
+-<input type="hidden" name="action_wait" value="">
+-<input type="hidden" name="ddns_enable_x" value="">
+-</form>
+-
+-<form method="post" name="parameterForm" id="parameterForm" action="" target="">
+-<input type="hidden" name="next_page" id="next_page" value="">
+-<input type="hidden" name="accountNum" id="accountNum" value="0">
+-<!--input type="hidden" name="account0" id="account0" value="">
+-<input type="hidden" name="passwd0" id="passwd0" value="">                                
+-<input type="hidden" name="permission0" id="permission0" value=""-->
+-<input type="hidden" name="account1" id="account1" value="">
+-<input type="hidden" name="passwd1" id="passwd1" value="">
+-<input type="hidden" name="permission1" id="permission1" value="">
+-</form>
+-
+-<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+-<input type="hidden" name="preferred_lang" id="preferred_lang" value="<% nvram_get("preferred_lang"); %>">
+-<input type="hidden" name="firmver" value="<% nvram_get("firmver"); %>">
+-<input type="hidden" name="action_mode" value="">
+-<input type="hidden" name="action_script" value="">
+-<input type="hidden" name="action_wait" value="">
+-</form>
+-
+-<table border="0" align="center" cellpadding="0" cellspacing="0" class="content">
+-	<tr>
+-		<td valign="top" width="17">&nbsp;</td>
+-
+-		<!--=====Beginning of Main Menu=====-->
+-		<td valign="top" width="202">
+-			<div id="mainMenu"></div>
+-			<div id="subMenu"></div>
+-		</td>
+-
+-		<td height="430" align="center" valign="top">
+-			<div id="tabMenu"></div>
+-
+-		<!--==============Beginning of hint content=============-->
+-<table id="FormTitle" width="100%" height="100%" border="0" bgcolor="#4d595d" cellpadding="0"  cellspacing="0" style="margin-top:-140px;-webkit-border-radius:3px;-moz-border-radius:3px;border-radius:3px;">
+-  <tr>
+-		<td align="left" valign="top">
+-			<iframe id="sub_frame" src="" width="760px" height="710px" frameborder="0" scrolling="no" style="position:relative;-webkit-border-radius:3px;-moz-border-radius:3px;border-radius:3px;"></iframe>
+-		</td>
+-		<td id="help_td" style="width:15px;" align="center" valign="top">
+-			<div id="helpicon"></div>
+-			<div id="hintofPM" style="display:none;">
+-				<table width="100%" cellpadding="0" cellspacing="1" class="Help" bgcolor="#999999">
+-					<thead>
+-					<tr>
+-						<td>
+-							<div id="helpname" class="AiHintTitle"></div>
+-						</td>
+-					</tr>
+-					</thead>
+-
+-					<tr>
+-						<td valign="top">
+-							<div class="hint_body2" id="hint_body"></div>
+-							<iframe id="statusframe" name="statusframe" class="statusframe" src="/aidisk/Aidisk-1_help.asp" frameborder="0" /></iframe>
+-						</td>
+-					</tr>
+-				</table>
+-			</div>
+-		</td>
+-				</tr>
+-			</table>
+-		</td>
+-		
+-		<td width="20"></td>
+-	</tr>
+-</table>
+-		<!--==============Ending of hint content=============-->
+-		
+-<div id="footer"></div>
+-</body>
+-</html>
+diff --git a/release/src/router/www/aidisk/ASUS_DDNS_TOS.asp b/release/src/router/www/aidisk/ASUS_DDNS_TOS.asp
+deleted file mode 100644
+index 3f69c383ef..0000000000
+--- a/release/src/router/www/aidisk/ASUS_DDNS_TOS.asp
++++ /dev/null
+@@ -1,73 +0,0 @@
+-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<head>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title>Terms of Service</title>
+-<style type="text/css">
+-<!--
+-body {
+-	margin-left: 0px;
+-	margin-top: 0px;
+-	margin-right: 0px;
+-	margin-bottom: 0px;
+-	background-color:#FFFFCC;
+-}
+--->
+-</style>
+-</head>
+-
+-<!--body onload="parent.big_help_td();" onunload="parent.restore_help_td();"-->
+-<body>
+-<textarea  style="width:99%; height:380px; font-size:12px; font-family: Arial, Helvetica, sans-serif; background-color: #FFFFCC; border-style:none; ">
+-
+-Terms of Service
+-
+-Please read the Acceptable Use Policy (AUP) and accept it prior to creating your account. Also acknowledge that you may only have one (1) free account, and that creation of multiple free accounts will result in the deletion of all of your accounts.
+-Policy Last Modified: November 15, 2007
+-
+-1. ACKNOWLEDGMENT AND ACCEPTANCE OF TERMS OF SERVICE
+-
+-All services provided by ASUSTeK Computer INC. (“ASUSTeK”) are provided to you (the “Member”) under the Terms and Conditions set forth in this Acceptable Use Policy ( “AUP” ") and any other operating rules and policies set forth by ASUSTeK. The AUP comprises the entire agreement between the Member and ASUSTeK and supersedes all prior agreements between the parties regarding the subject matter contained herein. BY COMPLETING THE REGISTRATION PROCESS AND CLICKING THE "Accept" BUTTON, YOU ARE INDICATING YOUR AGREEMENT TO BE BOUND BY ALL OF THE TERMS AND CONDITIONS OF THE AUP.
+-
+-2. DESCRIPTION OF SERVICE
+-
+-ASUSTeK is providing the Member with the DNS-based aliasing service (“Service”). The Member must (1) provide all equipment necessary for its own Internet connection, including computer and modem, and (2) provide for the Member's own access to the Internet and pay any fees related with such connection. All information requested on sign-up shall be referred to as registration data (“Registration Data”). Furthermore, the Member grants ASUSTeK the right to disclose certain Registration Data about the Member and Service information where required to do so by any applicable law or legal process. ASUSTeK reserves the right to terminate the Member's membership and right to use the Service, with or without notification to the Member.
+-
+-3. MODIFICATIONS TO ACCEPTABLE USE POLICY
+-
+-ASUSTeK reserves the right to change the terms and conditions of this AUP as necessary. ASUSTeK expects the Member to actively ensure that it agrees to the current AUP, and a modification date will be posted on any and all copies of the AUP. Please note that the Member's use of the Service constitutes an acknowledgement by the Member to follow and be bound by the AUP and any modifications. 
+-
+-4. MODIFICATIONS TO SERVICE
+-
+-ASUSTeK reserves the right to modify or discontinue the Service with or without notice to the Member. ASUSTeK shall not be liable to the Member or any third party should ASUSTeK exercise its right to modify or discontinue the Service.
+-
+-5. DISCLAIMER OF WARRANTIES
+-
+-THE MEMBER EXPRESSLY AGREES THAT THIS WEBSITE AND THE USE OF THE SERVICE IS AT THE MEMBER'S SOLE RISK. THE SERVICE IS PROVIDED ON AN "AS IS" BASIS. ASUSTeK EXPRESSLY DISCLAIMS ALL WARRANTIES OF ANY KIND, WHETHER EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. ASUSTeK MAKES NO WARRANTY THAT THE SERVICE WILL MEET THE MEMBER'S REQUIREMENTS, OR THAT THE SERVICE WILL BE UNINTERRUPTED, TIMELY, SECURE, OR ERROR-FREE; NOR DOES ASUSTeK MAKE ANY WARRANTY AS TO THE RESULTS THAT MAY BE OBTAINED FROM THE USE OF THE SERVICE OR AS TO THE ACCURACY OR RELIABILITY OF ANY INFORMATION OBTAINED THROUGH THE SERVICE OR THAT DEFECTS IN THE SOFTWARE WILL BE CORRECTED. THE MEMBER UNDERSTANDS AND AGREES THAT ANY MATERIAL AND/OR DATA DOWNLOADED OR OTHERWISE OBTAINED THROUGH THE USE OF THE SERVICE IS DONE AT THE MEMBER'S OWN DISCRETION AND RISK AND THAT THE MEMBER WILL BE SOLELY RESPONSIBLE FOR ANY DAMAGE TO THE MEMBER'S COMPUTER SYSTEM OR LOSS OF DATA THAT RESULTS FROM THE DOWNLOAD OF SUCH MATERIAL AND/OR DATA. ASUSTeK MAKES NO WARRANTY REGARDING ANY GOODS OR SERVICES PURCHASED OR OBTAINED THROUGH THE SERVICE OR IN ANY TRANSACTIONS ENTERED INTO THROUGH THE SERVICE. NO ADVICE OR INFORMATION, WHETHER ORAL OR WRITTEN, OBTAINED BY THE MEMBER FROM ASUSTeK OR THROUGH THE SERVICE SHALL CREATE ANY WARRANTY NOT EXPRESSLY MADE HEREIN. 
+-
+-6. LIMITATION OF LIABILITY
+-
+-ASUSTeK SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES, RESULTING FROM THE USE OR THE INABILITY TO USE THE SERVICE OR FOR THE COST OF PROCUREMENT OF SUBSTITUTE GOODS AND SERVICES OR RESULTING FROM ANY GOODS OR SERVICES PURCHASE OR OBTAINED OR DOMAINS MOVED OR RESULTING FROM UNAUTHORIZED ACCESS TO OR ALTERATION OF THE MEMBER'S TRANSMISSIONS OF DATA, INCLUDING BUT NOT LIMITED TO, DAMAGES FOR LOSS OF PROFITS, USE, DATA, OR OTHER INTANGIBLE, EVEN IF ASUSTeK HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. 
+-
+-7. HOST CONTENT AND OTHER LIMITATIONS
+-
+-ASUSTeK assumes no responsibility for the content of any material located on the hosts provided from the Service. ASUSTeK has no control over these websites or other material hosted on external hosts; however, ASUSTeK retains the right, on ASUSTeK’s sole discretion, to determine whether or not the Member's conduct is consistent with the letter and spirit of the AUP and may terminate the Service if the Member's conduct is found to be inconsistent with the AUP.
+-
+-8. MEMBER CONDUCT
+-
+-The Member is solely responsible for the contents of his/her usage of the Service. The Member's use of the Service is subject to all applicable local, state, federal, and     international laws and regulations. The Member agrees: (1) to comply with all local, state, and federal laws regarding the transmission of technical data exported from the United States through the service; (2) not to use the Service for illegal purposes; (3) not to interfere with or disrupt networks connected to the Service; and (4) to comply with all regulations, policies, and procedures of networks connected to the Service. The Service makes use of the Internet's DNS protocol to create and delegate domains; therefore, the Member's conduct is subject to Internet regulations, policies, and procedures. The Member will not use the Service for illegal software, illegal pornography, spamming, linkspamming, spamdexing, or any use of distribution lists to any person who has not given specific permission to be included in such a process. For purposes of this AUP, facilitation of the illegal distribution of copyrighted materials, through operation of a "hub", "tracker", or other filesharing mechanism, shall be considered identical to the actual illegal distribution of those copyrighted materials. The Member agrees not to transmit through the service any unlawful, harassing, libelous, abusive, threatening, harmful, vulgar, obscene or otherwise objectionable material of any kind or nature. A cleanup fee of 100.00/hour (minimum 4 hours) may be assessed by ASUSTeK for violation of these terms. The Member further agrees not to transmit any material that encourages conduct that could constitute a criminal offense, give rise to civil liability or otherwise violate any applicable local, state, national, or international law or regulation. Attempts to gain unauthorized access to other computer systems are prohibited. The Member shall not interfere with another Member's use and enjoyment of the Service or another entity's use and enjoyment of similar services. ASUSTeK may, at its sole discretion, immediately terminate the Service should the Member's conduct fail to conform to the terms and conditions of the AUP.
+-
+-9. INDEMNIFICATION
+-
+-The Member agrees to indemnify and hold ASUSTeK, its parents, subsidiaries, affiliates, officers and employees, harmless from any claim or demand, including without limitation reasonable attorneys' fees, made by any third party due to or arising out of the Member's use of the Service, the violation of this AUP by the Member, or the infringement by the Member, or other user of the Service using the Member's computer, of any intellectual property or any other right of any person or entity.
+-
+-10. TERMINATION
+-
+-Either the Member or ASUSTeK may terminate the Service with or without cause at any time and may do so immediately. ASUSTeK shall not be liable to the Member or any third party for termination of the Service. Should the Member not use the Service for a period of three months, ASUSTeK may terminate the Service immediately. Should the Member object to any terms or conditions of the AUP or any subsequent modifications thereto or become dissatisfied with the Service in any way, the Member's only recourse is to immediately: (1) discontinue use of the Service; (2) terminate the Member's membership; and (3) notify ASUSTeK of the Member's termination. Upon termination of the Service, the Member's right to use the Service immediately ceases.
+-</textarea>
+-</body>
+-</html>
+diff --git a/release/src/router/www/aidisk/Aidisk-1.asp b/release/src/router/www/aidisk/Aidisk-1.asp
+deleted file mode 100644
+index 79648d4579..0000000000
+--- a/release/src/router/www/aidisk/Aidisk-1.asp
++++ /dev/null
+@@ -1,186 +0,0 @@
+-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<head>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title>AiDisk Wizard</title>
+-<link rel="stylesheet" type="text/css" href="../NM_style.css">
+-<link rel="stylesheet" type="text/css" href="aidisk.css">
+-<link rel="stylesheet" type="text/css" href="/form_style.css">
+-<script type="text/javascript" src="/js/jquery.js"></script>
+-<script type="text/javascript" src="/state.js"></script>
+-<script>
+-var dummyShareway = '<% nvram_get("dummyShareway"); %>';
+-var FTP_status = parent.get_ftp_status();  // FTP  0=disable 1=enable
+-var FTP_mode = parent.get_share_management_status("ftp");  // if share by account. 1=no 2=yes
+-var accounts = [<% get_all_accounts(); %>][0];
+-var ddns_enable = '<% nvram_get("ddns_enable_x"); %>';
+-var ddns_server = '<% nvram_get("ddns_server_x"); %>';
+-var ddns_hostname = '<% nvram_get("ddns_hostname_x"); %>';
+-
+-function initial(){
+-	parent.hideLoading();
+-
+-	if(FTP_mode == 1)
+-		document.getElementById("noFTP_Hint").style.display = "";
+-
+- 	require(['/require/modules/diskList.js'], function(diskList){
+-		var mount_num = 0;
+- 		var usbDevicesList = diskList.list();
+-
+-		for(var i=0; i < usbDevicesList.length; ++i)
+-			mount_num += usbDevicesList[i].mountNumber;
+-
+-		if(mount_num == 0){ // No USB disk plug.
+-			document.getElementById("AiDiskWelcome_desp").style.display = 'none';
+-			document.getElementById("linkdiskbox").style.display = 'none';
+-			document.getElementById("Nodisk_hint").style.display = 'block';
+-			return;
+-		}
+-		else if(dummyShareway != ""){  // Ever config aidisk wizard
+-			document.getElementById("AiDiskWelcome_desp").style.display = 'none';
+-			document.getElementById("linkdiskbox").style.display = 'block';
+-
+-			show_share_link();
+-		}
+-		else{
+-			document.getElementById("linkdiskbox").style.display = 'none';
+-		}	
+-	});
+-
+- 	$('#Wizard_desp1 a:first').css({'cursor':'pointer', 'text-decoration':'underline'}).attr({'href':'/Advanced_ASUSDDNS_Content.asp', 'target':'_blank'});
+- 	$('#Wizard_desp2 a:first').css({'cursor':'pointer', 'text-decoration':'underline'}).attr({'href':'/Advanced_AiDisk_ftp.asp', 'target':'_blank'});
+-}
+-
+-function show_share_link(){
+-	//alert("FTP"+FTP_status);
+-	// access the disk from WAN
+-	if(FTP_status == 1 && ddns_enable == 1 && ddns_server.length > 0 && ddns_hostname.length > 0){
+-		if(FTP_mode == 1 || dummyShareway == 0){
+-			document.getElementById("ddnslink1").style.display = ""; 
+-			showtext(document.getElementById("ddnslink1"), 'Internet FTP address: <a id="ddnslink1_link" target="_blank" style="text-decoration: underline; font-family:Lucida Console;">ftp://<% nvram_get("ddns_hostname_x"); %></a>');
+-						
+-			document.getElementById("desc_2").style.display = ""; 
+-			document.getElementById("ddnslink1_LAN").style.display = "";
+-			showtext(document.getElementById("ddnslink1_LAN"), 'LAN FTP address: <a id="ddnslink1_LAN_link" target="_blank" style="text-decoration: underline; font-family:Lucida Console;">ftp://<% nvram_get("lan_ipaddr"); %></a>');
+-			
+-		}
+-		else if(FTP_mode == 2){
+-			document.getElementById("ddnslink2").style.display = "";
+-			showtext(document.getElementById("ddnslink2"), 'Internet FTP address: <a id="ddnslink2_link" target="_blank" style="text-decoration: underline; font-family:Lucida Console;">ftp://<% nvram_get("ddns_hostname_x"); %></a>');
+-						
+-			document.getElementById("desc_2").style.display = ""; 
+-			document.getElementById("ddnslink2_LAN").style.display = ""; 			
+-			showtext(document.getElementById("ddnslink2_LAN"), 'LAN FTP address: <a id="ddnslink2_LAN_link" target="_blank" style="text-decoration: underline; font-family:Lucida Console;">ftp://<% nvram_get("lan_ipaddr"); %></a>');
+-			
+-		}
+-	}
+-	else{
+-		document.getElementById("noWAN_link").style.display = "";		
+-		if(FTP_status != 1)
+-			showtext(document.getElementById("noWAN_link"), '<#linktoFTP_no_1#>');
+-		else if(ddns_enable != 1){
+-			showtext(document.getElementById("noWAN_link"), "<#linktoFTP_no_2#>");
+-			document.getElementById("desc_2").style.display = ""; 
+-			document.getElementById("ddnslink1_LAN").style.display = "";			
+-			if(FTP_mode == 1){
+-					showtext(document.getElementById("ddnslink1_LAN"), 'LAN FTP address: <a id="ddnslink1_LAN_link" target="_blank" style="text-decoration: underline; font-family:Lucida Console;">ftp://<% nvram_get("lan_ipaddr"); %></a>');
+-					
+-			}else{
+-					showtext(document.getElementById("ddnslink1_LAN"), 'LAN FTP address: <a id="ddnslink1_LAN_link" target="_blank" style="text-decoration: underline; font-family:Lucida Console;">ftp://<% nvram_get("lan_ipaddr"); %></a>');
+-			}
+-		}else if(ddns_hostname.length <= 0){
+-			showtext(document.getElementById("noWAN_link"), "<#linktoFTP_no_3#>");
+-		}else
+-			alert("FTP and ddns exception");
+-	}
+-}
+-
+-function detect_mount_status(){
+-}
+-
+-function go_next_page(){
+-	document.redirectForm.action = "/aidisk/Aidisk-2.asp";
+-	document.redirectForm.submit();
+-}
+-</script>
+-</head>
+-<body onload="initial();">
+-<form method="GET" name="redirectForm" action="">
+-<input type="hidden" name="flag" value="">
+-</form>
+-
+-<div class="aidisk1_table">
+-<table>
+-<tr>
+-  <td valign="top" bgcolor="#4d595d" style="padding-top:25px;">
+-  <table width="740" height="125" border="0">
+-	<!-- start Step 0 -->  
+-	<tr>
+-		<td class="formfonttitle">
+-			<span style="margin-left:3px;"><#AiDiskWelcome_title#></span>
+-			<img onclick="go_setting_parent('/APP_Installation.asp')" align="right" style="cursor:pointer;margin-right:20px;margin-top:-20px;" title="<#Menu_usb_application#>" src="/images/backprev.png" onMouseOver="this.src='/images/backprevclick.png'" onMouseOut="this.src='/images/backprev.png'">
+-  	</td>
+-  </tr>
+-   
+-  <tr>
+-  	<td height="20">
+-  		<div style="margin:10px 0 10px 5px" class="splitLine"></div>
+-  	</td>
+-  </tr>
+-
+-	<tr>
+-		<td>
+-			<div style="width:660px;line-height:180%;font-size:16px;margin-left:30px;">
+-	  			<div id="Nodisk_hint" class="alert_string" style="display:none;"><#no_usb_found#></div>
+-
+-				<div id="AiDiskWelcome_desp">
+-					<#AiDiskWizard_desp0#>
+-					<ul>
+-						<li id="Wizard_desp1"><#AiDiskWizard_desp1#> <#web_redirect_suggestion_modify#></li>
+-						<li id="Wizard_desp2"><#AiDiskWizard_desp2#> <#web_redirect_suggestion_modify#></li>
+-						<li><#AiDiskWizard_desp3#>
+-							<ul>
+-								<li><#AiDiskWizard_desp31#> ftp://[hostname].asuscomm.com</li>
+-								<li><#AiDiskWizard_desp32#> ftp://<% nvram_get("lan_ipaddr"); %></li>
+-							</ul>
+-						</li>
+-					</ul>
+-					<div style="margin-left:23px;">*** <#AiDiskWizard_desp11#></div>
+-				</div>
+-
+-				<div id="linkdiskbox" style="display:none;">
+-					<span style="margin-left:5px;"><#AiDisk_wizard_text_box_title3#></span><br/>
+-					<ul>
+-						<li id="noFTP_Hint" style="display:none;">
+-							<span><#AiDisk_shareHint#></span>
+-						</li>
+-						<li>
+-							<span id="noWAN_link" style="display:none;"></span>
+-							<span id="ddnslink1" style="display:none;"></span>
+-							<span id="ddnslink2" style="display:none;"></span>
+-						</li>
+-						<li id="desc_2" style="display:none;margin-top:8px;">
+-							<span id="ddnslink1_LAN" style="display:none;"></span>
+-							<span id="ddnslink2_LAN" style="display:none;"></span>
+-						</li>
+-						<li><#AiDisk_moreconfig#></li>
+-						<li><#Aidisk_authority_hint#></li>
+-					</ul>
+-				</div>
+-			</div>
+-	  </td>
+-  </tr>
+-
+-<!-- end -->    
+-  </table>
+-
+-  </td>
+-</tr>  
+-</table>
+-</div>  <!--  //Viz-->
+-</body>
+-</html>
+diff --git a/release/src/router/www/aidisk/Aidisk-1_help.asp b/release/src/router/www/aidisk/Aidisk-1_help.asp
+deleted file mode 100644
+index 2621c41b49..0000000000
+--- a/release/src/router/www/aidisk/Aidisk-1_help.asp
++++ /dev/null
+@@ -1,25 +0,0 @@
+-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<head>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title>AiDisk Wizard</title>
+-<link rel="stylesheet" type="text/css" href="aidisk.css">
+-<link rel="stylesheet" type="text/css" href="/index_style.css">
+-</head>
+-
+-<body>
+-<table width="100%" height="400" border="0" cellpadding="5" cellspacing="0" class="Help">
+-	<tbody>
+-	<tr>
+-	<td valign="top">
+-		<a href="../Advanced_AiDisk_ftp.asp" target="_parent" hidefocus="true"><#menu5_4#></a>: <#AiDisk_moreconfig#>
+-	</td>
+-	</tr>
+-	</tbody>
+-</table>
+-</body>
+-</html>
+diff --git a/release/src/router/www/aidisk/Aidisk-2.asp b/release/src/router/www/aidisk/Aidisk-2.asp
+deleted file mode 100644
+index 8e9aae0472..0000000000
+--- a/release/src/router/www/aidisk/Aidisk-2.asp
++++ /dev/null
+@@ -1,276 +0,0 @@
+-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<head>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title>AiDisk Wizard</title>
+-<link rel="stylesheet" type="text/css" href="aidisk.css">
+-<link rel="stylesheet" type="text/css" href="/form_style.css">
+-<script type="text/javascript" src="/js/jquery.js"></script>
+-<script type="text/javascript" src="/state.js"></script>
+-<script type="text/javascript" src="/validator.js"></script>
+-<script>
+-var next_page = "";
+-var dummyShareway = 0;
+-
+-function initial(){
+-	
+-	parent.hideLoading();
+-	
+-	parent.restore_help_td();	
+-	
+-	
+-	parent.document.getElementById("dummyShareway").value = "<% nvram_get("dummyShareway"); %>";
+-	if(parent.document.getElementById("dummyShareway").value == "")
+-			parent.document.getElementById("dummyShareway").value = 0;
+-
+-	if(is_KR_sku){
+-		document.getElementById("d1").style.display = "none";	
+-		document.getElementById("d1_desc").style.display = "none";			
+-	}
+-	showTextinWizard(2);
+-}
+-
+-var lan_hwaddr_array = '<% nvram_get("lan_hwaddr"); %>'.split(':');
+-function showTextinWizard(flag){
+-	dummyShareway = flag;
+-	
+-	if(dummyShareway == 0){
+-		parent.document.getElementById("dummyShareway").value = dummyShareway;
+-		
+-		document.getElementsByName('dummyoption')[2].focus();
+-		document.getElementsByName('dummyoption')[2].checked = true;
+-		
+-		document.getElementById("share0_Hint").style.display = "";
+-		document.getElementById("share1").style.display = "none";				
+-		document.getElementById("target1").style.display = "none";
+-		document.getElementById("target2").style.display = "none";
+-	}
+-	else if(dummyShareway == 1){
+-		parent.document.getElementById("dummyShareway").value = dummyShareway;
+-		
+-		document.getElementsByName('dummyoption')[1].focus();
+-		document.getElementsByName('dummyoption')[1].checked = true;
+-		
+-		showtext(document.getElementById("user1"), '<% nvram_get("http_username"); %>');
+-		
+-		showtext(document.getElementById("user2"), "Family");
+-		document.getElementById("userpasswd2").value =  "family" + lan_hwaddr_array[lan_hwaddr_array.length-2].toLowerCase() + lan_hwaddr_array[lan_hwaddr_array.length-1].toLowerCase();
+-
+-		document.getElementById("share0_Hint").style.display = "none";
+-		document.getElementById("share1").style.display = "block";		
+-		document.getElementById("target1").style.display = "";
+-		document.getElementById("target2").style.display = "";
+-	}
+-	else if(dummyShareway == 2){
+-		parent.document.getElementById("dummyShareway").value = dummyShareway;
+-		
+-		document.getElementsByName('dummyoption')[0].focus();
+-		document.getElementsByName('dummyoption')[0].checked = true;
+-		
+-		showtext(document.getElementById("user1"), '<% nvram_get("http_username"); %>');
+-		
+-		document.getElementById("share0_Hint").style.display = "none";
+-		document.getElementById("share1").style.display = "";		
+-		document.getElementById("target1").style.display = "";
+-		document.getElementById("target2").style.display = "none";
+-	}
+-	else
+-		alert("System error: No this choice");	// no translate*/
+-}
+-
+-function passTheResult(){
+-	if(dummyShareway == 0){
+-		parent.document.getElementById("accountNum").value = 0;
+-		
+-		/*parent.document.getElementById("account0").value = "";
+-		parent.document.getElementById("passwd0").value = "";
+-		parent.document.getElementById("permission0").value = "";//*/
+-		
+-		parent.document.getElementById("account1").value = "";
+-		parent.document.getElementById("passwd1").value = "";
+-		parent.document.getElementById("permission1").value = "";
+-	}
+-	else if(dummyShareway == 1){
+-		parent.document.getElementById("accountNum").value = 2;
+-		
+-		/*if(checkPasswdValid(document.getElementById("userpasswd1").value)){
+-			parent.document.getElementById("account0").value = document.getElementById("user1").firstChild.nodeValue;
+-			parent.document.getElementById("passwd0").value = document.getElementById("userpasswd1").value;
+-			parent.document.getElementById("permission0").value = "3";
+-		}
+-		else{
+-			document.getElementById("userpasswd1").focus();
+-			return;
+-		}//*/
+-		
+-		if(checkPasswdValid(document.smartForm.userpasswd2)){
+-			parent.document.getElementById("account1").value = document.getElementById("user2").firstChild.nodeValue;
+-			parent.document.getElementById("passwd1").value = document.getElementById("userpasswd2").value;
+-			parent.document.getElementById("permission1").value = "1";
+-		}
+-		else{
+-			document.smartForm.action = "/aidisk/Aidisk-2.asp";
+-			document.smartForm.submit();
+-			return;
+-		}
+-	}
+-	else if(dummyShareway == 2){
+-		parent.document.getElementById("accountNum").value = 1;
+-		
+-		/*if(checkPasswdValid(document.getElementById("userpasswd1").value)){
+-			parent.document.getElementById("account0").value = document.getElementById("user1").firstChild.nodeValue;
+-			parent.document.getElementById("passwd0").value = document.getElementById("userpasswd1").value;
+-			parent.document.getElementById("permission0").value = "3";
+-		}
+-		else{
+-			document.getElementById("userpasswd1").focus();
+-			return;
+-		}//*/
+-		
+-		parent.document.getElementById("account1").value = "";
+-		parent.document.getElementById("passwd1").value = "";
+-		parent.document.getElementById("permission1").value = "";
+-	}
+-	
+-	document.smartForm.action = "/aidisk/Aidisk-3.asp";
+-	document.smartForm.submit();
+-}
+-
+-function go_pre_page(){
+-	document.smartForm.action = "/aidisk/Aidisk-1.asp";
+-	document.smartForm.submit();
+-}
+-
+-function checkPasswdValid(obj){
+-	if(obj.value.length <= 0){
+-		alert("<#File_Pop_content_alert_desc6#>");
+-		obj.focus();
+-		obj.select();
+-		return false;
+-	}	
+-	
+-	if(!validator.string(obj)){
+-			obj.focus();
+-			obj.select();
+-			return false;	
+-	}	
+-	
+-	return true;
+-}
+-</script>
+-</head>
+-
+-<body onload="initial();">
+-<form method="post" name="smartForm" id="smartForm" action="Aidisk-3.asp" onsubmit="return passTheResult();">
+-<input type="hidden" name="accountNum" id="accountNum" value="">
+-<input type="hidden" name="account0" id="account0" value="">
+-<input type="hidden" name="passwd0" id="passwd0" value="">
+-<input type="hidden" name="permission0" id="permission0" value="">
+-<input type="hidden" name="account1" id="account1" value="">
+-<input type="hidden" name="passwd1" id="passwd1" value="">
+-<input type="hidden" name="permission1" id="permission1" value="">
+-<!--/form-->
+-
+-<div class="aidisk1_table">
+-<table>	<!-- width="765" height="760" border="0" bgcolor="#4d595d" cellpadding="0"  cellspacing="0" style="padding:10px; padding-top:20px;"  //Viz-->
+-  
+-<tr>
+-  <td valign="top" bgcolor="#4d595d" style="padding-top:25px;">	<!-- height="780"  align="center" //Viz-->
+-  <table width="740" height="225" border="0">
+-    <!-- start Step 1 -->  
+-  	<tr>
+-    	<td>
+-    	<table width="740" border="0">
+-    		<tr>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step1.png) 0% 95% no-repeat;"></td>
+-    			<td width="15%"><img src="/images/New_ui/aidisk/steparrow.png" /></td>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step2.png) 0% 0% no-repeat;"></td>
+-    			<td width="15%"><img src="/images/New_ui/aidisk/steparrow.png" /></td>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step3.png) 0% 0% no-repeat;"></td>
+-    			<td width="25%">&nbsp;</td>
+-    		</tr>
+-    	</table>
+-    	</td>
+-    </tr>
+-
+-    <tr>
+-    	<td align="left" class="formfonttitle" style="padding-left:20px;" height="72"><#Step2_method#>: <#Step1_desp#></td>
+-    </tr>
+-  
+-    <!--tr>
+-    	<td align="left" valign="bottom" class="formfontcontent"><span class="formfonttitle" style="margin-left:20px;"></span>
+-    	</td>
+-    </tr-->
+-
+-    <tr>
+-      <td valign="top">
+-						<div style="margin-left:20px;">
+-            <br/><p><input type="radio" id="d3" name="dummyoption" value="2" width="10" onclick="showTextinWizard(this.value);"/> 
+-            				<label for="d3"><#Step2_method3#></label>
+-            		</p>
+-            <br/><p><input type="radio" id="d2" name="dummyoption" value="1" width="10" onclick="showTextinWizard(this.value);"/> 
+-            				<label for="d2"><#Step2_method2#></label>
+-            		</p>
+-            <br/><p><input type="radio" id="d1" name="dummyoption" value="0" width="10" onclick="showTextinWizard(this.value);"/> 
+-            				<label for="d1" id="d1_desc"><#Step2_method1#></label>
+-            		</p>
+-						</div>
+-
+-						<div id="share0_Hint" style="margin-top:10px;color:#FC0;margin-left:45px;">
+-							<span><#AiDisk_shareHint#></span>
+-						</div>
+-
+-            <div id="share1" style="margin-top:30px;">
+-            	<table width="80%" border="1" align="center" cellpadding="2" cellspacing="0" bordercolor="#7ea7bd" class="FormTable_table">
+-                	<tr>
+-                  	<th width="100"><#AiDisk_Account#></th>
+-                  	<th><#HSDPAConfig_Password_itemname#></th>
+-                  	<th width="50" ><#AiDisk_Read#></th>
+-                  	<th width="50" ><#AiDisk_Write#></th>
+-                	</tr>
+-                
+-                	<tr id="target1">
+-                  	<td height="35"><span id="user1" style="color:#FFFFFF;"></span></td>
+-                  	<td>*</td>
+-                  	<td align="center"><img src="/images/New_ui/checkbox.png"></td>
+-                  	<td align="center"><img src="/images/New_ui/checkbox.png"></td>
+-                	</tr>
+-                
+-                	<tr id="target2">
+-                  	<td height="35"><span id="user2" style="color:#FFFFFF;"></span></td>
+-					<td><input type="text" name="userpasswd2" id="userpasswd2" value="" class="input_25_table" onKeyPress="return validator.isString(this, event);" maxlength="32" autocorrect="off" autocapitalize="off"></td>
+-                  	<td align="center"><img src="/images/New_ui/checkbox.png"></td>
+-                  	<td align="center">&nbsp;</td>
+-                	</tr>
+-              	</table>  
+-           </div>          
+-      </td>
+-    </tr>
+-    
+-    <tr>
+-    	<td>
+-    		<div style="margin:30px 0 10px 5px;" class="splitLine"></div>
+-    	</td>
+-    </tr>     
+-    
+-    <tr valign="bottom" align="center">
+-    	<td width="20%">
+-		<div class="apply_gen" style="margin-top:30px">
+-  			<input type="button" id="prevButton" value="<#CTL_prev#>" onclick="go_pre_page();" class="button_gen">
+-			<input type="submit" id="nextButton" value="<#CTL_next#>" class="button_gen">
+-		</div>	 
+-	</td>
+-    </tr>
+-    <!-- end -->    
+-  </table>
+-  </td>
+-</tr>  
+-</table>
+-</div>	<!--//Viz-->
+-</form>
+-</body>
+-</html>
+diff --git a/release/src/router/www/aidisk/Aidisk-3.asp b/release/src/router/www/aidisk/Aidisk-3.asp
+deleted file mode 100644
+index b9774cdd61..0000000000
+--- a/release/src/router/www/aidisk/Aidisk-3.asp
++++ /dev/null
+@@ -1,310 +0,0 @@
+-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<head>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title>AiDisk Wizard</title>
+-<link rel="stylesheet" type="text/css" href="aidisk.css">
+-<link rel="stylesheet" type="text/css" href="/form_style.css">
+-<script type="text/javascript" src="/js/jquery.js"></script>
+-<script type="text/javascript" src="/state.js"></script>
+-<script type="text/javaScript" src="/general.js"></script>
+-<script type="text/javaScript" src="/validator.js"></script>
+-<script>
+-var ddns_server_x = '<% nvram_get("ddns_server_x"); %>';
+-var ddns_hostname_x = '<% nvram_get("ddns_hostname_x"); %>';
+-var ddns_old_name = '<% nvram_get("ddns_old_name"); %>';
+-var ddns_return_code = '<% nvram_get_ddns("LANHostConfig", "ddns_return_code"); %>';
+-var ddns_hostname_title;
+-
+-
+-function initial(){
+-	parent.hideLoading();
+-	
+-	if(this.ddns_server_x == "WWW.ASUS.COM" && this.ddns_hostname_x != ''){
+-		this.ddns_hostname_title = this.ddns_hostname_x.substring(0, this.ddns_hostname_x.indexOf('.asuscomm.com'));
+-		if(this.ddns_hostname_x != '' && this.ddns_hostname_title)
+-			document.getElementById("DDNSName").value = this.ddns_hostname_title;
+-		else
+-			document.getElementById("DDNSName").value = "<#asusddns_inputhint#>";
+-	}
+-	else{
+-		document.getElementById("DDNSName").value = "<#asusddns_inputhint#>";
+-	}
+-	switch_ddns();
+-}
+-
+-function switch_ddns(){
+-	if(document.form.check_asus_ddns[0].checked){
+-		parent.setASUSDDNS_enable("1");
+-		document.form.ddns_server_x.value = "WWW.ASUS.COM";
+-	}
+-	else{
+-		parent.setASUSDDNS_enable("0");
+-		document.form.check_asus_ddns[1].focus();
+-		document.form.ddns_server_x.value = this.ddns_server_x;
+-		
+-		if(parent.show_iframe_page("statusframe").indexOf("ASUS_DDNS_TOS.asp") > 0)
+-			parent.show_help_iframe(3);
+-	}
+-	
+-	show_TOS_checkbox();
+-	parent.restore_help_td();
+-}
+-
+-function show_TOS_checkbox(){
+-	if(document.form.check_asus_ddns[0].checked){
+-		document.form.asusddns_tos_agreement.value = "1";
+-		document.getElementById("ddnsname_input").style.display = "block";
+-		document.getElementById("DDNSName").focus();
+-		document.getElementById("DDNSName").select();
+-	}
+-	else{
+-		document.form.asusddns_tos_agreement.value = "0";		
+-		document.getElementById("ddnsname_input").style.display = "none";	
+-	}
+-
+-	if(this.ddns_server_x == "WWW.ASUS.COM")
+-		check_return_code();
+-	}
+-
+-function show_alert_block(alert_str){
+-	document.getElementById("alert_block").style.display = "block";
+-	
+-	showtext(document.getElementById("alert_str"), alert_str);
+-}
+-
+-function hide_alert_block(){
+-	document.getElementById("alert_block").style.display = "none";
+-}
+-
+-function check_return_code(){
+-
+-	if(this.ddns_return_code != 'no_change'){
+-		var ddnsHint = getDDNSState(this.ddns_return_code, this.ddns_hostname_x, this.ddns_old_name);
+-		if(ddnsHint != ""){
+-			if(this.ddns_return_code == 'Time-out')
+-				show_alert_block("<#LANHostConfig_x_DDNS_alarm_12#>");
+-			else
+-				show_alert_block(ddnsHint);
+-		}
+-	}
+-
+-	document.getElementById("loadingIcon").style.display = "none";	
+-	this.ddns_return_code = "";
+-}
+-
+-function verify_ddns_name(){
+-	
+-	if(!validate_ddns_hostname(document.getElementById("DDNSName"))){
+-		document.form.DDNSName.focus();
+-		document.form.DDNSName.select();
+-		return false;		
+-		
+-	}else{
+-		document.getElementById("loadingIcon").style.display = "";
+-		
+-		document.form.current_page.value = "/aidisk/Aidisk-3.asp";
+-		document.form.ddns_hostname_x.value = document.getElementById("DDNSName").value+".asuscomm.com";
+-		
+-		document.form.flag.value = "nodetect";
+-		FormActions("", "apply", "aidisk_asusddns_register", "1");
+-		document.form.target = "hidden_frame";
+-		document.form.submit();
+-		
+-		return true;
+-	}
+-}
+-
+-function go_next_page(){
+-	if(document.form.check_asus_ddns[0].checked){
+-		if(!verify_ddns_name())
+-			return;
+-	}
+-	else {
+-		document.form.action = "/aidisk/Aidisk-4.asp";
+-		document.form.target = "";
+-		document.form.submit();
+-	}
+-}
+-
+-function go_pre_page(){
+-	document.form.action = "/aidisk/Aidisk-2.asp";
+-	document.form.target = "";
+-	document.form.submit();
+-}
+-
+-function validate_ddns_hostname(o){
+-	dot = 0;
+-	s = o.value;
+-	if(s == ""){
+-		show_alert_block("<#QKSet_account_nameblank#>");
+-		return false;
+-	}
+-	
+-	var unvalid_start=new RegExp("^[0-9].*", "gi");
+-	if(unvalid_start.test(s) )
+-	{
+-		show_alert_block("<#LANHostConfig_x_DDNS_alarm_7#>");
+-		return false;
+-	}	
+-	if(!validator.string(o)){
+-		return false;
+-	}
+-	
+-	for(var i = 0; i < s.length; ++i){
+-		c = s.charCodeAt(i);
+-		if(c == 46){
+-			++dot;
+-			if(dot > 0){
+-				show_alert_block("<#LANHostConfig_x_DDNS_alarm_7#>");
+-				return false;
+-			}
+-		}
+-		
+-		if(!validator.hostNameChar(c)){
+-			show_alert_block("<#LANHostConfig_x_DDNS_alarm_13#> '"+s.charAt(i)+"' !");
+-			return false;
+-		}
+-	}
+-	
+-	return true;
+-}
+-
+-function done_validating(action){
+-	document.form.action = "/aidisk/Aidisk-3.asp";
+-	document.form.target = "";
+-	document.form.submit();
+-}
+-
+-function showLoading(seconds, flag){
+-	parent.showLoading(seconds, flag);
+-}
+-
+-function hideLoading(flag){
+-	parent.hideLoading(flag);
+-}
+-
+-function checkDDNSReturnCode(){
+-    $.ajax({
+-    	url: '/ajax_ddnscode.asp',
+-    	dataType: 'script', 
+-        
+-    	error: function(xhr){
+-      		checkDDNSReturnCode();
+-    	},
+-    	success: function(response){
+-                if(ddns_return_code == 'ddns_query')
+-                        setTimeout("checkDDNSReturnCode();", 500);
+-                else {
+-			if( (ddns_return_code == 'register,200')
+-			||  (ddns_return_code == 'register,220')
+-			||  (ddns_return_code == 'register,230')
+-			||  (ddns_return_code == 'no_change') ) {
+-		        	parent.setASUSDDNS_enable("1");
+-                		document.form.action = "/aidisk/Aidisk-4.asp";
+-		                document.form.target = "";
+-                		document.form.submit();
+-			}
+-			else
+-				check_return_code();
+-		}
+-        }
+-   });
+-}
+-
+-function cleandef(){
+-		if(document.form.DDNSName.value == "<#asusddns_inputhint#>")
+-				document.form.DDNSName.value = "";	
+-}
+-
+-</script>
+-</head>
+-
+-<body onload="initial();">
+-<iframe name="hidden_frame" id="hidden_frame" src="" width="0" height="0" frameborder="0"></iframe>
+-<form method="post" name="form" id="ruleForm" action="/start_apply.htm" target="hidden_frame">
+-<input type="hidden" name="current_page" value="">
+-<input type="hidden" name="next_page" value="">
+-<input type="hidden" name="group_id" value="">
+-<input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="aidisk_asusddns_register">
+-<input type="hidden" name="action_wait" value="15">
+-<input type="hidden" name="asusddns_tos_agreement" value="<% nvram_get("asusddns_tos_agreement"); %>">
+-<input type="hidden" name="ddns_server_x" value="<% nvram_get("ddns_server_x"); %>">
+-<input type="hidden" name="ddns_hostname_x" value="<% nvram_get("ddns_hostname_x"); %>">
+-<input type="hidden" name="flag" value="">
+-
+-	<div class="aidisk1_table">
+-<table>
+-	<tr>
+-  <td height="780" align="left" valign="top" bgcolor="#4d595d" style="padding-top:25px;">	<!--height="780"   align="center" //Viz -->
+-  <table width="740" height="225" border="0">
+-    <!-- start Step 2 -->  
+-  	<tr>
+-    	<td>
+-    	<table width="740" border="0">
+-    		<tr>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step1.png) 0% 0% no-repeat;"></td>
+-    			<td width="15%"><img src="/images/New_ui/aidisk/steparrow.png" /></td>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step2.png) 0% 95% no-repeat;"></td>
+-    			<td width="15%"><img src="/images/New_ui/aidisk/steparrow.png" /></td>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step3.png) 0% 0% no-repeat;"></td>
+-    			<td width="25%">&nbsp;</td>
+-    		</tr>
+-    	</table>
+-    	</td>
+-    </tr>
+-    
+-    <tr>
+-    	<td align="left" class="formfonttitle" style="padding-left:20px;" height="72"><#Step2_desp#></td>
+-    </tr>
+-
+-    <tr>
+-			<td>
+-			<div style="margin-left:20px;">	
+-				<p><input type="radio" name="check_asus_ddns" id="c1" onClick="switch_ddns();" checked>
+-					<label for="c1"><#DDNSterm_agreeword#></label>
+-				</p>			
+-				<br/>
+-						<div id="ddnsname_input" class="aidiskdesc" style="display:none;">
+-							<input type="text" name="DDNSName" id="DDNSName" class="input_25_table" onClick="cleandef()" autocorrect="off" autocapitalize="off">.asuscomm.com
+-							<div id="alert_block" style="color:#FFCC00; margin-left:5px; font-size:11px;display:none;">
+-								<span id="alert_str"></span>
+-							</div>
+-						</div>
+-				<br/>
+-				<p><input type="radio" name="check_asus_ddns" id="c2" onClick="switch_ddns();" >
+-						<label for="c2"><#neednotDDNS#></label>
+-				</p>
+-			</div>							
+-			</td>
+-		</tr>
+-	
+-    <tr>
+-    	<td>
+-    		<div style="margin:30px 0 10px 5px;" class="splitLine"></div>
+-    	</td>
+-    </tr>     
+-
+-		<tr valign="bottom">
+-  		<td width="20%">
+-			<div class="apply_gen" style="margin-top:30px">	
+-				<input type="button" id="prevButton" value="<#CTL_prev#>" onclick="go_pre_page();" class="button_gen">
+-				<input type="button" id="nextButton" value="<#CTL_next#>" onclick="go_next_page();"class="button_gen">
+-				<img id="loadingIcon" style="display:none;margin-top:7px" src="/images/InternetScan.gif"></span>
+-			</div>
+-		</td>
+-	  </tr>
+-	  <!-- end -->
+-  </table>
+-  </td>
+-</tr>  
+-</table>
+-</div>
+-</form>
+-</body>
+-</html>
+diff --git a/release/src/router/www/aidisk/Aidisk-4.asp b/release/src/router/www/aidisk/Aidisk-4.asp
+deleted file mode 100644
+index e8c86b3586..0000000000
+--- a/release/src/router/www/aidisk/Aidisk-4.asp
++++ /dev/null
+@@ -1,223 +0,0 @@
+-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<head>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title>AiDisk Wizard</title>
+-<link rel="stylesheet" type="text/css" href="aidisk.css"> 
+-<link rel="stylesheet" type="text/css" href="/form_style.css">
+-<script type="text/javascript" src="/js/jquery.js"></script>
+-<script type="text/javascript" src="/general.js"></script>
+-<script type="text/javascript" src="/state.js"></script>
+-<script>
+-var ddns_enable_x = parent.getASUSDDNS_enable();
+-var ddns_server_x = '<% nvram_get("ddns_server_x"); %>';
+-var ddns_hostname_x = '<% nvram_get("ddns_hostname_x"); %>';
+-var ddns_hostname_title;
+-var SAFE_TIME = 8;
+-var FOLDER_WORK_TIME = 1;
+-<% wanlink(); %>
+-
+-function initial(){
+-	parent.show_help_iframe(4);
+-	parent.hideLoading();
+-	//parent.get_account_parameter();
+-	show_dummyshareway();
+-	showDDNS();
+-	clickevent();
+-	parent.restore_help_td();	
+-	document.getElementById("finish").focus();
+-}
+-
+-function show_dummyshareway(){
+-	switch(parent.document.getElementById("dummyShareway").value){
+-		case "0":
+-			showtext(document.getElementById("dummyShareStr"), "\"<#Step2_method1#>\"");
+-			break;
+-		case "1":
+-			showtext(document.getElementById("dummyShareStr"), "\"<#Step2_method2#>\"");
+-			break;
+-		case "2":
+-			showtext(document.getElementById("dummyShareStr"), "\"<#Step2_method3#>\"");
+-			break;
+-		//default:
+-		//	alert("dummy: System error!");
+-	}
+-}
+-
+-function valid_wan_ip() {
+-        // test if WAN IP is a private IP.
+-        var A_class_start = inet_network("10.0.0.0");
+-        var A_class_end = inet_network("10.255.255.255");
+-        var B_class_start = inet_network("172.16.0.0");
+-        var B_class_end = inet_network("172.31.255.255");
+-        var C_class_start = inet_network("192.168.0.0");
+-        var C_class_end = inet_network("192.168.255.255");
+-        
+-        var ip_obj = wanlink_ipaddr();
+-        var ip_num = inet_network(ip_obj);
+-        var ip_class = "";
+-
+-        if(ip_num > A_class_start && ip_num < A_class_end)
+-                ip_class = 'A';
+-        else if(ip_num > B_class_start && ip_num < B_class_end)
+-                ip_class = 'B';
+-        else if(ip_num > C_class_start && ip_num < C_class_end)
+-                ip_class = 'C';
+-        else if(ip_num != 0){
+-		document.getElementById("priv_wan_ip").style.display = "none";
+-                return;
+-        }
+-	document.getElementById("priv_wan_ip").style.display = "";
+-        return;
+-}
+-
+-function showDDNS(){
+-	document.getElementById("priv_wan_ip").style.display = "none";
+-	if('<% nvram_get("enable_ftp"); %>' == '1'){
+-		if(this.ddns_enable_x == "1"){
+-			document.getElementById("haveDDNS").style.display = "";
+-			document.getElementById("noFTP").style.display = "none";
+-			document.getElementById("noDDNS").style.display = "none";
+-			valid_wan_ip();
+-		}
+-		else{
+-			document.getElementById("haveDDNS").style.display = "none";
+-			document.getElementById("noFTP").style.display = "none";
+-			document.getElementById("noDDNS").style.display = "";
+-		}
+-	}
+-	else{
+-		document.getElementById("haveDDNS").style.display = "none";
+-		document.getElementById("noFTP").style.display = "none";
+-		document.getElementById("noDDNS").style.display = "none";
+-	}
+-}
+-
+-function go_pre_page(){
+-	document.redirectForm.action = "/aidisk/Aidisk-3.asp";
+-	document.redirectForm.submit();
+-}
+-
+-function compute_work_time(){
+-  require(['/require/modules/diskList.js'], function(diskList){
+-    var total_folder_number = 0;
+-    var usbDevicesList = diskList.list();
+-
+-    for(var i=0; i < usbDevicesList.length; i++){
+-    //Scan all partition of usb device
+-      for(var j=0; j < usbDevicesList[i].partition.length; j++){
+-        if(usbDevicesList[i].partition[j].mountPoint.indexOf("part") < 0)
+-          continue;
+-        total_folder_number += parent.get_sharedfolder_in_pool(usbDevicesList[i].partition[j].mountPoint).length-1;
+-      }
+-    }
+-
+-    if(parent.document.getElementById("dummyShareway").value == "1")
+-      return FOLDER_WORK_TIME*total_folder_number*2+SAFE_TIME;
+-    else if(parent.document.getElementById("dummyShareway").value == "2")
+-      return FOLDER_WORK_TIME*total_folder_number+SAFE_TIME;
+-    else
+-      return SAFE_TIME;
+-  });	
+-}
+-
+-function clickevent(){
+-	document.getElementById("finish").onclick = function(){
+-			parent.showLoading();
+-			//parent.showLoading(compute_work_time(), "waiting");
+-			parent.document.parameterForm.next_page.value = "/aidisk.asp";
+-
+-			if(parent.document.getElementById("dummyShareway").value == "0")
+-				parent.switchShareMode("ftp", "share");
+-			else
+-				parent.initialAccount();
+-	};
+-}
+-</script>
+-</head>
+-<body onload="initial();">
+-<form method="post" name="redirectForm" action=""><!--/form-->
+-
+-<div class="aidisk1_table">
+-<table>	<!-- width="765" height="760" border="0" bgcolor="#4d595d" cellpadding="0"  cellspacing="0" style="padding:10px; padding-top:20px;"  //Viz-->
+-  
+-<tr>
+-  <td height="780" align="center" valign="top" bgcolor="#4d595d" style="padding-top:25px;">
+-  <table width="740" height="225" border="0">
+-    <!-- start Step 3 -->  
+-  	<tr>
+-    	<td>
+-    	<table width="740" border="0">
+-    		<tr>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step1.png) 0% 0% no-repeat;"></td>
+-    			<td width="15%"><img src="/images/New_ui/aidisk/steparrow.png" /></td>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step2.png) 0% 0% no-repeat;"></td>
+-    			<td width="15%"><img src="/images/New_ui/aidisk/steparrow.png" /></td>
+-    			<td width="15%" height="90px" style="background:url(/images/New_ui/aidisk/step3.png) 0% 95% no-repeat;"></td>
+-    			<td width="25%">&nbsp;</td>
+-    		</tr>
+-    	</table>
+-    	</td>
+-    </tr>
+-    
+-    <tr>
+-    	<td align="left" class="formfonttitle" style="padding-left:20px;" height="72"><#Step3_desp#></td>
+-    </tr>
+-  
+-    <tr>
+-     	<td colspan="3" valign="top" align="left" class="">
+-     	<div style="width:660px; line-height:180%;">	
+-     	<ul>
+-     	 <li><#yoursharesetting#> 
+-     	 	 <span id="dummyShareStr"></span>
+-     	 </li>
+-     	 
+-     	 <span id="haveDDNS">
+-       <li>
+-          Internet FTP address: <a target="_blank" style="text-decoration: underline; font-family:Lucida Console;">ftp://<% nvram_get("ddns_hostname_x"); %></a>
+-       </li> 
+-       </span> 
+-       <span id="priv_wan_ip" style="color:#FFCC00;">
+-       <li><#LANHostConfig_x_DDNSEnable_sectiondesc2#></li>
+-       </span>
+-
+-       <span id="noFTP" class="ServerClose">
+-       <li><#linktoFTP_no_1#></li>
+-       </span>
+-       
+-       <span id="noDDNS" class="ServerClose">
+-       <li><#linktoFTP_no_2#></li>
+-       </span>
+-       	
+-       </ul>
+-       </div> 
+-      </td>
+-    </tr>
+-    
+-    <tr>
+-    	<td>
+-    		<div style="margin:30px 0 10px 5px;" class="splitLine"></div>
+-    	</td>
+-    </tr>     
+-
+-    <tr valign="bottom">
+-	<td width="20%">
+-		<div class="apply_gen" style="margin-top:30px">
+-			<input type="button" id="prevButton" value="<#CTL_prev#>" onclick="go_pre_page();" class="button_gen">
+-			<input type="button" id="finish" value="<#CTL_finish#>" class="button_gen">
+-		</div>	
+-	</td>
+-    </tr>
+-    <!-- end -->
+-  </table>
+-  </td>
+-</tr>  
+-</table>
+-</div>	<!--  //Viz-->
+-</form>
+-</body>
+-</html>
+diff --git a/release/src/router/www/aidisk/initial_account.asp b/release/src/router/www/aidisk/initial_account.asp
+deleted file mode 100644
+index a91fd98a35..0000000000
+--- a/release/src/router/www/aidisk/initial_account.asp
++++ /dev/null
+@@ -1,26 +0,0 @@
+-﻿<html>
+-<head>
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-
+-<script type="text/javascript" src="/disk_msg.js"></script>
+-<script>
+-function initial_account_error(error_msg){
+-	parent.alert_error_msg(error_msg);
+-}
+-
+-function initial_account_success(){
+-	parent.resultOfInitialAccount();
+-}
+-</script>
+-</head>
+-
+-<body>
+-
+-<% initial_account(); %>
+-
+-</body>
+-</html>
+-- 
+2.25.1
+

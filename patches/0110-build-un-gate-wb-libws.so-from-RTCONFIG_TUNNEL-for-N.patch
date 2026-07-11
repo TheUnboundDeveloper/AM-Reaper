@@ -1,0 +1,39 @@
+From be855480f4697fc109d183b4e0fdd42b094a7939 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 8 Jul 2026 14:22:14 -0400
+Subject: [PATCH] build: un-gate wb/libws.so from RTCONFIG_TUNNEL for
+ Notification Center (Phase 1.5 fix)
+
+The kept Notification Center binaries (nt_center/nt_monitor/Notify_Event2NC)
+DT_NEED libws.so, but ASUS gated the wb build with 'ifeq (RTCONFIG_TUNNEL,y)'
+around 'obj-$(RTCONFIG_NOTIFICATION_CENTER) += wb' -- safe only while tunnel and
+NC were both always-on. With the tunnel removed (beta5) but NC kept, wb stopped
+building and libcreduction aborted 'Missing 32-bit libraries: libws.so'. Move the
+wb line out of the TUNNEL ifeq so NC always builds it. libws.so verified
+self-contained (DT_NEEDED only common libs; no libasusnatnl/natnl syms).
+---
+ release/src/router/Makefile | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 5797528086..83ba2c3bf3 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -828,9 +828,12 @@ obj-y += nvram$(BCMEX)$(EX7)
+ 
+ obj-$(RTCONFIG_LIBASUSLOG) += libasuslog
+ obj-$(RTCONFIG_SW_HW_AUTH) += sw-hw-auth
+-ifeq ($(RTCONFIG_TUNNEL),y)
++# wb (libws.so) un-gated from RTCONFIG_TUNNEL (Phase 1.5 tunnel removal): the KEPT
++# Notification Center (nt_center/nt_monitor/Notify_Event2NC) DT_NEEDs libws.so, but
++# stock gated the wb build on TUNNEL as well (safe only while both were always-on).
++# With the tunnel removed but NC kept, wb must still build or libcreduction aborts
++# "Missing 32-bit libraries: libws.so".
+ obj-$(RTCONFIG_NOTIFICATION_CENTER) += wb
+-endif
+ obj-$(RTCONFIG_NOTIFICATION_CENTER) += json-c
+ obj-$(RTCONFIG_NOTIFICATION_CENTER) += sqlite
+ obj-$(RTCONFIG_NOTIFICATION_CENTER) += nt_center
+-- 
+2.25.1
+

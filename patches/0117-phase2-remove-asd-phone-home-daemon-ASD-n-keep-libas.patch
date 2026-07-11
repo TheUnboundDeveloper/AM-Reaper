@@ -1,0 +1,87 @@
+From d4131601626c85fe0088ab103224e52ad078c438 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 9 Jul 2026 09:54:35 -0400
+Subject: [PATCH] phase2: remove asd phone-home daemon (ASD=n) + keep libasc
+
+asd is the prebuilt ASUS security daemon that periodically fetches
+definition JSONs from ASUS -- the last automatic outbound connection after
+the tunnel (1.5) and UU plugin (v1.2) were removed. Drop it with ASD=n in
+the RT-BE96U target.mak stanza; the image loses /usr/bin/asd, libasd.so,
+and its onig/jq riders.
+
+Two link shims for kept prebuilt blobs (the recurring blob trap):
+- rc/private.o imports start_asd -> inert #else stubs in services.c
+  (read_asd_enc_file needs none: prebuilt frs_service.o, always linked,
+  exports it; libasd.so does not).
+- libasc.so was pulled in only as an ASD/AHS side-effect via the config-gen
+  macro, but kept prebuilt rc/wps_pbcd/networkmap/arpstorm/asusdiscovery/
+  find_cap all DT_NEED it -> force RTCONFIG_LIBASC=y in config_base so the
+  passive library stays staged (else libcreduction fails: missing libasc.so).
+
+NOT removed here: conn_diag / dblog. Flipping their target.mak tokens is a
+no-op -- the config-gen macro force-enables RTCONFIG_CONNDIAG and
+RTCONFIG_DBLOG under the kept AMAS/AiMesh block (behnd Makefile ~4013/4259).
+Removing them needs an AMAS-decoupling pass (map amas_ssd_cd / cfg_server
+consumers first), tracked separately.
+---
+ release/src-rt/target.mak        |  2 +-
+ release/src/router/config_base   |  7 ++++++-
+ release/src/router/rc/services.c | 11 +++++++++++
+ 3 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/release/src-rt/target.mak b/release/src-rt/target.mak
+index e7b49bd21e..d93e75349d 100644
+--- a/release/src-rt/target.mak
++++ b/release/src-rt/target.mak
+@@ -334,7 +334,7 @@ export RT-BE96U += BUILD_NAME="RT-BE96U" EXT_PHY="BCM84880" NVSIZE="192" DHDAP=y
+ 		LETSENCRYPT=y VPN_FUSION=y JFFS_NVRAM=y NVRAM_ENCRYPT=y BCM_CEVENTD=y UTF8_SSID=y I2CTOOLS=y AMAS=y \
+ 		DBLOG=y ETHOBD=y CFGSYNC_LOCSYNC=y CONNDIAG=y NFCM=n DNSQUERY_INTERCEPT=y IPSEC=STRONGSWAN IPSEC_SRVCLI_ONLY=SRV \
+ 		DWB=y OPEN_NAT=y AMASDB=n CRASHLOG=y WATCH_REINIT=n BW160M=y BRCM_HOSTAPD=y UUPLUGIN=n IPERF3=y INFO_EXAP=y BCN_RPT=y \
+-		BTM_11V=y INTERNETCTRL=y ASD=y AHS=n FRS_LIVE_UPDATE=n ASUSCTRL=y HAS_6G=y CAPTCHA=y OUTFOX=y GAME_MODE=y \
++		BTM_11V=y INTERNETCTRL=y ASD=n AHS=n FRS_LIVE_UPDATE=n ASUSCTRL=y HAS_6G=y CAPTCHA=y OUTFOX=y GAME_MODE=y \
+ 		AMAS_ETHDETECT=y INSTANT_GUARD=y AVBLCHAN=y FRONTHAUL_DWB=y BCM_CLED=y BONDING=y BONDING_WAN=y ACL96=y LACP=y \
+ 		OWE_TRANS=y EXTEND_LIMIT=y LED_BTN=y WIREGUARD=y BCMBSD_V2=y AURALED_NIGHT=y AURALED=y \
+ 		SW_CTRL_ALLLED=y COMFW=y WIFI7=y BW320M=y PC_SCHED_V3=y MULTISERVICE_WAN=y MTLANCFG=y CAPTIVE_PORTAL=y CP_FREEWIFI=y \
+diff --git a/release/src/router/config_base b/release/src/router/config_base
+index 692519c987..57a4f9ce82 100644
+--- a/release/src/router/config_base
++++ b/release/src/router/config_base
+@@ -532,7 +532,12 @@ RTCONFIG_MERLINUPDATE=y
+ # RTCONFIG_VPN_FUSION_MERLIN is not set
+ RTCONFIG_NTPD=y
+ # RTCONFIG_AHS is not set
+-# RTCONFIG_LIBASC is not set
++# reaper: libasc.so is normally pulled in only by ASD/AHS, but the kept prebuilt
++# rc/wps_pbcd/networkmap/arpstorm/asusdiscovery/find_cap all DT_NEED it. With
++# ASD removed (phase 2) keep the library so those binaries still load; it is a
++# passive shared lib (no daemon/phone-home of its own). The config-gen macro
++# preserves this value when neither ASD nor AHS is set.
++RTCONFIG_LIBASC=y
+ RTCONFIG_DNSSEC=y
+ # RTCONFIG_DNSSEC_OPENSSL is not set
+ RTCONFIG_DNSSEC_NETTLE=y
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 73b7832320..996e7596a9 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -6929,6 +6929,17 @@ void start_asd(void)
+ 	stop_asd();
+ 	xstart("asd");
+ }
++#else /* !RTCONFIG_ASD */
++/* Prebuilt rc/private.o imports start_asd unconditionally; inert stubs keep it
++ * linking with the asd package removed (read_asd_enc_file stays provided by
++ * the always-linked prebuilt frs_service.o). */
++void stop_asd(void)
++{
++}
++
++void start_asd(void)
++{
++}
+ #endif /* RTCONFIG_ASD */
+ 
+ #ifdef RTCONFIG_GEARUPPLUGIN
+-- 
+2.25.1
+

@@ -275,7 +275,7 @@ cd release/src-rt-5.04behnd.4916 && nice make rt-be96u -j1     # ~25-30 min full
 
 Success criteria (verify all): log has `Done! Image 96813GW has been built`,
 `MAKE_EXIT=0`, `reaper_inject.o` links into httpd, and the fresh
-`RT-BE96U_3006_102.8_Reaper_v1.0_nand_squashfs.pkgtb` mtime is newer than the build
+`RT-BE96U_3006_102.8_Reaper_v<version>_nand_squashfs.pkgtb` mtime is newer than the build
 start. Then verify the staged rootfs (`targets/96813GW/fs/www` is **minified** -
 grep, do not diff):
 
@@ -305,6 +305,34 @@ router.
   via `EXTENDNO=reaper`; see the build-SOP memory).
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
+
+**Patch-series regeneration recipe (validated 2026-07-11, produced the 138-patch
+v1.4.1 series):**
+
+```bash
+BASE=a7ebfa133a                      # last real upstream commit
+STRIP=$(git rev-parse 48b0698465)    # the optional model-strip commit (excluded)
+
+# 1. format-patch with a pathspec that EXCLUDES docs/meta -> doc hunks are stripped
+#    from mixed commits (e.g. a version bump that also edits REAPER-FIXES.md) and
+#    pure-doc commits are skipped automatically.
+git format-patch $BASE..HEAD -o /tmp/stage -N --no-cover-letter -- \
+  . ':(exclude)*.md' ':(exclude)docs' ':(exclude).mailmap' \
+  ':(exclude).gitattributes' ':(exclude).gitignore'
+
+# 2. drop the model-strip commit's patch (first line "From <hash> …"), renumber
+#    survivors 0001.. with no gaps, and normalize the author line:
+#    sed 's/^From: .*/From: reaper <theunbounddeveloper@outlook.com>/'
+
+# 3. VALIDATE (do not skip): apply onto a fresh BASE worktree with --keep-cr and
+#    confirm zero source diff vs HEAD.
+git worktree add --detach /tmp/wt $BASE
+cd /tmp/wt && git am --keep-cr /tmp/final/*.patch
+git --git-dir=<clone>/.git --work-tree=/tmp/wt diff --name-only HEAD -- release/src/router   # must be empty
+```
+
+`--keep-cr` is mandatory when applying (some third-party files — `lltdc` — are
+CRLF; without it the CR is stripped and the series fails at `qospktio.c`).
 
 ---
 

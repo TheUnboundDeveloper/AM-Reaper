@@ -1,0 +1,438 @@
+From 764bb4c1b99c76efdbc617d9d29c2b861f9eb58b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 10:43:05 -0400
+Subject: [PATCH] rtrafd/webui: v1.3.1 - fix Traffic Analyzer
+ per-device/per-network (hardware offload bypassed conntrack); live probe;
+ QoS-off class-panel messaging
+
+Root cause (on-metal): with the Broadcom flow accelerator ON, LAN<->WAN traffic
+is forwarded in hardware and never traverses the software path, so conntrack
+byte counts and the br* bridge counters stay ~0. WAN (eth0 port counter) and
+per-class (Runner queue counters) still see it, which is why only those worked;
+per-device/per-network read the wrong source.
+
+- rtrafd: replace the conntrack per-client collector with a flow-cache reader
+  (/proc/fcache/nflist). Deltas each flow's cumulative TotalBytes per flow-id
+  slot (recycle-safe), attributes uploads by the real LAN source IP/MAC, and
+  correlates NAT'd download flows back to the client via the shared nf_conn[0]
+  pointer. Per-network derived by mapping each client's LAN device to its
+  bridge (/sys/class/net/<dev>/master, cached). This is offload-accurate.
+- poll_ifaces: drop the br* branch (software-bridge counters miss offloaded
+  flows); WAN still uses the authoritative eth0 counter; per-network now from
+  the flow cache.
+- Fallback: when nflist yields no flows (accelerator OFF - the software QoS
+  engines Traditional/Cake do this), fall back to conntrack, which IS accurate
+  on the software path. No double counting (offloaded flows' conntrack bytes
+  freeze at offload; when accel is on nflist carries them and conntrack is
+  skipped). Confirms Traffic Analyzer works across QoS off / HW QoS / SW QoS.
+- Live probe: report the running average since the current 5-min bucket opened
+  instead of the ring slot (only stamped at bucket close -> read 0 mid-window).
+- www: per-class panel shows an explicit state ('enable HW QoS Classful' /
+  'QoS is running <mode>, which has no per-class queues') when qos_type != 11,
+  instead of a blank chart. FAQ accuracy note updated to flow-cache sourcing.
+- rtrafd start/store logs raised to LOG_NOTICE so they appear in logread.
+
+EXTENDNO=Reaper_v1.3.1. Syntax-checked + mock-validated (class gate renders,
+ASCII clean). Metal test owed: Top devices + By network populate with real
+per-client data under load with the accelerator ON (the fix's core claim),
+across QoS off and a QoS mode; probe latency graphs; logread shows rtrafd.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf               |   2 +-
+ release/src/router/rtrafd/rtrafd.c        | 232 ++++++++++++++++++++--
+ release/src/router/www/Reaper_Traffic.asp |  37 +++-
+ 3 files changed, 251 insertions(+), 20 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index d25324728a..53a8015d6e 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.3.0
++EXTENDNO=Reaper_v1.3.1
+ 
+ RCNO=0
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 94fa656dcb..210f3de912 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -47,6 +47,8 @@
+ #define NCLI		64
+ #define NFLOW		16384	/* conntrack delta table (power of 2) */
+ #define NTOP		20
++#define FC_MAX		1536	/* flows parsed per fcache poll (bounded work) */
++#define FC_SLOTS	16384	/* fcache flow-id -> last-bytes delta table */
+ #define SAVE_EVERY	3600	/* persist once an hour */
+ #define DB_MAGIC	0x52545246	/* "RTRF" */
+ #define DB_VER		1
+@@ -83,8 +85,14 @@ static ring_t *r_wan, *r_net[NNET], *r_cls[7], *r_cli[NCLI], *r_prb;
+ static char netname[NNET][16];
+ static int nnet = 0;
+ static cli_t cli[NCLI];
+-static flow_t *flows;
++static flow_t *flows;			/* conntrack-fallback delta table */
+ static uint32_t flowgen = 0;
++static uint64_t *fc_last;		/* fcache flow-id -> last cumulative TotalBytes */
++static int fc_overflow_logged = 0;
++
++/* cached LAN-device -> bridge map (eth3 -> br0, wl2.1 -> br1, ...) */
++static struct { char dev[16], br[16]; } brmap[32];
++static int nbrmap = 0;
+ 
+ static uint64_t last_if_rx[NNET + 1], last_if_tx[NNET + 1];	/* [0]=wan */
+ static int have_if_last[NNET + 1];
+@@ -193,6 +201,41 @@ static int net_slot(const char *name)
+ 	return nnet++;
+ }
+ 
++static void ip2str(uint32_t ip, char *out /* >=16 */)
++{
++	snprintf(out, 16, "%u.%u.%u.%u",
++		 (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
++}
++
++/* LAN-side interface -> its bridge (per-network grouping). A port's bridge is
++ * /sys/class/net/<dev>/master; wireless VIFs (wl2.1) and wired ports resolve to
++ * br0/br1/... Cached; unbridged devices report under their own name. */
++static const char *dev_bridge(const char *dev)
++{
++	int i;
++	char path[80], link[80];
++	ssize_t n;
++	const char *b = dev;
++
++	if (!dev[0]) return dev;
++	for (i = 0; i < nbrmap; i++)
++		if (strcmp(brmap[i].dev, dev) == 0) return brmap[i].br;
++
++	snprintf(path, sizeof(path), "/sys/class/net/%s/master", dev);
++	n = readlink(path, link, sizeof(link) - 1);
++	if (n > 0) {
++		char *s;
++		link[n] = '\0';
++		s = strrchr(link, '/');
++		b = s ? s + 1 : link;
++	}
++	if (nbrmap >= (int)(sizeof(brmap) / sizeof(brmap[0])))
++		return "lan";	/* map full (won't happen in practice): safe constant */
++	strlcpy(brmap[nbrmap].dev, dev, sizeof(brmap[0].dev));
++	strlcpy(brmap[nbrmap].br, b, sizeof(brmap[0].br));
++	return brmap[nbrmap++].br;
++}
++
+ static int cli_slot(const char *key, const char *ip)
+ {
+ 	int i, oldest = 0;
+@@ -255,16 +298,14 @@ static void poll_ifaces(const char *wanif)
+ 		if (sscanf(c + 1, "%llu %*u %*u %*u %*u %*u %*u %*u %llu",
+ 			   (unsigned long long *)&rxb, (unsigned long long *)&txb) != 2)
+ 			continue;
++		/* WAN only: the eth0 port counter is authoritative and sees offloaded
++		 * traffic. Per-network is NOT read here - the br* software-bridge
++		 * counters miss hardware-offloaded flows (they never traverse the
++		 * Linux bridge); per-network is derived from the flow cache instead. */
+ 		if (strcmp(name, wanif) == 0) {
+ 			if (have_if_last[0] && rxb >= last_if_rx[0] && txb >= last_if_tx[0])
+ 				ring_add(r_wan, rxb - last_if_rx[0], txb - last_if_tx[0]);
+ 			last_if_rx[0] = rxb; last_if_tx[0] = txb; have_if_last[0] = 1;
+-		} else if (strncmp(name, "br", 2) == 0 && name[2] >= '0' && name[2] <= '9') {
+-			int sl = net_slot(name);
+-			if (sl < 0) continue;
+-			if (have_if_last[sl + 1] && rxb >= last_if_rx[sl + 1] && txb >= last_if_tx[sl + 1])
+-				ring_add(r_net[sl], rxb - last_if_rx[sl + 1], txb - last_if_tx[sl + 1]);
+-			last_if_rx[sl + 1] = rxb; last_if_tx[sl + 1] = txb; have_if_last[sl + 1] = 1;
+ 		}
+ 	}
+ 	fclose(f);
+@@ -313,6 +354,161 @@ put:
+ 	top[i].rate = rate; top[i].up = up; top[i].dn = dn;
+ }
+ 
++/* Broadcom flow-cache reader (offload-accurate). /proc/fcache/nflist lists
++ * every actively-forwarded flow (SW + HW hits) with a cumulative TotalBytes,
++ * the real LAN source IP/MAC on the upload direction, and an nf_conn pointer
++ * shared by both directions of a connection. We delta each flow's TotalBytes
++ * per flow-id slot, then group the two directions by nf_conn to attribute
++ * download bytes (which are NAT'd and don't carry the LAN IP) back to the
++ * client. This is what conntrack byte-accounting cannot see once the Runner
++ * offloads a flow to hardware. Falls back to conntrack if the table is absent. */
++static void poll_conntrack(void);	/* fwd decl - fallback */
++
++struct fcf {
++	uint64_t nfc;		/* nf_conn[0] pointer (connection correlation key) */
++	uint64_t delta;		/* TotalBytes delta this poll */
++	uint32_t sip, dip;
++	int dport, lan;		/* lan = source is a LAN address (upload dir) */
++	char mac[20], dev[16];	/* client MAC (upload SA); LAN-side dev */
++};
++
++static void poll_fcache(void)
++{
++	FILE *f = fopen("/proc/fcache/nflist", "r");
++	char line[1024];
++	static struct fcf fl[FC_MAX];
++	static char consumed[FC_MAX];
++	int nfl = 0, i, j, parsed = 0;
++
++	if (!f) { poll_conntrack(); return; }	/* accelerator table absent */
++
++	ntop = 0;
++	if (!fgets(line, sizeof(line), f) || !fgets(line, sizeof(line), f)) {
++		fclose(f);		/* two header lines */
++		return;
++	}
++
++	while (fgets(line, sizeof(line), f)) {
++		int flowid, sport, dport, a, b, c, d;
++		unsigned long long tbytes = 0;
++		char sips[24], dips[24], macs[24], rxdev[16], txdev[16], nfcs[24];
++		char *p, *q, *gt;
++		uint64_t last, delta;
++
++		parsed++;
++		if (nfl >= FC_MAX) {
++			if (!fc_overflow_logged) {
++				syslog(LOG_NOTICE, "rtrafd: >%d active flows, per-device totals sampled", FC_MAX);
++				fc_overflow_logged = 1;
++			}
++			break;
++		}
++		/* left block is fixed-width: flowid=tok1, TotalBytes=tok8 */
++		if (sscanf(line, "%d %*s %*s %*s %*s %*s %*s %llu", &flowid, &tbytes) != 2)
++			continue;
++		if (flowid < 0 || flowid >= FC_SLOTS)
++			continue;
++		/* src ip:port = 1st <...>, dst ip:port = 2nd <...> */
++		if ((p = strchr(line, '<')) == NULL) continue;
++		if (sscanf(p, "<%23[0-9.]:%d>", sips, &sport) != 2) continue;
++		if ((q = strchr(p + 1, '<')) == NULL) continue;
++		if (sscanf(q, "<%23[0-9.]:%d>", dips, &dport) != 2) continue;
++		/* MAC SA = 3rd <...>; MAC DA = 4th; then RxDev TxDev nf_conn[0] */
++		macs[0] = rxdev[0] = txdev[0] = nfcs[0] = '\0';
++		if ((p = strchr(q + 1, '<')) != NULL) {
++			sscanf(p, "<%19[0-9a-fA-F:]>", macs);
++			if ((p = strchr(p + 1, '<')) != NULL &&	/* MAC DA */
++			    (gt = strchr(p, '>')) != NULL)
++				sscanf(gt + 1, " %15s %15s %23s", rxdev, txdev, nfcs);
++		}
++		/* octets are zero-padded (192.168.050.215) -> parse decimal, NOT
++		 * inet_aton (which would read "050" as octal). */
++		if (sscanf(sips, "%d.%d.%d.%d", &a, &b, &c, &d) != 4) continue;
++		fl[nfl].sip = ((uint32_t)a << 24) | (b << 16) | (c << 8) | d;
++		if (sscanf(dips, "%d.%d.%d.%d", &a, &b, &c, &d) == 4)
++			fl[nfl].dip = ((uint32_t)a << 24) | (b << 16) | (c << 8) | d;
++		else
++			fl[nfl].dip = 0;
++
++		last = fc_last[flowid];
++		delta = (tbytes >= last) ? (tbytes - last) : tbytes;	/* recycle-safe */
++		fc_last[flowid] = tbytes;
++		if (delta == 0) continue;
++
++		fl[nfl].nfc = strtoull(nfcs, NULL, 16);
++		fl[nfl].delta = delta;
++		fl[nfl].dport = dport;
++		fl[nfl].lan = ((fl[nfl].sip & lan_mask) == lan_net);
++		strlcpy(fl[nfl].mac, macs, sizeof(fl[0].mac));
++		strlcpy(fl[nfl].dev, fl[nfl].lan ? rxdev : txdev, sizeof(fl[0].dev));
++		nfl++;
++	}
++	fclose(f);
++
++	/* nflist yielded no flows-with-deltas. Two cases: (a) genuinely idle, or
++	 * (b) the accelerator is OFF - which is exactly what the software QoS
++	 * engines (Traditional type 0, Cake type 9) do. Either way, fall back to
++	 * conntrack, which sees the software path accurately when accel is off (and
++	 * finds little when merely idle). No double counting: when accel is ON,
++	 * nfl>0 and this is skipped; and an offloaded flow's conntrack bytes freeze
++	 * at offload, so the two sources never account the same bytes. */
++	if (nfl == 0) {
++		poll_conntrack();
++		return;
++	}
++	(void)parsed;
++
++	/* age the fc_last table: any slot NOT seen this poll keeps its value, which
++	 * is fine (delta stays 0 until it grows or a new flow recycles the slot). */
++
++	memset(consumed, 0, nfl);
++	for (i = 0; i < nfl; i++) {
++		uint64_t nfc, up = 0, dn = 0;
++		int have_lan = 0, ci, ns;
++		uint32_t cli_ip = 0, dst_ip = 0;
++		int dport = 0;
++		char cli_mac[20] = "", cli_dev[16] = "", ips[16], dsts[16];
++
++		if (consumed[i]) continue;
++		nfc = fl[i].nfc;
++		/* group both directions of this connection (shared nf_conn) */
++		for (j = i; j < nfl; j++) {
++			if (consumed[j]) continue;
++			if (nfc && fl[j].nfc != nfc) continue;
++			if (!nfc && j != i) continue;	/* nfc==0: don't group blindly */
++			consumed[j] = 1;
++			if (fl[j].lan) {
++				up += fl[j].delta;
++				if (!have_lan) {
++					have_lan = 1;
++					cli_ip = fl[j].sip;
++					dst_ip = fl[j].dip;
++					dport = fl[j].dport;
++					strlcpy(cli_mac, fl[j].mac, sizeof(cli_mac));
++					strlcpy(cli_dev, fl[j].dev, sizeof(cli_dev));
++				}
++			} else {
++				dn += fl[j].delta;
++				if (!cli_dev[0])
++					strlcpy(cli_dev, fl[j].dev, sizeof(cli_dev));
++			}
++		}
++		if (!have_lan)
++			continue;	/* no LAN side = router-originated / unmatched */
++
++		ip2str(cli_ip, ips);
++		ci = cli_slot(cli_mac[0] ? cli_mac : ips, ips);
++		ring_add(r_cli[ci], dn, up);	/* rx=download, tx=upload */
++
++		ns = net_slot(dev_bridge(cli_dev));
++		if (ns >= 0)
++			ring_add(r_net[ns], dn, up);
++
++		ip2str(dst_ip, dsts);
++		top_note(ips, dsts, dport, 0, up, dn);
++	}
++}
++
+ static void poll_conntrack(void)
+ {
+ 	FILE *f = fopen("/proc/net/nf_conntrack", "r");
+@@ -515,8 +711,17 @@ static void write_live(const char *store, uint64_t wrx_d, uint64_t wtx_d,
+ 	fprintf(o, "],\"quota\":{\"used\":%llu,\"cap_gb\":%llu}",
+ 		(unsigned long long)(r_wan->bm[imcur].rx + r_wan->bm[imcur].tx),
+ 		(unsigned long long)cap_gb);
+-	fprintf(o, ",\"probe\":{\"rtt_us\":%llu,\"loss\":%llu}",
+-		(unsigned long long)r_prb->b5[i5cur].rx, (unsigned long long)r_prb->b5[i5cur].tx);
++	/* live probe = running average since the current 5-min bucket opened;
++	 * the ring slot is only stamped at bucket close, so reading it directly
++	 * showed 0 for most of each window. Fall back to the last closed slot
++	 * until the first sample of a new bucket lands. */
++	{
++		uint64_t live_rtt = (prb_n > prb_lost) ? prb_rtt_sum / (prb_n - prb_lost)
++						       : r_prb->b5[i5cur].rx;
++		uint64_t live_loss = prb_n ? (prb_lost * 100) / prb_n : r_prb->b5[i5cur].tx;
++		fprintf(o, ",\"probe\":{\"rtt_us\":%llu,\"loss\":%llu}",
++			(unsigned long long)live_rtt, (unsigned long long)live_loss);
++	}
+ 	fprintf(o, ",\"top\":[");
+ 	for (i = 0; i < ntop; i++)
+ 		fprintf(o, "%s{\"src\":\"%s\",\"dst\":\"%s\",\"dport\":%d,\"proto\":%d,\"rate\":%llu,\"up\":%llu,\"dn\":%llu}",
+@@ -627,7 +832,8 @@ int main(int argc, char **argv)
+ 	for (i = 0; i < NCLI; i++) r_cli[i] = calloc(1, sizeof(ring_t));
+ 	r_prb = calloc(1, sizeof(ring_t));
+ 	flows = calloc(NFLOW, sizeof(flow_t));
+-	if (!r_wan || !r_prb || !flows) return 1;
++	fc_last = calloc(FC_SLOTS, sizeof(uint64_t));
++	if (!r_wan || !r_prb || !flows || !fc_last) return 1;
+ 
+ 	mkdir("/tmp/rtraf", 0700);
+ 	f_write_string("/proc/sys/net/netfilter/nf_conntrack_acct", "1", 0, 0);
+@@ -648,7 +854,9 @@ int main(int argc, char **argv)
+ 	db_load(dbpath);
+ 	last_save = time(NULL);
+ 	slots_for(time(NULL), &i5cur, &ihcur, &idcur, &imcur);
+-	syslog(LOG_INFO, "rtrafd: started (store=%s wan=%s)", store, wanif);
++	/* LOG_NOTICE so it clears the default syslog threshold and shows in logread */
++	syslog(LOG_NOTICE, "rtrafd: started (store=%s wan=%s lan=%s/%08x)",
++	       store, wanif, nvram_safe_get("lan_ipaddr"), lan_mask);
+ 
+ 	while (running) {
+ 		time_t now = time(NULL);
+@@ -676,7 +884,7 @@ int main(int argc, char **argv)
+ 
+ 		poll_ifaces(wanif);
+ 		poll_classes(wanif);
+-		poll_conntrack();
++		poll_fcache();		/* offload-accurate per-client/per-network + top talkers */
+ 		poll_probe();
+ 		check_quota();
+ 
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 429fb8db1d..90817df1c2 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -170,9 +170,12 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+ <div class="grid">
+   <div class="panel">
+     <h2>By QoS class</h2>
+-    <div class="sub">Per-class upload (needs HW QoS Classful running). Stacked, newest at right.</div>
+-    <div class="legend" id="clslegend"></div>
+-    <div class="chart-wrap"><svg id="clschart" width="100%" height="200" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg></div>
++    <div class="sub">Per-class upload, stacked, newest at right.</div>
++    <div id="clsgate" style="display:none;padding:22px 4px;font-size:13px;color:var(--amber);line-height:1.6"></div>
++    <div id="clsbody">
++      <div class="legend" id="clslegend"></div>
++      <div class="chart-wrap"><svg id="clschart" width="100%" height="200" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg></div>
++    </div>
+   </div>
+   <div class="panel">
+     <h2>By network</h2>
+@@ -237,7 +240,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <div class="fhead"><h2>Traffic Analyzer Guide</h2><span class="fclose" onclick="faqClose()">&times;</span></div>
+   <div class="fbody">
+     <details open><summary>Where is my history stored?</summary><div class="fc">Choose in Settings: <b>RAM</b> (default, cleared on reboot), <b>JFFS</b> (internal flash, survives reboot), or <b>USB</b> (a plugged-in disk, most space). Anything longer than the live view needs JFFS or USB if you want it to outlast a reboot. The collector writes a snapshot hourly, so an unclean shutdown loses at most the last hour.</div></details>
+-    <details><summary>How accurate are the per-device numbers?</summary><div class="fc">They come from the kernel connection tracker, which the flow accelerator syncs periodically &mdash; so totals are accurate to within a poll interval, and a very short flow that starts and ends between polls can undercount slightly. Device names come from the network map; a device shows as a bare IP until it is named there. IPv6 traffic counts toward interface and network totals but is not split per-device in this version.</div></details>
++    <details><summary>How accurate are the per-device numbers?</summary><div class="fc">They come from the router's <b>hardware flow accelerator</b> table &mdash; the same engine that forwards your traffic &mdash; so offloaded flows (the bulk of throughput on this router) are counted accurately, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. IPv6 counts toward the WAN total but is not yet split per-device.</div></details>
+     <details><summary>Why is the per-class chart empty?</summary><div class="fc">Per-class data only exists while <b>HW QoS Classful</b> (Traffic Manager) is the active engine &mdash; that is what creates the five upload queues this reads. On any other QoS mode the class chart stays blank; everything else still works.</div></details>
+     <details><summary>What are "top talkers"?</summary><div class="fc">The highest-rate active connections right now, grouped by destination port so you can tell <i>what kind</i> of traffic it is (HTTPS 443, QUIC 443/UDP, SSH 22, mail, torrent-range, etc.) without deep packet inspection. This is the privacy-respecting replacement for the old per-app view &mdash; it reads only the connection table, never packet contents.</div></details>
+     <details><summary>How does the data cap work?</summary><div class="fc">Set a monthly GB figure and the collector tracks month-to-date WAN usage (up + down). At 80% and again at 100% it writes a warning to the system log; if you have a remote syslog server or SIEM configured, the warning reaches it too. It is a notification, not an enforcement &mdash; nothing is cut off.</div></details>
+@@ -265,8 +268,25 @@ var NV = {
+   enable: '<% nvram_get("rtraf_enable"); %>',
+   path:   '<% nvram_get("rtraf_path"); %>',
+   probe:  decodeURIComponent('<% nvram_char_to_ascii("", "rtraf_probe"); %>'),
+-  cap:    '<% nvram_get("rtraf_cap_gb"); %>'
++  cap:    '<% nvram_get("rtraf_cap_gb"); %>',
++  qos_en: '<% nvram_get("qos_enable"); %>',
++  qos_ty: '<% nvram_get("qos_type"); %>'
+ };
++var QOSMODES={'0':'Traditional QoS','2':'Bandwidth Limiter','9':'Cake','10':'Hardware QoS (single queue)','11':'HW QoS Classful'};
++/* Per-class data only exists on qos_type 11. Show an explicit state on the class
++   panel rather than a blank chart when QoS is off or on a non-classful engine. */
++function classGate(){
++  var on = (NV.qos_en==='1' && NV.qos_ty==='11');
++  document.getElementById('clsgate').style.display = on?'none':'';
++  document.getElementById('clsbody').style.display = on?'':'none';
++  if(!on){
++    var msg = (NV.qos_en!=='1')
++      ? 'Per-class stats require the QoS engine. Traffic shaping is currently <b>off</b> &mdash; enable <b>HW QoS Classful</b> in Traffic Manager to populate this panel.'
++      : 'Per-class stats require <b>HW QoS Classful</b> (the 5-queue engine). QoS is running <b>'+(QOSMODES[NV.qos_ty]||('type '+NV.qos_ty))+'</b>, which has no per-class queues. Switch the engine in Traffic Manager to see this data.';
++    document.getElementById('clsgate').innerHTML = msg;
++  }
++  return on;
++}
+ var CLSCOLOR = ['#71767b','#3987e5','#199e70','#c98500','#9085e9','#d95926','#e66767'];
+ var CLSNAME  = (decodeURIComponent('<% nvram_char_to_ascii("", "qos_class_names"); %>')||'Q1,Q2,Q3,Q4,Q5').split(',');
+ var NETCOLOR = ['#3987e5','#199e70','#c98500','#9085e9','#d95926','#e66767','#d55181','#71767b'];
+@@ -352,11 +372,14 @@ function renderHist(d){
+     series.push({data:lat.map(function(v){return v/lmax*maxv;}),color:'var(--amber)'}); }
+   lineChart('wanchart', series, maxv, fmtBps);
+ 
+-  /* class stack */
++  /* class stack (gated: hidden entirely when not on HW QoS Classful) */
++  if(!classGate()){ /* gate message shown; skip class chart */ }
++  else {
+   var cl=d.class||{}, clsLays=[], clsCols=[], clsLeg='';
+   for(var c=1;c<=5;c++){ var arr=(cl['q'+c]||[]).map(function(p){return p[0];}); if(arr.length){ clsLays.push(arr); clsCols.push(CLSCOLOR[c]); clsLeg+='<span><i style="background:'+CLSCOLOR[c]+'"></i>'+esc(CLSNAME[c-1]||('Q'+c))+'</span>'; } }
+-  document.getElementById('clslegend').innerHTML = clsLeg || '<span style="color:var(--steel)">No QoS class data in this window.</span>';
++  document.getElementById('clslegend').innerHTML = clsLeg || '<span style="color:var(--steel)">No QoS class data in this window yet.</span>';
+   if(clsLays.length) stackChart('clschart', clsLays, null, clsCols); else document.getElementById('clschart').innerHTML='';
++  }
+ 
+   /* network stack */
+   var nets=d.nets||{}, netLays=[], netCols=[], netLeg='', ni=0;
+-- 
+2.25.1
+

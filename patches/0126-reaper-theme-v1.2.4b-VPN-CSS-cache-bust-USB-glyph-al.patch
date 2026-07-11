@@ -1,0 +1,65 @@
+From 23d011e3d1c5d08815b5be8ea7dc4d842f1d7c02 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 10 Jul 2026 19:26:12 -0400
+Subject: [PATCH] reaper theme: v1.2.4b - VPN CSS cache-bust + USB glyph
+ alignment nudge
+
+Shipped as side-image Reaper_v1.2.4b (v1.2.4 base + CSS-only; sha256 c ...).
+- reaperThemeFrame (both VPN wrappers): append ?t=Date.now() to the injected
+  reaper_content.css href so the iframe always loads the current stylesheet
+  after a firmware update (the v1.2.4a VPN theming was correct but browsers
+  served a cached older copy to the iframe).
+- reaper_content.css: transform:translateY(4px) on div[id^=iconUSBdisk] to
+  centre the plugged-USB glyph in its ring (inline-JS bg-position can't be
+  retuned by CSS; transform can). Iteration-1 offset, metal-tuned.
+---
+ release/src/router/www/reaper/reaper_content.css             | 5 +++++
+ .../sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp   | 2 +-
+ .../sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp   | 2 +-
+ 3 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 948de87f3f..b73a4d8688 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -410,6 +410,11 @@ div[id^="ring_USBdisk"]{background-image:url("/images/New_ui/networkmap/white_05
+    so an empty slot recedes; distinct selector, so the populated crimson icon is
+    untouched (does NOT widen the [id^=iconUSBdisk] filter that caused the ring-tint). */
+ .iconNo,.iconNoM2{filter:grayscale(1) brightness(.45)!important;opacity:.85!important}
++/* v1.2.4b: a plugged-USB glyph (#iconUSBdisk_N, nested in the ring) sat a few px
++   high in the ring. Its background-position is set inline by index.asp JS so CSS
++   can't retune it, but transform is NOT inline -> nudge the glyph down to centre it
++   on the ring. ITERATION-1 offset (metal-tuned); ring div is untouched (id ring_). */
++div[id^="iconUSBdisk"]{transform:translateY(4px)!important}
+ 
+ /* Network Map "View List" popup (device-map/clientlist.html): the client list
+    still rendered on stock teal */
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+index 37629bcb89..535959a8bf 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+@@ -29,7 +29,7 @@ function reaperThemeFrame(ifr){
+ 		var d=ifr.contentDocument; if(!d) return;
+ 		if(!d.querySelector('link[href*="reaper_content"]')){
+ 			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
+-			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
++			l.href="/reaper/reaper_content.css?t="+(new Date()).getTime(); (d.head||d.documentElement).appendChild(l);
+ 		}
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+index 00ea2db54c..f9b5724eb1 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+@@ -29,7 +29,7 @@ function reaperThemeFrame(ifr){
+ 		var d=ifr.contentDocument; if(!d) return;
+ 		if(!d.querySelector('link[href*="reaper_content"]')){
+ 			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
+-			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
++			l.href="/reaper/reaper_content.css?t="+(new Date()).getTime(); (d.head||d.documentElement).appendChild(l);
+ 		}
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-- 
+2.25.1
+

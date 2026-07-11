@@ -1,0 +1,85 @@
+From eb34121cc4b72fff45d97d9f0e59929c34bfca8b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 8 Jul 2026 14:08:17 -0400
+Subject: [PATCH] reaper: remove AAE/mastiff cloud tunnel + restore Ookla
+ speed-test tab (Phase 1.5)
+
+Tunnel removal: drop NATNL_AICLOUD + NATNL_AIHOME from the RT-BE96U stanza of
+release/src-rt/target.mak -> unsets RTCONFIG_TUNNEL/AICLOUD_TUNNEL/AIHOME_TUNNEL,
+compiling out aaews/mastiff/aaeuac/asusnatnl(libasusnatnl.so)/wb and the whole
+rc/natnl_api.c body. No owner traffic transits ASUS relay infrastructure.
+
+MANDATORY SHIM: un-gate aae_ipc.o in shared/Makefile (was inside
+ifeq RTCONFIG_TUNNEL). The prebuilt aae_ipc.o (self-contained unix-socket IPC
+client) stays in libshared so the closed web_hook.o / priv_webapi.o / libwebapi.so
+resolve aae_sendIpcMsg / aae_sendIpcMsgAndWaitResp; with no daemon the IPC fails
+gracefully. Without this, httpd + libwebapi fail to LINK with TUNNEL off
+(the 1.2 bwdpi/amas_lib blob-link-trap pattern).
+
+Bundled: restore the Ookla Internet Speed tab (RTCONFIG_OOKLA, independent of the
+removed bwdpi) that the Phase 1.2 menu cleanup over-broadly dropped -- re-add
+{url:AdaptiveQoS_InternetSpeed.asp, tabName:<#InternetSpeed#>} to menu_BandwidthMonitor.
+Binary /usr/sbin/ookla + page + assets already ship; support gate already OK.
+
+Accepted losses: ASUS app remote access, asuscomm.com DDNS, app-initiated Instant
+Guard onboarding. KEPT: inadyn generic DDNS, WireGuard/OpenVPN servers (independent),
+IPsec Instant Guard server. ACCOUNT_BINDING left set (inert without the tunnel).
+---
+ release/src-rt/target.mak                            | 4 ++--
+ release/src/router/shared/Makefile                   | 7 +++++--
+ release/src/router/www/require/menuTrees/menuTree.js | 1 +
+ 3 files changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt/target.mak b/release/src-rt/target.mak
+index 0c6010b2a2..97132cefbb 100644
+--- a/release/src-rt/target.mak
++++ b/release/src-rt/target.mak
+@@ -328,10 +328,10 @@ export RT-BE96U += BUILD_NAME="RT-BE96U" EXT_PHY="BCM84880" NVSIZE="192" DHDAP=y
+ 		SMARTSYNCBASE=n USB="USB" APP="network" PROXYSTA=y DNSMQ=y SHP=n BCMWL6=y BCMWL6A=y DISK_MONITOR=y \
+ 		OPTIMIZE_XBOX=y ODMPID=y BCMSMP=y XHCI=y DUALWAN=y NEW_USER_LOW_RSSI=y OPENVPN=y TIMEMACHINE=y MDNS=y VPNC=y \
+ 		JFFS2LOG=y DUMP_OOPS_MSG=n LINUX_MTD="64" DEBUGFS=y TEMPROOTFS=n SSH=y EMAIL=y FRS_FEEDBACK=n SYSSTATE=y \
+-		STAINFO=y CLOUDCHECK=n NATNL_AICLOUD=y REBOOT_SCHEDULE=y MULTICASTIPTV=y QUAGGA=y WLCLMLOAD=n BCM_MUMIMO=y LAN50="all" \
++		STAINFO=y CLOUDCHECK=n REBOOT_SCHEDULE=y MULTICASTIPTV=y QUAGGA=y WLCLMLOAD=n BCM_MUMIMO=y LAN50="all" \
+ 		ATCOVER=y GETREALIP=y CFEZ=y ETLAN_LED=y TFAT=y NTFS="tuxera" HFS="tuxera" NEWSSID_REV4=y NEW_APP_ARM=y NETOOL=y \
+ 		TRACEROUTE=y FORCE_AUTO_UPGRADE=n SW_HW_AUTH=y HD_SPINDOWN=y ASPMD=n BCM_MEVENT=n BCMEVENTD=y BCM_APPEVENTD=n \
+-		LETSENCRYPT=y VPN_FUSION=y JFFS_NVRAM=y NVRAM_ENCRYPT=y NATNL_AIHOME=y BCM_CEVENTD=y UTF8_SSID=y I2CTOOLS=y AMAS=y \
++		LETSENCRYPT=y VPN_FUSION=y JFFS_NVRAM=y NVRAM_ENCRYPT=y BCM_CEVENTD=y UTF8_SSID=y I2CTOOLS=y AMAS=y \
+ 		DBLOG=y ETHOBD=y CFGSYNC_LOCSYNC=y CONNDIAG=y NFCM=n DNSQUERY_INTERCEPT=y IPSEC=STRONGSWAN IPSEC_SRVCLI_ONLY=SRV \
+ 		DWB=y OPEN_NAT=y AMASDB=n CRASHLOG=y WATCH_REINIT=n BW160M=y BRCM_HOSTAPD=y UUPLUGIN=y IPERF3=y INFO_EXAP=y BCN_RPT=y \
+ 		BTM_11V=y INTERNETCTRL=y ASD=y AHS=n FRS_LIVE_UPDATE=n ASUSCTRL=y HAS_6G=y CAPTCHA=y OUTFOX=y GAME_MODE=y \
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 5458759926..eed2ff15ec 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -533,11 +533,14 @@ CFLAGS  += -I$(TOP)/sw-hw-auth
+ vpath %.c $(TOP)/sw-hw-auth
+ endif
+ 
+-ifeq ($(RTCONFIG_TUNNEL),y)
++# aae_ipc.o un-gated from RTCONFIG_TUNNEL (Phase 1.5 tunnel removal): the prebuilt
++# aae_ipc.o (self-contained unix-socket IPC client) MUST stay in libshared so the
++# closed web_hook.o / priv_webapi.o / libwebapi.so blobs still resolve
++# aae_sendIpcMsg / aae_sendIpcMsgAndWaitResp. With no mastiff/aaews daemon the IPC
++# just fails gracefully. Without this, httpd + libwebapi fail to LINK when TUNNEL is off.
+ OBJS += aae_ipc.o
+ CFLAGS  += -I$(TOP)/aaews
+ vpath %.c $(TOP)/aaews
+-endif
+ 
+ ifeq ($(RTCONFIG_GEFORCENOW), y)
+ OBJS += nvgfn.o
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 5a60acc58d..215fcb79c6 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -102,6 +102,7 @@ define(function(){
+ 					{url: "QoS_EZQoS.asp", tabName: "<#menu5_3_2#>"},
+ 					{url: "AdaptiveQoS_ROG.asp", tabName: "<table style='margin-top:-7px;'><tr><td><img src='/images/ROG_Logo.png' style='border:0px;width:32px;'></td><td>ROG First</td></tr></table>"}, 
+ 					{url: "Main_Spectrum_Content.asp", tabName: "<#Spectrum_title#>"},
++					{url: "AdaptiveQoS_InternetSpeed.asp", tabName: "<#InternetSpeed#>"},
+ 					{url: "Advanced_QOSUserPrio_Content.asp", tabName: "__INHERIT__"},
+ 					{url: "Advanced_QOSUserRules_Content.asp", tabName: "__INHERIT__"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+-- 
+2.25.1
+

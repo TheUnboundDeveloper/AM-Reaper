@@ -1,0 +1,1489 @@
+From 4cc8250b3e132943f51f4baa96e2a66bcafe923b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 09:38:22 -0400
+Subject: [PATCH] rc/httpd/webui: v1.3.0 - Traffic Analyzer (rtrafd collector +
+ native page: per-device/per-network/per-class history, top talkers, quota,
+ WAN probe, RAM/JFFS/USB storage)
+
+New in-tree daemon rtrafd (release/src/router/rtrafd/, no listening port):
+- Samples every 30s from clean sources only (DPI stack stays removed):
+  /proc/net/dev (WAN + per-br* network), /proc/net/nf_conntrack (per-client
+  bytes + live top talkers, LAN-attributed via lan_ipaddr/mask + /proc/net/arp),
+  tmctl getqstats (per-QoS-class, only while HW classful runs), and an opt-in
+  ping probe (WAN latency/loss; empty target = no outbound).
+- Four ring granularities per series (5min x288/24h, hour x336/14d, day x366,
+  month x24) published as JSON under /tmp/rtraf for the authed endpoint.
+- Storage backend chosen by nvram rtraf_path (rstats_path-style): "" = RAM
+  (cleared on reboot), "jffs" = internal flash, "usb" = /tmp/mnt/*/reaper;
+  hourly snapshot, atomic rename, unwritable target falls back to RAM.
+- Monthly quota (rtraf_cap_gb): syslog WARNING at 80% and 100% (reaches a
+  remote SIEM via the existing remote-syslog path); notification only.
+- Enables nf_conntrack_acct sysctl so flows carry byte counters.
+- Wired: router Makefile obj-y + install rule; rc start_rtraf/stop_rtraf on
+  boot (start_services) + service dispatch ("rtraf") + stop_services; rc.h
+  protos; defaults.c rtraf_enable/path/probe/cap_gb.
+
+httpd: do_reaper_traffic_cgi + reaper_traffic.cgi (do_auth) streams the
+requested window snapshot; window name matched against a fixed 5-literal
+allowlist so the served path is never request-controlled.
+
+www: NEW Reaper_Traffic.asp dashboard-native page - live tiles, 5 time
+windows (live/24h/14d/1y/month), WAN throughput lines with optional latency
+overlay, stacked per-class + per-network areas, top-devices table, live
+top-talkers by destination-port bucket (the no-DPI replacement for per-app),
+monthly-cap meter, JSON export, and a Settings panel exposing the storage
+backend + probe + cap, plus a usage/FAQ fly-out. Chart series use a
+CVD-validated categorical palette (dataviz validator, dark surface: all six
+checks pass) for the stacks; brand crimson/jade/amber carry WAN up/down/
+latency. Menu Traffic-Analyzer tab + dashboard rail retargeted (stock
+Monitor/Statistic pages still ship, reachable by URL); reaper_inject.c +
+reaper_shell native-marker skip the page.
+
+Mock-validated render. EXTENDNO=Reaper_v1.3.0. Metal tests owed: rtrafd
+runs (ps), per-client numbers accrue with fc accel ON (the conntrack-acct
+sync question), JFFS/USB persistence survives reboot + RAM fallback, quota
+syslog fires at 80/100%, per-class chart populates under HW classful, probe
+latency graphs, export downloads.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/Makefile                   |   7 +
+ release/src/router/httpd/reaper_inject.c      |   1 +
+ release/src/router/httpd/web.c                |  35 +
+ release/src/router/rc/rc.h                    |   2 +
+ release/src/router/rc/services.c              |  28 +
+ release/src/router/rtrafd/Makefile            |  48 ++
+ release/src/router/rtrafd/rtrafd.c            | 704 ++++++++++++++++++
+ release/src/router/shared/defaults.c          |   6 +
+ release/src/router/www/Main_ReaperDash.asp    |   2 +-
+ release/src/router/www/Reaper_Traffic.asp     | 429 +++++++++++
+ .../router/www/require/menuTrees/menuTree.js  |   5 +-
+ 12 files changed, 1266 insertions(+), 3 deletions(-)
+ create mode 100644 release/src/router/rtrafd/Makefile
+ create mode 100644 release/src/router/rtrafd/rtrafd.c
+ create mode 100644 release/src/router/www/Reaper_Traffic.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 78caa04f6c..d25324728a 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.9
++EXTENDNO=Reaper_v1.3.0
+ 
+ RCNO=0
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 83ba2c3bf3..a9632d1185 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1197,6 +1197,8 @@ else
+ obj-y += rstats
+ endif
+ endif
++# reaper v1.3.0: traffic collector (per-client/per-net/per-class history + probe)
++obj-y += rtrafd
+ ifeq ($(RTCONFIG_DSL),y)
+ obj-y += spectrum
+ endif
+@@ -6388,6 +6390,11 @@ rstats: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rstats-install:
+ 	$(MAKE) -C rstats INSTALLDIR=$(INSTALLDIR)/rstats install
+ 
++rtrafd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
++
++rtrafd-install:
++	$(MAKE) -C rtrafd INSTALLDIR=$(INSTALLDIR)/rtrafd install
++
+ dropbear/config.h.in: $(if $(RTCONFIG_PROTECTION_SERVER),protect_srv-stage,)
+ 
+ dropbear/config.h: dropbear/config.h.in
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 941e47fa9d..75d19e96e2 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -54,6 +54,7 @@ static const char *reaper_skip[] = {
+ 	/* reaper-native pages carry their own chrome + a self bounce; injecting
+ 	   reaper_content.css (written for stock pages) would fight their CSS */
+ 	"Reaper_QoS.asp",
++	"Reaper_Traffic.asp",
+ 	"Main_Login.asp",
+ 	"Nologin.asp",
+ 	/* Captive_Portal* embed a </head> INSIDE a <script> splash template before
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f4daed5124..5578c3883d 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21646,6 +21646,40 @@ do_reaper_qos_stats_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "}");
+ }
+ 
++/* reaper v1.3.0: stream a collector snapshot for Reaper_Traffic.asp. The only
++ * request input is the window name, matched against a fixed allowlist - the
++ * filesystem path is always one of five literals. */
++static void
++do_reaper_traffic_cgi(char *url, FILE *stream)
++{
++	static const char *wins[] = { "live", "m5", "hour", "day", "month", NULL };
++	char path[48], buf[4096];
++	const char *want = "live";
++	char *q;
++	FILE *f;
++	size_t n;
++	int i;
++
++	if ((q = strstr(url, "f=")) != NULL) {
++		for (i = 0; wins[i]; i++) {
++			size_t l = strlen(wins[i]);
++			if (strncmp(q + 2, wins[i], l) == 0 &&
++			    (q[2 + l] == '\0' || q[2 + l] == '&')) {
++				want = wins[i];
++				break;
++			}
++		}
++	}
++	snprintf(path, sizeof(path), "/tmp/rtraf/%s.json", want);
++	if ((f = fopen(path, "r")) == NULL) {
++		websWrite(stream, "{}");
++		return;
++	}
++	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++		fwrite(buf, 1, n, stream);
++	fclose(f);
++}
++
+ static void
+ do_unreg_ASUSDDNS_cgi(char *url, FILE *stream)
+ {
+@@ -28726,6 +28760,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "upload.cgi*", "text/html", no_cache_IE7, do_upload_post, do_upload_cgi, do_auth },
+ 	/* reaper v1.2.7: set_ASUS_EULA.cgi endpoint removed (legacy app-only setter; EULA pre-signed in defaults.c) */
+ 	{ "reaper_qos_stats.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
++	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
+ 	{ "set_ASUS_NEW_EULA.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_NEW_EULA_cgi, do_auth },
+ 	{ "set_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_privacy_policy_cgi, do_auth },
+ 	{ "get_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_ASUS_privacy_policy_cgi, do_auth },
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index c15a4e7051..ecdbe77e47 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2973,6 +2973,8 @@ extern int stop_8021x(void);
+ extern void stop_lltd(void);
+ extern void stop_httpd(void);
+ extern void stop_rstats(void);
++extern void stop_rtraf(void);	/* reaper v1.3.0 traffic collector */
++extern void start_rtraf(void);
+ extern void stop_autodet(void);
+ extern void start_autodet(void);
+ extern int wps_band_ssid_broadcast_off(int wps_band);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 996e7596a9..3d1bcab56f 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7106,6 +7106,7 @@ stop_misc(void)
+ 	stop_lltd();
+ 	stop_snooper();
+ 	stop_rstats();
++	stop_rtraf();	/* reaper v1.3.0 */
+ #ifdef RTCONFIG_DSL
+ 	stop_spectrum(); //Ren
+ #endif //For DSL-N55U
+@@ -7577,6 +7578,27 @@ restart_rstats()
+ }
+ ////////^^^^^^^^^^^^^^^^^^^jerry5 2009.07
+ 
++/* reaper v1.3.0: traffic collector (per-client/per-net/per-class history).
++ * No listener; publishes JSON under /tmp/rtraf for the authed httpd endpoint.
++ * conntrack accounting sysctl is enabled here so the very first flows after a
++ * service restart already carry byte counters. */
++void
++stop_rtraf(void)
++{
++	if (pids("rtrafd"))
++		killall_tk("rtrafd");
++}
++
++void
++start_rtraf(void)
++{
++	stop_rtraf();
++	if (!is_routing_enabled()) return;
++	if (nvram_match("rtraf_enable", "0")) return;
++	f_write_string("/proc/sys/net/netfilter/nf_conntrack_acct", "1", 0, 0);
++	xstart("rtrafd");
++}
++
+ //Ren.B
+ #ifdef RTCONFIG_DSL
+ void stop_spectrum(void)
+@@ -13222,6 +13244,7 @@ start_services(void)
+ 
+ 	start_infosvr();
+ 	restart_rstats();
++	start_rtraf();	/* reaper v1.3.0 traffic collector */
+ #ifdef RTCONFIG_DSL
+ 	start_spectrum(); //Ren
+ #endif
+@@ -21395,6 +21418,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rstats();
+ 		if(action & RC_SERVICE_START) restart_rstats();
+ 	}
++	else if (strcmp(script, "rtraf") == 0)
++	{
++		if(action & RC_SERVICE_STOP) stop_rtraf();
++		if(action & RC_SERVICE_START) start_rtraf();
++	}
+ 	else if (strcmp(script, "conntrack") == 0)
+ 	{
+ 		setup_conntrack();
+diff --git a/release/src/router/rtrafd/Makefile b/release/src/router/rtrafd/Makefile
+new file mode 100644
+index 0000000000..10df6ce6d7
+--- /dev/null
++++ b/release/src/router/rtrafd/Makefile
+@@ -0,0 +1,48 @@
++include ../common.mak
++
++CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared
++LDFLAGS	= -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared
++ifeq ($(RTCONFIG_BCM_502L07P2),y)
++LDFLAGS += -L$(TOP_PLATFORM)/ethctl_lib -lethctl
++endif
++ifeq ($(HND_ROUTER),y)
++LDFLAGS += -L$(TOP_PLATFORM)/wlcsm -lwlcsm
++endif
++
++ifeq ($(RTCONFIG_BCMARM),y)
++CFLAGS += -I$(SRCBASE)/shared/bcmwifi/include -DTYPEDEF_FLOAT_T
++CFLAGS += -I$(SRCBASE)/common/include
++endif
++
++OBJS = rtrafd.o
++
++all: rtrafd
++
++rtrafd: $(OBJS)
++	@echo " [rtrafd] CC -o $@"
++	$(CC) $(LDFLAGS) -o $@ $(OBJS)
++
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f rtrafd .*.depend
++	rm -f *.o
++
++install: all
++	@echo " [rtrafd] Installing..."
++	install -D rtrafd $(INSTALLDIR)/bin/rtrafd
++	$(STRIP) $(INSTALLDIR)/bin/rtrafd
++
++%.o: %.c .%.depend
++	@echo " [rtrafd] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.depend: $(OBJS:%.o=%.c)
++	@$(CC) $(CFLAGS) -M $^ > .depend
++
++.%.depend: %.c
++	@$(CC) $(CFLAGS) -M $< > $@
++
++-include $(OBJS:%.o=.%.depend)
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+new file mode 100644
+index 0000000000..94fa656dcb
+--- /dev/null
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -0,0 +1,704 @@
++/*
++ * rtrafd - reaper traffic collector (v1, firmware v1.2.10)
++ *
++ * Samples every POLL seconds:
++ *   - /proc/net/dev            WAN + all br* interfaces (per-network)
++ *   - /proc/net/nf_conntrack   per-client byte deltas (LAN-attributed) + top talkers
++ *   - tmctl getqstats          per-QoS-class tx/drops (only while HW classful runs)
++ *   - optional ping probe      WAN latency/loss (opt-in, user-set target)
++ *
++ * Keeps four ring granularities per series (5min x 288 = 24h, hour x 336 = 14d,
++ * day x 366, month x 24) and publishes JSON snapshots under /tmp/rtraf/ for the
++ * authenticated httpd endpoint. History survives reboot only when the owner
++ * selects a persistent store (nvram rtraf_path: "" = RAM, "jffs", "usb") -
++ * mirroring the classic rstats save-location feature.
++ *
++ * Accounting caveats (documented in the UI FAQ): per-client numbers come from
++ * conntrack, which the flow accelerator syncs periodically - short flows that
++ * die between polls may undercount slightly. IPv6 flows count toward interface
++ * totals but are not client-attributed in v1.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <stdint.h>
++#include <time.h>
++#include <signal.h>
++#include <syslog.h>
++#include <errno.h>
++#include <dirent.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <arpa/inet.h>
++
++#include <bcmnvram.h>
++#include <shutils.h>
++#include <shared.h>
++
++#define POLL		30
++#define N5		288	/* 5-min slots  (24 h) */
++#define NH		336	/* hour slots   (14 d) */
++#define ND		366	/* day slots    (~1 y) */
++#define NM		24	/* month slots  (2 y)  */
++#define NNET		8
++#define NCLI		64
++#define NFLOW		16384	/* conntrack delta table (power of 2) */
++#define NTOP		20
++#define SAVE_EVERY	3600	/* persist once an hour */
++#define DB_MAGIC	0x52545246	/* "RTRF" */
++#define DB_VER		1
++
++typedef struct { uint64_t rx, tx; } cnt_t;	/* class rings: rx=txbytes, tx=dropped pkts */
++						/* probe ring:  rx=avg rtt us, tx=loss %   */
++typedef struct {
++	cnt_t b5[N5], bh[NH], bd[ND], bm[NM];
++} ring_t;
++
++typedef struct {
++	uint64_t key;
++	uint64_t ob, rb;	/* last seen orig/reply byte counters */
++	uint32_t gen;
++} flow_t;
++
++typedef struct {
++	char key[20];		/* MAC "aa:bb:cc:dd:ee:ff" or bare IP */
++	char ip[16];
++	time_t last;
++	int used;
++} cli_t;
++
++/* persisted header (rings follow in fixed order) */
++typedef struct {
++	uint32_t magic, ver;
++	int64_t saved;
++	int nnet;
++	char netname[NNET][16];
++	cli_t cli[NCLI];
++} dbhdr_t;
++
++static ring_t *r_wan, *r_net[NNET], *r_cls[7], *r_cli[NCLI], *r_prb;
++static char netname[NNET][16];
++static int nnet = 0;
++static cli_t cli[NCLI];
++static flow_t *flows;
++static uint32_t flowgen = 0;
++
++static uint64_t last_if_rx[NNET + 1], last_if_tx[NNET + 1];	/* [0]=wan */
++static int have_if_last[NNET + 1];
++static uint64_t last_cls_txb[7], last_cls_dp[7];
++static int have_cls_last = 0;
++
++static uint32_t lan_net = 0, lan_mask = 0;
++static volatile sig_atomic_t running = 1;
++
++/* probe accumulators for the open 5-min bucket */
++static uint64_t prb_rtt_sum = 0;
++static uint32_t prb_n = 0, prb_lost = 0;
++
++/* quota syslog once-flags */
++static int warned80 = 0, warned100 = 0, warn_month = -1;
++
++/* current live snapshot (for live.json) */
++typedef struct {
++	char src[16], dst[46];
++	int dport, proto;	/* proto: 6/17/other */
++	uint64_t rate;		/* bytes/sec both dirs */
++	uint64_t up, dn;	/* delta bytes this poll */
++} top_t;
++static top_t top[NTOP];
++static int ntop = 0;
++
++static void on_term(int sig) { (void)sig; running = 0; }
++
++static uint64_t fnv64(const char *s)
++{
++	uint64_t h = 1469598103934665603ULL;
++	while (*s) { h ^= (unsigned char)*s++; h *= 1099511628211ULL; }
++	return h ? h : 1;
++}
++
++/* ---------- slot indexing ---------- */
++static int i5cur, ihcur, idcur, imcur;
++
++static void slots_for(time_t t, int *i5, int *ih, int *id, int *im)
++{
++	struct tm tm;
++	localtime_r(&t, &tm);
++	*i5 = (int)((t / 300) % N5);
++	*ih = (int)((t / 3600) % NH);
++	*id = tm.tm_yday % ND;
++	*im = ((tm.tm_year * 12) + tm.tm_mon) % NM;
++}
++
++static void ring_zero_slot(ring_t *r, int which, int idx)
++{
++	if (!r) return;
++	switch (which) {
++	case 0: r->b5[idx].rx = r->b5[idx].tx = 0; break;
++	case 1: r->bh[idx].rx = r->bh[idx].tx = 0; break;
++	case 2: r->bd[idx].rx = r->bd[idx].tx = 0; break;
++	case 3: r->bm[idx].rx = r->bm[idx].tx = 0; break;
++	}
++}
++
++static void all_zero_slot(int which, int idx)
++{
++	int i;
++	ring_zero_slot(r_wan, which, idx);
++	for (i = 0; i < NNET; i++) ring_zero_slot(r_net[i], which, idx);
++	for (i = 0; i < 7; i++) ring_zero_slot(r_cls[i], which, idx);
++	for (i = 0; i < NCLI; i++) ring_zero_slot(r_cli[i], which, idx);
++	ring_zero_slot(r_prb, which, idx);
++}
++
++static void ring_add(ring_t *r, uint64_t rx, uint64_t tx)
++{
++	if (!r) return;
++	r->b5[i5cur].rx += rx; r->b5[i5cur].tx += tx;
++	r->bh[ihcur].rx += rx; r->bh[ihcur].tx += tx;
++	r->bd[idcur].rx += rx; r->bd[idcur].tx += tx;
++	r->bm[imcur].rx += rx; r->bm[imcur].tx += tx;
++}
++
++/* ---------- helpers ---------- */
++static int ifname_ok(const char *s)
++{
++	for (; *s; s++)
++		if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') ||
++		      (*s >= '0' && *s <= '9') || *s == '.' || *s == '_' || *s == '-'))
++			return 0;
++	return 1;
++}
++
++static int host_ok(const char *s)	/* probe target: hostname / IPv4 chars only */
++{
++	if (!*s || strlen(s) > 63) return 0;
++	for (; *s; s++)
++		if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') ||
++		      (*s >= '0' && *s <= '9') || *s == '.' || *s == '-'))
++			return 0;
++	return 1;
++}
++
++static int net_slot(const char *name)
++{
++	int i;
++	for (i = 0; i < nnet; i++)
++		if (strcmp(netname[i], name) == 0) return i;
++	if (nnet >= NNET) return -1;
++	strlcpy(netname[nnet], name, sizeof(netname[0]));
++	return nnet++;
++}
++
++static int cli_slot(const char *key, const char *ip)
++{
++	int i, oldest = 0;
++	time_t omin = 0;
++	for (i = 0; i < NCLI; i++)
++		if (cli[i].used && strcmp(cli[i].key, key) == 0) {
++			strlcpy(cli[i].ip, ip, sizeof(cli[i].ip));
++			cli[i].last = time(NULL);
++			return i;
++		}
++	for (i = 0; i < NCLI; i++)
++		if (!cli[i].used) { oldest = i; goto take; }
++	/* LRU replace: wipe that client's history */
++	for (i = 0; i < NCLI; i++)
++		if (omin == 0 || cli[i].last < omin) { omin = cli[i].last; oldest = i; }
++	memset(r_cli[oldest], 0, sizeof(ring_t));
++take:
++	cli[oldest].used = 1;
++	strlcpy(cli[oldest].key, key, sizeof(cli[0].key));
++	strlcpy(cli[oldest].ip, ip, sizeof(cli[0].ip));
++	cli[oldest].last = time(NULL);
++	return oldest;
++}
++
++/* ip -> mac from /proc/net/arp (linear scan; table is small) */
++static int arp_mac(const char *ip, char *mac, size_t maclen)
++{
++	FILE *f = fopen("/proc/net/arp", "r");
++	char line[256], aip[64], hw[64], dev[32];
++	int type, fl;
++	if (!f) return 0;
++	fgets(line, sizeof(line), f);	/* header */
++	while (fgets(line, sizeof(line), f)) {
++		if (sscanf(line, "%63s 0x%x 0x%x %63s %*s %31s", aip, &type, &fl, hw, dev) < 4)
++			continue;
++		if (strcmp(aip, ip) == 0 && strcmp(hw, "00:00:00:00:00:00") != 0) {
++			strlcpy(mac, hw, maclen);
++			fclose(f);
++			return 1;
++		}
++	}
++	fclose(f);
++	return 0;
++}
++
++/* ---------- pollers ---------- */
++static void poll_ifaces(const char *wanif)
++{
++	FILE *f = fopen("/proc/net/dev", "r");
++	char line[512], name[32];
++	uint64_t rxb, txb;
++	if (!f) return;
++	while (fgets(line, sizeof(line), f)) {
++		char *c = strchr(line, ':');
++		char *s = line;
++		if (!c) continue;
++		*c = '\0';
++		while (*s == ' ') s++;
++		strlcpy(name, s, sizeof(name));
++		if (sscanf(c + 1, "%llu %*u %*u %*u %*u %*u %*u %*u %llu",
++			   (unsigned long long *)&rxb, (unsigned long long *)&txb) != 2)
++			continue;
++		if (strcmp(name, wanif) == 0) {
++			if (have_if_last[0] && rxb >= last_if_rx[0] && txb >= last_if_tx[0])
++				ring_add(r_wan, rxb - last_if_rx[0], txb - last_if_tx[0]);
++			last_if_rx[0] = rxb; last_if_tx[0] = txb; have_if_last[0] = 1;
++		} else if (strncmp(name, "br", 2) == 0 && name[2] >= '0' && name[2] <= '9') {
++			int sl = net_slot(name);
++			if (sl < 0) continue;
++			if (have_if_last[sl + 1] && rxb >= last_if_rx[sl + 1] && txb >= last_if_tx[sl + 1])
++				ring_add(r_net[sl], rxb - last_if_rx[sl + 1], txb - last_if_tx[sl + 1]);
++			last_if_rx[sl + 1] = rxb; last_if_tx[sl + 1] = txb; have_if_last[sl + 1] = 1;
++		}
++	}
++	fclose(f);
++}
++
++static void poll_classes(const char *wanif)
++{
++	int qid;
++	char cmd[160], line[160];
++	if (!(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11)) {
++		have_cls_last = 0;
++		return;
++	}
++	for (qid = 0; qid <= 6; qid++) {
++		uint64_t txb = 0, dp = 0;
++		FILE *p;
++		snprintf(cmd, sizeof(cmd), "tmctl getqstats --devtype 0 --if %s --qid %d", wanif, qid);
++		if ((p = popen(cmd, "r")) == NULL) return;
++		while (fgets(line, sizeof(line), p)) {
++			sscanf(line, " txBytes: %llu", (unsigned long long *)&txb);
++			sscanf(line, " droppedPackets: %llu", (unsigned long long *)&dp);
++		}
++		pclose(p);
++		if (have_cls_last && txb >= last_cls_txb[qid] && dp >= last_cls_dp[qid])
++			ring_add(r_cls[qid], txb - last_cls_txb[qid], dp - last_cls_dp[qid]);
++		last_cls_txb[qid] = txb; last_cls_dp[qid] = dp;
++	}
++	have_cls_last = 1;
++}
++
++static void top_note(const char *src, const char *dst, int dport, int proto,
++		     uint64_t up, uint64_t dn)
++{
++	uint64_t rate = (up + dn) / POLL;
++	int i, worst = 0;
++	if (rate == 0) return;
++	if (ntop < NTOP) { i = ntop++; goto put; }
++	for (i = 1; i < NTOP; i++)
++		if (top[i].rate < top[worst].rate) worst = i;
++	if (rate <= top[worst].rate) return;
++	i = worst;
++put:
++	strlcpy(top[i].src, src, sizeof(top[0].src));
++	strlcpy(top[i].dst, dst, sizeof(top[0].dst));
++	top[i].dport = dport; top[i].proto = proto;
++	top[i].rate = rate; top[i].up = up; top[i].dn = dn;
++}
++
++static void poll_conntrack(void)
++{
++	FILE *f = fopen("/proc/net/nf_conntrack", "r");
++	char line[768];
++	if (!f) return;
++	flowgen++;
++	ntop = 0;
++	while (fgets(line, sizeof(line), f)) {
++		char proto[16] = "", src[64] = "", dst[64] = "";
++		char rsrc[64] = "";
++		unsigned long long ob = 0, rb = 0;
++		int sport = 0, dport = 0, pnum = 0;
++		char *p;
++
++		if (strncmp(line, "ipv4", 4) != 0) continue;	/* v1: v4 attribution only */
++		if (sscanf(line, "%*s %*d %15s %d", proto, &pnum) != 2) continue;
++
++		/* original direction: first src=/dst=/sport=/dport=/bytes= */
++		if ((p = strstr(line, "src=")) == NULL) continue;
++		sscanf(p, "src=%63s", src);
++		if ((p = strstr(p, "dst=")) == NULL) continue;
++		sscanf(p, "dst=%63s", dst);
++		if ((p = strstr(p, "sport=")) != NULL) sscanf(p, "sport=%d", &sport);
++		if (p && (p = strstr(p, "dport=")) != NULL) sscanf(p, "dport=%d", &dport);
++		if ((p = strstr(line, "bytes=")) == NULL) continue;	/* needs nf_conntrack_acct=1 */
++		sscanf(p, "bytes=%llu", &ob);
++		/* reply direction: second src= then its bytes= */
++		if ((p = strstr(p, "src=")) != NULL) {
++			sscanf(p, "src=%63s", rsrc);
++			if ((p = strstr(p, "bytes=")) != NULL) sscanf(p, "bytes=%llu", &rb);
++		}
++
++		/* LAN attribution */
++		{
++			struct in_addr a;
++			uint64_t key, dob, drb;
++			uint32_t idx;
++			flow_t *fl;
++			char kbuf[160], mac[20];
++			int ci;
++
++			if (inet_aton(src, &a) == 0) continue;
++			if ((ntohl(a.s_addr) & lan_mask) != lan_net) continue;
++
++			snprintf(kbuf, sizeof(kbuf), "%d/%s/%s/%d/%d", pnum, src, dst, sport, dport);
++			key = fnv64(kbuf);
++			idx = (uint32_t)(key & (NFLOW - 1));
++			fl = NULL;
++			{
++				uint32_t j;
++				for (j = 0; j < NFLOW; j++) {
++					flow_t *e = &flows[(idx + j) & (NFLOW - 1)];
++					if (e->key == key) { fl = e; break; }
++					if (e->key == 0 || (int)(flowgen - e->gen) > 2) { fl = e; fl->key = 0; break; }
++				}
++			}
++			if (!fl) continue;	/* table full - skip flow */
++			if (fl->key == key && ob >= fl->ob && rb >= fl->rb) {
++				dob = ob - fl->ob; drb = rb - fl->rb;
++			} else {
++				dob = ob; drb = rb;	/* new (or recycled) entry: count from zero */
++			}
++			fl->key = key; fl->ob = ob; fl->rb = rb; fl->gen = flowgen;
++
++			if (dob == 0 && drb == 0) continue;
++			if (!arp_mac(src, mac, sizeof(mac)))
++				strlcpy(mac, src, sizeof(mac));
++			ci = cli_slot(mac, src);
++			ring_add(r_cli[ci], drb, dob);	/* rx=download(reply), tx=upload(orig) */
++			top_note(src, dst, dport, pnum, dob, drb);
++		}
++	}
++	fclose(f);
++}
++
++static void poll_probe(void)
++{
++	char tgt[64], cmd[128], line[256];
++	FILE *p;
++	int got = 0;
++	strlcpy(tgt, nvram_safe_get("rtraf_probe"), sizeof(tgt));
++	if (!host_ok(tgt)) return;
++	snprintf(cmd, sizeof(cmd), "ping -c 1 -W 2 %s 2>/dev/null", tgt);
++	if ((p = popen(cmd, "r")) == NULL) return;
++	while (fgets(line, sizeof(line), p)) {
++		char *t = strstr(line, "time=");
++		if (t) {
++			double ms = atof(t + 5);
++			prb_rtt_sum += (uint64_t)(ms * 1000.0);
++			got = 1;
++		}
++	}
++	pclose(p);
++	prb_n++;
++	if (!got) prb_lost++;
++}
++
++static void probe_close_bucket(void)
++{
++	uint64_t rtt = prb_n > prb_lost && prb_n ? prb_rtt_sum / (prb_n - prb_lost) : 0;
++	uint64_t loss = prb_n ? (prb_lost * 100) / prb_n : 0;
++	/* store straight into the JUST-CLOSED 5-min slot; hour/day/month keep the
++	 * latest closed values (coarse but adequate for an overlay) */
++	r_prb->b5[i5cur].rx = rtt; r_prb->b5[i5cur].tx = loss;
++	r_prb->bh[ihcur].rx = rtt; r_prb->bh[ihcur].tx = loss;
++	r_prb->bd[idcur].rx = rtt; r_prb->bd[idcur].tx = loss;
++	r_prb->bm[imcur].rx = rtt; r_prb->bm[imcur].tx = loss;
++	prb_rtt_sum = 0; prb_n = prb_lost = 0;
++}
++
++/* ---------- quota ---------- */
++static void check_quota(void)
++{
++	uint64_t cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
++	uint64_t used;
++	struct tm tm;
++	time_t t = time(NULL);
++	localtime_r(&t, &tm);
++	if (warn_month != tm.tm_mon) { warned80 = warned100 = 0; warn_month = tm.tm_mon; }
++	if (cap_gb == 0) return;
++	used = r_wan->bm[imcur].rx + r_wan->bm[imcur].tx;
++	if (!warned100 && used >= cap_gb * 1000000000ULL) {
++		syslog(LOG_WARNING, "rtrafd: monthly WAN data cap REACHED (%llu GB cap)", (unsigned long long)cap_gb);
++		warned100 = 1;
++	} else if (!warned80 && used * 10 >= cap_gb * 1000000000ULL * 8) {
++		syslog(LOG_WARNING, "rtrafd: monthly WAN usage passed 80%% of the %llu GB cap", (unsigned long long)cap_gb);
++		warned80 = 1;
++	}
++}
++
++/* ---------- JSON output ---------- */
++static void json_ring(FILE *o, ring_t *r, int which)
++{
++	cnt_t *a = which == 0 ? r->b5 : which == 1 ? r->bh : which == 2 ? r->bd : r->bm;
++	int n = which == 0 ? N5 : which == 1 ? NH : which == 2 ? ND : NM;
++	int cur = which == 0 ? i5cur : which == 1 ? ihcur : which == 2 ? idcur : imcur;
++	int i;
++	fputc('[', o);
++	for (i = 0; i < n; i++) {
++		int idx = (cur + 1 + i) % n;	/* oldest -> newest, ends at current */
++		fprintf(o, "%s[%llu,%llu]", i ? "," : "",
++			(unsigned long long)a[idx].rx, (unsigned long long)a[idx].tx);
++	}
++	fputc(']', o);
++}
++
++static void write_hist(int which, const char *fn, int step)
++{
++	char tmp[64], path[64];
++	FILE *o;
++	int i;
++	snprintf(tmp, sizeof(tmp), "/tmp/rtraf/.%s", fn);
++	snprintf(path, sizeof(path), "/tmp/rtraf/%s", fn);
++	if ((o = fopen(tmp, "w")) == NULL) return;
++	fprintf(o, "{\"now\":%lld,\"step\":%d,\"wan\":", (long long)time(NULL), step);
++	json_ring(o, r_wan, which);
++	fprintf(o, ",\"nets\":{");
++	for (i = 0; i < nnet; i++) {
++		fprintf(o, "%s\"%s\":", i ? "," : "", netname[i]);
++		json_ring(o, r_net[i], which);
++	}
++	fprintf(o, "},\"class\":{");
++	for (i = 0; i <= 6; i++) {
++		fprintf(o, "%s\"q%d\":", i ? "," : "", i);
++		json_ring(o, r_cls[i], which);
++	}
++	fprintf(o, "},\"clients\":{");
++	{
++		int first = 1;
++		for (i = 0; i < NCLI; i++) {
++			if (!cli[i].used) continue;
++			fprintf(o, "%s\"%s\":{\"ip\":\"%s\",\"d\":", first ? "" : ",", cli[i].key, cli[i].ip);
++			json_ring(o, r_cli[i], which);
++			fputc('}', o);
++			first = 0;
++		}
++	}
++	fprintf(o, "},\"probe\":");
++	json_ring(o, r_prb, which);
++	fprintf(o, "}");
++	fclose(o);
++	rename(tmp, path);
++}
++
++static void write_live(const char *store, uint64_t wrx_d, uint64_t wtx_d,
++		       uint64_t cls_txd[7], uint64_t cls_dpd[7], int qos_on)
++{
++	FILE *o = fopen("/tmp/rtraf/.live.json", "w");
++	int i;
++	uint64_t cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
++	if (!o) return;
++	fprintf(o, "{\"t\":%lld,\"poll\":%d,\"store\":\"%s\",\"qos\":%d",
++		(long long)time(NULL), POLL, store, qos_on);
++	fprintf(o, ",\"wan\":{\"rx_bps\":%llu,\"tx_bps\":%llu}",
++		(unsigned long long)(wrx_d * 8 / POLL), (unsigned long long)(wtx_d * 8 / POLL));
++	fprintf(o, ",\"class\":[");
++	for (i = 0; i <= 6; i++)
++		fprintf(o, "%s{\"tx_bps\":%llu,\"dp\":%llu}", i ? "," : "",
++			(unsigned long long)(cls_txd[i] * 8 / POLL), (unsigned long long)cls_dpd[i]);
++	fprintf(o, "],\"quota\":{\"used\":%llu,\"cap_gb\":%llu}",
++		(unsigned long long)(r_wan->bm[imcur].rx + r_wan->bm[imcur].tx),
++		(unsigned long long)cap_gb);
++	fprintf(o, ",\"probe\":{\"rtt_us\":%llu,\"loss\":%llu}",
++		(unsigned long long)r_prb->b5[i5cur].rx, (unsigned long long)r_prb->b5[i5cur].tx);
++	fprintf(o, ",\"top\":[");
++	for (i = 0; i < ntop; i++)
++		fprintf(o, "%s{\"src\":\"%s\",\"dst\":\"%s\",\"dport\":%d,\"proto\":%d,\"rate\":%llu,\"up\":%llu,\"dn\":%llu}",
++			i ? "," : "", top[i].src, top[i].dst, top[i].dport, top[i].proto,
++			(unsigned long long)top[i].rate, (unsigned long long)top[i].up,
++			(unsigned long long)top[i].dn);
++	fprintf(o, "]}");
++	fclose(o);
++	rename("/tmp/rtraf/.live.json", "/tmp/rtraf/live.json");
++}
++
++/* ---------- persistence (RAM / jffs / usb) ---------- */
++static const char *resolve_store(char *buf, size_t len)
++{
++	char mode[16];
++	strlcpy(mode, nvram_safe_get("rtraf_path"), sizeof(mode));
++	if (strcmp(mode, "jffs") == 0) {
++		mkdir("/jffs/reaper", 0700);
++		if (access("/jffs/reaper", W_OK) == 0) {
++			strlcpy(buf, "/jffs/reaper/rtraf.db", len);
++			return "jffs";
++		}
++	} else if (strcmp(mode, "usb") == 0) {
++		DIR *d = opendir("/tmp/mnt");
++		struct dirent *e;
++		if (d) {
++			while ((e = readdir(d)) != NULL) {
++				char p[128];
++				if (e->d_name[0] == '.') continue;
++				snprintf(p, sizeof(p), "/tmp/mnt/%s/reaper", e->d_name);
++				mkdir(p, 0700);
++				if (access(p, W_OK) == 0) {
++					snprintf(buf, len, "%s/rtraf.db", p);
++					closedir(d);
++					return "usb";
++				}
++			}
++			closedir(d);
++		}
++	}
++	buf[0] = '\0';
++	return "ram";
++}
++
++static void db_save(const char *path)
++{
++	dbhdr_t h;
++	FILE *o;
++	char tmp[160];
++	int i;
++	if (!path[0]) return;
++	snprintf(tmp, sizeof(tmp), "%s.new", path);
++	if ((o = fopen(tmp, "w")) == NULL) return;
++	memset(&h, 0, sizeof(h));
++	h.magic = DB_MAGIC; h.ver = DB_VER; h.saved = time(NULL); h.nnet = nnet;
++	memcpy(h.netname, netname, sizeof(netname));
++	memcpy(h.cli, cli, sizeof(cli));
++	fwrite(&h, sizeof(h), 1, o);
++	fwrite(r_wan, sizeof(ring_t), 1, o);
++	for (i = 0; i < NNET; i++) fwrite(r_net[i], sizeof(ring_t), 1, o);
++	for (i = 0; i < 7; i++) fwrite(r_cls[i], sizeof(ring_t), 1, o);
++	for (i = 0; i < NCLI; i++) fwrite(r_cli[i], sizeof(ring_t), 1, o);
++	fwrite(r_prb, sizeof(ring_t), 1, o);
++	fclose(o);
++	rename(tmp, path);
++}
++
++static void db_load(const char *path)
++{
++	dbhdr_t h;
++	FILE *o;
++	int i;
++	if (!path[0] || (o = fopen(path, "r")) == NULL) return;
++	if (fread(&h, sizeof(h), 1, o) != 1 || h.magic != DB_MAGIC || h.ver != DB_VER) {
++		fclose(o);
++		return;
++	}
++	nnet = h.nnet > NNET ? NNET : h.nnet;
++	memcpy(netname, h.netname, sizeof(netname));
++	memcpy(cli, h.cli, sizeof(cli));
++	if (fread(r_wan, sizeof(ring_t), 1, o) != 1) goto out;
++	for (i = 0; i < NNET; i++) if (fread(r_net[i], sizeof(ring_t), 1, o) != 1) goto out;
++	for (i = 0; i < 7; i++) if (fread(r_cls[i], sizeof(ring_t), 1, o) != 1) goto out;
++	for (i = 0; i < NCLI; i++) if (fread(r_cli[i], sizeof(ring_t), 1, o) != 1) goto out;
++	fread(r_prb, sizeof(ring_t), 1, o);
++	syslog(LOG_INFO, "rtrafd: history restored from %s (saved %lld)", path, (long long)h.saved);
++out:
++	fclose(o);
++}
++
++/* ---------- main ---------- */
++int main(int argc, char **argv)
++{
++	char wanif[24], dbpath[160];
++	const char *store;
++	time_t last_save;
++	int i;
++
++	if (daemon(0, 0) < 0) return 1;
++	openlog("rtrafd", LOG_PID, LOG_DAEMON);
++	signal(SIGTERM, on_term);
++	signal(SIGINT, on_term);
++
++	/* allocations (about 1.3 MB of rings + flow table) */
++	r_wan = calloc(1, sizeof(ring_t));
++	for (i = 0; i < NNET; i++) r_net[i] = calloc(1, sizeof(ring_t));
++	for (i = 0; i < 7; i++) r_cls[i] = calloc(1, sizeof(ring_t));
++	for (i = 0; i < NCLI; i++) r_cli[i] = calloc(1, sizeof(ring_t));
++	r_prb = calloc(1, sizeof(ring_t));
++	flows = calloc(NFLOW, sizeof(flow_t));
++	if (!r_wan || !r_prb || !flows) return 1;
++
++	mkdir("/tmp/rtraf", 0700);
++	f_write_string("/proc/sys/net/netfilter/nf_conntrack_acct", "1", 0, 0);
++
++	strlcpy(wanif, get_wan_ifname(wan_primary_ifunit()), sizeof(wanif));
++	if (!ifname_ok(wanif) || !wanif[0]) strlcpy(wanif, "eth0", sizeof(wanif));
++
++	{
++		struct in_addr a, m;
++		if (inet_aton(nvram_safe_get("lan_ipaddr"), &a) &&
++		    inet_aton(nvram_safe_get("lan_netmask"), &m)) {
++			lan_mask = ntohl(m.s_addr);
++			lan_net = ntohl(a.s_addr) & lan_mask;
++		}
++	}
++
++	store = resolve_store(dbpath, sizeof(dbpath));
++	db_load(dbpath);
++	last_save = time(NULL);
++	slots_for(time(NULL), &i5cur, &ihcur, &idcur, &imcur);
++	syslog(LOG_INFO, "rtrafd: started (store=%s wan=%s)", store, wanif);
++
++	while (running) {
++		time_t now = time(NULL);
++		int n5, nh, nd, nm;
++		uint64_t wrx0 = r_wan->b5[i5cur].rx, wtx0 = r_wan->b5[i5cur].tx;
++		uint64_t c_tx0[7], c_dp0[7], cls_txd[7], cls_dpd[7];
++
++		slots_for(now, &n5, &nh, &nd, &nm);
++		if (n5 != i5cur) {
++			probe_close_bucket();
++			/* publish closing snapshots BEFORE advancing */
++			write_hist(0, "m5.json", 300);
++			if (nh != ihcur) write_hist(1, "hour.json", 3600);
++			if (nd != idcur) write_hist(2, "day.json", 86400);
++			if (nm != imcur) write_hist(3, "month.json", 0);
++			if (n5 != i5cur) all_zero_slot(0, n5);
++			if (nh != ihcur) all_zero_slot(1, nh);
++			if (nd != idcur) all_zero_slot(2, nd);
++			if (nm != imcur) all_zero_slot(3, nm);
++			i5cur = n5; ihcur = nh; idcur = nd; imcur = nm;
++			wrx0 = r_wan->b5[i5cur].rx; wtx0 = r_wan->b5[i5cur].tx;
++		}
++
++		for (i = 0; i <= 6; i++) { c_tx0[i] = r_cls[i]->b5[i5cur].rx; c_dp0[i] = r_cls[i]->b5[i5cur].tx; }
++
++		poll_ifaces(wanif);
++		poll_classes(wanif);
++		poll_conntrack();
++		poll_probe();
++		check_quota();
++
++		for (i = 0; i <= 6; i++) {
++			cls_txd[i] = r_cls[i]->b5[i5cur].rx - c_tx0[i];
++			cls_dpd[i] = r_cls[i]->b5[i5cur].tx - c_dp0[i];
++		}
++		write_live(store, r_wan->b5[i5cur].rx - wrx0, r_wan->b5[i5cur].tx - wtx0,
++			   cls_txd, cls_dpd,
++			   nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11);
++
++		if (now - last_save >= SAVE_EVERY) {
++			store = resolve_store(dbpath, sizeof(dbpath));
++			db_save(dbpath);
++			last_save = now;
++		}
++
++		for (i = 0; i < POLL && running; i++) sleep(1);
++	}
++
++	store = resolve_store(dbpath, sizeof(dbpath));
++	db_save(dbpath);
++	syslog(LOG_INFO, "rtrafd: stopped (history %s)", dbpath[0] ? "saved" : "in RAM only - lost");
++	return 0;
++}
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 9feb2cd1ea..a884537031 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3080,6 +3080,12 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
+ 	{ "qos_sched", "p,p,p,p,p", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight */
+ 	{ "qos_l4s", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 EXPERIMENTAL: flag class queues L4S (DualPI2 ECT(1) marking) */
++
++	/* reaper v1.3.0 traffic collector (rtrafd) */
++	{ "rtraf_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* collector on/off (no listener) */
++	{ "rtraf_path", "", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* history store: "" = RAM, "jffs", "usb" (rstats_path-style choice) */
++	{ "rtraf_probe", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* opt-in WAN latency probe target (empty = off; no forced outbound) */
++	{ "rtraf_cap_gb", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* monthly WAN quota in GB (0 = off); warns via syslog at 80/100% */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 6dd6a7a6be..04cbed7607 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -271,7 +271,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+       <a href="/reaper_shell.asp#SDN.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl">Network</span></a>
+       <a href="/reaper_shell.asp#ParentalControl.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg></span><span class="nl">Parental Controls</span></a>
+       <a href="/reaper_shell.asp#Reaper_QoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl">Traffic Manager</span></a>
+-      <a href="/reaper_shell.asp#Main_TrafficMonitor_realtime.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl">Traffic Monitor</span></a>
++      <a href="/reaper_shell.asp#Reaper_Traffic.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl">Traffic Analyzer</span></a>
+       <a href="/reaper_shell.asp#Main_GameServer_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg></span><span class="nl">Open NAT</span></a>
+       <a href="/reaper_shell.asp#APP_Installation.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg></span><span class="nl">USB Application</span></a>
+       <a href="/reaper_shell.asp#Tools_Sysinfo.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span class="nl">System Info</span></a>
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+new file mode 100644
+index 0000000000..429fb8db1d
+--- /dev/null
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -0,0 +1,429 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; Traffic Analyzer</title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418; --surface-1:#141418;
++  --line-soft:rgba(255,255,255,.06); --line:rgba(225,6,0,.16);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  /* validated categorical series (dataviz dark set) for stacked classes/networks */
++  --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#9085e9; --s5:#d95926;
++  --s6:#e66767; --s7:#d55181;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;padding:22px 26px 60px}
++h1,h2,h3,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.mono{font-variant-numeric:tabular-nums}
++html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
++::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:var(--crimson);border-radius:8px;border:2px solid #000}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++a{color:var(--bone-dim)} a:hover{color:var(--bone)}
++
++.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
++.pagehead h1{font-size:24px;font-weight:700}
++.spacer{flex:1}
++.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
++  padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
++.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade)}
++.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
++  font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;padding:9px 16px;cursor:pointer;text-transform:uppercase}
++.btn:hover{border-color:var(--line)}
++.btn.ghost{background:transparent}
++
++/* window tabs */
++.wins{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
++.win{font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;
++  border:1px solid var(--line-soft);background:var(--panel);color:var(--bone-dim);border-radius:8px;padding:8px 15px;cursor:pointer}
++.win:hover{border-color:var(--line)}
++.win.on{color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent}
++
++.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
++@media(max-width:1100px){.grid{grid-template-columns:1fr}}
++.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:16px 18px;margin-bottom:16px}
++.panel.span{grid-column:1/-1}
++.panel h2{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:2px}
++.panel .sub{font-size:12px;color:var(--steel);margin:2px 0 12px;line-height:1.5}
++.legend{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 4px;font-size:12px}
++.legend span{display:inline-flex;align-items:center;gap:6px;color:var(--bone-dim)}
++.legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
++
++/* stat tiles */
++.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
++.tile{border:1px solid var(--line-soft);border-radius:12px;background:var(--panel-2);padding:13px 15px}
++.tile .k{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
++.tile .v{font-family:var(--hdr);font-weight:700;font-size:23px;color:var(--bone);margin-top:5px}
++.tile .v small{font-size:13px;color:var(--bone-dim);font-weight:600}
++.tile .v.up{color:var(--jade)} .tile .v.dn{color:var(--s1)}
++
++svg .grid-l{stroke:var(--line-soft);stroke-width:1}
++svg .axl{fill:var(--steel);font:10px var(--body)}
++.chart-wrap{width:100%;overflow-x:auto}
++
++/* tables */
++table.ta{width:100%;border-collapse:collapse}
++table.ta th{font-family:var(--hdr);font-weight:600;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
++  color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
++table.ta td{padding:8px;border-bottom:1px solid var(--line-soft);font-size:12.5px;color:var(--bone-dim)}
++table.ta tr:last-child td{border-bottom:none}
++table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bone)}
++.bar{position:relative;height:7px;border-radius:4px;background:rgba(255,255,255,.05);margin-top:5px;overflow:hidden}
++.bar>span{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--s1)}
++.tname{color:var(--bone);font-weight:500}
++.badge{font-family:var(--hdr);font-size:9.5px;letter-spacing:.08em;border:1px solid var(--line-soft);border-radius:5px;padding:2px 6px;color:var(--steel)}
++
++/* quota meter */
++.meter{height:12px;border-radius:7px;background:rgba(255,255,255,.05);overflow:hidden;margin:10px 0 6px}
++.meter>span{display:block;height:100%;border-radius:7px;background:linear-gradient(90deg,var(--jade),var(--amber))}
++.meter>span.hot{background:linear-gradient(90deg,var(--amber),var(--crimson))}
++
++/* settings + faq flyout */
++.togglerow{display:flex;align-items:flex-start;gap:12px;padding:11px 0;border-top:1px solid var(--line-soft)}
++.togglerow:first-of-type{border-top:none}
++.tswitch{position:relative;flex:0 0 42px;height:22px;margin-top:2px}
++.tswitch input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:2}
++.tswitch .track{position:absolute;inset:0;background:#26262b;border:1px solid var(--line-soft);border-radius:999px}
++.tswitch .track::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#6a6f75;transition:.15s}
++.tswitch input:checked~.track{background:#3a3f45}
++.tswitch input:checked~.track::after{left:22px;background:#c9cdd2}
++.tmeta .tname2{font-family:var(--hdr);font-weight:600;font-size:13.5px;letter-spacing:.05em;color:var(--bone)}
++.tmeta .tdesc{font-size:12px;color:var(--steel);line-height:1.5;margin-top:2px}
++.fld{margin:12px 0}
++.fld label{display:block;font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:6px}
++.fld input,.fld select{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:9px 11px;outline:none}
++.fld input:focus,.fld select:focus{border-color:var(--line)}
++.fld .u{margin-left:7px;color:var(--steel);font-size:12px}
++.storenote{font-size:12px;color:var(--steel);line-height:1.55;margin-top:6px}
++.storenote b{color:var(--bone-dim)}
++
++.scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s;z-index:40}
++.scrim.open{opacity:1;pointer-events:auto}
++.flyout{position:fixed;top:0;right:-460px;width:440px;max-width:92vw;height:100vh;background:var(--panel);border-left:1px solid var(--line);z-index:41;transition:right .22s ease;display:flex;flex-direction:column}
++.flyout.open{right:0}
++.flyout .fhead{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line-soft)}
++.flyout .fhead h2{font-size:16px;font-weight:700;flex:1}
++.flyout .fclose{cursor:pointer;color:var(--steel);font-size:20px;padding:2px 6px}
++.flyout .fclose:hover{color:var(--bone)}
++.flyout .fbody{overflow-y:auto;padding:6px 18px 40px}
++.flyout details{border-bottom:1px solid var(--line-soft);padding:2px 0}
++.flyout summary{cursor:pointer;font-family:var(--hdr);font-weight:600;font-size:13.5px;color:var(--bone);padding:12px 2px;list-style:none;position:relative;padding-right:22px}
++.flyout summary::-webkit-details-marker{display:none}
++.flyout summary::after{content:"+";position:absolute;right:4px;top:10px;color:var(--steel);font-size:16px}
++.flyout details[open] summary::after{content:"\2013"}
++.flyout .fc{font-size:12.5px;line-height:1.65;color:var(--bone-dim);padding:0 2px 14px}
++.flyout .fc b{color:var(--bone)}
++.applying{position:fixed;inset:0;background:rgba(0,0,0,.78);display:none;z-index:60;place-items:center}
++.applying.show{display:grid}
++.applying .abox{text-align:center}.applying .abox h2{font-size:18px;margin-bottom:8px}.applying .abox p{color:var(--steel);font-size:13px}
++</style>
++</head>
++<body>
++<script>if (self === top) location.href = '/reaper_shell.asp#Reaper_Traffic.asp';</script>
++
++<div class="pagehead">
++  <div><div class="eyebrow">Traffic Analyzer</div><h1>Bandwidth &amp; Usage</h1></div>
++  <span class="pill" id="statuspill"><span class="dot"></span><span id="statuspill_t">Live</span></span>
++  <div class="spacer"></div>
++  <button type="button" class="btn ghost" onclick="exportJSON()">Export</button>
++  <button type="button" class="btn ghost" onclick="faqOpen()">Guide</button>
++  <button type="button" class="btn ghost" onclick="scrollTo(0,document.body.scrollHeight)">Settings</button>
++</div>
++
++<div class="tiles" id="tiles"></div>
++
++<div class="wins" id="wins">
++  <div class="win on" data-w="live" data-step="live">Live</div>
++  <div class="win" data-w="m5" data-step="300">24 hours</div>
++  <div class="win" data-w="hour" data-step="3600">14 days</div>
++  <div class="win" data-w="day" data-step="86400">1 year</div>
++  <div class="win" data-w="month" data-step="0">By month</div>
++</div>
++
++<div class="panel span">
++  <h2>WAN throughput</h2>
++  <div class="sub">Upload and download across the internet link. <span id="probe_note"></span></div>
++  <div class="legend">
++    <span><i style="background:var(--jade)"></i>Download</span>
++    <span><i style="background:var(--crimson)"></i>Upload</span>
++    <span id="lat_leg" style="display:none"><i style="background:var(--amber)"></i>Latency (right axis)</span>
++  </div>
++  <div class="chart-wrap"><svg id="wanchart" width="100%" height="230" viewBox="0 0 1000 230" preserveAspectRatio="none"></svg></div>
++</div>
++
++<div class="grid">
++  <div class="panel">
++    <h2>By QoS class</h2>
++    <div class="sub">Per-class upload (needs HW QoS Classful running). Stacked, newest at right.</div>
++    <div class="legend" id="clslegend"></div>
++    <div class="chart-wrap"><svg id="clschart" width="100%" height="200" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg></div>
++  </div>
++  <div class="panel">
++    <h2>By network</h2>
++    <div class="sub">Per-bridge totals &mdash; main LAN, guest, and each SDN/VLAN.</div>
++    <div class="legend" id="netlegend"></div>
++    <div class="chart-wrap"><svg id="netchart" width="100%" height="200" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg></div>
++  </div>
++</div>
++
++<div class="grid">
++  <div class="panel">
++    <h2>Top devices</h2>
++    <div class="sub">Total usage this window, by LAN device (conntrack-accounted).</div>
++    <table class="ta"><thead><tr><th>Device</th><th class="num">Down</th><th class="num">Up</th></tr></thead><tbody id="clitbody"></tbody></table>
++  </div>
++  <div class="panel">
++    <h2>Top talkers (live)</h2>
++    <div class="sub">Highest-rate active flows right now, by destination port bucket.</div>
++    <table class="ta"><thead><tr><th>Source</th><th>Destination</th><th class="num">Rate</th></tr></thead><tbody id="toptbody"></tbody></table>
++  </div>
++</div>
++
++<div class="panel span" id="quotapanel" style="display:none">
++  <h2>Monthly data cap</h2>
++  <div class="sub">Month-to-date WAN usage against your cap. A warning is logged to the system log (and any remote syslog/SIEM) at 80% and 100%.</div>
++  <div class="meter"><span id="quotabar"></span></div>
++  <div style="font-size:12.5px" id="quotatxt"></div>
++</div>
++
++<div class="panel span">
++  <h2>Settings</h2>
++  <div class="sub">The collector adds no listening ports. It only reads local counters (interfaces, conntrack, QoS queues).</div>
++  <div class="togglerow">
++    <label class="tswitch"><input type="checkbox" id="tg_enable"><span class="track"></span></label>
++    <div class="tmeta"><div class="tname2">Collect traffic history</div><div class="tdesc">Turns the rtrafd collector on or off. Off = the realtime interface monitor still works, but no history or per-device accounting.</div></div>
++  </div>
++  <div class="fld">
++    <label>History storage</label>
++    <select id="set_path">
++      <option value="">RAM (fast, cleared on reboot)</option>
++      <option value="jffs">JFFS (survives reboot, internal flash)</option>
++      <option value="usb">USB disk (survives reboot, most space)</option>
++    </select>
++    <div class="storenote">
++      <b>RAM</b> keeps everything in memory &mdash; the live view and up to a year of rolled-up history, but it all resets when the router reboots. Choose <b>JFFS</b> or <b>USB</b> to keep history across reboots. The collector snapshots once an hour, so at most the last hour is lost on an unclean shutdown. JFFS is limited internal flash (fine for this data, a few hundred KB); USB has the most room and avoids flash wear. If the chosen target is not writable, the collector silently falls back to RAM.
++    </div>
++  </div>
++  <div class="fld">
++    <label>WAN latency probe (optional)</label>
++    <input type="text" id="set_probe" maxlength="63" placeholder="e.g. 1.1.1.1 (blank = off)" style="width:230px">
++    <div class="storenote">A single ping per sample to this host graphs latency and loss under load beside throughput &mdash; the bufferbloat picture. Left blank, nothing is sent (no forced outbound). Use an IP or hostname you are comfortable pinging continuously.</div>
++  </div>
++  <div class="fld">
++    <label>Monthly data cap</label>
++    <input type="text" id="set_cap" maxlength="7" style="width:120px"><span class="u">GB (0 = off)</span>
++  </div>
++  <button type="button" class="btn" style="background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff" onclick="applySettings()">Apply settings</button>
++</div>
++
++<div class="scrim" id="scrim" onclick="faqClose()"></div>
++<aside class="flyout" id="flyout">
++  <div class="fhead"><h2>Traffic Analyzer Guide</h2><span class="fclose" onclick="faqClose()">&times;</span></div>
++  <div class="fbody">
++    <details open><summary>Where is my history stored?</summary><div class="fc">Choose in Settings: <b>RAM</b> (default, cleared on reboot), <b>JFFS</b> (internal flash, survives reboot), or <b>USB</b> (a plugged-in disk, most space). Anything longer than the live view needs JFFS or USB if you want it to outlast a reboot. The collector writes a snapshot hourly, so an unclean shutdown loses at most the last hour.</div></details>
++    <details><summary>How accurate are the per-device numbers?</summary><div class="fc">They come from the kernel connection tracker, which the flow accelerator syncs periodically &mdash; so totals are accurate to within a poll interval, and a very short flow that starts and ends between polls can undercount slightly. Device names come from the network map; a device shows as a bare IP until it is named there. IPv6 traffic counts toward interface and network totals but is not split per-device in this version.</div></details>
++    <details><summary>Why is the per-class chart empty?</summary><div class="fc">Per-class data only exists while <b>HW QoS Classful</b> (Traffic Manager) is the active engine &mdash; that is what creates the five upload queues this reads. On any other QoS mode the class chart stays blank; everything else still works.</div></details>
++    <details><summary>What are "top talkers"?</summary><div class="fc">The highest-rate active connections right now, grouped by destination port so you can tell <i>what kind</i> of traffic it is (HTTPS 443, QUIC 443/UDP, SSH 22, mail, torrent-range, etc.) without deep packet inspection. This is the privacy-respecting replacement for the old per-app view &mdash; it reads only the connection table, never packet contents.</div></details>
++    <details><summary>How does the data cap work?</summary><div class="fc">Set a monthly GB figure and the collector tracks month-to-date WAN usage (up + down). At 80% and again at 100% it writes a warning to the system log; if you have a remote syslog server or SIEM configured, the warning reaches it too. It is a notification, not an enforcement &mdash; nothing is cut off.</div></details>
++    <details><summary>Does this add any attack surface?</summary><div class="fc">No listening ports. The collector only reads local kernel counters and writes JSON files the web UI serves through the normal authenticated session. The optional latency probe is the only outbound traffic, and only to the host you enter.</div></details>
++  </div>
++</aside>
++
++<div class="applying" id="applying"><div class="abox"><h2>Applying</h2><p>Restarting the collector.</p></div></div>
++
++<iframe name="hidden_frame" style="display:none" width="0" height="0"></iframe>
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_Traffic.asp">
++  <input type="hidden" name="next_page" value="Reaper_Traffic.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_rtraf">
++  <input type="hidden" name="action_wait" value="5">
++  <input type="hidden" name="rtraf_enable" value="" disabled>
++  <input type="hidden" name="rtraf_path" value="" disabled>
++  <input type="hidden" name="rtraf_probe" value="" disabled>
++  <input type="hidden" name="rtraf_cap_gb" value="" disabled>
++</form>
++
++<script>
++var NV = {
++  enable: '<% nvram_get("rtraf_enable"); %>',
++  path:   '<% nvram_get("rtraf_path"); %>',
++  probe:  decodeURIComponent('<% nvram_char_to_ascii("", "rtraf_probe"); %>'),
++  cap:    '<% nvram_get("rtraf_cap_gb"); %>'
++};
++var CLSCOLOR = ['#71767b','#3987e5','#199e70','#c98500','#9085e9','#d95926','#e66767'];
++var CLSNAME  = (decodeURIComponent('<% nvram_char_to_ascii("", "qos_class_names"); %>')||'Q1,Q2,Q3,Q4,Q5').split(',');
++var NETCOLOR = ['#3987e5','#199e70','#c98500','#9085e9','#d95926','#e66767','#d55181','#71767b'];
++var curWin = 'live', curStep = 'live', liveTimer = null;
++
++/* ---- formatting ---- */
++function fmtBps(b){ b=+b||0; if(b>=1e9)return (b/1e9).toFixed(2)+' Gb/s'; if(b>=1e6)return (b/1e6).toFixed(1)+' Mb/s'; if(b>=1e3)return (b/1e3).toFixed(0)+' kb/s'; return b.toFixed(0)+' b/s'; }
++function fmtBytes(b){ b=+b||0; if(b>=1e12)return (b/1e12).toFixed(2)+' TB'; if(b>=1e9)return (b/1e9).toFixed(2)+' GB'; if(b>=1e6)return (b/1e6).toFixed(1)+' MB'; if(b>=1e3)return (b/1e3).toFixed(0)+' KB'; return b+' B'; }
++function esc(s){ return String(s).replace(/[<>&"]/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c];}); }
++var PORTS={20:'FTP',21:'FTP',22:'SSH',25:'SMTP',53:'DNS',80:'HTTP',110:'POP3',143:'IMAP',443:'HTTPS/QUIC',465:'SMTPS',587:'SMTP',993:'IMAPS',3074:'Xbox',3478:'STUN/RTC',5060:'SIP',5061:'SIP',8080:'HTTP-alt',51413:'BitTorrent',32400:'Plex'};
++function portName(p,proto){ if(PORTS[p]) return PORTS[p]+' ('+p+')'; if(p>=6881&&p<=6999) return 'BitTorrent ('+p+')'; if(p>=27000&&p<=27100) return 'Game ('+p+')'; return (proto===17?'UDP ':proto===6?'TCP ':'')+p; }
++
++/* ---- fetch ---- */
++function getJSON(f, cb){
++  var x=new XMLHttpRequest();
++  x.open('GET','/reaper_traffic.cgi?f='+f+'&_='+Date.now(),true);
++  x.onreadystatechange=function(){ if(x.readyState!==4)return; var d={}; try{d=JSON.parse(x.responseText);}catch(e){} cb(d); };
++  x.send();
++}
++
++/* ---- SVG chart helpers (W=1000 viewBox) ---- */
++var W=1000;
++function axis(svg, H, maxv, unit){
++  var g='', steps=4, i;
++  for(i=0;i<=steps;i++){ var y=10+(H-24)*i/steps, val=maxv*(1-i/steps);
++    g+='<line class="grid-l" x1="44" y1="'+y.toFixed(1)+'" x2="'+W+'" y2="'+y.toFixed(1)+'"/>';
++    g+='<text class="axl" x="0" y="'+(y+3).toFixed(1)+'">'+unit(val)+'</text>'; }
++  return g;
++}
++function lineChart(id, series, maxv, unit){
++  var svg=document.getElementById(id), H=+svg.getAttribute('viewBox').split(' ')[3];
++  var body=axis(svg,H,maxv||1,unit), s, i;
++  for(s=0;s<series.length;s++){ var pts=series[s].data, d='';
++    for(i=0;i<pts.length;i++){ var x=44+(W-44)*(pts.length<2?0:i/(pts.length-1)), y=10+(H-24)*(1-(pts[i]/(maxv||1)));
++      d+=(i?'L':'M')+x.toFixed(1)+' '+Math.max(10,Math.min(H-14,y)).toFixed(1)+' '; }
++    body+='<path d="'+d+'" fill="none" stroke="'+series[s].color+'" stroke-width="2"/>'; }
++  svg.innerHTML=body;
++}
++function stackChart(id, layers, labels, colors){
++  var svg=document.getElementById(id), H=+svg.getAttribute('viewBox').split(' ')[3];
++  var n=layers.length?layers[0].length:0, i, s, tot=[], maxv=1;
++  for(i=0;i<n;i++){ tot[i]=0; for(s=0;s<layers.length;s++) tot[i]+=layers[s][i]; if(tot[i]>maxv)maxv=tot[i]; }
++  var body=axis(svg,H,maxv,fmtBytes), acc=new Array(n).fill(0);
++  for(s=0;s<layers.length;s++){ var up='',dn='';
++    for(i=0;i<n;i++){ var x=44+(W-44)*(n<2?0:i/(n-1));
++      var y0=10+(H-24)*(1-acc[i]/maxv), y1=10+(H-24)*(1-(acc[i]+layers[s][i])/maxv);
++      up+=(i?'L':'M')+x.toFixed(1)+' '+y1.toFixed(1)+' '; }
++    for(i=n-1;i>=0;i--){ var x2=44+(W-44)*(n<2?0:i/(n-1)); dn+='L'+x2.toFixed(1)+' '+(10+(H-24)*(1-acc[i]/maxv)).toFixed(1)+' '; }
++    body+='<path d="'+up+dn+'Z" fill="'+colors[s]+'" fill-opacity="0.75" stroke="'+colors[s]+'" stroke-width="1"/>';
++    for(i=0;i<n;i++) acc[i]+=layers[s][i]; }
++  svg.innerHTML=body;
++}
++
++/* ---- render live ---- */
++function renderLive(d){
++  document.getElementById('statuspill_t').textContent = 'Live - '+(d.store?d.store.toUpperCase():'RAM');
++  var wan=d.wan||{rx_bps:0,tx_bps:0};
++  var tiles=[['Download',fmtBps(wan.rx_bps),'dn'],['Upload',fmtBps(wan.tx_bps),'up']];
++  if(d.probe&&d.probe.rtt_us){ tiles.push(['Latency',(d.probe.rtt_us/1000).toFixed(1)+' <small>ms</small>','']); tiles.push(['Loss',d.probe.loss+' <small>%</small>','']); }
++  var q=d.quota||{}; if(q.cap_gb>0){ tiles.push(['Cap used',fmtBytes(q.used)+' <small>/ '+q.cap_gb+' GB</small>','']); }
++  var th=''; for(var i=0;i<tiles.length;i++) th+='<div class="tile"><div class="k">'+tiles[i][0]+'</div><div class="v '+tiles[i][2]+'">'+tiles[i][1]+'</div></div>';
++  document.getElementById('tiles').innerHTML=th;
++  /* live top talkers */
++  var tb=''; (d.top||[]).sort(function(a,b){return b.rate-a.rate;}).slice(0,12).forEach(function(t){
++    tb+='<tr><td class="tname">'+esc(t.src)+'</td><td>'+esc(t.dst)+' <span class="badge">'+esc(portName(t.dport,t.proto))+'</span></td><td class="num">'+fmtBps(t.rate*8)+'</td></tr>'; });
++  document.getElementById('toptbody').innerHTML = tb || '<tr><td colspan="3" style="color:var(--steel)">No active flows.</td></tr>';
++  /* live class strip */
++  var cls=d.class||[]; var lays=[], cols=[], labs=[];
++  for(var c=1;c<=5;c++){ if(cls[c]){ lays.push([cls[c].tx_bps||0]); cols.push(CLSCOLOR[c]); labs.push(CLSNAME[c-1]||('Q'+c)); } }
++  document.getElementById('probe_note').textContent = d.qos? 'QoS Classful active - per-class chart live.' : 'Enable HW QoS Classful for per-class data.';
++}
++
++/* ---- render history window ---- */
++function renderHist(d){
++  var wan=d.wan||[], rx=wan.map(function(p){return p[0];}), tx=wan.map(function(p){return p[1];});
++  var step=d.step||300, div=step>0?step:2592000;
++  var rxbps=rx.map(function(v){return v*8/div;}), txbps=tx.map(function(v){return v*8/div;});
++  var maxv=Math.max(1,Math.max.apply(null,rxbps),Math.max.apply(null,txbps));
++  var series=[{data:rxbps,color:'var(--jade)'},{data:txbps,color:'var(--crimson)'}];
++  var probe=d.probe||[], hasP=probe.some(function(p){return p[0]>0;});
++  document.getElementById('lat_leg').style.display = hasP?'':'none';
++  if(hasP){ var lat=probe.map(function(p){return p[0]/1000;}), lmax=Math.max.apply(null,lat)||1;
++    series.push({data:lat.map(function(v){return v/lmax*maxv;}),color:'var(--amber)'}); }
++  lineChart('wanchart', series, maxv, fmtBps);
++
++  /* class stack */
++  var cl=d.class||{}, clsLays=[], clsCols=[], clsLeg='';
++  for(var c=1;c<=5;c++){ var arr=(cl['q'+c]||[]).map(function(p){return p[0];}); if(arr.length){ clsLays.push(arr); clsCols.push(CLSCOLOR[c]); clsLeg+='<span><i style="background:'+CLSCOLOR[c]+'"></i>'+esc(CLSNAME[c-1]||('Q'+c))+'</span>'; } }
++  document.getElementById('clslegend').innerHTML = clsLeg || '<span style="color:var(--steel)">No QoS class data in this window.</span>';
++  if(clsLays.length) stackChart('clschart', clsLays, null, clsCols); else document.getElementById('clschart').innerHTML='';
++
++  /* network stack */
++  var nets=d.nets||{}, netLays=[], netCols=[], netLeg='', ni=0;
++  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; var narr=nets[nm].map(function(p){return p[0]+p[1];}); var col=NETCOLOR[ni%NETCOLOR.length]; netLays.push(narr); netCols.push(col); netLeg+='<span><i style="background:'+col+'"></i>'+esc(nm)+'</span>'; ni++; }
++  document.getElementById('netlegend').innerHTML = netLeg || '<span style="color:var(--steel)">No per-network data yet.</span>';
++  if(netLays.length) stackChart('netchart', netLays, null, netCols); else document.getElementById('netchart').innerHTML='';
++
++  /* top devices (sum window) */
++  var cli=d.clients||{}, rows=[];
++  for(var k in cli){ if(!cli.hasOwnProperty(k))continue; var dn=0,up=0; cli[k].d.forEach(function(p){dn+=p[0];up+=p[1];}); rows.push({name:k,ip:cli[k].ip,dn:dn,up:up,tot:dn+up}); }
++  rows.sort(function(a,b){return b.tot-a.tot;});
++  var maxTot=rows.length?rows[0].tot:1, tb='';
++  rows.slice(0,15).forEach(function(r){ tb+='<tr><td><span class="tname">'+esc(r.ip||r.name)+'</span><div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'; });
++  document.getElementById('clitbody').innerHTML = tb || '<tr><td colspan="3" style="color:var(--steel)">No per-device data yet.</td></tr>';
++
++  /* quota */
++  var q=null; getJSON('live', function(l){ if(l.quota&&l.quota.cap_gb>0){ var used=l.quota.used, cap=l.quota.cap_gb*1e9, pct=Math.min(100,used/cap*100);
++    document.getElementById('quotapanel').style.display=''; var bar=document.getElementById('quotabar'); bar.style.width=pct.toFixed(0)+'%'; bar.className=pct>=80?'hot':'';
++    document.getElementById('quotatxt').innerHTML=fmtBytes(used)+' of '+l.quota.cap_gb+' GB ('+pct.toFixed(0)+'%) this month'; }
++    else document.getElementById('quotapanel').style.display='none'; });
++}
++
++/* ---- window switching ---- */
++function loadWin(){
++  if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
++  if(curWin==='live'){
++    var tick=function(){ getJSON('live', renderLive); };
++    tick(); liveTimer=setInterval(tick,5000);
++    /* also draw the 24h history behind the live tiles for context */
++    getJSON('m5', renderHist);
++  } else {
++    getJSON(curWin, renderHist);
++    getJSON('live', renderLive);   /* keep tiles fresh */
++  }
++}
++(function(){ var ws=document.querySelectorAll('#wins .win'); for(var i=0;i<ws.length;i++) ws[i].onclick=function(){
++  document.querySelectorAll('#wins .win').forEach(function(x){x.className='win';}); this.className='win on';
++  curWin=this.getAttribute('data-w'); curStep=this.getAttribute('data-step'); loadWin(); }; })();
++
++/* ---- settings ---- */
++function applySettings(){
++  var f=document.form;
++  f.rtraf_enable.disabled=false; f.rtraf_enable.value=document.getElementById('tg_enable').checked?'1':'0';
++  f.rtraf_path.disabled=false;   f.rtraf_path.value=document.getElementById('set_path').value;
++  var pv=document.getElementById('set_probe').value.trim();
++  if(pv && !/^[A-Za-z0-9.\-]{1,63}$/.test(pv)){ alert('Probe target must be a plain hostname or IPv4 address.'); return; }
++  f.rtraf_probe.disabled=false;  f.rtraf_probe.value=pv;
++  var cv=parseInt(document.getElementById('set_cap').value,10); if(isNaN(cv)||cv<0)cv=0;
++  f.rtraf_cap_gb.disabled=false; f.rtraf_cap_gb.value=String(cv);
++  document.getElementById('applying').className='applying show';
++  f.submit();
++  setTimeout(function(){ location.reload(); }, 6000);
++}
++function exportJSON(){
++  var win = curWin==='live'?'m5':curWin;
++  window.open('/reaper_traffic.cgi?f='+win, '_blank');
++}
++function faqOpen(){ document.getElementById('flyout').className='flyout open'; document.getElementById('scrim').className='scrim open'; }
++function faqClose(){ document.getElementById('flyout').className='flyout'; document.getElementById('scrim').className='scrim'; }
++document.addEventListener('keydown',function(e){ if(e.key==='Escape')faqClose(); });
++
++/* ---- init ---- */
++document.getElementById('tg_enable').checked = (NV.enable!=='0');
++document.getElementById('set_path').value = NV.path||'';
++document.getElementById('set_probe').value = NV.probe||'';
++document.getElementById('set_cap').value = NV.cap||'0';
++loadWin();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 6df50a45b0..80f489fa3d 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -122,7 +122,10 @@ define(function(){
+ 				menuName: "<#Traffic_Analyzer#>",
+ 				index: "menu_TrafficAnalyzer", 
+ 				tab: [
+-					{url: "Main_TrafficMonitor_realtime.asp", tabName: "<#traffic_monitor#>"},
++					/* reaper v1.3.0: Traffic Analyzer is the reaper-native page;
++					   stock Monitor/Statistic pages still ship and remain reachable by URL */
++					{url: "Reaper_Traffic.asp", tabName: "<#traffic_monitor#>"},
++					{url: "Main_TrafficMonitor_realtime.asp", tabName: "__INHERIT__"},
+ 					{url: "Main_TrafficMonitor_last24.asp", tabName: "__INHERIT__"},
+ 					{url: "Main_TrafficMonitor_daily.asp", tabName: "__INHERIT__"},
+ 					{url: "Main_TrafficMonitor_monthly.asp", tabName: "__INHERIT__"},
+-- 
+2.25.1
+

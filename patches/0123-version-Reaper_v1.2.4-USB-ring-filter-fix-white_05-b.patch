@@ -1,0 +1,129 @@
+From cba54a5b181ae0f9884521777af474c7c8422728 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 10 Jul 2026 10:51:46 -0400
+Subject: [PATCH] version: Reaper_v1.2.4 (USB ring filter fix + white_05 blend,
+ VPN client/server Others theme, Network Analysis graph centering)
+
+---
+ release/src-rt/version.conf                   |  2 +-
+ .../src/router/www/reaper/reaper_content.css  | 44 ++++++++++++++++++-
+ .../VPNC_V2/Advanced_VPNClient_Content.asp    | 16 ++++++-
+ 3 files changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index ac802b615f..f152aa2b45 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.3
++EXTENDNO=Reaper_v1.2.4
+ 
+ RCNO=0
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index b4a41f58b4..ac71cd8e83 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -380,9 +380,25 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+ /* Network Map: USB/device icons are sprite background-images with ids like
+    iconUSBdisk_1 / deviceIcon_1 (usbPath 1,2). Crimson the sprite and force a
+    transparent background so no rose/teal tile square shows behind them */
+-[id^="iconUSBdisk"],[id^="deviceIcon_"],[id^="iconModem"],[id^="iconPrinter"]{
++/* Crimson-tint the device GLYPHS only. The deviceIcon_ CONTAINER is deliberately
++   NOT in this selector: a CSS filter on it cascades to every child (the USB ring
++   sprite included), which tinted the whole ring crimson. The container just goes
++   transparent so the network-map panel background shows behind the ring. */
++[id^="iconUSBdisk"],[id^="iconModem"],[id^="iconPrinter"]{
+   filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3) brightness(.95)!important;
+   background-color:transparent!important;box-shadow:none!important}
++[id^="deviceIcon_"]{background-color:transparent!important;box-shadow:none!important;filter:none!important}
++/* USB slot ring: owner's dark-canvas sprite (white_05) so the ring background is
++   the dark page, not the stock teal tile. div[id^] beats the .iconUSBdisk class
++   rule (equal specificity otherwise). NO blend/filter (that was the crimson path).
++   The sprite canvas is OPAQUE BLACK; the network-map panel is #0f0f12 (not pure
++   black), so a plain swap shows the canvas as a black square. mix-blend-mode:screen
++   melts black into whatever backdrop (screen vs black = backdrop unchanged), so the
++   ring floats cleanly on the panel and adapts if the bg changes. The crimson-filter
++   path that previously fought this is gone (see the deviceIcon_ note above).
++   Alignment geometry is frame-precise -> tuned on-device. */
++div[id^="ring_USBdisk"]{background-image:url("/images/New_ui/networkmap/white_05.gif")!important;
++  background-repeat:no-repeat!important;filter:none!important;mix-blend-mode:screen!important}
+ 
+ /* Network Map "View List" popup (device-map/clientlist.html): the client list
+    still rendered on stock teal */
+@@ -641,3 +657,29 @@ body.bg,.container.no_highlights,.content_container{background:transparent!impor
+    and the yellow avg / green ping polylines are data-viz - left untouched (rule 2). */
+ #svgContainer{background:#0f0f12!important;border:1px solid rgba(255,255,255,.08)!important;
+   border-radius:8px!important}
++
++/* ---------- 21. VPN Server + VPN Client SPA server-list cards (v1.2.4) ----------
++   vpns.html / vpnc.html inject this file into their nested iframe. The shared
++   RWD_UI classes are themed by section 17; these are the vpns/vpnc-SPECIFIC
++   server-list + card classes still on stock teal/blue (#32393B/#1E2A41/#667881/
++   #248DFF). VPN-specific selectors only (svr_*, add_acc, banner_*) so nothing
++   bleeds onto other RWD_UI pages. AUTH-GATED - validate on device. */
++.svr_item_container,.svr_item_text_container,.svr_list_add_container,
++.add_acc_bg,.banner_surfshark,.svr_list_num_container{
++  background-color:#0c0c0f!important;border-color:rgba(255,255,255,.08)!important}
++.svr_item_container.selected{
++  background:linear-gradient(90deg,rgba(225,6,0,.18),#141418)!important;
++  border-color:rgba(225,6,0,.35)!important}
++.svr_item_container:hover{border-color:rgba(225,6,0,.30)!important}
++.svr_list_title,.svr_list_num,.svr_type_text{color:#ECE7DB!important}
++.svr_type_title{color:#B7B1A4!important}
++/* server-item toggle stays NEUTRAL grey (standing rule 11), never crimson */
++.svr_item_switch_container .switch{background:#45454B!important}
++.svr_item_switch_container .switch.on{background:#6B6B72!important}
++.vpnc_help_icon,.svr_list_help_icon,.svr_list_add_icon{color:#E10600!important}
++
++/* Network Analysis (Main_Analysis_Content.asp): the ping graph + results table
++   are a fixed 730px block; in the wide shell frame they stranded left with dead
++   space. Center the block so it reads as intentional (data-viz untouched). */
++#graphArea{max-width:772px!important;margin-left:auto!important;margin-right:auto!important}
++#svgContainer,#tableContainer{margin-left:auto!important;margin-right:auto!important}
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+index e7d43fb703..37629bcb89 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+@@ -24,6 +24,18 @@
+ </style>
+ <script>
+ 
++function reaperThemeFrame(ifr){
++	try{
++		var d=ifr.contentDocument; if(!d) return;
++		if(!d.querySelector('link[href*="reaper_content"]')){
++			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
++			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
++		}
++		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
++		grow(); setTimeout(grow,400); setTimeout(grow,1200);
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++	}catch(e){}
++}
+ function initial(){
+ 	show_menu();
+ 	setTimeout(function(){
+@@ -47,7 +59,7 @@ function initial(){
+ 
+ 		if(referer != "")
+ 			vpnc_iframe_src += "?referer=" + referer + "";
+-		document.getElementById("vpnc_iframe").setAttribute("src", vpnc_iframe_src);
++		var _vcifr=document.getElementById("vpnc_iframe"); _vcifr.addEventListener("load", function(){ reaperThemeFrame(_vcifr); }); _vcifr.setAttribute("src", vpnc_iframe_src);
+ 	},((window.location.protocol == "https:") ? 1000 : 50));
+ }
+ </script>
+@@ -85,7 +97,7 @@ function initial(){
+ 							<tbody>
+ 								<tr>
+ 									<td bgcolor="#4D595D" valign="top">
+-										<iframe id="vpnc_iframe" class="rwd_iframe" frameborder="0"></iframe>
++										<iframe id="vpnc_iframe" class="rwd_iframe" frameborder="0" scrolling="no"></iframe>
+ 									</td>
+ 								</tr>
+ 							</tbody>
+-- 
+2.25.1
+

@@ -1,0 +1,335 @@
+From 6fe4cd7876953d5b7f7e4f295ec88f104f08e9a4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 00:46:36 -0400
+Subject: [PATCH] rc/webui: v1.2.9 - QoS v4: per-class WRR weights + L4S flag;
+ group shaper objects dropped with cause
+
+- rc/qos.c start_hwqos_classful: new qos_sched nvram (5 tokens by queue
+  position: p = strict priority, w<1-63> = WRR weight). Weighted classes get
+  tmctl setqcfg --schedmode 2 --weight N, emitted BEFORE setqdropalg/
+  setqshaper (config-rewriting verbs first - the v1 ordering lesson), with
+  the platform-tuned qsize read back at run time and preserved (setqcfg is
+  skipped if the read fails; never write a zero qsize). qos_l4s=1
+  (EXPERIMENTAL, default 0) adds --l4s 1 on every class queue - DualPI2
+  ECT(1) marking for L4S-capable flows, inert if a flow/TM rejects it.
+  Stop branch restores schedmode 1 (weight 1 = lowest legal value, ignored
+  in SP; the tool rejects weight 0) and --l4s 0 on any queue the script
+  reconfigured. With no weighted class and L4S off the generated script is
+  byte-identical to v3.
+- shared/defaults.c: qos_sched default "p,p,p,p,p" (CKN_STR64), qos_l4s
+  default "0".
+- www/Reaper_QoS.asp: class editor gains Mode (Priority/Weighted) + Weight
+  columns with weighted-pool queue notes; serialize writes qos_sched and
+  enforces WRR contiguity at the bottom (an SP row below the pool would
+  silently outrank it). L4S toggle (EXPERIMENTAL tag). FAQ: Priority-vs-
+  Weighted, L4S explainer, and the group-cap recipe.
+
+GROUP SHAPER OBJECTS / ORL: DROPPED with cause. tmctl CreateShaper returns
+an object POINTER that SetShaperQueue consumes, but the CLI never prints it
+on success -> not scriptable; libtmctl.so ships no headers and rc has no
+tmctl linkage, so the C route is undocumented-blob guesswork. ORL is
+redundant with the v3 port shaper (both whole-port aggregate caps). The
+group-cap outcome = member ceilings summing to the group budget under the
+aggregate cap (+ weights for fair sharing) - documented in the FAQ.
+
+Mock-validated render. EXTENDNO=Reaper_v1.2.9. Metal tests owed: weighted
+pool shares by weight under dual bulk saturation while SP classes stay
+first; getqcfg shows schedMode 2/weight after apply and schedMode 1 after
+stop; qsize preserved across apply; L4S toggle accepted by setqcfg (or
+fails inert); v3 regression pass (port shaper/minrates/DSCP/stats).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf           |  2 +-
+ release/src/router/rc/qos.c           | 45 ++++++++++++++-
+ release/src/router/shared/defaults.c  |  2 +
+ release/src/router/www/Reaper_QoS.asp | 83 +++++++++++++++++++++++----
+ 4 files changed, 118 insertions(+), 14 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index ac4005141d..78caa04f6c 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.8
++EXTENDNO=Reaper_v1.2.9
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index c34ed17c06..f6fc0b340f 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3094,7 +3094,8 @@ int start_hwqos_classful(void)
+ {
+ 	FILE *f;
+ 	unsigned int obw, rate, ceil, cap, minr;
+-	int i, qid, minrates;
++	int i, qid, minrates, l4s;
++	int sched_w[5];		/* v4: per-class WRR weight, 0 = strict priority */
+ 	char *buf, *g, *p;
+ 	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
+ 	const char *q;
+@@ -3125,6 +3126,28 @@ int start_hwqos_classful(void)
+ 		wan_ifname
+ 	);
+ 
++	/* v4: per-class scheduler mode from qos_sched - 5 comma tokens by queue
++	 * position: "p" = strict priority (default, v3 behavior) or "w<1-63>" =
++	 * WRR with that weight. The port scheduler is an SP_WRR combo: SP queues
++	 * are always served first, WRR queues share what remains by weight.
++	 * qos_l4s=1 additionally flags every class queue L4S (EXPERIMENTAL -
++	 * DualPI2 marking for ECT(1) flows; harmless no-op if the TM rejects it). */
++	{
++		char *sbuf, *sg, *st;
++		int widx;
++		for (widx = 0; widx < 5; widx++) sched_w[widx] = 0;	/* 0 = SP */
++		sg = sbuf = strdup(nvram_safe_get("qos_sched"));
++		for (widx = 0; widx < 5 && sg; widx++) {
++			if ((st = strsep(&sg, ",")) == NULL) break;
++			if (st[0] == 'w') {
++				int w = atoi(st + 1);
++				if (w >= 1 && w <= 63) sched_w[widx] = w;
++			}
++		}
++		free(sbuf);
++	}
++	l4s = nvram_match("qos_l4s", "1");
++
+ 	/* class queues 1..5: PI2 + min%/ceil% of OBW from qos_orates (prio order 0..4).
+ 	 * v3: the min half of each "min-ceil" pair (ignored by v2) is now emitted as
+ 	 * a committed rate (--minrate) - lower classes keep a guaranteed floor while
+@@ -3134,6 +3157,17 @@ int start_hwqos_classful(void)
+ 		if ((!g) || ((p = strsep(&g, ",")) == NULL)) break;
+ 		if (sscanf(p, "%u-%u", &rate, &ceil) != 2) continue;
+ 		qid = i + 1;
++		/* v4: setqcfg FIRST - like setqdropalg it rewrites the whole queue
++		 * config (the v1 ordering lesson), so scheduler mode must land before
++		 * drop-alg and shaper. qsize is platform-tuned, so it is read back at
++		 * run time and preserved; if the read fails the setqcfg is skipped
++		 * (never write a zero qsize). Only emitted when the class actually
++		 * departs from the SP default, so v3 scripts stay byte-identical. */
++		if (sched_w[i] > 0 || l4s) {
++			fprintf(f, "\tQS=$(tmctl getqcfg --devtype 0 --if $WANIF --qid %d | awk '/qsize/{print $3}')\n", qid);
++			fprintf(f, "\t[ -n \"$QS\" ] && tmctl setqcfg --devtype 0 --if $WANIF --qid %d --priority %d --qsize $QS --schedmode %d --weight %d --l4s %d\n",
++				qid, qid, sched_w[i] > 0 ? 2 : 1, sched_w[i] > 0 ? sched_w[i] : 1, l4s ? 1 : 0);
++		}
+ 		/* obw==0 means "no bandwidth configured" -> leave the class unshaped,
+ 		 * matching start_hwqos. (calc() floors to 2, so without this guard a
+ 		 * blank OBW would throttle every 1..99%% class to ~2 kbit.) */
+@@ -3169,6 +3203,15 @@ int start_hwqos_classful(void)
+ 
+ 	fprintf(f, "\t;;\nstop)\n");
+ 	fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate 0\n");
++	/* v4: restore strict priority on any queue this script reconfigured
++	 * (setqcfg first, mirroring the start ordering; weight 1 is the lowest
++	 * legal value and is ignored in SP mode - the tool rejects weight 0) */
++	for (i = 0; i < 5; i++) {
++		if (sched_w[i] > 0 || l4s) {
++			fprintf(f, "\tQS=$(tmctl getqcfg --devtype 0 --if $WANIF --qid %d | awk '/qsize/{print $3}')\n", i + 1);
++			fprintf(f, "\t[ -n \"$QS\" ] && tmctl setqcfg --devtype 0 --if $WANIF --qid %d --priority %d --qsize $QS --schedmode 1 --weight 1 --l4s 0\n", i + 1, i + 1);
++		}
++	}
+ 	for (qid = 0; qid <= 6; qid++) {
+ 		/* reset minrate along with the ceiling - a bare "--shapingrate 0"
+ 		 * would leave a stale committed rate configured on the queue */
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index cb2824ba31..9feb2cd1ea 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3078,6 +3078,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_pshaper", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 aggregate cap: port shaper at qos_obw */
+ 	{ "qos_minrates", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 guaranteed minimums from qos_orates min half */
+ 	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
++	{ "qos_sched", "p,p,p,p,p", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight */
++	{ "qos_l4s", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 EXPERIMENTAL: flag class queues L4S (DualPI2 ECT(1) marking) */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index ece0f24290..f0a2846f95 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -213,15 +213,24 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+       <div class="tdesc">Maps standard DiffServ classes from LAN devices (EF/CS5+ to Q1, AF4x to Q2, AF3x to Q3, CS1 scavenger to Q5) ahead of the default class. Your explicit rules always win. Off by default: any LAN host can influence its own priority when this is on.</div>
+     </div>
+   </div>
++  <div class="togglerow">
++    <label class="tswitch"><input type="checkbox" id="tg_l4s"><span class="track"></span></label>
++    <div class="tmeta">
++      <div class="tname">L4S marking <span class="tag warn" style="vertical-align:1px">EXPERIMENTAL</span></div>
++      <div class="tdesc">Flags the class queues L4S: flows that negotiate L4S ECN get congestion <i>marked</i> instead of dropped, holding queueing near zero for capable apps (newer Apple/conference stacks). Harmless if unsupported by a flow &mdash; classic traffic keeps normal PI2 behavior. Unproven on this hardware; watch the drop counters after enabling.</div>
++    </div>
++  </div>
+ 
+   <table class="classes">
+     <thead><tr>
+-      <th style="width:64px">Order</th><th>Class name</th><th style="width:110px">Queue</th>
+-      <th style="width:90px">Min %</th><th style="width:90px">Ceiling %</th>
+-      <th style="width:130px">Rate (live)</th><th style="width:110px">Drops</th>
++      <th style="width:64px">Order</th><th>Class name</th><th style="width:100px">Queue</th>
++      <th style="width:120px">Mode</th><th style="width:80px">Weight</th>
++      <th style="width:78px">Min %</th><th style="width:78px">Ceiling %</th>
++      <th style="width:120px">Rate (live)</th><th style="width:100px">Drops</th>
+     </tr></thead>
+     <tbody id="ctbody"></tbody>
+   </table>
++  <div class="hint" style="margin-top:8px"><b>Priority</b> classes are always served first, top to bottom. <b>Weighted</b> classes form a pool below them that splits the remaining bandwidth by weight (1&ndash;63) instead of rank &mdash; use it when two bulk classes should share fairly rather than starve each other. Weighted classes must sit together at the bottom of the list.</div>
+ 
+   <div class="xq">
+     <div class="xt"><div class="xn">Unclassified (Q0)</div><div class="xv statcell" id="xq0">&ndash;</div></div>
+@@ -277,6 +286,22 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+         <b>Small office</b>: raise Default's min (most traffic is unclassified there) and keep bulk backup jobs in Q5 with a high ceiling &mdash; bottom priority makes them yield instantly when anyone needs the line.
+       </div>
+     </details>
++    <details>
++      <summary>Priority vs Weighted classes &mdash; when to use which?</summary>
++      <div class="fc">
++        <b>Priority</b> (the default) is absolute rank: under load, a higher class takes everything its ceiling allows before a lower class gets a byte. Perfect for latency tiers.<br><br>
++        <b>Weighted</b> classes opt out of ranking: all weighted classes form one pool <i>below</i> every Priority class, and the pool splits whatever bandwidth is left in proportion to weight (1&ndash;63). Use it when two bulk-ish classes should share fairly instead of one starving the other &mdash; e.g. make Downloads (weight 40) and a Backups class (weight 20) weighted, and backups always get a third of the leftover no matter how greedy downloads are.<br><br>
++        Rule the editor enforces: weighted rows sit together at the bottom &mdash; a Priority row below the pool would silently outrank the whole pool.
++      </div>
++    </details>
++    <details>
++      <summary>Can I cap a GROUP of classes together?</summary>
++      <div class="fc">There is no group-shaper control (the hardware's shaper-object API is not usable from the firmware's tooling), but the same outcome falls out of two existing levers: with the <b>aggregate cap on</b>, give the group members ceilings that <b>sum to the group budget</b> &mdash; e.g. Streaming 30% + Downloads 30% can never exceed 60% combined. Add weights (previous question) if the members should also share that budget fairly.</div>
++    </details>
++    <details>
++      <summary>What is L4S and should I turn it on?</summary>
++      <div class="fc">L4S (Low Latency, Low Loss, Scalable throughput) is a newer congestion-control standard: capable flows get their congestion signaled by <b>marking</b> packets (ECN) instead of dropping them, so the sender backs off within a round-trip and queueing stays near zero. Newer Apple devices and some conferencing/game stacks negotiate it; everything else is unaffected and keeps normal PI2 behavior.<br><br>It is marked <b>experimental</b> here: the queue hardware advertises the capability but it has not been proven on this board. Safe to try &mdash; if it misbehaves (a class suddenly shows zero drops but poor latency), switch it back off and re-apply.</div>
++    </details>
+     <details>
+       <summary>Why do bulk classes get a HIGH ceiling?</summary>
+       <div class="fc">Strict priority already makes the bottom class yield the moment anything above it wants the line. A high ceiling (95%) simply lets backups saturate an otherwise idle link. Low priority + high ceiling is the correct combination for bulk; a low ceiling would only slow it down at 3 a.m. for no one's benefit.</div>
+@@ -314,6 +339,8 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   <input type="hidden" name="qos_pshaper" value="" disabled>
+   <input type="hidden" name="qos_minrates" value="" disabled>
+   <input type="hidden" name="qos_dscp_trust" value="" disabled>
++  <input type="hidden" name="qos_sched" value="" disabled>
++  <input type="hidden" name="qos_l4s" value="" disabled>
+ </form>
+ 
+ <script>
+@@ -327,7 +354,9 @@ var NV = {
+   cnames:  decodeURIComponent('<% nvram_char_to_ascii("", "qos_class_names"); %>'),
+   pshaper: '<% nvram_get("qos_pshaper"); %>',
+   minrates:'<% nvram_get("qos_minrates"); %>',
+-  dscp:    '<% nvram_get("qos_dscp_trust"); %>'
++  dscp:    '<% nvram_get("qos_dscp_trust"); %>',
++  sched:   '<% nvram_get("qos_sched"); %>',
++  l4s:     '<% nvram_get("qos_l4s"); %>'
+ };
+ 
+ /* ---------- mode model (qos_type 1/Adaptive is retired with the DPI stack) ---------- */
+@@ -390,7 +419,14 @@ function parseOrates(){
+   }
+   var d = (NV.cnames||'').split(','), names=[];
+   for (var j=0;j<5;j++) names.push((d[j]&&d[j].length)?d[j]:DEFN[j]);
+-  return {mins:mins, ceils:ceils, names:names};
++  /* v4: qos_sched tokens - "p" or "w<weight>" per queue position */
++  var s = (NV.sched||'').split(','), modes=[], weights=[];
++  for (var k=0;k<5;k++){
++    var t = s[k]||'p';
++    if (t.charAt(0)==='w'){ var w=parseInt(t.substring(1),10); if(w>=1&&w<=63){ modes.push('w'); weights.push(w); continue; } }
++    modes.push('p'); weights.push(10);
++  }
++  return {mins:mins, ceils:ceils, names:names, modes:modes, weights:weights};
+ }
+ function buildEditor(){
+   var tb = document.getElementById('ctbody'); tb.innerHTML='';
+@@ -399,8 +435,12 @@ function buildEditor(){
+     var tr = document.createElement('tr');
+     tr.innerHTML =
+       '<td class="arrows"><span onclick="rowMove(this,-1)" title="move up">&#9650;</span><span onclick="rowMove(this,1)" title="move down">&#9660;</span></td>'
+-      +'<td><input type="text" maxlength="24" style="width:170px" value="'+String(m.names[i]).replace(/"/g,'&quot;')+'"></td>'
++      +'<td><input type="text" maxlength="24" style="width:150px" value="'+String(m.names[i]).replace(/"/g,'&quot;')+'"></td>'
+       +'<td><span class="qbadge qb"></span> <span class="qnote qn"></span></td>'
++      +'<td><select class="cl-filter" style="margin:0;width:104px;padding:6px 8px;font-size:12px" onchange="modeSync(this)">'
++        +'<option value="p"'+(m.modes[i]==='p'?' selected':'')+'>Priority</option>'
++        +'<option value="w"'+(m.modes[i]==='w'?' selected':'')+'>Weighted</option></select></td>'
++      +'<td><input type="text" maxlength="2" style="width:50px;'+(m.modes[i]==='w'?'':'visibility:hidden')+'" value="'+m.weights[i]+'" onblur="clampW(this)"></td>'
+       +'<td><input type="text" maxlength="3" style="width:56px" value="'+m.mins[i]+'" onblur="clampPct(this)"></td>'
+       +'<td><input type="text" maxlength="3" style="width:56px" value="'+m.ceils[i]+'" onblur="clampPct(this)"></td>'
+       +'<td class="statcell"><span class="rate">&ndash;</span></td>'
+@@ -410,11 +450,18 @@ function buildEditor(){
+   renumber();
+ }
+ function clampPct(o){ var v=parseInt(o.value,10); if(isNaN(v)||v<0)v=0; if(v>100)v=100; o.value=v; }
++function clampW(o){ var v=parseInt(o.value,10); if(isNaN(v)||v<1)v=1; if(v>63)v=63; o.value=v; }
++function modeSync(sel){
++  var tr = sel.parentNode.parentNode;
++  tr.getElementsByTagName('input')[1].style.visibility = (sel.value==='w') ? '' : 'hidden';
++  renumber();
++}
+ function renumber(){
+   var rows = document.querySelectorAll('#ctbody tr');
+   for (var i=0;i<rows.length;i++){
++    var mode = rows[i].getElementsByTagName('select')[0].value;
+     rows[i].querySelector('.qb').textContent = 'Q'+(i+1);
+-    rows[i].querySelector('.qn').textContent = i===0?'served first':(i===rows.length-1?'served last':'');
++    rows[i].querySelector('.qn').textContent = mode==='w' ? 'weighted pool' : (i===0?'served first':(i===rows.length-1?'served last':''));
+   }
+ }
+ function rowMove(sp,dir){
+@@ -425,14 +472,23 @@ function rowMove(sp,dir){
+ }
+ function serializeClasses(){
+   var rows = document.querySelectorAll('#ctbody tr'); if(!rows.length) return null;
+-  var mins=[], ceils=[], names=[], csum=0, msum=0;
++  var mins=[], ceils=[], names=[], sched=[], csum=0, msum=0, sawW=false;
+   for (var i=0;i<rows.length;i++){
+     var ins = rows[i].getElementsByTagName('input');
++    var mode = rows[i].getElementsByTagName('select')[0].value;
+     names.push((ins[0].value||('Class'+(i+1))).replace(/,/g,' ').replace(/</g,'').replace(/>/g,''));
+-    var mn = parseInt(ins[1].value,10); if(isNaN(mn)||mn<0)mn=0; if(mn>100)mn=100;
+-    var cl = parseInt(ins[2].value,10); if(isNaN(cl)||cl<0)cl=0; if(cl>100)cl=100;
+-    if (mn > cl && cl > 0){ mn = cl; ins[1].value = mn; } /* a floor above the ceiling is meaningless */
++    var wt = parseInt(ins[1].value,10); if(isNaN(wt)||wt<1)wt=1; if(wt>63)wt=63;
++    var mn = parseInt(ins[2].value,10); if(isNaN(mn)||mn<0)mn=0; if(mn>100)mn=100;
++    var cl = parseInt(ins[3].value,10); if(isNaN(cl)||cl<0)cl=0; if(cl>100)cl=100;
++    if (mn > cl && cl > 0){ mn = cl; ins[2].value = mn; } /* a floor above the ceiling is meaningless */
+     mins.push(mn); ceils.push(cl); msum+=mn; csum+=cl;
++    /* v4 contiguity: SP queues are always drained ahead of the WRR pool, so a
++       Priority row BELOW a Weighted row would silently outrank the whole pool */
++    if (mode==='w'){ sawW = true; sched.push('w'+wt); }
++    else {
++      if (sawW){ alert('Priority classes must sit ABOVE all Weighted classes (row '+(i+1)+' is Priority below a Weighted row). Reorder, or make it Weighted.'); return null; }
++      sched.push('p');
++    }
+   }
+   if (csum === 0){ alert('At least one class must have a non-zero upload ceiling (%).'); return null; }
+   if (document.getElementById('tg_minrates').checked && msum > 100){
+@@ -443,7 +499,7 @@ function serializeClasses(){
+       !confirm('Ceilings total '+csum+'% and the aggregate cap is OFF: several busy classes together can exceed the upload figure and re-enter the ISP buffer. Continue?'))
+     return null;
+   var pairs=[]; for (var j=0;j<10;j++) pairs.push(j<5 ? (mins[j]+'-'+ceils[j]) : '0-0');
+-  return { orates: pairs.join(','), names: names.join(',') };
++  return { orates: pairs.join(','), names: names.join(','), sched: sched.join(',') };
+ }
+ 
+ /* ---------- live stats ---------- */
+@@ -510,9 +566,11 @@ function applyQoS(){
+     var s = serializeClasses(); if (!s) return;
+     f.qos_orates.disabled=false;      f.qos_orates.value = s.orates;
+     f.qos_class_names.disabled=false; f.qos_class_names.value = s.names;
++    f.qos_sched.disabled=false;       f.qos_sched.value = s.sched;
+     f.qos_pshaper.disabled=false;     f.qos_pshaper.value = document.getElementById('tg_pshaper').checked ? '1':'0';
+     f.qos_minrates.disabled=false;    f.qos_minrates.value = document.getElementById('tg_minrates').checked ? '1':'0';
+     f.qos_dscp_trust.disabled=false;  f.qos_dscp_trust.value = document.getElementById('tg_dscp').checked ? '1':'0';
++    f.qos_l4s.disabled=false;         f.qos_l4s.value = document.getElementById('tg_l4s').checked ? '1':'0';
+   }
+ 
+   /* stock HND semantics: same enable+type (or turning off) restarts live;
+@@ -544,6 +602,7 @@ document.addEventListener('keydown', function(e){ if(e.key==='Escape') faqClose(
+ document.getElementById('tg_pshaper').checked = (NV.pshaper !== '0');
+ document.getElementById('tg_minrates').checked = (NV.minrates !== '0');
+ document.getElementById('tg_dscp').checked = (NV.dscp === '1');
++document.getElementById('tg_l4s').checked = (NV.l4s === '1');
+ renderModes(); syncPanels(); buildEditor(); pollStats();
+ </script>
+ </body>
+-- 
+2.25.1
+

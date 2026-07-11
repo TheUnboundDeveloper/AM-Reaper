@@ -36,9 +36,11 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 3. **Apply the reaper hardening** from this repo's [`../patches/`](../patches/) onto the upstream checkout:
    ```bash
    cd asuswrt-merlin.ng
-   git am /path/to/ASUS-Merlin-Reaper/patches/*.patch     # preserves authorship + messages
-   #   …or, if you prefer plain patches:
-   #   for p in /path/to/ASUS-Merlin-Reaper/patches/*.patch; do patch -p1 < "$p"; done
+   # --keep-cr is REQUIRED: some third-party files (lltdc) have CRLF line endings;
+   # without it git strips the CR and the series fails to apply at qospktio.c.
+   git am --keep-cr /path/to/ASUS-Merlin-Reaper/patches/*.patch   # preserves authorship + messages
+   #   (plain `patch -p1` will NOT work: 4 patches carry git binary payloads —
+   #    fonts, logo, USB ring sprite — that `patch` cannot apply. Use git am.)
    ```
    The patches touch only the shared open-source userspace (`release/src/router/{httpd,rc,shared,libovpn,snooper,urlfilterd,lltdc,wsdd2,infosvr,libcodb,…}`), so they apply cleanly to a stock upstream tree. **Making the tree BE96U-only (removing the sibling-model artifacts) is optional and not required to build `rt-be96u`** — see [`../patches/README.md`](../patches/README.md).
 

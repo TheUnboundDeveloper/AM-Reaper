@@ -1,0 +1,41 @@
+From 3e59e86f0a6ddbab3ab4f4a5db047a4bc9ab8c4d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 7 Jul 2026 20:33:41 -0400
+Subject: [PATCH] networkmap: ship libbwdpi.so wrapper when the DPI engine is
+ compiled out
+
+libcreduction failed: the closed networkmap prebuilts (networkmap,
+asusdiscovery, find_cap, arpstorm - no sources exist) carry libbwdpi.so
+in DT_NEEDED, so the loader needs the DSO present even with bwdpi off.
+Install the ASUS wrapper lib from bwdpi_source/asus/prebuild/RT-BE96U in
+networkmap's install target when RTCONFIG_BWDPI != y. Its own DT_NEEDED
+chain is only always-shipped common libs (nvram/shared/json-c/wlcsm/bcm
+utils - no TrendMicro engine libs), so the rest of the DPI stack (dcd,
+wred, shn_ctrl, tcd, tdts modules, signatures, libbwdpi_sql, libshn_*)
+stays removed.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/networkmap/Makefile | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/release/src/router/networkmap/Makefile b/release/src/router/networkmap/Makefile
+index 7e5a6b372f..91deea1cb1 100644
+--- a/release/src/router/networkmap/Makefile
++++ b/release/src/router/networkmap/Makefile
+@@ -250,6 +250,12 @@ endif
+ 	cp -f db/nmp_vendor_type.js $(INSTALLDIR)/usr/networkmap/nmp_vendor_type.js
+ 	cp -f db/nmp_bwdpi_type.js $(INSTALLDIR)/usr/networkmap/nmp_bwdpi_type.js
+ 	install -D api/$(NMP_API_SO) $(INSTALLDIR)/usr/lib/$(NMP_API_SO)
++ifneq ($(RTCONFIG_BWDPI),y)
++# the closed networkmap/asusdiscovery/find_cap/arpstorm prebuilts DT_NEED
++# libbwdpi.so; ship the ASUS wrapper lib (deps: common libs only) even when
++# the DPI engine is compiled out, or the loader refuses to start them
++	install -D $(TOP)/bwdpi_source/asus/prebuild/$(BUILD_NAME)/libbwdpi.so $(INSTALLDIR)/usr/lib/libbwdpi.so
++endif
+ 	$(STRIP) $(INSTALLDIR)/usr/lib/*.so
+ 
+ clean:
+-- 
+2.25.1
+

@@ -1,0 +1,874 @@
+From 5401e945ec7a3be47b9479de6cab57e7aa5fabd3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 8 Jul 2026 11:51:32 -0400
+Subject: [PATCH] rc/httpd: remove always-compiled AiCloud/WebDAV code (Phase
+ 1.3)
+
+usb.c: drop the un-gated (commented-#ifdef) webdav block (write_webdav_permissions
+#if 0 helpers, start/stop_webdav incl. the webdav_aidisk/webdav_proxy nvram
+cross-enable, stop_all_webdav), the always-compiled start/stop_cloudsync
+(~450 lines, all callers CLOUDSYNC-gated), and find_webdav_right +
+webdav_account_default (dead, always compiled).
+services.c: drop the UNGATED enable_webdav notify handler (bounced
+upnp/ddns/firewall and called start_webdav with RTCONFIG_WEBDAV off).
+firewall.c: drop the two '#if 1 /* def RTCONFIG_WEBDAV */' LOCALSRV DNAT
+blocks and the ungated webdav_aidisk SKIPLOG rule (live firewall writers
+keyed on webdav nvram).
+httpd: unregister get_webdavInfo.asp (web.c mime table; handler lived in the
+closed blob and was served with NO authentication - info-leak surface gone).
+
+#ifdef RTCONFIG_WEBDAV/CLOUDSYNC-gated call sites are left in place: they are
+compiled out (flags permanently unset) and deleting them would only add
+upstream-merge surface. Entware S50aicloud/S50smartsync #else hooks likewise
+kept (inert without /opt scripts). All remaining references verified gated;
+stop_all_webdav ungated calls resolve to the rc.h static-inline no-op.
+---
+ release/src/router/httpd/httpd.h |   1 -
+ release/src/router/httpd/web.c   |   1 -
+ release/src/router/rc/firewall.c |  32 --
+ release/src/router/rc/services.c |  13 -
+ release/src/router/rc/usb.c      | 715 -------------------------------
+ 5 files changed, 762 deletions(-)
+
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+index 77a7629ea8..316d92da7f 100644
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -627,7 +627,6 @@ extern int check_chpass_auth(char *cur_username, char *cur_passwd);
+ extern void replace_char(char *str, char find, char replace);
+ extern void reg_default_final_token();
+ extern int captcha_on();
+-extern void do_webdavInfo_asp(char *url, FILE *stream);
+ extern int gen_wl_nband_array();
+ extern void do_get_cta_info_cgi(char *url, FILE *stream);
+ extern void do_upload_config_sync_post(char *url, FILE *stream, int len, char *boundary);
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 95f5f8d92c..cd591b3639 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -28539,7 +28539,6 @@ struct mime_handler mime_handlers[] =
+ #endif
+ #endif
+ 	{ "wlc_status.json", "application/json", no_cache_IE7, do_html_post_and_get, do_ej, do_auth },
+-	{ "get_webdavInfo.asp", "text/html", no_cache_IE7, do_html_post_and_get, do_webdavInfo_asp, NULL },
+ 	{ "appGet_image_path.cgi", "text/html", no_cache_IE7, do_html_post_and_get, do_appGet_image_path_cgi, NULL },
+ 	{ "login.cgi", "text/html", no_cache_IE7, do_html_post_and_get, do_login_cgi, NULL },
+ 	{ "login_v2.cgi", "text/html", no_cache_IE7, do_html_post_and_get, do_login_v2_cgi, NULL },
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 32530cd5ae..fbaae28c1c 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -2045,21 +2045,6 @@ void nat_setting(char *wan_if, char *wan_ip, char *wanx_if, char *wanx_ip, char
+ 		}
+ #endif
+ 
+-#if 1 /* def RTCONFIG_WEBDAV */
+-		if (nvram_match("webdav_aidisk", "1")) {
+-			int port;
+-
+-			port = nvram_get_int("webdav_https_port");
+-			if (!port || port >= 65536)
+-				port = 443;
+-			fprintf(fp, "-A LOCALSRV -p tcp -m tcp --dport %d -j DNAT --to-destination %s:%d\n", port, lan_ip, port);
+-			port = nvram_get_int("webdav_http_port");
+-			if (!port || port >= 65536)
+-				port = 8082;
+-			fprintf(fp, "-A LOCALSRV -p tcp -m tcp --dport %d -j DNAT --to-destination %s:%d\n", port, lan_ip, port);
+-		}
+-#endif
+-
+ #ifdef RTCONFIG_MULTIWAN_CFG
+ 		if (get_nr_wan_unit() == 2 && nvram_match("wans_mode", "lb")) {
+ 			/* dualwan + load-balance */
+@@ -2587,21 +2572,6 @@ void nat_setting2(char *lan_if, char *lan_ip, char *logaccept, char *logdrop)	//
+ 		}
+ #endif
+ 
+-#if 1 /* def RTCONFIG_WEBDAV */
+-		if (nvram_match("webdav_aidisk", "1")) {
+-			int port;
+-
+-			port = nvram_get_int("webdav_https_port");
+-			if (!port || port >= 65536)
+-				port = 443;
+-			fprintf(fp, "-A LOCALSRV -p tcp -m tcp --dport %d -j DNAT --to-destination %s:%d\n", port, lan_ip, port);
+-			port = nvram_get_int("webdav_http_port");
+-			if (!port || port >= 65536)
+-				port = 8082;
+-			fprintf(fp, "-A LOCALSRV -p tcp -m tcp --dport %d -j DNAT --to-destination %s:%d\n", port, lan_ip, port);
+-		}
+-#endif
+-
+ #ifdef RTCONFIG_MULTIWAN_CFG
+ 		for(unit = WAN_UNIT_FIRST; unit < wan_max_unit; ++unit){
+ 			int i;
+@@ -8433,8 +8403,6 @@ mangle_setting(char *wan_if, char *wan_ip, char *lan_if, char *lan_ip, char *log
+ 		eval("iptables", "-t", "mangle", "-I", "PREROUTING", "-i", "br0", "-p", "tcp", "--dport", nvram_safe_get("https_lanport"), "-j", "SKIPLOG");
+ 	if(nvram_get_int("misc_http_x"))
+ 		eval("iptables", "-t", "mangle", "-I", "PREROUTING", "-i", wan_ifname, "-p", "tcp", "--dport", nvram_safe_get("misc_httpsport_x"), "-j", "SKIPLOG");
+-	if (nvram_get_int("webdav_aidisk"))
+-		eval("iptables", "-t", "mangle", "-I", "PREROUTING", "-i", wan_ifname, "-p", "tcp", "--dport", nvram_safe_get("webdav_https_port"), "-j", "SKIPLOG");
+ #endif
+ 
+ #if defined(RTCONFIG_HND_ROUTER_BE_4916) || defined(RTCONFIG_MT798X) || defined(RTCONFIG_MT799X)
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index ea7c07a9d7..73b7832320 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -18784,19 +18784,6 @@ check_ddr_done:
+ 		_dprintf("[AFC] afc_sp_failback_status=%d\n", ret);
+ 	}
+ #endif	/* RTCONFIG_BCM_AFC */
+-	else if (strcmp(script, "enable_webdav") == 0)
+-	{
+-		stop_upnp();
+-		stop_ddns();
+-#ifdef RTCONFIG_WEBDAV
+-		stop_webdav();
+-#endif
+-		start_firewall(wan_primary_ifunit(), 0);
+-		start_webdav();
+-		start_ddns(NULL, 0);
+-		start_upnp();
+-
+-	}
+ #ifdef RTCONFIG_FAST_ACL_SET
+ 	else if (strcmp(script, "fastaclset") == 0 )
+ 	{
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 0aec002a68..eb4d8ef2a5 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -4263,665 +4263,7 @@ stop_mt_daapd(int force)
+ #endif
+ #endif	// RTCONFIG_MEDIA_SERVER
+ 
+-// -------------
+ 
+-// !!TB - webdav
+-
+-//#ifdef RTCONFIG_WEBDAV
+-#if 0
+-void write_webdav_permissions()
+-{
+-	FILE *fp;
+-	int acc_num = 0, i;
+-	char *nv, *nvp, *b;
+-	char *tmp_ascii_user, *tmp_ascii_passwd;
+-
+-	/* write /tmp/lighttpd/permissions */
+-	fp = fopen("/tmp/lighttpd/permissions", "w");
+-	if (fp==NULL) return;
+-
+-	acc_num = nvram_get_int("acc_num");
+-	if(acc_num < 0)
+-		acc_num = 0;
+-
+-	nv = nvp = strdup(nvram_safe_get("acc_list"));
+-	i = 0;
+-	if(nv && strlen(nv) > 0){
+-		while((b = strsep(&nvp, "<")) != NULL){
+-			if(vstrsep(b, ">", &tmp_ascii_user, &tmp_ascii_passwd) != 2)
+-				continue;
+-
+-			char char_user[64], char_passwd[64];
+-
+-			memset(char_user, 0, 64);
+-			ascii_to_char_safe(char_user, tmp_ascii_user, 64);
+-			memset(char_passwd, 0, 64);
+-#ifdef RTCONFIG_NVRAM_ENCRYPT
+-			int declen = strlen(tmp_ascii_passwd);
+-			char dec_passwd[declen];
+-			memset(dec_passwd, 0, sizeof(dec_passwd));
+-			pw_dec(tmp_ascii_passwd, dec_passwd, sizeof(dec_passwd), 1);
+-			tmp_ascii_passwd = dec_passwd;
+-#endif
+-			ascii_to_char_safe(char_passwd, tmp_ascii_passwd, 64);
+-
+-			fprintf(fp, "%s:%s\n", char_user, char_passwd);
+-
+-			if(++i >= acc_num)
+-				break;
+-		}
+-	}
+-	if(nv)
+-		free(nv);
+-
+-	fclose(fp);
+-}
+-
+-void write_webdav_server_pem()
+-{
+-	unsigned long long sn;
+-	char t[32];
+-#ifdef RTCONFIG_HTTPS
+-	if(f_exists("/etc/server.pem"))
+-		system("cp -f /etc/server.pem /tmp/lighttpd/");
+-#endif
+-	if(!f_exists("/tmp/lighttpd/server.pem")){
+-		f_read("/dev/urandom", &sn, sizeof(sn));
+-		sprintf(t, "%llu", sn & 0x7FFFFFFFFFFFFFFFULL);
+-		eval("gencert.sh", t);
+-
+-		system("cp -f /etc/server.pem /tmp/lighttpd/");
+-	}
+-}
+-#endif
+-
+-void start_webdav(void)	// added by Vanic
+-{
+-#ifdef RTCONFIG_WEBDAV
+-	pid_t pid, pid1;
+-	char *lighttpd_argv[] = { "/usr/sbin/lighttpd", "-f", "/tmp/lighttpd.conf", "-D", NULL };
+-	char *lighttpd_monitor_argv[] = { "/usr/sbin/lighttpd-monitor", NULL };
+-#endif
+-
+-	if(getpid()!=1) {
+-		notify_rc("start_webdav");
+-		return;
+-	}
+-/*
+-#ifndef RTCONFIG_WEBDAV
+-	system("sh /opt/etc/init.d/S50aicloud scan");
+-#else
+-*/
+-	if (nvram_get_int("webdav_aidisk") || nvram_get_int("webdav_proxy"))
+-		nvram_set("enable_webdav", "1");
+-	else if (!nvram_get_int("webdav_aidisk") && !nvram_get_int("webdav_proxy") && nvram_get_int("enable_webdav"))
+-	{
+-		// enable both when enable_webdav by other apps
+-		nvram_set("webdav_aidisk", "1");
+-		nvram_set("webdav_proxy", "1");
+-	}
+-
+-	if (nvram_match("enable_webdav", "0")) return;
+-
+-/* Independent from AiCloud
+-ifdef RTCONFIG_TUNNEL
+-	//- start tunnel
+-	start_mastiff();
+-#endif*/
+-
+-#ifndef RTCONFIG_WEBDAV
+-	if(f_exists("/opt/etc/init.d/S50aicloud"))
+-		system("sh /opt/etc/init.d/S50aicloud scan");
+-#else
+-	/* WebDav directory */
+-	mkdir_if_none("/tmp/lighttpd");
+-	mkdir_if_none("/tmp/lighttpd/uploads");
+-	chmod("/tmp/lighttpd/uploads", 0777);
+-	mkdir_if_none("/tmp/lighttpd/www");
+-	chmod("/tmp/lighttpd/www", 0777);
+-
+-	/* tmp/lighttpd/permissions */
+-	//write_webdav_permissions();
+-
+-	/* WebDav SSL support */
+-	//write_webdav_server_pem();
+-#ifdef RTCONFIG_HTTPS
+-	if(f_size(LIGHTTPD_CERTKEY) != f_size(HTTPD_KEY) + f_size(HTTPD_CERT))
+-	{
+-		char buf[256];
+-		snprintf(buf, sizeof(buf), "cat %s %s > %s", HTTPD_KEY, HTTPD_CERT, LIGHTTPD_CERTKEY);
+-		system(buf);
+-	}
+-#endif	/* RTCONFIG_HTTPS */
+-
+-	/* write WebDav configure file*/
+-	system("/sbin/write_webdav_conf");
+-
+-	if (!f_exists("/tmp/lighttpd.conf")) return;
+-
+-	if (!pids("lighttpd")){
+-		_eval(lighttpd_argv, NULL, 0, &pid);
+-	}
+-	if (!pids("lighttpd-monitor")){
+-		_eval(lighttpd_monitor_argv, NULL, 0, &pid1);
+-	}
+-
+-	if (pids("lighttpd"))
+-		logmessage("WEBDAV server", "daemon is started");
+-#endif
+-}
+-
+-void stop_webdav(void)
+-{
+-	if (getpid() != 1) {
+-		notify_rc("stop_webdav");
+-		return;
+-	}
+-
+-#ifndef RTCONFIG_WEBDAV
+-	if(f_exists("/opt/etc/init.d/S50aicloud"))
+-		system("sh /opt/etc/init.d/S50aicloud scan");
+-#else
+-	if (pids("lighttpd-monitor")){
+-		kill_pidfile_tk("/tmp/lighttpd/lighttpd-monitor.pid");
+-		unlink("/tmp/lighttpd/lighttpd-monitor.pid");
+-	}
+-
+-	if (pids("lighttpd")){
+-		kill_pidfile_tk("/tmp/lighttpd/lighttpd.pid");
+-		// charles: unlink lighttpd.conf will cause lighttpd error
+-		//	we should re-write lighttpd.conf
+-		system("/sbin/write_webdav_conf");
+-
+-		unlink("/tmp/lighttpd/lighttpd.pid");
+-	}
+-
+-	if (pids("lighttpd-arpping")){
+-		kill_pidfile_tk("/tmp/lighttpd/lighttpd-arpping.pid");
+-		unlink("/tmp/lighttpd/lighttpd-arpping.pid");
+-	}
+-
+-	logmessage("WEBDAV Server", "daemon is stopped");
+-#endif
+-
+-/* Independent from AiCloud
+-#ifdef RTCONFIG_TUNNEL
+-        //- stop tunnel
+-        stop_mastiff();
+-#endif*/
+-
+-}
+-//#endif	// RTCONFIG_WEBDAV
+-
+-#ifdef RTCONFIG_WEBDAV
+-void stop_all_webdav(void)
+-{
+-	if (getpid() != 1) {
+-		notify_rc("stop_webdav");
+-		return;
+-	}
+-
+-	stop_webdav();
+-
+-	if (pids("lighttpd-arpping")){
+-		kill_pidfile_tk("/tmp/lighttpd/lighttpd-arpping.pid");
+-		unlink("/tmp/lighttpd/lighttpd-arpping.pid");
+-	}
+-	logmessage("WEBDAV Server", "arpping daemon is stopped");
+-}
+-#endif
+-
+-//#ifdef RTCONFIG_CLOUDSYNC
+-void start_cloudsync(int fromUI)
+-{
+-    char *b, *nvp, *nv;
+-    int type = 0, enable = 0;
+-    char username[64], sync_dir[PATH_MAX];
+-    int count;
+-    char cloud_token[PATH_MAX];
+-    char mounted_path[PATH_MAX], *ptr, *other_path;
+-    int pid, s = 3;
+-    char *cmd1_argv[] = { "nice", "-n", "10", "inotify", NULL };
+-    char *cmd2_argv[] = { "nice", "-n", "10", "asuswebstorage", NULL };
+-    char *cmd3_argv[] = { "touch", NULL, NULL };
+-    char *cmd4_argv[] = { "nice", "-n", "10", "webdav_client", NULL };
+-    char *cmd5_argv[] = { "nice", "-n", "10", "dropbox_client", NULL };
+-    char *cmd6_argv[] = { "nice", "-n", "10", "ftpclient", NULL};
+-    char *cmd7_argv[] = { "nice", "-n", "10", "sambaclient", NULL};
+-    char *cmd8_argv[] = { "nice", "-n", "10", "usbclient", NULL};
+-    char *cmd9_argv[] = { "nice", "-n", "10", "google_client", NULL };
+-    char buf[32];
+-    int ret;
+-    char *b_bak = NULL, *ptr_b_bak = NULL;
+-    char *saveptr = NULL;
+-    char *token = NULL;
+-    FILE *fp = NULL;
+-    char check_target[PATH_MAX];
+-    char line[PATH_MAX];
+-    int got_mount = 0;
+-    size_t strlcpy_ret;
+-
+-    memset(buf, 0, sizeof(buf));
+-    memset(username, 0, sizeof(username));
+-    memset(sync_dir, 0, sizeof(sync_dir));
+-    memset(cloud_token, 0, sizeof(cloud_token));
+-    memset(mounted_path, 0, sizeof(mounted_path));
+-    memset(check_target, 0, sizeof(check_target));
+-    memset(line, 0, sizeof(line));
+-    
+-    ret = snprintf(buf, sizeof(buf), "start_cloudsync %d", fromUI);
+-    if (ret < 0 || ret >= (int)sizeof(buf)) {
+-        logmessage("Cloudsync client", "Failed to format buffer or buffer too small");
+-        return;
+-    }
+-
+-    if(getpid() != 1) {
+-        notify_rc(buf);
+-        return;
+-    }
+-
+-    if(nvram_match("enable_cloudsync", "0")){
+-        logmessage("Cloudsync client", "manually disabled all rules");
+-        return;
+-    }
+-
+-    if (get_meminfo_item("MemTotal") < 200*1024)
+-        s = 0;
+-
+-    nv = nvp = strdup(nvram_safe_get("cloud_sync"));
+-    if(nv == NULL) {
+-        logmessage("Cloudsync client", "Failed to allocate memory for cloud_sync");
+-        return;
+-    }
+-
+-    while((b = strsep(&nvp, "<")) != NULL){
+-        char *original_b = strdup(b);
+-        if (original_b == NULL) {
+-            logmessage("Cloudsync client", "Failed to allocate memory for string copy");
+-            continue;
+-        }
+-        
+-        char *type_saveptr = NULL;
+-        char *type_token = strtok_r(original_b, ">", &type_saveptr);
+-        if (type_token == NULL) {
+-            logmessage("Cloudsync client", "Missing type field");
+-            free(original_b);
+-            continue;
+-        }
+-        
+-        type = safe_atoi(type_token);
+-        
+-        if (type < 0 || type > 6) {
+-            logmessage("Cloudsync client", "Invalid type value: %d", type);
+-            free(original_b);
+-            continue;
+-        }
+-
+-        if (type >= 1 && type <= 6) {
+-            switch(type) {
+-                case 1: // WebDAV
+-                    if(!pids("inotify"))
+-                        _eval(&cmd1_argv[s], NULL, 0, &pid);
+-                    if(!pids("webdav_client")){
+-                        _eval(&cmd4_argv[s], NULL, 0, &pid);
+-                        sleep(2);
+-                    }
+-                    if(pids("inotify") && pids("webdav_client"))
+-                        logmessage("Webdav client", "daemon is started");
+-                    break;
+-                    
+-                case 2: // FTP
+-                    if(!pids("inotify"))
+-                        _eval(cmd1_argv, NULL, 0, &pid);
+-                    if(!pids("ftpclient")){
+-                        _eval(cmd6_argv, NULL, 0, &pid);
+-                        sleep(2);
+-                    }
+-                    if(pids("inotify") && pids("ftpclient"))
+-                        logmessage("ftp client", "daemon is started");
+-                    break;
+-                    
+-                case 3: // Dropbox
+-                    if(!pids("inotify"))
+-                        _eval(cmd1_argv, NULL, 0, &pid);
+-                    if(!pids("dropbox_client")){
+-                        _eval(cmd5_argv, NULL, 0, &pid);
+-                        sleep(2);
+-                    }
+-                    if(pids("inotify") && pids("dropbox_client"))
+-                        logmessage("dropbox client", "daemon is started");
+-                    break;
+-                    
+-                case 4: // Samba
+-                    if(!pids("inotify"))
+-                        _eval(cmd1_argv, NULL, 0, &pid);
+-                    if(!pids("sambaclient")){
+-                        _eval(cmd7_argv, NULL, 0, &pid);
+-                        sleep(2);
+-                    }
+-                    if(pids("inotify") && pids("sambaclient"))
+-                        logmessage("sambaclient", "daemon is started");
+-                    break;
+-                    
+-                case 5: // USB
+-                    if(!pids("inotify"))
+-                        _eval(cmd1_argv, NULL, 0, &pid);
+-                    if(!pids("usbclient")){
+-                        _eval(cmd8_argv, NULL, 0, &pid);
+-                        sleep(2);
+-                    }
+-                    if(pids("inotify") && pids("usbclient"))
+-                        logmessage("usbclient", "daemon is started");
+-                    break;
+-                    
+-                case 6: // Google
+-                    if(!pids("inotify"))
+-                        _eval(cmd1_argv, NULL, 0, &pid);
+-                    if(!pids("google_client")){
+-                        _eval(cmd9_argv, NULL, 0, &pid);
+-                        sleep(2);
+-                    }
+-                    if(pids("inotify") && pids("google_client"))
+-                        logmessage("google client", "daemon is started");
+-                    break;
+-            }
+-            
+-            free(original_b);
+-            continue;
+-        }
+-        
+-        if (type == 0) {
+-            free(original_b);
+-            ptr_b_bak = b_bak = strdup(b);
+-            if (b_bak == NULL) {
+-                logmessage("Cloudsync client", "Failed to allocate memory for detailed parsing");
+-                continue;
+-            }
+-            
+-            memset(username, 0, sizeof(username));
+-            memset(sync_dir, 0, sizeof(sync_dir));
+-            enable = 0;
+-            type = 0;
+-            
+-            count = 0;
+-            saveptr = NULL;
+-            token = strtok_r(b_bak, ">", &saveptr);
+-            
+-            while (token != NULL && count < 7) {
+-                switch(count) {
+-                    case 0: // type
+-                        type = safe_atoi(token);
+-                        break;
+-                        
+-                    case 1: // username
+-                        strlcpy_ret = strlcpy(username, token, sizeof(username));
+-                        if (strlcpy_ret >= sizeof(username)) {
+-                            logmessage("Cloudsync client", "Username too long, truncated");
+-                        }
+-                        break;
+-                        
+-                    case 2: // password (skip)
+-                    case 3: // (skip)
+-                    case 4: // (skip)
+-                        break;
+-                        
+-                    case 5: // sync directory
+-                        strlcpy_ret = strlcpy(sync_dir, token, sizeof(sync_dir));
+-                        if (strlcpy_ret >= sizeof(sync_dir)) {
+-                            logmessage("Cloudsync client", "Sync directory path too long, truncated");
+-                        }
+-                        break;
+-                        
+-                    case 6: // enable flag
+-                        enable = safe_atoi(token);
+-                        break;
+-                }
+-                
+-                ++count;
+-                token = strtok_r(NULL, ">", &saveptr);
+-            }
+-            
+-            if (ptr_b_bak != NULL) {
+-                free(ptr_b_bak);
+-                ptr_b_bak = NULL;
+-                b_bak = NULL;
+-            }
+-            
+-            if (type != 0) {
+-                logmessage("Cloudsync client", "Type should be 0 for ASUS WebStorage, got %d", type);
+-                continue;
+-            }
+-            
+-            if (username[0] == '\0') {
+-                logmessage("Cloudsync client", "Username is empty");
+-                continue;
+-            }
+-            
+-            if (sync_dir[0] == '\0') {
+-                logmessage("Cloudsync client", "Sync directory is empty");
+-                continue;
+-            }
+-            
+-            if (!enable) {
+-                logmessage("Cloudsync client", "manually disabled");
+-                continue;
+-            }
+-            
+-            if (strncmp(sync_dir, POOL_MOUNT_ROOT, strlen(POOL_MOUNT_ROOT)) != 0) {
+-                logmessage("Cloudsync client", "Sync directory does not start with %s", POOL_MOUNT_ROOT);
+-                continue;
+-            }
+-            
+-            size_t pool_len = strlen(POOL_MOUNT_ROOT);
+-            if (strlen(sync_dir) < pool_len + 1) {
+-                logmessage("Cloudsync client", "Invalid sync directory path");
+-                continue;
+-            }
+-            
+-            ptr = sync_dir + pool_len;
+-            if (*ptr == '/') {
+-                ptr++;
+-            }
+-            
+-            other_path = strchr(ptr, '/');
+-            if(other_path != NULL){
+-                size_t mount_len = other_path - sync_dir;
+-                if (mount_len >= sizeof(mounted_path)) {
+-                    logmessage("Cloudsync client", "Mounted path too long");
+-                    continue;
+-                }
+-                strncpy(mounted_path, sync_dir, mount_len);
+-                mounted_path[mount_len] = '\0';
+-            } else {
+-                if (strlen(sync_dir) >= sizeof(mounted_path)) {
+-                    logmessage("Cloudsync client", "Mounted path too long");
+-                    continue;
+-                }
+-                strlcpy(mounted_path, sync_dir, sizeof(mounted_path));
+-            }
+-            
+-            if (strlen(mounted_path) + 3 >= sizeof(check_target)) {
+-                logmessage("Cloudsync client", "Check target path too long");
+-                continue;
+-            }
+-            
+-            ret = snprintf(check_target, sizeof(check_target), " %s ", mounted_path);
+-            if (ret < 0 || ret >= (int)sizeof(check_target)) {
+-                logmessage("Cloudsync client", "Failed to format check target");
+-                continue;
+-            }
+-            
+-            fp = fopen(MOUNT_FILE, "r");
+-            if(fp == NULL){
+-                logmessage("Cloudsync client", "Could not open mount file: %s", strerror(errno));
+-                continue;
+-            }
+-            
+-            got_mount = 0;
+-            while(fgets(line, sizeof(line), fp) != NULL){
+-                line[sizeof(line) - 1] = '\0';
+-                char *newline = strchr(line, '\n');
+-                if (newline) *newline = '\0';
+-                
+-                if(strstr(line, check_target)){
+-                    got_mount = 1;
+-                    break;
+-                }
+-            }
+-            fclose(fp);
+-            fp = NULL;
+-            
+-            if(!got_mount){
+-                logmessage("Cloudsync client", "The specific disk doesn't exist");
+-                continue;
+-            }
+-            
+-            if(sync_dir[0])
+-                mkdir_if_none(sync_dir);
+-            
+-            ret = snprintf(cloud_token, sizeof(cloud_token), "%s/.__cloudsync_%d_%s.txt", mounted_path, type, username);
+-            if (ret < 0 || ret >= (int)sizeof(cloud_token)) {
+-                logmessage("Cloudsync client", "Cloud token path too long");
+-                continue;
+-            }
+-            
+-            if(!fromUI && !check_if_file_exist(cloud_token)){
+-                _dprintf("start_cloudsync: No token file.\n");
+-                continue;
+-            }
+-            
+-            cmd3_argv[1] = cloud_token;
+-            _eval(cmd3_argv, NULL, 0, NULL);
+-            
+-            if(!pids("inotify"))
+-                _eval(&cmd1_argv[s], NULL, 0, &pid);
+-            
+-            if(!pids("asuswebstorage")){
+-                _eval(&cmd2_argv[s], NULL, 0, &pid);
+-                sleep(2); 
+-            }
+-            
+-            if(pids("inotify") && pids("asuswebstorage"))
+-                logmessage("Cloudsync client", "daemon is started");
+-        }
+-    }
+-    
+-    if (nv != NULL) {
+-        free(nv);
+-        nv = NULL;
+-    }
+-}
+-
+-void stop_cloudsync(int type)
+-{
+-	char buf[32];
+-
+-	memset(buf, 0, 32);
+-	sprintf(buf, "stop_cloudsync %d", type);
+-
+-	if(getpid()!=1) {
+-		notify_rc(buf);
+-		return;
+-	}
+-
+-	if(type == 1){
+-		if(pids("inotify") && !pids("asuswebstorage") && !pids("dropbox_client") && !pids("ftpclient") && !pids("sambaclient") && !pids("usbclient")&& !pids("google_client"))
+-			killall_tk("inotify");
+-
+-		if(pids("webdav_client"))
+-			killall_tk("webdav_client");
+-
+-		logmessage("Webdav_client", "daemon is stopped");
+-	}
+-	else if(type == 2){
+-		if(pids("inotify") && !pids("asuswebstorage") && !pids("dropbox_client") && !pids("webdav_client") && !pids("sambaclient") && !pids("usbclient")&& !pids("google_client"))
+-			killall_tk("inotify");
+-
+-		if(pids("ftpclient"))
+-			killall_tk("ftpclient");
+-
+-		logmessage("ftp client", "daemon is stopped");
+-	}
+-	else if(type == 3){
+-		if(pids("inotify") && !pids("asuswebstorage") && !pids("webdav_client") && !pids("ftpclient") && !pids("sambaclient") && !pids("usbclient")&& !pids("google_client"))
+-			killall_tk("inotify");
+-
+-		if(pids("dropbox_client"))
+-			killall_tk("dropbox_client");
+-
+-		logmessage("dropbox_client", "daemon is stopped");
+-	}
+-	else if(type == 4){
+-		if(pids("inotify") && !pids("asuswebstorage") && !pids("webdav_client") && !pids("ftpclient") && !pids("dropbox_client") && !pids("usbclient")&& !pids("google_client"))
+-			killall_tk("inotify");
+-
+-		if(pids("sambaclient"))
+-			killall_tk("sambaclient");
+-
+-		logmessage("sambaclient", "daemon is stopped");
+-	}
+-	else if(type == 5){
+-		if(pids("inotify") && !pids("asuswebstorage") && !pids("webdav_client") && !pids("ftpclient") && !pids("dropbox_client") && !pids("sambaclient")&& !pids("google_client"))
+-			killall_tk("inotify");
+-
+-		if(pids("usbclient"))
+-			killall_tk("usbclient");
+-
+-		logmessage("usbclient", "daemon is stopped");
+-	}
+-	else if(type == 6){
+-
+-        if(pids("inotify") && !pids("asuswebstorage") && !pids("webdav_client") && !pids("ftpclient") && !pids("sambaclient") && !pids("dropbox_client")&&!pids("usbclient"))
+-            killall_tk("inotify");
+-
+-        if(pids("google_client"))
+-        {
+-            killall_tk("google_client");
+-        }
+-
+-        logmessage("google_client", "daemon is stopped");
+-
+-    }
+-	else if(type == 0){
+-		if(pids("inotify") && !pids("webdav_client") && !pids("dropbox_client") && !pids("ftpclient") && !pids("sambaclient")  && !pids("usbclient")&& !pids("google_client"))
+-			killall_tk("inotify");
+-
+-		if(pids("asuswebstorage"))
+-			killall_tk("asuswebstorage");
+-		logmessage("Cloudsync client", "daemon is stoped");
+-	}
+-	else{
+-	if(pids("inotify"))
+-			killall_tk("inotify");
+-
+-	if(pids("webdav_client"))
+-			killall_tk("webdav_client");
+-
+-		if(pids("asuswebstorage"))
+-			killall_tk("asuswebstorage");
+-
+-	if(pids("dropbox_client"))
+-			killall_tk("dropbox_client");
+-
+-	if(pids("ftpclient"))
+-			killall_tk("ftpclient");
+-
+-	if(pids("sambaclient"))
+-			killall_tk("sambaclient");
+-
+-	if(pids("usbclient"))
+-			killall_tk("usbclient");
+-
+-	if(pids("google_client"))
+-    {           
+-            killall_tk("google_client");
+-              //system("killall google_client");
+-    }
+-
+-		logmessage("Cloudsync client and Webdav_client and dropbox_client ftp_client sambaclient usb_client google_client", "daemon is stopped");
+-	}
+-}
+-//#endif
+ 
+ #ifdef RTCONFIG_USB
+ int sd_partition_num()
+@@ -6000,63 +5342,6 @@ void usb_notify(){
+ #endif
+ #endif // RTCONFIG_USB
+ 
+-//#ifdef RTCONFIG_WEBDAV
+-#define DEFAULT_WEBDAVPROXY_RIGHT 0
+-
+-int find_webdav_right(char *account)
+-{
+-	char *nv, *nvp, *b;
+-	char *acc, *right;
+-	int ret;
+-
+-	nv = nvp = strdup(nvram_safe_get("acc_webdavproxy"));
+-	ret = DEFAULT_WEBDAVPROXY_RIGHT;
+-
+-	if(nv) {
+-		while ((b = strsep(&nvp, "<")) != NULL) {
+-			if((vstrsep(b, ">", &acc, &right) != 2)) continue;
+-
+-			if(strcmp(acc, account)==0) {
+-				ret = safe_atoi(right);
+-				break;
+-			}
+-		}
+-		free(nv);
+-	}
+-
+-	return ret;
+-}
+-
+-void webdav_account_default(void)
+-{
+-	char *nv, *nvp, *b;
+-	char *accname, *accpasswd;
+-	int right;
+-	char new[256];
+-	int i;
+-	char *p;
+-
+-	nv = nvp = strdup(nvram_safe_get("acc_list"));
+-	i = 0;
+-	strcpy(new, "");
+-
+-	if(nv) {
+-		i=0;
+-		p = new;
+-		while ((b = strsep(&nvp, "<")) != NULL) {
+-			if((vstrsep(b, ">", &accname, &accpasswd) != 2)) continue;
+-
+-			right = find_webdav_right(accname);
+-
+-			if(i==0) p += sprintf(p, "%s>%d", accname, right);
+-			else p += sprintf(p, "<%s>%d", accname, right);
+-			i++;
+-		}
+-		free(nv);
+-		nvram_set("acc_webdavproxy", new);
+-	}
+-}
+-//#endif
+ void start_wsdd()
+ {
+ 	unsigned char ea[ETHER_ADDR_LEN];
+-- 
+2.25.1
+

@@ -1,0 +1,37 @@
+From 976b23555249a153fb3a944b20e84e1cc3cd49c2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 7 Jul 2026 22:56:48 -0400
+Subject: [PATCH] networkmap: pin CLIENT_DETAIL_INFO_TABLE shmem ABI - keep
+ bwdpi fields when engine removed, fixes empty client list
+
+---
+ release/src/router/networkmap/networkmap.h | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/networkmap/networkmap.h b/release/src/router/networkmap/networkmap.h
+index 2129d676c1..9cc5ec25c2 100644
+--- a/release/src/router/networkmap/networkmap.h
++++ b/release/src/router/networkmap/networkmap.h
+@@ -318,12 +318,17 @@ typedef struct {
+ #if defined(RTCONFIG_FBWIFI) || defined(RTCONFIG_CAPTIVE_PORTAL)
+ 	char		subunit[MAX_NR_CLIENT_LIST];
+ #endif
+-#if (defined(RTCONFIG_BWDPI) || defined(RTCONFIG_BWDPI_DEP))
++	/* ABI PIN (reaper): the closed prebuilt networkmap is compiled with
++	 * RTCONFIG_BWDPI and writes these 4 fields into the shared-memory
++	 * CLIENT_DETAIL_INFO_TABLE. bwdpi is compiled out of this build, but httpd
++	 * must keep the IDENTICAL struct layout to read networkmap's shmem -- the
++	 * client-count fields ip_mac_num/detail_info_num sit AFTER this block, so
++	 * re-gating on RTCONFIG_BWDPI shifts their offset by ~85KB and httpd reads
++	 * a garbage count => empty client list. Keep unconditional. */
+ 	char		bwdpi_host[MAX_NR_CLIENT_LIST][32];
+ 	char		bwdpi_vendor[MAX_NR_CLIENT_LIST][100];
+ 	char		bwdpi_type[MAX_NR_CLIENT_LIST][100];
+ 	char		bwdpi_device[MAX_NR_CLIENT_LIST][100];
+-#endif
+ 	int		ip_mac_num;
+ 	int		detail_info_num;
+ //for sorting asus device
+-- 
+2.25.1
+

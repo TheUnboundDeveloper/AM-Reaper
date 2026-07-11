@@ -1,0 +1,92 @@
+From edccc1cc803df16f2a34853534bf2c111dae79a6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 9 Jul 2026 17:35:37 -0400
+Subject: [PATCH] reaper_shell: auto-grow the page frame to its content (triage
+ item 10)
+
+The stage was sticky at viewport height, so long pages (SDN.asp) scrolled
+inside a nested iframe scrollbar. The frame now tracks its document height
+(ResizeObserver on the framed html/body + load/resize hooks, 4px deadband
+against feedback loops), with min-height keeping short pages filling the
+viewport under the sticky topbar - the only scrollbar is the browser own.
+
+Mock-validated: Administration>System renders full-height in the shell with
+no inner scrollbar; dashboard and framed pages unaffected. SDN.asp itself
+needs on-device validation (standing rule 15).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 43 ++++++++++++++++++++++---
+ 1 file changed, 39 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index a7d38e294b..88e79b72de 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -70,9 +70,11 @@ a.item svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7
+ a.item:hover{color:var(--bone);background:var(--panel)}
+ a.item.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;background:var(--crimson);border-radius:2px}
+-/* content stage: shell-owned tab bar + frame; sticky so it stays put while
+-   the rail scrolls with the page */
+-.stage{grid-column:2;grid-row:2;position:sticky;top:64px;height:calc(100vh - 64px);background:var(--bg);
++/* content stage: shell-owned tab bar + frame. The frame auto-grows to its
++   content (JS below), so the ONLY scrollbar is the browser's own - no nested
++   iframe scrollbar on long pages (SDN.asp). min-height keeps short pages
++   filling the viewport under the sticky 64px topbar. */
++.stage{grid-column:2;grid-row:2;min-height:calc(100vh - 64px);background:var(--bg);
+   display:flex;flex-direction:column}
+ #tabbar{display:none;gap:6px;padding:12px 16px 0;flex-wrap:wrap;flex:0 0 auto}
+ #tabbar a.rtab{font-family:var(--hdr);font-weight:600;letter-spacing:.05em;font-size:13px;
+@@ -81,7 +83,7 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+ #tabbar a.rtab:hover{color:var(--bone);background:var(--panel-2)}
+ #tabbar a.rtab.on{color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.22),var(--panel-2));
+   border-color:rgba(225,6,0,.35);box-shadow:inset 0 -2px 0 var(--crimson)}
+-#page_frame{width:100%;flex:1;border:0;display:block;background:var(--bg)}
++#page_frame{width:100%;flex:1 1 auto;border:0;display:block;background:var(--bg)}
+ .mono{font-family:ui-monospace,'Cascadia Code',Consolas,monospace}
+ /* drop the lowest-priority pills before the header can clip at 1080p / 125% */
+ @media (max-width:1700px){ .pills .pill:nth-child(n+6){display:none} }
+@@ -271,6 +273,39 @@ function buildRail(menuTree){
+   });
+ })();
+ 
++/* auto-grow the frame to its content height so long pages (SDN.asp) scroll
++   with the browser scrollbar instead of a nested iframe scrollbar. Same-origin
++   only (all framed pages are); guarded so a measurement failure just leaves
++   the flex fallback height. The 4px deadband stops resize feedback loops on
++   pages whose body height tracks the frame. */
++(function(){
++  var f=$id('page_frame');
++  if(!f) return;
++  var ro=null;
++  function fit(){
++    try{
++      var d=f.contentDocument;
++      if(!d||!d.documentElement) return;
++      var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0);
++      if(h>40 && Math.abs(h-f.offsetHeight)>4) f.style.height=h+'px';
++    }catch(e){}
++  }
++  f.addEventListener('load', function(){
++    f.style.height='';           /* reset before measuring the new page */
++    try{
++      if(ro){ ro.disconnect(); ro=null; }
++      var d=f.contentDocument;
++      if(d && window.ResizeObserver){
++        ro=new ResizeObserver(fit);
++        if(d.documentElement) ro.observe(d.documentElement);
++        if(d.body) ro.observe(d.body);
++      }
++    }catch(e){}
++    fit();
++  });
++  window.addEventListener('resize', fit);
++})();
++
+ /* rail from menuTree.js; if that fails for any reason, fall back to a minimal
+    static menu so the rail is never blank */
+ function railFallback(){
+-- 
+2.25.1
+

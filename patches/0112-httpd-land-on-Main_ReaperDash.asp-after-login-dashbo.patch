@@ -1,0 +1,41 @@
+From 84764e0127610b644a85ce2d81461d7570426e88 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 8 Jul 2026 20:16:07 -0400
+Subject: [PATCH] httpd: land on Main_ReaperDash.asp after login (dashboard as
+ home)
+
+get_index_page() now returns Main_ReaperDash.asp when the reaper theme is
+active, so the post-login redirect target (login_url / indexpage) IS the
+live dashboard instead of stock index.asp -> inject-bounce. Kill-switch
+semantics mirror reaper_inject.c exactly (unset/nonzero = on, explicit
+'0' = off -> stock index.asp). Falls back cleanly when Main_ReaperDash.asp
+is absent or the theme is killed.
+---
+ release/src/router/shared/misc.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 3d4551a24b..4455bc47ad 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -6377,8 +6377,17 @@ int get_chance_to_control(void)
+ 
+ int get_index_page(char *page, int size)
+ {
++	/* Reaper kill-switch: match reaper_inject.c exactly - unset/nonzero = theme on,
++	 * explicit "0" = off. */
++	const char *ri = nvram_get("reaper_inject");
++	int reaper_on = !(ri && *ri && atoi(ri) == 0);
++
+ 	if(check_if_file_exist("/www/GameDashboard.asp"))
+ 		strlcpy(page, "GameDashboard.asp", size);
++	/* Reaper: land on the live dashboard directly (post-login redirect target)
++	 * instead of bouncing through index.asp; fall back to stock when killed. */
++	else if(reaper_on && check_if_file_exist("/www/Main_ReaperDash.asp"))
++		strlcpy(page, "Main_ReaperDash.asp", size);
+ 	else
+ 		strlcpy(page, "index.asp", size);
+ 	return 0;
+-- 
+2.25.1
+

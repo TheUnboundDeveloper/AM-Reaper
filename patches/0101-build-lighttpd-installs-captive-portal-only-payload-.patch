@@ -1,0 +1,67 @@
+From 5406ad8fff164223ea6340daed64720c8ef2e7cc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 8 Jul 2026 11:44:03 -0400
+Subject: [PATCH] build: lighttpd installs captive-portal-only payload (Phase
+ 1.3)
+
+Drop from the image: mod_webdav/mod_smbdav + the 4 closed AiCloud modules
+(auth/invite/sharelink/aidisk_access), lighttpd-monitor + lighttpd-arpping
+(webdav-only helpers), the AiCloud file-manager UI under /usr/lighttpd
+(CloudUtil.jar, sharelink/smbdav/davclient js, jplayer, ...) and the APP-IPK
+control files. Keep exactly what write_uam_conf serves: lighttpd core +
+uamsrv symlink, mod_captive_portal_uam/create_captcha_image/query_field_json,
+css/uam.html+uam.js+Bypass.html+status-4*.html+style-status.css, js/jquery.js,
+libsmbclient.so.0 (DT_NEEDED by lighttpd core + kept CP modules).
+---
+ release/src/router/Makefile | 24 +++++++++++++++---------
+ 1 file changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 7f9bf5481f..5797528086 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -7817,26 +7817,32 @@ endif
+ lighttpd-1.4.39: shared $(if $(BCM_502L07P2),ethctl_lib) nvram$(BCMEX)$(EX7) libpasswd libdisk samba-3.5.8 pcre-8.31 libxml2 sqlite libexif openssl curl $(if $(RTCONFIG_PERMISSION_MANAGEMENT),PMS_DBapis) $(if $(RTCONFIG_MXL_826XX),libhostapi) lighttpd-1.4.39/stamp-h1
+ 	$(MAKE) -C lighttpd-1.4.39 $(PARALLEL_BUILD)
+ 
++# lighttpd ships ONLY as the captive-portal uamsrv: no AiCloud/WebDAV modules,
++# no lighttpd-monitor/arpping (webdav-only helpers), no AiCloud UI/js, no APP-IPK
++# controls. Keep-list = what write_uam_conf (rc/services.c) actually loads/serves.
++# libsmbclient.so.0 stays: DT_NEEDED by lighttpd core + all 3 kept CP modules.
+ lighttpd-1.4.39-install:
+ 	if [ -f lighttpd-1.4.39/Makefile ] ; then \
+ 		install -D lighttpd-1.4.39/src/.libs/lighttpd $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/lighttpd ; \
+-		install -D lighttpd-1.4.39/src/.libs/lighttpd-monitor $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/lighttpd-monitor ; \
+-		install -D lighttpd-1.4.39/src/.libs/lighttpd-arpping $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/lighttpd-arpping ; \
+ 		ln -sf lighttpd $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/uamsrv ; \
+ 		$(STRIP) -s $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/lighttpd ; \
+-		$(STRIP) -s $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/lighttpd-monitor ; \
+-		$(STRIP) -s $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/lighttpd-arpping ; \
+ 		install -d $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/ ; \
+ 		install -D lighttpd-1.4.39/src/.libs/*.so $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/ ; \
+ 		if [ -d lighttpd-1.4.39/prebuild ] ; then \
+-			install -D lighttpd-1.4.39/prebuild/$(BUILD_NAME)/*.so $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/ ; \
++			install -D lighttpd-1.4.39/prebuild/$(BUILD_NAME)/mod_captive_portal_uam.so $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/ ; \
++			install -D lighttpd-1.4.39/prebuild/$(BUILD_NAME)/mod_create_captcha_image.so $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/ ; \
++			install -D lighttpd-1.4.39/prebuild/$(BUILD_NAME)/mod_query_field_json.so $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/ ; \
+ 		fi ; \
++		rm -f $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/mod_webdav.so ; \
++		rm -f $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/mod_smbdav.so ; \
+ 		install -D samba-3.5.8/source3/bin/libsmbclient.so.0 $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/libsmbclient.so.0 ; \
+ 		mkdir -p $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css && mkdir -p $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/js ; \
+-		cp -rf lighttpd-1.4.39/external_file/css/ $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd ; \
+-		cp -rf lighttpd-1.4.39/external_file/js/ $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd ; \
+-		cp -f APP-IPK/AiCloud-tmp/CONTROL/control-aicloud $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/control ; \
+-		cp -f APP-IPK/AiCloud-tmp/CONTROL/control-smartsync-arm $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/smartsync_control ; \
++		cp -f lighttpd-1.4.39/external_file/css/uam.html $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css/ ; \
++		cp -f lighttpd-1.4.39/external_file/css/uam.js $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css/ ; \
++		cp -f lighttpd-1.4.39/external_file/css/Bypass.html $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css/ ; \
++		cp -f lighttpd-1.4.39/external_file/css/style-status.css $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css/ ; \
++		cp -f lighttpd-1.4.39/external_file/css/status-4*.html $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css/ ; \
++		cp -f lighttpd-1.4.39/external_file/js/jquery.js $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/js/ ; \
+ 		$(STRIP) -s $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/*.so ; \
+ 		$(STRIP) -s $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/*.so.0 ; \
+ 	fi
+-- 
+2.25.1
+

@@ -1,0 +1,288 @@
+From 1c0b45017d8613aaa39df90582d73620d99e2345 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 10 Jul 2026 08:17:12 -0400
+Subject: [PATCH] version: Reaper_v1.2.3 (ring revert, shell scrollbar, VPN +
+ Network Analysis theme, QoS classful editor)
+
+- www/reaper/reaper_content.css: revert USB ring to stock white_04 (drop the
+  white_05 swap + geometry/blend block; owner reported no on-metal change from
+  the v1.2.2 ring fix). + section 20: VPN Server wrapper/SPA containers and the
+  Network Analysis #svgContainer plot box (data-viz lines/gridlines untouched).
+- www/reaper_shell.asp: #page_frame scrolling="no" + min-height + overflow:hidden
+  so the framed page never shows a nested scrollbar (single outer scrollbar).
+- www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp: inject
+  reaper_content.css into the nested vpns_iframe (/VPN/vpns.html SPA, RWD_UI
+  classes already themed by section 17) + auto-grow it + scrolling=no.
+- www/QoS_EZQoS.asp + shared/defaults.c: HW QoS Classful (qos_type 11) priority
+  editor - reorder the 5 upload classes + edit each ceiling %; persist order+ceils
+  to qos_orates (positional min-ceil) and labels to new UI-only nvram
+  qos_class_names (CKN_STR256; engine ignores). Apply = restart_qos;restart_firewall.
+- version.conf: EXTENDNO Reaper_v1.2.3.
+
+conn_diag/dblog KEPT (verified no phone-home transport; AiMesh-coupled).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ release/src/router/shared/defaults.c          |  1 +
+ release/src/router/www/QoS_EZQoS.asp          | 72 +++++++++++++++++++
+ .../src/router/www/reaper/reaper_content.css  | 34 ++++-----
+ release/src/router/www/reaper_shell.asp       |  4 +-
+ .../VPNS_V2/Advanced_VPNServer_Content.asp    | 18 ++++-
+ 6 files changed, 110 insertions(+), 21 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index e44cad1da8..ac802b615f 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.2
++EXTENDNO=Reaper_v1.2.3
+ 
+ RCNO=0
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 9708114740..faff4bf852 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3070,6 +3070,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_rulelist", "<Web Surf>>80>tcp>0~512>0<HTTPS>>443>tcp>0~512>0<File Transfer>>80>tcp>512~>3<File Transfer>>443>tcp>512~>3", CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ 	{ "qos_orates", "80-100,10-100,5-100,3-100,2-95,0-0,0-0,0-0,0-0,0-0", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "qos_class_names", "Gaming,Web/VoIP,Streaming,Downloads,Default", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },  /* reaper: HW QoS Classful editor labels (UI-only; engine reads qos_orates) */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/QoS_EZQoS.asp b/release/src/router/www/QoS_EZQoS.asp
+index cc1e304fdb..17b2fbe27f 100644
+--- a/release/src/router/www/QoS_EZQoS.asp
++++ b/release/src/router/www/QoS_EZQoS.asp
+@@ -1048,6 +1048,7 @@
+         function submitQoS() {
+             document.form.ark_qoe_enable.value = "0";
+             if (validForm()) {
++                if (document.form.qos_type.value == 11) hwqoscSerialize();
+                 if (document.form.qos_enable.value == "1" && document.form.qos_type.value == "1" && document.form.TM_EULA.value == "0") {
+                     if (policy_status.TM == 0 || policy_status.TM_time == '') {
+                         const policyModal = new PolicyModalComponent({
+@@ -1123,6 +1124,8 @@
+                 document.getElementById('hwqos_desc_tr').style.display = "none";
+             if (document.getElementById('hwqosc_desc_tr'))	// reset HW QoS Classful note; re-shown only for value==11
+                 document.getElementById('hwqosc_desc_tr').style.display = "none";
++            if (document.getElementById('hwqosc_prio_tr'))	// reset HW QoS Classful priority editor
++                document.getElementById('hwqosc_prio_tr').style.display = "none";
+             if (value == 0) {		//Traditional QoS
+                 document.form.qos_enable.value = "1";
+                 document.getElementById('int_type').checked = false;
+@@ -1358,6 +1361,8 @@
+                     document.getElementById('download2_tr').style.display = "none";
+                 }
+                 document.getElementById('hwqosc_desc_tr').style.display = "";
++                document.getElementById('hwqosc_prio_tr').style.display = "";
++                hwqoscBuildEditor();
+                 // overhead / MPU are not used by the hardware shaper
+                 if (codel_support || cake_support)
+                     document.getElementById('qos_overhead_tr').style.display = "none";
+@@ -2166,6 +2171,8 @@
+                 <input type="hidden" name="rb_enable_orig" value="<% nvram_get("rb_enable"); %>">
+                 <input type="hidden" name="re_rb_enable" value="<% nvram_get("re_rb_enable"); %>">
+                 <input type="hidden" name="qos_obw" value="<% nvram_get("qos_obw"); %>" disabled>
++                <input type="hidden" name="qos_orates" id="qos_orates_input" value="<% nvram_get("qos_orates"); %>" disabled>
++                <input type="hidden" name="qos_class_names" id="qos_class_names_input" value="<% nvram_get("qos_class_names"); %>" disabled>
+                 <input type="hidden" name="qos_ibw" value="<% nvram_get("qos_ibw"); %>" disabled>
+                 <input type="hidden" name="qos_obw1" value="<% nvram_get("qos_obw1"); %>" disabled>
+                 <input type="hidden" name="qos_ibw1" value="<% nvram_get("qos_ibw1"); %>" disabled>
+@@ -2371,6 +2378,16 @@
+                                                         </div>
+                                                     </td>
+                                                 </tr>
++                                                <tr id="hwqosc_prio_tr" style="display:none">
++                                                    <th style="vertical-align:top;padding-top:10px;">Priority &amp; bandwidth</th>
++                                                    <td colspan="2">
++                                                        <div class="formfontdesc" style="color:#B7B1A4;margin:2px 0 8px;line-height:16px;">Order the upload priority classes (top = highest priority = first hardware queue) and set each class ceiling as a percentage of your upload bandwidth. Use the arrows to reorder.</div>
++                                                        <table id="qos_prio_table" class="FormTable_table" style="width:auto;min-width:430px;border-collapse:collapse;">
++                                                            <thead><tr><th style="width:64px;">Order</th><th style="text-align:left;">Priority class</th><th style="width:96px;">Queue</th><th style="width:104px;">Ceiling %</th></tr></thead>
++                                                            <tbody id="qos_prio_tbody"></tbody>
++                                                        </table>
++                                                    </td>
++                                                </tr>
+                                                 <tr id="qos_overhead_tr" style="display:none">
+                                                     <th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50, 28);">WAN packet overhead</a></th>
+                                                     <td colspan="2">
+@@ -2559,5 +2576,60 @@
+ </table>
+ </form>
+ <div id="footer"></div>
++<script>
++/* ---- HW QoS Classful priority editor (reaper v1.2.3, triage item 11) ----
++   Reorder the 5 upload priority classes (top = highest = first hardware egress
++   queue) and set each class ceiling as a percent of upload bandwidth. Order +
++   ceilings persist to qos_orates (positional, "min-ceil"); labels persist to the
++   UI-only qos_class_names nvram. The classful engine (rc/qos.c start_hwqos_classful)
++   reads the ceilings from qos_orates in queue order. */
++var HWQOSC_MIN_TMPL=[80,10,5,3,2];
++function hwqoscParse(){
++  var raw=(document.getElementById('qos_orates_input')||{}).value||'';
++  var parts=raw.split(','),ceils=[];
++  for(var i=0;i<5;i++){var seg=(parts[i]||'').split('-');ceils.push(seg.length>1?(parseInt(seg[1],10)||0):(parseInt(seg[0],10)||0));}
++  var nraw=(document.getElementById('qos_class_names_input')||{}).value||'';
++  var d=nraw.split(','),def=['Gaming','Web/VoIP','Streaming','Downloads','Default'],names=[];
++  for(var j=0;j<5;j++)names.push((d[j]&&d[j].length)?d[j]:def[j]);
++  return {ceils:ceils,names:names};
++}
++function hwqoscBuildEditor(){
++  var tb=document.getElementById('qos_prio_tbody');if(!tb)return;
++  var m=hwqoscParse();tb.innerHTML='';
++  for(var i=0;i<5;i++){
++    var tr=document.createElement('tr');
++    tr.innerHTML='<td style="text-align:center;white-space:nowrap;">'
++      +'<img src="/images/unfold_more.svg" title="move up" style="height:14px;transform:rotate(180deg);cursor:pointer;opacity:.85;" onclick="hwqoscMove(this,-1);">'
++      +'<img src="/images/unfold_more.svg" title="move down" style="height:14px;cursor:pointer;opacity:.85;margin-left:6px;" onclick="hwqoscMove(this,1);"></td>'
++      +'<td style="text-align:left;"><input type="text" class="input_15_table" maxlength="24" value="'+String(m.names[i]).replace(/"/g,'&quot;')+'" style="width:150px;"></td>'
++      +'<td class="qprioq" style="text-align:center;color:#B7B1A4;"></td>'
++      +'<td><input type="text" class="input_6_table" maxlength="3" value="'+m.ceils[i]+'" onKeyPress="return validator.isNumber(this,event);" onblur="hwqoscClamp(this);" style="width:60px;"><span style="margin-left:5px;color:#B7B1A4;">%</span></td>';
++    tb.appendChild(tr);
++  }
++  hwqoscRenumber();
++}
++function hwqoscClamp(o){var v=parseInt(o.value,10);if(isNaN(v)||v<0)v=0;if(v>100)v=100;o.value=v;}
++function hwqoscRenumber(){
++  var rows=document.querySelectorAll('#qos_prio_tbody tr');
++  for(var i=0;i<rows.length;i++){var q=rows[i].querySelector('.qprioq');
++    if(q)q.textContent='Q'+(i+1)+(i===0?' (highest)':(i===rows.length-1?' (lowest)':''));}
++}
++function hwqoscMove(img,dir){
++  var tr=img.parentNode.parentNode,tb=tr.parentNode;
++  if(dir<0&&tr.previousElementSibling)tb.insertBefore(tr,tr.previousElementSibling);
++  else if(dir>0&&tr.nextElementSibling)tb.insertBefore(tr.nextElementSibling,tr);
++  hwqoscRenumber();
++}
++function hwqoscSerialize(){
++  var rows=document.querySelectorAll('#qos_prio_tbody tr');if(!rows.length)return;
++  var ceils=[],names=[];
++  for(var i=0;i<rows.length;i++){var ins=rows[i].getElementsByTagName('input');
++    names.push((ins[0].value||('Class'+(i+1))).replace(/,/g,' ').replace(/</g,'').replace(/>/g,''));
++    var v=parseInt(ins[1].value,10);if(isNaN(v)||v<0)v=0;if(v>100)v=100;ceils.push(v);}
++  var pairs=[];for(var j=0;j<10;j++)pairs.push(j<ceils.length?((HWQOSC_MIN_TMPL[j]||0)+'-'+ceils[j]):'0-0');
++  var oi=document.getElementById('qos_orates_input');oi.disabled=false;oi.value=pairs.join(',');
++  var ni=document.getElementById('qos_class_names_input');ni.disabled=false;ni.value=names.join(',');
++}
++</script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 30092e1815..b4a41f58b4 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -244,22 +244,6 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+    circle; force natural size so a plugged drive renders as the same clean circle
+    as the empty slot. */
+ .iconUSBdisk,.iconM2{background-position:0% 0%!important;background-size:auto!important;filter:none!important}
+-/* USB slot ring: swap the stock teal-tile sprite (white_04.gif) for the
+-   USER-AUTHORED dark-background recolor (white_05.gif, same 95x276 frame
+-   geometry). Theme-gated by construction: this file is only injected when
+-   reaper_inject=1, so the stock UI / kill-switch keeps white_04. Do NOT
+-   apply any color filter to this sprite - it is hand-made artwork.
+-   Geometry fix (item 9): the rule above pins both divs to frame 1 at natural
+-   size, which left the ring circle (74px @ cx47.5) offset from and barely
+-   larger than the 73px button (cx42). Upscale + reposition the ring bg so it
+-   encircles the button concentrically (must stay AFTER the .iconUSBdisk rule
+-   - equal specificity, order decides). screen-blend melts the sprite's opaque
+-   black canvas into any dark backdrop (same pattern as the #Senario blend);
+-   it composites the whole tile, but over near-black page bgs the button art
+-   shifts <2% - imperceptible. */
+-[id^="ring_USBdisk"]{background-image:url("/images/New_ui/networkmap/white_05.gif")!important;
+-  background-size:116% auto!important;background-position:-10px -5px!important;
+-  mix-blend-mode:screen}
+ .statusbody,.NM_radius_bottom_container{background:#0f0f12!important}
+ .statusTitle{background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important;
+   font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;letter-spacing:.08em!important}
+@@ -639,3 +623,21 @@ i[class^='type'],i[class*=' type'],i[class^='vendor-icon'],i[class*=' vendor-ico
+ .config_item_container .dropdown_select{background:#2a2a30!important}
+ .config_item_container .help_icon{background-color:#B7B1A4!important}
+ 
++
++/* ---------- 20. VPN Server page + Network Analysis (v1.2.3) ---------- */
++/* Advanced_VPNServer_Content.asp is a thin wrapper whose vpns_iframe loads the
++   VPNS_V2 SPA (/VPN/vpns.html). The wrapper injects THIS stylesheet into that
++   nested frame (see the page's reaperThemeFrame), so the SPA's rwd_component
++   classes are already themed by section 17; these cover the wrapper chrome +
++   the SPA's top-level containers that section 17 does not. */
++.rwd_iframe{width:100%!important;border:0!important;background:transparent!important;display:block!important}
++body.bg,.container.no_highlights,.content_container{background:transparent!important}
++.function_desc_container,.hidden_static_text{color:#B7B1A4!important}
++.server_list_container,.profile_setting_container{background:#0c0c0f!important;
++  border:1px solid rgba(255,255,255,.08)!important;border-radius:10px!important}
++.svr_list_title_container,.svr_list_title,.title{color:#ECE7DB!important}
++/* Network Analysis (Main_Analysis_Content.asp): the ping-graph plot box carries
++   an inline background-color:black; align it to the reaper panel. The gridlines
++   and the yellow avg / green ping polylines are data-viz - left untouched (rule 2). */
++#svgContainer{background:#0f0f12!important;border:1px solid rgba(255,255,255,.08)!important;
++  border-radius:8px!important}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 88e79b72de..ae90e67eb7 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -83,7 +83,7 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+ #tabbar a.rtab:hover{color:var(--bone);background:var(--panel-2)}
+ #tabbar a.rtab.on{color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.22),var(--panel-2));
+   border-color:rgba(225,6,0,.35);box-shadow:inset 0 -2px 0 var(--crimson)}
+-#page_frame{width:100%;flex:1 1 auto;border:0;display:block;background:var(--bg)}
++#page_frame{width:100%;flex:1 1 auto;border:0;display:block;background:var(--bg);min-height:calc(100vh - 64px);overflow:hidden}
+ .mono{font-family:ui-monospace,'Cascadia Code',Consolas,monospace}
+ /* drop the lowest-priority pills before the header can clip at 1080p / 125% */
+ @media (max-width:1700px){ .pills .pill:nth-child(n+6){display:none} }
+@@ -114,7 +114,7 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+   </aside>
+   <main class="stage">
+     <div id="tabbar"></div>
+-    <iframe id="page_frame" name="reaper_frame" title="settings page"></iframe>
++    <iframe id="page_frame" name="reaper_frame" title="settings page" scrolling="no"></iframe>
+   </main>
+ </div>
+ 
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+index 2e0881b445..00ea2db54c 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+@@ -24,11 +24,25 @@
+ </style>
+ <script>
+ 
++function reaperThemeFrame(ifr){
++	try{
++		var d=ifr.contentDocument; if(!d) return;
++		if(!d.querySelector('link[href*="reaper_content"]')){
++			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
++			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
++		}
++		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
++		grow(); setTimeout(grow,400); setTimeout(grow,1200);
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++	}catch(e){}
++}
+ function initial(){
+ 	show_menu();
++	var ifr=document.getElementById("vpns_iframe");
++	ifr.addEventListener("load", function(){ reaperThemeFrame(ifr); });
+ 	setTimeout(function(){
+ 		var curTheme = (parent.webWrapper) ? "?current_theme=white" : "";
+-		document.getElementById("vpns_iframe").setAttribute("src", "/VPN/vpns.html" + curTheme);
++		ifr.setAttribute("src", "/VPN/vpns.html" + curTheme);
+ 	},((window.location.protocol == "https:") ? 1000 : 50));
+ }
+ </script>
+@@ -66,7 +80,7 @@ function initial(){
+ 							<tbody>
+ 								<tr>
+ 									<td bgcolor="#4D595D" valign="top">
+-										<iframe id="vpns_iframe" class="rwd_iframe" frameborder="0"></iframe>
++										<iframe id="vpns_iframe" class="rwd_iframe" frameborder="0" scrolling="no"></iframe>
+ 									</td>
+ 								</tr>
+ 							</tbody>
+-- 
+2.25.1
+

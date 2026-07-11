@@ -1,0 +1,406 @@
+From f281d7611ec7b7fa7f77fa9db14bede32b49ef31 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 12:12:07 -0400
+Subject: [PATCH] rtrafd/webui: v1.3.3 - live Traffic Analyzer (1s dual-cadence
+ collector + rolling live view), poll-rate selector, settings-scroll fix
+
+Live view was frozen: the daemon sampled every 30s and the page drew the
+charts once from history without refreshing.
+
+Daemon (dual cadence):
+- POLL 30 -> 1s base tick drives WAN rate + live.json every second. Per-class
+  polled every 2 ticks (tmctl is heavier than a proc read); the flow-cache
+  scan (per-device/per-network/top-talkers) and ping probe run every 5 ticks
+  to keep CPU down. History rings just accumulate finer deltas into the same
+  5-min/hour/day slots.
+- Live rate holders (lv_wan/lv_cls/lv_cli/lv_net) computed at each source's
+  cadence and republished into live.json every tick; write_live now emits
+  per-network and per-device live rates ("net"/"dev") so those panels update
+  without waiting on the 5-min history file. top_note rate now divided by the
+  flow-cache interval (FCACHE_SECS), not the base tick.
+
+webui:
+- Live window: rolling WAN line chart + rolling per-class stacked (client-side
+  buffers, ~2 min) + live per-network bars + live per-device rate table, all
+  refreshed on the live poll. History windows unchanged.
+- Refresh-rate selector (1s/10s/30s, persisted in localStorage) controls the
+  live poll interval; restarts the timer on change.
+- Settings button now scrollIntoView()s the settings panel - the page runs in
+  the shell's auto-grown iframe (inner window doesn't scroll), so the old
+  scrollTo() was a no-op.
+
+Mock-validated (rolling charts, net/dev panels, selector, settings scroll).
+EXTENDNO=Reaper_v1.3.3. Metal test: WAN graph ticks ~1s; class/net/device
+update live; selector changes cadence; Settings scrolls; watch CPU with the
+1s tick (class cadence + selector are the dials).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf               |   2 +-
+ release/src/router/rtrafd/rtrafd.c        | 110 +++++++++++++++++-----
+ release/src/router/www/Reaper_Traffic.asp |  79 +++++++++++++---
+ 3 files changed, 152 insertions(+), 39 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 272d2f9cc6..32abca06b2 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.3.2
++EXTENDNO=Reaper_v1.3.3
+ 
+ RCNO=0
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 210f3de912..849ce2c5b2 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -38,7 +38,16 @@
+ #include <shutils.h>
+ #include <shared.h>
+ 
+-#define POLL		30
++/* Dual cadence: a fast 1s base tick drives the live view (WAN rate + per-class
++ * + live.json write) so the page updates once a second; the expensive flow-cache
++ * scan (per-device/per-network/top-talkers) and the ping probe run on slower
++ * sub-cadences to keep CPU down. History rings just accumulate finer deltas -
++ * still binned into the same 5-min/hour/day/month slots. */
++#define POLL		1	/* base tick / WAN + live.json cadence (s) */
++#define CLASS_EVERY	2	/* poll per-QoS-class every N ticks */
++#define HEAVY_EVERY	5	/* poll flow cache (per-dev/net/top) every N ticks */
++#define PROBE_EVERY	5	/* ping probe every N ticks */
++#define FCACHE_SECS	(HEAVY_EVERY * POLL)	/* flow-cache sample interval (s) */
+ #define N5		288	/* 5-min slots  (24 h) */
+ #define NH		336	/* hour slots   (14 d) */
+ #define ND		366	/* day slots    (~1 y) */
+@@ -109,6 +118,13 @@ static uint32_t prb_n = 0, prb_lost = 0;
+ /* quota syslog once-flags */
+ static int warned80 = 0, warned100 = 0, warn_month = -1;
+ 
++/* live snapshot holders (bits/sec), refreshed at each source's own cadence and
++ * republished into live.json every tick so the page always has a fresh value */
++static uint64_t lv_wan_rx, lv_wan_tx;		/* WAN rate (every tick) */
++static uint64_t lv_cls_tx[7], lv_cls_dp[7];	/* per-class tx rate + drop delta */
++static uint64_t lv_cli_rx[NCLI], lv_cli_tx[NCLI];	/* per-device rate (fcache tick) */
++static uint64_t lv_net_rx[NNET], lv_net_tx[NNET];	/* per-network rate (fcache tick) */
++
+ /* current live snapshot (for live.json) */
+ typedef struct {
+ 	char src[16], dst[46];
+@@ -339,7 +355,9 @@ static void poll_classes(const char *wanif)
+ static void top_note(const char *src, const char *dst, int dport, int proto,
+ 		     uint64_t up, uint64_t dn)
+ {
+-	uint64_t rate = (up + dn) / POLL;
++	/* top_note is only called from poll_fcache, whose deltas span one flow-cache
++	 * sample interval (FCACHE_SECS), not one base tick - divide by that. */
++	uint64_t rate = (up + dn) / FCACHE_SECS;
+ 	int i, worst = 0;
+ 	if (rate == 0) return;
+ 	if (ntop < NTOP) { i = ntop++; goto put; }
+@@ -383,6 +401,9 @@ static void poll_fcache(void)
+ 	if (!f) { poll_conntrack(); return; }	/* accelerator table absent */
+ 
+ 	ntop = 0;
++	/* reset the live per-device/per-network rate accumulators for this sample */
++	memset(lv_cli_rx, 0, sizeof(lv_cli_rx)); memset(lv_cli_tx, 0, sizeof(lv_cli_tx));
++	memset(lv_net_rx, 0, sizeof(lv_net_rx)); memset(lv_net_tx, 0, sizeof(lv_net_tx));
+ 	if (!fgets(line, sizeof(line), f) || !fgets(line, sizeof(line), f)) {
+ 		fclose(f);		/* two header lines */
+ 		return;
+@@ -499,10 +520,15 @@ static void poll_fcache(void)
+ 		ip2str(cli_ip, ips);
+ 		ci = cli_slot(cli_mac[0] ? cli_mac : ips, ips);
+ 		ring_add(r_cli[ci], dn, up);	/* rx=download, tx=upload */
++		lv_cli_rx[ci] += dn * 8 / FCACHE_SECS;	/* live per-device rate (bps) */
++		lv_cli_tx[ci] += up * 8 / FCACHE_SECS;
+ 
+ 		ns = net_slot(dev_bridge(cli_dev));
+-		if (ns >= 0)
++		if (ns >= 0) {
+ 			ring_add(r_net[ns], dn, up);
++			lv_net_rx[ns] += dn * 8 / FCACHE_SECS;	/* live per-network rate */
++			lv_net_tx[ns] += up * 8 / FCACHE_SECS;
++		}
+ 
+ 		ip2str(dst_ip, dsts);
+ 		top_note(ips, dsts, dport, 0, up, dn);
+@@ -693,22 +719,42 @@ static void write_hist(int which, const char *fn, int step)
+ 	rename(tmp, path);
+ }
+ 
+-static void write_live(const char *store, uint64_t wrx_d, uint64_t wtx_d,
+-		       uint64_t cls_txd[7], uint64_t cls_dpd[7], int qos_on)
++/* Published every base tick (1s). WAN + class are true per-interval rates held
++ * in the lv_* globals; per-network and per-device rates come from the last
++ * flow-cache sample (refreshed every FCACHE_SECS). */
++static void write_live(const char *store)
+ {
+ 	FILE *o = fopen("/tmp/rtraf/.live.json", "w");
+-	int i;
++	int i, first;
+ 	uint64_t cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
++	int qos_on = (nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11);
+ 	if (!o) return;
+ 	fprintf(o, "{\"t\":%lld,\"poll\":%d,\"store\":\"%s\",\"qos\":%d",
+ 		(long long)time(NULL), POLL, store, qos_on);
+ 	fprintf(o, ",\"wan\":{\"rx_bps\":%llu,\"tx_bps\":%llu}",
+-		(unsigned long long)(wrx_d * 8 / POLL), (unsigned long long)(wtx_d * 8 / POLL));
++		(unsigned long long)lv_wan_rx, (unsigned long long)lv_wan_tx);
+ 	fprintf(o, ",\"class\":[");
+ 	for (i = 0; i <= 6; i++)
+ 		fprintf(o, "%s{\"tx_bps\":%llu,\"dp\":%llu}", i ? "," : "",
+-			(unsigned long long)(cls_txd[i] * 8 / POLL), (unsigned long long)cls_dpd[i]);
+-	fprintf(o, "],\"quota\":{\"used\":%llu,\"cap_gb\":%llu}",
++			(unsigned long long)lv_cls_tx[i], (unsigned long long)lv_cls_dp[i]);
++	fprintf(o, "]");
++	/* live per-network rate (bps) */
++	fprintf(o, ",\"net\":{");
++	for (i = 0; i < nnet; i++)
++		fprintf(o, "%s\"%s\":[%llu,%llu]", i ? "," : "", netname[i],
++			(unsigned long long)lv_net_rx[i], (unsigned long long)lv_net_tx[i]);
++	fprintf(o, "}");
++	/* live per-device rate (bps); skip idle devices */
++	fprintf(o, ",\"dev\":[");
++	first = 1;
++	for (i = 0; i < NCLI; i++) {
++		if (!cli[i].used || (lv_cli_rx[i] == 0 && lv_cli_tx[i] == 0)) continue;
++		fprintf(o, "%s{\"ip\":\"%s\",\"dn\":%llu,\"up\":%llu}", first ? "" : ",",
++			cli[i].ip, (unsigned long long)lv_cli_rx[i], (unsigned long long)lv_cli_tx[i]);
++		first = 0;
++	}
++	fprintf(o, "]");
++	fprintf(o, ",\"quota\":{\"used\":%llu,\"cap_gb\":%llu}",
+ 		(unsigned long long)(r_wan->bm[imcur].rx + r_wan->bm[imcur].tx),
+ 		(unsigned long long)cap_gb);
+ 	/* live probe = running average since the current 5-min bucket opened;
+@@ -858,43 +904,53 @@ int main(int argc, char **argv)
+ 	syslog(LOG_NOTICE, "rtrafd: started (store=%s wan=%s lan=%s/%08x)",
+ 	       store, wanif, nvram_safe_get("lan_ipaddr"), lan_mask);
+ 
++	{
++	unsigned long tick = 0;
+ 	while (running) {
+ 		time_t now = time(NULL);
+ 		int n5, nh, nd, nm;
+-		uint64_t wrx0 = r_wan->b5[i5cur].rx, wtx0 = r_wan->b5[i5cur].tx;
+-		uint64_t c_tx0[7], c_dp0[7], cls_txd[7], cls_dpd[7];
++		uint64_t wrx0, wtx0;
+ 
++		/* history boundary - fires every 5 min regardless of tick rate */
+ 		slots_for(now, &n5, &nh, &nd, &nm);
+ 		if (n5 != i5cur) {
+ 			probe_close_bucket();
+-			/* publish closing snapshots BEFORE advancing */
+ 			write_hist(0, "m5.json", 300);
+ 			if (nh != ihcur) write_hist(1, "hour.json", 3600);
+ 			if (nd != idcur) write_hist(2, "day.json", 86400);
+ 			if (nm != imcur) write_hist(3, "month.json", 0);
+-			if (n5 != i5cur) all_zero_slot(0, n5);
++			all_zero_slot(0, n5);
+ 			if (nh != ihcur) all_zero_slot(1, nh);
+ 			if (nd != idcur) all_zero_slot(2, nd);
+ 			if (nm != imcur) all_zero_slot(3, nm);
+ 			i5cur = n5; ihcur = nh; idcur = nd; imcur = nm;
+-			wrx0 = r_wan->b5[i5cur].rx; wtx0 = r_wan->b5[i5cur].tx;
+ 		}
+ 
+-		for (i = 0; i <= 6; i++) { c_tx0[i] = r_cls[i]->b5[i5cur].rx; c_dp0[i] = r_cls[i]->b5[i5cur].tx; }
+-
++		/* WAN: every tick (the lively graph). Rate = this-tick delta / POLL. */
++		wrx0 = r_wan->b5[i5cur].rx; wtx0 = r_wan->b5[i5cur].tx;
+ 		poll_ifaces(wanif);
+-		poll_classes(wanif);
+-		poll_fcache();		/* offload-accurate per-client/per-network + top talkers */
+-		poll_probe();
++		lv_wan_rx = (r_wan->b5[i5cur].rx - wrx0) * 8 / POLL;
++		lv_wan_tx = (r_wan->b5[i5cur].tx - wtx0) * 8 / POLL;
++
++		/* per-class: every CLASS_EVERY ticks (tmctl is heavier than a proc read) */
++		if (tick % CLASS_EVERY == 0) {
++			uint64_t c_tx0[7], c_dp0[7];
++			for (i = 0; i <= 6; i++) { c_tx0[i] = r_cls[i]->b5[i5cur].rx; c_dp0[i] = r_cls[i]->b5[i5cur].tx; }
++			poll_classes(wanif);
++			for (i = 0; i <= 6; i++) {
++				lv_cls_tx[i] = (r_cls[i]->b5[i5cur].rx - c_tx0[i]) * 8 / (CLASS_EVERY * POLL);
++				lv_cls_dp[i] = r_cls[i]->b5[i5cur].tx - c_dp0[i];
++			}
++		}
++
++		/* flow cache (per-device/per-network/top-talkers) + probe: slow cadence */
++		if (tick % HEAVY_EVERY == 0)
++			poll_fcache();
++		if (tick % PROBE_EVERY == 0)
++			poll_probe();
+ 		check_quota();
+ 
+-		for (i = 0; i <= 6; i++) {
+-			cls_txd[i] = r_cls[i]->b5[i5cur].rx - c_tx0[i];
+-			cls_dpd[i] = r_cls[i]->b5[i5cur].tx - c_dp0[i];
+-		}
+-		write_live(store, r_wan->b5[i5cur].rx - wrx0, r_wan->b5[i5cur].tx - wtx0,
+-			   cls_txd, cls_dpd,
+-			   nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11);
++		write_live(store);
+ 
+ 		if (now - last_save >= SAVE_EVERY) {
+ 			store = resolve_store(dbpath, sizeof(dbpath));
+@@ -902,8 +958,10 @@ int main(int argc, char **argv)
+ 			last_save = now;
+ 		}
+ 
++		tick++;
+ 		for (i = 0; i < POLL && running; i++) sleep(1);
+ 	}
++	}
+ 
+ 	store = resolve_store(dbpath, sizeof(dbpath));
+ 	db_save(dbpath);
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 197df576c3..2e2cb511cf 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -141,9 +141,14 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <div><div class="eyebrow">Traffic Analyzer</div><h1>Bandwidth &amp; Usage</h1></div>
+   <span class="pill" id="statuspill"><span class="dot"></span><span id="statuspill_t">Live</span></span>
+   <div class="spacer"></div>
++  <select id="pollrate" title="Live refresh rate" onchange="setPollRate()" class="cl-filter" style="width:auto;margin:0;padding:8px 12px;font-size:12px">
++    <option value="1000">Refresh: 1s</option>
++    <option value="10000">Refresh: 10s</option>
++    <option value="30000">Refresh: 30s</option>
++  </select>
+   <button type="button" class="btn ghost" onclick="exportJSON()">Export</button>
+   <button type="button" class="btn ghost" onclick="faqOpen()">Guide</button>
+-  <button type="button" class="btn ghost" onclick="scrollTo(0,document.body.scrollHeight)">Settings</button>
++  <button type="button" class="btn ghost" onclick="gotoSettings()">Settings</button>
+ </div>
+ 
+ <div class="tiles" id="tiles"></div>
+@@ -205,7 +210,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <div style="font-size:12.5px" id="quotatxt"></div>
+ </div>
+ 
+-<div class="panel span">
++<div class="panel span" id="settingspanel">
+   <h2>Settings</h2>
+   <div class="sub">The collector adds no listening ports. It only reads local counters (interfaces, conntrack, QoS queues).</div>
+   <div class="togglerow">
+@@ -290,7 +295,7 @@ function classGate(){
+ var CLSCOLOR = ['#71767b','#3987e5','#199e70','#c98500','#9085e9','#d95926','#e66767'];
+ var CLSNAME  = (decodeURIComponent('<% nvram_char_to_ascii("", "qos_class_names"); %>')||'Q1,Q2,Q3,Q4,Q5').split(',');
+ var NETCOLOR = ['#3987e5','#199e70','#c98500','#9085e9','#d95926','#e66767','#d55181','#71767b'];
+-var curWin = 'live', curStep = 'live', liveTimer = null;
++var curWin = 'live', curStep = 'live', liveTimer = null, pollMs = 1000;
+ 
+ /* ---- formatting ---- */
+ function fmtBps(b){ b=+b||0; if(b>=1e9)return (b/1e9).toFixed(2)+' Gb/s'; if(b>=1e6)return (b/1e6).toFixed(1)+' Mb/s'; if(b>=1e3)return (b/1e3).toFixed(0)+' kb/s'; return b.toFixed(0)+' b/s'; }
+@@ -341,22 +346,64 @@ function stackChart(id, layers, labels, colors){
+ }
+ 
+ /* ---- render live ---- */
++var WBUF=120, wanBuf=[], clsBuf=[];   /* rolling buffers: ~2 min at 1s */
+ function renderLive(d){
+   document.getElementById('statuspill_t').textContent = 'Live - '+(d.store?d.store.toUpperCase():'RAM');
+   var wan=d.wan||{rx_bps:0,tx_bps:0};
++  /* tiles + top talkers update in any window */
+   var tiles=[['Download',fmtBps(wan.rx_bps),'dn'],['Upload',fmtBps(wan.tx_bps),'up']];
+   if(d.probe&&d.probe.rtt_us){ tiles.push(['Latency',(d.probe.rtt_us/1000).toFixed(1)+' <small>ms</small>','']); tiles.push(['Loss',d.probe.loss+' <small>%</small>','']); }
+   var q=d.quota||{}; if(q.cap_gb>0){ tiles.push(['Cap used',fmtBytes(q.used)+' <small>/ '+q.cap_gb+' GB</small>','']); }
+   var th=''; for(var i=0;i<tiles.length;i++) th+='<div class="tile"><div class="k">'+tiles[i][0]+'</div><div class="v '+tiles[i][2]+'">'+tiles[i][1]+'</div></div>';
+   document.getElementById('tiles').innerHTML=th;
+-  /* live top talkers */
+   var tb=''; (d.top||[]).sort(function(a,b){return b.rate-a.rate;}).slice(0,12).forEach(function(t){
+     tb+='<tr><td class="tname">'+esc(t.src)+'</td><td>'+esc(t.dst)+' <span class="badge">'+esc(portName(t.dport,t.proto))+'</span></td><td class="num">'+fmtBps(t.rate*8)+'</td></tr>'; });
+   document.getElementById('toptbody').innerHTML = tb || '<tr><td colspan="3" style="color:var(--steel)">No active flows.</td></tr>';
+-  /* live class strip */
+-  var cls=d.class||[]; var lays=[], cols=[], labs=[];
+-  for(var c=1;c<=5;c++){ if(cls[c]){ lays.push([cls[c].tx_bps||0]); cols.push(CLSCOLOR[c]); labs.push(CLSNAME[c-1]||('Q'+c)); } }
+-  document.getElementById('probe_note').textContent = d.qos? 'QoS Classful active - per-class chart live.' : 'Enable HW QoS Classful for per-class data.';
++
++  if(curWin!=='live') return;   /* rolling live charts only render in the Live window */
++
++  /* rolling WAN throughput (appends a point per second) */
++  wanBuf.push([wan.rx_bps||0, wan.tx_bps||0]); if(wanBuf.length>WBUF) wanBuf.shift();
++  var rx=wanBuf.map(function(p){return p[0];}), tx=wanBuf.map(function(p){return p[1];});
++  var wmax=Math.max(1,Math.max.apply(null,rx),Math.max.apply(null,tx));
++  lineChart('wanchart',[{data:rx,color:'var(--jade)'},{data:tx,color:'var(--crimson)'}],wmax,fmtBps);
++  document.getElementById('lat_leg').style.display='none';
++  document.getElementById('probe_note').textContent='Live - updating every second.';
++
++  /* rolling per-class stacked (gated on HW QoS Classful) */
++  if(classGate()){
++    var cls=d.class||[], row=[];
++    for(var c=1;c<=5;c++) row.push(cls[c]?(cls[c].tx_bps||0):0);
++    clsBuf.push(row); if(clsBuf.length>WBUF) clsBuf.shift();
++    var lays=[], cols=[], leg='';
++    for(var k=0;k<5;k++){ lays.push(clsBuf.map(function(r){return r[k];})); cols.push(CLSCOLOR[k+1]);
++      leg+='<span><i style="background:'+CLSCOLOR[k+1]+'"></i>'+esc(CLSNAME[k]||('Q'+(k+1)))+'</span>'; }
++    document.getElementById('clslegend').innerHTML=leg;
++    stackChart('clschart',lays,null,cols);
++  }
++
++  /* By network + Top devices: live rate bars/rows (from the last flow-cache sample) */
++  document.getElementById('netchart').innerHTML='';
++  var nets=d.net||{}, nrows=[], nmax=1;
++  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; var v=(nets[nm][0]||0)+(nets[nm][1]||0); nrows.push([nm,v]); if(v>nmax)nmax=v; }
++  nrows.sort(function(a,b){return b[1]-a[1];});
++  var nh='';
++  for(var n2=0;n2<nrows.length;n2++){ var col=NETCOLOR[n2%NETCOLOR.length];
++    nh+='<div style="display:flex;width:100%;align-items:center;gap:10px;margin:7px 0"><span style="color:var(--bone);min-width:64px;font-size:12.5px">'+esc(nrows[n2][0])+'</span><div class="bar" style="flex:1;margin:0"><span style="width:'+(nrows[n2][1]/nmax*100).toFixed(0)+'%;background:'+col+'"></span></div><span class="num" style="min-width:82px;text-align:right;font-size:12.5px">'+fmtBps(nrows[n2][1])+'</span></div>'; }
++  document.getElementById('netlegend').innerHTML = nh || '<span style="color:var(--steel)">No active networks.</span>';
++
++  var devs=(d.dev||[]).slice().sort(function(a,b){return (b.dn+b.up)-(a.dn+a.up);}), dmax=1;
++  if(devs.length) dmax=Math.max(1,devs[0].dn+devs[0].up);
++  var dh='';
++  devs.slice(0,15).forEach(function(r){ var tot=r.dn+r.up;
++    dh+='<tr><td><span class="tname">'+esc(r.ip)+'</span><div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'; });
++  document.getElementById('clitbody').innerHTML = dh || '<tr><td colspan="3" style="color:var(--steel)">No active devices.</td></tr>';
++
++  /* quota meter */
++  if(q.cap_gb>0){ var used=q.used, cap=q.cap_gb*1e9, pct=Math.min(100,used/cap*100);
++    document.getElementById('quotapanel').style.display=''; var bar=document.getElementById('quotabar'); bar.style.width=pct.toFixed(0)+'%'; bar.className=pct>=80?'hot':'';
++    document.getElementById('quotatxt').innerHTML=fmtBytes(used)+' of '+q.cap_gb+' GB ('+pct.toFixed(0)+'%) this month'; }
++  else document.getElementById('quotapanel').style.display='none';
+ }
+ 
+ /* ---- render history window ---- */
+@@ -408,15 +455,22 @@ function renderHist(d){
+ function loadWin(){
+   if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
+   if(curWin==='live'){
++    wanBuf=[]; clsBuf=[];   /* fresh rolling window */
+     var tick=function(){ getJSON('live', renderLive); };
+-    tick(); liveTimer=setInterval(tick,5000);
+-    /* also draw the 24h history behind the live tiles for context */
+-    getJSON('m5', renderHist);
++    tick(); liveTimer=setInterval(tick, pollMs);   /* live view refresh (user-selectable) */
+   } else {
+     getJSON(curWin, renderHist);
+-    getJSON('live', renderLive);   /* keep tiles fresh */
++    getJSON('live', renderLive);   /* tiles + top talkers reflect current moment */
+   }
+ }
++function setPollRate(){
++  pollMs = parseInt(document.getElementById('pollrate').value,10) || 1000;
++  try{ localStorage.setItem('rtraf_pollms', pollMs); }catch(e){}
++  if(curWin==='live') loadWin();   /* restart the timer at the new rate */
++}
++/* the page runs inside the reaper shell iframe (auto-grown to content, so the
++   inner window doesn't scroll) - scrollIntoView bubbles to the parent frame */
++function gotoSettings(){ document.getElementById('settingspanel').scrollIntoView({behavior:'smooth',block:'start'}); }
+ (function(){ var ws=document.querySelectorAll('#wins .win'); for(var i=0;i<ws.length;i++) ws[i].onclick=function(){
+   document.querySelectorAll('#wins .win').forEach(function(x){x.className='win';}); this.className='win on';
+   curWin=this.getAttribute('data-w'); curStep=this.getAttribute('data-step'); loadWin(); }; })();
+@@ -444,6 +498,7 @@ function faqClose(){ document.getElementById('flyout').className='flyout'; docum
+ document.addEventListener('keydown',function(e){ if(e.key==='Escape')faqClose(); });
+ 
+ /* ---- init ---- */
++try{ var pm=localStorage.getItem('rtraf_pollms'); if(pm){ pollMs=parseInt(pm,10)||1000; document.getElementById('pollrate').value=String(pollMs); } }catch(e){}
+ document.getElementById('tg_enable').checked = (NV.enable!=='0');
+ document.getElementById('set_path').value = NV.path||'';
+ document.getElementById('set_probe').value = NV.probe||'';
+-- 
+2.25.1
+

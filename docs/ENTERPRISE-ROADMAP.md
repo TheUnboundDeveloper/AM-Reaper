@@ -18,10 +18,16 @@ Hard constraint (unchanged): the Broadcom closed blobs (wl/dhd/runner fast-path,
 
 ---
 
-## Phase 0 — Done / in place
+## Phase 0 — Done / in place (shipped through v1.4.1)
 
-- **Security hardening (Rounds 1–3)** — see `REAPER-FIXES.md`. ~70+ issues across rc / httpd / shared / libdisk, the network-facing ASUS daemons, and libcodb; the latest round added pre-auth login, dnsmasq/inadyn/iptables config-injection, and libcodb SQL-identifier fixes.
-- **Hardware QoS (`qos_type=10`)** — PI2 AQM + shaper programmed in the Broadcom Runner; the accelerator stays on (upload). GUI-integrated. This is the **local-only** QoS the project favours over DPI-based Adaptive QoS.
+*Per-version detail in [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).*
+
+- **Security hardening (Rounds 1–4 + latent T1–T4 + avahi CVE backport)** — see `REAPER-FIXES.md`. ~70+ issues across rc / httpd / shared / libdisk, the network-facing ASUS daemons, and libcodb. (v1.0)
+- **Hardware QoS** — `qos_type=10` (PI2 AQM + shaper in the Broadcom Runner, accelerator stays on, upload) and the `qos_type=11` **Classful** engine (v1.0); extended with aggregate cap / guaranteed minimums / DSCP trust / live stats (**v3**, v1.2.8) and per-class WRR weights + experimental L4S (**v4**, v1.2.9). The local-only QoS the project favours over DPI-based Adaptive QoS.
+- **Traffic Analyzer** (v1.3.x) — native per-device / per-network / per-class history, live view, top talkers, quota, opt-in WAN probe; offload-accurate (reads the Runner flow table).
+- **AI Advisor** (v1.4.x) — **optional**, read-only, LAN-only MCP server; off by default; compiled out of the Standard build entirely (`RTCONFIG_REAPER_MCP`). Mode A arming code + optional Mode B USB key. **EXPERIMENTAL**
+- **De-cloud removals (Phase 1 — EXECUTED, shipped v1.2):** Alexa/Google Assistant, Trend Micro DPI (`bwdpi`), AiCloud/WebDAV, the AiDisk wizard, the AAE/AiHome cloud tunnel, and the first-boot EULA/consent surface (v1.2.7).
+- **Reaper UI** — full rebrand + serve-time theme injection with a runtime kill-switch (v1.0).
 - **Sibling-model strip** — only the RT-BE96U is retained in the tree.
 
 ---
@@ -40,7 +46,9 @@ Observed 2026-06-30 on the flashed `3006.102.8_reaper` image (boots, stable, 17 
 
 ---
 
-## Phase 1 — Feature removal / de-bloat  *(CURRENT OBJECTIVE)*
+## Phase 1 — Feature removal / de-bloat  *(EXECUTED — shipped in v1.2; see CHANGELOG)*
+
+> **Status: done.** The removals in the table below were executed and shipped across the `v1.1-beta*` images and consolidated into **v1.2** (AiCloud/WebDAV, Alexa/Google, Trend Micro DPI, AiDisk wizard, AAE/AiHome tunnel), with the first-boot EULA/consent surface removed in **v1.2.7**. AiMesh was kept as planned. The dependency maps below are retained as the historical record of how each removal was scoped.
 
 Strip AI-branded, cloud-coupled, legacy, and superfluous features while keeping the router's core — routing, Wi-Fi, firewall, DHCP, DNS, VPN, and management — intact and stable.
 
@@ -118,6 +126,8 @@ No removal ships if it introduces: boot instability, a broken build or dependenc
 | strongSwan | 6.0.4 | **Current ✓** | |
 | dropbear (SSH) | ~2026.x | **Current ✓** | |
 
-### Enterprise additions *(de-prioritised — Entware-on-USB, not firmware)*
+**NOTICE** OpenSSL version number is left unchanged but file is maintained and updated by developers. Finding is suspected false positive but warrants investigation.
+
+### Potential Enterprise additions *(de-prioritised — Entware-on-USB, not firmware)*
 
 Quagga OSPF/BGP/IS-IS (in tree, unshipped), freeradius (802.1X), fprobe (NetFlow), CrowdSec, Suricata, Unbound, AdGuardHome, Tailscale/ZeroTier, OpenSSH. These remain *possible* via the USB runtime layer but are **not** roadmap items for the image — they run counter to the de-bloat goal.

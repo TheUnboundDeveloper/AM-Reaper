@@ -14,6 +14,19 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 
 ---
 
+## v1.4.2 — AI Advisor: TLS via the router's own certificate
+- The AI Advisor now serves **HTTPS using the router's own web (httpd) certificate**
+  when one is loaded (the same `/etc/cert.pem` the router's web UI uses — **not** a
+  separate cert), and falls back to plain HTTP when the router has no certificate.
+  The arming page hands you the matching `https://` or `http://` connection URL
+  automatically. (If the router's certificate is self-signed, your AI client may need
+  to trust it.)
+- **Friendly network names:** the advisor's wireless view now reports your real SSIDs
+  (from the SDN profiles) instead of the internal onboarding IDs — still security
+  *mode* only, never the Wi-Fi password.
+- The **Standard (no-AI-Advisor) image was rebuilt to keep the version numbers in
+  step** — it contains no AI Advisor code and is otherwise unchanged from v1.4.1.
+
 ## v1.4.1 — AI Advisor: optional USB second factor + clean two-build split
 - **Mode B (optional USB key)** added to the AI Advisor: an opt-in physical second
   factor *on top of* the arming code. The router writes a generated key to your USB

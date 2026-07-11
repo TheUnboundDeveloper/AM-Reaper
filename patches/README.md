@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**138 patches, v1.0 → v1.4.1**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**139 patches, v1.0 → v1.4.2**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/ASUS-Merlin-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (138 patches, v1.0 → v1.4.1)
+## What the series contains (139 patches, v1.0 → v1.4.2)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -56,12 +56,13 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - `0133` — **v1.3.0**: Traffic Analyzer (`rtrafd` collector + native page: per-device/network/class history, top talkers, quota, WAN probe, RAM/JFFS/USB storage).
 - `0134`–`0136` — v1.3.1 offload-accurate per-device/network (reads the Runner flow table), v1.3.2 endpoint fix, v1.3.3 1-second dual-cadence live view + poll selector.
 
-### v1.4 — AI Advisor (`0137`–`0138`)
+### v1.4 — AI Advisor (`0137`–`0139`)
 - `0137` — **v1.4.0**: AI Advisor — read-only LAN MCP server (`rmcpd`), off by default, LAN-only, arming-code gated.
 - `0138` — **v1.4.1**: AI Advisor **Mode B** (optional USB key) + the clean **with/without-MCP two-build split** (`RTCONFIG_REAPER_MCP`).
+- `0139` — **v1.4.2**: AI Advisor **TLS via the router's own httpd cert** (`/etc/cert.pem` through `mssl`, else plain HTTP) + **friendly SSIDs** (from the SDN profiles, not the internal onboarding IDs).
 
 ## Notes
 
 - **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted.
-- Regenerated for **v1.4.1** (2026-07-11) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr`.
+- Regenerated for **v1.4.2** (2026-07-11) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr`.

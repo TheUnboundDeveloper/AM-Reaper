@@ -1,0 +1,534 @@
+From c79d65cf805834f141570e956531106de725b67e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 17:03:43 -0400
+Subject: [PATCH] reaper v1.4.2: AI Advisor - friendly SSID + TLS via the
+ router's own cert
+
+get_wireless_status now reports the user-facing network names, not the
+internal MWL onboarding IDs: it resolves the SDN MAINFH profiles the same
+way the GUI does (parse sdn_rl, read apm<idx>_ssid + the auth MODE; never
+the PSK) and returns radios{} + networks[]. wlX_ssid dropped from the
+get_nvram whitelist too.
+
+The advisor now serves TLS using the ROUTER'S OWN httpd certificate
+(/etc/cert.pem + /etc/key.pem via the same mssl layer httpd uses) when one
+is loaded, and falls back to plain HTTP when none is - not a separate cert.
+The request/response path was moved onto a FILE* (ssl_server_fopen / fdopen
+"r+"), mirroring httpd; the TLS path closes the socket fd itself since
+mssl_close only frees the SSL object. The arming endpoint emits https:// vs
+http:// (and a tls flag) based on cert presence; the GUI notes the scheme
+and the self-signed-cert caveat. rmcpd links mssl + openssl.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf               |   2 +-
+ release/src/router/Makefile               |   2 +-
+ release/src/router/httpd/web.c            |  20 +-
+ release/src/router/rmcpd/Makefile         |   4 +-
+ release/src/router/rmcpd/rmcpd.c          | 230 ++++++++++++++--------
+ release/src/router/www/Reaper_Advisor.asp |   7 +-
+ 6 files changed, 171 insertions(+), 94 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index cb612caba4..4c91fed6df 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.1
++EXTENDNO=Reaper_v1.4.2
+ 
+ RCNO=0
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 7cd2ec9c63..2a292eca37 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -6397,7 +6397,7 @@ rtrafd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rtrafd-install:
+ 	$(MAKE) -C rtrafd INSTALLDIR=$(INSTALLDIR)/rtrafd install
+ 
+-rmcpd: nvram$(BCMEX)$(EX7) shared json-c $(if $(BCM_502L07P2),ethctl_lib)
++rmcpd: nvram$(BCMEX)$(EX7) shared json-c mssl $(if $(BCM_502L07P2),ethctl_lib)
+ 
+ rmcpd-install:
+ 	$(MAKE) -C rmcpd INSTALLDIR=$(INSTALLDIR)/rmcpd install
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 8fd1ea8228..1ebf25c1bb 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21823,13 +21823,14 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		}
+ 		int usb_enrolled = (nvram_get_int("rmcp_usb_enable") == 1 &&
+ 				    nvram_safe_get("rmcp_usb_hash")[0] != 0);
++		int tls = (f_exists(HTTPD_CERT) && f_exists(HTTPD_KEY)) ? 1 : 0;
+ 		websWrite(stream, "{\"provisioned\":%d,\"armed\":%d,\"expiry\":%ld,"
+ 			"\"now\":%ld,\"port\":%s,\"timeout\":%s,\"lan_ip\":\"%s\","
+-			"\"locked\":%d,\"lock_until\":%ld,\"usb_enrolled\":%d}",
++			"\"locked\":%d,\"lock_until\":%ld,\"usb_enrolled\":%d,\"tls\":%d}",
+ 			provisioned, armed ? 1 : 0, expiry, (long)now,
+ 			nvram_safe_get("rmcp_port"), nvram_safe_get("rmcp_timeout"),
+ 			nvram_safe_get("lan_ipaddr"),
+-			(lock_until > now) ? 1 : 0, lock_until, usb_enrolled);
++			(lock_until > now) ? 1 : 0, lock_until, usb_enrolled, tls);
+ 		return;
+ 	}
+ 
+@@ -22031,11 +22032,16 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		notify_rc("start_rmcp");
+ 		logmessage("rmcpd", "advisor armed for %d minutes%s", timeout,
+ 			usbkey_line[0] ? " (USB key required)" : "");
+-		websWrite(stream, "{\"ok\":1,\"token\":\"%s\",\"lan_ip\":\"%s\",\"port\":%s,"
+-			"\"expiry\":%ld,\"url\":\"http://%s:%s/mcp\"}",
+-			tokhex, nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"),
+-			(long)(now + timeout * 60),
+-			nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"));
++		/* scheme mirrors rmcpd: it serves TLS with the router's own httpd cert
++		 * when one is loaded (/etc/cert.pem + /etc/key.pem), else plain HTTP. */
++		{
++			const char *scheme = (f_exists(HTTPD_CERT) && f_exists(HTTPD_KEY)) ? "https" : "http";
++			websWrite(stream, "{\"ok\":1,\"token\":\"%s\",\"lan_ip\":\"%s\",\"port\":%s,"
++				"\"expiry\":%ld,\"tls\":%d,\"url\":\"%s://%s:%s/mcp\"}",
++				tokhex, nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"),
++				(long)(now + timeout * 60), (scheme[4] == 's') ? 1 : 0,
++				scheme, nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"));
++		}
+ 		return;
+ 	}
+ 
+diff --git a/release/src/router/rmcpd/Makefile b/release/src/router/rmcpd/Makefile
+index 74e1c2f65e..aab2a44eea 100644
+--- a/release/src/router/rmcpd/Makefile
++++ b/release/src/router/rmcpd/Makefile
+@@ -1,9 +1,11 @@
+ include ../common.mak
+ 
+ CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
+-CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared -I$(TOP)/json-c
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared -I$(TOP)/json-c -I$(TOP)/mssl
+ LDFLAGS	= -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared
+ LDFLAGS += -L$(TOP)/json-c/.libs -ljson-c
++# TLS via the router's own httpd cert: reuse the mssl wrapper httpd uses.
++LDFLAGS += -L$(TOP)/mssl -lmssl -L$(TOP)/openssl-1.1 -lssl -lcrypto -ldl
+ ifeq ($(RTCONFIG_BCM_502L07P2),y)
+ LDFLAGS += -L$(TOP_PLATFORM)/ethctl_lib -lethctl
+ endif
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index edd4c22dca..555cf6e8a5 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -51,7 +51,8 @@
+ 
+ #include <bcmnvram.h>
+ #include <shutils.h>
+-#include <shared.h>
++#include <shared.h>	/* provides HTTPD_CERT / HTTPD_KEY */
++#include <mssl.h>	/* the router's own TLS layer (same one httpd uses) */
+ 
+ #define STATE_DIR	"/tmp/reaper_mcp"
+ #define SESSION_FILE	STATE_DIR "/session"	/* token=<hex> expiry=<epoch> client=<ip> */
+@@ -72,6 +73,7 @@ static char  g_token[80] = "";
+ static time_t g_expiry = 0;
+ static int   g_badauth = 0;
+ static char  g_usbkey[256] = "";	/* Mode B: enrolled keyfile path, or "" if code-only */
++static int   g_https = 0;		/* 1 = serve TLS with the router's httpd cert */
+ 
+ /* ------------------------------------------------------------------ */
+ /* lifecycle: iptables fence + cleanup                                 */
+@@ -168,7 +170,8 @@ static const char *NV_WHITELIST[] = {
+ 	"wan_proto", "wan0_proto", "wan_ifname",
+ 	"dhcp_enable_x", "dhcp_start", "dhcp_end", "dhcp_lease",
+ 	"time_zone", "ntp_server0", "ntp_server1",
+-	"wl0_ssid", "wl1_ssid", "wl2_ssid",
++	/* wlX_ssid deliberately excluded - it is the internal MWL onboarding ID,
++	 * not the user's network name (see get_wireless_status -> networks[]). */
+ 	"wl0_auth_mode_x", "wl1_auth_mode_x", "wl2_auth_mode_x",
+ 	"wl0_crypto", "wl1_crypto", "wl2_crypto",
+ 	"wl0_channel", "wl1_channel", "wl2_channel",
+@@ -366,17 +369,68 @@ static void tool_overview(sbuf_t *s)
+ 
+ static void tool_wireless(sbuf_t *s)
+ {
++	/* radio-level facts (physical band config); wlX_ssid is the internal MWL
++	 * onboarding ID, NOT the user's network name, so it is deliberately omitted -
++	 * the friendly SSIDs come from the SDN profiles below. */
+ 	static const char *keys[] = {
+-		"wl0_ssid", "wl0_auth_mode_x", "wl0_crypto", "wl0_channel", "wl0_bw", "wl0_closed",
+-		"wl1_ssid", "wl1_auth_mode_x", "wl1_crypto", "wl1_channel", "wl1_bw", "wl1_closed",
+-		"wl2_ssid", "wl2_auth_mode_x", "wl2_crypto", "wl2_channel", "wl2_bw", "wl2_closed",
++		"wl0_auth_mode_x", "wl0_crypto", "wl0_channel", "wl0_bw", "wl0_closed",
++		"wl1_auth_mode_x", "wl1_crypto", "wl1_channel", "wl1_bw", "wl1_closed",
++		"wl2_auth_mode_x", "wl2_crypto", "wl2_channel", "wl2_bw", "wl2_closed",
+ 		"smart_connect_x", "smart_connect_v2", NULL };
+-	int first = 1, i;
+-	sb_puts(s, "{");
++	int first = 1, i, nn = 0;
++	char *rl, *entry, *save1;
++
++	sb_puts(s, "{\"radios\":{");
+ 	for (i = 0; keys[i]; i++)
+ 		sb_nv_pair(s, keys[i], &first);
+-	sb_puts(s, "}");
+-	/* NOTE: PSKs are intentionally absent - only security MODE is surfaced. */
++	sb_puts(s, "},\"networks\":[");
++
++	/* Friendly SSIDs from the SDN MAINFH profiles - mirrors state.js
++	 * get_sdn_main_fh_info(): split sdn_rl on '<', keep MAINFH entries, field
++	 * [5] (0-based, '>'-split) = apm index, read apm<idx>_ssid + auth MODE.
++	 * The PSK (apm<idx>_security field 3) is deliberately NEVER read. */
++	rl = strdup(nvram_safe_get("sdn_rl"));
++	if (rl) {
++		for (entry = strtok_r(rl, "<", &save1); entry; entry = strtok_r(NULL, "<", &save1)) {
++			char *e2, *tok, *save2, *fields[8];
++			int nf = 0;
++			if (!strstr(entry, "MAINFH")) continue;
++			if (!(e2 = strdup(entry))) continue;
++			for (tok = strtok_r(e2, ">", &save2); tok && nf < 8; tok = strtok_r(NULL, ">", &save2))
++				fields[nf++] = tok;
++			if (nf > 5) {
++				char key[32], skey[40], auth[48] = "";
++				const char *ssid, *sec, *lt;
++				snprintf(key, sizeof(key), "apm%s_ssid", fields[5]);
++				snprintf(skey, sizeof(skey), "apm%s_security", fields[5]);
++				ssid = nvram_safe_get(key);
++				sec = nvram_safe_get(skey);
++				/* apm<idx>_security = "...<...>AUTH>...>PSK>..." : take the field
++				 * at index 1 after the first '<' as the auth mode; never index 3. */
++				if ((lt = strchr(sec, '<')) != NULL) {
++					char *sd = strdup(lt + 1), *st, *sv;
++					int si = 0;
++					if (sd) {
++						for (st = strtok_r(sd, ">", &sv); st; st = strtok_r(NULL, ">", &sv)) {
++							if (si == 1) { snprintf(auth, sizeof(auth), "%s", st); break; }
++							si++;
++						}
++						free(sd);
++					}
++				}
++				if (nn++) sb_puts(s, ",");
++				sb_puts(s, "{\"ssid\":");
++				sb_json_str(s, ssid);
++				sb_puts(s, ",\"auth\":");
++				sb_json_str(s, auth);
++				sb_puts(s, "}");
++			}
++			free(e2);
++		}
++		free(rl);
++	}
++	sb_puts(s, "]}");
++	/* PSKs intentionally absent - only SSID + security MODE. */
+ }
+ 
+ static void tool_clients(sbuf_t *s)
+@@ -474,7 +528,7 @@ static int run_tool(const char *name, struct json_object *args, sbuf_t *out)
+ static const char *TOOLS_CATALOG =
+ "["
+ "{\"name\":\"get_overview\",\"description\":\"Router model, firmware, uptime, load, memory.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+-"{\"name\":\"get_wireless_status\",\"description\":\"Per-radio SSID, security MODE (never the PSK), channel, width.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_wireless_status\",\"description\":\"Per-radio security mode + the network SSIDs (friendly names from SDN); never the PSK.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_clients\",\"description\":\"Connected clients from ARP and DHCP leases.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_qos\",\"description\":\"QoS engine, type, and bandwidth configuration.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_traffic\",\"description\":\"Traffic Analyzer snapshot for a window.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"string\",\"enum\":[\"live\",\"m5\",\"hour\",\"day\",\"month\"]}}}},"
+@@ -488,29 +542,29 @@ static const char *TOOLS_CATALOG =
+ /* HTTP + JSON-RPC                                                     */
+ /* ------------------------------------------------------------------ */
+ 
+-static void http_send(int fd, int code, const char *status, const char *body, size_t blen)
++/* All response I/O goes through a FILE* so the same code serves plain sockets
++ * (fdopen) and TLS (mssl ssl_server_fopen), transparently. */
++static void http_send(FILE *fp, int code, const char *status, const char *body, size_t blen)
+ {
+-	char hdr[256];
+-	int n = snprintf(hdr, sizeof(hdr),
++	fprintf(fp,
+ 		"HTTP/1.1 %d %s\r\n"
+ 		"Content-Type: application/json\r\n"
+ 		"Content-Length: %zu\r\n"
+ 		"Connection: close\r\n"
+ 		"\r\n", code, status, blen);
+-	if (n > 0) write(fd, hdr, n);
+-	if (body && blen) write(fd, body, blen);
++	if (body && blen) fwrite(body, 1, blen, fp);
++	fflush(fp);
+ }
+ 
+-static void http_error(int fd, int code, const char *status, const char *msg)
++static void http_error(FILE *fp, int code, const char *status, const char *msg)
+ {
+-	char body[256];
+-	int n = snprintf(body, sizeof(body), "{\"error\":%s}", "\"err\"");
++	const char *b = "{\"error\":\"err\"}";
+ 	(void)msg;
+-	http_send(fd, code, status, body, n > 0 ? (size_t)n : 0);
++	http_send(fp, code, status, b, strlen(b));
+ }
+ 
+ /* Build a JSON-RPC result envelope wrapping a tools/call text content. */
+-static void send_rpc_result_raw(int fd, struct json_object *id, const char *raw_json_result)
++static void send_rpc_result_raw(FILE *fp, struct json_object *id, const char *raw_json_result)
+ {
+ 	sbuf_t o;
+ 	sb_init(&o);
+@@ -519,11 +573,11 @@ static void send_rpc_result_raw(int fd, struct json_object *id, const char *raw_
+ 	sb_puts(&o, ",\"result\":");
+ 	sb_puts(&o, raw_json_result);
+ 	sb_puts(&o, "}");
+-	http_send(fd, 200, "OK", o.p ? o.p : "{}", o.len);
++	http_send(fp, 200, "OK", o.p ? o.p : "{}", o.len);
+ 	sb_free(&o);
+ }
+ 
+-static void send_rpc_error(int fd, struct json_object *id, int code, const char *message)
++static void send_rpc_error(FILE *fp, struct json_object *id, int code, const char *message)
+ {
+ 	sbuf_t o;
+ 	sb_init(&o);
+@@ -532,17 +586,17 @@ static void send_rpc_error(int fd, struct json_object *id, int code, const char
+ 	sb_printf(&o, ",\"error\":{\"code\":%d,\"message\":", code);
+ 	sb_json_str(&o, message);
+ 	sb_puts(&o, "}}");
+-	http_send(fd, 200, "OK", o.p ? o.p : "{}", o.len);
++	http_send(fp, 200, "OK", o.p ? o.p : "{}", o.len);
+ 	sb_free(&o);
+ }
+ 
+-static void handle_rpc(int fd, const char *body)
++static void handle_rpc(FILE *fp, const char *body)
+ {
+ 	struct json_object *root, *jid = NULL, *jmethod = NULL, *jparams = NULL;
+ 	const char *method;
+ 
+ 	root = json_tokener_parse(body);
+-	if (!root) { http_error(fd, 400, "Bad Request", "parse"); return; }
++	if (!root) { http_error(fp, 400, "Bad Request", "parse"); return; }
+ 
+ 	json_object_object_get_ex(root, "id", &jid);
+ 	json_object_object_get_ex(root, "method", &jmethod);
+@@ -556,26 +610,26 @@ static void handle_rpc(int fd, const char *body)
+ 			"\"serverInfo\":{\"name\":\"reaper-advisor\",\"version\":\"1.0\"},"
+ 			"\"instructions\":\"Read-only Reaper router advisor. All tools are read-only; "
+ 			"recommend changes for the human to apply. Secrets are never exposed.\"}");
+-		send_rpc_result_raw(fd, jid, r.p ? r.p : "{}");
++		send_rpc_result_raw(fp, jid, r.p ? r.p : "{}");
+ 		sb_free(&r);
+ 	} else if (!strcmp(method, "ping")) {
+-		send_rpc_result_raw(fd, jid, "{}");
++		send_rpc_result_raw(fp, jid, "{}");
+ 	} else if (!strncmp(method, "notifications/", 14)) {
+ 		/* JSON-RPC notification - no id, no response body expected */
+-		http_send(fd, 202, "Accepted", "", 0);
++		http_send(fp, 202, "Accepted", "", 0);
+ 	} else if (!strcmp(method, "tools/list")) {
+ 		sbuf_t r; sb_init(&r);
+ 		sb_puts(&r, "{\"tools\":");
+ 		sb_puts(&r, TOOLS_CATALOG);
+ 		sb_puts(&r, "}");
+-		send_rpc_result_raw(fd, jid, r.p ? r.p : "{}");
++		send_rpc_result_raw(fp, jid, r.p ? r.p : "{}");
+ 		sb_free(&r);
+ 	} else if (!strcmp(method, "tools/call")) {
+ 		struct json_object *jname = NULL, *jargs = NULL;
+ 		const char *tname;
+ 		sbuf_t tout, r;
+ 		if (!jparams || !json_object_object_get_ex(jparams, "name", &jname)) {
+-			send_rpc_error(fd, jid, -32602, "missing tool name");
++			send_rpc_error(fp, jid, -32602, "missing tool name");
+ 			json_object_put(root);
+ 			return;
+ 		}
+@@ -583,7 +637,7 @@ static void handle_rpc(int fd, const char *body)
+ 		tname = json_object_get_string(jname);
+ 		sb_init(&tout);
+ 		if (run_tool(tname, jargs, &tout) != 0) {
+-			send_rpc_error(fd, jid, -32601, "unknown tool");
++			send_rpc_error(fp, jid, -32601, "unknown tool");
+ 			sb_free(&tout);
+ 			json_object_put(root);
+ 			return;
+@@ -595,27 +649,24 @@ static void handle_rpc(int fd, const char *body)
+ 		sb_puts(&r, "{\"content\":[{\"type\":\"text\",\"text\":");
+ 		sb_json_str(&r, tout.p ? tout.p : "");
+ 		sb_puts(&r, "}],\"isError\":false}");
+-		send_rpc_result_raw(fd, jid, r.p ? r.p : "{}");
++		send_rpc_result_raw(fp, jid, r.p ? r.p : "{}");
+ 		sb_free(&r);
+ 		sb_free(&tout);
+ 	} else {
+-		send_rpc_error(fd, jid, -32601, "method not found");
++		send_rpc_error(fp, jid, -32601, "method not found");
+ 	}
+ 	json_object_put(root);
+ }
+ 
+-/* returns 1 if the request carried the correct Bearer token */
+-static int check_auth(const char *headers)
++/* returns 1 if the Authorization header value carries the correct Bearer token */
++static int check_auth_value(const char *val)
+ {
+-	const char *h = strcasestr(headers, "\nauthorization:");
+ 	const char *b;
+ 	char got[128];
+ 	size_t i = 0;
+-	if (!h) return 0;
+-	h += 15;
+-	while (*h == ' ' || *h == '\t') h++;
+-	if (strncasecmp(h, "bearer ", 7)) return 0;
+-	b = h + 7;
++	while (*val == ' ' || *val == '\t') val++;
++	if (strncasecmp(val, "bearer ", 7)) return 0;
++	b = val + 7;
+ 	while (*b && *b != '\r' && *b != '\n' && i < sizeof(got) - 1)
+ 		got[i++] = *b++;
+ 	got[i] = 0;
+@@ -626,56 +677,59 @@ static int check_auth(const char *headers)
+ 
+ static void serve_conn(int fd)
+ {
+-	char *req = malloc(REQ_MAX + 1);
+-	size_t total = 0;
+-	ssize_t n;
+-	char *hdr_end, *body;
++	FILE *fp;
++	char line[2048];
++	int is_post_mcp = 0, authed = 0;
+ 	long clen = 0;
+-	const char *cl;
+-
+-	if (!req) { close(fd); return; }
+-
+-	/* read headers (and whatever body arrives with them) */
+-	while (total < REQ_MAX) {
+-		n = read(fd, req + total, REQ_MAX - total);
+-		if (n <= 0) break;
+-		total += n;
+-		req[total] = 0;
+-		if (strstr(req, "\r\n\r\n")) {
+-			/* have full header block; check if we still need more body */
+-			hdr_end = strstr(req, "\r\n\r\n");
+-			cl = strcasestr(req, "\ncontent-length:");
+-			if (cl) clen = strtol(cl + 16, NULL, 10);
+-			if (clen < 0) clen = 0;
+-			if ((size_t)((hdr_end + 4) - req) + (size_t)clen <= total)
+-				break;
+-		}
++	char *body = NULL;
++	size_t got;
++
++	/* wrap the accepted socket: TLS via the router's cert, or plain HTTP -
++	 * exactly as httpd does (ssl_server_fopen / fdopen "r+", read then write). */
++	fp = g_https ? ssl_server_fopen(fd) : fdopen(fd, "r+");
++	if (!fp) { close(fd); return; }
++
++	/* request line */
++	if (!fgets(line, sizeof(line), fp)) goto done;
++	if (!strncmp(line, "POST ", 5) && strstr(line, "/mcp"))
++		is_post_mcp = 1;
++
++	/* headers, until the blank line */
++	while (fgets(line, sizeof(line), fp)) {
++		if (line[0] == '\r' || line[0] == '\n') break;
++		if (!strncasecmp(line, "content-length:", 15))
++			clen = strtol(line + 15, NULL, 10);
++		else if (!strncasecmp(line, "authorization:", 14))
++			authed = check_auth_value(line + 14);
+ 	}
+-	req[total] = 0;
++	if (clen < 0) clen = 0;
++	if (clen > REQ_MAX) clen = REQ_MAX;
+ 
+-	hdr_end = strstr(req, "\r\n\r\n");
+-	if (!hdr_end) { http_error(fd, 400, "Bad Request", "hdr"); free(req); close(fd); return; }
++	if (!is_post_mcp) { http_error(fp, 404, "Not Found", "path"); goto done; }
+ 
+-	/* method + path: only POST /mcp is served */
+-	if (strncmp(req, "POST ", 5) || !strstr(req, " /mcp")) {
+-		http_error(fd, 404, "Not Found", "path");
+-		free(req); close(fd); return;
+-	}
+-
+-	if (!check_auth(req)) {
++	if (!authed) {
+ 		if (++g_badauth >= MAX_BADAUTH) {
+ 			syslog(LOG_CRIT, "rmcpd: %d bad tokens - self-terminating", g_badauth);
+ 			g_stop = 1;
+ 		}
+-		http_error(fd, 401, "Unauthorized", "auth");
+-		free(req); close(fd); return;
++		http_error(fp, 401, "Unauthorized", "auth");
++		goto done;
+ 	}
+ 	g_badauth = 0;
+ 
+-	body = hdr_end + 4;
+-	handle_rpc(fd, body);
+-	free(req);
+-	close(fd);
++	/* body (exactly Content-Length bytes) */
++	body = malloc((size_t)clen + 1);
++	if (!body) { http_error(fp, 500, "Internal Server Error", "mem"); goto done; }
++	got = clen ? fread(body, 1, (size_t)clen, fp) : 0;
++	body[got] = 0;
++	handle_rpc(fp, body);
++
++done:
++	free(body);
++	fclose(fp);
++	/* mssl_close() frees the SSL object but does NOT close the socket; fdopen's
++	 * fclose() already did. So close the fd ourselves only in the TLS case. */
++	if (g_https) close(fd);
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -709,6 +763,18 @@ int main(int argc, char **argv)
+ 		if (p >= 1024 && p <= 65535) g_port = p;
+ 	}
+ 
++	/* Reuse the ROUTER'S OWN httpd TLS cert if one is loaded - same files
++	 * (/etc/cert.pem, /etc/key.pem) and same mssl path httpd uses, NOT a
++	 * separate cert. No cert on the router -> plain HTTP. */
++	if (access(HTTPD_CERT, R_OK) == 0 && access(HTTPD_KEY, R_OK) == 0 &&
++	    mssl_cert_key_match(HTTPD_CERT, HTTPD_KEY) &&
++	    mssl_init(HTTPD_CERT, HTTPD_KEY)) {
++		g_https = 1;
++		syslog(LOG_NOTICE, "rmcpd: TLS enabled using the router httpd cert (%s)", HTTPD_CERT);
++	} else {
++		syslog(LOG_NOTICE, "rmcpd: no router TLS cert loaded - serving plain HTTP");
++	}
++
+ 	signal(SIGTERM, on_signal);
+ 	signal(SIGINT,  on_signal);
+ 	signal(SIGPIPE, SIG_IGN);
+@@ -741,8 +807,8 @@ int main(int argc, char **argv)
+ 	g_added_rule = 1;
+ 	atexit(cleanup);
+ 
+-	syslog(LOG_NOTICE, "rmcpd: armed, read-only advisor on %s:%d, session ends in %ld min",
+-		g_lan_ip, g_port, (long)((g_expiry - time(NULL)) / 60));
++	syslog(LOG_NOTICE, "rmcpd: armed, read-only advisor on %s://%s:%d, session ends in %ld min",
++		g_https ? "https" : "http", g_lan_ip, g_port, (long)((g_expiry - time(NULL)) / 60));
+ 
+ 	while (!g_stop) {
+ 		fd_set rf;
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index 2ecf039fac..1e995fe3b0 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -162,8 +162,11 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+     <pre class="snip" id="snip">&mdash;</pre>
+     <button class="btn" onclick="copySnip()">Copy snippet</button>
+     <div class="note" style="margin-top:10px;color:var(--steel)">
+-      Point your AI client at the endpoint with this token. Some clients need the
+-      <span class="mono">mcp-remote</span> bridge for plain HTTP MCP servers.
++      Point your AI client at the endpoint with this token. The connection uses
++      <b>the router's own TLS certificate</b> (<span class="mono">https</span>) when one is
++      loaded, otherwise plain <span class="mono">http</span> &mdash; the snippet above already has the
++      right scheme. If the router's cert is self-signed, your client may need to trust it (or
++      use the <span class="mono">mcp-remote</span> bridge).
+     </div>
+   </div>
+ </div>
+-- 
+2.25.1
+

@@ -1,7 +1,7 @@
 # RT-BE96U "Reaper" — Release Notes
 
-**Release:** v1.4.1 (release candidate — pending final on-hardware validation)
-**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.4.1`
+**Release:** v1.4.2 (release candidate — pending final on-hardware validation)
+**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.4.2`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
 **Model:** ASUS RT-BE96U **only** (WiFi 7, Broadcom BCM4916/BCM6813)
 **Flash images:** two variants — **with** or **without** the AI Advisor (see §2)
@@ -37,8 +37,8 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BE96U_…_Reaper_v1.4.1_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.4.1_MCP_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BE96U_…_Reaper_v1.4.2_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.4.2_MCP_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
@@ -46,8 +46,8 @@ identical. Pick whichever you prefer; the AI Advisor is opt-in even in the varia
 that includes it.
 
 > Naming note for maintainers: the current build artifacts are named
-> `…_Reaper_v1.4.1_nand_squashfs.pkgtb` (with the Advisor) and
-> `…_Reaper_v1.4.1_noMCP_…` (without). At release these are re-stamped to the
+> `…_Reaper_v1.4.2_nand_squashfs.pkgtb` (with the Advisor) and
+> `…_Reaper_v1.4.2_noMCP_…` (without). At release these are re-stamped to the
 > convention above (plain = Standard, `_MCP` = with Advisor). Hashes in §8 are
 > re-stamped for the final release build.
 
@@ -70,11 +70,17 @@ It is deliberately fenced to fit the threat model:
 - **LAN-only.** Binds the router's LAN address; never reachable from the internet.
 - **Second factor.** Arming needs the admin session **and** an out-of-band **arming
   code** (stored only as a salted hash — the code lives off the router). Optionally,
-  a **USB physical key** (v1.4.1): when enrolled, arming also needs the stick, and
+  a **USB physical key** (v1.4.2): when enrolled, arming also needs the stick, and
   pulling it locks the advisor within ~1 second.
 - **Secrets never leave** and **no API key is stored on the router.** Wi-Fi
   passwords, admin credentials, and keys are redacted; the router itself sends
-  nothing to any cloud.
+  nothing to any cloud. Network names are shown as your real SSIDs (from the SDN
+  profiles), security mode only — never the PSK.
+- **Encrypted with the router's own certificate (v1.4.2).** When the router has a web
+  (httpd) certificate loaded, the advisor serves **HTTPS using that same certificate**
+  — the one your router's web UI uses, **not** a separate cert — and the arming page
+  hands you an `https://` URL. If the router has no certificate loaded, it serves plain
+  HTTP. (A self-signed router certificate may need to be trusted by your AI client.)
 
 The advisor self-terminates on a session timeout, on disable, or on repeated auth
 failure.
@@ -218,11 +224,11 @@ Release-candidate build hashes (SHA-256):
 
 | Artifact | SHA-256 |
 |---|---|
-| `RT-BE96U_3006_102.8_Reaper_v1.4.1_MCP_nand_squashfs.pkgtb` (with Advisor, flash this) | `767656b6fe698a7035e59dae3895f01ba7c9ce358e8404997d84a8fb9c4cd44e` |
-| `RT-BE96U_3006_102.8_Reaper_v1.4.1_nand_squashfs.pkgtb` (Standard, flash this) | `b140523a277cdc208d8c22c46776aeadaaa4b6daaaf519bec2210fcaca33fa3e` |
+| `RT-BE96U_3006_102.8_Reaper_v1.4.2_MCP_nand_squashfs.pkgtb` (with Advisor, flash this) | `0e96f7378eb0da8da10c6e2ae2cdd4e099e84fafc9a073bd600e638e685709d0` |
+| `RT-BE96U_3006_102.8_Reaper_v1.4.2_nand_squashfs.pkgtb` (Standard, flash this) | `3073c09091b973190d9defdb95974e46deff5ddb4e859997d00e4df3b41096a1` |
 
 > Hashes above are the current build-candidate images (currently named
-> `…_Reaper_v1.4.1` for the Advisor build and `…_Reaper_v1.4.1_noMCP` for Standard).
+> `…_Reaper_v1.4.2` for the Advisor build and `…_Reaper_v1.4.2_noMCP` for Standard).
 > They are re-stamped for the final release build once the version is finalized.
 
 **Validation status.** Everything through **v1.3.3** is validated on the physical
@@ -231,7 +237,7 @@ Hardware QoS engines (v1 global, Classful, v3, v4) end-to-end on metal, the Traf
 Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **v1.4.x AI
 Advisor** is feature-complete and build-verified; its on-hardware validation (arming,
 LAN-only bind, token auth, secret redaction, timeout/USB-key teardown) is **in
-progress** and is the gating item for the final v1.4.1 release.
+progress** and is the gating item for the final v1.4.2 release.
 
 ---
 

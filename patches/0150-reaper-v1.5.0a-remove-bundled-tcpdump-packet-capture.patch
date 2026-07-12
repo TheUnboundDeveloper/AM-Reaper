@@ -1,0 +1,571 @@
+From 70609e7452e3223de4ca034439cafb55961c93e9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 12 Jul 2026 19:36:55 -0400
+Subject: [PATCH] reaper v1.5.0a: remove bundled tcpdump packet-capture; harden
+ AI Advisor diagnostics
+
+- Remove the Network Tools "Packet Capture" page and the bundled tcpdump build
+  (RTCONFIG_TCPDUMP off): drops a large legacy dependency and its attack surface.
+  Users who need packet capture can install tcpdump via Entware.
+- AI Advisor network-diagnostics hardening (rmcpd): stricter probe-target
+  validation (block IPv6 loopback/link-local/ULA and extra reserved IPv4 ranges),
+  reject option-shaped DNS names, validate the LAN interface name before use,
+  and clean up the single-flight diagnostic lock.
+- reaper_mcp.cgi: require the router http_id token on state-changing actions
+  (CSRF hardening).
+- rtrafd: JSON-escape emitted string fields; clamp the monthly-quota math.
+
+Both variants (MCP + noMCP).
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/config_base                |   2 +-
+ release/src/router/httpd/web.c                |  94 ++---------
+ release/src/router/rc/init.c                  |   3 -
+ release/src/router/rmcpd/rmcpd.c              |  36 +++-
+ release/src/router/rtrafd/rtrafd.c            |  29 +++-
+ .../router/www/Main_PacketCapture_Content.asp | 158 ------------------
+ release/src/router/www/Reaper_Advisor.asp     |   3 +-
+ .../router/www/require/menuTrees/menuTree.js  |   1 -
+ 9 files changed, 74 insertions(+), 254 deletions(-)
+ delete mode 100644 release/src/router/www/Main_PacketCapture_Content.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index a8d47a7386..db9318c425 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.5.0
++EXTENDNO=Reaper_v1.5.0a
+ 
+ RCNO=0
+diff --git a/release/src/router/config_base b/release/src/router/config_base
+index 69e34cc039..d8ebbe3acf 100644
+--- a/release/src/router/config_base
++++ b/release/src/router/config_base
+@@ -326,7 +326,7 @@ RTCONFIG_WPS=y
+ # RTCONFIG_DNSQUERY_INTERCEPT is not set
+ # RTCONFIG_ROUTERBOOST is not set
+ # RTCONFIG_ASUSCTRL is not set
+-RTCONFIG_TCPDUMP=y
++# RTCONFIG_TCPDUMP is not set
+ # RTCONFIG_DUMP4000 is not set
+ # RTCONFIG_TRACEROUTE is not set
+ # RTCONFIG_NETOOL is not set
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 8a6cae56cb..14553c06ac 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21849,6 +21849,18 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 
+ 	if (!action) action = "status";
+ 
++	/* F4 CSRF guard: state-changing actions must carry the router's http_id
++	 * token (a per-router secret embedded in served pages; a cross-origin page
++	 * cannot read it via SOP, so cannot forge this). 'status' is read-only. */
++	if (strcmp(action, "status") != 0) {
++		char *hid = get_cgi("http_id");
++		char *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\"}");
++			return;
++		}
++	}
++
+ 	if (!strcmp(action, "status")) {
+ 		int armed = f_exists(RMCP_SESSION);
+ 		long expiry = 0;
+@@ -22119,85 +22131,6 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ }
+ #endif	/* RTCONFIG_REAPER_MCP */
+ 
+-#ifdef RTCONFIG_TCPDUMP
+-/* Reaper v1.5.0 Packet Capture (Network Tools page). Bounded, admin-authed
+- * tcpdump run via _eval - argv-based (NEVER a shell), alarm()-timeout, packet
+- * count cap, one-shot. Deliberately does NOT reuse the stock SystemCmd path
+- * (its char-whitelist rejects BPF-filter characters and it is unbounded).
+- * Returns decoded text as the response body (the page shows it in a textarea). */
+-#define PCAP_OUT "/tmp/reaper_pcap.txt"
+-static void
+-do_reaper_pcap_cgi(char *url, FILE *stream)
+-{
+-	char *iface  = get_cgi("iface");
+-	char *scount = get_cgi("count");
+-	char *sdur   = get_cgi("dur");
+-	char *ssnap  = get_cgi("snap");
+-	char *filter = get_cgi("filter");
+-	char cbuf[8], nbuf[8];
+-	static char fbuf[160];
+-	int count, dur, snap, ac = 0;
+-	char *argv[24];
+-	FILE *f;
+-	char line[1024];
+-	size_t total = 0;
+-
+-	/* interface must be a REAL interface - blocks arbitrary/injected strings */
+-	if (!iface || !*iface || strlen(iface) > 16 || if_nametoindex(iface) == 0) {
+-		websWrite(stream, "error: invalid interface");
+-		return;
+-	}
+-	count = scount ? atoi(scount) : 0; if (count < 1) count = 20;  if (count > 2000) count = 2000;
+-	dur   = sdur   ? atoi(sdur)   : 0; if (dur < 1)   dur = 5;     if (dur > 15)   dur = 15;
+-	snap  = ssnap  ? atoi(ssnap)  : 0; if (snap < 64) snap = 256;  if (snap > 2048) snap = 2048;
+-	snprintf(cbuf, sizeof(cbuf), "%d", count);
+-	snprintf(nbuf, sizeof(nbuf), "%d", snap);
+-
+-	argv[ac++] = "/usr/sbin/tcpdump";
+-	argv[ac++] = "-i";    argv[ac++] = iface;
+-	argv[ac++] = "-c";    argv[ac++] = cbuf;
+-	argv[ac++] = "-s";    argv[ac++] = nbuf;
+-	argv[ac++] = "-n";
+-	argv[ac++] = "-tttt";
+-	/* optional BPF filter: strict char allow-list, then split into argv tokens
+-	 * (each token a separate argv element - no shell, no injection surface) */
+-	if (filter && *filter) {
+-		int ok = 1; size_t k, fn = strlen(filter);
+-		if (fn > 128) ok = 0;
+-		for (k = 0; ok && k < fn; k++) {
+-			char c = filter[k];
+-			if (!(isalnum((unsigned char)c) || c==' ' || c=='.' || c==':' ||
+-			      c=='/' || c=='(' || c==')' || c=='-' || c=='_'))
+-				ok = 0;
+-		}
+-		if (!ok) {
+-			websWrite(stream, "error: invalid filter (allowed: letters digits space . : / ( ) - _)");
+-			return;
+-		}
+-		snprintf(fbuf, sizeof(fbuf), "%s", filter);
+-		{
+-			char *p = fbuf, *tok;
+-			while ((tok = strsep(&p, " ")) != NULL && ac < 22)
+-				if (*tok) argv[ac++] = tok;
+-		}
+-	}
+-	argv[ac] = NULL;
+-
+-	unlink(PCAP_OUT);
+-	_eval(argv, ">" PCAP_OUT, dur, NULL);	/* bounded: -c count AND alarm(dur) */
+-
+-	f = fopen(PCAP_OUT, "r");
+-	if (!f) { websWrite(stream, "(no output - interface idle or capture failed)"); return; }
+-	while (fgets(line, sizeof(line), f) && total < 64 * 1024) {
+-		websWrite(stream, "%s", line);
+-		total += strlen(line);
+-	}
+-	fclose(f);
+-	unlink(PCAP_OUT);
+-	if (total == 0)
+-		websWrite(stream, "(no packets matched in %d s on %s)", dur, iface);
+-}
+-#endif	/* RTCONFIG_TCPDUMP */
+ 
+ static void
+ do_unreg_ASUSDDNS_cgi(char *url, FILE *stream)
+@@ -29282,9 +29215,6 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
+ #ifdef RTCONFIG_REAPER_MCP
+ 	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
+-#endif
+-#ifdef RTCONFIG_TCPDUMP
+-	{ "reaper_pcap.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_pcap_cgi, do_auth },
+ #endif
+ 	{ "set_ASUS_NEW_EULA.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_NEW_EULA_cgi, do_auth },
+ 	{ "set_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_privacy_policy_cgi, do_auth },
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 42658da097..f2653e43de 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -24014,9 +24014,6 @@ NO_USB_CAP:
+ #ifdef RTCONFIG_REAPER_MCP
+ 	add_rc_support("reaper_mcp");
+ #endif
+-#ifdef RTCONFIG_TCPDUMP
+-	add_rc_support("tcpdump");
+-#endif
+ 
+ #ifdef RTCONFIG_PROXYSTA
+ 	add_rc_support("proxysta");
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index 47c54a3379..873d5ecc72 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -91,7 +91,13 @@ static int   g_diag = 0;		/* per-session consent for the active-diagnostics tier
+ static const char *lan_ifname(void)
+ {
+ 	char *lif = nvram_safe_get("lan_ifname");
+-	return (lif && *lif) ? lif : "br0";
++	const char *c;
++	if (!lif || !*lif) return "br0";
++	/* only a plausible interface name may reach the iptables shell string (F7) */
++	for (c = lif; *c; c++)
++		if (!(isalnum((unsigned char)*c) || *c == '.' || *c == '_' || *c == '-' || *c == ':'))
++			return "br0";
++	return lif;
+ }
+ 
+ /* Insert / remove the single LAN-only accept rule. We shell out to the same
+@@ -120,6 +126,8 @@ static void cleanup(void)
+ 		g_added_rule = 0;
+ 	}
+ 	unlink(SESSION_FILE);
++	unlink(DIAG_LOCK);	/* F9: don't leave a stale single-flight lock */
++	unlink(DIAG_OUT);
+ }
+ 
+ static void on_signal(int sig)
+@@ -533,7 +541,10 @@ static int diag_target_allowed_v4(struct in_addr a)
+ 		   ((ip & 0xFFF00000UL) == 0xAC100000UL) /* 172.16/12 */ ||
+ 		   ((ip & 0xFFFF0000UL) == 0xC0A80000UL) /* 192.168/16 */ ||
+ 		   ((ip >> 24) == 127) /* loopback */ ||
+-		   ((ip & 0xFFFF0000UL) == 0xA9FE0000UL) /* 169.254/16 */;
++		   ((ip & 0xFFFF0000UL) == 0xA9FE0000UL) /* 169.254/16 */ ||
++		   ((ip >> 24) == 0) /* 0.0.0.0/8 (F8) */ ||
++		   ((ip & 0xFFC00000UL) == 0x64400000UL) /* 100.64/10 CGNAT (F8) */ ||
++		   ((ip >> 28) >= 0xE) /* 224/4 multicast + 240/4 reserved (F8) */;
+ 	struct in_addr lan, mask;
+ 	if (!priv)
+ 		return 1;
+@@ -543,6 +554,24 @@ static int diag_target_allowed_v4(struct in_addr a)
+ 	return 0;
+ }
+ 
++/* IPv6 counterpart of diag_target_allowed_v4 (F3): refuse loopback (::1),
++ * link/site-local, ULA (fc00::/7), unspecified and multicast; apply the v4
++ * policy to a v4-mapped address; allow global unicast. */
++static int diag_target_allowed_v6(const struct in6_addr *a)
++{
++	const unsigned char *b = a->s6_addr;
++	if (IN6_IS_ADDR_LOOPBACK(a) || IN6_IS_ADDR_UNSPECIFIED(a)) return 0;
++	if (IN6_IS_ADDR_LINKLOCAL(a) || IN6_IS_ADDR_SITELOCAL(a)) return 0;
++	if (IN6_IS_ADDR_MULTICAST(a)) return 0;
++	if ((b[0] & 0xFE) == 0xFC) return 0;			/* fc00::/7 ULA */
++	if (IN6_IS_ADDR_V4MAPPED(a)) {
++		struct in_addr v4;
++		memcpy(&v4, b + 12, 4);
++		return diag_target_allowed_v4(v4);
++	}
++	return 1;						/* global unicast */
++}
++
+ /* Validate + resolve a probe target to the numeric address we hand the tool.
+  * FQDNs are resolved FIRST and the resolved IPv4 is guarded, so a name that
+  * maps into internal space is rejected. IPv6 literals pass through. 1 = ok. */
+@@ -562,6 +591,7 @@ static int resolve_and_guard(const char *host, char *ipout, size_t iplen)
+ 		return 1;
+ 	}
+ 	if (inet_pton(AF_INET6, host, &a6) == 1) {
++		if (!diag_target_allowed_v6(&a6)) return 0;	/* F3 */
+ 		snprintf(ipout, iplen, "%s", host);
+ 		return 1;
+ 	}
+@@ -594,6 +624,7 @@ static int resolve_and_guard(const char *host, char *ipout, size_t iplen)
+ 	for (p = res; p && !ok; p = p->ai_next) {
+ 		if (p->ai_family == AF_INET6) {
+ 			struct sockaddr_in6 *si6 = (struct sockaddr_in6 *)p->ai_addr;
++			if (!diag_target_allowed_v6(&si6->sin6_addr)) continue;	/* F3 */
+ 			inet_ntop(AF_INET6, &si6->sin6_addr, ipout, iplen);
+ 			ok = 1;
+ 		}
+@@ -664,6 +695,7 @@ static void tool_net_dns_lookup(struct json_object *args, sbuf_t *out)
+ 	char *argv[] = { "nslookup", NULL, NULL };
+ 	size_t i, n = name ? strlen(name) : 0;
+ 	if (n == 0 || n > 253) { sb_puts(out, "error: missing or oversized 'host'"); return; }
++	if (name[0] == '-') { sb_puts(out, "error: invalid 'host' (leading '-')"); return; }	/* F6 */
+ 	/* a DNS query, not a network probe of the target - just sanitize charset */
+ 	for (i = 0; i < n; i++) {
+ 		char c = name[i];
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 6d3db13694..3131b21216 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -671,6 +671,7 @@ static void check_quota(void)
+ {
+ 	uint64_t cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
+ 	uint64_t used;
++	if (cap_gb > 1000000ULL) cap_gb = 1000000ULL;	/* F14: avoid u64 overflow below */
+ 	struct tm tm;
+ 	time_t t = time(NULL);
+ 	localtime_r(&t, &tm);
+@@ -687,6 +688,22 @@ static void check_quota(void)
+ }
+ 
+ /* ---------- JSON output ---------- */
++/* F11: minimal JSON string escaper (sources are already constrained charsets -
++ * bridge names, hex MACs, dotted IPs - so this is defense-in-depth). */
++static const char *jesc(const char *s, char *dst, size_t dn)
++{
++	size_t j = 0;
++	if (!s) s = "";
++	for (; *s && j + 7 < dn; s++) {
++		unsigned char c = (unsigned char)*s;
++		if (c == '"' || c == '\\') { dst[j++] = '\\'; dst[j++] = (char)c; }
++		else if (c < 0x20) { j += snprintf(dst + j, dn - j, "\\u%04x", c); }
++		else dst[j++] = (char)c;
++	}
++	dst[j] = 0;
++	return dst;
++}
++
+ static void json_ring(FILE *o, ring_t *r, int which)
+ {
+ 	cnt_t *a = which == 0 ? r->b5 : which == 1 ? r->bh : which == 2 ? r->bd : r->bm;
+@@ -705,6 +722,7 @@ static void json_ring(FILE *o, ring_t *r, int which)
+ static void write_hist(int which, const char *fn, int step)
+ {
+ 	char tmp[64], path[64];
++	char eb[80], eb2[80];	/* F11 escape scratch */
+ 	FILE *o;
+ 	int i;
+ 	snprintf(tmp, sizeof(tmp), "/tmp/rtraf/.%s", fn);
+@@ -714,7 +732,7 @@ static void write_hist(int which, const char *fn, int step)
+ 	json_ring(o, r_wan, which);
+ 	fprintf(o, ",\"nets\":{");
+ 	for (i = 0; i < nnet; i++) {
+-		fprintf(o, "%s\"%s\":", i ? "," : "", netname[i]);
++		fprintf(o, "%s\"%s\":", i ? "," : "", jesc(netname[i], eb, sizeof(eb)));
+ 		json_ring(o, r_net[i], which);
+ 	}
+ 	fprintf(o, "},\"class\":{");
+@@ -727,7 +745,7 @@ static void write_hist(int which, const char *fn, int step)
+ 		int first = 1;
+ 		for (i = 0; i < NCLI; i++) {
+ 			if (!cli[i].used) continue;
+-			fprintf(o, "%s\"%s\":{\"ip\":\"%s\",\"d\":", first ? "" : ",", cli[i].key, cli[i].ip);
++			fprintf(o, "%s\"%s\":{\"ip\":\"%s\",\"d\":", first ? "" : ",", jesc(cli[i].key, eb, sizeof(eb)), jesc(cli[i].ip, eb2, sizeof(eb2)));
+ 			json_ring(o, r_cli[i], which);
+ 			fputc('}', o);
+ 			first = 0;
+@@ -746,6 +764,7 @@ static void write_hist(int which, const char *fn, int step)
+ static void write_live(const char *store)
+ {
+ 	FILE *o = fopen("/tmp/rtraf/.live.json", "w");
++	char eb[80], eb2[80];	/* F11 escape scratch */
+ 	int i, first;
+ 	uint64_t cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
+ 	int qos_on = (nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11);
+@@ -762,7 +781,7 @@ static void write_live(const char *store)
+ 	/* live per-network rate (bps) */
+ 	fprintf(o, ",\"net\":{");
+ 	for (i = 0; i < nnet; i++)
+-		fprintf(o, "%s\"%s\":[%llu,%llu]", i ? "," : "", netname[i],
++		fprintf(o, "%s\"%s\":[%llu,%llu]", i ? "," : "", jesc(netname[i], eb, sizeof(eb)),
+ 			(unsigned long long)lv_net_rx[i], (unsigned long long)lv_net_tx[i]);
+ 	fprintf(o, "}");
+ 	/* live per-device rate (bps); skip idle devices */
+@@ -771,7 +790,7 @@ static void write_live(const char *store)
+ 	for (i = 0; i < NCLI; i++) {
+ 		if (!cli[i].used || (lv_cli_rx[i] == 0 && lv_cli_tx[i] == 0)) continue;
+ 		fprintf(o, "%s{\"ip\":\"%s\",\"dn\":%llu,\"up\":%llu}", first ? "" : ",",
+-			cli[i].ip, (unsigned long long)lv_cli_rx[i], (unsigned long long)lv_cli_tx[i]);
++			jesc(cli[i].ip, eb, sizeof(eb)), (unsigned long long)lv_cli_rx[i], (unsigned long long)lv_cli_tx[i]);
+ 		first = 0;
+ 	}
+ 	fprintf(o, "]");
+@@ -792,7 +811,7 @@ static void write_live(const char *store)
+ 	fprintf(o, ",\"top\":[");
+ 	for (i = 0; i < ntop; i++)
+ 		fprintf(o, "%s{\"src\":\"%s\",\"dst\":\"%s\",\"dport\":%d,\"proto\":%d,\"rate\":%llu,\"up\":%llu,\"dn\":%llu}",
+-			i ? "," : "", top[i].src, top[i].dst, top[i].dport, top[i].proto,
++			i ? "," : "", jesc(top[i].src, eb, sizeof(eb)), jesc(top[i].dst, eb2, sizeof(eb2)), top[i].dport, top[i].proto,
+ 			(unsigned long long)top[i].rate, (unsigned long long)top[i].up,
+ 			(unsigned long long)top[i].dn);
+ 	fprintf(o, "]}");
+diff --git a/release/src/router/www/Main_PacketCapture_Content.asp b/release/src/router/www/Main_PacketCapture_Content.asp
+deleted file mode 100644
+index 58be5b859c..0000000000
+--- a/release/src/router/www/Main_PacketCapture_Content.asp
++++ /dev/null
+@@ -1,158 +0,0 @@
+-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+-<html xmlns="http://www.w3.org/1999/xhtml">
+-<head>
+-<meta http-equiv="X-UA-Compatible" content="IE=Edge">
+-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+-<meta HTTP-EQUIV="Expires" CONTENT="-1">
+-<link rel="shortcut icon" href="images/favicon.png">
+-<link rel="icon" href="images/favicon.png">
+-<title><#Network_Tools#> - <#NetworkTools_PktCap#></title>
+-<link rel="stylesheet" type="text/css" href="index_style.css">
+-<link rel="stylesheet" type="text/css" href="form_style.css">
+-<script language="JavaScript" type="text/javascript" src="/js/jquery.js"></script>
+-<script language="JavaScript" type="text/javascript" src="/state.js"></script>
+-<script language="JavaScript" type="text/javascript" src="/general.js"></script>
+-<script language="JavaScript" type="text/javascript" src="/popup.js"></script>
+-<script language="JavaScript" type="text/javascript" src="/help.js"></script>
+-<script language="JavaScript" type="text/javascript" src="/validator.js"></script>
+-<script type="text/javascript" src="/form.js"></script>
+-<script>
+-function initial(){
+-	show_menu();
+-}
+-
+-/* client-side mirror of the server allow-list (server re-validates everything) */
+-function filterOk(v){
+-	return /^[A-Za-z0-9 ._:\/()\-]*$/.test(v);
+-}
+-
+-function runCapture(){
+-	var iface  = document.getElementById('pc_iface').value;
+-	var count  = document.getElementById('pc_count').value || '20';
+-	var dur    = document.getElementById('pc_dur').value || '5';
+-	var snap   = document.getElementById('pc_snap').value || '256';
+-	var filter = document.getElementById('pc_filter').value || '';
+-
+-	if(!iface){ alert('<#NetworkTools_PktCap_iface#>'); return; }
+-	if(!filterOk(filter)){ alert('<#NetworkTools_PktCap_filter#>'); return; }
+-
+-	var btn = document.getElementById('pc_btn');
+-	btn.disabled = true; btn.style.color = '#666';
+-	document.getElementById('pc_load').style.display = '';
+-	document.getElementById('pc_out').value = '...';
+-
+-	$.ajax({
+-		url: '/reaper_pcap.cgi',
+-		type: 'POST',
+-		dataType: 'text',
+-		data: { iface: iface, count: count, dur: dur, snap: snap, filter: filter },
+-		error: function(){ finishCapture('capture failed - try again'); },
+-		success: function(resp){ finishCapture(resp); }
+-	});
+-}
+-
+-function finishCapture(txt){
+-	var ta = document.getElementById('pc_out');
+-	ta.value = txt;
+-	ta.scrollTop = ta.scrollHeight;
+-	var btn = document.getElementById('pc_btn');
+-	btn.disabled = false; btn.style.color = '';
+-	document.getElementById('pc_load').style.display = 'none';
+-}
+-</script>
+-</head>
+-<body onload="initial();" class="bg">
+-<div id="TopBanner"></div>
+-<div id="Loading" class="popup_bg"></div>
+-<iframe name="hidden_frame" id="hidden_frame" src="" width="0" height="0" frameborder="0"></iframe>
+-<form method="POST" name="form" action="/reaper_pcap.cgi" target="hidden_frame">
+-<input type="hidden" name="current_page" value="Main_PacketCapture_Content.asp">
+-<input type="hidden" name="next_page" value="Main_PacketCapture_Content.asp">
+-<input type="hidden" name="preferred_lang" id="preferred_lang" value="<% nvram_get("preferred_lang"); %>">
+-<input type="hidden" name="firmver" value="<% nvram_get("firmver"); %>">
+-
+-<table class="content" align="center" cellpadding="0" cellspacing="0">
+-	<tr>
+-		<td width="17">&nbsp;</td>
+-		<td valign="top" width="202">
+-			<div id="mainMenu"></div>
+-			<div id="subMenu"></div>
+-		</td>
+-		<td valign="top">
+-			<div id="tabMenu" class="submenuBlock"></div>
+-			<table width="98%" border="0" align="left" cellpadding="0" cellspacing="0">
+-				<tr>
+-					<td align="left" valign="top">
+-						<table width="760px" border="0" cellpadding="5" cellspacing="0" bordercolor="#6b8fa3" class="FormTitle" id="FormTitle">
+-							<tr>
+-								<td bgcolor="#4D595D" colspan="3" valign="top">
+-								<div class="container">
+-
+-									<div>&nbsp;</div>
+-									<div class="formfonttitle"><#Network_Tools#> - <#NetworkTools_PktCap#></div>
+-									<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
+-									<div class="formfontdesc"><#NetworkTools_PktCap_desc#></div>
+-									<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
+-										<tr>
+-											<th width="30%"><#NetworkTools_PktCap_iface#></th>
+-											<td>
+-												<select id="pc_iface" class="input_option">
+-													<option value="<% nvram_get("lan_ifname"); %>">LAN (<% nvram_get("lan_ifname"); %>)</option>
+-													<option value="<% nvram_get("wan0_ifname"); %>">WAN (<% nvram_get("wan0_ifname"); %>)</option>
+-												</select>
+-											</td>
+-										</tr>
+-										<tr>
+-											<th width="30%"><#NetworkTools_Count#></th>
+-											<td>
+-												<input type="text" id="pc_count" class="input_6_table" maxlength="4" value="20" onKeyPress="return validator.isNumber(this, event);" placeholder="20" autocorrect="off" autocapitalize="off"> (1 - 2000)
+-											</td>
+-										</tr>
+-										<tr>
+-											<th width="30%"><#NetworkTools_PktCap_dur#></th>
+-											<td>
+-												<input type="text" id="pc_dur" class="input_6_table" maxlength="2" value="5" onKeyPress="return validator.isNumber(this, event);" placeholder="5" autocorrect="off" autocapitalize="off"> (1 - 15)
+-											</td>
+-										</tr>
+-										<tr>
+-											<th width="30%"><#NetworkTools_PktCap_snap#></th>
+-											<td>
+-												<input type="text" id="pc_snap" class="input_6_table" maxlength="4" value="256" onKeyPress="return validator.isNumber(this, event);" placeholder="256" autocorrect="off" autocapitalize="off"> (64 - 2048)
+-											</td>
+-										</tr>
+-										<tr>
+-											<th width="30%"><#NetworkTools_PktCap_filter#></th>
+-											<td>
+-												<input type="text" id="pc_filter" class="input_32_table" maxlength="128" value="" placeholder="ex: tcp port 443" autocorrect="off" autocapitalize="off">
+-											</td>
+-										</tr>
+-									</table>
+-
+-									<div class="apply_gen">
+-										<span><input class="btn_subusage button_gen" id="pc_btn" onClick="runCapture();" type="button" value="<#NetworkTools_PktCap_btn#>"></span>
+-										<img id="pc_load" style="display:none;" src="/images/InternetScan.gif">
+-									</div>
+-
+-									<div style="margin-top:8px">
+-										<textarea cols="63" rows="27" wrap="off" readonly="readonly" id="pc_out" style="width:99%;font-family:Courier New, Courier, mono; font-size:11px;background:#475A5F;color:#FFFFFF;"></textarea>
+-									</div>
+-
+-									</div>	<!-- for .container  -->
+-									<div class="popup_container popup_element_second"></div>
+-
+-								</td>
+-							</tr>
+-						</table>
+-					</td>
+-				</tr>
+-			</table>
+-		</td>
+-		<td width="10" align="center" valign="top"></td>
+-	</tr>
+-</table>
+-</form>
+-
+-<div id="footer"></div>
+-</body>
+-</html>
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index ec4e4424af..9db6388226 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -174,11 +174,12 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+ 
+ <script>
+ var CGI = '/reaper_mcp.cgi';
++var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* F4 CSRF token */
+ var lastToken = '', endExpiry = 0, ticker = null, provisionedNow = false;
+ 
+ function esc(s){return (s==null?'':(''+s)).replace(/[<>&"]/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c];});}
+ function post(action, params){
+-  var body = 'action=' + encodeURIComponent(action);
++  var body = 'action=' + encodeURIComponent(action) + '&http_id=' + encodeURIComponent(REAPER_HTTPID);
+   if(params) for(var k in params) body += '&' + k + '=' + encodeURIComponent(params[k]);
+   return fetch(CGI, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body})
+     .then(function(r){return r.text();}).then(function(t){ try{return JSON.parse(t);}catch(e){return {ok:0,error:'<#RADV_41#>'};} });
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index f2cffa1f9a..537772c235 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -355,7 +355,6 @@ define(function(){
+ 				index: "menu_NekworkTool",
+ 				tab: [
+ 					{url: "Main_Analysis_Content.asp", tabName: "<#Network_Analysis#>"},
+-					{url: "Main_PacketCapture_Content.asp", tabName: "<#NetworkTools_PktCap#>"},
+ 					{url: "Main_Netstat_Content.asp", tabName: "Netstat"},
+ 					{url: "Main_WOL_Content.asp", tabName: "<#NetworkTools_WOL#>"},
+ 					// {url: "Main_ChkSta_Content.asp", tabName: "<#NetworkTools_ChkSta#>"},
+-- 
+2.25.1
+

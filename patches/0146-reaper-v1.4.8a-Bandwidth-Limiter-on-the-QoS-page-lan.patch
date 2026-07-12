@@ -1,0 +1,838 @@
+From 88cbfbb0eba9793d5ca4d224271c27418e54caf2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 12 Jul 2026 12:11:29 -0400
+Subject: [PATCH] reaper v1.4.8a: Bandwidth Limiter on the QoS page +
+ language-selector fixes (both variants)
+
+Fold the stock per-device Bandwidth Limiter into the Reaper QoS page: the Bandwidth
+Limiter mode now has an on-page editor (device/MAC + download/upload Mb/s, enable/remove,
+32-device cap) that reads/writes qos_bw_rulelist in the exact stock format and applies
+through the existing QoS flow. Hide QoS_EZQoS.asp from the menu (menuTree.js) and redirect
+any direct/framed hit to Reaper_QoS.asp (reaper_inject.c SUP map). Remove the crimson
+"editor" link from that mode card.
+
+Language-selector fixes from v1.4.8 on-hardware testing:
+- Include the current language in the topbar dropdown (shown_language_css omits it) so you
+  can switch back to English and the active language shows as selected.
+- Make the selector more visible (globe icon, crimson border, brighter text).
+- Clean the Traffic_Analyzer dict value in the 5 languages that shipped it as "English +
+  native" (CN/TW/CZ/KR/NL) so the side-nav label replaces instead of appends; add nav-label
+  ellipsis + a dashboard overflow-x guard so no language can force a horizontal scrollbar.
+
+6 new dict keys (RQOS_110-115) added to all 25 dict files. www + one httpd source file
+(reaper_inject.c); both images (MCP + noMCP) built and validated.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/reaper_inject.c      |   3 +-
+ release/src/router/www/BR.dict                |   6 +
+ release/src/router/www/CN.dict                |   8 +-
+ release/src/router/www/CZ.dict                |   8 +-
+ release/src/router/www/DA.dict                |   6 +
+ release/src/router/www/DE.dict                |   6 +
+ release/src/router/www/EN.dict                |   6 +
+ release/src/router/www/ES.dict                |   6 +
+ release/src/router/www/FI.dict                |   6 +
+ release/src/router/www/FR.dict                |   6 +
+ release/src/router/www/HU.dict                |   6 +
+ release/src/router/www/IT.dict                |   6 +
+ release/src/router/www/JP.dict                |   6 +
+ release/src/router/www/KR.dict                |   8 +-
+ release/src/router/www/MS.dict                |   6 +
+ release/src/router/www/Main_ReaperDash.asp    |  29 ++--
+ release/src/router/www/NL.dict                |   8 +-
+ release/src/router/www/NO.dict                |   6 +
+ release/src/router/www/PL.dict                |   6 +
+ release/src/router/www/RO.dict                |   6 +
+ release/src/router/www/RU.dict                |   6 +
+ release/src/router/www/Reaper_QoS.asp         | 139 +++++++++++++++++-
+ release/src/router/www/SL.dict                |   6 +
+ release/src/router/www/SV.dict                |   6 +
+ release/src/router/www/TH.dict                |   6 +
+ release/src/router/www/TR.dict                |   6 +
+ release/src/router/www/TW.dict                |   8 +-
+ release/src/router/www/UK.dict                |   6 +
+ release/src/router/www/reaper_shell.asp       |  27 ++--
+ .../router/www/require/menuTrees/menuTree.js  |   2 +
+ 31 files changed, 330 insertions(+), 32 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 9638529730..576f79c89f 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.8
++EXTENDNO=Reaper_v1.4.8a
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 2fa3b0c250..ae52bf5fa8 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -53,7 +53,8 @@ static const char REAPER_BLOCK[] =
+ 	"\"main_trafficmonitor_settings.asp\":\"Reaper_Traffic.asp\","
+ 	"\"trafficanalyzer_statistic.asp\":\"Reaper_Traffic.asp\","
+ 	"\"advanced_qosuserprio_content.asp\":\"Reaper_QoS.asp\","
+-	"\"advanced_qosuserrules_content.asp\":\"Reaper_QoS.asp\"};"
++	"\"advanced_qosuserrules_content.asp\":\"Reaper_QoS.asp\","
++	"\"qos_ezqos.asp\":\"Reaper_QoS.asp\"};"
+ 	"var s=SUP[rp.toLowerCase()];"
+ 	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}"
+ 	"if(self===top){location.replace(rp===\"index.asp\"?\"/Main_ReaperDash.asp\":"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 53c90c9131..2e1bd4bcb3 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 3e6a3547a0..26450303c6 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -4042,7 +4042,7 @@ traffic_analysis_top5app_monthly=月使用前5位应用程序
+ traffic_analysis_top5client_daily=日使用前5位客户端
+ traffic_analysis_top5client_weekly=周使用前5位客户端
+ traffic_analysis_top5client_monthly=月使用前5位客户端
+-Traffic_Analyzer=Traffic Analyzer 流量分析
++Traffic_Analyzer=流量分析
+ Traffic_Analyzer_current=即时流量
+ Traffic_Analyzer_desc=Traffic Analyzer 可分析网络流量并将结果以直观的曲线图方式呈现出来，该图显示出您的网络是如何被使用以及被哪个客户端设备或app使用的。网络流量在整点每一小时记录一次，呈现方式可选择客户端或app。
+ Traffic_Analyzer_daily=每日流量
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index b5f9164905..113bcefa71 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -4042,7 +4042,7 @@ traffic_analysis_top5app_monthly=5 nejčastěji používaných aplikací měsí
+ traffic_analysis_top5client_daily=5 nejčastěji používaných klientů denně
+ traffic_analysis_top5client_weekly=5 nejlepších klientů týdne
+ traffic_analysis_top5client_monthly=5 nejčastěji používaných klientů měsíčně
+-Traffic_Analyzer=Traffic Analyzer (Analyzátor provozu)
++Traffic_Analyzer=Analyzátor provozu
+ Traffic_Analyzer_current=Provoz v období
+ Traffic_Analyzer_desc=Traffic Analyzer (Analyzátor provozu) analyzuje provoz sítě a předkládá výsledky ve vizuálním grafu, které ukazují, jak je vaše síť využívána a jakými klientskými zařízeními či aplikacemi. Provoz sítě bude zaznamenán každou hodinu v celou hodinu a zobrazí se podle klientů či aplikací.
+ Traffic_Analyzer_daily=Denní provoz
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 333f0ddbc2..f2ac02544c 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 5cfdb0fee3..56af79d36e 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 053686a6c2..39f9fe2029 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index aedf182434..2083acec4d 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 577d311b9d..02649b1c37 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index cbaf13879f..bf5b6842ac 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 467059182e..a98e1098fa 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index c8c981d420..645d87364f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index c614d70f79..a00fcc3e7d 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 714a727f94..6560b8b130 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -4042,7 +4042,7 @@ traffic_analysis_top5app_monthly=월별사용된상위5개의앱
+ traffic_analysis_top5client_daily=일별사용된상위5개의클라이언트
+ traffic_analysis_top5client_weekly=주간상위5대클라이언트
+ traffic_analysis_top5client_monthly=월별사용된상위5개의클라이언트
+-Traffic_Analyzer=Traffic Analyzer (트래픽분석기)
++Traffic_Analyzer=트래픽분석기
+ Traffic_Analyzer_current=기간 트래픽
+ Traffic_Analyzer_desc=트래픽 분석기는 네트워크 트래픽을 분석하여 결과를 그래프로 표시하며, 이를 통해 네트워크가 사용된 방식과 네트워크를 사용한 클라이언트 장치 또는 앱을 알 수 있습니다. 네트워크 트래픽이 매시간 정시에 기록되고 클라이언트 또는 앱별로 표시됩니다.
+ Traffic_Analyzer_daily=일일 트래픽
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 34035e4ec0..4de88fbb5c 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 7bfc000145..20e2a293a8 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -23,7 +23,7 @@
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0;height:100%}
+-body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);overflow-x:hidden;
+   background-image:
+     radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
+     radial-gradient(900px 600px at 120% 120%,rgba(225,6,0,.06),transparent 55%),
+@@ -68,7 +68,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   text-decoration:none;justify-content:flex-start;padding:0 12px;position:relative;transition:.15s}
+ .nav a .ni{width:20px;flex:0 0 20px;display:grid;place-items:center}
+ .nav a svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7}
+-.nav a .nl{font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap}
++.nav a{overflow:hidden}
++.nav a .nl{font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+ .nav a:hover{color:var(--bone);background:var(--panel)}
+ .nav a.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ .nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+@@ -255,11 +256,13 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   .pills .pill{flex:1 1 calc(50% - 5px)}
+   .btn{flex:1 1 auto}
+ }
+-.langsel{font-family:var(--hdr);font-weight:600;letter-spacing:.05em;font-size:11px;text-transform:uppercase;
+-  padding:7px 10px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);
+-  color:var(--bone-dim);cursor:pointer;flex:0 0 auto;-webkit-appearance:none;appearance:none;line-height:normal}
+-.langsel:hover{color:var(--bone);border-color:var(--line)}
+-.langsel option{background:var(--panel-2);color:var(--bone)}
++.langsel{font-family:var(--hdr);font-weight:700;letter-spacing:.05em;font-size:11px;text-transform:uppercase;
++  padding:7px 8px 7px 30px;border-radius:8px;border:1px solid var(--line);cursor:pointer;flex:0 0 auto;
++  color:var(--bone);line-height:normal;background:var(--panel-2)
++  url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23ECE7DB'%20stroke-width='1.6'%3E%3Ccircle%20cx='12'%20cy='12'%20r='9'/%3E%3Cpath%20d='M3%2012h18M12%203c3%203%203%2015%200%2018M12%203c-3%203-3%2015%200%2018'/%3E%3C/svg%3E")
++  no-repeat 9px center;background-size:15px 15px}
++.langsel:hover{border-color:var(--crimson);color:#fff}
++.langsel option{background:var(--panel-2);color:var(--bone);text-transform:none;font-weight:600}
+ </style>
+ </head>
+ <body>
+@@ -484,6 +487,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   <input type="hidden" name="preferred_lang" value="<% nvram_get("preferred_lang"); %>">
+ </form>
+ <span id="lang_src" style="display:none"><% shown_language_css(); %></span>
++<span id="lang_cur_name" style="display:none"><#selected_language#></span>
+ <div id="lang_overlay" style="display:none;position:fixed;inset:0;z-index:99;background:rgba(4,4,5,.92);backdrop-filter:blur(3px)">
+   <div style="position:absolute;top:44%;left:50%;transform:translate(-50%,-50%);text-align:center;font-family:var(--hdr);color:var(--crimson);font-size:20px;letter-spacing:.2em;text-transform:uppercase"><#Reaper_c_applying#></div>
+ </div>
+@@ -778,13 +782,18 @@ pollTemp(); setInterval(pollTemp, 5000);
+ (function(){
+   var src=$id('lang_src'), sel=$id('select_lang'); if(!src||!sel) return;
+   var cur=''; try{ cur=document.titleForm.preferred_lang.value; }catch(e){}
++  var curName=''; try{ curName=($id('lang_cur_name').textContent||'').replace(/\s+/g,' ').trim(); }catch(e){}
+   var as=src.querySelectorAll('dd a');
+-  if(!as.length){ sel.style.display='none'; return; }
++  if(!as.length){ sel.style.display='none'; return; }   /* single-language / mock: nothing to switch to */
++  if(cur){                                   /* current language first, shown active (shown_language_css omits it) */
++    var oc=document.createElement('option');
++    oc.value=cur; oc.textContent=curName||cur; oc.selected=true;
++    sel.appendChild(oc);
++  }
+   for(var i=0;i<as.length;i++){
+-    var code=as[i].id||''; if(!code) continue;
++    var code=as[i].id||''; if(!code||code===cur) continue;
+     var o=document.createElement('option');
+     o.value=code; o.textContent=(as[i].textContent||code).replace(/\s+/g,' ').trim();
+-    if(code===cur) o.selected=true;
+     sel.appendChild(o);
+   }
+   sel.addEventListener('change', function(){
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 9e04a3aea7..61c77477eb 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -4042,7 +4042,7 @@ traffic_analysis_top5app_monthly=5 meest gebruikte apps per maand
+ traffic_analysis_top5client_daily=5 meest gebruikte clients per dag
+ traffic_analysis_top5client_weekly=Wekelijkse top 5 klanten
+ traffic_analysis_top5client_monthly=5 meest gebruikte clients per maand
+-Traffic_Analyzer=Traffic Analyzer (Verkeersanalyse)
++Traffic_Analyzer=Verkeersanalyse
+ Traffic_Analyzer_current=Verkeer tijdens periode
+ Traffic_Analyzer_desc=Traffic Analyzer (Verkeersanalyse) wordt gebruikt voor het analyseren van het netwerkverkeer en het voorstellen van de resultaten in een visuele grafiek die toont hoe uw netwerk wordt gebruikt en door welke clientapparaten of apps. Het netwerkverkeer wordt elk uur geregistreerd een weergegeven via clients of apps.
+ Traffic_Analyzer_daily=Dagelijks verkeer
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 7f94aa2191..0135f3d9bb 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 7b7a6ee50f..1c2154d910 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index f7fb5abf9e..30af2bedb6 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 900131ad87..891df8266d 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 5f7ec91773..fb0162e353 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -115,9 +115,18 @@ table.classes input[type=text]:focus{border-color:var(--line)}
+ .xq .xt .xn{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+ .xq .xt .xv{font-size:13px;color:var(--bone-dim);margin-top:4px}
+ 
+-/* per-mode contextual link (Bandwidth Limiter -> stock editor) */
+-.mode .modelink{display:inline-block;margin-top:8px;font-size:12px;color:var(--crimson);text-decoration:none;border-bottom:1px solid rgba(225,6,0,.4)}
+-.mode .modelink:hover{border-bottom-color:var(--crimson)}
++/* Bandwidth Limiter editor (per-device caps) */
++.bwl-add{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft)}
++.bwl-add .f{display:flex;flex-direction:column;gap:5px}
++.bwl-add label{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--steel)}
++.bwl-add input{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 10px;outline:none}
++.bwl-add input:focus{border-color:var(--line)}
++.bwl-add input.dev{width:220px}
++.bwl-add input.num{width:96px}
++.bwldel{cursor:pointer;color:var(--steel);font-size:19px;line-height:1;padding:2px 8px;user-select:none}
++.bwldel:hover{color:var(--crimson)}
++table.classes td .unit{margin-left:5px;color:var(--steel);font-size:11px}
++table.classes input.bwlnum{width:66px}
+ 
+ /* FAQ fly-out */
+ .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s;z-index:40}
+@@ -240,6 +249,30 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   </div>
+ </div>
+ 
++<div class="panel" id="bwlimpanel" style="display:none">
++  <h2><#Bandwidth_Limiter#></h2>
++  <div class="sub"><#RQOS_110#></div>
++  <table class="classes">
++    <thead><tr>
++      <th style="width:52px"><#Reaper_c_on#></th>
++      <th><#Clientlist_device#></th>
++      <th style="width:160px"><#InternetSpeed_Download#> (Mb/s)</th>
++      <th style="width:160px"><#CTL_upload#> (Mb/s)</th>
++      <th style="width:44px"></th>
++    </tr></thead>
++    <tbody id="bwltbody"></tbody>
++  </table>
++  <div class="bwl-add">
++    <div class="f"><label><#NetworkTools_target#></label>
++      <input class="dev" id="bwl_dev" list="bwl_clients" placeholder="AA:BB:CC:DD:EE:FF" maxlength="17" autocomplete="off">
++      <datalist id="bwl_clients"></datalist></div>
++    <div class="f"><label><#InternetSpeed_Download#></label><input class="num" id="bwl_dn" maxlength="7" placeholder="Mb/s"></div>
++    <div class="f"><label><#CTL_upload#></label><input class="num" id="bwl_up" maxlength="7" placeholder="Mb/s"></div>
++    <button type="button" class="btn" onclick="bwlAdd()"><#CTL_add#></button>
++  </div>
++  <div class="hint" style="margin-top:12px"><#RQOS_111#></div>
++</div>
++
+ <!-- FAQ fly-out -->
+ <div class="scrim" id="scrim" onclick="faqClose()"></div>
+ <aside class="flyout" id="flyout" aria-label="<#RQOS_33#>">
+@@ -333,6 +366,7 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   <input type="hidden" name="qos_dscp_trust" value="" disabled>
+   <input type="hidden" name="qos_sched" value="" disabled>
+   <input type="hidden" name="qos_l4s" value="" disabled>
++  <input type="hidden" name="qos_bw_rulelist" value="" disabled>
+ </form>
+ 
+ <script>
+@@ -348,7 +382,8 @@ var NV = {
+   minrates:'<% nvram_get("qos_minrates"); %>',
+   dscp:    '<% nvram_get("qos_dscp_trust"); %>',
+   sched:   '<% nvram_get("qos_sched"); %>',
+-  l4s:     '<% nvram_get("qos_l4s"); %>'
++  l4s:     '<% nvram_get("qos_l4s"); %>',
++  bwrule:  '<% nvram_get("qos_bw_rulelist"); %>'
+ };
+ 
+ /* ---------- mode model (qos_type 1/Adaptive is retired with the DPI stack) ---------- */
+@@ -364,7 +399,6 @@ var MODES = [
+   {key:'0', type:'0', name:'<#EzQoS_type_traditional#>', desc:'<#RQOS_81#>',
+    tags:[['<#RQOS_79#>','warn'],['<#RQOS_80#>','']]},
+   {key:'2', type:'2', name:'<#Bandwidth_Limiter#>', desc:'<#RQOS_82#>',
+-   link:{href:'/QoS_EZQoS.asp', text:'<#RQOS_83#>'},
+    tags:[['<#RQOS_84#>',''],['<#RQOS_85#>','warn']]}
+ ];
+ var sel = (NV.enable === '1') ? String(NV.type) : 'off';
+@@ -388,6 +422,8 @@ function renderModes(){
+ }
+ function syncPanels(){
+   document.getElementById('clpanel').style.display = (sel === '11') ? '' : 'none';
++  document.getElementById('bwlimpanel').style.display = (sel === '2') ? '' : 'none';
++  document.getElementById('bwpanel').style.display = (sel === '2') ? 'none' : '';
+   var on = (NV.enable === '1');
+   var pill = document.getElementById('engpill');
+   pill.className = 'pill' + (on ? ' on' : '');
+@@ -542,6 +578,92 @@ function pollStats(){
+ setInterval(pollStats, 3000);
+ 
+ /* ---------- apply ---------- */
++/* ---------- Bandwidth Limiter (per-device caps, qos_type=2) ----------
++   nvram qos_bw_rulelist: rows joined by '<', fields by '>':
++   enable>MAC>download(Kb/s)>upload(Kb/s)>priority ; stored HTML-entity-encoded. */
++var BWL = [];            /* [{en, mac, dn(kb), up(kb)}] */
++var BWLNAMES = {};       /* mac(lower) -> display name from the client list */
++function bwlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
++function bwlDecode(s){ return String(s||'').replace(/&#62/g,'>').replace(/&#60/g,'<'); }
++function bwlKb2Mb(k){ k=parseInt(k,10)||0; return k ? String(Math.round(k/1024*10)/10) : '0'; }
++function bwlMb2Kb(m){ m=parseFloat(m)||0; return Math.round(m*1024); }
++function bwlNameOf(mac){ var n=BWLNAMES[String(mac).toLowerCase()]; return n||mac; }
++function parseBwl(){
++  BWL = [];
++  var raw = bwlDecode(NV.bwrule);
++  if(!raw) return;
++  var rows = raw.split('<');
++  for(var i=0;i<rows.length;i++){
++    if(!rows[i]) continue;
++    var f = rows[i].split('>');
++    if(f.length < 4) continue;
++    BWL.push({en:(f[0]==='0'?0:1), mac:f[1]||'', dn:parseInt(f[2],10)||0, up:parseInt(f[3],10)||0});
++  }
++}
++function renderBwl(){
++  var tb = document.getElementById('bwltbody'); if(!tb) return;
++  tb.innerHTML = '';
++  if(!BWL.length){
++    tb.innerHTML = '<tr><td colspan="5" style="color:var(--steel);text-align:center;padding:16px"><#RQOS_112#></td></tr>';
++    return;
++  }
++  for(var i=0;i<BWL.length;i++){ (function(idx){
++    var r = BWL[idx], tr = document.createElement('tr');
++    tr.innerHTML =
++      '<td><label class="tswitch" style="transform:scale(.82);transform-origin:left center"><input type="checkbox" '+(r.en?'checked':'')+'><span class="track"></span></label></td>'
++      +'<td><span class="qbadge">'+bwlEsc(bwlNameOf(r.mac))+'</span><br><span class="qnote" style="font-family:ui-monospace,Consolas,monospace">'+bwlEsc(r.mac)+'</span></td>'
++      +'<td><input type="text" maxlength="7" class="bwlnum" value="'+bwlKb2Mb(r.dn)+'"><span class="unit">Mb/s</span></td>'
++      +'<td><input type="text" maxlength="7" class="bwlnum" value="'+bwlKb2Mb(r.up)+'"><span class="unit">Mb/s</span></td>'
++      +'<td><span class="bwldel" title="<#CTL_del#>">&times;</span></td>';
++    tr.querySelector('input[type=checkbox]').onchange = function(){ r.en = this.checked ? 1 : 0; };
++    var ins = tr.querySelectorAll('input.bwlnum');
++    ins[0].onblur = function(){ r.dn = bwlMb2Kb(this.value); this.value = bwlKb2Mb(r.dn); };
++    ins[1].onblur = function(){ r.up = bwlMb2Kb(this.value); this.value = bwlKb2Mb(r.up); };
++    tr.querySelector('.bwldel').onclick = function(){ BWL.splice(idx,1); renderBwl(); };
++    tb.appendChild(tr);
++  })(i); }
++}
++function bwlAdd(){
++  var dev = document.getElementById('bwl_dev'), dn = document.getElementById('bwl_dn'), up = document.getElementById('bwl_up');
++  var mac = (dev.value||'').trim().toUpperCase();
++  if(!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)){ alert('<#RQOS_113#>'); return; }
++  if(BWL.length >= 32){ alert('<#RQOS_115#>'); return; }
++  for(var i=0;i<BWL.length;i++){ if(BWL[i].mac.toUpperCase()===mac){ alert('<#JS_duplicate#>'); return; } }
++  var d = parseFloat(dn.value), u = parseFloat(up.value);
++  if(!(d>=0.1) || !(u>=0.1)){ alert('<#RQOS_114#>'); return; }
++  BWL.push({en:1, mac:mac, dn:bwlMb2Kb(d), up:bwlMb2Kb(u)});
++  dev.value=''; dn.value=''; up.value='';
++  renderBwl();
++}
++function serializeBwl(){
++  var out = [];
++  for(var i=0;i<BWL.length;i++){ var r = BWL[i];
++    if(!(r.dn>0) || !(r.up>0)){ alert('<#RQOS_114#>'); return false; }
++    out.push([(r.en?1:0), r.mac, r.dn, r.up, i].join('>'));
++  }
++  return out.join('<');
++}
++function fetchBwlClients(){
++  var dl = document.getElementById('bwl_clients'); if(!dl) return;
++  var x = new XMLHttpRequest();
++  x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+(new Date()).getTime(), true);
++  x.onreadystatechange = function(){
++    if(x.readyState!==4 || x.status!==200) return;
++    try{
++      var j = JSON.parse(x.responseText), cl = j.get_clientlist||j, ml = cl.maclist||[];
++      for(var i=0;i<ml.length;i++){
++        var mac = ml[i], c = cl[mac]; if(!c) continue;
++        var nm = (c.nickName && c.nickName.length) ? c.nickName : (c.name||mac);
++        BWLNAMES[String(mac).toLowerCase()] = nm;
++        var o = document.createElement('option'); o.value = mac; o.label = nm+' ('+mac+')';
++        dl.appendChild(o);
++      }
++      renderBwl();
++    }catch(e){}
++  };
++  x.send();
++}
++
+ function applyQoS(){
+   var f = document.form;
+   var wasOn = (NV.enable==='1'), wasType = String(NV.type);
+@@ -567,6 +689,11 @@ function applyQoS(){
+     f.qos_l4s.disabled=false;         f.qos_l4s.value = document.getElementById('tg_l4s').checked ? '1':'0';
+   }
+ 
++  if (sel === '2'){
++    var bl = serializeBwl(); if (bl === false) return;
++    f.qos_bw_rulelist.disabled = false; f.qos_bw_rulelist.value = bl;
++  }
++
+   /* stock HND semantics: same enable+type (or turning off) restarts live;
+      an engine switch / fresh enable reconfigures the accelerator = reboot */
+   var live = (wasOn === nowOn && (!nowOn || wasType === nowType)) || (wasOn && !nowOn);
+@@ -597,7 +724,7 @@ document.getElementById('tg_pshaper').checked = (NV.pshaper !== '0');
+ document.getElementById('tg_minrates').checked = (NV.minrates !== '0');
+ document.getElementById('tg_dscp').checked = (NV.dscp === '1');
+ document.getElementById('tg_l4s').checked = (NV.l4s === '1');
+-renderModes(); syncPanels(); buildEditor(); pollStats();
++renderModes(); syncPanels(); buildEditor(); parseBwl(); renderBwl(); fetchBwlClients(); pollStats();
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index a13d5ff672..767afc4d2f 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 599842d1c6..8f5bcc16c5 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 38d929328e..c10ca782c6 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 3189b66014..5ab223c291 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 1db8d733f6..79ccd5557d 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -4042,7 +4042,7 @@ traffic_analysis_top5app_monthly=月使用前5位應用程式
+ traffic_analysis_top5client_daily=日使用前5位用戶端
+ traffic_analysis_top5client_weekly=周使用前5位用戶端
+ traffic_analysis_top5client_monthly=月使用前5位用戶端
+-Traffic_Analyzer=Traffic Analyzer 流量分析
++Traffic_Analyzer=流量分析
+ Traffic_Analyzer_current=即時流量
+ Traffic_Analyzer_desc=Traffic Analyzer 可分析網路流量並將結果以直覺式的曲線圖方式呈現出來，該圖顯示出您的網路是如何被使用以及哪個用戶端裝置或app使用的。網路流量在整點每小時記錄一次，呈現方式可選擇用戶端或app。
+ Traffic_Analyzer_daily=每日流量
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index bd37f2230d..1267d95258 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5578,3 +5578,9 @@ RTRF_69=No per-device data yet.
+ RTRF_70=Probe target must be a plain hostname or IPv4 address.
+ RDSH_65=custom scripts
+ RDSH_66=on
++RQOS_110=Set a hard upload/download speed cap for specific devices. Any device not listed keeps full speed.
++RQOS_111=Up to 32 devices, capped in both directions. Switching into Bandwidth Limiter reboots the router once; editing the list afterward applies live when you Apply.
++RQOS_112=No devices are capped yet. Add one below.
++RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
++RQOS_114=Download and upload must each be at least 0.1 Mb/s.
++RQOS_115=You can limit up to 32 devices.
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 4ef0a5ed04..093c97c6b0 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -50,11 +50,13 @@ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);overflow
+   padding:8px 16px 8px 13px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);
+   color:var(--bone-dim);cursor:pointer;transition:.15s;text-decoration:none;display:inline-block;line-height:normal;white-space:nowrap;flex:0 0 auto}
+ .btn:hover{color:var(--bone);border-color:var(--line)}
+-.langsel{font-family:var(--hdr);font-weight:600;letter-spacing:.05em;font-size:11px;text-transform:uppercase;
+-  padding:7px 10px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);
+-  color:var(--bone-dim);cursor:pointer;flex:0 0 auto;-webkit-appearance:none;appearance:none;line-height:normal}
+-.langsel:hover{color:var(--bone);border-color:var(--line)}
+-.langsel option{background:var(--panel-2);color:var(--bone)}
++.langsel{font-family:var(--hdr);font-weight:700;letter-spacing:.05em;font-size:11px;text-transform:uppercase;
++  padding:7px 8px 7px 30px;border-radius:8px;border:1px solid var(--line);cursor:pointer;flex:0 0 auto;
++  color:var(--bone);line-height:normal;background:var(--panel-2)
++  url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23ECE7DB'%20stroke-width='1.6'%3E%3Ccircle%20cx='12'%20cy='12'%20r='9'/%3E%3Cpath%20d='M3%2012h18M12%203c3%203%203%2015%200%2018M12%203c-3%203-3%2015%200%2018'/%3E%3C/svg%3E")
++  no-repeat 9px center;background-size:15px 15px}
++.langsel:hover{border-color:var(--crimson);color:#fff}
++.langsel option{background:var(--panel-2);color:var(--bone);text-transform:none;font-weight:600}
+ .btn.crit{color:#fff;border-color:#7A0C0C;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
+ .btn.crit:hover{filter:brightness(1.08)}
+ /* rail: no scrollbar of its own - the page scrollbar handles overflow */
+@@ -70,8 +72,9 @@ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);overflow
+ .grp{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.2em;font-size:10px;color:var(--steel);padding:12px 10px 4px}
+ a.item{display:flex;align-items:center;gap:12px;height:38px;border-radius:9px;color:var(--steel);
+   text-decoration:none;padding:0 12px;position:relative;transition:.15s;
+-  font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap;flex:0 0 auto}
++  font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap;flex:0 0 auto;overflow:hidden}
+ a.item svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;flex:0 0 18px}
++a.item>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+ a.item:hover{color:var(--bone);background:var(--panel)}
+ a.item.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;background:var(--crimson);border-radius:2px}
+@@ -144,6 +147,7 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+   <input type="hidden" name="preferred_lang" value="<% nvram_get("preferred_lang"); %>">
+ </form>
+ <span id="lang_src" style="display:none"><% shown_language_css(); %></span>
++<span id="lang_cur_name" style="display:none"><#selected_language#></span>
+ <div id="lang_overlay" style="display:none;position:fixed;inset:0;z-index:99;background:rgba(4,4,5,.92)">
+   <div style="position:absolute;top:44%;left:50%;transform:translate(-50%,-50%);text-align:center;font-family:var(--hdr);color:var(--crimson);font-size:20px;letter-spacing:.2em;text-transform:uppercase"><#Reaper_c_applying#></div>
+ </div>
+@@ -380,13 +384,18 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+ (function(){
+   var src=$id('lang_src'), sel=$id('select_lang'); if(!src||!sel) return;
+   var cur=''; try{ cur=document.titleForm.preferred_lang.value; }catch(e){}
++  var curName=''; try{ curName=($id('lang_cur_name').textContent||'').replace(/\s+/g,' ').trim(); }catch(e){}
+   var as=src.querySelectorAll('dd a');
+-  if(!as.length){ sel.style.display='none'; return; }
++  if(!as.length){ sel.style.display='none'; return; }   /* single-language / mock: nothing to switch to */
++  if(cur){                                   /* current language first, shown active (shown_language_css omits it) */
++    var oc=document.createElement('option');
++    oc.value=cur; oc.textContent=curName||cur; oc.selected=true;
++    sel.appendChild(oc);
++  }
+   for(var i=0;i<as.length;i++){
+-    var code=as[i].id||''; if(!code) continue;
++    var code=as[i].id||''; if(!code||code===cur) continue;
+     var o=document.createElement('option');
+     o.value=code; o.textContent=(as[i].textContent||code).replace(/\s+/g,' ').trim();
+-    if(code===cur) o.selected=true;
+     sel.appendChild(o);
+   }
+   sel.addEventListener('change', function(){
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 20f2694446..537772c235 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -623,6 +623,8 @@ define(function(){
+ 
+ 				/* reaper: Instant Guard app onboarding needs the removed AAE tunnel - always hide (IPsec VPN server page stays) */
+ 				retArray.push("Advanced_Instant_Guard.asp");
++					/* reaper v1.4.8: Bandwidth Limiter config folded into Reaper_QoS.asp - hide the stock QoS_EZQoS editor (also URL-suppressed in reaper_inject.c) */
++					retArray.push("QoS_EZQoS.asp");
+ 				/* reaper: Advanced_Privacy.asp DELETED in v1.2.7 (EULA pre-signed in defaults.c, QIS retired) - tab entry removed above */
+ 
+ 				if(!ParentalCtrl2_support){
+-- 
+2.25.1
+

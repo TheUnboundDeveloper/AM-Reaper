@@ -18,14 +18,15 @@ Hard constraint (unchanged): the Broadcom closed blobs (wl/dhd/runner fast-path,
 
 ---
 
-## Phase 0 — Done / in place (shipped through v1.4.1)
+## Phase 0 — Done / in place (shipped through v1.5.0a)
 
 *Per-version detail in [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).*
 
 - **Security hardening (Rounds 1–4 + latent T1–T4 + avahi CVE backport)** — see `REAPER-FIXES.md`. ~70+ issues across rc / httpd / shared / libdisk, the network-facing ASUS daemons, and libcodb. (v1.0)
 - **Hardware QoS** — `qos_type=10` (PI2 AQM + shaper in the Broadcom Runner, accelerator stays on, upload) and the `qos_type=11` **Classful** engine (v1.0); extended with aggregate cap / guaranteed minimums / DSCP trust / live stats (**v3**, v1.2.8) and per-class WRR weights + experimental L4S (**v4**, v1.2.9). The local-only QoS the project favours over DPI-based Adaptive QoS.
 - **Traffic Analyzer** (v1.3.x) — native per-device / per-network / per-class history, live view, top talkers, quota, opt-in WAN probe; offload-accurate (reads the Runner flow table).
-- **AI Advisor** (v1.4.x) — **optional**, read-only, LAN-only MCP server; off by default; compiled out of the Standard build entirely (`RTCONFIG_REAPER_MCP`). Mode A arming code + optional Mode B USB key. **EXPERIMENTAL**
+- **AI Advisor** (v1.4.x) — **optional**, read-only, LAN-only MCP server; off by default; compiled out of the Standard build entirely (`RTCONFIG_REAPER_MCP`). Mode A arming code + optional Mode B USB key; **v1.5.0a** adds an opt-in, per-session bounded network-diagnostics tier (ping/traceroute/DNS/netstat). **EXPERIMENTAL**
+- **Network Diagnostics** (v1.5.0a) — the AI Advisor's opt-in, per-session bounded network-probe tier (ping/traceroute/DNS/netstat); local, read-only, injection-safe (fixed-argument exec, never a shell; targets scoped so it can't scan the internal network). *A bundled `tcpdump` packet-capture page was evaluated and deliberately left out to keep the image lean — install `tcpdump` via Entware if you need capture.*
 - **De-cloud removals (Phase 1 — EXECUTED, shipped v1.2):** Alexa/Google Assistant, Trend Micro DPI (`bwdpi`), AiCloud/WebDAV, the AiDisk wizard, the AAE/AiHome cloud tunnel, and the first-boot EULA/consent surface (v1.2.7).
 - **Reaper UI** — full rebrand + serve-time theme injection with a runtime kill-switch (v1.0).
 - **Sibling-model strip** — only the RT-BE96U is retained in the tree.

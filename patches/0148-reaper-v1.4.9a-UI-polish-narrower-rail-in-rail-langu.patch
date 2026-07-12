@@ -1,0 +1,199 @@
+From e6cd204620b8fa6ea37c723f4ac5699f8cbd604e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 12 Jul 2026 14:33:24 -0400
+Subject: [PATCH] reaper v1.4.9a: UI polish - narrower rail, in-rail language
+ selector, AiMesh logo over room selector, Sysinfo Features lists Reaper
+ packages
+
+Left nav rail narrowed (264px -> 236px) back to "just wide enough" for the
+ASUS - Merlin - Reaper wordmark and the menu items, in both chrome pages
+(reaper_shell.asp shell + Main_ReaperDash.asp dashboard).
+
+Language selector moved out of the top bar and into the rail, above the
+"General" group heading: a compact "LANGUAGE: [select]" row that flexes to the
+rail width without widening it. Same #select_lang element/JS, reuses the
+Reaper_c_language dict token (localizes), globe icon dropped for a text label.
+
+AiMesh card: the ASUS-logo backdrop now extends DOWN behind the room selector so
+the room dropdown sits ON the image, its bottom landing a few px above the divider
+under the room row. Implemented as a .primary_info_bg::before layer behind the
+(now transparent) icon/space/location rows so no content moves; single height knob.
+
+Tools_Sysinfo "Features" row now advertises this build's Reaper packages via gated
+add_rc_support in rc/init.c (reaper, reaper_traffic, hwqos_classful; reaper_mcp and
+tcpdump #ifdef-gated so the row shows the true per-build status and auto-differentiates
+the MCP vs noMCP images). Removed stock features (alexa/webdav/bwdpi/...) were already
+correctly gated out. Unique tokens - nothing in the stock UI keys on them.
+
+C change (rc/init.c) -> full build; both images built, noMCP drops reaper_mcp.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ release/src/router/rc/init.c                  | 16 ++++++++++++++
+ release/src/router/www/Main_ReaperDash.asp    | 12 +++++++++--
+ .../src/router/www/reaper/reaper_content.css  | 21 ++++++++++++-------
+ release/src/router/www/reaper_shell.asp       | 12 +++++++++--
+ 5 files changed, 51 insertions(+), 12 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index f8c0754735..da87178075 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.9
++EXTENDNO=Reaper_v1.4.9a
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 488408ceaa..42658da097 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -24002,6 +24002,22 @@ NO_USB_CAP:
+ #endif
+ 	add_rc_support("eula");
+ 
++	/* Reaper: advertise this build's own packages/features so Tools_Sysinfo's
++	 * "Features" row reflects the actual Reaper feature set. These are unique
++	 * tokens - nothing in the stock UI keys on them. reaper_mcp and tcpdump are
++	 * #ifdef-gated so the row shows the TRUE per-build status (this also auto-
++	 * differentiates the MCP vs noMCP images). Added after config_tcode() so the
++	 * tcode/odmpid rc_support pruning cannot strip them. */
++	add_rc_support("reaper");
++	add_rc_support("reaper_traffic");
++	add_rc_support("hwqos_classful");
++#ifdef RTCONFIG_REAPER_MCP
++	add_rc_support("reaper_mcp");
++#endif
++#ifdef RTCONFIG_TCPDUMP
++	add_rc_support("tcpdump");
++#endif
++
+ #ifdef RTCONFIG_PROXYSTA
+ 	add_rc_support("proxysta");
+ #endif
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 20e2a293a8..1b7df2a3a4 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -52,7 +52,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
+ 
+ /* ---------- shell / always-expanded rail ---------- */
+-.app{display:grid;grid-template-columns:264px 1fr;min-height:100vh}
++.app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
+ .rail{background:linear-gradient(180deg,#0c0c0f,#08080a);border-right:1px solid var(--line-soft);
+   display:flex;flex-direction:column;padding:14px 12px 56px;gap:2px}
+ .wordmark{font-family:var(--hdr);font-weight:700;font-size:18px;letter-spacing:.01em;line-height:1.15;padding:4px 6px 12px;text-align:center;white-space:nowrap}
+@@ -263,6 +263,14 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   no-repeat 9px center;background-size:15px 15px}
+ .langsel:hover{border-color:var(--crimson);color:#fff}
+ .langsel option{background:var(--panel-2);color:var(--bone);text-transform:none;font-weight:600}
++/* language selector relocated into the rail (above the first group): compact
++   "LANGUAGE: [select]" row that flexes to the rail width without widening it */
++.raillang{display:flex;align-items:center;gap:6px;padding:2px 6px 10px}
++.raillbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.1em;font-size:10px;color:var(--steel);flex:0 0 auto;white-space:nowrap}
++.raillangsel{flex:1 1 auto;min-width:0;width:100%;font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.02em;
++  padding:5px 6px;border-radius:7px;border:1px solid var(--line);cursor:pointer;color:var(--bone);background:var(--panel-2)}
++.raillangsel:hover{border-color:var(--crimson)}
++.raillangsel option{background:var(--panel-2);color:var(--bone);font-weight:600}
+ </style>
+ </head>
+ <body>
+@@ -271,6 +279,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   <!-- LEFT RAIL (always expanded; menu mirrors the current firmware) -->
+   <aside class="rail">
+     <div class="wordmark"><span class="a">ASUS</span> <span class="d">&middot;</span> <span class="m">Merlin</span> <span class="d">&middot;</span> <span class="r">Reaper</span></div>
++    <div class="raillang"><span class="raillbl"><#Reaper_c_language#>:</span><select class="raillangsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+ 
+     <div class="grp"><#menu5_1_1#></div>
+     <nav class="nav">
+@@ -312,7 +321,6 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+       </div>
+       <div class="spacer"></div>
+-      <select class="langsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select>
+       <button class="btn" id="btn_reboot"><#BTN_REBOOT#></button>
+       <button class="btn crit" id="btn_logout"><#t1Logout#></button>
+     </header>
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 552563cdbc..bc070f8eba 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -360,13 +360,20 @@ div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
+ .aimesh_tab > span{color:#B7B1A4!important;background:transparent!important;box-shadow:none!important}
+ .aimesh_tab > span.clicked{color:#ECE7DB!important;background:transparent!important;box-shadow:none!important}
+ .aimesh_tab > span.clicked:before{border-bottom:2px solid #B3000C!important}
+-/* v1.4.7: the location photo behind the router/node name (.translucent_bg, default
+-   Home.jpg) -> the ASUS logo. !important overrides every per-location variant
+-   (.translucent_bg.Home/.Living_Room/...); contain keeps the whole logo visible. */
+-.icon_bg{height:176px!important}   /* a bit taller than stock 148 - stretch the logo band down some */
+-.translucent_bg{background-image:url("/images/ASUSLogo.png")!important;
+-  background-size:100% 100%!important;background-position:center!important;
+-  background-repeat:no-repeat!important;height:100%!important}   /* fill the whole band (stock pins it to 148px, which left a dark gap) */
++/* v1.4.7/1.4.9a: the location photo behind the router/node name -> the ASUS logo.
++   v1.4.9a extends the logo band DOWN behind the room selector so the dropdown sits
++   ON the image, its bottom landing a few px above the divider under the room row.
++   Painted as a ::before layer behind the (now transparent) icon/space/location rows
++   so NO content moves; the model name/MAC and the room dropdown render on top. */
++.primary_info_bg{position:relative}
++.primary_info_bg::before{content:"";position:absolute;left:0;right:0;top:0;
++  height:234px;   /* KNOB: raise toward / lower away from the divider under the room selector (target 2-5px above it) */
++  background:url("/images/ASUSLogo.png") no-repeat center;background-size:100% 100%;
++  border-radius:4px 4px 0 0;z-index:0;pointer-events:none}
++.primary_info_bg > .icon_bg{height:176px!important;background:transparent!important;position:relative;z-index:1}
++.primary_info_bg > .icon_bg .translucent_bg{background:none!important;height:100%!important}
++.primary_info_bg > .item_space{background:transparent!important;position:relative;z-index:1}
++.primary_info_bg > .item_bg.location{background:transparent!important;position:relative;z-index:1}
+ 
+ /* ---------- 12. on-device review 2026-07-04: remaining stock surfaces ---------- */
+ /* tableApi data tables (js/table/table.css: thead td #4D595D teal, th #1f2d35)
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 093c97c6b0..d6fe824e20 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -33,7 +33,7 @@ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);overflow
+ /* one page-level scrollbar: the body scrolls; topbar and the content stage are
+    sticky so only the rail visually scrolls when it is taller than the viewport */
+ /* rail width + topbar geometry standardized to match Main_ReaperDash exactly */
+-.app{display:grid;grid-template-columns:264px minmax(0,1fr);grid-template-rows:auto 1fr;min-height:100vh}
++.app{display:grid;grid-template-columns:236px minmax(0,1fr);grid-template-rows:auto 1fr;min-height:100vh}
+ .top{grid-column:2;grid-row:1;display:flex;align-items:center;gap:14px;padding:14px 18px;flex-wrap:nowrap;
+   border-bottom:1px solid var(--line-soft);box-shadow:0 1px 0 rgba(225,6,0,.12);background:#040405;
+   position:sticky;top:0;z-index:300}
+@@ -57,6 +57,14 @@ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);overflow
+   no-repeat 9px center;background-size:15px 15px}
+ .langsel:hover{border-color:var(--crimson);color:#fff}
+ .langsel option{background:var(--panel-2);color:var(--bone);text-transform:none;font-weight:600}
++/* language selector relocated into the rail (above the first group): compact
++   "LANGUAGE: [select]" row that flexes to the rail width without widening it */
++.raillang{display:flex;align-items:center;gap:6px;padding:2px 6px 10px}
++.raillbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.1em;font-size:10px;color:var(--steel);flex:0 0 auto;white-space:nowrap}
++.raillangsel{flex:1 1 auto;min-width:0;width:100%;font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.02em;
++  padding:5px 6px;border-radius:7px;border:1px solid var(--line);cursor:pointer;color:var(--bone);background:var(--panel-2)}
++.raillangsel:hover{border-color:var(--crimson)}
++.raillangsel option{background:var(--panel-2);color:var(--bone);font-weight:600}
+ .btn.crit{color:#fff;border-color:#7A0C0C;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
+ .btn.crit:hover{filter:brightness(1.08)}
+ /* rail: no scrollbar of its own - the page scrollbar handles overflow */
+@@ -113,13 +121,13 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+       <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+     </div>
+     <span class="spacer"></span>
+-    <select class="langsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select>
+     <a class="btn" href="/Main_ReaperDash.asp"><#AiProtection_title_Dashboard_title#></a>
+     <button class="btn" type="button" id="btn_reboot"><#BTN_REBOOT#></button>
+     <button class="btn crit" type="button" id="btn_logout"><#t1Logout#></button>
+   </header>
+   <aside class="rail" id="rail">
+     <div class="wordmark">ASUS <span class="r">&middot;</span> <span class="m">Merlin</span> <span class="r">&middot;</span> <span class="r">Reaper</span></div>
++    <div class="raillang"><span class="raillbl"><#Reaper_c_language#>:</span><select class="raillangsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+   </aside>
+   <main class="stage">
+     <div id="tabbar"></div>
+-- 
+2.25.1
+

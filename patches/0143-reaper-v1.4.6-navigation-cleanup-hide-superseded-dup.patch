@@ -1,0 +1,234 @@
+From 94a3e3f42f7695c3e12e4fb746f2a59a1a81a43a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 21:09:05 -0400
+Subject: [PATCH] reaper v1.4.6: navigation cleanup - hide superseded +
+ duplicate pages
+
+UI/navigation only; no underlying feature change. Both build variants.
+
+Hide "Open NAT" (menuTree.js + Main_ReaperDash.asp):
+- Remove the menu_OpenNAT static section; make its retArray hide unconditional
+  (was gated on gameMode_support, comment wrongly said "keep").
+- Remove the "Open NAT" dashboard-rail tile (pointed at Main_GameServer_Content.asp).
+- Port forwarding itself is unchanged / still reachable.
+
+Remove the QoS "Related Pages" block (Reaper_QoS.asp):
+- Delete the linkspanel block. It linked the two legacy QoS editors (suppressed
+  below) plus the kept Bandwidth Limiter editor (QoS_EZQoS.asp); preserve that one
+  as a contextual .modelink inside the Bandwidth Limiter mode card so the mode
+  isn't stranded.
+
+Suppress superseded stock pages (menuTree.js + reaper_inject.c):
+- Menu: remove the 5 stock Traffic Monitor pages, TrafficAnalyzer_Statistic.asp,
+  and the 2 legacy QoS editors (Advanced_QOSUserPrio/UserRules_Content.asp). Keep
+  Reaper_Traffic, Reaper_QoS, and Traffic Limiter.
+- URL: extend the injected bounce script with a suppression map (SUP{}) that
+  redirects any direct/framed hit on those 8 pages to their reaper-native
+  replacement (Traffic Monitor/Statistic -> Reaper_Traffic; legacy QoS ->
+  Reaper_QoS), in both top and framed contexts (top.location).
+
+Both v1.4.6 images built + verified (noMCP zero-trace clean; 8 suppression
+targets baked into httpd; rail/Related-Pages removed; BW link kept).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ release/src/router/httpd/reaper_inject.c      | 27 +++++++++++--
+ release/src/router/www/Main_ReaperDash.asp    |  1 -
+ release/src/router/www/Reaper_QoS.asp         | 18 +++------
+ .../router/www/require/menuTrees/menuTree.js  | 38 +++++++------------
+ 5 files changed, 44 insertions(+), 42 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index d5007fd16d..14fc146d6d 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.5
++EXTENDNO=Reaper_v1.4.6
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 75d19e96e2..2fa3b0c250 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -33,12 +33,31 @@
+ 
+ #include "reaper_inject.h"
+ 
+-/* The exact block that used to be baked before </head> in every stock page. */
++/* The block baked before </head> in every stock page: the reaper theme <link>
++ * plus the bounce/suppression script.
++ *
++ * SUP{} maps stock pages that a reaper-native page has SUPERSEDED to their
++ * replacement; hitting one (by direct URL or framed in the shell) redirects the
++ * TOP window to the reaper page instead of showing the dead stock page. The
++ * suppression check runs in BOTH top and framed contexts (top.location), so a
++ * bookmark or in-page link can't sneak a superseded page into the shell iframe.
++ * The normal index->dashboard / other->shell bounce still runs for top-level
++ * loads that are not suppressed. */
+ static const char REAPER_BLOCK[] =
+ 	"<link rel=\"stylesheet\" type=\"text/css\" href=\"/reaper/reaper_content.css\">"
+-	"<script>if(self===top){var rp=location.pathname.split(\"/\").pop()||\"index.asp\";"
+-	"location.replace(rp===\"index.asp\"?\"/Main_ReaperDash.asp\":"
+-	"\"/reaper_shell.asp#\"+rp+location.search);}</script>";
++	"<script>(function(){var rp=location.pathname.split(\"/\").pop()||\"index.asp\";"
++	"var SUP={\"main_trafficmonitor_realtime.asp\":\"Reaper_Traffic.asp\","
++	"\"main_trafficmonitor_last24.asp\":\"Reaper_Traffic.asp\","
++	"\"main_trafficmonitor_daily.asp\":\"Reaper_Traffic.asp\","
++	"\"main_trafficmonitor_monthly.asp\":\"Reaper_Traffic.asp\","
++	"\"main_trafficmonitor_settings.asp\":\"Reaper_Traffic.asp\","
++	"\"trafficanalyzer_statistic.asp\":\"Reaper_Traffic.asp\","
++	"\"advanced_qosuserprio_content.asp\":\"Reaper_QoS.asp\","
++	"\"advanced_qosuserrules_content.asp\":\"Reaper_QoS.asp\"};"
++	"var s=SUP[rp.toLowerCase()];"
++	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}"
++	"if(self===top){location.replace(rp===\"index.asp\"?\"/Main_ReaperDash.asp\":"
++	"\"/reaper_shell.asp#\"+rp+location.search);}})();</script>";
+ 
+ #define REAPER_TAG	"</head>"
+ #define REAPER_TAGLEN	7		/* strlen("</head>") */
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 9ba65a2bad..2c3bef78b9 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -273,7 +273,6 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+       <a href="/reaper_shell.asp#Reaper_QoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl">Traffic Manager</span></a>
+       <a href="/reaper_shell.asp#Reaper_Traffic.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl">Traffic Analyzer</span></a>
+       <a href="/reaper_shell.asp#Reaper_Advisor.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 1 5 5c0 2-1 3-2 4s-1 2-1 3H10c0-1 0-2-1-3S7 10 7 8a5 5 0 0 1 5-5z"/><path d="M10 20h4"/></svg></span><span class="nl">AI Advisor</span></a>
+-      <a href="/reaper_shell.asp#Main_GameServer_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg></span><span class="nl">Open NAT</span></a>
+       <a href="/reaper_shell.asp#APP_Installation.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg></span><span class="nl">USB Application</span></a>
+       <a href="/reaper_shell.asp#Tools_Sysinfo.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span class="nl">System Info</span></a>
+     </nav>
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index f0a2846f95..68fa6c79e2 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -115,8 +115,9 @@ table.classes input[type=text]:focus{border-color:var(--line)}
+ .xq .xt .xn{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+ .xq .xt .xv{font-size:13px;color:var(--bone-dim);margin-top:4px}
+ 
+-/* links row */
+-.linksrow{font-size:12.5px;line-height:1.7}
++/* per-mode contextual link (Bandwidth Limiter -> stock editor) */
++.mode .modelink{display:inline-block;margin-top:8px;font-size:12px;color:var(--crimson);text-decoration:none;border-bottom:1px solid rgba(225,6,0,.4)}
++.mode .modelink:hover{border-bottom-color:var(--crimson)}
+ 
+ /* FAQ fly-out */
+ .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s;z-index:40}
+@@ -239,15 +240,6 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   </div>
+ </div>
+ 
+-<div class="panel linksrow" id="linkspanel">
+-  <h2>Related pages</h2>
+-  <div class="sub" style="margin-bottom:6px">Classification and per-device controls stay on their existing pages:</div>
+-  <a href="/Advanced_QOSUserRules_Content.asp">Classification rules (match by IP / MAC / port / protocol)</a> &middot;
+-  <a href="/Advanced_QOSUserPrio_Content.asp">Traditional QoS priorities</a> &middot;
+-  <a href="/QoS_EZQoS.asp">Stock QoS page (Bandwidth Limiter per-device editor)</a>
+-  <div class="hint">Rule of thumb: match on <b>IP, MAC, port or protocol</b> &mdash; not transferred-bytes. Accelerated flows keep the class of their first packet, so byte-count rules misclassify long flows.</div>
+-</div>
+-
+ <!-- FAQ fly-out -->
+ <div class="scrim" id="scrim" onclick="faqClose()"></div>
+ <aside class="flyout" id="flyout" aria-label="FAQ and tuning guide">
+@@ -371,7 +363,8 @@ var MODES = [
+    tags:[['Accel OFF','warn'],['Up + Down','good']]},
+   {key:'0', type:'0', name:'Traditional QoS', desc:'The classic software engine with rule-based classes. Turns the NAT accelerator off.',
+    tags:[['Accel OFF','warn'],['Up + Down','']]},
+-  {key:'2', type:'2', name:'Bandwidth Limiter', desc:'Hard per-device speed caps rather than smart sharing. Configure device limits on the stock page (link below).',
++  {key:'2', type:'2', name:'Bandwidth Limiter', desc:'Hard per-device speed caps rather than smart sharing. Set device limits on the stock Bandwidth Limiter editor.',
++   link:{href:'/QoS_EZQoS.asp', text:'Open the Bandwidth Limiter editor'},
+    tags:[['Per-device caps',''],['Not bufferbloat','warn']]}
+ ];
+ var sel = (NV.enable === '1') ? String(NV.type) : 'off';
+@@ -387,6 +380,7 @@ function renderModes(){
+     h += '<h3>'+m.name+'</h3><p>'+m.desc+'</p><div class="tags">';
+     for (var t=0;t<m.tags.length;t++) h += '<span class="tag '+(m.tags[t][1]||'')+'">'+m.tags[t][0]+'</span>';
+     h += '</div>';
++    if (m.link) h += '<a class="modelink" href="'+m.link.href+'" onclick="event.stopPropagation()">'+m.link.text+' &rsaquo;</a>';
+     d.innerHTML = h;
+     d.onclick = function(){ sel = m.key; renderModes(); syncPanels(); };
+     host.appendChild(d);
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index ebe65b4c23..20f2694446 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -100,13 +100,14 @@ define(function(){
+ 				index: "menu_BandwidthMonitor", 
+ 				tab: [
+ 					/* reaper QoS v3: the QoS tab is the reaper-native page; the stock
+-					   QoS_EZQoS.asp still ships and is linked from it (BW-limiter editor) */
++					   QoS_EZQoS.asp still ships and is linked from it (BW-limiter editor).
++					   The legacy QoS editors (Advanced_QOSUserPrio/UserRules) are
++					   superseded by Reaper_QoS -> removed here and URL-suppressed in
++					   reaper_inject.c (redirect to the reaper page). */
+ 					{url: "Reaper_QoS.asp", tabName: "<#menu5_3_2#>"},
+ 					{url: "AdaptiveQoS_ROG.asp", tabName: "<table style='margin-top:-7px;'><tr><td><img src='/images/ROG_Logo.png' style='border:0px;width:32px;'></td><td>ROG First</td></tr></table>"},
+ 					{url: "Main_Spectrum_Content.asp", tabName: "<#Spectrum_title#>"},
+ 					{url: "AdaptiveQoS_InternetSpeed.asp", tabName: "<#InternetSpeed#>"},
+-					{url: "Advanced_QOSUserPrio_Content.asp", tabName: "__INHERIT__"},
+-					{url: "Advanced_QOSUserRules_Content.asp", tabName: "__INHERIT__"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				] 
+ 			},		
+@@ -122,15 +123,11 @@ define(function(){
+ 				menuName: "<#Traffic_Analyzer#>",
+ 				index: "menu_TrafficAnalyzer", 
+ 				tab: [
+-					/* reaper v1.3.0: Traffic Analyzer is the reaper-native page;
+-					   stock Monitor/Statistic pages still ship and remain reachable by URL */
++					/* reaper v1.3.0: Traffic Analyzer is the reaper-native page. The
++					   stock Traffic Monitor + Statistic pages are superseded by it ->
++					   removed here and URL-suppressed in reaper_inject.c (redirect to the
++					   reaper page). Traffic Limiter is a distinct feature and is kept. */
+ 					{url: "Reaper_Traffic.asp", tabName: "<#traffic_monitor#>"},
+-					{url: "Main_TrafficMonitor_realtime.asp", tabName: "__INHERIT__"},
+-					{url: "Main_TrafficMonitor_last24.asp", tabName: "__INHERIT__"},
+-					{url: "Main_TrafficMonitor_daily.asp", tabName: "__INHERIT__"},
+-					{url: "Main_TrafficMonitor_monthly.asp", tabName: "__INHERIT__"},
+-					{url: "Main_TrafficMonitor_settings.asp", tabName: "__INHERIT__"},
+-					{url: "TrafficAnalyzer_Statistic.asp", tabName: "<#Statistic#>"},
+ 					{url: "AdaptiveQoS_TrafficLimiter.asp", tabName: "Traffic Limiter"},
+                                         {url: "NULL", tabName: "__INHERIT__"}
+ 				]
+@@ -155,14 +152,8 @@ define(function(){
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				] 
+ 			},
+-			{
+-				menuName: "Open NAT",
+-				index: "menu_OpenNAT", 
+-				tab: [
+-					{url: "GameProfile.asp", tabName: "Open NAT"},
+-					{url: "NULL", tabName: "__INHERIT__"}
+-				] 
+-			},
++			/* reaper: Open NAT hidden - it is just port forwarding, already covered
++			   by the Port Forwarding page (Advanced_VirtualServer_Content.asp). */
+ 			{
+ 				menuName: "腾讯网游加速器",
+ 				index: "menu_TencentAcceleration",
+@@ -432,12 +423,11 @@ define(function(){
+ 				if(!tagged_based_vlan){
+ 					retArray.push("menu_VLAN");
+ 				}
+-
+-				/* reaper: Game Boost drives bwdpi adaptive-QoS (removed) - always hide; Open NAT is plain port forwarding, keep */
+-				retArray.push("menu_GameBoost");
+-				if(!gameMode_support) {
++					/* reaper: Game Boost drives bwdpi adaptive-QoS (removed) - always hide.
++					   Open NAT is plain port forwarding, already covered by Port Forwarding
++					   - always hide too (also removed from the static list + dashboard rail). */
++					retArray.push("menu_GameBoost");
+ 					retArray.push("menu_OpenNAT");
+-				}
+ 
+ 				if(!rog_support && !tuf_support){
+ 					for(i=0; i<menuTree.list.length; i++){
+-- 
+2.25.1
+

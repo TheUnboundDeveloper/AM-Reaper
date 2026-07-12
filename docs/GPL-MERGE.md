@@ -306,8 +306,10 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (validated 2026-07-11, produced the 138-patch
-v1.4.1 series):**
+**Patch-series regeneration recipe (validated 2026-07-12, produced the 150-patch
+v1.5.0a series — `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a
+zero `release/src/router` diff; the earlier 138-patch v1.4.1 run was validated the
+same way):**
 
 ```bash
 BASE=a7ebfa133a                      # last real upstream commit

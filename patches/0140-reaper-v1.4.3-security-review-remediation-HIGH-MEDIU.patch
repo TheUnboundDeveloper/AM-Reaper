@@ -1,0 +1,284 @@
+From 05acf110a6dc9383a34085cc9efcad36c72d457a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 18:49:15 -0400
+Subject: [PATCH] reaper v1.4.3: security-review remediation (HIGH/MEDIUM +
+ quick LOW)
+
+From the v1.4.2 multi-agent code review. Fixes apply to both build variants
+except the AI Advisor items, which are RTCONFIG_REAPER_MCP-gated (MCP build
+only).
+
+Traffic Analyzer (rtrafd - both variants):
+- HIGH: db_load trusted a signed nnet from the on-disk (USB/JFFS) history db;
+  a negative value reached net_slot() -> netname[negative] out-of-bounds
+  write. Reject out-of-range nnet; force-terminate all untrusted on-disk
+  strings and normalize 'used' before any %s; guard the final ring read.
+- MEDIUM: arp_mac re-opened+scanned /proc/net/arp per flow every second
+  (O(flows x arp) CPU DoS from a LAN host). Load ARP once per poll into a
+  cache; lookups are in-memory.
+- LOW: reject a leading '-' in the ping probe target (no -f flood); validate
+  nflist IPv4 octets 0..255.
+
+Hardware QoS (rc/qos.c - both variants):
+- MEDIUM: ip_range_checker validated the address before '-' but emitted the
+  range upper bound (p+1) verbatim into an iptables --src-range rule; a tail
+  newline could inject a mangle rule. Validate both bounds with isIPnum.
+
+AI Advisor (rmcpd - MCP build only):
+- HIGH: no socket/handshake timeout let a slow client wedge the single-
+  threaded daemon and defeat the session-expiry + USB-key-removal lockdowns.
+  Set SO_RCVTIMEO/SO_SNDTIMEO on the accepted fd.
+- MEDIUM: any unauthenticated LAN host could trip the 5-bad-token self-kill
+  and drop the owner's session. Only self-terminate on repeated bad tokens
+  when a client pin is set (then only the pinned host can reach it).
+- LOW: constant-time token compare (CRYPTO_memcmp); broaden get_logs
+  redaction to ':' / spaced / quoted secret shapes.
+
+Deferred LOW / defense-in-depth items are in the lean repo docs/BACKLOG.md.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf        |  2 +-
+ release/src/router/rc/qos.c        |  6 ++-
+ release/src/router/rmcpd/Makefile  |  2 +-
+ release/src/router/rmcpd/rmcpd.c   | 34 +++++++++++++---
+ release/src/router/rtrafd/rtrafd.c | 64 +++++++++++++++++++++++-------
+ 5 files changed, 83 insertions(+), 25 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 4c91fed6df..017692969b 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.2
++EXTENDNO=Reaper_v1.4.3
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index f6fc0b340f..73b179eebf 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -285,8 +285,10 @@ static int ip_range_checker(char *old, char *new, int len)
+ 		memset(a, 0, sizeof(a));
+ 		strncpy(a, g, len_to_line);
+ 
+-		// validate value is valid IP num
+-		if (isIPnum(a) == -1) {
++		// validate BOTH range bounds: 'a' (before '-') AND p+1 (after '-').
++		// p+1 was previously emitted verbatim into the iptables --src-range rule,
++		// so a tail containing a newline/space could inject an extra rule line.
++		if (isIPnum(a) == -1 || isIPnum(p + 1) == -1) {
+ 			QOSLOG("case 3: p+=%s, g=%s, a=%s", p+1, g, a);
+ 			goto END;
+ 		}
+diff --git a/release/src/router/rmcpd/Makefile b/release/src/router/rmcpd/Makefile
+index aab2a44eea..270e274bc5 100644
+--- a/release/src/router/rmcpd/Makefile
++++ b/release/src/router/rmcpd/Makefile
+@@ -1,7 +1,7 @@
+ include ../common.mak
+ 
+ CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
+-CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared -I$(TOP)/json-c -I$(TOP)/mssl
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared -I$(TOP)/json-c -I$(TOP)/mssl -I$(TOP)/openssl-1.1/include
+ LDFLAGS	= -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared
+ LDFLAGS += -L$(TOP)/json-c/.libs -ljson-c
+ # TLS via the router's own httpd cert: reuse the mssl wrapper httpd uses.
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index 555cf6e8a5..be82a6e92d 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -48,6 +48,7 @@
+ #include <arpa/inet.h>
+ 
+ #include <json.h>	/* json-c umbrella; Makefile adds -I$(TOP)/json-c */
++#include <openssl/crypto.h>	/* CRYPTO_memcmp (constant-time token compare) */
+ 
+ #include <bcmnvram.h>
+ #include <shutils.h>
+@@ -485,9 +486,12 @@ static void tool_nvram(sbuf_t *s)
+ 
+ static void tool_logs(sbuf_t *s)
+ {
+-	/* syslog tail; redact anything that looks like a secret assignment */
++	/* syslog tail; redact secret-shaped assignments. Broadened to cover ':' and
++	 * ' = ' separators and optional quoting (not just "key=value"), so a value
++	 * with spaces or a colon-form log line is still scrubbed before egress. */
+ 	sb_addcmd(s, "tail -n 200 /tmp/syslog.log 2>/dev/null | "
+-		"sed -E 's/(psk|password|passwd|key|secret|token)=[^ ]+/\\1=<redacted>/Ig'",
++		"sed -E 's/(psk|passwd|password|secret|token|apikey|pin|pass|key)"
++		"[[:space:]]*[:=][[:space:]]*\"?[^\", ]+/\\1=<redacted>/Ig'",
+ 		48 * 1024);
+ }
+ 
+@@ -670,9 +674,10 @@ static int check_auth_value(const char *val)
+ 	while (*b && *b != '\r' && *b != '\n' && i < sizeof(got) - 1)
+ 		got[i++] = *b++;
+ 	got[i] = 0;
+-	/* length-first compare to keep it simple; token is 128-bit random hex */
++	/* constant-time compare; the length check leaks nothing (the token is a
++	 * fixed-length 128-bit hex string). */
+ 	if (strlen(got) != strlen(g_token)) return 0;
+-	return strcmp(got, g_token) == 0 ? 1 : 0;
++	return CRYPTO_memcmp(got, g_token, strlen(g_token)) == 0 ? 1 : 0;
+ }
+ 
+ static void serve_conn(int fd)
+@@ -708,8 +713,14 @@ static void serve_conn(int fd)
+ 	if (!is_post_mcp) { http_error(fp, 404, "Not Found", "path"); goto done; }
+ 
+ 	if (!authed) {
+-		if (++g_badauth >= MAX_BADAUTH) {
+-			syslog(LOG_CRIT, "rmcpd: %d bad tokens - self-terminating", g_badauth);
++		/* Only let repeated bad tokens self-terminate the daemon when a client
++		 * pin is set: with a pin, iptables (-s) + the peer check mean ONLY the
++		 * pinned host can reach this, so it's a genuine brute-force signal.
++		 * Without a pin ANY LAN host could reach it and abuse the self-kill as a
++		 * free off-switch for the owner's session, so unpinned we simply 401 -
++		 * the 128-bit token is unguessable regardless. */
++		if (g_client_ip[0] && ++g_badauth >= MAX_BADAUTH) {
++			syslog(LOG_CRIT, "rmcpd: %d bad tokens from the pinned client - self-terminating", g_badauth);
+ 			g_stop = 1;
+ 		}
+ 		http_error(fp, 401, "Unauthorized", "auth");
+@@ -843,6 +854,17 @@ int main(int argc, char **argv)
+ 			socklen_t cl = sizeof(ca);
+ 			int cfd = accept(ls, (struct sockaddr *)&ca, &cl);
+ 			if (cfd < 0) continue;
++			/* Bound every read/write (and the TLS handshake, which reads on this
++			 * fd) so a slow/stalled client cannot wedge the single-threaded loop
++			 * and thereby defeat the session-expiry and USB-key-removal lockdowns
++			 * (they only run between connections). 15s is generous for a LAN MCP
++			 * client; a slower peer is dropped rather than parking the daemon. */
++			{
++				struct timeval to;
++				to.tv_sec = 15; to.tv_usec = 0;
++				setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
++				setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof(to));
++			}
+ 			/* defense in depth atop iptables: enforce client pin here too */
+ 			if (g_client_ip[0]) {
+ 				char peer[32];
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 849ce2c5b2..212421a321 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -200,6 +200,7 @@ static int ifname_ok(const char *s)
+ static int host_ok(const char *s)	/* probe target: hostname / IPv4 chars only */
+ {
+ 	if (!*s || strlen(s) > 63) return 0;
++	if (*s == '-') return 0;	/* never let the target parse as a ping option (e.g. -f flood) */
+ 	for (; *s; s++)
+ 		if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') ||
+ 		      (*s >= '0' && *s <= '9') || *s == '.' || *s == '-'))
+@@ -276,24 +277,42 @@ take:
+ 	return oldest;
+ }
+ 
+-/* ip -> mac from /proc/net/arp (linear scan; table is small) */
+-static int arp_mac(const char *ip, char *mac, size_t maclen)
++/* ARP cache: /proc/net/arp is read ONCE per poll (arp_refresh) into this table,
++ * not re-opened+scanned per flow - otherwise a LAN host opening many flows makes
++ * per-client attribution O(flows x arp_entries) every second (CPU DoS). */
++#define NARP	256
++static struct { char ip[16]; char mac[24]; } arp_tbl[NARP];
++static int arp_n = 0;
++
++static void arp_refresh(void)
+ {
+ 	FILE *f = fopen("/proc/net/arp", "r");
+-	char line[256], aip[64], hw[64], dev[32];
++	char line[256], aip[64], hw[64];
+ 	int type, fl;
+-	if (!f) return 0;
++	arp_n = 0;
++	if (!f) return;
+ 	fgets(line, sizeof(line), f);	/* header */
+-	while (fgets(line, sizeof(line), f)) {
+-		if (sscanf(line, "%63s 0x%x 0x%x %63s %*s %31s", aip, &type, &fl, hw, dev) < 4)
++	while (fgets(line, sizeof(line), f) && arp_n < NARP) {
++		if (sscanf(line, "%63s 0x%x 0x%x %63s", aip, &type, &fl, hw) < 4)
+ 			continue;
+-		if (strcmp(aip, ip) == 0 && strcmp(hw, "00:00:00:00:00:00") != 0) {
+-			strlcpy(mac, hw, maclen);
+-			fclose(f);
+-			return 1;
+-		}
++		if (strcmp(hw, "00:00:00:00:00:00") == 0)
++			continue;
++		strlcpy(arp_tbl[arp_n].ip, aip, sizeof(arp_tbl[0].ip));
++		strlcpy(arp_tbl[arp_n].mac, hw, sizeof(arp_tbl[0].mac));
++		arp_n++;
+ 	}
+ 	fclose(f);
++}
++
++/* ip -> mac from the per-poll ARP cache (linear scan; table is small) */
++static int arp_mac(const char *ip, char *mac, size_t maclen)
++{
++	int i;
++	for (i = 0; i < arp_n; i++)
++		if (strcmp(arp_tbl[i].ip, ip) == 0) {
++			strlcpy(mac, arp_tbl[i].mac, maclen);
++			return 1;
++		}
+ 	return 0;
+ }
+ 
+@@ -444,9 +463,10 @@ static void poll_fcache(void)
+ 		}
+ 		/* octets are zero-padded (192.168.050.215) -> parse decimal, NOT
+ 		 * inet_aton (which would read "050" as octal). */
+-		if (sscanf(sips, "%d.%d.%d.%d", &a, &b, &c, &d) != 4) continue;
++		if (sscanf(sips, "%d.%d.%d.%d", &a, &b, &c, &d) != 4 ||
++		    ((a | b | c | d) & ~0xff)) continue;	/* reject octet >255 / negative */
+ 		fl[nfl].sip = ((uint32_t)a << 24) | (b << 16) | (c << 8) | d;
+-		if (sscanf(dips, "%d.%d.%d.%d", &a, &b, &c, &d) == 4)
++		if (sscanf(dips, "%d.%d.%d.%d", &a, &b, &c, &d) == 4 && !((a | b | c | d) & ~0xff))
+ 			fl[nfl].dip = ((uint32_t)a << 24) | (b << 16) | (c << 8) | d;
+ 		else
+ 			fl[nfl].dip = 0;
+@@ -542,6 +562,7 @@ static void poll_conntrack(void)
+ 	if (!f) return;
+ 	flowgen++;
+ 	ntop = 0;
++	arp_refresh();		/* load /proc/net/arp ONCE per poll, not per flow */
+ 	while (fgets(line, sizeof(line), f)) {
+ 		char proto[16] = "", src[64] = "", dst[64] = "";
+ 		char rsrc[64] = "";
+@@ -845,14 +866,27 @@ static void db_load(const char *path)
+ 		fclose(o);
+ 		return;
+ 	}
+-	nnet = h.nnet > NNET ? NNET : h.nnet;
++	/* The db comes from USB/JFFS and is UNTRUSTED. h.nnet is a signed int read
++	 * straight from disk: clamping only the high end let a negative value through
++	 * to net_slot() -> netname[negative] out-of-bounds write. Reject any header
++	 * whose nnet is out of range. */
++	if (h.nnet < 0 || h.nnet > NNET) { fclose(o); return; }
++	nnet = h.nnet;
+ 	memcpy(netname, h.netname, sizeof(netname));
+ 	memcpy(cli, h.cli, sizeof(cli));
++	/* on-disk strings/flags are untrusted too: force-terminate every field and
++	 * normalize 'used' before any %s emit, so a crafted db can't over-read .bss. */
++	for (i = 0; i < NNET; i++) netname[i][sizeof(netname[0]) - 1] = 0;
++	for (i = 0; i < NCLI; i++) {
++		cli[i].key[sizeof(cli[0].key) - 1] = 0;
++		cli[i].ip[sizeof(cli[0].ip) - 1] = 0;
++		cli[i].used = cli[i].used ? 1 : 0;
++	}
+ 	if (fread(r_wan, sizeof(ring_t), 1, o) != 1) goto out;
+ 	for (i = 0; i < NNET; i++) if (fread(r_net[i], sizeof(ring_t), 1, o) != 1) goto out;
+ 	for (i = 0; i < 7; i++) if (fread(r_cls[i], sizeof(ring_t), 1, o) != 1) goto out;
+ 	for (i = 0; i < NCLI; i++) if (fread(r_cli[i], sizeof(ring_t), 1, o) != 1) goto out;
+-	fread(r_prb, sizeof(ring_t), 1, o);
++	if (fread(r_prb, sizeof(ring_t), 1, o) != 1) goto out;	/* guard the last ring too */
+ 	syslog(LOG_INFO, "rtrafd: history restored from %s (saved %lld)", path, (long long)h.saved);
+ out:
+ 	fclose(o);
+-- 
+2.25.1
+

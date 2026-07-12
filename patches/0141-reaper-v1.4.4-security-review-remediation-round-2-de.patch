@@ -1,0 +1,376 @@
+From 09b52349f3364a6378e7cc00498c21f596167df9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 11 Jul 2026 19:52:35 -0400
+Subject: [PATCH] reaper v1.4.4: security-review remediation round 2 (deferred
+ LOW / defense-in-depth)
+
+Clears the remaining LOW items from the v1.4.2 multi-agent review (HIGH/MEDIUM
+were v1.4.3). None was a live vulnerability. Fixes apply to both build variants
+except the AI Advisor items, which are RTCONFIG_REAPER_MCP-gated (MCP build only).
+
+Traffic Analyzer (rtrafd - both variants):
+- Harden the persistent history db against a hostile USB mount: db_save creates
+  the temp with O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0600 (published atomically via
+  rename), db_load opens O_RDONLY|O_NOFOLLOW, and both the jffs/usb store dirs are
+  lstat-checked (dir_ok) so a planted symlink can't redirect writes and history is
+  never world-readable.
+
+Dashboard (www/Main_ReaperDash.asp - both variants):
+- Stop eval()-ing the three stock CPU/temp/ports responses; a pickJSON() extractor
+  + JSON.parse (plain regex for the temp string) parses them as inert data. The
+  emitters were confirmed to be single-line double-quoted JSON, so behaviour is
+  unchanged.
+
+AI Advisor (httpd/web.c + www/Reaper_Advisor.asp - MCP build only):
+- CSRF: reaper_mcp.cgi is NOT in the (prebuilt/closed) web_hook.o mime_referers
+  whitelist, so do_referer stays 0 and referer_check() never runs for it; do_auth
+  only proves the login cookie. Since the closed table can't be edited, gate the
+  two security-relevant state changes (deprovision, usb_unenroll) on proof of the
+  current arming code (rmcp_require_code: constant-time, shared lockout accounting),
+  mirroring the provision-rotate guard. The arming page prompts for the code.
+- Boot sweep: reaper_mcp_boot_sweep() in start_services removes a stale LAN
+  INPUT...ACCEPT rule + /tmp/reaper_mcp/session left by an unclean rmcpd exit
+  (SIGKILL/SEGV); reconstructs the exact rule from lan_ifname + rmcp_port + the
+  session's strictly-validated client. Never starts the daemon.
+
+Both v1.4.4 images built + verified (noMCP zero-trace clean); deferred build-flags
+item remains in the lean repo docs/BACKLOG.md.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                |  2 +-
+ release/src/router/httpd/web.c             | 48 ++++++++++++++-
+ release/src/router/rc/services.c           | 72 ++++++++++++++++++++++
+ release/src/router/rtrafd/rtrafd.c         | 31 ++++++++--
+ release/src/router/www/Main_ReaperDash.asp | 17 +++--
+ release/src/router/www/Reaper_Advisor.asp  | 12 +++-
+ 6 files changed, 169 insertions(+), 13 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 017692969b..5df6c8956a 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.3
++EXTENDNO=Reaper_v1.4.4
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 1ebf25c1bb..c7df615c2a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21800,6 +21800,45 @@ static int rmcp_usb_find_key(const char *wanthash, char *out, size_t outsz)
+ 	return found;
+ }
+ 
++/* CSRF / second-factor guard for the destructive advisor actions. reaper_mcp.cgi
++ * is a Reaper-added CGI, so it is NOT in the (prebuilt, closed) httpd Referer
++ * whitelist - do_referer stays 0 and referer_check() never runs for it. do_auth
++ * only proves a live admin cookie, which a CSRF POST rides. Proving knowledge of
++ * the current arming code - a secret the browser never holds - defeats that for
++ * the security-relevant actions (wiping the code, dropping the USB 2nd factor),
++ * mirroring the code-rotation guard already used in 'provision'. Shares the same
++ * fail-count + lockout accounting. Returns 1 to proceed; on failure it has already
++ * written the JSON error and the caller must return. */
++static int
++rmcp_require_code(FILE *stream, const char *code, time_t now, long lock_until)
++{
++	unsigned char salt[32];
++	char calc[80];
++	const char *stored = nvram_safe_get("rmcp_code_hash");
++	int saltlen, fails;
++
++	if (lock_until > now) {
++		websWrite(stream, "{\"ok\":0,\"error\":\"locked - too many failures\",\"lock_until\":%ld}", lock_until);
++		return 0;
++	}
++	saltlen = rmcp_unhex(nvram_safe_get("rmcp_code_salt"), salt, sizeof(salt));
++	if (!code || saltlen <= 0 || rmcp_kdf(code, salt, saltlen, calc) != 0 ||
++	    strlen(calc) != strlen(stored) ||
++	    CRYPTO_memcmp(calc, stored, strlen(stored)) != 0) {
++		fails = atoi(nvram_safe_get("rmcp_fails")) + 1;
++		char fb[8]; snprintf(fb, sizeof(fb), "%d", fails);
++		nvram_set("rmcp_fails", fb);
++		if (fails >= RMCP_MAX_FAIL) {
++			char lb[16]; snprintf(lb, sizeof(lb), "%ld", (long)(now + RMCP_LOCK_SECS));
++			nvram_set("rmcp_lock_until", lb);
++		}
++		nvram_commit();
++		websWrite(stream, "{\"ok\":0,\"error\":\"current arming code required\"}");
++		return 0;
++	}
++	return 1;
++}
++
+ static void
+ do_reaper_mcp_cgi(char *url, FILE *stream)
+ {
+@@ -21894,7 +21933,10 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 	}
+ 
+ 	if (!strcmp(action, "deprovision")) {
+-		/* clearing the code also disarms any live session */
++		/* clearing the code also disarms any live session; require proof of the
++		 * current code so a CSRF/stale-cookie POST cannot wipe the 2nd factor */
++		if (provisioned && !rmcp_require_code(stream, get_cgi("code"), now, lock_until))
++			return;
+ 		unlink(RMCP_SESSION);
+ 		notify_rc("stop_rmcp");
+ 		nvram_set("rmcp_code_salt", "");
+@@ -21944,6 +21986,10 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 	}
+ 
+ 	if (!strcmp(action, "usb_unenroll")) {
++		/* dropping the 2nd factor is a security downgrade - gate it on the code
++		 * too, so a CSRF/stale-cookie POST cannot silently remove the USB key */
++		if (provisioned && !rmcp_require_code(stream, get_cgi("code"), now, lock_until))
++			return;
+ 		nvram_set("rmcp_usb_hash", "");
+ 		nvram_set("rmcp_usb_enable", "0");
+ 		nvram_commit();
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index d836419c6a..a090c0e0b3 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7632,6 +7632,75 @@ start_rmcp(void)
+ 	}
+ 	xstart("rmcpd");
+ }
++
++/* strict dotted-quad check: the client IP is spliced into an iptables shell
++ * command below, so a crafted session file must not be able to inject. */
++static int rmcp_ipv4_literal_ok(const char *s)
++{
++	size_t i, len;
++	if (!s) return 0;
++	len = strlen(s);
++	if (len < 7 || len > 15) return 0;	/* 0.0.0.0 .. 255.255.255.255 */
++	for (i = 0; i < len; i++)
++		if (!((s[i] >= '0' && s[i] <= '9') || s[i] == '.')) return 0;
++	return 1;
++}
++
++/* reaper v1.4.4: boot-time stale-rule sweep. Normally the daemon's atexit/signal
++ * cleanup removes its LAN INPUT ACCEPT rule and /tmp/reaper_mcp/session. If it
++ * died abnormally (SIGKILL/SEGV) that cleanup never ran and both can linger -
++ * inert (the daemon is gone) but untidy, and the port match stays open. On boot,
++ * with rmcpd NOT running, reconstruct the exact rule from nvram + the session's
++ * recorded client and tear it down. A clean boot has neither file nor rule, so
++ * this is a no-op. */
++void
++reaper_mcp_boot_sweep(void)
++{
++	char client[64] = "";
++	char cmd[256];
++	const char *lif;
++	int port, i;
++	FILE *f;
++
++	if (pids("rmcpd"))
++		return;				/* daemon alive - leave its rule in place */
++	if (!f_exists("/tmp/reaper_mcp/session"))
++		return;				/* nothing the daemon would have left behind */
++
++	port = nvram_get_int("rmcp_port");
++	if (port < 1024 || port > 65535)
++		port = 5199;
++	if ((f = fopen("/tmp/reaper_mcp/session", "r"))) {
++		char line[256];
++		while (fgets(line, sizeof(line), f)) {
++			char *nl = strchr(line, '\n');
++			if (nl) *nl = 0;
++			if (!strncmp(line, "client=", 7))
++				strlcpy(client, line + 7, sizeof(client));
++		}
++		fclose(f);
++	}
++
++	lif = nvram_safe_get("lan_ifname");
++	if (!lif || !*lif)
++		lif = "br0";
++	/* delete both rule shapes (pinned -s and unpinned); repeat to clear dups */
++	for (i = 0; i < 4; i++) {
++		if (rmcp_ipv4_literal_ok(client)) {
++			snprintf(cmd, sizeof(cmd),
++				"iptables -D INPUT -i %s -s %s -p tcp --dport %d -j ACCEPT 2>/dev/null",
++				lif, client, port);
++			system(cmd);
++		}
++		snprintf(cmd, sizeof(cmd),
++			"iptables -D INPUT -i %s -p tcp --dport %d -j ACCEPT 2>/dev/null",
++			lif, port);
++		system(cmd);
++	}
++
++	unlink("/tmp/reaper_mcp/session");
++	logmessage("rmcpd", "boot: cleared stale advisor rule/session left by an unclean exit");
++}
+ #endif
+ 
+ //Ren.B
+@@ -13280,6 +13349,9 @@ start_services(void)
+ 	start_infosvr();
+ 	restart_rstats();
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
++#ifdef RTCONFIG_REAPER_MCP
++	reaper_mcp_boot_sweep();	/* reaper v1.4.4 - drop stale advisor rule/session from an unclean prior exit; never starts the daemon */
++#endif
+ #ifdef RTCONFIG_DSL
+ 	start_spectrum(); //Ren
+ #endif
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 212421a321..6d3db13694 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -801,13 +801,23 @@ static void write_live(const char *store)
+ }
+ 
+ /* ---------- persistence (RAM / jffs / usb) ---------- */
++
++/* The store dir must be a REAL directory, not a symlink an attacker planted on
++ * a USB mount (which would silently redirect our rtraf.db writes elsewhere).
++ * lstat, don't follow: a symlink reports S_ISLNK, so S_ISDIR fails and we skip. */
++static int dir_ok(const char *p)
++{
++	struct stat st;
++	return lstat(p, &st) == 0 && S_ISDIR(st.st_mode);
++}
++
+ static const char *resolve_store(char *buf, size_t len)
+ {
+ 	char mode[16];
+ 	strlcpy(mode, nvram_safe_get("rtraf_path"), sizeof(mode));
+ 	if (strcmp(mode, "jffs") == 0) {
+ 		mkdir("/jffs/reaper", 0700);
+-		if (access("/jffs/reaper", W_OK) == 0) {
++		if (dir_ok("/jffs/reaper") && access("/jffs/reaper", W_OK) == 0) {
+ 			strlcpy(buf, "/jffs/reaper/rtraf.db", len);
+ 			return "jffs";
+ 		}
+@@ -820,7 +830,7 @@ static const char *resolve_store(char *buf, size_t len)
+ 				if (e->d_name[0] == '.') continue;
+ 				snprintf(p, sizeof(p), "/tmp/mnt/%s/reaper", e->d_name);
+ 				mkdir(p, 0700);
+-				if (access(p, W_OK) == 0) {
++				if (dir_ok(p) && access(p, W_OK) == 0) {
+ 					snprintf(buf, len, "%s/rtraf.db", p);
+ 					closedir(d);
+ 					return "usb";
+@@ -839,9 +849,17 @@ static void db_save(const char *path)
+ 	FILE *o;
+ 	char tmp[160];
+ 	int i;
++	int fd;
+ 	if (!path[0]) return;
+ 	snprintf(tmp, sizeof(tmp), "%s.new", path);
+-	if ((o = fopen(tmp, "w")) == NULL) return;
++	/* On an attacker-controlled USB mount, tmp could be a pre-planted symlink;
++	 * clear it, then create exclusively without following (O_EXCL|O_NOFOLLOW)
++	 * with 0600 so history is never world-readable and never redirected. The
++	 * final rtraf.db is this 0600 file, published atomically via rename(). */
++	unlink(tmp);
++	fd = open(tmp, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++	if (fd < 0) return;
++	if ((o = fdopen(fd, "w")) == NULL) { close(fd); unlink(tmp); return; }
+ 	memset(&h, 0, sizeof(h));
+ 	h.magic = DB_MAGIC; h.ver = DB_VER; h.saved = time(NULL); h.nnet = nnet;
+ 	memcpy(h.netname, netname, sizeof(netname));
+@@ -861,7 +879,12 @@ static void db_load(const char *path)
+ 	dbhdr_t h;
+ 	FILE *o;
+ 	int i;
+-	if (!path[0] || (o = fopen(path, "r")) == NULL) return;
++	int fd;
++	if (!path[0]) return;
++	/* don't follow a symlink planted where rtraf.db should be */
++	fd = open(path, O_RDONLY | O_NOFOLLOW);
++	if (fd < 0) return;
++	if ((o = fdopen(fd, "r")) == NULL) { close(fd); return; }
+ 	if (fread(&h, sizeof(h), 1, o) != 1 || h.magic != DB_MAGIC || h.ver != DB_VER) {
+ 		fclose(o);
+ 		return;
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index fd70b939e4..9ba65a2bad 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -680,6 +680,15 @@ function setDial(id,pct,unit){
+   d.style.setProperty('--v', pct);
+   var t=d.querySelector('.txt'); if(t) t.innerHTML = pct+'%<small>'+unit+'</small>';
+ }
++/* The stock same-origin status endpoints return "<var> = {..JSON..};" assignment
++ * text (ej emitters + json-c, always single-line valid JSON). Extract the object
++ * and JSON.parse it rather than eval()-ing the response body, so an unexpected or
++ * tampered response can only ever become inert data, never executable code. */
++function pickJSON(text, name){
++  var m = text.match(new RegExp(name + '\\s*=\\s*(\\{.*\\})\\s*;'));
++  if(!m) return null;
++  try{ return JSON.parse(m[1]); }catch(e){ return null; }
++}
+ var _prevCpu=null, _prevCores=null;
+ function pollSys(){
+   var x=new XMLHttpRequest();
+@@ -687,8 +696,7 @@ function pollSys(){
+   x.onreadystatechange=function(){
+     if(x.readyState!==4||x.status!==200) return;
+     try{
+-      var cpuInfo={}, memInfo={};
+-      eval(x.responseText);              /* defines cpuInfo, memInfo */
++      var cpuInfo=pickJSON(x.responseText,'cpuInfo')||{}, memInfo=pickJSON(x.responseText,'memInfo')||{};
+       var tot=0,use=0,per=[];
+       for(var k in cpuInfo){ var c=cpuInfo[k]; if(c&&c.total!=null){ tot+=Number(c.total); use+=Number(c.usage); per.push({t:Number(c.total),u:Number(c.usage)}); } }
+       if(tot>0){
+@@ -731,7 +739,7 @@ function pollTemp(){
+   x.open('GET','/ajax_coretmp.asp?_='+(new Date()).getTime(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4||x.status!==200) return;
+-    try{ eval(x.responseText); var t=parseFloat(String(window.curr_cpuTemp||'').replace(/[^0-9.]/g,'')); if(t>0) setTemp(t); }catch(e){}
++    try{ var m=x.responseText.match(/curr_cpuTemp\s*=\s*"([^"]*)"/); var t=m?parseFloat(m[1].replace(/[^0-9.]/g,'')):0; if(t>0) setTemp(t); }catch(e){}
+   };
+   x.send();
+ }
+@@ -889,8 +897,7 @@ function pollPorts(){
+   x.onreadystatechange=function(){
+     if(x.readyState!==4||x.status!==200) return;
+     try{
+-      var get_wan_lan_status={};
+-      eval(x.responseText);              /* defines get_wan_lan_status */
++      var get_wan_lan_status=pickJSON(x.responseText,'get_wan_lan_status')||{};
+       var sp=(get_wan_lan_status&&get_wan_lan_status.portSpeed)||{};
+       var keys=[]; for(var k in sp) keys.push(k);
+       if(!keys.length) return;
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index 1e995fe3b0..fc8651f2e4 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -231,7 +231,11 @@ function provision(){
+ 
+ function deprovision(){
+   if(!confirm('Clear the arming code and disable the advisor?')) return;
+-  post('deprovision').then(function(d){ setMsg('provMsg', d.ok?'Cleared.':'Failed.', d.ok?'ok':'err'); loadStatus(); });
++  var p={};
++  if(provisionedNow){
++    var c=prompt('Enter the current arming code to confirm:'); if(!c) return; p.code=c;
++  }
++  post('deprovision',p).then(function(d){ setMsg('provMsg', d.ok?'Cleared.':(d.error||'Failed.'), d.ok?'ok':'err'); loadStatus(); });
+ }
+ 
+ function usbEnroll(){
+@@ -243,7 +247,11 @@ function usbEnroll(){
+ }
+ function usbUnenroll(){
+   if(!confirm('Remove the USB key requirement? Arming will use the code only.')) return;
+-  post('usb_unenroll').then(function(d){ setMsg('usbMsg', d.ok?'Removed. Code-only arming.':'Failed.', d.ok?'ok':'err'); loadStatus(); });
++  var p={};
++  if(provisionedNow){
++    var c=prompt('Enter the current arming code to confirm:'); if(!c) return; p.code=c;
++  }
++  post('usb_unenroll',p).then(function(d){ setMsg('usbMsg', d.ok?'Removed. Code-only arming.':(d.error||'Failed.'), d.ok?'ok':'err'); loadStatus(); });
+ }
+ 
+ function saveSettings(){
+-- 
+2.25.1
+

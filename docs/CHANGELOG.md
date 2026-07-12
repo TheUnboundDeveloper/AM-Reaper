@@ -7,12 +7,190 @@ per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 All versions are the `RT-BE96U 3006.102.8_Reaper_v<X>` firmware line, built for the
 ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 
-> **Metal-validation note:** every version listed as released was validated on the
-> physical RT-BE96U. The newest line (v1.4.x — AI Advisor) is feature-complete and
-> build-verified; its on-hardware validation is in progress. See `RELEASE-NOTES.md`
-> for the current release's exact status.
+> **Metal-validation note:** everything through v1.4.8 is validated on the physical
+> RT-BE96U (including the USB third-factor flow). v1.4.8a–v1.4.9a are build-verified
+> (both image variants); v1.5.0a's AI Advisor and its network-diagnostics tier are
+> validated on the physical RT-BE96U. See `RELEASE-NOTES.md` for the current release's status.
 
 ---
+
+## v1.5.0a — Network Diagnostics: AI network probes (+ security hardening)
+- **AI Advisor network-diagnostics tier (AI Advisor image only).** When you explicitly allow it,
+  the read-only Advisor can run bounded, read-only network probes — `ping`, `traceroute`,
+  `DNS lookup`, `netstat` — so your own AI assistant can tell whether a problem sits at the
+  **router, the client device, the ISP, or the wider internet**. It still cannot change a single
+  setting.
+  - **Off by default, per session.** An "Allow network diagnostics" checkbox on the arming
+    card must be ticked *each time you arm*; the consent lives only in that session and never
+    persists.
+  - **Scoped + audited.** Every probe is fixed-argument (no shell), one-at-a-time, time-bounded,
+    output-capped, and written to the system log. Targets are validated and resolved first, and
+    loopback / link-local / ULA / private addresses that are **not** on this router's own LAN are
+    refused — for IPv4 **and** IPv6 — so the Advisor cannot be turned into an internal-network scanner.
+- **Security hardening.** The AI Advisor control endpoint now requires the router's request token
+  on any state-changing action (CSRF protection); diagnostic input-validation, interface-name
+  checks, and traffic-analyzer output escaping were tightened.
+- **No bundled packet capture.** An earlier internal build carried a `tcpdump`-based "Packet
+  Capture" page; it is **not** included — it pulled a large legacy dependency for a niche need.
+  If you want packet capture, install `tcpdump` via Entware on a USB stick.
+- **Metal-validated** on the RT-BE96U: the AI Advisor and its diagnostics tier verified on hardware.
+
+## v1.4.9a — UI polish: navigation, in-rail language selector, AiMesh, System Info
+- **Slimmer left navigation.** The side nav is back to just wide enough for the menu items and
+  the "ASUS · Merlin · Reaper" wordmark on one line.
+- **Language selector moved into the rail.** It now sits above the "General" heading as a compact
+  "Language:" dropdown instead of in the topbar.
+- **AiMesh card.** The router backdrop image now extends down behind the room selector so the
+  dropdown sits on the image, up to the divider — closing the dark gap.
+- **System Info "Features" row** now advertises Reaper's own packages (AI Advisor, Traffic
+  Analyzer, HW QoS classful) alongside the stock
+  capability list, so it reflects the true per-build feature set. UI/presentation only; both images.
+
+## v1.4.9 — USB second factor made binding + AI Advisor lock-state UI fix
+- **The USB key is now binding.** "Remove USB key" (unenroll) now requires the enrolled
+  stick to be physically inserted — someone with only the admin login and the arming code can
+  no longer strip the third factor, including via the deprovision-then-unenroll path. If the
+  key is lost, a **factory reset / nvram clear** is the only way to clear it. This makes the
+  USB factor tamper-resistant: removal is now at least as strong as arming.
+- **The AI Advisor page reflects the lock immediately.** While a session is armed the page now
+  re-polls the router every few seconds, so pulling the USB key (or a session timeout/disarm)
+  flips the card to "locked" within seconds instead of counting down a session the router has
+  already torn down. (The router-side teardown — firewall rule removed, session file deleted —
+  already fired on key removal; this closes the front-end feedback gap.)
+- Security/UI only, in the **AI Advisor image** (the standard/noMCP image has no Advisor, so it
+  is unaffected).
+
+## v1.4.8a — Bandwidth Limiter on the QoS page + language-selector fixes
+- **Bandwidth Limiter moved onto the Reaper QoS page.** Choosing the Bandwidth Limiter mode
+  now shows a per-device cap editor (pick a device or enter a MAC, set download/upload in
+  Mb/s, enable/disable and remove rows — up to 32 devices) directly on the page instead of
+  linking out to the stock editor. The old `QoS_EZQoS.asp` page is removed from the menu and
+  any direct or framed hit redirects to the Reaper QoS page.
+- **Language selector fixes (from v1.4.8 on-hardware testing):**
+  - You can now switch **back to English**, and the dropdown shows the **active** language as
+    selected. (ASUS's language list deliberately omits the current language, so it wasn't
+    selectable; the current language is now included.)
+  - The selector is more visible in the topbar — a globe icon, a crimson-tinted border, and
+    brighter text.
+- **"Traffic Analyzer" no longer scrolls the side nav sideways.** Five languages shipped that
+  menu label as "English + native", which overflowed the rail; it now shows the native
+  translation only, and nav labels ellipsize so no language can force a horizontal scrollbar.
+- **Removed the red editor link** from the Bandwidth Limiter option (now that the editor lives
+  on the page). Localization/UI only. Both images.
+
+## v1.4.8 — Language packs + UI fixes
+- **Language packs (i18n).** The five Reaper-native pages (dashboard, Traffic Manager,
+  Traffic Analyzer, AI Advisor, and the app shell) were 100% hardcoded English and ignored
+  the router's language setting. They are now fully tokenized (`<#...#>` dict entries) like
+  every stock ASUS page, so they follow `preferred_lang`. Where a string already had an
+  ASUS translation (menus, buttons, modes, common labels — ~70% of the chrome) the existing
+  key is reused, so those localize **immediately in all 25 languages**. Reaper-specific
+  strings (the QoS/Traffic/Advisor help prose) get new keys carrying English in every
+  language for now — a translation drop-in point with no code change needed. 350 new dict
+  keys added across all 25 language files, kept in lockstep.
+- **Language selector in the Reaper topbar.** Reaper's chrome hid the stock language menu
+  and offered no replacement, so the language could not be changed from the UI at all. A
+  compact language dropdown now sits in the shell and dashboard topbars (populated with the
+  router's compiled languages, localized names), applying the choice the same way the stock
+  UI does.
+- **Download Master advert removed** from the USB Application page — the advertised
+  "PC-free download manager" install tile no longer appears.
+- **Network Map USB icon** sizing corrected — the v1.4.7 change reframed the glyph because
+  the icon is a sprite sheet; the slice is now scaled to its box so a plugged drive shows
+  the clean centered glyph.
+- **AiMesh backdrop** stretched to fill the card band so there is no dark gap below the ASUS
+  logo and the room selector sits correctly.
+- UI/localization only; no change to any underlying feature. Both images.
+
+## v1.4.7 — UI polish + idle auto-logout
+- **Idle auto-logout (15 min).** An unattended admin session now logs itself out after
+  15 minutes of no activity (mouse/keyboard/touch), in the shell and inside the framed
+  page alike. Closes the "walked away from the router page" exposure.
+- **Traffic Analyzer** reading line now names the **selected timeframe** (Live / 24 hours /
+  14 days / 1 year / By month) instead of always saying "Live".
+- **Every page lands at the top** — switching pages in the app shell no longer leaves you
+  scrolled down with the tab strip hidden.
+- **Network Map USB tile:** the plugged-USB icon is centered in its ring, the disk-quota
+  bar is removed, and a long disk name no longer clips.
+- **AiMesh:** the backdrop behind the router/node name is now the ASUS logo instead of the
+  stock room photo.
+- Device/client icons already carry the red-on-black theme across the client-list pages
+  (confirmed on hardware). UI/navigation only; no underlying feature change. Both images.
+
+## v1.4.6 — Navigation cleanup: hide superseded and duplicate pages
+- **Superseded stock pages are now hidden and redirected.** The stock Traffic Monitor
+  and Statistic pages (replaced by the Reaper Traffic Analyzer) and the legacy QoS rule
+  editors (replaced by the Reaper QoS page) are removed from the menu; visiting one by
+  direct URL now bounces to its Reaper-native replacement instead of showing the dead
+  stock page.
+- **"Open NAT" removed from navigation.** It is just port forwarding, already covered by
+  the Port Forwarding page — removed from the menu and the dashboard rail. The
+  port-forwarding feature itself is unchanged and still reachable.
+- **QoS page tidy-up.** Removed the "Related Pages" block at the bottom of the QoS panel;
+  the one control it still pointed to (the per-device Bandwidth Limiter editor) now
+  appears as a link inside the Bandwidth Limiter mode where it belongs.
+- Navigation/UI only; no change to any underlying feature. Applies to both images.
+
+## v1.4.5 — Exploit-mitigation build hardening (Reaper daemons)
+- Compiles the two Reaper background daemons — the Traffic Analyzer collector
+  (`rtrafd`, in both images) and the AI Advisor server (`rmcpd`, AI Advisor image
+  only) — with modern exploit mitigations the stock BCM build omits: stack canaries
+  (`-fstack-protector-strong`), buffer-overflow checks (`-D_FORTIFY_SOURCE=2`),
+  format-string diagnostics (`-Wformat -Wformat-security`), position-independent
+  executables (**PIE**), and **full RELRO** (`-Wl,-z,relro,-z,now`). The stock base
+  ships neither stack canaries nor full RELRO, so this is a genuine hardening uplift
+  for Reaper's own long-running processes.
+- Build-only change (two Makefiles); no source or behaviour change. Verified on the
+  built binaries: both are now position-independent with read-only relocations and
+  stack-protection. Kept as its own release so the mitigation can be validated on
+  hardware in isolation.
+- Both images (Standard + AI Advisor) receive the `rtrafd` hardening; the AI Advisor
+  image additionally hardens `rmcpd`.
+
+## v1.4.4 — Security-review remediation, round 2 (defense-in-depth)
+- Clears the remaining LOW / defense-in-depth items from the v1.4.2 code review
+  (the HIGH/MEDIUM findings were fixed in v1.4.3). None was a live vulnerability;
+  these tighten untrusted-input handling, cleanup, and CSRF posture.
+- **Both images (Standard + AI Advisor):**
+  - **Traffic Analyzer:** the persistent history database is now written safely on an
+    untrusted USB mount — the file is created without following symlinks, is no longer
+    world-readable, and the store directory is rejected if it isn't a real directory
+    (blocking a planted symlink from redirecting history writes).
+  - **Dashboard:** the live CPU/temperature/port tiles no longer evaluate the stock
+    status responses as code — they parse them strictly as data, so an unexpected
+    response can never execute.
+- **AI Advisor image only:**
+  - Clearing the arming code or removing the USB second factor now requires the current
+    arming code, closing a cross-site-request path that a stale admin session could
+    otherwise have ridden to weaken the advisor's setup. (Arming already required the
+    code; this extends that to the two remaining state-changing actions.)
+  - If the advisor ever exits uncleanly, its LAN firewall rule and session file are now
+    swept away on the next boot instead of lingering.
+- The Standard (no-AI-Advisor) image receives the Traffic Analyzer and Dashboard fixes
+  and a matching version bump; the AI Advisor fixes are absent because that code isn't
+  in it.
+
+## v1.4.3 — Security-review remediation
+- Fixes from a full multi-agent code review of the newest subsystems (AI Advisor,
+  Traffic Analyzer, Hardware QoS, and the web UI). No router-compromise or
+  secret-leak path was found; these harden availability and untrusted-input handling.
+- **Both images (Standard + AI Advisor):**
+  - **Traffic Analyzer:** a crafted history database (on a USB/JFFS store) could cause
+    an out-of-bounds write — the on-disk header is now validated and its strings
+    treated as untrusted. Per-client attribution no longer rescans the ARP table for
+    every connection each second (a LAN device could otherwise spike router CPU); the
+    optional latency-probe target is validated more strictly.
+  - **Hardware QoS:** both ends of a QoS IP-range rule are now validated, closing a
+    path where a malformed rule address could inject an extra firewall rule.
+- **AI Advisor image only:**
+  - A slow or stalled connection can no longer wedge the advisor and delay its
+    self-lockdown — it now enforces a connection timeout, so session-expiry and
+    USB-key-removal always take effect promptly.
+  - Repeated bad-token attempts can no longer be used by an unauthenticated LAN device
+    to shut down your active advisor session.
+  - Constant-time token comparison and broader log-redaction as extra hardening.
+- The Standard (no-AI-Advisor) image receives the Traffic Analyzer and QoS fixes and a
+  matching version bump; the AI Advisor fixes are absent because that code isn't in it.
 
 ## v1.4.2 — AI Advisor: TLS via the router's own certificate
 - The AI Advisor now serves **HTTPS using the router's own web (httpd) certificate**

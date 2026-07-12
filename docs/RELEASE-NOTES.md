@@ -1,7 +1,7 @@
 # RT-BE96U "Reaper" — Release Notes
 
-**Release:** v1.4.2 (release candidate — pending final on-hardware validation)
-**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.4.2`
+**Release:** v1.5.0a (both variants build-verified; AI Advisor + network-diagnostics tier metal-validated on the RT-BE96U)
+**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.5.0a`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
 **Model:** ASUS RT-BE96U **only** (WiFi 7, Broadcom BCM4916/BCM6813)
 **Flash images:** two variants — **with** or **without** the AI Advisor (see §2)
@@ -37,23 +37,33 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BE96U_…_Reaper_v1.4.2_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.4.2_MCP_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BE96U_…_Reaper_v1.5.0a_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.5.0a_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note for maintainers: the current build artifacts are named
-> `…_Reaper_v1.4.2_nand_squashfs.pkgtb` (with the Advisor) and
-> `…_Reaper_v1.4.2_noMCP_…` (without). At release these are re-stamped to the
-> convention above (plain = Standard, `_MCP` = with Advisor). Hashes in §8 are
-> re-stamped for the final release build.
+> Naming note: the build artifacts are `…_Reaper_v1.5.0a_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v1.5.0a_noMCP_…` (**without**). §8 lists these
+> exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
+
+### Network Diagnostics — optional AI network probes (v1.5.0a)
+- **No bundled packet capture.** An earlier internal build carried a `tcpdump`-based Packet
+  Capture page; it is **not** shipped (a large legacy dependency for a niche need). Install
+  `tcpdump` via Entware on a USB stick if you need capture.
+- **AI Advisor diagnostics tier** (AI Advisor variant only): with **per-session, off-by-default**
+  consent (a checkbox on the arming card, re-ticked each arm), the read-only Advisor may run
+  bounded read-only probes — `ping` / `traceroute` / `DNS lookup` / `netstat` — to localize a
+  problem to the **router, client, ISP, or WAN**. Each probe is fixed-argument (no shell),
+  one-at-a-time, time-bounded, output-capped, audited to the system log, and target-scoped
+  (private addresses that are not on this router's own LAN are refused, so it cannot be used to
+  scan the internal network). It still cannot change any setting.
 
 ### AI Advisor — optional, read-only, LAN-only (v1.4.x)
 An **optional** subsystem (present only in the `_MCP` variant, and **off by default**
@@ -224,8 +234,8 @@ Release-candidate build hashes (SHA-256):
 
 | Artifact | SHA-256 |
 |---|---|
-| `RT-BE96U_3006_102.8_Reaper_v1.4.2_MCP_nand_squashfs.pkgtb` (with Advisor, flash this) | `0e96f7378eb0da8da10c6e2ae2cdd4e099e84fafc9a073bd600e638e685709d0` |
-| `RT-BE96U_3006_102.8_Reaper_v1.4.2_nand_squashfs.pkgtb` (Standard, flash this) | `3073c09091b973190d9defdb95974e46deff5ddb4e859997d00e4df3b41096a1` |
+| `RT-BE96U_3006_102.8_Reaper_v1.5.0a_nand_squashfs.pkgtb` (with AI Advisor, flash this) | `999dc390e3803b23f4fda36e026639b31fd3a7a3e3ab307c0b07f43d58f0a435` |
+| `RT-BE96U_3006_102.8_Reaper_v1.5.0a_noMCP_nand_squashfs.pkgtb` (Standard, flash this) | `2d7e23c9eadbc4b23dfd0775d2430aae24e91c61b01df59fab21ffc59ec3e3f0` |
 
 > Hashes above are the current build-candidate images (currently named
 > `…_Reaper_v1.4.2` for the Advisor build and `…_Reaper_v1.4.2_noMCP` for Standard).

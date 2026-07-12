@@ -1,0 +1,1356 @@
+From e12ed8684fee32b20b632349436a52708fec4ffe Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 12 Jul 2026 16:29:00 -0400
+Subject: [PATCH] reaper v1.5.0: Network Diagnostics - tcpdump on Network Tools
+ + MCP active-diagnostics tier
+
+Part A (both images): a "Packet Capture" tab on the Network Tools page.
+RTCONFIG_TCPDUMP=y (config_base) packages /usr/sbin/tcpdump. New page
+Main_PacketCapture_Content.asp + menuTree tab post to a NEW bounded CGI
+do_reaper_pcap_cgi (httpd, #ifdef RTCONFIG_TCPDUMP): argv-based tcpdump via _eval
+(NEVER a shell), packet-count + alarm(duration) caps, snaplen, strict-charset BPF
+filter split into argv tokens, real-interface check (if_nametoindex). Deliberately
+does NOT reuse the stock SystemCmd path (its char-whitelist rejects BPF chars and
+it is unbounded). Output = decoded text summary shown on the page.
+
+Part B (MCP image only, #ifdef RTCONFIG_REAPER_MCP): an active-diagnostics tier in
+rmcpd - net_ping / net_traceroute / net_dns_lookup / net_netstat - so the armed AI
+Advisor can isolate router vs client vs ISP vs WAN. Per-session opt-in: a new
+off-by-default "Allow network diagnostics" checkbox on the Advisor arm card writes
+diag=1 into the session file; rmcpd reads it (g_diag), advertises the tier in
+tools/list and permits tools/call ONLY when consented. Each probe: argv-exec via
+_eval (no shell), single-flight lock, alarm timeout, output cap, syslog audit line.
+Targets validated + resolved, and RFC1918 space that is NOT the router's own LAN is
+rejected (no internal-network sweeping). net_bufferbloat deferred (needs a bounded
+load generator). Advisor promise reworded (RADV_04) to state diagnostics honestly.
+
+i18n: 9 new dict keys (NetworkTools_PktCap*, RADV_73/74) + reworded RADV_04, all 25
+dicts in lockstep. noMCP image: Part A present, Part B compiled out. Metal test owed.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/config_base                |   2 +-
+ release/src/router/httpd/web.c                |  94 +++++++-
+ release/src/router/rmcpd/rmcpd.c              | 205 +++++++++++++++++-
+ release/src/router/www/BR.dict                |  11 +-
+ release/src/router/www/CN.dict                |  11 +-
+ release/src/router/www/CZ.dict                |  11 +-
+ release/src/router/www/DA.dict                |  11 +-
+ release/src/router/www/DE.dict                |  11 +-
+ release/src/router/www/EN.dict                |  11 +-
+ release/src/router/www/ES.dict                |  11 +-
+ release/src/router/www/FI.dict                |  11 +-
+ release/src/router/www/FR.dict                |  11 +-
+ release/src/router/www/HU.dict                |  11 +-
+ release/src/router/www/IT.dict                |  11 +-
+ release/src/router/www/JP.dict                |  11 +-
+ release/src/router/www/KR.dict                |  11 +-
+ release/src/router/www/MS.dict                |  11 +-
+ .../router/www/Main_PacketCapture_Content.asp | 158 ++++++++++++++
+ release/src/router/www/NL.dict                |  11 +-
+ release/src/router/www/NO.dict                |  11 +-
+ release/src/router/www/PL.dict                |  11 +-
+ release/src/router/www/RO.dict                |  11 +-
+ release/src/router/www/RU.dict                |  11 +-
+ release/src/router/www/Reaper_Advisor.asp     |   9 +-
+ release/src/router/www/SL.dict                |  11 +-
+ release/src/router/www/SV.dict                |  11 +-
+ release/src/router/www/TH.dict                |  11 +-
+ release/src/router/www/TR.dict                |  11 +-
+ release/src/router/www/TW.dict                |  11 +-
+ release/src/router/www/UK.dict                |  11 +-
+ .../router/www/require/menuTrees/menuTree.js  |   1 +
+ 32 files changed, 708 insertions(+), 38 deletions(-)
+ create mode 100644 release/src/router/www/Main_PacketCapture_Content.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index da87178075..a8d47a7386 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.9a
++EXTENDNO=Reaper_v1.5.0
+ 
+ RCNO=0
+diff --git a/release/src/router/config_base b/release/src/router/config_base
+index d8ebbe3acf..69e34cc039 100644
+--- a/release/src/router/config_base
++++ b/release/src/router/config_base
+@@ -326,7 +326,7 @@ RTCONFIG_WPS=y
+ # RTCONFIG_DNSQUERY_INTERCEPT is not set
+ # RTCONFIG_ROUTERBOOST is not set
+ # RTCONFIG_ASUSCTRL is not set
+-# RTCONFIG_TCPDUMP is not set
++RTCONFIG_TCPDUMP=y
+ # RTCONFIG_DUMP4000 is not set
+ # RTCONFIG_TRACEROUTE is not set
+ # RTCONFIG_NETOOL is not set
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 05ee9c5902..8a6cae56cb 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22016,6 +22016,8 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		unsigned char salt[32], token[16];
+ 		char calc[80], tokhex[40];
+ 		char usbkey_line[320] = "";	/* Mode B: "usbkey=<path>\n" or empty */
++		const char *netdiag = get_cgi("netdiag");	/* per-session active-diagnostics consent */
++		const char *diag_line = (netdiag && !strcmp(netdiag, "1")) ? "diag=1\n" : "";
+ 		const char *stored = nvram_safe_get("rmcp_code_hash");
+ 		int saltlen, fails, timeout;
+ 		FILE *sf;
+@@ -22083,14 +22085,15 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 			return;
+ 		}
+ 		fchmod(fileno(sf), 0600);
+-		fprintf(sf, "token=%s\nexpiry=%ld\nclient=%s\n%s",
++		fprintf(sf, "token=%s\nexpiry=%ld\nclient=%s\n%s%s",
+ 			tokhex, (long)(now + timeout * 60), nvram_safe_get("rmcp_client"),
+-			usbkey_line);
++			usbkey_line, diag_line);
+ 		fclose(sf);
+ 
+ 		notify_rc("start_rmcp");
+-		logmessage("rmcpd", "advisor armed for %d minutes%s", timeout,
+-			usbkey_line[0] ? " (USB key required)" : "");
++		logmessage("rmcpd", "advisor armed for %d minutes%s%s", timeout,
++			usbkey_line[0] ? " (USB key required)" : "",
++			diag_line[0] ? " (network diagnostics ENABLED)" : "");
+ 		/* scheme mirrors rmcpd: it serves TLS with the router's own httpd cert
+ 		 * when one is loaded (/etc/cert.pem + /etc/key.pem), else plain HTTP. */
+ 		{
+@@ -22116,6 +22119,86 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ }
+ #endif	/* RTCONFIG_REAPER_MCP */
+ 
++#ifdef RTCONFIG_TCPDUMP
++/* Reaper v1.5.0 Packet Capture (Network Tools page). Bounded, admin-authed
++ * tcpdump run via _eval - argv-based (NEVER a shell), alarm()-timeout, packet
++ * count cap, one-shot. Deliberately does NOT reuse the stock SystemCmd path
++ * (its char-whitelist rejects BPF-filter characters and it is unbounded).
++ * Returns decoded text as the response body (the page shows it in a textarea). */
++#define PCAP_OUT "/tmp/reaper_pcap.txt"
++static void
++do_reaper_pcap_cgi(char *url, FILE *stream)
++{
++	char *iface  = get_cgi("iface");
++	char *scount = get_cgi("count");
++	char *sdur   = get_cgi("dur");
++	char *ssnap  = get_cgi("snap");
++	char *filter = get_cgi("filter");
++	char cbuf[8], nbuf[8];
++	static char fbuf[160];
++	int count, dur, snap, ac = 0;
++	char *argv[24];
++	FILE *f;
++	char line[1024];
++	size_t total = 0;
++
++	/* interface must be a REAL interface - blocks arbitrary/injected strings */
++	if (!iface || !*iface || strlen(iface) > 16 || if_nametoindex(iface) == 0) {
++		websWrite(stream, "error: invalid interface");
++		return;
++	}
++	count = scount ? atoi(scount) : 0; if (count < 1) count = 20;  if (count > 2000) count = 2000;
++	dur   = sdur   ? atoi(sdur)   : 0; if (dur < 1)   dur = 5;     if (dur > 15)   dur = 15;
++	snap  = ssnap  ? atoi(ssnap)  : 0; if (snap < 64) snap = 256;  if (snap > 2048) snap = 2048;
++	snprintf(cbuf, sizeof(cbuf), "%d", count);
++	snprintf(nbuf, sizeof(nbuf), "%d", snap);
++
++	argv[ac++] = "/usr/sbin/tcpdump";
++	argv[ac++] = "-i";    argv[ac++] = iface;
++	argv[ac++] = "-c";    argv[ac++] = cbuf;
++	argv[ac++] = "-s";    argv[ac++] = nbuf;
++	argv[ac++] = "-n";
++	argv[ac++] = "-tttt";
++	/* optional BPF filter: strict char allow-list, then split into argv tokens
++	 * (each token a separate argv element - no shell, no injection surface) */
++	if (filter && *filter) {
++		int ok = 1; size_t k, fn = strlen(filter);
++		if (fn > 128) ok = 0;
++		for (k = 0; ok && k < fn; k++) {
++			char c = filter[k];
++			if (!(isalnum((unsigned char)c) || c==' ' || c=='.' || c==':' ||
++			      c=='/' || c=='(' || c==')' || c=='-' || c=='_'))
++				ok = 0;
++		}
++		if (!ok) {
++			websWrite(stream, "error: invalid filter (allowed: letters digits space . : / ( ) - _)");
++			return;
++		}
++		snprintf(fbuf, sizeof(fbuf), "%s", filter);
++		{
++			char *p = fbuf, *tok;
++			while ((tok = strsep(&p, " ")) != NULL && ac < 22)
++				if (*tok) argv[ac++] = tok;
++		}
++	}
++	argv[ac] = NULL;
++
++	unlink(PCAP_OUT);
++	_eval(argv, ">" PCAP_OUT, dur, NULL);	/* bounded: -c count AND alarm(dur) */
++
++	f = fopen(PCAP_OUT, "r");
++	if (!f) { websWrite(stream, "(no output - interface idle or capture failed)"); return; }
++	while (fgets(line, sizeof(line), f) && total < 64 * 1024) {
++		websWrite(stream, "%s", line);
++		total += strlen(line);
++	}
++	fclose(f);
++	unlink(PCAP_OUT);
++	if (total == 0)
++		websWrite(stream, "(no packets matched in %d s on %s)", dur, iface);
++}
++#endif	/* RTCONFIG_TCPDUMP */
++
+ static void
+ do_unreg_ASUSDDNS_cgi(char *url, FILE *stream)
+ {
+@@ -29199,6 +29282,9 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
+ #ifdef RTCONFIG_REAPER_MCP
+ 	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
++#endif
++#ifdef RTCONFIG_TCPDUMP
++	{ "reaper_pcap.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_pcap_cgi, do_auth },
+ #endif
+ 	{ "set_ASUS_NEW_EULA.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_NEW_EULA_cgi, do_auth },
+ 	{ "set_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_privacy_policy_cgi, do_auth },
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index be82a6e92d..47c54a3379 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -46,6 +46,8 @@
+ #include <sys/select.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++#include <netdb.h>	/* getaddrinfo - resolve+guard diagnostic targets */
++#include <syslog.h>	/* audit trail for the active-diagnostics tier */
+ 
+ #include <json.h>	/* json-c umbrella; Makefile adds -I$(TOP)/json-c */
+ #include <openssl/crypto.h>	/* CRYPTO_memcmp (constant-time token compare) */
+@@ -63,6 +65,11 @@
+ #define TICK_SECS	1		/* accept/expiry poll cadence */
+ #define TOOLOUT_MAX	(256 * 1024)	/* cap on a single tool's text output */
+ 
++/* active-diagnostics tier (v1.5.0): bounded, per-session-consented, one-at-a-time */
++#define DIAG_OUT	STATE_DIR "/diag.out"	/* _eval capture target */
++#define DIAG_LOCK	STATE_DIR "/diag.lock"	/* single-flight lock */
++#define DIAG_MAX	(32 * 1024)		/* cap on one diagnostic's output */
++
+ #define PROTO_VER	"2024-11-05"	/* MCP protocol revision we speak */
+ 
+ static volatile sig_atomic_t g_stop = 0;
+@@ -75,6 +82,7 @@ static time_t g_expiry = 0;
+ static int   g_badauth = 0;
+ static char  g_usbkey[256] = "";	/* Mode B: enrolled keyfile path, or "" if code-only */
+ static int   g_https = 0;		/* 1 = serve TLS with the router's httpd cert */
++static int   g_diag = 0;		/* per-session consent for the active-diagnostics tier (session "diag=1") */
+ 
+ /* ------------------------------------------------------------------ */
+ /* lifecycle: iptables fence + cleanup                                 */
+@@ -131,6 +139,7 @@ static int load_session(void)
+ 
+ 	if (!f)
+ 		return -1;
++	g_diag = 0;	/* consent is per-session; default off unless the file opts in */
+ 	while (fgets(line, sizeof(line), f)) {
+ 		char *nl = strchr(line, '\n');
+ 		if (nl) *nl = 0;
+@@ -142,6 +151,8 @@ static int load_session(void)
+ 			snprintf(g_client_ip, sizeof(g_client_ip), "%s", line + 7);
+ 		else if (!strncmp(line, "usbkey=", 7))
+ 			snprintf(g_usbkey, sizeof(g_usbkey), "%s", line + 7);
++		else if (!strncmp(line, "diag=", 5))
++			g_diag = (atoi(line + 5) == 1);
+ 	}
+ 	fclose(f);
+ 	if (!g_token[0] || g_expiry <= 0)
+@@ -506,6 +517,172 @@ static void tool_audit(sbuf_t *s)
+ 	sb_puts(s, "}");
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* active-diagnostics tier (v1.5.0): bounded ping/traceroute/dns/netstat, */
++/* gated by per-session consent (g_diag). argv-exec via _eval (NEVER a    */
++/* shell), single-flight, audited; targets scoped so the advisor cannot   */
++/* be used to sweep the internal network.                                 */
++/* ------------------------------------------------------------------ */
++
++/* A dotted-quad target is allowed if it is public, or private but on the
++ * router's own LAN subnet. Blocks using the advisor to sweep RFC1918 space. */
++static int diag_target_allowed_v4(struct in_addr a)
++{
++	unsigned long ip = ntohl(a.s_addr);
++	int priv = ((ip >> 24) == 10) ||
++		   ((ip & 0xFFF00000UL) == 0xAC100000UL) /* 172.16/12 */ ||
++		   ((ip & 0xFFFF0000UL) == 0xC0A80000UL) /* 192.168/16 */ ||
++		   ((ip >> 24) == 127) /* loopback */ ||
++		   ((ip & 0xFFFF0000UL) == 0xA9FE0000UL) /* 169.254/16 */;
++	struct in_addr lan, mask;
++	if (!priv)
++		return 1;
++	if (inet_aton(nvram_safe_get("lan_ipaddr"), &lan) == 1 &&
++	    inet_aton(nvram_safe_get("lan_netmask"), &mask) == 1)
++		return (a.s_addr & mask.s_addr) == (lan.s_addr & mask.s_addr);
++	return 0;
++}
++
++/* Validate + resolve a probe target to the numeric address we hand the tool.
++ * FQDNs are resolved FIRST and the resolved IPv4 is guarded, so a name that
++ * maps into internal space is rejected. IPv6 literals pass through. 1 = ok. */
++static int resolve_and_guard(const char *host, char *ipout, size_t iplen)
++{
++	struct in_addr a4;
++	struct in6_addr a6;
++	struct addrinfo hints, *res = NULL, *p;
++	int ok = 0;
++	size_t i, n = host ? strlen(host) : 0;
++
++	if (n == 0 || n > 253)
++		return 0;
++	if (inet_pton(AF_INET, host, &a4) == 1) {
++		if (!diag_target_allowed_v4(a4)) return 0;
++		snprintf(ipout, iplen, "%s", host);
++		return 1;
++	}
++	if (inet_pton(AF_INET6, host, &a6) == 1) {
++		snprintf(ipout, iplen, "%s", host);
++		return 1;
++	}
++	/* FQDN: conservative charset, must contain a dot, no leading/trailing sep */
++	if (host[0] == '.' || host[0] == '-' || host[n-1] == '.' || host[n-1] == '-')
++		return 0;
++	{
++		int dot = 0;
++		for (i = 0; i < n; i++) {
++			char c = host[i];
++			if (!(isalnum((unsigned char)c) || c == '.' || c == '-')) return 0;
++			if (c == '.') dot = 1;
++		}
++		if (!dot) return 0;
++	}
++	memset(&hints, 0, sizeof(hints));
++	hints.ai_family = AF_UNSPEC;
++	hints.ai_socktype = SOCK_DGRAM;
++	if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res)
++		return 0;
++	for (p = res; p && !ok; p = p->ai_next) {
++		if (p->ai_family == AF_INET) {
++			struct sockaddr_in *si = (struct sockaddr_in *)p->ai_addr;
++			if (diag_target_allowed_v4(si->sin_addr)) {
++				inet_ntop(AF_INET, &si->sin_addr, ipout, iplen);
++				ok = 1;
++			}
++		}
++	}
++	for (p = res; p && !ok; p = p->ai_next) {
++		if (p->ai_family == AF_INET6) {
++			struct sockaddr_in6 *si6 = (struct sockaddr_in6 *)p->ai_addr;
++			inet_ntop(AF_INET6, &si6->sin6_addr, ipout, iplen);
++			ok = 1;
++		}
++	}
++	freeaddrinfo(res);
++	return ok;
++}
++
++/* one diagnostic at a time; run argv bounded (no shell, alarm timeout via
++ * _eval), capture to DIAG_OUT, read back capped, audit, clean up. */
++static void run_diag(const char *tool, const char *target, char *const argv[], int timeout_s, sbuf_t *out)
++{
++	int fd = open(DIAG_LOCK, O_CREAT | O_EXCL | O_WRONLY, 0600);
++	if (fd < 0) {
++		sb_puts(out, "error: another diagnostic is already running - try again shortly");
++		return;
++	}
++	close(fd);
++	syslog(LOG_NOTICE, "rmcpd: diag %s target=%s client=%s",
++		tool, target ? target : "-", g_client_ip[0] ? g_client_ip : "any-lan");
++	unlink(DIAG_OUT);
++	_eval(argv, ">" DIAG_OUT, timeout_s, NULL);	/* blocks; alarm-bounded */
++	sb_addfile(out, DIAG_OUT, DIAG_MAX);
++	unlink(DIAG_OUT);
++	unlink(DIAG_LOCK);
++}
++
++static const char *diag_arg_host(struct json_object *args)
++{
++	struct json_object *jh = NULL;
++	if (args && json_object_object_get_ex(args, "host", &jh))
++		return json_object_get_string(jh);
++	return NULL;
++}
++
++static void tool_net_ping(struct json_object *args, sbuf_t *out)
++{
++	const char *host = diag_arg_host(args);
++	char ip[64];
++	char *argv[] = { "ping", "-c", "4", "-w", "6", NULL, NULL };
++	if (!host) { sb_puts(out, "error: missing 'host'"); return; }
++	if (!resolve_and_guard(host, ip, sizeof(ip))) {
++		sb_puts(out, "error: target not permitted (unresolvable, or a private host outside this router's LAN)");
++		return;
++	}
++	argv[5] = ip;
++	run_diag("net_ping", ip, argv, 9, out);
++}
++
++static void tool_net_traceroute(struct json_object *args, sbuf_t *out)
++{
++	const char *host = diag_arg_host(args);
++	char ip[64];
++	char *argv[] = { "traceroute", "-n", "-q", "1", "-w", "2", "-m", "15", NULL, NULL };
++	if (!host) { sb_puts(out, "error: missing 'host'"); return; }
++	if (!resolve_and_guard(host, ip, sizeof(ip))) {
++		sb_puts(out, "error: target not permitted (unresolvable, or a private host outside this router's LAN)");
++		return;
++	}
++	argv[8] = ip;
++	run_diag("net_traceroute", ip, argv, 40, out);
++}
++
++static void tool_net_dns_lookup(struct json_object *args, sbuf_t *out)
++{
++	const char *name = diag_arg_host(args);
++	char clean[256];
++	char *argv[] = { "nslookup", NULL, NULL };
++	size_t i, n = name ? strlen(name) : 0;
++	if (n == 0 || n > 253) { sb_puts(out, "error: missing or oversized 'host'"); return; }
++	/* a DNS query, not a network probe of the target - just sanitize charset */
++	for (i = 0; i < n; i++) {
++		char c = name[i];
++		if (!(isalnum((unsigned char)c) || c == '.' || c == '-' || c == ':')) {
++			sb_puts(out, "error: invalid characters in 'host'"); return;
++		}
++	}
++	snprintf(clean, sizeof(clean), "%s", name);
++	argv[1] = clean;
++	run_diag("net_dns_lookup", clean, argv, 8, out);
++}
++
++static void tool_net_netstat(struct json_object *args, sbuf_t *out)
++{
++	char *argv[] = { "netstat", "-tuna", NULL };
++	(void)args;
++	run_diag("net_netstat", NULL, argv, 6, out);
++}
++
+ /* dispatch a tools/call by name; returns 0 if handled, -1 if unknown tool */
+ static int run_tool(const char *name, struct json_object *args, sbuf_t *out)
+ {
+@@ -525,6 +702,13 @@ static int run_tool(const char *name, struct json_object *args, sbuf_t *out)
+ 	if (!strcmp(name, "get_nvram"))            { tool_nvram(out); return 0; }
+ 	if (!strcmp(name, "get_logs"))             { tool_logs(out); return 0; }
+ 	if (!strcmp(name, "get_settings_audit"))   { tool_audit(out); return 0; }
++	/* active-diagnostics tier - only reachable when the session consented */
++	if (g_diag) {
++		if (!strcmp(name, "net_ping"))       { tool_net_ping(args, out); return 0; }
++		if (!strcmp(name, "net_traceroute")) { tool_net_traceroute(args, out); return 0; }
++		if (!strcmp(name, "net_dns_lookup")) { tool_net_dns_lookup(args, out); return 0; }
++		if (!strcmp(name, "net_netstat"))    { tool_net_netstat(args, out); return 0; }
++	}
+ 	return -1;
+ }
+ 
+@@ -539,8 +723,14 @@ static const char *TOOLS_CATALOG =
+ "{\"name\":\"get_firewall_summary\",\"description\":\"iptables filter rules and NAT forwards summary.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_nvram\",\"description\":\"Curated non-secret configuration keys (secrets are never included).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_logs\",\"description\":\"Recent system log lines, secrets redacted.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+-"{\"name\":\"get_settings_audit\",\"description\":\"Composed security-posture snapshot for auditing and explanation.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"
+-"]";
++"{\"name\":\"get_settings_audit\",\"description\":\"Composed security-posture snapshot for auditing and explanation.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}";
++/* diagnostics tier: appended to tools/list ONLY when the session consented
++ * (g_diag). Leading comma; the closing ']' is emitted by the tools/list handler. */
++static const char *TOOLS_DIAG =
++",{\"name\":\"net_ping\",\"description\":\"Ping a public host or a LAN host (4 packets, bounded). Isolates reachability/latency at the router vs the path. Read-only probe.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
++"{\"name\":\"net_traceroute\",\"description\":\"Traceroute to a host (bounded hops). Shows where in the path (router / ISP / WAN) latency or loss appears. Read-only probe.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
++"{\"name\":\"net_dns_lookup\",\"description\":\"Resolve a name via the router's DNS. Distinguishes DNS problems from connectivity problems. Read-only.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
++"{\"name\":\"net_netstat\",\"description\":\"Active TCP/UDP sockets on the router (numeric).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}";
+ 
+ /* ------------------------------------------------------------------ */
+ /* HTTP + JSON-RPC                                                     */
+@@ -612,8 +802,10 @@ static void handle_rpc(FILE *fp, const char *body)
+ 		sb_puts(&r, "{\"protocolVersion\":\"" PROTO_VER "\","
+ 			"\"capabilities\":{\"tools\":{}},"
+ 			"\"serverInfo\":{\"name\":\"reaper-advisor\",\"version\":\"1.0\"},"
+-			"\"instructions\":\"Read-only Reaper router advisor. All tools are read-only; "
+-			"recommend changes for the human to apply. Secrets are never exposed.\"}");
++			"\"instructions\":\"Read-only Reaper router advisor. It cannot change any "
++			"setting - recommend changes for the human to apply. Secrets are never exposed. "
++			"When the human enables diagnostics for this session, additional bounded, read-only "
++			"network probes (ping/traceroute/dns/netstat) become available for root-cause isolation.\"}");
+ 		send_rpc_result_raw(fp, jid, r.p ? r.p : "{}");
+ 		sb_free(&r);
+ 	} else if (!strcmp(method, "ping")) {
+@@ -624,8 +816,9 @@ static void handle_rpc(FILE *fp, const char *body)
+ 	} else if (!strcmp(method, "tools/list")) {
+ 		sbuf_t r; sb_init(&r);
+ 		sb_puts(&r, "{\"tools\":");
+-		sb_puts(&r, TOOLS_CATALOG);
+-		sb_puts(&r, "}");
++		sb_puts(&r, TOOLS_CATALOG);		/* "[" + base tools, no closing ']' */
++		if (g_diag) sb_puts(&r, TOOLS_DIAG);	/* consented: append diagnostics tools */
++		sb_puts(&r, "]}");
+ 		send_rpc_result_raw(fp, jid, r.p ? r.p : "{}");
+ 		sb_free(&r);
+ 	} else if (!strcmp(method, "tools/call")) {
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 6b65c5d6c8..e149104529 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 0dbd7374fd..db50df0d01 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 5346d56caf..acb5cc8122 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index bb0ae0b64d..6daff4cbb6 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 98849e8e89..18d4b01630 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 2ffe0b9386..9ee347fcb3 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 83378184e8..cd6b3891c6 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 46fa6e4e31..4bf2003e65 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e07c407fc5..5f9c2ffcc6 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index b8d96c6e0d..4246d5b92c 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 0c50460f56..5ce43df700 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 075c6a7b17..3ead9cc7e7 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 1155e1dc63..aa6490f631 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 79bd8d53d6..bfce583878 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/Main_PacketCapture_Content.asp b/release/src/router/www/Main_PacketCapture_Content.asp
+new file mode 100644
+index 0000000000..58be5b859c
+--- /dev/null
++++ b/release/src/router/www/Main_PacketCapture_Content.asp
+@@ -0,0 +1,158 @@
++<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
++<html xmlns="http://www.w3.org/1999/xhtml">
++<head>
++<meta http-equiv="X-UA-Compatible" content="IE=Edge">
++<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
++<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
++<meta HTTP-EQUIV="Expires" CONTENT="-1">
++<link rel="shortcut icon" href="images/favicon.png">
++<link rel="icon" href="images/favicon.png">
++<title><#Network_Tools#> - <#NetworkTools_PktCap#></title>
++<link rel="stylesheet" type="text/css" href="index_style.css">
++<link rel="stylesheet" type="text/css" href="form_style.css">
++<script language="JavaScript" type="text/javascript" src="/js/jquery.js"></script>
++<script language="JavaScript" type="text/javascript" src="/state.js"></script>
++<script language="JavaScript" type="text/javascript" src="/general.js"></script>
++<script language="JavaScript" type="text/javascript" src="/popup.js"></script>
++<script language="JavaScript" type="text/javascript" src="/help.js"></script>
++<script language="JavaScript" type="text/javascript" src="/validator.js"></script>
++<script type="text/javascript" src="/form.js"></script>
++<script>
++function initial(){
++	show_menu();
++}
++
++/* client-side mirror of the server allow-list (server re-validates everything) */
++function filterOk(v){
++	return /^[A-Za-z0-9 ._:\/()\-]*$/.test(v);
++}
++
++function runCapture(){
++	var iface  = document.getElementById('pc_iface').value;
++	var count  = document.getElementById('pc_count').value || '20';
++	var dur    = document.getElementById('pc_dur').value || '5';
++	var snap   = document.getElementById('pc_snap').value || '256';
++	var filter = document.getElementById('pc_filter').value || '';
++
++	if(!iface){ alert('<#NetworkTools_PktCap_iface#>'); return; }
++	if(!filterOk(filter)){ alert('<#NetworkTools_PktCap_filter#>'); return; }
++
++	var btn = document.getElementById('pc_btn');
++	btn.disabled = true; btn.style.color = '#666';
++	document.getElementById('pc_load').style.display = '';
++	document.getElementById('pc_out').value = '...';
++
++	$.ajax({
++		url: '/reaper_pcap.cgi',
++		type: 'POST',
++		dataType: 'text',
++		data: { iface: iface, count: count, dur: dur, snap: snap, filter: filter },
++		error: function(){ finishCapture('capture failed - try again'); },
++		success: function(resp){ finishCapture(resp); }
++	});
++}
++
++function finishCapture(txt){
++	var ta = document.getElementById('pc_out');
++	ta.value = txt;
++	ta.scrollTop = ta.scrollHeight;
++	var btn = document.getElementById('pc_btn');
++	btn.disabled = false; btn.style.color = '';
++	document.getElementById('pc_load').style.display = 'none';
++}
++</script>
++</head>
++<body onload="initial();" class="bg">
++<div id="TopBanner"></div>
++<div id="Loading" class="popup_bg"></div>
++<iframe name="hidden_frame" id="hidden_frame" src="" width="0" height="0" frameborder="0"></iframe>
++<form method="POST" name="form" action="/reaper_pcap.cgi" target="hidden_frame">
++<input type="hidden" name="current_page" value="Main_PacketCapture_Content.asp">
++<input type="hidden" name="next_page" value="Main_PacketCapture_Content.asp">
++<input type="hidden" name="preferred_lang" id="preferred_lang" value="<% nvram_get("preferred_lang"); %>">
++<input type="hidden" name="firmver" value="<% nvram_get("firmver"); %>">
++
++<table class="content" align="center" cellpadding="0" cellspacing="0">
++	<tr>
++		<td width="17">&nbsp;</td>
++		<td valign="top" width="202">
++			<div id="mainMenu"></div>
++			<div id="subMenu"></div>
++		</td>
++		<td valign="top">
++			<div id="tabMenu" class="submenuBlock"></div>
++			<table width="98%" border="0" align="left" cellpadding="0" cellspacing="0">
++				<tr>
++					<td align="left" valign="top">
++						<table width="760px" border="0" cellpadding="5" cellspacing="0" bordercolor="#6b8fa3" class="FormTitle" id="FormTitle">
++							<tr>
++								<td bgcolor="#4D595D" colspan="3" valign="top">
++								<div class="container">
++
++									<div>&nbsp;</div>
++									<div class="formfonttitle"><#Network_Tools#> - <#NetworkTools_PktCap#></div>
++									<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
++									<div class="formfontdesc"><#NetworkTools_PktCap_desc#></div>
++									<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
++										<tr>
++											<th width="30%"><#NetworkTools_PktCap_iface#></th>
++											<td>
++												<select id="pc_iface" class="input_option">
++													<option value="<% nvram_get("lan_ifname"); %>">LAN (<% nvram_get("lan_ifname"); %>)</option>
++													<option value="<% nvram_get("wan0_ifname"); %>">WAN (<% nvram_get("wan0_ifname"); %>)</option>
++												</select>
++											</td>
++										</tr>
++										<tr>
++											<th width="30%"><#NetworkTools_Count#></th>
++											<td>
++												<input type="text" id="pc_count" class="input_6_table" maxlength="4" value="20" onKeyPress="return validator.isNumber(this, event);" placeholder="20" autocorrect="off" autocapitalize="off"> (1 - 2000)
++											</td>
++										</tr>
++										<tr>
++											<th width="30%"><#NetworkTools_PktCap_dur#></th>
++											<td>
++												<input type="text" id="pc_dur" class="input_6_table" maxlength="2" value="5" onKeyPress="return validator.isNumber(this, event);" placeholder="5" autocorrect="off" autocapitalize="off"> (1 - 15)
++											</td>
++										</tr>
++										<tr>
++											<th width="30%"><#NetworkTools_PktCap_snap#></th>
++											<td>
++												<input type="text" id="pc_snap" class="input_6_table" maxlength="4" value="256" onKeyPress="return validator.isNumber(this, event);" placeholder="256" autocorrect="off" autocapitalize="off"> (64 - 2048)
++											</td>
++										</tr>
++										<tr>
++											<th width="30%"><#NetworkTools_PktCap_filter#></th>
++											<td>
++												<input type="text" id="pc_filter" class="input_32_table" maxlength="128" value="" placeholder="ex: tcp port 443" autocorrect="off" autocapitalize="off">
++											</td>
++										</tr>
++									</table>
++
++									<div class="apply_gen">
++										<span><input class="btn_subusage button_gen" id="pc_btn" onClick="runCapture();" type="button" value="<#NetworkTools_PktCap_btn#>"></span>
++										<img id="pc_load" style="display:none;" src="/images/InternetScan.gif">
++									</div>
++
++									<div style="margin-top:8px">
++										<textarea cols="63" rows="27" wrap="off" readonly="readonly" id="pc_out" style="width:99%;font-family:Courier New, Courier, mono; font-size:11px;background:#475A5F;color:#FFFFFF;"></textarea>
++									</div>
++
++									</div>	<!-- for .container  -->
++									<div class="popup_container popup_element_second"></div>
++
++								</td>
++							</tr>
++						</table>
++					</td>
++				</tr>
++			</table>
++		</td>
++		<td width="10" align="center" valign="top"></td>
++	</tr>
++</table>
++</form>
++
++<div id="footer"></div>
++</body>
++</html>
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index a0d12ffa15..d638b47449 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 6f831ba88a..6372c02ca7 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index eaaaff9da7..3e71a98474 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index bb66d08b58..ca2de46569 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index bda6ee27c3..83aeda8489 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index 02e92591b0..ec4e4424af 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -150,6 +150,12 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+     <button class="btn primary" id="armBtn" onclick="arm()"><#RADV_31#></button>
+     <button class="btn ghost" id="disarmBtn" onclick="disarm()"><#RADV_32#></button>
+   </div>
++  <div class="row" style="margin-top:8px">
++    <label class="fld" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400">
++      <input type="checkbox" id="netdiag"> <#RADV_73#>
++    </label>
++  </div>
++  <div class="sub" style="margin-top:2px"><#RADV_74#></div>
+   <div id="armMsg" class="msg"></div>
+ 
+   <div id="armedBox" class="creds hide">
+@@ -264,7 +270,8 @@ function arm(){
+   var code=document.getElementById('armcode').value;
+   if(!code){ setMsg('armMsg','<#RADV_67#>','err'); return; }
+   setMsg('armMsg','<#RADV_68#>','');
+-  post('arm',{code:code}).then(function(d){
++  var nd = document.getElementById('netdiag').checked ? 1 : 0;
++  post('arm',{code:code, netdiag:nd}).then(function(d){
+     document.getElementById('armcode').value='';
+     if(!d.ok){ setMsg('armMsg', d.error||'<#RADV_69#>', 'err'); loadStatus(); return; }
+     setMsg('armMsg','<#RADV_70#>','ok');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 2d7c6ef318..66d7f90acd 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index e215dc94b8..195e423f1b 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 5b22cde704..72242869a8 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index f4a7961931..4154695342 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index b472d6c9d0..79d1823970 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 0faa79e96e..2b9f232b6e 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5247,7 +5247,7 @@ RSHL_reboot_note=The UI will reload when the router is back.
+ RADV_01=A <b>read-only</b> bridge that lets <b>your own</b> AI assistant read this router's
+ RADV_02=<b>Off by default.</b> Nothing listens until you arm it below, and it never survives a reboot.
+ RADV_03=<b>LAN only.</b> It binds this router's LAN address and is never reachable from the internet.
+-RADV_04=<b>Read only.</b> It cannot change a single setting &mdash; it recommends; you apply.
++RADV_04=<b>Read only.</b> It cannot change a setting. When you allow it, it can also run bounded, read-only network diagnostics (ping / traceroute / DNS / netstat).
+ RADV_05=<b>Secrets never leave.</b> Wi-Fi passwords, admin credentials and keys are never exposed.
+ RADV_06=<b>Two-factor.</b> Even with the admin password, arming also needs your out-of-band arming code.
+ RADV_07=<b>Your key stays on your machine.</b> The AI runs in your client; no API key is stored here.
+@@ -5585,3 +5585,12 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RADV_72=Session ended - the advisor is now locked.
++NetworkTools_PktCap=Packet Capture
++NetworkTools_PktCap_desc=Capture live packets on an interface, bounded by packet count and time. A read-only diagnostic - no setting is changed.
++NetworkTools_PktCap_iface=Interface
++NetworkTools_PktCap_dur=Max duration (seconds)
++NetworkTools_PktCap_snap=Snap length (bytes)
++NetworkTools_PktCap_filter=Capture filter (optional)
++NetworkTools_PktCap_btn=Start capture
++RADV_73=Allow network diagnostics
++RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 537772c235..f2cffa1f9a 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -355,6 +355,7 @@ define(function(){
+ 				index: "menu_NekworkTool",
+ 				tab: [
+ 					{url: "Main_Analysis_Content.asp", tabName: "<#Network_Analysis#>"},
++					{url: "Main_PacketCapture_Content.asp", tabName: "<#NetworkTools_PktCap#>"},
+ 					{url: "Main_Netstat_Content.asp", tabName: "Netstat"},
+ 					{url: "Main_WOL_Content.asp", tabName: "<#NetworkTools_WOL#>"},
+ 					// {url: "Main_ChkSta_Content.asp", tabName: "<#NetworkTools_ChkSta#>"},
+-- 
+2.25.1
+

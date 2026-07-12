@@ -1,12 +1,12 @@
 # ASUS-Merlin-Reaper
 
-**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x** — branded `reaper`. Current: **v1.4.2**.
+**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x** — branded `reaper`. Current: **v1.5.0a**.
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — remove cloud-coupled/AI-branded attack surface, and produce a flashable image that can be shared with other security-conscious BE96U owners.
 
 > ~70+ security issues fixed across four audit rounds (command-injection, memory-safety, and defense-in-depth), each compile/link-verified by a full firmware build. See **[docs/REAPER-FIXES.md](docs/REAPER-FIXES.md)**. Version-by-version history: **[docs/CHANGELOG.md](docs/CHANGELOG.md)**.
 
-Beyond hardening, Reaper adds router features ASUS never shipped — two **Hardware QoS** engines that keep the flow accelerator on, a native **Traffic Analyzer**, and an **optional, read-only, LAN-only AI Advisor** — and removes cloud/telemetry surface (Alexa/Google, Trend Micro DPI, AiCloud/WebDAV, the AAE cloud tunnel). See **[docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)**.
+Beyond hardening, Reaper adds router features ASUS never shipped — two **Hardware QoS** engines that keep the flow accelerator on, a native **Traffic Analyzer**, an **optional, read-only, LAN-only AI Advisor** (with an opt-in, bounded network-diagnostics mode), and **on-router network diagnostics** (ping/traceroute/DNS/netstat via the AI Advisor) — and removes cloud/telemetry surface (Alexa/Google, Trend Micro DPI, AiCloud/WebDAV, the AAE cloud tunnel). See **[docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)**.
 
 ---
 
@@ -52,7 +52,7 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 
 1. **[docs/PROJECT.md](docs/PROJECT.md)** — what this fork is, scope, hard rules, threat model, flashing, legal. (The collapsed version of the upstream READMEs.)
 2. **[docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)** — what the current release contains, the two build variants, and how to flash it.
-3. **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — big changes per version, v1.0 → v1.4.2.
+3. **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — big changes per version, v1.0 → v1.5.0a.
 4. **[docs/DEV-SETUP.md](docs/DEV-SETUP.md)** — the hard-won contributor build/edit environment: WSL 20.04, gcc-10.3 toolchains, host deps, the build recipe and its traps, the editing/tooling gotchas, and how to verify a change. **If you want to build or patch the firmware, this is the one.**
 5. **[docs/REAPER-FIXES.md](docs/REAPER-FIXES.md)** — authoritative list of every security fix applied (all audit rounds), with commits.
 6. **[docs/GPL-MERGE.md](docs/GPL-MERGE.md)** — maintainer guide for rebasing the hardening onto a new upstream/GPL drop.
@@ -69,7 +69,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 ## Base & status
 
 - Base: Asuswrt-Merlin **3006.102.8** (patches apply on tag `3006.102.8-beta2`; the sibling-model strip is optional — see [`patches/README.md`](patches/README.md)).
-- Current version: **v1.4.2** (release candidate — everything through v1.3.3 is validated on the physical RT-BE96U; the v1.4.x AI Advisor is build-verified with on-hardware validation in progress). Per-version history: [docs/CHANGELOG.md](docs/CHANGELOG.md).
+- Current version: **v1.5.0a** (everything through v1.4.8 is validated on the physical RT-BE96U, including the USB third-factor flow; v1.4.8a–v1.4.9a are build-verified for both image variants, and v1.5.0a's AI Advisor + network-diagnostics tier are validated on the physical RT-BE96U). Per-version history: [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 ## Legal
 

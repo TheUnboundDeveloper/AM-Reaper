@@ -1,6 +1,6 @@
 # RT-BE96U "Reaper" — Project Overview
 
-A security-hardened, **de-clouded** single-model fork of **Asuswrt-Merlin** focused exclusively on the **ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. Current version **v1.4.2** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
+A security-hardened, **de-clouded** single-model fork of **Asuswrt-Merlin** focused exclusively on the **ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. Current version **v1.5.0a** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
 > This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder.
 
@@ -12,8 +12,8 @@ A security-hardened, **de-clouded** single-model fork of **Asuswrt-Merlin** focu
 - **This fork's goal:** take the BE96U slice of that tree, **harden the open-source userspace** against remote/network compromise, and produce a flashable image that can be distributed to other security-conscious BE96U owners — free of charge.
 - **Threat-model north star:** only **physical access** should be able to compromise the device. Eliminate remotely/LAN-reachable compromise (command injection, buffer overflows from network/nvram/WAN input, format strings, auth bypass). The hardening is invisible in normal use — its benefit is reduced attack surface.
 - **Also de-cloud:** remove AI-branded and cloud-coupled surface (Alexa/Google Assistant, Trend Micro DPI, AiCloud/WebDAV, the AiDisk wizard, the AAE cloud tunnel, the first-boot consent screens) so the base image stays lean, local-only, and auditable.
-- **And add genuinely-local features:** two Hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, and an **optional, read-only, LAN-only AI Advisor** (compiled out of the Standard build entirely).
-- **Branding:** `reaper`. The build version reads `RT-BE96U 3006.102.8_Reaper_v<X>` (e.g. `…_Reaper_v1.4.2`).
+- **And add genuinely-local features:** two Hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, an **optional, read-only, LAN-only AI Advisor** (compiled out of the Standard build entirely; with an opt-in, per-session bounded network-diagnostics mode), and **on-router network diagnostics** — ping/traceroute/DNS/netstat via the AI Advisor.
+- **Branding:** `reaper`. The build version reads `RT-BE96U 3006.102.8_Reaper_v<X>` (e.g. `…_Reaper_v1.5.0a`).
 
 ## Scope & hard rules
 
@@ -32,7 +32,7 @@ Most of the source we patch is **shared across many Broadcom-HND Merlin models**
 
 Carried over from Asuswrt-Merlin and present in the BE96U image: user scripts (firewall/services events), cron, customizable service configs, **Entware** add-on support (via `amtm`), `nano`, NTP daemon, SNMP, OpenVPN client/server (hardened here) + WireGuard + IPsec/strongSwan, **VPN Director** policy routing, **DNS Director**, **Cake SQM QoS**, Tor, ipset, USB sharing (Samba/minidlna/vsftpd/AFP), traffic stats. See [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md) for what's in-tree-but-not-yet-enabled and what's worth adding.
 
-**Reaper adds** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md) / [`CHANGELOG.md`](CHANGELOG.md)): Hardware QoS (`qos_type=10` and the `qos_type=11` Classful engine, plus v3/v4 aggregate cap, minimums, DSCP, WRR, L4S) with the flow accelerator left on; a native **Traffic Analyzer** (per-device/network/class history, live view, quota); and an **optional AI Advisor** (read-only LAN MCP server, off by default, present only in the `_MCP` build variant). **Reaper removes** (de-cloud): Alexa/Google Assistant, the Trend Micro DPI engine (AiProtection / DPI Adaptive QoS / web history), AiCloud/WebDAV, the AiDisk cloud-share wizard, the AAE/AiHome cloud tunnel, and the first-boot EULA/consent surface.
+**Reaper adds** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md) / [`CHANGELOG.md`](CHANGELOG.md)): Hardware QoS (`qos_type=10` and the `qos_type=11` Classful engine, plus v3/v4 aggregate cap, minimums, DSCP, WRR, L4S) with the flow accelerator left on; a native **Traffic Analyzer** (per-device/network/class history, live view, quota); an **optional AI Advisor** (read-only LAN MCP server, off by default, present only in the `_MCP` build variant, with an opt-in per-session bounded network-diagnostics tier); and **on-router network diagnostics** — the AI Advisor's opt-in ping/traceroute/DNS/netstat probe tier. **Reaper removes** (de-cloud): Alexa/Google Assistant, the Trend Micro DPI engine (AiProtection / DPI Adaptive QoS / web history), AiCloud/WebDAV, the AiDisk cloud-share wizard, the AAE/AiHome cloud tunnel, and the first-boot EULA/consent surface.
 
 ## Security status
 

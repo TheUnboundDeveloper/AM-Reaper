@@ -70,7 +70,36 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 
 ---
 
-## 3. If you redistribute a Reaper binary image
+## 3. Requesting a build
+
+Reaper firmware images are **not publicly hosted.** A flashable build for the
+ASUS RT-BE96U is available **on request**, and is delivered together with the
+complete corresponding source (§1) under GPL v2 — a §3(a) delivery to each
+recipient. This keeps the images off public, scraped pages while remaining fully
+GPL-compliant to everyone who receives one.
+
+**Request format.** Email the project address **theunbounddeveloper@outlook.com**
+(or open an issue if you have repository access) with:
+
+- **Subject:** `Reaper build request — RT-BE96U`
+- **Variant:** `Standard` (no AI Advisor) **or** `AI Advisor` (the optional,
+  off-by-default MCP build)
+- **Version:** a specific version (e.g. `v1.5.0d`) or `latest`
+
+You receive the flashable `.pkgtb` (plus its recovery `_loader.pkgtb`) and the
+complete corresponding source per §1. Under GPL v2 you may then use, study,
+modify, and redistribute the GPL-covered portions freely; if you ship a modified
+build, please brand it as your own (see [`../LICENSE.reaper`](../LICENSE.reaper) § 3(c)).
+
+> **Note.** A build bundles proprietary Broadcom/ASUS/Trend Micro/Tuxera
+> components licensed for use on genuine ASUS hardware only. They are provided for
+> flashing your own RT-BE96U and are **not** separately licensed for
+> redistribution. See § Proprietary components in
+> [`../THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
+
+---
+
+## 4. If you redistribute a Reaper image
 
 GPL v2 requires that GPL binaries travel with either the corresponding source
 (**§3(a)**) or a copy of a written offer like §2 above (**§3(b)/§3(c)**), and

@@ -1,5 +1,15 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
+> ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
+> userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
+> so the same flaws exist on those models running **stock, currently-shipping firmware**.
+> This document names affected components, functions, and input vectors. Treat it as a
+> coordinated-disclosure surface: before publishing it, ensure base-firmware findings have
+> been reported to ASUS / Asuswrt-Merlin and given reasonable time to remediate, or reduce
+> the disclosure to class-level detail for still-unpatched issues. See
+> [`COMPLIANCE-AUDIT-2026-07-13.md`](COMPLIANCE-AUDIT-2026-07-13.md) item **M6** and
+> [`../SECURITY.md`](../SECURITY.md).
+
 Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 
 - **Base version:** 3006.102.8_beta2

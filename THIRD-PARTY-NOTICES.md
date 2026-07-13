@@ -20,13 +20,11 @@ pages. Full license text: [`LICENSES/OFL-1.1.txt`](LICENSES/OFL-1.1.txt).
 | **Inter** | `www/fonts/inter-400.woff2`, `inter-500.woff2`, `inter-600.woff2` | The Inter Project Authors (<https://github.com/rsms/inter>) | OFL 1.1 |
 | **Rajdhani** | `www/fonts/rajdhani-500.woff2`, `rajdhani-600.woff2`, `rajdhani-700.woff2` | the Indian Type Foundry | OFL 1.1 |
 
-> **Action still required in the image (needs maintainer approval — patch edit).**
-> OFL 1.1 §2 requires the license to travel *with* the font files. This repo now
-> carries the OFL text, satisfying the **source** distribution. To also satisfy it
-> in the **built image**, a future patch should install `OFL.txt` into
-> `www/fonts/`. That change touches the patch series and is therefore left for
-> your approval — see [`docs/COMPLIANCE-AUDIT-2026-07-13.md`](docs/COMPLIANCE-AUDIT-2026-07-13.md)
-> item **M1**.
+> OFL 1.1 §2 requires the license to travel *with* the font files. Satisfied in
+> **both** the source (this repo's [`LICENSES/OFL-1.1.txt`](LICENSES/OFL-1.1.txt))
+> and the **built image** — patch `0152` (v1.5.0c) installs the OFL text as
+> `www/fonts/OFL.txt`, verified present in the staged image. See
+> [`docs/COMPLIANCE-AUDIT-2026-07-13.md`](docs/COMPLIANCE-AUDIT-2026-07-13.md) item **M1**.
 
 ### Other Reaper assets
 - `www/images/REAPER.png`, `www/images/New_ui/rt_reaper.png`, `www/favicon.ico`,

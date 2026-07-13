@@ -1,0 +1,747 @@
+From 7a94b0792d76dca8ae10bf7a000f52e22ec434f5 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 13 Jul 2026 09:40:05 -0400
+Subject: [PATCH 151/152] reaper v1.5.0b: Traffic Analyzer Live (200ms) mode;
+ diag-aware MCP advisor instructions
+
+Traffic Analyzer: rtrafd base tick 1s -> 200ms (TICK_MS/TPS); WAN rate +
+live.json publish 5x/s for the new "Live (200ms)" refresh option on
+Reaper_Traffic.asp (RTRF_71, all 25 dicts; default stays 1s). Heavy
+sources keep wall-clock cadence (per-class 2s, fcache/probe 5s); loop is
+work-time-paced (CLOCK_MONOTONIC + nanosleep remainder) so heavy ticks
+don't stretch the interval; quota check gated to 1/s; live.json "poll"
+renamed "poll_ms"; RTRF_64 reworded (no longer "every second").
+
+rmcpd: initialize instructions were static and always claimed read-only,
+so the model undersold the consented diagnostics tier. Instructions now
+branch on g_diag (affirmative "diagnostics ARE ENABLED, run the probes
+yourself" vs "NO active diagnostics this session"); TOOLS_DIAG
+descriptions reworded "Read-only probe" -> "Active probe; changes no
+settings"; armed syslog logs read+diagnostics vs read-only.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf               |  2 +-
+ release/src/router/rmcpd/rmcpd.c          | 33 +++++++++----
+ release/src/router/rtrafd/rtrafd.c        | 60 +++++++++++++++--------
+ release/src/router/www/BR.dict            |  3 +-
+ release/src/router/www/CN.dict            |  3 +-
+ release/src/router/www/CZ.dict            |  3 +-
+ release/src/router/www/DA.dict            |  3 +-
+ release/src/router/www/DE.dict            |  3 +-
+ release/src/router/www/EN.dict            |  3 +-
+ release/src/router/www/ES.dict            |  3 +-
+ release/src/router/www/FI.dict            |  3 +-
+ release/src/router/www/FR.dict            |  3 +-
+ release/src/router/www/HU.dict            |  3 +-
+ release/src/router/www/IT.dict            |  3 +-
+ release/src/router/www/JP.dict            |  3 +-
+ release/src/router/www/KR.dict            |  3 +-
+ release/src/router/www/MS.dict            |  3 +-
+ release/src/router/www/NL.dict            |  3 +-
+ release/src/router/www/NO.dict            |  3 +-
+ release/src/router/www/PL.dict            |  3 +-
+ release/src/router/www/RO.dict            |  3 +-
+ release/src/router/www/RU.dict            |  3 +-
+ release/src/router/www/Reaper_Traffic.asp |  8 +--
+ release/src/router/www/SL.dict            |  3 +-
+ release/src/router/www/SV.dict            |  3 +-
+ release/src/router/www/TH.dict            |  3 +-
+ release/src/router/www/TR.dict            |  3 +-
+ release/src/router/www/TW.dict            |  3 +-
+ release/src/router/www/UK.dict            |  3 +-
+ 29 files changed, 120 insertions(+), 58 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index db9318c425..da1f700f70 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.5.0a
++EXTENDNO=Reaper_v1.5.0b
+ 
+ RCNO=0
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index 873d5ecc72..414a6a61e6 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -759,9 +759,9 @@ static const char *TOOLS_CATALOG =
+ /* diagnostics tier: appended to tools/list ONLY when the session consented
+  * (g_diag). Leading comma; the closing ']' is emitted by the tools/list handler. */
+ static const char *TOOLS_DIAG =
+-",{\"name\":\"net_ping\",\"description\":\"Ping a public host or a LAN host (4 packets, bounded). Isolates reachability/latency at the router vs the path. Read-only probe.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
+-"{\"name\":\"net_traceroute\",\"description\":\"Traceroute to a host (bounded hops). Shows where in the path (router / ISP / WAN) latency or loss appears. Read-only probe.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
+-"{\"name\":\"net_dns_lookup\",\"description\":\"Resolve a name via the router's DNS. Distinguishes DNS problems from connectivity problems. Read-only.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
++",{\"name\":\"net_ping\",\"description\":\"Run a ping from the router to a public or LAN host (4 packets, bounded). Isolates reachability/latency at the router vs the path. Active probe; changes no settings.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
++"{\"name\":\"net_traceroute\",\"description\":\"Run a traceroute from the router (bounded hops). Shows where in the path (router / ISP / WAN) latency or loss appears. Active probe; changes no settings.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
++"{\"name\":\"net_dns_lookup\",\"description\":\"Resolve a name via the router's DNS. Distinguishes DNS problems from connectivity problems. Changes no settings.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"host\":{\"type\":\"string\"}},\"required\":[\"host\"]}},"
+ "{\"name\":\"net_netstat\",\"description\":\"Active TCP/UDP sockets on the router (numeric).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}";
+ 
+ /* ------------------------------------------------------------------ */
+@@ -833,11 +833,25 @@ static void handle_rpc(FILE *fp, const char *body)
+ 		sbuf_t r; sb_init(&r);
+ 		sb_puts(&r, "{\"protocolVersion\":\"" PROTO_VER "\","
+ 			"\"capabilities\":{\"tools\":{}},"
+-			"\"serverInfo\":{\"name\":\"reaper-advisor\",\"version\":\"1.0\"},"
+-			"\"instructions\":\"Read-only Reaper router advisor. It cannot change any "
+-			"setting - recommend changes for the human to apply. Secrets are never exposed. "
+-			"When the human enables diagnostics for this session, additional bounded, read-only "
+-			"network probes (ping/traceroute/dns/netstat) become available for root-cause isolation.\"}");
++			"\"serverInfo\":{\"name\":\"reaper-advisor\",\"version\":\"1.0\"},");
++		/* the model takes this text at face value: when the session granted
++		 * diagnostics (g_diag), say so affirmatively - a static "read-only"
++		 * blurb makes it call itself read-only and hand probes back to the
++		 * human even though tools/list offers them */
++		if (g_diag)
++			sb_puts(&r, "\"instructions\":\"Reaper router advisor. Settings are "
++				"read-only: it cannot change any setting - recommend changes for the "
++				"human to apply. Secrets are never exposed. Network diagnostics ARE "
++				"ENABLED for this session: run net_ping, net_traceroute, net_dns_lookup "
++				"and net_netstat yourself to isolate faults (router vs LAN vs ISP vs "
++				"destination) rather than asking the human to run them. The probes send "
++				"packets but change nothing on the router.\"}");
++		else
++			sb_puts(&r, "\"instructions\":\"Read-only Reaper router advisor. It cannot "
++				"change any setting - recommend changes for the human to apply. Secrets "
++				"are never exposed. This session has NO active diagnostics: if network "
++				"probes (ping/traceroute/dns/netstat) would help, ask the human to re-arm "
++				"the Advisor with 'Allow network diagnostics' checked.\"}");
+ 		send_rpc_result_raw(fp, jid, r.p ? r.p : "{}");
+ 		sb_free(&r);
+ 	} else if (!strcmp(method, "ping")) {
+@@ -1043,7 +1057,8 @@ int main(int argc, char **argv)
+ 	g_added_rule = 1;
+ 	atexit(cleanup);
+ 
+-	syslog(LOG_NOTICE, "rmcpd: armed, read-only advisor on %s://%s:%d, session ends in %ld min",
++	syslog(LOG_NOTICE, "rmcpd: armed, %s advisor on %s://%s:%d, session ends in %ld min",
++		g_diag ? "read+diagnostics" : "read-only",
+ 		g_https ? "https" : "http", g_lan_ip, g_port, (long)((g_expiry - time(NULL)) / 60));
+ 
+ 	while (!g_stop) {
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 3131b21216..91a6c502d7 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -1,7 +1,7 @@
+ /*
+  * rtrafd - reaper traffic collector (v1, firmware v1.2.10)
+  *
+- * Samples every POLL seconds:
++ * Samples on a fast base tick (each source at its own sub-cadence):
+  *   - /proc/net/dev            WAN + all br* interfaces (per-network)
+  *   - /proc/net/nf_conntrack   per-client byte deltas (LAN-attributed) + top talkers
+  *   - tmctl getqstats          per-QoS-class tx/drops (only while HW classful runs)
+@@ -38,16 +38,18 @@
+ #include <shutils.h>
+ #include <shared.h>
+ 
+-/* Dual cadence: a fast 1s base tick drives the live view (WAN rate + per-class
+- * + live.json write) so the page updates once a second; the expensive flow-cache
+- * scan (per-device/per-network/top-talkers) and the ping probe run on slower
+- * sub-cadences to keep CPU down. History rings just accumulate finer deltas -
++/* Dual cadence: a fast 200 ms base tick drives the live view (WAN rate +
++ * live.json write) so the page's "Live" refresh mode gets true 200 ms samples;
++ * the heavier sources keep their wall-clock cadences - per-class every 2 s
++ * (tmctl popens), the flow-cache scan (per-device/per-network/top-talkers) and
++ * the ping probe every 5 s. History rings just accumulate finer deltas -
+  * still binned into the same 5-min/hour/day/month slots. */
+-#define POLL		1	/* base tick / WAN + live.json cadence (s) */
+-#define CLASS_EVERY	2	/* poll per-QoS-class every N ticks */
+-#define HEAVY_EVERY	5	/* poll flow cache (per-dev/net/top) every N ticks */
+-#define PROBE_EVERY	5	/* ping probe every N ticks */
+-#define FCACHE_SECS	(HEAVY_EVERY * POLL)	/* flow-cache sample interval (s) */
++#define TICK_MS		200	/* base tick / WAN + live.json cadence (ms) */
++#define TPS		(1000 / TICK_MS)	/* ticks per second */
++#define CLASS_EVERY	(2 * TPS)	/* poll per-QoS-class every 2 s */
++#define HEAVY_EVERY	(5 * TPS)	/* poll flow cache (per-dev/net/top) every 5 s */
++#define PROBE_EVERY	(5 * TPS)	/* ping probe every 5 s */
++#define FCACHE_SECS	(HEAVY_EVERY * TICK_MS / 1000)	/* flow-cache sample interval (s) */
+ #define N5		288	/* 5-min slots  (24 h) */
+ #define NH		336	/* hour slots   (14 d) */
+ #define ND		366	/* day slots    (~1 y) */
+@@ -758,8 +760,8 @@ static void write_hist(int which, const char *fn, int step)
+ 	rename(tmp, path);
+ }
+ 
+-/* Published every base tick (1s). WAN + class are true per-interval rates held
+- * in the lv_* globals; per-network and per-device rates come from the last
++/* Published every base tick (200 ms). WAN + class are true per-interval rates
++ * held in the lv_* globals; per-network and per-device rates come from the last
+  * flow-cache sample (refreshed every FCACHE_SECS). */
+ static void write_live(const char *store)
+ {
+@@ -769,8 +771,8 @@ static void write_live(const char *store)
+ 	uint64_t cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
+ 	int qos_on = (nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11);
+ 	if (!o) return;
+-	fprintf(o, "{\"t\":%lld,\"poll\":%d,\"store\":\"%s\",\"qos\":%d",
+-		(long long)time(NULL), POLL, store, qos_on);
++	fprintf(o, "{\"t\":%lld,\"poll_ms\":%d,\"store\":\"%s\",\"qos\":%d",
++		(long long)time(NULL), TICK_MS, store, qos_on);
+ 	fprintf(o, ",\"wan\":{\"rx_bps\":%llu,\"tx_bps\":%llu}",
+ 		(unsigned long long)lv_wan_rx, (unsigned long long)lv_wan_tx);
+ 	fprintf(o, ",\"class\":[");
+@@ -986,6 +988,9 @@ int main(int argc, char **argv)
+ 		time_t now = time(NULL);
+ 		int n5, nh, nd, nm;
+ 		uint64_t wrx0, wtx0;
++		struct timespec t0;
++
++		clock_gettime(CLOCK_MONOTONIC, &t0);
+ 
+ 		/* history boundary - fires every 5 min regardless of tick rate */
+ 		slots_for(now, &n5, &nh, &nd, &nm);
+@@ -1002,11 +1007,12 @@ int main(int argc, char **argv)
+ 			i5cur = n5; ihcur = nh; idcur = nd; imcur = nm;
+ 		}
+ 
+-		/* WAN: every tick (the lively graph). Rate = this-tick delta / POLL. */
++		/* WAN: every tick (the lively graph). Rate = this-tick delta scaled
++		 * to bits/sec. */
+ 		wrx0 = r_wan->b5[i5cur].rx; wtx0 = r_wan->b5[i5cur].tx;
+ 		poll_ifaces(wanif);
+-		lv_wan_rx = (r_wan->b5[i5cur].rx - wrx0) * 8 / POLL;
+-		lv_wan_tx = (r_wan->b5[i5cur].tx - wtx0) * 8 / POLL;
++		lv_wan_rx = (r_wan->b5[i5cur].rx - wrx0) * 8 * TPS;
++		lv_wan_tx = (r_wan->b5[i5cur].tx - wtx0) * 8 * TPS;
+ 
+ 		/* per-class: every CLASS_EVERY ticks (tmctl is heavier than a proc read) */
+ 		if (tick % CLASS_EVERY == 0) {
+@@ -1014,7 +1020,7 @@ int main(int argc, char **argv)
+ 			for (i = 0; i <= 6; i++) { c_tx0[i] = r_cls[i]->b5[i5cur].rx; c_dp0[i] = r_cls[i]->b5[i5cur].tx; }
+ 			poll_classes(wanif);
+ 			for (i = 0; i <= 6; i++) {
+-				lv_cls_tx[i] = (r_cls[i]->b5[i5cur].rx - c_tx0[i]) * 8 / (CLASS_EVERY * POLL);
++				lv_cls_tx[i] = (r_cls[i]->b5[i5cur].rx - c_tx0[i]) * 8 * TPS / CLASS_EVERY;
+ 				lv_cls_dp[i] = r_cls[i]->b5[i5cur].tx - c_dp0[i];
+ 			}
+ 		}
+@@ -1024,7 +1030,8 @@ int main(int argc, char **argv)
+ 			poll_fcache();
+ 		if (tick % PROBE_EVERY == 0)
+ 			poll_probe();
+-		check_quota();
++		if (tick % TPS == 0)
++			check_quota();	/* monthly cap: once a second is plenty */
+ 
+ 		write_live(store);
+ 
+@@ -1035,7 +1042,20 @@ int main(int argc, char **argv)
+ 		}
+ 
+ 		tick++;
+-		for (i = 0; i < POLL && running; i++) sleep(1);
++		{
++			/* pace off measured work time so a heavy tick (tmctl popens,
++			 * fcache scan) doesn't stretch the sample interval; if the
++			 * work overran the tick, yield briefly instead of bursting */
++			struct timespec t1, ts;
++			long nap_ms;
++			clock_gettime(CLOCK_MONOTONIC, &t1);
++			nap_ms = TICK_MS - ((long)(t1.tv_sec - t0.tv_sec) * 1000 +
++					    (t1.tv_nsec - t0.tv_nsec) / 1000000);
++			if (nap_ms < 1) nap_ms = 1;
++			ts.tv_sec = nap_ms / 1000;
++			ts.tv_nsec = (nap_ms % 1000) * 1000000L;
++			nanosleep(&ts, NULL);	/* SIGTERM interrupts; loop re-checks running */
++		}
+ 	}
+ 	}
+ 
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index e149104529..b822f6896b 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index db50df0d01..325fdcfd0c 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index acb5cc8122..81d7516a35 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 6daff4cbb6..b0081c0df1 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 18d4b01630..25334cb857 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 9ee347fcb3..fb08767f39 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index cd6b3891c6..41763cb1c1 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 4bf2003e65..e30709a739 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 5f9c2ffcc6..8d6fe50cdd 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 4246d5b92c..bc3ed53edc 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 5ce43df700..123ff2febf 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 3ead9cc7e7..34749479aa 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index aa6490f631..bee25eb67d 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index bfce583878..8633904dbc 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index d638b47449..a5dd543cfa 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 6372c02ca7..bd448fd062 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 3e71a98474..4abf1f99e6 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index ca2de46569..210a123cb9 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 83aeda8489..db61d6d60a 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index ac84c0eb5d..29b0d85484 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -142,6 +142,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <span class="pill" id="statuspill"><span class="dot"></span><span id="statuspill_t"><#RTRF_02#></span></span>
+   <div class="spacer"></div>
+   <select id="pollrate" title="<#RTRF_03#>" onchange="setPollRate()" class="cl-filter" style="width:auto;margin:0;padding:8px 12px;font-size:12px">
++    <option value="200"><#RTRF_71#></option>
+     <option value="1000"><#RTRF_04#></option>
+     <option value="10000"><#RTRF_05#></option>
+     <option value="30000"><#RTRF_06#></option>
+@@ -349,7 +350,7 @@ function stackChart(id, layers, labels, colors){
+ }
+ 
+ /* ---- render live ---- */
+-var WBUF=120, wanBuf=[], clsBuf=[];   /* rolling buffers: ~2 min at 1s */
++var WBUF=120, wanBuf=[], clsBuf=[];   /* rolling buffers: 120 points (24 s at Live/200ms, ~2 min at 1s) */
+ function renderLive(d){
+   curStore = d.store?d.store.toUpperCase():'RAM'; setPill();
+   var wan=d.wan||{rx_bps:0,tx_bps:0};
+@@ -365,7 +366,7 @@ function renderLive(d){
+ 
+   if(curWin!=='live') return;   /* rolling live charts only render in the Live window */
+ 
+-  /* rolling WAN throughput (appends a point per second) */
++  /* rolling WAN throughput (appends a point per poll) */
+   wanBuf.push([wan.rx_bps||0, wan.tx_bps||0]); if(wanBuf.length>WBUF) wanBuf.shift();
+   var rx=wanBuf.map(function(p){return p[0];}), tx=wanBuf.map(function(p){return p[1];});
+   var wmax=Math.max(1,Math.max.apply(null,rx),Math.max.apply(null,tx));
+@@ -501,7 +502,8 @@ function faqClose(){ document.getElementById('flyout').className='flyout'; docum
+ document.addEventListener('keydown',function(e){ if(e.key==='Escape')faqClose(); });
+ 
+ /* ---- init ---- */
+-try{ var pm=localStorage.getItem('rtraf_pollms'); if(pm){ pollMs=parseInt(pm,10)||1000; document.getElementById('pollrate').value=String(pollMs); } }catch(e){}
++try{ var pm=localStorage.getItem('rtraf_pollms'); if(pm){ pollMs=parseInt(pm,10)||1000; } }catch(e){}
++document.getElementById('pollrate').value=String(pollMs);   /* always sync: first option is Live(200ms), default stays 1s */
+ document.getElementById('tg_enable').checked = (NV.enable!=='0');
+ document.getElementById('set_path').value = NV.path||'';
+ document.getElementById('set_probe').value = NV.probe||'';
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 66d7f90acd..c4b755e5be 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 195e423f1b..d9f16a2ce8 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 72242869a8..feb74340cf 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 4154695342..d743a193ec 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 79d1823970..1facbb786a 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 2b9f232b6e..c87755360c 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5569,7 +5569,7 @@ RTRF_60=Latency
+ RTRF_61=Loss
+ RTRF_62=Cap used
+ RTRF_63=No active flows.
+-RTRF_64=Live - updating every second.
++RTRF_64=Live - rolling view at the selected refresh rate.
+ RTRF_65=No active networks.
+ RTRF_66=No active devices.
+ RTRF_67=No QoS class data in this window yet.
+@@ -5594,3 +5594,4 @@ NetworkTools_PktCap_filter=Capture filter (optional)
+ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
++RTRF_71=Refresh: Live (200ms)
+-- 
+2.25.1
+

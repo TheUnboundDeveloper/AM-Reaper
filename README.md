@@ -1,4 +1,4 @@
-# ASUS-Merlin-Reaper
+# AM-Reaper
 
 **Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x** — branded `reaper`. Current: **v1.5.0c**.
 

@@ -36,7 +36,7 @@ held for maintainer approval · `ATTORNEY` legal question, not an engineering fi
 |---|---|---|
 | **H1** | The maintainer's personal Gmail (and an early author handle) was recoverable in **git history** (initial commit + the author-normalize commit) as pre-normalization patch-blob content. | **FIXED (2026-07-13).** History rewritten with `git-filter-repo` (replace-text + mailmap), verified clean, force-pushed. See [`PRE-PUBLICATION-CHECKLIST.md`](PRE-PUBLICATION-CHECKLIST.md). |
 | **H2** | A maintainer home-directory path (real-name-adjacent) appeared in the commit-message body of `patches/0038`. | **FIXED (2026-07-13).** Same history rewrite neutralized the path across all history and the working tree. |
-| **H3** | Public repo name led with the ASUS/ASUSWRT trademark (origin/endorsement risk). | **OWNER-ACTION.** In-text disclaimers are good. Recommend project-first naming (e.g. `reaper-rt-be96u`) with the vendor/model relegated to a descriptive tagline. This lean repo is also named `ASUS-Merlin-Reaper` — consider the same rename. |
+| **H3** | Public repo name led with the ASUS/ASUSWRT trademark (origin/endorsement risk). | **IN PROGRESS (owner).** This repo is being renamed `ASUS-Merlin-Reaper` → **`AM-Reaper`** (all in-repo references updated 2026-07-13; GitHub rename by owner). "AM" is an abbreviation rather than the spelled-out mark — a clear improvement; the offline image repo (`ASUSWRT-Reaper`) should get the same treatment if re-created. In-text nominative credit to ASUS/Merlin stays. |
 
 ## Medium risk
 

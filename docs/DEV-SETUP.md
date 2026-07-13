@@ -38,7 +38,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
    cd asuswrt-merlin.ng
    # --keep-cr is REQUIRED: some third-party files (lltdc) have CRLF line endings;
    # without it git strips the CR and the series fails to apply at qospktio.c.
-   git am --keep-cr /path/to/ASUS-Merlin-Reaper/patches/*.patch   # preserves authorship + messages
+   git am --keep-cr /path/to/AM-Reaper/patches/*.patch   # preserves authorship + messages
    #   (plain `patch -p1` will NOT work: 4 patches carry git binary payloads —
    #    fonts, logo, USB ring sprite — that `patch` cannot apply. Use git am.)
    ```

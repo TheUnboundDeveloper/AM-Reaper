@@ -81,7 +81,7 @@ change is a single line (near line 150): `OBJS += reaper_inject.o`.
   - **Windows mirror** `.../asuswrt-merlin.ng` - `origin` points at upstream RMerl; this is where a new drop is fetched.
   - **WSL build clone** `/home/reaper/asuswrt-be96u` - its `origin` is the local Windows mirror (`file:///mnt/c/.../asuswrt-merlin.ng/.git`). This is where you rebase and build.
 - **Never push** either full tree (`origin` is upstream). Only the separate lean
-  repo (`TheUnboundDeveloper/ASUS-Merlin-Reaper`) is pushable.
+  repo (`TheUnboundDeveloper/AM-Reaper`) is pushable.
 - Run multi-step git/build commands from a **scratchpad `.sh` file** invoked as
   `wsl -d Ubuntu-20.04 -u reaper bash /mnt/c/.../script.sh` - inline
   `VAR=...; cmd $VAR` in `wsl bash -c` arrives with the variable **empty**.

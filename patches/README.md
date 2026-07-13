@@ -15,7 +15,7 @@ git checkout 3006.102.8-beta2
 #    fails to apply (at lltdc/src/qospktio.c).
 #  - git am (not plain `patch`): 4 patches carry git binary payloads (fonts, logo,
 #    USB ring sprite) that `patch` cannot apply.
-git am --keep-cr /path/to/ASUS-Merlin-Reaper/patches/*.patch
+git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 ```
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).

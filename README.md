@@ -18,7 +18,7 @@ References to ASUS and Asuswrt-Merlin are provided solely to identify the hardwa
 
 Do not contact ASUS or the Asuswrt-Merlin developer for installation assistance, troubleshooting, debugging, compatibility questions, or issue reporting related to this firmware. Support requests and reports must be submitted through this repository or through the designated project email address, depending on the nature and sensitivity of the finding.
 
-Redistribution or rehosting of compiled firmware images is not authorized. Official downloads must come directly from this project’s GitHub repository so that users receive the intended, current, and verifiable release.
+The GPL-covered portions of this firmware are, and remain, freely redistributable under GPL v2 — nothing here restricts that (see [docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md)). However, a compiled `.pkgtb` **image** also bundles proprietary Broadcom/ASUS/Trend Micro/Tuxera components that are licensed for genuine ASUS hardware only and carry **no redistribution grant** ([docs/README.proprietary](docs/README.proprietary), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)). For that reason the project does not authorize rehosting of the compiled images, and asks that flashable images be obtained from the official project release channel so users receive an intended, current, and verifiable build. If you redistribute the GPL code or images, you must comply with GPL v2 — publish the corresponding source and preserve the notices ([docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md)).
 
 Because this is an independently maintained project, updates may be intermittent or infrequent depending on available time, technical limitations, upstream changes, hardware access, and other project constraints.
 
@@ -40,7 +40,8 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 **In the repo:**
 - **[`patches/`](patches/)** — the hardening, as patch files you apply onto an upstream Asuswrt-Merlin checkout.
 - **[`docs/`](docs/)** — all project documentation (see **Documentation** below).
-- Root: [`LICENSE`](LICENSE) (GPL v2) and [`LICENSE.reaper`](LICENSE.reaper) (the Reaper-specific notice), plus `SECURITY.md` and `CONTRIBUTING.md`.
+- Root: [`LICENSE`](LICENSE) (GPL v2), [`LICENSE.reaper`](LICENSE.reaper) (the Reaper-specific notice), [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), [`DEPENDENCIES.md`](DEPENDENCIES.md), [`LICENSES/`](LICENSES/) (license texts), plus `SECURITY.md` and `CONTRIBUTING.md`.
+- **Compliance:** [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md) (GPL source + written offer) and [`docs/COMPLIANCE-AUDIT-2026-07-13.md`](docs/COMPLIANCE-AUDIT-2026-07-13.md) (audit + remediation tracker). **Read the audit before making anything public.**
 
 **Not in the repo (externally sourced — see [docs/DEV-SETUP.md](docs/DEV-SETUP.md) § "Get the inputs"):**
 - The **upstream firmware source** — clone `RMerl/asuswrt-merlin.ng` at tag `3006.102.8-beta2`.

@@ -14,6 +14,15 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 
 ---
 
+## v1.5.0d — De-ASUS rebrand (UI only)
+- **New wordmark banner.** The `REAPER1` wordmark banner replaces the previous logo everywhere it
+  appeared: the dashboard and app-shell headers, the login/logout card, and the stock-page banner.
+- **AiMesh backdrop.** The AiMesh node card now uses the `RLogo` artwork; the old ASUS logo asset is
+  removed from the build entirely.
+- **Live rail clock.** The "ASUS · Merlin · Reaper" wordmark at the top of the left rail is replaced
+  by a themed, live, 24-hour **router-time clock** (date + seconds), on both the dashboard and the
+  app shell. No functional/firmware change. Build-verified; pending metal validation.
+
 ## v1.5.0c — Compliance: license headers + font license (no functional change)
 - **SPDX license headers** (`GPL-2.0-only` + copyright) added to every Reaper-authored source
   file (the Traffic Analyzer and AI Advisor daemons, the theme-injection filter, the Reaper

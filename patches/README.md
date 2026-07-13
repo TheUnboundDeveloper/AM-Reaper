@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**152 patches, v1.0 → v1.5.0c**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**153 patches, v1.0 → v1.5.0d**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (152 patches, v1.0 → v1.5.0c)
+## What the series contains (153 patches, v1.0 → v1.5.0d)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -67,9 +67,10 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - `0149` — **v1.5.0**: Network Diagnostics — the tcpdump Packet Capture tab + the AI Advisor active-diagnostics tier (ping/traceroute/DNS/netstat, opt-in, fixed-argument exec).
 - `0150` — **v1.5.0a**: remove the bundled tcpdump Packet Capture; harden the AI Advisor diagnostics.
 
-### v1.5.0b → v1.5.0c — live view + compliance (`0151`–`0152`)
+### v1.5.0b → v1.5.0d — live view, compliance, rebrand (`0151`–`0153`)
 - `0151` — **v1.5.0b**: Traffic Analyzer "Live (200ms)" refresh mode (rtrafd base tick 1s → 200ms, work-time-paced); diag-aware AI Advisor `initialize` instructions (branch on the per-session diagnostics consent instead of a static "read-only" blurb).
 - `0152` — **v1.5.0c**: compliance hygiene — SPDX `GPL-2.0-only` + copyright headers on the Reaper-authored source files, and the SIL OFL 1.1 text installed as `www/fonts/OFL.txt` so the Inter/Rajdhani font license ships in the image. No functional change.
+- `0153` — **v1.5.0d**: de-ASUS rebrand (UI only) — the `REAPER1.png` wordmark banner replaces the logo in the header, the login/logout card, and the stock-page banner; the AiMesh node-card backdrop uses `RLogo.png` (and the `ASUSLogo.png` asset is removed); the "ASUS · Merlin · Reaper" rail wordmark becomes a live, themed, 24-hour router-time clock (reusing the stock `<% uptime(); %>` hook, offset-proof).
 
 ## Notes
 

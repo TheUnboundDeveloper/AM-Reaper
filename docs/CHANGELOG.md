@@ -14,6 +14,24 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 
 ---
 
+## v1.5.0c — Compliance: license headers + font license (no functional change)
+- **SPDX license headers** (`GPL-2.0-only` + copyright) added to every Reaper-authored source
+  file (the Traffic Analyzer and AI Advisor daemons, the theme-injection filter, the Reaper
+  pages, CSS, and Makefiles) — provenance hygiene, no behavior change.
+- **Font license shipped in the image.** The SIL Open Font License 1.1 text is now installed as
+  `www/fonts/OFL.txt` so the license for the bundled Inter/Rajdhani web fonts travels with the
+  firmware, as OFL 1.1 requires. Part of the 2026-07-13 release-compliance pass
+  (see `COMPLIANCE-AUDIT-2026-07-13.md`). Build-verified; pending metal validation.
+
+## v1.5.0b — Traffic Analyzer "Live (200ms)" mode + diag-aware AI Advisor
+- **New "Live (200ms)" refresh mode** on the Traffic Analyzer. The collector's base tick moves
+  from 1 s to 200 ms (work-time-paced so heavy samples never stretch the interval), giving the
+  live WAN view true 5 Hz updates; the 1 s / 10 s / 30 s options remain and 1 s stays the default.
+- **AI Advisor `initialize` instructions are now diagnostics-aware.** When a session has network
+  diagnostics enabled, the Advisor is told the probes are active and to run them itself, instead
+  of the previous static "read-only" wording that made it defer network probes back to the user.
+  Build-verified; pending metal validation.
+
 ## v1.5.0a — Network Diagnostics: AI network probes (+ security hardening)
 - **AI Advisor network-diagnostics tier (AI Advisor image only).** When you explicitly allow it,
   the read-only Advisor can run bounded, read-only network probes — `ping`, `traceroute`,

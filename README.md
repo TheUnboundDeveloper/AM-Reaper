@@ -1,6 +1,6 @@
 # ASUS-Merlin-Reaper
 
-**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x** — branded `reaper`. Current: **v1.5.0a**.
+**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x** — branded `reaper`. Current: **v1.5.0c**.
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — remove cloud-coupled/AI-branded attack surface, and produce a flashable image that can be shared with other security-conscious BE96U owners.
 
@@ -70,7 +70,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 ## Base & status
 
 - Base: Asuswrt-Merlin **3006.102.8** (patches apply on tag `3006.102.8-beta2`; the sibling-model strip is optional — see [`patches/README.md`](patches/README.md)).
-- Current version: **v1.5.0a** (everything through v1.4.8 is validated on the physical RT-BE96U, including the USB third-factor flow; v1.4.8a–v1.4.9a are build-verified for both image variants, and v1.5.0a's AI Advisor + network-diagnostics tier are validated on the physical RT-BE96U). Per-version history: [docs/CHANGELOG.md](docs/CHANGELOG.md).
+- Current version: **v1.5.0c** (everything through v1.4.8 is validated on the physical RT-BE96U, including the USB third-factor flow; v1.5.0a's AI Advisor + network-diagnostics tier are validated on the physical RT-BE96U; v1.5.0b [Traffic Analyzer 200ms Live mode + diag-aware Advisor] and v1.5.0c [SPDX headers + font OFL, no functional change] are build-verified and pending metal validation). Per-version history: [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 ## Legal
 

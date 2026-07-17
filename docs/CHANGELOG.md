@@ -11,9 +11,11 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 > RT-BE96U (including the USB third-factor flow). v1.4.8a–v1.4.9a are build-verified
 > (both image variants); v1.5.0a's AI Advisor and its network-diagnostics tier are
 > validated on the physical RT-BE96U. In the v1.5.x line, **v1.5.6** is the newest
-> fully metal-validated build; the v1.5.7 checklist is owed, and **v1.5.8** was flashed
-> to the router 2026-07-16 with its checklist owed. Sibling-model builds (v1.5.0e/v1.5.1)
-> are build-validated only. See `RELEASE-NOTES.md` for the current release's status.
+> fully metal-validated build; the v1.5.7 checklist is owed, **v1.5.8** was flashed
+> to the router 2026-07-16 with its checklist owed, and **v1.5.9** (built and shipped
+> 2026-07-17, both variants) awaits flashing + its checklist. Sibling-model builds
+> (v1.5.0e/v1.5.1) are build-validated only. See `RELEASE-NOTES.md` for the current
+> release's status.
 
 ---
 
@@ -28,7 +30,8 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 - **Master page scrollbar themed everywhere.** The far-right top-window scrollbar was
   black-track/crimson-thumb on the dashboard but stock gray on every shell-framed page; the
   app shell (the top window for all framed pages) now carries the same red scrollbar rules.
-- UI only, both images. Metal test owed.
+- UI only, both images. Built and shipped 2026-07-17 (both variants, staged-fs verified);
+  pending metal validation — checklist in `reaper-firmware/METAL-TEST-v1.5.9.md`.
 
 ## v1.5.8 — Wireless diagnostics page
 - **New "Wireless" diagnostics page** (`Reaper_Wireless.asp`): a live radio-state snapshot for

@@ -14,7 +14,8 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 > fully metal-validated build; the v1.5.7 checklist is owed, **v1.5.8** was flashed
 > to the router 2026-07-16 with its checklist owed, and **v1.5.9** (built and shipped
 > 2026-07-17, both variants) awaits flashing + its checklist. Sibling-model builds
-> (v1.5.0e/v1.5.1) are build-validated only. See `RELEASE-NOTES.md` for the current
+> (v1.5.0e/v1.5.1, and the **v1.5.9 GT-BE98 / GT-BE98 Pro** builds carrying the GT-BE98
+> field-report fix) are build-validated only. See `RELEASE-NOTES.md` for the current
 > release's status.
 
 ---
@@ -32,6 +33,26 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   app shell (the top window for all framed pages) now carries the same red scrollbar rules.
 - UI only, both images. Built and shipped 2026-07-17 (both variants, staged-fs verified);
   pending metal validation — checklist in `reaper-firmware/METAL-TEST-v1.5.9.md`.
+- **Wireless page — quad-band radio ceiling.** The v1.5.8 Wireless diagnostics backend
+  enumerated at most three radios (a value carried over from the tri-band RT-BE96U), so on a
+  four-radio model it hid the 4th radio and refused a channel capture on it. The ceiling is
+  raised to four; it is self-configuring — a radio with no interface is skipped — so the
+  RT-BE96U still shows exactly its three. No visible change on the RT-BE96U.
+
+### v1.5.9 — sibling models GT-BE98 and GT-BE98 Pro (build-validated)
+- **Both GT-BE98 variants brought up to v1.5.9** (all of the above, plus the whole
+  v1.5.2 → v1.5.9 line they had been missing: boot-efficiency, QoS v5 download side, the
+  first-boot credentials wizard, the AI Advisor wireless-stations tool, the audit-fix rung,
+  and the Wireless diagnostics page). Both built in both variants.
+- **GT-BE98 (non-Pro) field-report fix.** A tester's GT-BE98 showed only three of four
+  radios (no 6 GHz), an empty Wi-Fi client list, and roughly half the expected wired
+  throughput. Root cause: the earlier GT-BE98 port linked four **GT-BE98 Pro** closed
+  binaries as a stopgap — including the model-specific radio/board bring-up object — and the
+  Pro's radio layout differs from the non-Pro's. All four are now the **official ASUS GT-BE98**
+  binaries (from ASUS's GT-BE98 GPL source drop), with the build-compat shim reworked
+  accordingly. **Build-validated only — awaits hardware confirmation** that all four radios
+  come up; checklist in `reaper-firmware/METAL-TEST-GT-BE98-v1.5.9.md`.
+- Sibling-model images are build-validated only; flash only with a recovery path ready.
 
 ## v1.5.8 — Wireless diagnostics page
 - **New "Wireless" diagnostics page** (`Reaper_Wireless.asp`): a live radio-state snapshot for

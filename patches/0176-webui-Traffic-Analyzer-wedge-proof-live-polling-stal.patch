@@ -1,0 +1,373 @@
+From da794094a69228f2c1e72b747b6268ff001ffd9e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 17 Jul 2026 11:36:23 -0400
+Subject: [PATCH] webui: Traffic Analyzer - wedge-proof live polling, stalled
+ indicator, history auto-refresh
+
+The live view could freeze at its last paint while the browser kept
+polling: getJSON() had no timeout and the in-flight guard was a boolean
+cleared only in the readyState-4 callback, so one response that never
+completed (httpd busy during an apply, a Wi-Fi roam, a sleep/resume
+half-open connection) wedged the loop forever. Recovery required
+leaving the page and coming back.
+
+- getJSON(): rebuilt on onloadend (fires exactly once on success, HTTP
+  error, timeout AND abort) + xhr.timeout = max(3000, 2*pollMs+2000) ms.
+  Callback is now cb(data, ok); a non-200 or non-JSON response yields
+  ok=false instead of an empty object.
+- Live loop: the in-flight guard now holds the XHR + a start stamp, and
+  a tick-side watchdog aborts any request older than
+  max(5000, 2*pollMs+3000) ms - the loop always self-heals.
+- Failed polls no longer render zeros: the page keeps its last paint and
+  the status pill shows an amber dot + "No response" (new dict key
+  RTRF_72, appended to all 25 dicts in lockstep) until polls answer.
+- History windows (5 min / 24 h / 14 d / By month) now refresh every
+  30 s; they were one-shot fetches that went permanently stale.
+
+Server side exonerated: the CGI is a non-blocking tmpfs read and rtrafd
+publishes live.json via atomic rename, so the freeze was client-only.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/BR.dict            |  1 +
+ release/src/router/www/CN.dict            |  1 +
+ release/src/router/www/CZ.dict            |  1 +
+ release/src/router/www/DA.dict            |  1 +
+ release/src/router/www/DE.dict            |  1 +
+ release/src/router/www/EN.dict            |  1 +
+ release/src/router/www/ES.dict            |  1 +
+ release/src/router/www/FI.dict            |  1 +
+ release/src/router/www/FR.dict            |  1 +
+ release/src/router/www/HU.dict            |  1 +
+ release/src/router/www/IT.dict            |  1 +
+ release/src/router/www/JP.dict            |  1 +
+ release/src/router/www/KR.dict            |  1 +
+ release/src/router/www/MS.dict            |  1 +
+ release/src/router/www/NL.dict            |  1 +
+ release/src/router/www/NO.dict            |  1 +
+ release/src/router/www/PL.dict            |  1 +
+ release/src/router/www/RO.dict            |  1 +
+ release/src/router/www/RU.dict            |  1 +
+ release/src/router/www/Reaper_Traffic.asp | 47 ++++++++++++++++++-----
+ release/src/router/www/SL.dict            |  1 +
+ release/src/router/www/SV.dict            |  1 +
+ release/src/router/www/TH.dict            |  1 +
+ release/src/router/www/TR.dict            |  1 +
+ release/src/router/www/TW.dict            |  1 +
+ release/src/router/www/UK.dict            |  1 +
+ 26 files changed, 63 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index c3553a3790..eef5359d9a 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 4edb7476c9..3bb815af59 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index d10ed361da..fcd6d8a5b3 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index b5ffe7575f..fec724df16 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 47213e6cf7..4b499b52a5 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f0565c8bc7..0affc28cba 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index b7480253ee..62e696f810 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index bb68012688..31d639b999 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index a39512f324..0fddebad62 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index c451678a47..8984591bb9 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 9075e040f7..b7a1cbf8cd 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index febf96c6e4..87ccf03e08 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index a60c2e4c93..d95309e3b7 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 9188cfc83b..411a6b37f7 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 6b08586089..eede4e1ea2 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 9b662662ba..8fb2ccfb26 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 32bb045752..a11530e89a 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 934741c535..79938864fb 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index bd020d6812..64ec3894b3 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index ca0d6e90f4..91a1e8315a 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -46,6 +46,7 @@ a{color:var(--bone-dim)} a:hover{color:var(--bone)}
+ .pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
+   padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
+ .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade)}
++.pill.stall .dot{background:var(--amber)}
+ .btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
+   font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;padding:9px 16px;cursor:pointer;text-transform:uppercase}
+ .btn:hover{border-color:var(--line)}
+@@ -301,9 +302,14 @@ var CLSCOLOR = ['#71767b','#3987e5','#199e70','#c98500','#9085e9','#d95926','#e6
+ var CLSNAME  = (decodeURIComponent('<% nvram_char_to_ascii("", "qos_class_names"); %>')||'Q1,Q2,Q3,Q4,Q5').split(',');
+ var NETCOLOR = ['#3987e5','#199e70','#c98500','#9085e9','#d95926','#e66767','#d55181','#71767b'];
+ var curWin = 'live', curStep = 'live', liveTimer = null, pollMs = 1000, curStore = 'RAM';
+-/* reading pill mirrors the SELECTED window label + the store location (was hardcoded 'Live') */
++/* reading pill mirrors the SELECTED window label + the store location (was hardcoded 'Live');
++   it also carries the no-response marker when polls stop answering, so a dead
++   collector/session reads as stalled instead of silently rendering nothing new */
++var stalled=false;
+ function setPill(){ var on=document.querySelector('#wins .win.on');
+-  document.getElementById('statuspill_t').textContent=(on?on.textContent.trim():'<#RTRF_02#>')+' - '+curStore; }
++  document.getElementById('statuspill_t').textContent=(on?on.textContent.trim():'<#RTRF_02#>')+' - '+curStore+(stalled?' - <#RTRF_72#>':''); }
++function setStalled(s){ if(s===stalled)return; stalled=s;
++  document.getElementById('statuspill').className='pill'+(s?' stall':''); setPill(); }
+ 
+ /* ---- formatting ---- */
+ function fmtBps(b){ b=+b||0; if(b>=1e9)return (b/1e9).toFixed(2)+' Gb/s'; if(b>=1e6)return (b/1e6).toFixed(1)+' Mb/s'; if(b>=1e3)return (b/1e3).toFixed(0)+' kb/s'; return b.toFixed(0)+' b/s'; }
+@@ -313,11 +319,20 @@ var PORTS={20:'FTP',21:'FTP',22:'SSH',25:'SMTP',53:'DNS',80:'HTTP',110:'POP3',14
+ function portName(p,proto){ if(PORTS[p]) return PORTS[p]+' ('+p+')'; if(p>=6881&&p<=6999) return 'BitTorrent ('+p+')'; if(p>=27000&&p<=27100) return 'Game ('+p+')'; return (proto===17?'UDP ':proto===6?'TCP ':'')+p; }
+ 
+ /* ---- fetch ---- */
++/* cb(data, ok). onloadend fires exactly once on success, HTTP error, timeout AND
++   abort, so a request can never end in no state at all - a stalled XHR is what
++   wedged the old in-flight guard and froze the page. ok=false means no usable
++   payload arrived: callers keep the last paint and mark the pill stalled rather
++   than render zeros. Returns the XHR so the live loop can watchdog it. */
+ function getJSON(f, cb){
+   var x=new XMLHttpRequest();
+   x.open('GET','/reaper_traffic.cgi?f='+f+'&_='+Date.now(),true);
+-  x.onreadystatechange=function(){ if(x.readyState!==4)return; var d={}; try{d=JSON.parse(x.responseText);}catch(e){} cb(d); };
++  x.timeout=Math.max(3000, 2*pollMs+2000);
++  x.onloadend=function(){ var d=null;
++    if(x.status===200){ try{d=JSON.parse(x.responseText);}catch(e){} }
++    if(d&&typeof d==='object') cb(d,true); else cb({},false); };
+   x.send();
++  return x;
+ }
+ 
+ /* ---- client identity (v1.5.3): names from networkmap - same source as the
+@@ -496,14 +511,28 @@ function loadWin(){
+   if(curWin==='live'){
+     wanBuf=[]; clsBuf=[];   /* fresh rolling window */
+     /* in-flight guard: at the 100ms Live rate a slow response must skip ticks,
+-       not stack XHRs against the single-threaded httpd */
+-    var inflight=false;
+-    var tick=function(){ if(inflight) return; inflight=true;
+-      getJSON('live', function(d){ inflight=false; renderLive(d); }); };
++       not stack XHRs against the single-threaded httpd. The guard holds the XHR
++       + a start stamp: a request that outlives the XHR timeout is aborted here
++       (belt-and-suspenders) so one hung response can never wedge the loop - the
++       old boolean flag had no way back to false and froze the whole page. */
++    var inflight=null, inflightAt=0;
++    var tick=function(){
++      if(inflight){
++        if(Date.now()-inflightAt < Math.max(5000, 2*pollMs+3000)) return;
++        try{ inflight.abort(); }catch(e){}
++        inflight=null;
++      }
++      inflightAt=Date.now();
++      inflight=getJSON('live', function(d,ok){ inflight=null; setStalled(!ok); if(ok) renderLive(d); });
++    };
+     tick(); liveTimer=setInterval(tick, pollMs);   /* live view refresh (user-selectable) */
+   } else {
+-    getJSON(curWin, renderHist);
+-    getJSON('live', renderLive);   /* tiles + top talkers reflect current moment */
++    var histTick=function(){
++      getJSON(curWin, function(d,ok){ if(ok) renderHist(d); });
++      getJSON('live', function(d,ok){ setStalled(!ok); if(ok) renderLive(d); });   /* tiles + top talkers */
++    };
++    histTick();
++    liveTimer=setInterval(histTick, 30000);   /* history windows refresh too (were one-shot -> went stale) */
+   }
+ }
+ function setPollRate(){
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index f003f232ee..3b9f870634 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 7c4b30b4e9..8bcf632f2f 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 018be5b5ff..271d9a4cff 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 76d238cc1e..91d78d54bb 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4d2e08027b..51d3c094bb 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index a75f17f93b..47f45ba9e8 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5629,3 +5629,4 @@ RWIF_25=top-of-band only
+ RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
+ RWIF_27=Custom / unrecognized list
+ RWIF_28=Duration
++RTRF_72=No response
+-- 
+2.25.1
+

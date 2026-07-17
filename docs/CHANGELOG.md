@@ -10,9 +10,116 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 > **Metal-validation note:** everything through v1.4.8 is validated on the physical
 > RT-BE96U (including the USB third-factor flow). v1.4.8a–v1.4.9a are build-verified
 > (both image variants); v1.5.0a's AI Advisor and its network-diagnostics tier are
-> validated on the physical RT-BE96U. See `RELEASE-NOTES.md` for the current release's status.
+> validated on the physical RT-BE96U. In the v1.5.x line, **v1.5.6** is the newest
+> fully metal-validated build; the v1.5.7 checklist is owed, and **v1.5.8** was flashed
+> to the router 2026-07-16 with its checklist owed. Sibling-model builds (v1.5.0e/v1.5.1)
+> are build-validated only. See `RELEASE-NOTES.md` for the current release's status.
 
 ---
+
+## v1.5.9 — Traffic Analyzer resilience + shell scrollbar
+- **Traffic Analyzer can no longer freeze.** The live view could stick at its last paint while
+  the browser kept polling (one stalled response wedged the poll loop's in-flight guard forever).
+  The fetch path is rebuilt on a single always-fires completion point with a request timeout and
+  a watchdog that aborts any hung request, so the loop always self-heals. When polls stop
+  answering, the page now keeps its last data and flips the status pill to an amber
+  **"No response"** marker instead of silently rendering zeros; the history windows
+  (5 min / 24 h / 14 d / By month) also auto-refresh every 30 s instead of going stale.
+- **Master page scrollbar themed everywhere.** The far-right top-window scrollbar was
+  black-track/crimson-thumb on the dashboard but stock gray on every shell-framed page; the
+  app shell (the top window for all framed pages) now carries the same red scrollbar rules.
+- UI only, both images. Metal test owed.
+
+## v1.5.8 — Wireless diagnostics page
+- **New "Wireless" diagnostics page** (`Reaper_Wireless.asp`): a live radio-state snapshot for
+  every band, a one-click **channel Lock/Unlock** that pins the currently-running channel through
+  the stock apply flow (so automatic channel selection can never drift it), a decoded view of the
+  channel **exclusion list** and regulatory/board branch actually in effect, and an **on-demand
+  channel-quality capture** — a bounded 1 Hz channel-utilization sample written to CSV in RAM
+  (never always-on, never syslog). This productizes the manual capture loop that located a
+  real-world 320 MHz interferer on the 6 GHz band on 2026-07-16.
+- **Factory-default fix:** two duplicate defaults for the 6 GHz PSC-channel setting (`psc6g`)
+  disagreed, so a factory reset landed on the unintended value; aligned to the intended default.
+- Flashed to the physical RT-BE96U 2026-07-16; the test checklist is owed.
+
+## v1.5.7 — Audit fix rung
+- Fixes from a 34-agent adversarial sweep of all Reaper-authored code (21 raw findings —
+  12 upheld and fixed, 9 refuted and recorded so they are not re-found):
+  - **Smart Connect:** the band bitmask is now indexed by slot, not by band count, so the
+    toggle stays correct when a radio is disabled.
+  - **System Log:** Broadcom wireless-driver errors are no longer filtered out of the log.
+  - **Traffic Analyzer collector:** radio queries moved out of the hot sampling path, and
+    rate reporting corrected.
+  - **AI Advisor:** every tool command now carries a hard time bound, and session cleanup is
+    armed before it can first be needed.
+  - Smaller fixes: firewall mangle flush when leaving HW QoS, port-forward names with spaces,
+    AiMesh config-sync client count, Advisor page CSS. Metal test owed.
+
+## v1.5.6 — AI Advisor: wireless-stations read tool
+- **New curated read tool `get_wireless_stations`** (AI Advisor image only): per-station
+  signal/PHY/rate detail plus channel-utilization for every wireless interface, gathered by one
+  fixed, no-caller-input pipeline — so the Advisor can reason about Wi-Fi health without shell
+  access. Metal-validated on the RT-BE96U.
+
+## v1.5.5 — First-boot security wizard + dashboard/UX fixes
+- **Mandatory first-boot / factory-reset credentials wizard.** A fully Reaper-authored, themed
+  setup page (`Reaper_FirstBoot.asp`) now forces the admin **username + password** on a
+  factory-fresh box (default `admin/admin` is disabled once setup completes, and "admin" is
+  rejected as a password), then forces the wireless page until a **WiFi PSK** is set, before any
+  other UI is reachable. Replaces the stock forced password-change gate (which lives in a closed
+  blob and only changed the password). Upgrade-safe: the gate derives from live state, so a
+  configured or upgraded box never sees it. This is the concrete mitigation for deferred finding
+  **H15 (default admin creds)** and the primary credential-hygiene item from advisory
+  **AA26-194A** (see `BACKLOG.md`). *Factory-reset metal test still owed; known limitation: the
+  WiFi step releases on "configured", so an explicitly-open network can skip the PSK.*
+- **Internet status now updates itself during boot.** The dashboard Internet card **and** the
+  shell-header WAN pill poll the WAN state on their own and flip to Connected without a manual
+  refresh — fast (~4 s) while disconnected, slow (~30 s) once up.
+- **Waiting overlay for Reaper pages.** A reusable themed "applying" modal (modeled on the reboot
+  overlay) now covers apply/arm actions on the Reaper-native pages that lacked one.
+- **AI Advisor IP pin persists.** The client-IP pin is prefilled from the router and survives
+  visits, reboots, and a later Save Settings (it was previously wiped to empty).
+
+## v1.5.4 — QoS v5.1: download-policer metal tuning
+- **Burst/rate fixes for the new download-side policer** from on-hardware tuning
+  (2026-07-15). Small correctness rung on top of v1.5.3; no new features.
+
+## v1.5.3 — QoS v5 download side + Traffic Analyzer Live (100 ms) + device identity
+- **QoS v5: the download side.** A WAN-ingress RX policer (driven by the download bandwidth
+  setting) plus a downstream DSCP→WMM class lift, so download traffic is now policed and
+  classified like upload — previously the classful engine shaped upload only. Metal
+  validation owed.
+- **Traffic Analyzer "Live" tightened to 100 ms.** The collector tick and the page's Live
+  option move together (200 ms → 100 ms) as a matched pair, with an in-flight request guard
+  so a slow response skips ticks instead of stacking against the single-threaded web server.
+- **Device identity rows.** Top Talkers and Top Devices now show the device **name** with an
+  "IP · MAC" subline (names from the same source as the dashboard's client list), instead of
+  raw addresses.
+
+## v1.5.2 — Boot efficiency, round 1
+- First fixes from the boot-behavior recon: the web UI no longer restarts when a USB drive
+  mounts during bring-up, and watchdog wait paths were unblocked — trimming avoidable UI
+  drops in the several-minute boot-stabilization window. (The wider boot-efficiency
+  investigation remains open in `BACKLOG.md`.)
+
+## v1.5.1 — GT-BE98 blob re-base (sibling models)
+- The GT-BE98 ports' closed-source blobs were **re-based from the second-hand community
+  import onto the official ASUS GPL drop** (102_39274), and the GT-BE98 quad-band gap was
+  closed (`HAS_6G` — the 6 GHz radio was never enabled in the v1.5.0e port, the prime suspect
+  in the GT-BE98 field report tracked in `BACKLOG.md`). Sibling-model build rung;
+  **build-validated only**, no functional change to the RT-BE96U image.
+
+## v1.5.0e — Factory-reset recovery fix + first sibling-model builds
+- **Fixed the factory-reset redirect loop.** On a factory-clean box the first-run gate pages and
+  Reaper's serve-time bounce redirected each other forever, so the UI never loaded and the router
+  appeared bricked (recoverable only via the ASUS rescue tool). Setup/QIS pages are now excluded
+  from the bounce. *Reported by tester PorscheT — credit him in the public release notes.*
+- **First builds for sibling BCM4916 models.** GT-BE98 Pro, GT-BE98, and RT-BE86U (plus RT-BE96U)
+  each built in both variants — closing the "wider BE-series support" investigation.
+  **Build-validated only, no metal test** on the sibling models; do not flash without a recovery
+  path. (A GT-BE98 field report is tracked in `BACKLOG.md`.)
+- **Reproducible branch builds.** The `be96u-only` branch now builds cleanly from a fresh
+  checkout (it previously depended on uncommitted working-tree deletions).
 
 ## v1.5.0d — De-ASUS rebrand (UI only)
 - **New wordmark banner.** The `REAPER1` wordmark banner replaces the previous logo everywhere it

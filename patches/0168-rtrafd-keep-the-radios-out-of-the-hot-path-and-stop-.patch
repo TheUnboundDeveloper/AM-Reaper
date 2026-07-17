@@ -1,0 +1,357 @@
+From 624702858fe54f10930a6a5f4386a1dec54a68b6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 11:25:23 -0400
+Subject: [PATCH] rtrafd: keep the radios out of the hot path, and stop lying
+ about rates
+
+Five fixes to the always-on collector. It runs from boot at 10 Hz
+regardless of qos_enable, so it is the largest piece of Reaper that is
+always executing and always near the datapath.
+
+1. WAN counters from sysfs, not /proc/net/dev. Generating /proc/net/dev
+   makes the kernel walk EVERY netdev and call each one's stats callback -
+   including the wl VIFs, whose callback is inside the closed wl driver.
+   We were entering the wireless driver ten times a second, forever, to
+   read two numbers belonging to eth0. Read
+   /sys/class/net/<wanif>/statistics/{rx,tx}_bytes instead and touch only
+   the WAN. Correct on its own merits, and it retires the open question of
+   whether that sweep contends with the wl perimeter lock - which could not
+   be answered from source, because the callback is a blob.
+
+2. Live rates were scaled by the compile-time constant TPS, which asserts
+   exactly TICK_MS elapsed. Nothing enforced that: the pacer measures the
+   tick's work time and shortens its nap to compensate, explicitly
+   tolerating overrun. Any overrun tick therefore reported
+   (actual/TICK_MS) times the true rate - a large multiplier with a full
+   flow table, on precisely the reading someone reaches for while
+   diagnosing a throughput problem. Scale by the measured interval. Same
+   fix for the per-class rates, whose tick shells out to tmctl seven times
+   and is the most likely to overrun of all.
+
+3. The conntrack flow table's probe took a reclaimable slot the moment it
+   saw one, even when the live entry for that key was further along the
+   chain - then zeroed its key, so the caller's `fl->key == key` test
+   failed and the flow's entire cumulative byte counter was credited as a
+   single delta. Remember the reclaim candidate, keep probing, and only
+   fall back to it if the key genuinely is not present. Only an empty slot
+   ends a probe chain; a stale-but-occupied one does not.
+
+4. arp_refresh() was only called from poll_conntrack(), the FALLBACK path.
+   With the accelerator on - the normal state - poll_fcache() returns
+   without ever reaching it, so arp_n stayed 0 for the daemon's whole life
+   and every arp_mac() lookup missed. Top-talker and top-device rows could
+   only ever show a raw IP, never a MAC, and so never resolved to a device
+   name. Refresh on the fcache path too.
+
+5. write_hist() for each window was gated on that window's own index
+   changing, so day.json was rewritten once per 24 h and month.json once
+   per calendar month - those views served stale or absent data for up to a
+   day / a month after boot while the rings behind them updated all along.
+   Republish every window at each 5-min boundary. The all_zero_slot() calls
+   stay index-gated; those must only fire on a real rollover.
+
+Also: the conntrack fallback now fills the live per-device accumulators.
+poll_fcache() zeroes them and hands off, and nothing refilled them, so
+live per-device rows read a flat zero whenever a software QoS engine was
+selected. (Per-network still cannot be filled there - that path has no
+LAN-side device to map to a bridge.)
+
+And stop_rtraf() now restores nf_conntrack_acct instead of leaving it on
+forever. The only other write of that sysctl, in init.c, is gated on
+(BWDPI && QCA) || RALINK_MT7622 and is not compiled for this platform, so
+rtrafd is the sole thing that raises it here - which is exactly why it has
+to lower it again. Save and restore rather than blind-writing "0": the
+sysctl is global and we do not own its value.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c   |  25 +++++
+ release/src/router/rtrafd/rtrafd.c | 159 +++++++++++++++++++++++------
+ 2 files changed, 150 insertions(+), 34 deletions(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index a090c0e0b3..44f5ab763d 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7585,19 +7585,44 @@ restart_rstats()
+  * No listener; publishes JSON under /tmp/rtraf for the authed httpd endpoint.
+  * conntrack accounting sysctl is enabled here so the very first flows after a
+  * service restart already carry byte counters. */
++
++/* nf_conntrack_acct as it stood BEFORE start_rtraf() raised it; -1 = we have
++ * not raised it and so have nothing to put back.
++ *
++ * We must restore it: the only other write of this sysctl in the tree is
++ * init.c's, and that one is gated on (BWDPI && QCA) || RALINK_MT7622 - none of
++ * which hold for this platform (BWDPI is compiled out, we are Broadcom), so it
++ * is NOT built here. rtrafd is therefore the sole thing that turns conntrack
++ * accounting on for this box, which makes leaving it on after the daemon dies a
++ * global side effect that outlives its owner.
++ *
++ * Save-and-restore rather than blindly writing "0" on stop: the sysctl is
++ * system-wide and we do not own its value, so put back what we found. */
++static int rtraf_acct_prev = -1;
++
+ void
+ stop_rtraf(void)
+ {
+ 	if (pids("rtrafd"))
+ 		killall_tk("rtrafd");
++	if (rtraf_acct_prev >= 0) {
++		f_write_string("/proc/sys/net/netfilter/nf_conntrack_acct",
++			       rtraf_acct_prev ? "1" : "0", 0, 0);
++		rtraf_acct_prev = -1;
++	}
+ }
+ 
+ void
+ start_rtraf(void)
+ {
++	char buf[8];
++
+ 	stop_rtraf();
+ 	if (!is_routing_enabled()) return;
+ 	if (nvram_match("rtraf_enable", "0")) return;
++	rtraf_acct_prev = 0;
++	if (f_read_string("/proc/sys/net/netfilter/nf_conntrack_acct", buf, sizeof(buf)) > 0)
++		rtraf_acct_prev = (atoi(buf) != 0);
+ 	f_write_string("/proc/sys/net/netfilter/nf_conntrack_acct", "1", 0, 0);
+ 	xstart("rtrafd");
+ }
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index e5f423a525..ab51fc1bd6 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -324,33 +324,46 @@ static int arp_mac(const char *ip, char *mac, size_t maclen)
+ }
+ 
+ /* ---------- pollers ---------- */
++
++/* read a single unsigned counter out of a sysfs file */
++static int rd_u64(const char *path, uint64_t *out)
++{
++	FILE *f = fopen(path, "r");
++	int ok;
++	if (!f) return 0;
++	ok = (fscanf(f, "%llu", (unsigned long long *)out) == 1);
++	fclose(f);
++	return ok;
++}
++
++/* WAN byte counters, read straight from the WAN interface's sysfs entries.
++ *
++ * This deliberately does NOT read /proc/net/dev. That file is generated by
++ * walking EVERY netdev and invoking each one's stats callback - including the
++ * wl VIFs, whose callback lives inside the closed wl driver. Doing that at the
++ * base tick rate (10 Hz, for the whole uptime of the router) means entering the
++ * wireless driver twenty times a second to obtain two numbers that belong to
++ * eth0. sysfs exposes the same counters per-interface, so ask only the WAN and
++ * leave the radios alone.
++ *
++ * WAN only, as before: the eth0 port counter is authoritative and sees
++ * offloaded traffic. Per-network is NOT read here - the br* software-bridge
++ * counters miss hardware-offloaded flows (they never traverse the Linux
++ * bridge); per-network is derived from the flow cache instead.
++ */
+ static void poll_ifaces(const char *wanif)
+ {
+-	FILE *f = fopen("/proc/net/dev", "r");
+-	char line[512], name[32];
++	char p[160];
+ 	uint64_t rxb, txb;
+-	if (!f) return;
+-	while (fgets(line, sizeof(line), f)) {
+-		char *c = strchr(line, ':');
+-		char *s = line;
+-		if (!c) continue;
+-		*c = '\0';
+-		while (*s == ' ') s++;
+-		strlcpy(name, s, sizeof(name));
+-		if (sscanf(c + 1, "%llu %*u %*u %*u %*u %*u %*u %*u %llu",
+-			   (unsigned long long *)&rxb, (unsigned long long *)&txb) != 2)
+-			continue;
+-		/* WAN only: the eth0 port counter is authoritative and sees offloaded
+-		 * traffic. Per-network is NOT read here - the br* software-bridge
+-		 * counters miss hardware-offloaded flows (they never traverse the
+-		 * Linux bridge); per-network is derived from the flow cache instead. */
+-		if (strcmp(name, wanif) == 0) {
+-			if (have_if_last[0] && rxb >= last_if_rx[0] && txb >= last_if_tx[0])
+-				ring_add(r_wan, rxb - last_if_rx[0], txb - last_if_tx[0]);
+-			last_if_rx[0] = rxb; last_if_tx[0] = txb; have_if_last[0] = 1;
+-		}
+-	}
+-	fclose(f);
++
++	snprintf(p, sizeof(p), "/sys/class/net/%s/statistics/rx_bytes", wanif);
++	if (!rd_u64(p, &rxb)) return;
++	snprintf(p, sizeof(p), "/sys/class/net/%s/statistics/tx_bytes", wanif);
++	if (!rd_u64(p, &txb)) return;
++
++	if (have_if_last[0] && rxb >= last_if_rx[0] && txb >= last_if_tx[0])
++		ring_add(r_wan, rxb - last_if_rx[0], txb - last_if_tx[0]);
++	last_if_rx[0] = rxb; last_if_tx[0] = txb; have_if_last[0] = 1;
+ }
+ 
+ static void poll_classes(const char *wanif)
+@@ -427,6 +440,14 @@ static void poll_fcache(void)
+ 	if (!f) { poll_conntrack(); return; }	/* accelerator table absent */
+ 
+ 	ntop = 0;
++	/* Load the ARP table on THIS path too, not only in the conntrack fallback.
++	 * poll_conntrack() is the fallback (accelerator off / no flows); with the
++	 * accelerator on - the normal state - we return below without ever reaching
++	 * it, so arp_n stayed 0 for the daemon's whole life and every arp_mac()
++	 * lookup in write_live() missed. Top-talker and top-device rows could then
++	 * only ever show raw IPs, never a MAC, and so never resolve to a device
++	 * name. Cheap: one small file, once per 5 s fcache sample. */
++	arp_refresh();
+ 	/* reset the live per-device/per-network rate accumulators for this sample */
+ 	memset(lv_cli_rx, 0, sizeof(lv_cli_rx)); memset(lv_cli_tx, 0, sizeof(lv_cli_tx));
+ 	memset(lv_net_rx, 0, sizeof(lv_net_rx)); memset(lv_net_tx, 0, sizeof(lv_net_tx));
+@@ -613,11 +634,25 @@ static void poll_conntrack(void)
+ 			fl = NULL;
+ 			{
+ 				uint32_t j;
++				flow_t *reuse = NULL;
++
++				/* Open-addressed probe. A LIVE entry for this key always wins,
++				 * so a reclaimable slot found earlier in the chain is only
++				 * remembered - never taken on the spot. Taking it immediately
++				 * (and zeroing its key) would abandon the search before the
++				 * real entry, and the caller's `fl->key == key` test would then
++				 * fail and credit the flow's whole cumulative byte counter as a
++				 * single delta. Only an EMPTY slot terminates a probe chain: if
++				 * the key existed it would have been placed at or before one. A
++				 * stale-but-occupied slot does not, so keep walking past it. */
+ 				for (j = 0; j < NFLOW; j++) {
+ 					flow_t *e = &flows[(idx + j) & (NFLOW - 1)];
+ 					if (e->key == key) { fl = e; break; }
+-					if (e->key == 0 || (int)(flowgen - e->gen) > 2) { fl = e; fl->key = 0; break; }
++					if (!reuse && (e->key == 0 || (int)(flowgen - e->gen) > 2))
++						reuse = e;
++					if (e->key == 0) break;
+ 				}
++				if (!fl && reuse) { fl = reuse; fl->key = 0; }
+ 			}
+ 			if (!fl) continue;	/* table full - skip flow */
+ 			if (fl->key == key && ob >= fl->ob && rb >= fl->rb) {
+@@ -632,6 +667,19 @@ static void poll_conntrack(void)
+ 				strlcpy(mac, src, sizeof(mac));
+ 			ci = cli_slot(mac, src);
+ 			ring_add(r_cli[ci], drb, dob);	/* rx=download(reply), tx=upload(orig) */
++			/* Feed the LIVE per-device rates as well. poll_fcache() zeroes
++			 * lv_cli_*/lv_net_* at the top of each sample and repopulates them
++			 * on its own path; when it hands off to this fallback it has
++			 * already zeroed them and nothing here filled them back in, so the
++			 * live per-device rows read a flat zero for as long as a software
++			 * QoS engine (type 0/9, accelerator off) is selected. Same
++			 * bits/sec convention as the fcache path.
++			 * NOTE: lv_net_* (per-network) is still not filled here - this path
++			 * has no LAN-side device to map to a bridge, unlike the flow cache
++			 * which carries RxDev/TxDev. Per-network live rows therefore remain
++			 * zero on the fallback; the history rings are unaffected. */
++			lv_cli_rx[ci] += drb * 8 / FCACHE_SECS;
++			lv_cli_tx[ci] += dob * 8 / FCACHE_SECS;
+ 			top_note(src, dst, dport, pnum, dob, drb);
+ 		}
+ 	}
+@@ -998,11 +1046,15 @@ int main(int argc, char **argv)
+ 
+ 	{
+ 	unsigned long tick = 0;
++	struct timespec tsamp_prev = { 0, 0 };	/* previous WAN sample instant */
++	int have_tsamp = 0;
++	struct timespec tcls_prev = { 0, 0 };	/* previous per-class sample instant */
++	int have_tcls = 0;
+ 	while (running) {
+ 		time_t now = time(NULL);
+ 		int n5, nh, nd, nm;
+ 		uint64_t wrx0, wtx0;
+-		struct timespec t0;
++		struct timespec t0, tsamp, tcls;
+ 
+ 		clock_gettime(CLOCK_MONOTONIC, &t0);
+ 
+@@ -1010,10 +1062,19 @@ int main(int argc, char **argv)
+ 		slots_for(now, &n5, &nh, &nd, &nm);
+ 		if (n5 != i5cur) {
+ 			probe_close_bucket();
++			/* Republish EVERY window at each 5-min boundary, not just the ones
++			 * whose index happened to roll over. Gating the writes on their own
++			 * index (nh/nd/nm) meant day.json was rewritten once per 24 h and
++			 * month.json once per calendar month - so the 1y and month views
++			 * served stale or absent data for up to a day / a month after boot,
++			 * even though the rings behind them had been updating all along.
++			 * Four small JSON files every 5 minutes is nothing.
++			 * The all_zero_slot() calls below STAY index-gated: those clear a
++			 * newly-entered slot and must fire only on an actual rollover. */
+ 			write_hist(0, "m5.json", 300);
+-			if (nh != ihcur) write_hist(1, "hour.json", 3600);
+-			if (nd != idcur) write_hist(2, "day.json", 86400);
+-			if (nm != imcur) write_hist(3, "month.json", 0);
++			write_hist(1, "hour.json", 3600);
++			write_hist(2, "day.json", 86400);
++			write_hist(3, "month.json", 0);
+ 			all_zero_slot(0, n5);
+ 			if (nh != ihcur) all_zero_slot(1, nh);
+ 			if (nd != idcur) all_zero_slot(2, nd);
+@@ -1022,21 +1083,51 @@ int main(int argc, char **argv)
+ 		}
+ 
+ 		/* WAN: every tick (the lively graph). Rate = this-tick delta scaled
+-		 * to bits/sec. */
++		 * to bits/sec by the MEASURED interval since the previous sample.
++		 *
++		 * Do not scale by TPS. TPS asserts that exactly TICK_MS elapsed, and
++		 * nothing enforces that: the pacer below measures the tick's work time
++		 * and shortens the nap to compensate, explicitly tolerating overrun
++		 * (nap floor 1 ms) rather than preventing it. A tick that overran -
++		 * a heavy fcache scan, tmctl popens, a loaded box - would then report
++		 * (actual_ms / TICK_MS) times the true rate. With a full flow table
++		 * that is a large multiplier, and it lands on exactly the reading a
++		 * user reaches for while diagnosing a throughput problem. Measure. */
+ 		wrx0 = r_wan->b5[i5cur].rx; wtx0 = r_wan->b5[i5cur].tx;
++		clock_gettime(CLOCK_MONOTONIC, &tsamp);
+ 		poll_ifaces(wanif);
+-		lv_wan_rx = (r_wan->b5[i5cur].rx - wrx0) * 8 * TPS;
+-		lv_wan_tx = (r_wan->b5[i5cur].tx - wtx0) * 8 * TPS;
++		if (have_tsamp) {
++			long el_ms = (long)(tsamp.tv_sec - tsamp_prev.tv_sec) * 1000 +
++				     (tsamp.tv_nsec - tsamp_prev.tv_nsec) / 1000000;
++			if (el_ms < 1) el_ms = 1;	/* clock hiccup: never divide by 0 */
++			lv_wan_rx = (r_wan->b5[i5cur].rx - wrx0) * 8 * 1000 / (uint64_t)el_ms;
++			lv_wan_tx = (r_wan->b5[i5cur].tx - wtx0) * 8 * 1000 / (uint64_t)el_ms;
++		} else {
++			lv_wan_rx = lv_wan_tx = 0;	/* first tick has no interval yet */
++		}
++		tsamp_prev = tsamp; have_tsamp = 1;
+ 
+-		/* per-class: every CLASS_EVERY ticks (tmctl is heavier than a proc read) */
++		/* per-class: every CLASS_EVERY ticks (tmctl is heavier than a proc read).
++		 * Same measured-interval rule as the WAN rate above - poll_classes()
++		 * shells out to tmctl seven times, so this is the tick MOST likely to
++		 * overrun and least safe to scale by a compile-time constant. */
+ 		if (tick % CLASS_EVERY == 0) {
+ 			uint64_t c_tx0[7], c_dp0[7];
+ 			for (i = 0; i <= 6; i++) { c_tx0[i] = r_cls[i]->b5[i5cur].rx; c_dp0[i] = r_cls[i]->b5[i5cur].tx; }
++			clock_gettime(CLOCK_MONOTONIC, &tcls);
+ 			poll_classes(wanif);
+ 			for (i = 0; i <= 6; i++) {
+-				lv_cls_tx[i] = (r_cls[i]->b5[i5cur].rx - c_tx0[i]) * 8 * TPS / CLASS_EVERY;
++				if (have_tcls) {
++					long el_ms = (long)(tcls.tv_sec - tcls_prev.tv_sec) * 1000 +
++						     (tcls.tv_nsec - tcls_prev.tv_nsec) / 1000000;
++					if (el_ms < 1) el_ms = 1;
++					lv_cls_tx[i] = (r_cls[i]->b5[i5cur].rx - c_tx0[i]) * 8 * 1000 / (uint64_t)el_ms;
++				} else {
++					lv_cls_tx[i] = 0;
++				}
+ 				lv_cls_dp[i] = r_cls[i]->b5[i5cur].tx - c_dp0[i];
+ 			}
++			tcls_prev = tcls; have_tcls = 1;
+ 		}
+ 
+ 		/* flow cache (per-device/per-network/top-talkers) + probe: slow cadence */
+-- 
+2.25.1
+

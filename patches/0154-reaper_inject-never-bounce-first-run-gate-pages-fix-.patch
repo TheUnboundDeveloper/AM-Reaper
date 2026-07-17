@@ -1,0 +1,75 @@
+From 2016d8e5d609acae471da214ae77e43a5ed18858 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 13 Jul 2026 21:29:00 -0400
+Subject: [PATCH] reaper_inject: never bounce first-run gate pages (fix
+ factory-reset UI loop) [v1.5.0e]
+
+A factory-reset RT-BE96U looped its web UI ('bricked, keeps going in circles') --
+found and reported by tester PorscheT. Root cause: on a factory-clean box state.js
+force-redirects the top window to a gate page until setup completes: Main_Password.asp
+while the admin password is still default, QIS_wizard.htm while w_Setting=0 / sdn_rl
+unconfigured. But reaper_inject.c's serve-time bounce rewrote those gate pages into
+reaper_shell.asp, whose state.js redirected right back -- an infinite ping-pong with
+no way to reach the password page to escape. Reaper's earlier QIS removal handled the
+x_Setting/w_Setting path but not these gate redirects.
+
+Fix (bounce side, one place, covers every state.js trigger): add Main_Password.asp and
+QIS_wizard.htm to reaper_skip[], plus a QIS_* prefix skip in reaper_should_inject(), so
+the gate pages stay top-level. Post-reset flow is now login -> forced password change ->
+dashboard, no loop. Verified in mock_router.py. Bump v1.5.0e.
+
+Reported-by: PorscheT
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf              |  2 +-
+ release/src/router/httpd/reaper_inject.c | 15 +++++++++++++++
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 598c6cff42..11ddeaf2b1 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.5.0d
++EXTENDNO=Reaper_v1.5.0e
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 69c5e6b086..f223b5c68f 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -80,6 +80,16 @@ static const char *reaper_skip[] = {
+ 	"Reaper_Traffic.asp",
+ 	"Main_Login.asp",
+ 	"Nologin.asp",
++	/* First-run GATE pages: on a factory-clean box state.js force-redirects the
++	   TOP window to these until setup is complete -- Main_Password.asp while the
++	   admin password is still default, QIS_wizard.htm while w_Setting=0 / sdn_rl
++	   is unconfigured. If the bounce rewrites them into reaper_shell.asp, state.js
++	   redirects straight back and it loops forever (a factory reset "bricks" the
++	   UI, and the password page can never be reached to escape). Keep the gate
++	   pages TOP-LEVEL so the user can finish setup. (All QIS_* pages are also
++	   matched by the prefix check in reaper_should_inject().) */
++	"Main_Password.asp",
++	"QIS_wizard.htm",
+ 	/* Captive_Portal* embed a </head> INSIDE a <script> splash template before
+ 	   the real </head>; injecting at the first </head> would land inside the
+ 	   script and prematurely close it. They are the only multi-</head> pages, so
+@@ -156,6 +166,11 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 		if (strcasecmp(name, reaper_skip[i]) == 0)
+ 			return 0;
+ 
++	/* Any QIS_* setup page is a first-run gate page (see reaper_skip[]): never
++	   bounce it, or the setup wizard loops on a factory-clean box. */
++	if (strncasecmp(name, "QIS_", 4) == 0)
++		return 0;
++
+ 	return 1;
+ }
+ 
+-- 
+2.25.1
+

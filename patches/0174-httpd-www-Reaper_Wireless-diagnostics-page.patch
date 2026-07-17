@@ -1,0 +1,1622 @@
+From a16e9b0c2f3ef8a2063195ea829fa451894cc892 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 22:31:10 -0400
+Subject: [PATCH] httpd/www: Reaper_Wireless diagnostics page
+
+New native page (Wireless > Wireless Diagnostics) productizing the
+2026-07-16 6 GHz investigation:
+
+- Radio state per band: running vs configured chanspec, width, whether
+  acsd owns the radio. One-click Lock pins the RUNNING chanspec through
+  the stock start_apply path (wlN_chanspec + wlN_bw, restart_wireless),
+  killing the per-boot acsd re-selection drift; Unlock returns to Auto.
+- Channel-selection constraints panel: territory code, PSC state, and
+  the live wlN_acs_excl_chans decoded entry-by-entry and matched
+  verbatim against the four compiled-in exclusion lists (incl. the
+  RT-BE96U 6726x-A1 10G-port WAR), so the operator can SEE what acsd
+  is forbidden to pick and why.
+- On-demand channel-quality capture: 1 Hz wl chanim_stats sampling for
+  30-300 s to CSV in /tmp (RAM only, never syslog, never flash, no
+  always-on sampler), with live nopkt/txop/glitch view and a verdict.
+  This exact loop located a real 320 MHz interferer on metal: nopkt
+  ~50% at 6g1/320-1 vs 1% at 6g1/160.
+
+Backend do_reaper_wifi_cgi follows the reaper_traffic/rmcpd security
+model: no request string reaches a shell; unit and duration are
+allowlist-matched; the only popen variable is charset-checked
+wlN_ifname; capture worker is a detached grandchild that stops by
+run-token unlink, never by signal.
+
+25 language dicts gain the RWIF_ block in lockstep (5631 lines each).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                | 257 ++++++++++++
+ release/src/router/www/BR.dict                |  27 ++
+ release/src/router/www/CN.dict                |  27 ++
+ release/src/router/www/CZ.dict                |  27 ++
+ release/src/router/www/DA.dict                |  27 ++
+ release/src/router/www/DE.dict                |  27 ++
+ release/src/router/www/EN.dict                |  27 ++
+ release/src/router/www/ES.dict                |  27 ++
+ release/src/router/www/FI.dict                |  27 ++
+ release/src/router/www/FR.dict                |  27 ++
+ release/src/router/www/HU.dict                |  27 ++
+ release/src/router/www/IT.dict                |  27 ++
+ release/src/router/www/JP.dict                |  27 ++
+ release/src/router/www/KR.dict                |  27 ++
+ release/src/router/www/MS.dict                |  27 ++
+ release/src/router/www/NL.dict                |  27 ++
+ release/src/router/www/NO.dict                |  27 ++
+ release/src/router/www/PL.dict                |  27 ++
+ release/src/router/www/RO.dict                |  27 ++
+ release/src/router/www/RU.dict                |  27 ++
+ release/src/router/www/Reaper_Wireless.asp    | 385 ++++++++++++++++++
+ release/src/router/www/SL.dict                |  27 ++
+ release/src/router/www/SV.dict                |  27 ++
+ release/src/router/www/TH.dict                |  27 ++
+ release/src/router/www/TR.dict                |  27 ++
+ release/src/router/www/TW.dict                |  27 ++
+ release/src/router/www/UK.dict                |  27 ++
+ .../router/www/require/menuTrees/menuTree.js  |   3 +
+ 28 files changed, 1320 insertions(+)
+ create mode 100644 release/src/router/www/Reaper_Wireless.asp
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 57063a7280..60604b82ad 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21690,6 +21690,262 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ 	fclose(f);
+ }
+ 
++/* reaper v1.5.8: backend for Reaper_Wireless.asp - radio state snapshot plus an
++ * on-demand channel-quality capture (the 1 Hz chanim_stats loop that located a
++ * real-world 320 MHz interferer on 2026-07-16, productized). Read-only toward
++ * the radio: the page changes chanspec through the stock start_apply flow,
++ * never through this endpoint.
++ *
++ * Security model (same as do_reaper_traffic_cgi and rmcpd): no request string
++ * is ever placed in a shell command. The radio unit and capture duration are
++ * matched against fixed allowlists; the only variable in any popen command is
++ * the nvram wlN_ifname value, and it is charset-checked first. Capture output
++ * is CSV under /tmp/reaper_wifi (RAM only - never syslog, never flash, per the
++ * always-on-sampler lesson from rtrafd). The worker is a detached grandchild
++ * that samples once per second and exits on its own deadline or when the run
++ * token is unlinked, so "stop" is an unlink and no signal is ever sent. */
++
++#define RWIFI_DIR	"/tmp/reaper_wifi"
++#define RWIFI_CSV	RWIFI_DIR "/cap.csv"
++#define RWIFI_RUN	RWIFI_DIR "/run"
++#define RWIFI_MAXUNIT	2
++
++static int rwifi_ifname(int unit, char *buf, size_t blen)
++{
++	char tmp[32];
++	const char *v;
++	int i;
++
++	snprintf(tmp, sizeof(tmp), "wl%d_ifname", unit);
++	v = nvram_safe_get(tmp);
++	if (*v == 0 || strlen(v) >= blen)
++		return 0;
++	for (i = 0; v[i]; i++) {
++		if (!isalnum((unsigned char)v[i]) && v[i] != '.' && v[i] != '_' && v[i] != '-')
++			return 0;
++	}
++	strcpy(buf, v);
++	return 1;
++}
++
++/* running chanspec, first token of the wl output (e.g. "6g5/320-1") */
++static void rwifi_run_chanspec(const char *ifname, char *out)
++{
++	char cmd[128], line[256];
++	FILE *p;
++
++	out[0] = 0;
++	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspec 2>/dev/null", ifname);
++	if ((p = popen(cmd, "r")) == NULL)
++		return;
++	if (fgets(line, sizeof(line), p))
++		sscanf(line, "%63s", out);
++	pclose(p);
++}
++
++/* emit a JSON string value keeping only chanspec/list-safe characters, so a
++ * poisoned nvram value can never break out of the quoted JSON context */
++static void rwifi_json_str(FILE *stream, const char *s)
++{
++	int i;
++
++	websWrite(stream, "\"");
++	for (i = 0; s[i]; i++) {
++		unsigned char c = (unsigned char)s[i];
++		if (isalnum(c) || strchr(",/._:-", c))
++			websWrite(stream, "%c", c);
++	}
++	websWrite(stream, "\"");
++}
++
++/* exact-token membership test for ifname inside space-separated acs_ifnames */
++static int rwifi_in_acs(const char *ifname)
++{
++	char list[256], *tok, *sp;
++
++	snprintf(list, sizeof(list), "%s", nvram_safe_get("acs_ifnames"));
++	for (tok = strtok_r(list, " ", &sp); tok; tok = strtok_r(NULL, " ", &sp)) {
++		if (strcmp(tok, ifname) == 0)
++			return 1;
++	}
++	return 0;
++}
++
++/* one chanim_stats sample appended as a CSV row; header and version lines fail
++ * the 15-field parse and are skipped naturally */
++static int rwifi_sample(const char *ifname, int sec, FILE *csv)
++{
++	char cmd[128], line[512], chspec[32];
++	FILE *p;
++	int got = 0;
++	int tx, inbss, obss, nocat, nopkt, doze, txop, goodtx, badtx, glitch, badplcp, knoise, idle, busy;
++
++	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats 2>/dev/null", ifname);
++	if ((p = popen(cmd, "r")) == NULL)
++		return 0;
++	while (fgets(line, sizeof(line), p)) {
++		if (sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
++			chspec, &tx, &inbss, &obss, &nocat, &nopkt, &doze, &txop,
++			&goodtx, &badtx, &glitch, &badplcp, &knoise, &idle, &busy) == 15) {
++			fprintf(csv, "%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
++				sec, chspec, tx, inbss, obss, nocat, nopkt, doze, txop,
++				goodtx, badtx, glitch, badplcp, knoise, idle, busy);
++			got = 1;
++			break;
++		}
++	}
++	pclose(p);
++	return got;
++}
++
++static void rwifi_worker(int unit, int secs)
++{
++	char ifname[32];
++	struct stat st;
++	FILE *csv;
++	int t;
++
++	if (!rwifi_ifname(unit, ifname, sizeof(ifname)))
++		_exit(0);
++	if ((csv = fopen(RWIFI_CSV, "w")) == NULL)
++		_exit(0);
++	fprintf(csv, "sec,chspec,tx,inbss,obss,nocat,nopkt,doze,txop,goodtx,badtx,glitch,badplcp,knoise,idle,busy\n");
++	fflush(csv);
++	for (t = 0; t < secs; t++) {
++		if (stat(RWIFI_RUN, &st) != 0)
++			break;
++		rwifi_sample(ifname, t, csv);
++		fflush(csv);
++		sleep(1);
++	}
++	fclose(csv);
++	unlink(RWIFI_RUN);
++	_exit(0);
++}
++
++static void
++do_reaper_wifi_cgi(char *url, FILE *stream)
++{
++	static const int durs[] = { 30, 60, 120, 300, 0 };
++	char ifname[32], run[64], tmp[64], buf[4096];
++	struct stat st;
++	char *act, *up, *dp;
++	FILE *f;
++	size_t n;
++	pid_t pid;
++	int unit, secs, i, first;
++
++	act = get_cgi("action");
++	if (act == NULL)
++		act = "status";
++
++	if (strcmp(act, "status") == 0) {
++		websWrite(stream, "{\"territory\":");
++		rwifi_json_str(stream, nvram_safe_get("territory_code"));
++		websWrite(stream, ",\"psc6g\":\"%d\",\"cap\":%d,\"bands\":[",
++			nvram_get_int("psc6g"), stat(RWIFI_RUN, &st) == 0 ? 1 : 0);
++		first = 1;
++		for (unit = 0; unit <= RWIFI_MAXUNIT; unit++) {
++			if (!rwifi_ifname(unit, ifname, sizeof(ifname)))
++				continue;
++			rwifi_run_chanspec(ifname, run);
++			websWrite(stream, "%s{\"unit\":%d,\"ifname\":", first ? "" : ",", unit);
++			rwifi_json_str(stream, ifname);
++			snprintf(tmp, sizeof(tmp), "wl%d_nband", unit);
++			websWrite(stream, ",\"nband\":%d", nvram_get_int(tmp));
++			snprintf(tmp, sizeof(tmp), "wl%d_radio", unit);
++			websWrite(stream, ",\"radio\":%d", nvram_get_int(tmp));
++			snprintf(tmp, sizeof(tmp), "wl%d_chanspec", unit);
++			websWrite(stream, ",\"nv_chanspec\":");
++			rwifi_json_str(stream, nvram_safe_get(tmp));
++			snprintf(tmp, sizeof(tmp), "wl%d_bw", unit);
++			websWrite(stream, ",\"bw\":");
++			rwifi_json_str(stream, nvram_safe_get(tmp));
++			websWrite(stream, ",\"run_chanspec\":");
++			rwifi_json_str(stream, run);
++			snprintf(tmp, sizeof(tmp), "wl%d_acs_excl_chans", unit);
++			websWrite(stream, ",\"excl\":");
++			rwifi_json_str(stream, nvram_safe_get(tmp));
++			websWrite(stream, ",\"acs\":%d}", rwifi_in_acs(ifname));
++			first = 0;
++		}
++		websWrite(stream, "]}");
++		return;
++	}
++
++	if (strcmp(act, "capstart") == 0) {
++		unit = -1;
++		secs = 0;
++		up = get_cgi("unit");
++		dp = get_cgi("secs");
++		if (up && strlen(up) == 1 && up[0] >= '0' && up[0] <= '0' + RWIFI_MAXUNIT)
++			unit = up[0] - '0';
++		if (dp) {
++			for (i = 0; durs[i]; i++) {
++				if (atoi(dp) == durs[i]) {
++					secs = durs[i];
++					break;
++				}
++			}
++		}
++		if (unit < 0 || secs == 0 || !rwifi_ifname(unit, ifname, sizeof(ifname))) {
++			websWrite(stream, "{\"err\":\"params\"}");
++			return;
++		}
++		mkdir(RWIFI_DIR, 0700);
++		/* a live token younger than the longest duration means a worker is
++		 * still sampling; a stale one is leftover from a crash - reclaim it */
++		if (stat(RWIFI_RUN, &st) == 0 && time(NULL) - st.st_mtime < 400) {
++			websWrite(stream, "{\"err\":\"busy\"}");
++			return;
++		}
++		unlink(RWIFI_RUN);
++		if ((f = fopen(RWIFI_RUN, "w")) != NULL) {
++			fprintf(f, "%d %d\n", unit, secs);
++			fclose(f);
++		}
++		pid = fork();
++		if (pid == 0) {
++			/* intermediate child: detach a grandchild so httpd reaps
++			 * immediately and the worker never becomes a zombie */
++			if (fork() == 0) {
++				int fd;
++				setsid();
++				for (fd = 0; fd < 64; fd++)
++					close(fd);
++				fd = open("/dev/null", O_RDWR);
++				if (fd == 0) {
++					dup2(0, 1);
++					dup2(0, 2);
++				}
++				rwifi_worker(unit, secs);
++			}
++			_exit(0);
++		}
++		if (pid > 0)
++			waitpid(pid, NULL, 0);
++		websWrite(stream, "{\"ok\":1,\"secs\":%d}", secs);
++		return;
++	}
++
++	if (strcmp(act, "capstop") == 0) {
++		unlink(RWIFI_RUN);
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (strcmp(act, "capdata") == 0) {
++		if ((f = fopen(RWIFI_CSV, "r")) == NULL)
++			return;
++		while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++			fwrite(buf, 1, n, stream);
++		fclose(f);
++		return;
++	}
++
++	websWrite(stream, "{\"err\":\"action\"}");
++}
++
+ #ifdef RTCONFIG_REAPER_MCP
+ /* reaper v1.4.0: arming control plane for the read-only MCP advisor (rmcpd).
+  *
+@@ -29215,6 +29471,7 @@ struct mime_handler mime_handlers[] =
+ 	/* reaper v1.2.7: set_ASUS_EULA.cgi endpoint removed (legacy app-only setter; EULA pre-signed in defaults.c) */
+ 	{ "reaper_qos_stats.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
+ 	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
++	{ "reaper_wifi.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_wifi_cgi, do_auth },
+ #ifdef RTCONFIG_REAPER_MCP
+ 	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
+ #endif
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 1d0fab4822..c3553a3790 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index f586e1f7e8..4edb7476c9 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index aedc293544..d10ed361da 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index f552f09946..b5ffe7575f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index d71c544e6d..47213e6cf7 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index c76791e628..f0565c8bc7 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index b4a54db89a..b7480253ee 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 84ca35bcbe..bb68012688 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d325ec02dd..a39512f324 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index b2bfba5ec4..c451678a47 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index e995c58548..9075e040f7 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 97273541cc..febf96c6e4 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 8e09f1b590..a60c2e4c93 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 3108aadf27..9188cfc83b 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index f3af59b471..6b08586089 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 318e8870cd..9b662662ba 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 21da8e89ec..32bb045752 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 084a6183af..934741c535 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 2150de181a..bd020d6812 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+new file mode 100644
+index 0000000000..38b1c29758
+--- /dev/null
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -0,0 +1,385 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RWIF_1#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line-soft:rgba(255,255,255,.06); --line:rgba(225,6,0,.16);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;padding:22px 26px 60px}
++h1,h2,h3,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.mono{font-variant-numeric:tabular-nums}
++html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
++::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:var(--crimson);border-radius:8px;border:2px solid #000}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
++.pagehead h1{font-size:24px;font-weight:700}
++.spacer{flex:1}
++.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
++  padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
++.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade)}
++.pill .dot.rec{background:var(--crimson);animation:blink 1.1s infinite}
++@keyframes blink{50%{opacity:.25}}
++.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
++  font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.05em;border-radius:9px;padding:8px 14px;cursor:pointer;text-transform:uppercase}
++.btn:hover{border-color:var(--line)}
++.btn[disabled]{opacity:.45;cursor:default}
++.btn.hot{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:16px 18px;margin-bottom:16px}
++.panel h2{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:2px}
++.panel .sub{font-size:12px;color:var(--steel);margin:2px 0 12px;line-height:1.55}
++table.ta{width:100%;border-collapse:collapse}
++table.ta th{font-family:var(--hdr);font-weight:600;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
++  color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
++table.ta td{padding:8px;border-bottom:1px solid var(--line-soft);font-size:12.5px;color:var(--bone-dim)}
++table.ta tr:last-child td{border-bottom:none}
++table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bone)}
++.tname{color:var(--bone);font-weight:500}
++.badge{font-family:var(--hdr);font-size:9.5px;letter-spacing:.08em;border:1px solid var(--line-soft);border-radius:5px;padding:2px 6px;color:var(--steel)}
++.badge.lock{color:var(--bone);border-color:var(--line)}
++.badge.auto{color:var(--jade)}
++.badge.off{color:var(--steel)}
++.badge.warn{color:var(--amber);border-color:rgba(224,169,59,.35)}
++.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:12px 0 4px}
++.tile{border:1px solid var(--line-soft);border-radius:12px;background:var(--panel-2);padding:13px 15px}
++.tile .k{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
++.tile .v{font-family:var(--hdr);font-weight:700;font-size:23px;color:var(--bone);margin-top:5px}
++.tile .v small{font-size:13px;color:var(--bone-dim);font-weight:600}
++.tile .v.ok{color:var(--jade)} .tile .v.bad{color:var(--crimson)} .tile .v.warn{color:var(--amber)}
++.fld{display:inline-block;margin:0 14px 10px 0}
++.fld label{display:block;font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:6px}
++.fld select{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:9px 11px;outline:none;min-width:130px}
++.fld select:focus{border-color:var(--line)}
++.note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:8px}
++.note b{color:var(--bone-dim)}
++.verdict{font-family:var(--hdr);font-weight:600;font-size:13.5px;letter-spacing:.05em;margin-top:12px}
++.verdict.ok{color:var(--jade)} .verdict.bad{color:var(--crimson)}
++.exwrap{max-height:240px;overflow:auto;border:1px solid var(--line-soft);border-radius:10px;margin-top:10px}
++.empty{padding:22px 8px;text-align:center;color:var(--steel);font-size:12.5px}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <div>
++    <div class="eyebrow">REAPER</div>
++    <h1><#RWIF_1#></h1>
++  </div>
++  <div class="spacer"></div>
++  <span class="pill" id="cappill" style="display:none"><span class="dot rec"></span><span id="cappilltxt"></span></span>
++</div>
++
++<div class="panel">
++  <h2><#RWIF_2#></h2>
++  <div class="sub"><#RWIF_19#></div>
++  <table class="ta" id="radios"><tbody></tbody></table>
++</div>
++
++<div class="panel">
++  <h2><#RWIF_8#></h2>
++  <div class="sub" id="constrsub"></div>
++  <div class="tiles" id="constrtiles"></div>
++  <div id="exlists"></div>
++</div>
++
++<div class="panel">
++  <h2><#RWIF_10#></h2>
++  <div class="sub"><#RWIF_17#></div>
++  <div>
++    <div class="fld"><label><#menu5_1#></label><select id="capunit"></select></div>
++    <div class="fld"><label><#RWIF_28#></label><select id="capsecs">
++      <option value="30">30s</option><option value="60" selected>60s</option>
++      <option value="120">120s</option><option value="300">300s</option></select></div>
++    <button class="btn hot" id="capgo" onclick="capStart()"><#RWIF_11#></button>
++    <button class="btn" id="capstop" onclick="capStop()" disabled><#RWIF_12#></button>
++    <button class="btn ghost" id="capdl" onclick="capDownload()" disabled><#RWIF_13#></button>
++  </div>
++  <div class="tiles" id="captiles" style="display:none">
++    <div class="tile"><div class="k">nopkt &middot; <#RWIF_14#></div><div class="v" id="t_nopkt">&ndash;</div></div>
++    <div class="tile"><div class="k">txop &middot; <#RWIF_15#></div><div class="v" id="t_txop">&ndash;</div></div>
++    <div class="tile"><div class="k">glitch &middot; <#RWIF_16#></div><div class="v" id="t_glitch">&ndash;</div></div>
++    <div class="tile"><div class="k">samples</div><div class="v" id="t_n">&ndash;</div></div>
++  </div>
++  <div class="verdict" id="capverdict"></div>
++  <div class="exwrap" id="capwrap" style="display:none">
++    <table class="ta" id="captable">
++      <thead><tr><th>t</th><th>chspec</th><th class="num">tx</th><th class="num">obss</th><th class="num">nopkt</th>
++      <th class="num">doze</th><th class="num">txop</th><th class="num">glitch</th><th class="num">knoise</th><th class="num">busy</th></tr></thead>
++      <tbody></tbody>
++    </table>
++  </div>
++  <div class="empty" id="capempty"><#RWIF_18#></div>
++</div>
++
++<form method="post" name="lockform" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_Wireless.asp">
++  <input type="hidden" name="next_page" value="Reaper_Wireless.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_wireless">
++  <input type="hidden" name="action_wait" value="15">
++  <input type="hidden" name="wl0_chanspec" value="" disabled>
++  <input type="hidden" name="wl0_bw" value="" disabled>
++  <input type="hidden" name="wl1_chanspec" value="" disabled>
++  <input type="hidden" name="wl1_bw" value="" disabled>
++  <input type="hidden" name="wl2_chanspec" value="" disabled>
++  <input type="hidden" name="wl2_bw" value="" disabled>
++</form>
++<iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0" style="display:none"></iframe>
++
++<script>
++(function(){
++"use strict";
++
++/* the four acsd exclusion lists compiled into rc/sysdeps/init-broadcom.c -
++ * matched verbatim so the panel can name WHICH branch produced the live list */
++var U5="0x5001,0x5002,0x5005,0x5009,0x500d,0x5011,0x5015,0x5019,0x501d,0x5803,0x5903,0x580b,0x590b,0x5813,0x5913,0x581b,0x591b,0x6007,0x6107,0x6207,0x6307,0x6017,0x6117,0x6217,0x6317,0x680f,0x690f,0x6a0f,0x6b0f,0x6c0f,0x6d0f,0x6e0f,0x6f0f";
++var U8="0x50e9,0x50e1,0x50e5,0x58e3,0x59e3";
++var W5="0x5059,0x585b,0x595b,0x6057,0x6157,0x6257,0x6357,0x684f,0x694f,0x6a4f,0x6b4f,0x6c4f,0x6d4f,0x6e4f,0x6f4f,0x7002,0x7042,0x7082,0x70c2,0x7102,0x7142,0x7182,0x71c2,0x7001,0x7041,0x7081,0x70c1,0x7101,0x7141,0x7181,0x71c1,0x7201,0x7241,0x7281,0x72c1,0x7301,0x7341,0x7381,0x73c1";
++var W6="0x7202,0x7242,0x7282,0x72c2,0x7302,0x7342,0x7382,0x73c2";
++
++var BANDNAME={2:"2.4 GHz",1:"5 GHz",4:"6 GHz"};
++var ST=null, CAPPOLL=null, CSV="";
++
++function esc(s){return String(s).replace(/[&<>"']/g,function(c){return "&#"+c.charCodeAt(0)+";"});}
++
++function widthOf(cs){
++  if(!cs) return "";
++  if(cs.indexOf("/320")>=0) return "320";
++  if(cs.indexOf("/160")>=0) return "160";
++  if(cs.indexOf("/80")>=0) return "80";
++  if(cs.indexOf("/40")>=0||/[0-9][lu]$/.test(cs)) return "40";
++  return "20";
++}
++function bwCode(cs){
++  var w=widthOf(cs);
++  return w==="320"?"6":w==="160"?"5":w==="80"?"3":w==="40"?"2":"1";
++}
++
++/* best-effort decode of one Broadcom chanspec hex word (6 GHz encodings) */
++function decodeCs(hex){
++  var v=parseInt(hex,16);
++  if(isNaN(v)) return {w:"?",ch:""};
++  var lo=v&0xff, pos;
++  if((v&0xff00)===0x5000) return {w:"20",ch:String(lo)};
++  if((v&0xfe00)===0x5800){pos=(v>>8)&1;return {w:"40",ch:String(pos?lo+2:lo-2)};}
++  if((v&0xfc00)===0x6000){pos=(v>>8)&3;return {w:"80",ch:String(lo-6+4*pos)};}
++  if((v&0xf800)===0x6800){pos=(v>>8)&7;return {w:"160",ch:String(lo-14+4*pos)};}
++  if((v&0xfc00)===0x7000){return {w:"320",ch:"block "+(v&0xf)};}
++  return {w:"?",ch:""};
++}
++
++function classify(excl){
++  if(!excl) return {label:"<#RWIF_24#>",war:false};
++  if(excl===U8) return {label:"US &middot; UNII-8 " + "<#RWIF_25#>",war:false};
++  if(excl===U5+","+U8) return {label:"<#RWIF_26#>",war:false};
++  if(excl===U5+","+U8+","+W5+","+W6) return {label:"<#RWIF_21#>",war:true};
++  return {label:"<#RWIF_27#>",war:false};
++}
++
++function fetchStatus(cb){
++  var x=new XMLHttpRequest();
++  x.open("GET","/reaper_wifi.cgi?action=status&_="+Date.now(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4) return;
++    try{ST=JSON.parse(x.responseText);}catch(e){ST=null;}
++    render();
++    if(cb) cb();
++  };
++  x.send();
++}
++
++function render(){
++  if(!ST) return;
++  var tb=document.querySelector("#radios tbody"), h="";
++  h+="<tr><th><#menu5_1#></th><th>ifname</th><th><#WLANConfig11b_Channel_itemname#></th>"+
++     "<th><#WLANConfig11b_ChannelBW_itemname#></th><th>acsd</th><th></th></tr>";
++  var i,b;
++  for(i=0;i<ST.bands.length;i++){
++    b=ST.bands[i];
++    var locked=b.nv_chanspec&&b.nv_chanspec!=="0";
++    var w=widthOf(b.run_chanspec);
++    h+="<tr><td class=\"tname\">"+(BANDNAME[b.nband]||("nband "+b.nband))+"</td>"+
++       "<td class=\"mono\">"+esc(b.ifname)+"</td>"+
++       "<td class=\"mono\">"+(b.run_chanspec?esc(b.run_chanspec):"&ndash;")+
++       (locked?" <span class=\"badge lock\"><#RWIF_4#></span>":" <span class=\"badge auto\"><#RWIF_5#></span>")+
++       (b.radio?"":" <span class=\"badge off\">radio off</span>")+"</td>"+
++       "<td class=\"mono\">"+(w?w+" MHz":"&ndash;")+"</td>"+
++       "<td>"+(b.acs?"<span class=\"badge auto\">yes</span>":"<span class=\"badge off\">no</span>")+"</td>"+
++       "<td style=\"text-align:right\">"+
++       (locked?"<button class=\"btn\" onclick=\"RW.unlock("+b.unit+")\"><#RWIF_7#></button>"
++              :"<button class=\"btn\" "+(b.radio&&b.run_chanspec?"":"disabled ")+
++               "onclick=\"RW.lock("+b.unit+")\"><#RWIF_6#></button>")+"</td></tr>";
++  }
++  tb.innerHTML=h;
++
++  var six=null;
++  for(i=0;i<ST.bands.length;i++) if(ST.bands[i].nband===4) six=ST.bands[i];
++  var tiles="", sub="", ex="";
++  tiles+="<div class=\"tile\"><div class=\"k\"><#RWIF_20#></div><div class=\"v\"><small>"+(ST.territory?esc(ST.territory):"&ndash;")+"</small></div></div>";
++  tiles+="<div class=\"tile\"><div class=\"k\">PSC</div><div class=\"v "+(ST.psc6g==="1"?"ok":"warn")+"\"><small>"+(ST.psc6g==="1"?"on":"off")+"</small></div></div>";
++  if(six){
++    var cls=classify(six.excl);
++    tiles+="<div class=\"tile\"><div class=\"k\"><#RWIF_9#></div><div class=\"v "+(cls.war?"warn":"")+"\"><small>"+cls.label+"</small></div></div>";
++    sub="wl2_acs_excl_chans";
++    if(six.excl){
++      var parts=six.excl.split(","), rows="", j, d;
++      for(j=0;j<parts.length;j++){
++        d=decodeCs(parts[j]);
++        rows+="<tr><td class=\"mono\">"+esc(parts[j])+"</td><td class=\"mono\">"+d.w+" MHz</td><td class=\"mono\">"+esc(d.ch)+"</td></tr>";
++      }
++      ex="<div class=\"exwrap\"><table class=\"ta\"><thead><tr><th>chanspec</th><th><#WLANConfig11b_ChannelBW_itemname#></th><th><#WLANConfig11b_Channel_itemname#></th></tr></thead><tbody>"+rows+"</tbody></table></div>";
++    }
++  }
++  document.getElementById("constrtiles").innerHTML=tiles;
++  document.getElementById("constrsub").textContent=sub;
++  document.getElementById("exlists").innerHTML=ex;
++
++  var cu=document.getElementById("capunit");
++  if(cu.options.length===0){
++    var o;
++    for(i=0;i<ST.bands.length;i++){
++      b=ST.bands[i];
++      o=document.createElement("option");
++      o.value=b.unit; o.text=(BANDNAME[b.nband]||b.ifname);
++      if(b.nband===4) o.selected=true;
++      cu.appendChild(o);
++    }
++  }
++  var pill=document.getElementById("cappill");
++  pill.style.display=ST.cap?"":"none";
++  document.getElementById("capstop").disabled=!ST.cap;
++  document.getElementById("capgo").disabled=!!ST.cap;
++  if(ST.cap&&!CAPPOLL) capPoll();
++}
++
++/* channel lock: pin the RUNNING chanspec through the stock apply flow so
++ * validate_apply and restart_wireless do all the real work */
++function lock(unit){
++  var b=null,i;
++  for(i=0;i<ST.bands.length;i++) if(ST.bands[i].unit===unit) b=ST.bands[i];
++  if(!b||!b.run_chanspec) return;
++  submitApply(unit,b.run_chanspec,bwCode(b.run_chanspec));
++}
++function unlock(unit){
++  submitApply(unit,"0","0");
++}
++function submitApply(unit,cs,bw){
++  var f=document.lockform;
++  var e1=f["wl"+unit+"_chanspec"], e2=f["wl"+unit+"_bw"];
++  e1.disabled=false; e1.value=cs;
++  e2.disabled=false; e2.value=bw;
++  f.submit();
++  setTimeout(function(){fetchStatus();},18000);
++}
++
++function capStart(){
++  var u=document.getElementById("capunit").value;
++  var s=document.getElementById("capsecs").value;
++  var x=new XMLHttpRequest();
++  x.open("GET","/reaper_wifi.cgi?action=capstart&unit="+u+"&secs="+s+"&_="+Date.now(),true);
++  x.onreadystatechange=function(){if(x.readyState===4){fetchStatus();capPoll();}};
++  x.send();
++}
++function capStop(){
++  var x=new XMLHttpRequest();
++  x.open("GET","/reaper_wifi.cgi?action=capstop&_="+Date.now(),true);
++  x.onreadystatechange=function(){if(x.readyState===4) fetchStatus();};
++  x.send();
++}
++function capPoll(){
++  if(CAPPOLL) return;
++  CAPPOLL=setInterval(function(){
++    var x=new XMLHttpRequest();
++    x.open("GET","/reaper_wifi.cgi?action=capdata&_="+Date.now(),true);
++    x.onreadystatechange=function(){
++      if(x.readyState!==4) return;
++      CSV=x.responseText||"";
++      renderCap();
++      var y=new XMLHttpRequest();
++      y.open("GET","/reaper_wifi.cgi?action=status&_="+Date.now(),true);
++      y.onreadystatechange=function(){
++        if(y.readyState!==4) return;
++        try{ST=JSON.parse(y.responseText);}catch(e){}
++        if(ST&&!ST.cap){clearInterval(CAPPOLL);CAPPOLL=null;render();}
++      };
++      y.send();
++    };
++    x.send();
++  },2000);
++}
++function renderCap(){
++  var lines=CSV.split("\n").filter(function(l){return l&&l.indexOf("sec,")!==0;});
++  var n=lines.length;
++  document.getElementById("capempty").style.display=n?"none":"";
++  document.getElementById("capwrap").style.display=n?"":"none";
++  document.getElementById("captiles").style.display=n?"":"none";
++  document.getElementById("capdl").disabled=!n;
++  if(!n){document.getElementById("capverdict").textContent="";return;}
++  var i,c,sumNo=0,sumTx=0,maxGl=0,rows="";
++  for(i=0;i<n;i++){
++    c=lines[i].split(",");
++    sumNo+=+c[6]; sumTx+=+c[8]; if(+c[11]>maxGl) maxGl=+c[11];
++  }
++  var lo=Math.max(0,n-12);
++  for(i=n-1;i>=lo;i--){
++    c=lines[i].split(",");
++    rows+="<tr><td class=\"mono\">"+esc(c[0])+"</td><td class=\"mono\">"+esc(c[1])+"</td>"+
++      "<td class=\"num\">"+esc(c[2])+"</td><td class=\"num\">"+esc(c[4])+"</td>"+
++      "<td class=\"num\" style=\""+(+c[6]>=20?"color:var(--crimson)":"")+"\">"+esc(c[6])+"</td>"+
++      "<td class=\"num\">"+esc(c[7])+"</td><td class=\"num\">"+esc(c[8])+"</td>"+
++      "<td class=\"num\" style=\""+(+c[11]>=50?"color:var(--amber)":"")+"\">"+esc(c[11])+"</td>"+
++      "<td class=\"num\">"+esc(c[13])+"</td><td class=\"num\">"+esc(c[15])+"</td></tr>";
++  }
++  document.querySelector("#captable tbody").innerHTML=rows;
++  var avgNo=sumNo/n, avgTx=sumTx/n;
++  var eN=document.getElementById("t_nopkt");
++  eN.textContent=avgNo.toFixed(1)+"%"; eN.className="v "+(avgNo>=20?"bad":"ok");
++  document.getElementById("t_txop").textContent=avgTx.toFixed(1)+"%";
++  document.getElementById("t_glitch").textContent=String(maxGl);
++  document.getElementById("t_n").textContent=String(n);
++  document.getElementById("cappilltxt").textContent=n+"s";
++  var v=document.getElementById("capverdict");
++  if(n>=10){
++    v.className="verdict "+(avgNo>=20?"bad":"ok");
++    v.innerHTML=avgNo>=20?"<#RWIF_23#>":"<#RWIF_22#>";
++  } else v.textContent="";
++}
++function capDownload(){
++  var a=document.createElement("a");
++  a.href=URL.createObjectURL(new Blob([CSV],{type:"text/csv"}));
++  a.download="reaper_wifi_capture.csv";
++  document.body.appendChild(a); a.click();
++  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},2000);
++}
++
++window.RW={lock:lock,unlock:unlock};
++window.capStart=capStart; window.capStop=capStop; window.capDownload=capDownload;
++fetchStatus();
++setInterval(function(){if(!CAPPOLL) fetchStatus();},30000);
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index a6f22a608a..f003f232ee 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 1d7089d597..7c4b30b4e9 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 2be3a8f844..018be5b5ff 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index ca2d26cfe4..76d238cc1e 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index c21c4c208e..4d2e08027b 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 5031aa1563..a75f17f93b 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5602,3 +5602,30 @@ NetworkTools_PktCap_btn=Start capture
+ RADV_73=Allow network diagnostics
+ RADV_74=Let the AI run bounded, read-only network probes (ping / traceroute / DNS / netstat) this session to help locate problems. It still cannot change any setting. Off by default.
+ RTRF_71=Refresh: Live (100ms)
++RWIF_1=Wireless Diagnostics
++RWIF_2=Radio State
++RWIF_4=Locked
++RWIF_5=Auto
++RWIF_6=Lock current channel
++RWIF_7=Unlock
++RWIF_8=Channel Selection Constraints
++RWIF_9=Auto-select exclusions
++RWIF_10=Channel Quality Capture
++RWIF_11=Start capture
++RWIF_12=Stop
++RWIF_13=Download CSV
++RWIF_14=undecodable energy
++RWIF_15=free airtime
++RWIF_16=PHY glitches
++RWIF_17=Captures run on demand only, sample once per second, and write to RAM (/tmp). Nothing keeps running in the background after a capture completes.
++RWIF_18=No capture data yet. Pick a radio and a duration, then start a capture while the problem is happening.
++RWIF_19=With the channel on Auto the radio re-picks channel and width on every boot and wireless restart. Lock pins the currently running channel through the supported path; Unlock returns the radio to Auto.
++RWIF_20=Territory
++RWIF_21=Board workaround active (10G port interference)
++RWIF_22=Channel looks clean
++RWIF_23=Elevated undecodable energy - likely interference inside this channel width
++RWIF_24=None (no exclusions for this region)
++RWIF_25=top-of-band only
++RWIF_26=Non-EU default (UNII-5 low block + top-of-band)
++RWIF_27=Custom / unrecognized list
++RWIF_28=Duration
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 537772c235..c2c2fc1d05 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -229,6 +229,9 @@ define(function(){
+ 					{url: "Advanced_WProxy_Content.asp", tabName: "<#WiFi_Proxy_item#>"},
+ 					{url: "Advanced_Roaming_Block_Content.asp", tabName: "<#WiFi_Roaming_Block_List#>"},
+ 					{url: "MLO.asp", tabName: `MLO`},
++					/* reaper v1.5.8: native wireless diagnostics page (channel lock + acsd
++					   exclusion visibility + on-demand channel-quality capture) */
++					{url: "Reaper_Wireless.asp", tabName: "<#RWIF_1#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				] 
+ 			},
+-- 
+2.25.1
+

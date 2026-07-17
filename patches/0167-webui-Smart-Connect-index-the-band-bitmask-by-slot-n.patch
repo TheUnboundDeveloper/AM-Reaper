@@ -1,0 +1,58 @@
+From fbdde10ea7a2f01e0dc299e33cec5843dbd9906e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 11:25:23 -0400
+Subject: [PATCH] webui: Smart Connect - index the band bitmask by slot, not by
+ band count
+
+toggleSmartConnect() built smart_connect_selif_x as
+(Math.pow(2, bandList.length) - 1), i.e. "set one bit per band that
+exists". But the mask is indexed by BAND SLOT: bit i means bandName[i] of
+["2G","5G1","5G2","6G1","6G2"] - the same mapping isSmartConnectSelifBand()
+uses to read it back. Counting is only equivalent when the present bands
+happen to be contiguous from slot 0, which they are not on any tri-band
+unit with no second 5 GHz radio.
+
+On an RT-BE96U (2G + 5G1 + 6G1) the correct mask is bits 0,1,3 = 11.
+The old expression yielded 2^3-1 = 7 = bits 0,1,2 = 2G + 5G1 + 5G2: it
+selected a 5 GHz-2 radio that does not exist and silently dropped 6 GHz
+out of the steering group. One click, no warning, and the band most users
+bought the router for stops being steered.
+
+Build the mask from each band's index in bandName instead.
+
+Latent rather than live on the maintainer's own unit: nvram there reads
+11, so the button had never been pressed. Found by an audit of the Reaper
+diff, not by the symptom.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Advanced_Smart_Connect.asp | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index 089bc89bcb..da288ab398 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -969,7 +969,18 @@ function toggleSmartConnect(){
+ 		setObj['smart_connect_x'] = '1';	// SMRTCONN_FULL_BANDS
+ 		if(typeof smart_connect_v2_support !== 'undefined' && smart_connect_v2_support){
+ 			// v2 selects participating bands via a bitmask; (re)select every available band.
+-			setObj['smart_connect_selif_x'] = '' + (Math.pow(2, bandList.length) - 1);
++			// The mask is indexed by BAND SLOT, not by how many bands exist: bit i means
++			// bandName[i] of ["2G","5G1","5G2","6G1","6G2"] - the same mapping
++			// isSmartConnectSelifBand() reads back. Counting the present bands instead
++			// (2^bandList.length - 1) is wrong for any radio set with a gap in it. On a
++			// tri-band RT-BE96U (2G + 5G1 + 6G1) the correct mask is bits 0,1,3 = 11,
++			// but 2^3-1 = 7 = bits 0,1,2 = 2G + 5G1 + 5G2: it selects a 5 GHz-2 radio
++			// that does not exist and silently drops 6 GHz out of the steering group.
++			var selifMask = 0;
++			for(var b=0; b<bandName.length; b++){
++				if(get_wl_unit_by_band(bandName[b]) != '') selifMask |= (1 << b);
++			}
++			setObj['smart_connect_selif_x'] = '' + selifMask;
+ 		}
+ 	}
+ 
+-- 
+2.25.1
+

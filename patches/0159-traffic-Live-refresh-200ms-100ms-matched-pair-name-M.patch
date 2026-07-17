@@ -1,0 +1,223 @@
+From 19ab500bca50a221f41fb56a5b79b8c94ce05da0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 14 Jul 2026 23:27:19 -0400
+Subject: [PATCH] traffic: Live refresh 200ms -> 100ms matched pair +
+ name/MAC/IP identity rows
+
+Owner asked for a faster Live view (10ms). The Live option and the rtrafd
+base tick are a matched pair - polling faster than the collector rewrites
+live.json only re-reads identical data - so both sides move to 100ms
+(owner-approved compromise; 10ms would be ~100 req/s of duplicate frames
+against the single-threaded httpd for zero visual gain).
+
+rtrafd.c: TICK_MS 200 -> 100 (heavy cadences unchanged - they are wall-clock
+multiples of TPS); live.json dev[] entries now carry the client MAC (cli key,
+IP fallback) and top[] entries carry smac resolved from the per-poll ARP
+cache (remote dst stays IP-only).
+
+Reaper_Traffic.asp: option value + label 100ms; stored 200ms poll pref
+migrated to 100; in-flight XHR guard so a slow response skips ticks instead
+of stacking requests; Top Devices (live + history) and Top Talkers rows now
+render name (networkmap, same get_clientlist source as the dashboard) with
+an ip-and-MAC subline - falls back to raw ip/mac when networkmap has no name.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c        | 37 ++++++++++------
+ release/src/router/www/Reaper_Traffic.asp | 53 +++++++++++++++++++----
+ 2 files changed, 69 insertions(+), 21 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 7b7e102359..e5f423a525 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -41,13 +41,15 @@
+ #include <shutils.h>
+ #include <shared.h>
+ 
+-/* Dual cadence: a fast 200 ms base tick drives the live view (WAN rate +
+- * live.json write) so the page's "Live" refresh mode gets true 200 ms samples;
+- * the heavier sources keep their wall-clock cadences - per-class every 2 s
+- * (tmctl popens), the flow-cache scan (per-device/per-network/top-talkers) and
+- * the ping probe every 5 s. History rings just accumulate finer deltas -
+- * still binned into the same 5-min/hour/day/month slots. */
+-#define TICK_MS		200	/* base tick / WAN + live.json cadence (ms) */
++/* Dual cadence: a fast 100 ms base tick drives the live view (WAN rate +
++ * live.json write) so the page's "Live" refresh mode gets true 100 ms samples
++ * (v1.5.3, owner ask - was 200 ms; the page poll and this tick are a matched
++ * pair, change them together). The heavier sources keep their wall-clock
++ * cadences - per-class every 2 s (tmctl popens), the flow-cache scan
++ * (per-device/per-network/top-talkers) and the ping probe every 5 s. History
++ * rings just accumulate finer deltas - still binned into the same
++ * 5-min/hour/day/month slots. */
++#define TICK_MS		100	/* base tick / WAN + live.json cadence (ms) */
+ #define TPS		(1000 / TICK_MS)	/* ticks per second */
+ #define CLASS_EVERY	(2 * TPS)	/* poll per-QoS-class every 2 s */
+ #define HEAVY_EVERY	(5 * TPS)	/* poll flow cache (per-dev/net/top) every 5 s */
+@@ -763,7 +765,7 @@ static void write_hist(int which, const char *fn, int step)
+ 	rename(tmp, path);
+ }
+ 
+-/* Published every base tick (200 ms). WAN + class are true per-interval rates
++/* Published every base tick (TICK_MS). WAN + class are true per-interval rates
+  * held in the lv_* globals; per-network and per-device rates come from the last
+  * flow-cache sample (refreshed every FCACHE_SECS). */
+ static void write_live(const char *store)
+@@ -794,8 +796,11 @@ static void write_live(const char *store)
+ 	first = 1;
+ 	for (i = 0; i < NCLI; i++) {
+ 		if (!cli[i].used || (lv_cli_rx[i] == 0 && lv_cli_tx[i] == 0)) continue;
+-		fprintf(o, "%s{\"ip\":\"%s\",\"dn\":%llu,\"up\":%llu}", first ? "" : ",",
+-			jesc(cli[i].ip, eb, sizeof(eb)), (unsigned long long)lv_cli_rx[i], (unsigned long long)lv_cli_tx[i]);
++		/* key is the client MAC when the flow carried one (IP fallback
++		 * otherwise) - the page shows it only when it looks like a MAC */
++		fprintf(o, "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"dn\":%llu,\"up\":%llu}", first ? "" : ",",
++			jesc(cli[i].ip, eb, sizeof(eb)), jesc(cli[i].key, eb2, sizeof(eb2)),
++			(unsigned long long)lv_cli_rx[i], (unsigned long long)lv_cli_tx[i]);
+ 		first = 0;
+ 	}
+ 	fprintf(o, "]");
+@@ -814,11 +819,17 @@ static void write_live(const char *store)
+ 			(unsigned long long)live_rtt, (unsigned long long)live_loss);
+ 	}
+ 	fprintf(o, ",\"top\":[");
+-	for (i = 0; i < ntop; i++)
+-		fprintf(o, "%s{\"src\":\"%s\",\"dst\":\"%s\",\"dport\":%d,\"proto\":%d,\"rate\":%llu,\"up\":%llu,\"dn\":%llu}",
+-			i ? "," : "", jesc(top[i].src, eb, sizeof(eb)), jesc(top[i].dst, eb2, sizeof(eb2)), top[i].dport, top[i].proto,
++	for (i = 0; i < ntop; i++) {
++		/* LAN-side MAC from the per-poll ARP cache so the page can name the
++		 * talker; remote dst never resolves and stays IP-only */
++		char smac[24], eb3[80];
++		if (!arp_mac(top[i].src, smac, sizeof(smac)))
++			smac[0] = '\0';
++		fprintf(o, "%s{\"src\":\"%s\",\"smac\":\"%s\",\"dst\":\"%s\",\"dport\":%d,\"proto\":%d,\"rate\":%llu,\"up\":%llu,\"dn\":%llu}",
++			i ? "," : "", jesc(top[i].src, eb, sizeof(eb)), jesc(smac, eb3, sizeof(eb3)), jesc(top[i].dst, eb2, sizeof(eb2)), top[i].dport, top[i].proto,
+ 			(unsigned long long)top[i].rate, (unsigned long long)top[i].up,
+ 			(unsigned long long)top[i].dn);
++	}
+ 	fprintf(o, "]}");
+ 	fclose(o);
+ 	rename("/tmp/rtraf/.live.json", "/tmp/rtraf/live.json");
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 088bdb1399..ca0d6e90f4 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -90,6 +90,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+ .bar{position:relative;height:7px;border-radius:4px;background:rgba(255,255,255,.05);margin-top:5px;overflow:hidden}
+ .bar>span{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--s1)}
+ .tname{color:var(--bone);font-weight:500}
++.tsub{color:var(--steel);font-size:11px;margin-top:1px}
+ .badge{font-family:var(--hdr);font-size:9.5px;letter-spacing:.08em;border:1px solid var(--line-soft);border-radius:5px;padding:2px 6px;color:var(--steel)}
+ 
+ /* quota meter */
+@@ -145,7 +146,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <span class="pill" id="statuspill"><span class="dot"></span><span id="statuspill_t"><#RTRF_02#></span></span>
+   <div class="spacer"></div>
+   <select id="pollrate" title="<#RTRF_03#>" onchange="setPollRate()" class="cl-filter" style="width:auto;margin:0;padding:8px 12px;font-size:12px">
+-    <option value="200"><#RTRF_71#></option>
++    <option value="100"><#RTRF_71#></option>
+     <option value="1000"><#RTRF_04#></option>
+     <option value="10000"><#RTRF_05#></option>
+     <option value="30000"><#RTRF_06#></option>
+@@ -319,6 +320,37 @@ function getJSON(f, cb){
+   x.send();
+ }
+ 
++/* ---- client identity (v1.5.3): names from networkmap - same source as the
++   dashboard - keyed by lowercase MAC, plus an IP->MAC map for rows where the
++   collector only knew the IP. Fetched once at load; rows fall back to raw
++   ip/mac until (or unless) it answers. ---- */
++var CLNAME={}, IP2MAC={};
++function fetchClNames(){
++  var x=new XMLHttpRequest();
++  x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+Date.now(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||x.status!==200) return;
++    try{
++      var j=JSON.parse(x.responseText), cl=j.get_clientlist||j, ml=cl.maclist||[];
++      for(var i=0;i<ml.length;i++){ var mac=String(ml[i]), c=cl[mac]; if(!c) continue;
++        var nm=(c.nickName&&String(c.nickName).length)?String(c.nickName):((c.name&&String(c.name).length)?String(c.name):'');
++        var lm=mac.toLowerCase(); if(nm) CLNAME[lm]=nm; if(c.ip) IP2MAC[c.ip]=lm; }
++    }catch(e){}
++  };
++  x.send();
++}
++/* one-cell identity block: name on top when known, "ip - mac" subline.
++   mac may be an IP (collector key fallback) - only shown when it has ':'. */
++function devCell(ip, mac){
++  var m=String(mac||IP2MAC[ip]||'').toLowerCase(); if(m.indexOf(':')<0) m='';
++  var nm=CLNAME[m]||'';
++  var head=nm||ip||m.toUpperCase();
++  var bits=[];
++  if(nm&&ip) bits.push(esc(ip));
++  if(m&&String(head).toLowerCase()!==m) bits.push(esc(m.toUpperCase()));
++  return '<span class="tname">'+esc(head)+'</span>'+(bits.length?'<div class="tsub">'+bits.join(' &middot; ')+'</div>':'');
++}
++
+ /* ---- SVG chart helpers (W=1000 viewBox) ---- */
+ var W=1000;
+ function axis(svg, H, maxv, unit){
+@@ -353,7 +385,7 @@ function stackChart(id, layers, labels, colors){
+ }
+ 
+ /* ---- render live ---- */
+-var WBUF=120, wanBuf=[], clsBuf=[];   /* rolling buffers: 120 points (24 s at Live/200ms, ~2 min at 1s) */
++var WBUF=120, wanBuf=[], clsBuf=[];   /* rolling buffers: 120 points (12 s at Live/100ms, ~2 min at 1s) */
+ function renderLive(d){
+   curStore = d.store?d.store.toUpperCase():'RAM'; setPill();
+   var wan=d.wan||{rx_bps:0,tx_bps:0};
+@@ -364,7 +396,7 @@ function renderLive(d){
+   var th=''; for(var i=0;i<tiles.length;i++) th+='<div class="tile"><div class="k">'+tiles[i][0]+'</div><div class="v '+tiles[i][2]+'">'+tiles[i][1]+'</div></div>';
+   document.getElementById('tiles').innerHTML=th;
+   var tb=''; (d.top||[]).sort(function(a,b){return b.rate-a.rate;}).slice(0,12).forEach(function(t){
+-    tb+='<tr><td class="tname">'+esc(t.src)+'</td><td>'+esc(t.dst)+' <span class="badge">'+esc(portName(t.dport,t.proto))+'</span></td><td class="num">'+fmtBps(t.rate*8)+'</td></tr>'; });
++    tb+='<tr><td>'+devCell(t.src,t.smac)+'</td><td>'+esc(t.dst)+' <span class="badge">'+esc(portName(t.dport,t.proto))+'</span></td><td class="num">'+fmtBps(t.rate*8)+'</td></tr>'; });
+   document.getElementById('toptbody').innerHTML = tb || '<tr><td colspan="3" style="color:var(--steel)"><#RTRF_63#></td></tr>';
+ 
+   if(curWin!=='live') return;   /* rolling live charts only render in the Live window */
+@@ -403,7 +435,7 @@ function renderLive(d){
+   if(devs.length) dmax=Math.max(1,devs[0].dn+devs[0].up);
+   var dh='';
+   devs.slice(0,15).forEach(function(r){ var tot=r.dn+r.up;
+-    dh+='<tr><td><span class="tname">'+esc(r.ip)+'</span><div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'; });
++    dh+='<tr><td>'+devCell(r.ip,r.mac)+'<div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'; });
+   document.getElementById('clitbody').innerHTML = dh || '<tr><td colspan="3" style="color:var(--steel)"><#RTRF_66#></td></tr>';
+ 
+   /* quota meter */
+@@ -448,7 +480,7 @@ function renderHist(d){
+   for(var k in cli){ if(!cli.hasOwnProperty(k))continue; var dn=0,up=0; cli[k].d.forEach(function(p){dn+=p[0];up+=p[1];}); rows.push({name:k,ip:cli[k].ip,dn:dn,up:up,tot:dn+up}); }
+   rows.sort(function(a,b){return b.tot-a.tot;});
+   var maxTot=rows.length?rows[0].tot:1, tb='';
+-  rows.slice(0,15).forEach(function(r){ tb+='<tr><td><span class="tname">'+esc(r.ip||r.name)+'</span><div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'; });
++  rows.slice(0,15).forEach(function(r){ tb+='<tr><td>'+devCell(r.ip,r.name)+'<div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'; });
+   document.getElementById('clitbody').innerHTML = tb || '<tr><td colspan="3" style="color:var(--steel)"><#RTRF_69#></td></tr>';
+ 
+   /* quota */
+@@ -463,7 +495,11 @@ function loadWin(){
+   if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
+   if(curWin==='live'){
+     wanBuf=[]; clsBuf=[];   /* fresh rolling window */
+-    var tick=function(){ getJSON('live', renderLive); };
++    /* in-flight guard: at the 100ms Live rate a slow response must skip ticks,
++       not stack XHRs against the single-threaded httpd */
++    var inflight=false;
++    var tick=function(){ if(inflight) return; inflight=true;
++      getJSON('live', function(d){ inflight=false; renderLive(d); }); };
+     tick(); liveTimer=setInterval(tick, pollMs);   /* live view refresh (user-selectable) */
+   } else {
+     getJSON(curWin, renderHist);
+@@ -505,8 +541,9 @@ function faqClose(){ document.getElementById('flyout').className='flyout'; docum
+ document.addEventListener('keydown',function(e){ if(e.key==='Escape')faqClose(); });
+ 
+ /* ---- init ---- */
+-try{ var pm=localStorage.getItem('rtraf_pollms'); if(pm){ pollMs=parseInt(pm,10)||1000; } }catch(e){}
+-document.getElementById('pollrate').value=String(pollMs);   /* always sync: first option is Live(200ms), default stays 1s */
++try{ var pm=localStorage.getItem('rtraf_pollms'); if(pm){ pollMs=parseInt(pm,10)||1000; if(pollMs===200) pollMs=100; /* v1.5.3: Live option tightened 200->100ms */ } }catch(e){}
++document.getElementById('pollrate').value=String(pollMs);   /* always sync: first option is Live(100ms), default stays 1s */
++fetchClNames();
+ document.getElementById('tg_enable').checked = (NV.enable!=='0');
+ document.getElementById('set_path').value = NV.path||'';
+ document.getElementById('set_probe').value = NV.probe||'';
+-- 
+2.25.1
+

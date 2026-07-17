@@ -1,0 +1,192 @@
+From 26e7ad46f29c470b1d43f8d1c126c82c1f9b5f5b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 11:25:24 -0400
+Subject: [PATCH] rmcpd: bound every tool command in time, and arm cleanup
+ before it is needed
+
+Two fixes to the advisor daemon.
+
+1. sb_addcmd() bounded output size but not wall clock. popen()+fread()
+   waits as long as the child cares to run, so a single tool call could
+   park the daemon indefinitely - a wl query against a wedged driver, a
+   pipeline that never closes stdout, a loaded box - and outlive the
+   session that authorised it, straight past the arming timeout and past a
+   USB-key removal. An ephemeral, session-scoped daemon must not contain an
+   unbounded wait.
+
+   Fixed properly rather than cosmetically: popen(3) hands back no pid, so
+   a hung child cannot be killed and pclose() would just block on it, and
+   busybox here is built without the timeout applet (CONFIG_TIMEOUT is not
+   set) so wrapping the command in `timeout N ...` is not available either.
+   Added a minimal popen that returns the pid and puts the child in its own
+   process group, then poll() the pipe against an 8 s deadline and kill the
+   whole group - not just the fronting sh - on timeout or on hitting the
+   size cap. Only a clean EOF skips the kill, so the waitpid() cannot block
+   on the very child we gave up waiting for.
+
+2. atexit(cleanup) was registered only after the listener was up, but five
+   paths return before that point (no lan_ipaddr, socket, bad lan_ipaddr,
+   bind, listen). cleanup() is the only code that unlinks SESSION_FILE, so
+   each of those exits left a live bearer token in /tmp with the GUI still
+   reporting armed=1 and no daemon behind it. Register as soon as there is
+   an armed session to tear down; cleanup() already guards the iptables
+   teardown on g_added_rule, which is still 0 there.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rmcpd/rmcpd.c | 112 ++++++++++++++++++++++++++++---
+ 1 file changed, 104 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index c394959373..16eb985542 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -47,6 +47,8 @@
+ #include <sys/types.h>
+ #include <sys/socket.h>
+ #include <sys/select.h>
++#include <sys/wait.h>	/* waitpid - reap the bounded command child */
++#include <poll.h>	/* poll - deadline on that child's output */
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
+ #include <netdb.h>	/* getaddrinfo - resolve+guard diagnostic targets */
+@@ -339,19 +341,104 @@ static void sb_addfile(sbuf_t *s, const char *path, size_t cap)
+ }
+ 
+ /* run a fixed (non-request-derived) command, capture stdout into sbuf */
++/* How long any single tool command may run before we stop waiting on it. */
++#define CMD_TIMEOUT_MS	8000
++
++/* popen(3) with the child's pid handed back.
++ *
++ * The stock popen gives no pid, so a child that never finishes cannot be killed
++ * and pclose() would simply block on it - which is precisely the hang we need to
++ * bound. busybox here is built WITHOUT the timeout applet (CONFIG_TIMEOUT is not
++ * set), so wrapping the command string in `timeout N ...` is not available
++ * either. Hence a minimal popen of our own.
++ *
++ * The child is put in its own process group so a timeout can kill the WHOLE
++ * pipeline, not merely the sh that fronts it. setpgid() is called on both sides
++ * to close the fork/exec race.
++ */
++static FILE *popen_pid(const char *cmd, pid_t *pid_out)
++{
++	int fds[2];
++	pid_t pid;
++
++	if (pipe(fds) < 0) return NULL;
++	pid = fork();
++	if (pid < 0) { close(fds[0]); close(fds[1]); return NULL; }
++	if (pid == 0) {
++		setpgid(0, 0);
++		close(fds[0]);
++		dup2(fds[1], STDOUT_FILENO);
++		close(fds[1]);
++		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
++		_exit(127);
++	}
++	close(fds[1]);
++	setpgid(pid, pid);
++	*pid_out = pid;
++	return fdopen(fds[0], "r");
++}
++
++/* Run a command, append its stdout, bounded in BOTH size and time.
++ *
++ * cap bounds the bytes; CMD_TIMEOUT_MS bounds the wall clock. Without the time
++ * bound a single tool call could park the daemon for as long as its child felt
++ * like running - a wl query against a wedged driver, a pipeline that never
++ * closes stdout, a loaded box - and outlive the very session that authorised it,
++ * straight past the arming timeout and past a USB-key removal. An ephemeral,
++ * session-scoped daemon must not have an unbounded wait anywhere in it.
++ */
+ static void sb_addcmd(sbuf_t *s, const char *cmd, size_t cap)
+ {
+-	FILE *p = popen(cmd, "r");
++	FILE *p;
++	pid_t pid = -1;
++	int fd, st, saw_eof = 0, timed_out = 0;
+ 	char buf[2048];
+-	size_t got = 0, n;
++	size_t got = 0;
++	struct timespec t0;
++
++	p = popen_pid(cmd, &pid);
+ 	if (!p) { sb_puts(s, "(command unavailable)"); return; }
+-	while ((n = fread(buf, 1, sizeof(buf), p)) > 0) {
+-		if (got + n > cap) n = cap - got;
+-		sb_add(s, buf, n);
+-		got += n;
++	fd = fileno(p);
++	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
++	clock_gettime(CLOCK_MONOTONIC, &t0);
++
++	for (;;) {
++		struct timespec tn;
++		struct pollfd pfd;
++		long left;
++		ssize_t n;
++		int pr;
++
++		clock_gettime(CLOCK_MONOTONIC, &tn);
++		left = CMD_TIMEOUT_MS - ((long)(tn.tv_sec - t0.tv_sec) * 1000 +
++					(tn.tv_nsec - t0.tv_nsec) / 1000000);
++		if (left <= 0) { timed_out = 1; break; }
++
++		pfd.fd = fd; pfd.events = POLLIN; pfd.revents = 0;
++		pr = poll(&pfd, 1, (int)left);
++		if (pr < 0) { if (errno == EINTR) continue; break; }
++		if (pr == 0) { timed_out = 1; break; }
++
++		n = read(fd, buf, sizeof(buf));
++		if (n < 0) { if (errno == EINTR || errno == EAGAIN) continue; break; }
++		if (n == 0) { saw_eof = 1; break; }	/* child closed stdout */
++		if (got + (size_t)n > cap) n = (ssize_t)(cap - got);
++		if (n <= 0) break;
++		sb_add(s, buf, (size_t)n);
++		got += (size_t)n;
+ 		if (got >= cap) break;
+ 	}
+-	pclose(p);
++
++	fclose(p);
++	if (timed_out)
++		sb_puts(s, "\n(timed out)");
++	/* Anything other than a clean EOF means the child may still be alive - on
++	 * timeout, or when we stopped at cap. Kill the process group rather than
++	 * trusting it to notice the closed pipe, or the waitpid below could block
++	 * on exactly the child we gave up waiting for. */
++	if (!saw_eof)
++		kill(-pid, SIGKILL);
++	waitpid(pid, &st, 0);
+ }
+ 
+ /* emit one whitelisted nvram key as a JSON "key":"value" pair (or skip) */
+@@ -1048,6 +1135,15 @@ int main(int argc, char **argv)
+ 	}
+ 	sanitize_client_ip();
+ 
++	/* Register the teardown as soon as there is an armed session to tear down,
++	 * NOT after the listener is up. cleanup() is the only code that unlinks
++	 * SESSION_FILE, so registering it late left every early failure below (no
++	 * lan_ipaddr, socket, bad lan_ipaddr, bind, listen) exiting with the session
++	 * file still on disk: a live bearer token in /tmp and a GUI still reporting
++	 * armed=1, with no daemon behind either. Safe to arm here - cleanup() guards
++	 * the iptables teardown on g_added_rule, which is still 0 at this point. */
++	atexit(cleanup);
++
+ 	snprintf(g_lan_ip, sizeof(g_lan_ip), "%s", nvram_safe_get("lan_ipaddr"));
+ 	if (!g_lan_ip[0]) {
+ 		syslog(LOG_ERR, "rmcpd: no lan_ipaddr - refusing to start");
+@@ -1101,7 +1197,7 @@ int main(int argc, char **argv)
+ 
+ 	fence_rule("-I");
+ 	g_added_rule = 1;
+-	atexit(cleanup);
++	/* atexit(cleanup) is registered earlier, right after the session validates */
+ 
+ 	syslog(LOG_NOTICE, "rmcpd: armed, %s advisor on %s://%s:%d, session ends in %ld min",
+ 		g_diag ? "read+diagnostics" : "read-only",
+-- 
+2.25.1
+

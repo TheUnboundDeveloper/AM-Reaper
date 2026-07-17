@@ -1,0 +1,239 @@
+From d2ffbf1f75616bbb3b98ce8034d6fc8656becd44 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 14 Jul 2026 23:27:18 -0400
+Subject: [PATCH] qos v5: download side - WAN ingress RX policer + downstream
+ DSCP->WMM class lift
+
+Owner ask: upload AND download QoS. This silicon has no downstream queue set
+(SVCQ unsupported, probe round 3), so the download side is covered by the two
+mechanisms the hardware does have, both under the existing type-11 class model:
+
+1. rc/qos.c start_hwqos_classful: tmctl setportrxrate on the WAN at qos_ibw
+   (kbps; rdpa policer object -> flow accelerator stays ON). Aggregate download
+   cap ~90% of measured downlink keeps the ISP buffer out of the game - the
+   CAKE bufferbloat win without fc_disable. burstsize IS honored on this path
+   (unlike XRDP egress shapers): ~10ms of rate, floor 64KB, cap 8MB.
+   Gate qos_ipolicer (default 1, "0" kills); inert while qos_ibw=0.
+   Stop branch clears rate+burst alongside the port shaper.
+2. rc/qos.c add_qos_rules: new QOSDL mangle chain on POSTROUTING -o lan -
+   stamps DSCP from the connection class (Q1->CS6/AC_VO, Q2->CS5/AC_VI,
+   Q5->CS1/AC_BK; Q3/Q4 stay BE so they don't dilute the Q2 lift). The WLAN
+   driver picks WMM AC from DSCP precedence on AP egress, so the priority
+   editor now steers both directions for wireless clients. Classification was
+   already bidirectional (PREROUTING CONNMARK restore); this acts on it.
+   Gate qos_dscp_wmm (default 1, "0" kills), classful-only, v4+v6.
+
+defaults.c: qos_ipolicer/qos_dscp_wmm CKN_STR1 (3-gate check: no new qos_type,
+no web.c range gate involvement, no rc dispatch change).
+Reaper_QoS.asp: two toggle rows, hidden inputs enabled type-11-only (same
+pattern as pshaper/minrates), no-download-figure confirm at serialize, FAQ
+entry on the download design. Mock-validated.
+
+NOT metal-tested: setportrxrate has never been run with a live rate (probe
+confirmed usage text only). Verify on metal: policer engages at qos_ibw,
+DSCP stamps visible on wifi-bound frames, accel stays Enabled.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c           | 58 ++++++++++++++++++++++++++-
+ release/src/router/shared/defaults.c  |  4 ++
+ release/src/router/www/Reaper_QoS.asp | 29 ++++++++++++++
+ 3 files changed, 90 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 73b179eebf..393f8eeb9c 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -580,11 +580,14 @@ static int add_qos_rules(char *pcWANIF)
+ #endif
+ 	QOSDBG("[qos] iptables START\n");
+ 
++	/* :QOSDL is declared unconditionally (an empty unused chain is harmless);
++	 * it is only populated/hooked for reaper QoS v5 downstream DSCP marking. */
+ 	fprintf(fn,
+ 		"*mangle\n"
+ 		":PREROUTING ACCEPT [0:0]\n"
+ 		":OUTPUT ACCEPT [0:0]\n"
+ 		":QOSO - [0:0]\n"
++		":QOSDL - [0:0]\n"
+ 		"-A QOSO -j CONNMARK --restore-mark --mask 0x%x\n"
+ 		"-A QOSO -m connmark ! --mark 0/0x%x -j RETURN\n",
+ 			class_mask,
+@@ -597,6 +600,7 @@ static int add_qos_rules(char *pcWANIF)
+ 		":PREROUTING ACCEPT [0:0]\n"
+ 		":OUTPUT ACCEPT [0:0]\n"
+ 		":QOSO - [0:0]\n"
++		":QOSDL - [0:0]\n"
+ 		"-A QOSO -j CONNMARK --restore-mark --mask 0x%x\n"
+ 		"-A QOSO -m connmark ! --mark 0/0x%x -j RETURN\n",
+ 			class_mask,
+@@ -946,6 +950,41 @@ static int add_qos_rules(char *pcWANIF)
+ 		}
+ 	}
+ 
++	/* reaper QoS v5: downstream class -> DSCP stamp (qos_dscp_wmm, HW classful
++	 * engine only, "0" kills). The Broadcom driver picks the WMM access
++	 * category on AP egress from the DSCP precedence bits, so stamping
++	 * LAN-bound packets of classified connections lifts Q1 to AC_VO (CS6) and
++	 * Q2 to AC_VI (CS5) and drops Q5 bulk to AC_BK (CS1) on every wireless
++	 * client - the classful model then steers BOTH directions. Q3/Q4 stay
++	 * unstamped: precedence 3/4 would also land in AC_VI/AC_BE and dilute the
++	 * Q2 lift. connmark reads conntrack directly, so this needs no
++	 * restore-mark ordering; the stamp happens before HW offload freezes the
++	 * flow and is replayed by the blogged header mods thereafter. Same
++	 * connection-start freeze semantics as every type-11 rule: classify on
++	 * port/proto/IP/MAC, never transferred bytes. */
++	if (IS_HWQOS_CLASSFUL() && !nvram_match("qos_dscp_wmm", "0")) {
++		static const struct { int cls; const char *dscp; } wmm_map[] = {
++			{ 1, "CS6" },	/* Q1 highest -> AC_VO */
++			{ 2, "CS5" },	/* Q2         -> AC_VI */
++			{ 5, "CS1" },	/* Q5 bulk    -> AC_BK */
++		};
++		int wi;
++		for (wi = 0; wi < (int)(sizeof(wmm_map)/sizeof(wmm_map[0])); wi++) {
++			fprintf(fn, "-A QOSDL -m connmark --mark 0x%x/0x%x -j DSCP --set-dscp-class %s\n",
++				wmm_map[wi].cls, class_mask, wmm_map[wi].dscp);
++#ifdef RTCONFIG_IPV6
++			if (fn_ipv6 && ipv6_enabled())
++				fprintf(fn_ipv6, "-A QOSDL -m connmark --mark 0x%x/0x%x -j DSCP --set-dscp-class %s\n",
++					wmm_map[wi].cls, class_mask, wmm_map[wi].dscp);
++#endif
++		}
++		fprintf(fn, "-A POSTROUTING -o %s -j QOSDL\n", lan_ifname);
++#ifdef RTCONFIG_IPV6
++		if (fn_ipv6 && ipv6_enabled())
++			fprintf(fn_ipv6, "-A POSTROUTING -o %s -j QOSDL\n", lan_ifname);
++#endif
++	}
++
+ 	/* The default class */
+ 	i = nvram_get_int("qos_default");
+ 	if ((i < 0) || (i > 4)) i = 3;  // "lowest"
+@@ -3095,7 +3134,7 @@ int start_hwqos(void)
+ int start_hwqos_classful(void)
+ {
+ 	FILE *f;
+-	unsigned int obw, rate, ceil, cap, minr;
++	unsigned int obw, ibw, burst, rate, ceil, cap, minr;
+ 	int i, qid, minrates, l4s;
+ 	int sched_w[5];		/* v4: per-class WRR weight, 0 = strict priority */
+ 	char *buf, *g, *p;
+@@ -3203,8 +3242,25 @@ int start_hwqos_classful(void)
+ 	if (obw > 0 && !nvram_match("qos_pshaper", "0"))
+ 		fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate %u\n", obw);
+ 
++	/* v5: download cap - WAN ingress RX policer at qos_ibw (kbps, same units as
++	 * the egress shapers; backed by an rdpa policer object, so the flow
++	 * accelerator stays on). A policer has no queue: excess is dropped early and
++	 * TCP/QUIC back off before the ISP's upstream buffer ever fills - which is
++	 * why qos_ibw must be ~90%% of MEASURED downlink, not line rate. Unlike the
++	 * XRDP egress shapers, burstsize IS honored here: sized to ~10ms of the
++	 * configured rate (kbps * 1.25 = bytes per 10ms), floored at 64KB so low
++	 * rates keep a workable token bucket, capped at 8MB. qos_ipolicer="0" kills. */
++	ibw = strtoul(nvram_safe_get("qos_ibw"), NULL, 10);
++	if (ibw > 0 && !nvram_match("qos_ipolicer", "0")) {
++		burst = ibw + ibw / 4;
++		if (burst < 65536) burst = 65536;
++		if (burst > 8388608) burst = 8388608;
++		fprintf(f, "\ttmctl setportrxrate --devtype 0 --if $WANIF --shapingrate %u --burstsize %u\n", ibw, burst);
++	}
++
+ 	fprintf(f, "\t;;\nstop)\n");
+ 	fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate 0\n");
++	fprintf(f, "\ttmctl setportrxrate --devtype 0 --if $WANIF --shapingrate 0 --burstsize 0\n");
+ 	/* v4: restore strict priority on any queue this script reconfigured
+ 	 * (setqcfg first, mirroring the start ordering; weight 1 is the lowest
+ 	 * legal value and is ignored in SP mode - the tool rejects weight 0) */
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 0d390c15af..6036859df5 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3080,6 +3080,10 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
+ 	{ "qos_sched", "p,p,p,p,p", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight */
+ 	{ "qos_l4s", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 EXPERIMENTAL: flag class queues L4S (DualPI2 ECT(1) marking) */
++	/* reaper QoS v5 (download side): both inert until qos_type 11 is active and,
++	 * for the policer, qos_ibw > 0 - so default ON with kill-switch semantics. */
++	{ "qos_ipolicer", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 download cap: WAN ingress RX policer at qos_ibw */
++	{ "qos_dscp_wmm", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 downstream class->DSCP stamp (WMM AC lift on wifi egress) */
+ 
+ 	/* reaper v1.3.0 traffic collector (rtrafd) */
+ 	{ "rtraf_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* collector on/off (no listener) */
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 9ea4656f51..7d3ee84c9d 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -233,6 +233,20 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+       <div class="tdesc"><#RQOS_19#></div>
+     </div>
+   </div>
++  <div class="togglerow">
++    <label class="tswitch"><input type="checkbox" id="tg_ipolicer"><span class="track"></span></label>
++    <div class="tmeta">
++      <div class="tname"><#RQOS_116#></div>
++      <div class="tdesc"><#RQOS_117#></div>
++    </div>
++  </div>
++  <div class="togglerow">
++    <label class="tswitch"><input type="checkbox" id="tg_wmm"><span class="track"></span></label>
++    <div class="tmeta">
++      <div class="tname"><#RQOS_118#></div>
++      <div class="tdesc"><#RQOS_119#></div>
++    </div>
++  </div>
+ 
+   <table class="classes">
+     <thead><tr>
+@@ -346,6 +360,10 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+       <summary><#RQOS_65#></summary>
+       <div class="fc"><#RQOS_66#></div>
+     </details>
++    <details>
++      <summary><#RQOS_120#></summary>
++      <div class="fc"><#RQOS_121#></div>
++    </details>
+   </div>
+ </aside>
+ 
+@@ -369,6 +387,8 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   <input type="hidden" name="qos_dscp_trust" value="" disabled>
+   <input type="hidden" name="qos_sched" value="" disabled>
+   <input type="hidden" name="qos_l4s" value="" disabled>
++  <input type="hidden" name="qos_ipolicer" value="" disabled>
++  <input type="hidden" name="qos_dscp_wmm" value="" disabled>
+   <input type="hidden" name="qos_bw_rulelist" value="" disabled>
+ </form>
+ 
+@@ -386,6 +406,8 @@ var NV = {
+   dscp:    '<% nvram_get("qos_dscp_trust"); %>',
+   sched:   '<% nvram_get("qos_sched"); %>',
+   l4s:     '<% nvram_get("qos_l4s"); %>',
++  ipolicer:'<% nvram_get("qos_ipolicer"); %>',
++  wmm:     '<% nvram_get("qos_dscp_wmm"); %>',
+   bwrule:  '<% nvram_get("qos_bw_rulelist"); %>'
+ };
+ 
+@@ -690,6 +712,11 @@ function applyQoS(){
+     f.qos_minrates.disabled=false;    f.qos_minrates.value = document.getElementById('tg_minrates').checked ? '1':'0';
+     f.qos_dscp_trust.disabled=false;  f.qos_dscp_trust.value = document.getElementById('tg_dscp').checked ? '1':'0';
+     f.qos_l4s.disabled=false;         f.qos_l4s.value = document.getElementById('tg_l4s').checked ? '1':'0';
++    f.qos_ipolicer.disabled=false;    f.qos_ipolicer.value = document.getElementById('tg_ipolicer').checked ? '1':'0';
++    f.qos_dscp_wmm.disabled=false;    f.qos_dscp_wmm.value = document.getElementById('tg_wmm').checked ? '1':'0';
++    /* v5: the download cap is only as good as the figure it polices */
++    if (document.getElementById('tg_ipolicer').checked && !(parseFloat(dn)>0) &&
++        !confirm('<#RQOS_122#>')) return;
+   }
+ 
+   if (sel === '2'){
+@@ -727,6 +754,8 @@ document.getElementById('tg_pshaper').checked = (NV.pshaper !== '0');
+ document.getElementById('tg_minrates').checked = (NV.minrates !== '0');
+ document.getElementById('tg_dscp').checked = (NV.dscp === '1');
+ document.getElementById('tg_l4s').checked = (NV.l4s === '1');
++document.getElementById('tg_ipolicer').checked = (NV.ipolicer !== '0');
++document.getElementById('tg_wmm').checked = (NV.wmm !== '0');
+ renderModes(); syncPanels(); buildEditor(); parseBwl(); renderBwl(); fetchBwlClients(); pollStats();
+ </script>
+ </body>
+-- 
+2.25.1
+

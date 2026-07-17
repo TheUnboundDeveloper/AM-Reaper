@@ -1,0 +1,182 @@
+From 8dd5571f896fdb7179f2c98be7e6f759ed50ccfb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 11:25:25 -0400
+Subject: [PATCH] rc/httpd: mangle flush for qos_type=10, port-forward spaces,
+ cfgsync count, Advisor CSS
+
+Four independent fixes.
+
+qos.c: add_iQosRules() returned early for IS_HWQOS() without flushing the
+mangle table. mangle_setting() (firewall.c) only flushes in its `else`
+branch - the QoS-on branch relies on the rule builders doing it, since
+add_qos_rules() and the bandwidth/ROG builders each open with
+del_iQosRules(). qos_type=10 satisfies IS_NON_AQOS(), so mangle_setting()
+takes the builder branch and skips its own flush, and the early return
+then skipped the builder's. With neither running, the rest of
+mangle_setting() APPENDED onto a table nobody cleared, leaving another
+duplicate on every start_firewall() - which fires on WAN up, DDNS update,
+VPN client up. Not hypothetical on a default config: the SKIPLOG rule at
+firewall.c:8399 is emitted under HND_ROUTER_BE_4916 with no nvram gate.
+Flush before returning.
+
+firewall.c: _fw_field_safe() rejects spaces, which is correct - these
+fields are emitted raw into iptables-restore lines, and a space is exactly
+what would let an nvram value graft arguments onto a rule (a port of
+"80 -j ACCEPT" rewrites the target). But the GUI accepts "80, 443" and
+stores it verbatim, so a rule the user successfully saved was silently
+dropped with nothing logged. Normalise the whitespace out first, then
+apply the strict charset unchanged. The space never reaches the emitted
+line and the validator stays as strict as it was.
+
+watchdog.c: the cfgsync count-check cleared cfgsync_restart_count outside
+the 120 s cooldown guard added for boot efficiency. Stock zeroed the
+counter and restarted as one atomic act - it was only cleared because a
+restart was definitely happening. Once the kick became conditional, a
+suppressed iteration could still consume the escalation and log "restart
+cfg_client by count check" for a restart that never ran, forcing the count
+to re-accumulate from scratch while cfg_client stayed stuck. Only account
+for it when we actually act. (RE-node path; unreachable on a CAP.)
+
+reaper_inject.c: reaper_skip[] listed Reaper_QoS.asp, Reaper_Traffic.asp
+and Reaper_FirstBoot.asp but not Reaper_Advisor.asp, so the stock-page
+restyler CSS was injected over a reaper-native page and fought its own
+styling - contradicting the rationale comment directly above the list.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c |  1 +
+ release/src/router/rc/firewall.c         | 30 +++++++++++++++++++++++-
+ release/src/router/rc/qos.c              | 17 +++++++++++++-
+ release/src/router/rc/watchdog.c         | 25 +++++++++++++-------
+ 4 files changed, 63 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 790fdad52e..49d31a9766 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -78,6 +78,7 @@ static const char *reaper_skip[] = {
+ 	   reaper_content.css (written for stock pages) would fight their CSS */
+ 	"Reaper_QoS.asp",
+ 	"Reaper_Traffic.asp",
++	"Reaper_Advisor.asp",
+ 	"Main_Login.asp",
+ 	"Nologin.asp",
+ 	/* First-run GATE pages: on a factory-clean box state.js force-redirects the
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index fbaae28c1c..7542bbcbdf 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -159,6 +159,29 @@ static int __attribute__((unused)) _fw_field_safe(const char *s)
+ 	return 1;
+ }
+ 
++/* Strip ASCII spaces/tabs out of a rule-list field, IN PLACE.
++ *
++ * The GUI accepts human formatting in list fields - a port field of "80, 443"
++ * is legal there and reaches nvram verbatim. _fw_field_safe() then rejects it
++ * on the space, and the whole rule is silently dropped: the user sees a rule
++ * they successfully saved simply not working, with nothing logged.
++ *
++ * The space must NOT just be whitelisted. These fields are emitted raw into
++ * iptables-restore lines, so a space is exactly the character that would let an
++ * nvram value graft extra arguments onto a rule (a port of "80 -j ACCEPT"
++ * rewrites the rule's target). Normalise first and validate after: whitespace
++ * never reaches the emitted line, and the strict charset stays strict.
++ */
++static void __attribute__((unused)) _fw_strip_spaces(char *s)
++{
++	char *w;
++	if (!s) return;
++	for (w = s; *s; s++)
++		if (*s != ' ' && *s != '\t')
++			*w++ = *s;
++	*w = '\0';
++}
++
+ static int __attribute__((unused)) _fw_keyword_safe(const char *s)
+ {
+ 	if (!s)
+@@ -1455,7 +1478,12 @@ void write_port_forwarding(FILE *fp, char *config, char *chain, char *lan_ip, ch
+ 			else if (cnt < 6)
+ 				srcip = "";
+ 
+-			/* dstip/port/lport are emitted raw into iptables-restore lines; reject metachars/newlines */
++			/* dstip/port/lport are emitted raw into iptables-restore lines; reject metachars/newlines.
++			 * Normalise away GUI-legal whitespace first ("80, 443") so a saved rule is not
++			 * silently dropped, then apply the strict charset unchanged - see _fw_strip_spaces(). */
++			_fw_strip_spaces(port);
++			_fw_strip_spaces(dstip);
++			_fw_strip_spaces(lport);
+ 			if (!_fw_field_safe(port) || !_fw_field_safe(dstip) || (lport && *lport && !_fw_field_safe(lport)))
+ 				continue;
+ 
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index eb93cceb63..16b883a305 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2787,7 +2787,22 @@ int add_iQosRules(char *pcWANIF)
+ 	 * CONNMARK classes land in skb->mark bits [2:0] (= the Broadcom SKBMARK queue
+ 	 * field), which the flow cache copies into the Runner flow entry, steering
+ 	 * accelerated flows into the matching per-class egress queue. */
+-	if (IS_HWQOS()) return -1;
++	if (IS_HWQOS()) {
++		/* Flush the mangle table on the way out. mangle_setting() (firewall.c)
++		 * only flushes in its `else` branch - the QoS-on branch relies on the
++		 * rule builders doing it, because add_qos_rules() / the bandwidth and
++		 * ROG builders each begin with del_iQosRules(). qos_type=10 satisfies
++		 * IS_NON_AQOS(), so mangle_setting() takes the builder branch and skips
++		 * its own flush, and then this early return skips the builder's. With
++		 * neither flush running, the rest of mangle_setting() APPENDS its rules
++		 * onto a table that is never cleared, so every start_firewall() leaves
++		 * another duplicate behind - and start_firewall() runs on WAN up, DDNS
++		 * update, VPN client up, and more. Not hypothetical on a default config:
++		 * the SKBMARK/SKIPLOG rule at firewall.c:8399 (HND_ROUTER_BE_4916) is
++		 * emitted with no nvram gate at all. */
++		del_iQosRules();
++		return -1;
++	}
+ 
+ 	if (IS_TQOS() || IS_HWQOS_CLASSFUL()) {
+ 		status = add_qos_rules(pcWANIF);
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 6d2bfd7092..805632be40 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -10085,17 +10085,26 @@ void cfgsync_check()
+ #endif
+ 	)))
+ 	{
+-		if (nvram_get_int("re_mode") == 1) {
+-			if (cfgsync_restart_count >= CFGSYNC_RESTART_MAX_COUNT) {
+-				_dprintf("restart cfg_client by count check\n");
+-				logmessage("watchdog", "restart cfg_client by count check");
+-			}
+-			cfgsync_restart_count = 0;
+-		}
+ 		/* REAPER boot-efficiency: was notify_rc_and_wait_2min() - blocked this watchdog
+ 		 * loop up to 120s while cfg_server/cfg_client settled at boot (worst offender of
+-		 * the blocking waits). Async + 120s uptime cooldown preserves the re-fire rate. */
++		 * the blocking waits). Async + 120s uptime cooldown preserves the re-fire rate.
++		 *
++		 * The count-check bookkeeping below MUST live inside this guard. Stock
++		 * zeroed cfgsync_restart_count and issued the restart as one atomic act -
++		 * the counter was only cleared because a restart was definitely happening.
++		 * Once the kick became conditional, clearing the counter outside the guard
++		 * meant a cooldown-suppressed iteration could still consume the escalation
++		 * (and log "restart cfg_client by count check" for a restart that never
++		 * ran), forcing the count to re-accumulate CFGSYNC_RESTART_MAX_COUNT from
++		 * scratch while cfg_client stayed stuck. Only account for it when we act. */
+ 		if (uptime() - cfgsync_kick_time >= 120) {
++			if (nvram_get_int("re_mode") == 1) {
++				if (cfgsync_restart_count >= CFGSYNC_RESTART_MAX_COUNT) {
++					_dprintf("restart cfg_client by count check\n");
++					logmessage("watchdog", "restart cfg_client by count check");
++				}
++				cfgsync_restart_count = 0;
++			}
+ 			cfgsync_kick_time = uptime();
+ 			_dprintf("start cfgsync\n");
+ 			notify_rc("start_cfgsync");
+-- 
+2.25.1
+

@@ -6,16 +6,30 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 > Applied security fixes are tracked in [`REAPER-FIXES.md`](REAPER-FIXES.md); the
 > per-version history is in [`CHANGELOG.md`](CHANGELOG.md); strategy/roadmap is in
-> [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md).
+> [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md). Completed backlog items are
+> moved to the changelog and removed from this file (housekeeping pass 2026-07-17).
 
 ---
 
 ## Testing / validation owed
 
-- **Factory reset + first-boot manual setup.** Verify the full first-boot path after
-  the QIS removal: reset → login → forced password change → dashboard, with **no** QIS
-  redirect and **no** EULA modal. The **AiMesh add-node wizard and related setup menus
-  are still in use** and must still work.
+- **v1.5.9 metal test.** The Traffic Analyzer resilience fix + the shell master-scrollbar
+  theme (see `CHANGELOG.md` v1.5.9). Checks: (a) far-right scrollbar is black/crimson on
+  shell-framed pages (e.g. Network Map); (b) Analyzer Live view rides through an apply /
+  Wi-Fi drop — pill flips to amber "No response", then recovers on its own (no more
+  permanent freeze); (c) history windows visibly refresh (~30 s); (d) Live view survives a
+  laptop sleep/resume; (e) second-language spot-check of the new "No response" string
+  (`RTRF_72`; English in all dicts for now).
+
+- **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
+  reset → wizard appears → no page/dashboard reachable until username+password set → forced
+  to the wireless page until a WiFi PSK is set → dashboard → values persist → all editable
+  later; also confirm an *upgrade* (no reset) does **not** trigger it. **Known limitation
+  (v1.5.5):** the WiFi step releases once WiFi is *configured* (`sdn_rl` changes), so a user
+  could save it **open** and skip a PSK — optional tightening is to require a non-empty PSK
+  (currently uses the stock `sdn_rl` signal for stability). Feature record in
+  [`CHANGELOG.md`](CHANGELOG.md) v1.5.5; it replaces the stock forced password gate and is
+  the concrete mitigation for deferred finding **H15** (see the AA26-194A section below).
 
   **EXPERIMENTAL / OPTIONAL**
 
@@ -40,68 +54,18 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   audit line. busybox probe applets resolve on-device.
   **v1.5.x shelved:** a bounded bufferbloat (latency-under-load) probe for the diagnostics tier.
 
-- ~~**v1.4.5 hardened daemons run on hardware.**~~ **Done (metal, v1.4.5).** Confirmed via
-  the live MCP session: `rmcpd` (PIE) armed, bound LAN-only `:5199`, served over TLS
-  (router cert), and returned redacted reads; `rtrafd` (PIE) returned live per-device/
-  per-class/probe data. Both position-independent executables load and run correctly — the
-  PIE watch-item is cleared.
-
 ## UI / UX polish
 
-- ~~**Remove the "Related Pages" block** at the bottom of the QoS panel.~~ **Done
-  (v1.4.6).** Removed the `linkspanel` block from `Reaper_QoS.asp`; preserved the one
-  kept link (the Bandwidth Limiter editor, `QoS_EZQoS.asp`) as a contextual link inside
-  the Bandwidth Limiter mode card so that mode isn't stranded.
-- ~~**Suppress old/replaced pages.** Stock pages that Reaper has superseded (e.g. the
-  stock Traffic Monitor / Statistic pages and legacy QoS pages) are still reachable by
-  URL — hide them.~~ **Done (v1.4.6).** Removed the 5 stock Traffic Monitor pages,
-  `TrafficAnalyzer_Statistic.asp`, and the 2 legacy QoS editors
-  (`Advanced_QOSUserPrio/UserRules_Content.asp`) from the menu, and added a suppression
-  map to the injected bounce script (`reaper_inject.c`) that redirects any direct/framed
-  hit on those 8 pages to their Reaper-native replacement (→ Reaper_Traffic / Reaper_QoS).
-- ~~**Hide "Open NAT."** It's just port forwarding, already covered elsewhere.~~ **Done
-  (v1.4.6).** Removed from the static menu, the `retArray` hide made unconditional, and
-  the dashboard-rail tile removed. The port-forwarding feature itself stays reachable.
-- ~~**Traffic Analyzer title line.** Update the summary/reading line next to the title
-  to reflect the selected timeframe.~~ **Done (v1.4.7).** The reading pill was hardcoded
-  `'Live - <store>'`; now a `setPill()` helper reflects the selected window label
-  (Live / 24 hours / 14 days / 1 year / By month) plus the store, updated on window
-  switch and on each live poll (`Reaper_Traffic.asp`).
-- ~~**Scroll-to-top on page load.** Bounce every page to the top on load — inside the
-  app-shell iframe a page can open scrolled down, hiding the tab strip and confusing
-  users.~~ **Done (v1.4.7).** `reaper_shell.asp` iframe `load` handler now calls
-  `window.scrollTo(0,0)` after the fit pass, so every framed page lands at the top with
-  the tab strip visible.
-- ~~**Network Map USB icon alignment.**~~ **Done (v1.4.7).** Glyph-only override in
-  `reaper_content.css`:
-  `div[id^="iconUSBdisk"]{transform:translateY(4px)!important;background-position:0px -10px!important}`
-  (metal-tuned on the SanDisk Ultra Fit; `ring_USBdisk` sprite untouched). `!important`
-  is required because index.asp's JS re-sets `background-position` inline each load.
-- ~~**Network Map USB tile: remove the disk-quota bar + name-text clipping.**~~ **Done
-  (v1.4.7).** `#diskquota{display:none!important}` (CSS hide; stock `index.asp` stays
-  pristine) plus `[id^="deviceText_"]{font-size:12px!important}` so a long disk name fits.
 - **VPN submenu colors.** A few off-theme colors still need correcting. 
-- ~~**Device-icon red theme is incomplete.** ... extend to DHCP manual assignment,
-  Parental Controls, Access Control / MAC filter, Open NAT, Time Scheduling.~~ **Done** —
-  the `.clientIcon`/`.vendorIcon` theming in `reaper_content.css` covers the shared client
-  icon across those pages (confirmed complete on metal, v1.4.5).
-- ~~**AiMesh page background.** Change the image behind the router name to the ASUS
-  logo.~~ **Done (v1.4.7).** Shipped `www/images/ASUSLogo.png` and overrode the
-  `.translucent_bg` location backdrop (default Home.jpg) to the logo in `reaper_content.css`
-  section 11 (`!important` beats every per-location variant; `contain` keeps it whole).
-- ~~**Download Manager** the `download master` software being advertised in the ASUS router
-  needs to be removed. It can be found on the USB Application page.~~ **Done (v1.4.8).** The
-  `downloadmaster` tile is spliced out of `apps_array` unconditionally in `APP_Installation.asp`,
-  so the advertised install tile never renders.
-- ~~**Bandwidth Limiter** move the options and configuration of the bandwidth limiter to the
-  Reaper QoS page and hide, supress, or remove the old QoS_EZQoS.asp page.~~ **Done (v1.4.8a).**
-  A per-device cap editor (MAC/device + download/upload Mb/s, add/remove/enable, 32-device cap,
-  writes `qos_bw_rulelist`) is folded into the Reaper QoS page's Bandwidth Limiter mode.
-  `QoS_EZQoS.asp` is hidden from the menu (`menuTree.js`) and redirected to `Reaper_QoS.asp`
-  for any direct/framed hit (`reaper_inject.c` SUP map). The old crimson "editor" link was
-  removed from that mode card.
 - **Restart/Boot Effciency** Investigate why the wifi and router reboots several times and 
   takes 10 min to stablize. Potential reordering of boot could make this quicker.
+- **Mobile Compatibility** Need to work on the UI so that it looks clean in a mobile format like and iPad.
+- **Shell cut Off** SDN.asp gets cut off when a network is selected and "Advanced Settings" is not 
+  exapnded then you try to expand just the general settings.
+- **DICT** Run another pass through the whole firmware to ensure all items that can be are translated.
+  where the area is too small use an abrevation in the lauguage requested. Truncate words instead of 
+  expanding the page elements. Any truncated words or abbreviations should have a hover over tooltip 
+  built in that shows the whole word when you hover over it with your mouse.
 
 ## Known issues (cause identified)
 
@@ -111,18 +75,40 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   blob**; a boot-time script to suppress it based on device settings did not work and
   was reverted. [blocked — blob; risk-accepted]
 
+## Router hygiene — CISA/FBI/NSA advisory AA26-194A (Russian FSB "Static Tundra")
+
+Joint advisory *"Improve Router Hygiene to Protect Against Russian State-Sponsored
+Targeting"* (**AA26-194A**, 2026-07-13; NSA/CISA/FBI/DC3 + partners). FSB Center 16 actors
+(Berserk Bear / Energetic Bear / Dragonfly / **Static Tundra**) scan internet-reachable
+routers for **default or common SNMPv1/v2 community strings** and default/weak admin
+credentials, then copy the device config and exfiltrate it (via TFTP on the exploited
+Cisco path). The named exploit — **Cisco Smart Install / CVE-2018-0171** — is Cisco-specific
+and **not applicable** to this platform; the transferable defenses are the router-hygiene
+items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/aa26-194a>.
+*(The primary credential item — the unbypassable first-boot wizard — shipped in v1.5.5; see
+`CHANGELOG.md` and the metal-test entry at the top of this file.)*
+
+- **SNMP hardening — un-shelve.** **[owed]** The primary advisory vector is SNMP with
+  default/common community strings. Ensure the shipped default is **off / LAN-only**, reject
+  default and common community strings, **disable SNMPv1/v2**, and prefer **SNMPv3 with
+  `authPriv`**. `RTCONFIG_SNMPD=y` in the build — verify the current default state. This
+  revisits the SNMPv3 line currently **[shelved]** under *Packages* / `PACKAGE-UPDATES.md`;
+  the advisory is grounds to re-evaluate that "LAN-only risk accepted" decision.
+
+- **WAN-side management-exposure audit.** **[owed]** The advisory targets internet-reachable
+  devices. Verify that the web UI, SSH, Telnet, SNMP, and TFTP are all **OFF on the WAN
+  interface by default**, and that no admin/management daemon listens on the WAN out of the
+  box. Document the default posture per service.
+
+- **Detection / logging for the advisory TTPs.** Surface and log config-exfil attempts and
+  anomalous SNMP polling (spoofed-source reads). Ties into the **Remote syslog push/fetch**
+  and **NIST-grade auditing** items under *Features to add*.
+
 ## Features to add
 
 - **Remote syslog push/fetch.** The router can already send its log to a remote
   collector (send-only). Add the ability to **push to / be fetched by** analytics
   systems — most SIEM/analytics pipelines are push-based.
-- ~~**Idle session timeout.** Auto log-out and close idle admin sessions.~~ **Done
-  (v1.4.7, 15 min).** Client-side idle-logout in the two top-level pages
-  (`reaper_shell.asp` + `Main_ReaperDash.asp`) — resets on user activity in the shell
-  chrome and inside the framed page (re-attached per iframe load), redirects to
-  `/Logout.asp` after 15 min idle. (Server-side `auth_check` lives in the closed
-  `web_hook.o`; a per-request timestamp would also be defeated by the UI's background
-  polling — so client-side idle detection is the correct lever here.)
 - **NIST-grade auditing.** Consider adding audit capabilities aligned to a NIST
   baseline.
 - **AI Advisor — hardware-token USB factor (FIDO2 / U2F / smartcard, e.g. a YubiKey).**
@@ -135,18 +121,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   change (different hardware assumption + a crypto protocol in `rmcpd`); binding to a USB
   serial/VID/PID is only marginal (device-reported, spoofable). Recorded so the option is not
   lost — decide later.
-- ~~**Language packs.** Rectify and apply, matching ASUS's language capability.~~ **Done
-  (v1.4.8).** All 5 Reaper pages tokenized (`<#...#>`) so they follow `preferred_lang`;
-  ~70% of the chrome reuses existing ASUS keys (localized now in all 25 languages), and new
-  Reaper strings carry English fallback (350 keys added to all 25 dicts in lockstep). A
-  language selector was added to the shell + dashboard topbars (the stock one is hidden by
-  Reaper's chrome). Owner decision was reuse + English fallback; a real 24-language
-  translation of the help prose is a future drop-in (same keys, per-language values).
-  Detail in the `language-packs` memory + `docs/i18n-reuse-map.txt`.
-- ~~**Remove the Download Master advert** from the USB Application page.~~ **Done (source).**
-  `APP_Installation.asp` now splices the `downloadmaster` entry out of `apps_array`
-  unconditionally (was gated on `nodm_support`), so the advertised tile never renders.
-  Builds into the next image.
+- **QoS v6?** Look into further QoS improvements.
 
 ## Documentation
 
@@ -163,51 +138,45 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   LAN-only and manageable). Listed here for visibility; revisit from that doc's
   execution-order table if the decision changes.
 
-## Security hardening — LOW items (from the v1.4.2 code review) — ALL CLEARED
-
-*The HIGH and MEDIUM findings from the review were fixed in v1.4.3; the LOW /
-defense-in-depth items were cleared in v1.4.4, and the standalone exploit-mitigation
-build-flags item in v1.4.5. None was a live vulnerability. This section is retained
-as a record; nothing here is outstanding.*
-
-**Cleared in v1.4.5:**
-
-- ~~**Exploit-mitigation build flags.**~~ **Done (v1.4.5).** Both Reaper daemons now
-  compile with `-D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security
-  -fPIE` and link `-pie -Wl,-z,relro,-z,now` (rtrafd → both images; rmcpd → AI Advisor
-  image). Done as its own release (two Makefiles, no source change) and verified on the
-  built binaries: both are now PIE (`ET_DYN`) with full RELRO (`BIND_NOW`) and stack
-  canaries — the stock base had neither. On-hardware run check of both daemons is the
-  one remaining validation (PIE is the only behavioural change), folded into the v1.4.5
-  metal test.
-
-**Cleared in v1.4.4:**
-
-- ~~**AI Advisor CSRF — belt-and-suspenders.**~~ **Done (v1.4.4).** Confirmed the Referer
-  guard does *not* gate `reaper_mcp.cgi`: the `mime_referers[]` whitelist lives in the
-  prebuilt/closed `web_hook.o` and predates the Reaper CGIs, so `do_referer` stays `0`
-  and `referer_check()` never runs for it (`do_auth` only proves the login cookie). Since
-  the closed table can't be edited, fixed at the application layer instead —
-  `deprovision` and `usb_unenroll` now require proof of the current arming code
-  (constant-time, with the same lockout accounting as `provision`-rotate); the arming
-  page prompts for it. `arm` was already code-gated; `disarm`/`deprovision` are fail-safe
-  directions.
-- ~~**rtrafd USB history store hardening.**~~ **Done (v1.4.4).** `db_save` now creates the
-  temp with `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW, 0600` (published atomically via
-  `rename`); `db_load` opens `O_RDONLY|O_NOFOLLOW`; both the JFFS and USB store dirs are
-  `lstat`-checked (`dir_ok`) so a symlink planted on an attacker's mount can't redirect
-  writes, and history is never world-readable.
-- ~~**Stale-rule sweep on boot.**~~ **Done (v1.4.4).** `reaper_mcp_boot_sweep()` runs once
-  in `start_services`: if `rmcpd` isn't running but a stale `/tmp/reaper_mcp/session`
-  exists (unclean SIGKILL/SEGV exit), it reconstructs the exact LAN `INPUT ... ACCEPT`
-  rule from `lan_ifname` + `rmcp_port` + the session's recorded (strictly validated)
-  client and removes it, then deletes the session file. Never starts the daemon.
-- ~~**Dashboard `eval()`.**~~ **Done (v1.4.4).** `Main_ReaperDash.asp` no longer `eval()`s
-  the three stock CPU/temp/ports responses — a `pickJSON()` extractor + `JSON.parse`
-  (plus a plain regex for the temperature string) replaces them. Confirmed all three
-  endpoints emit single-line double-quoted JSON, so behaviour is unchanged.
-
 ## Platform / expansion
 
-- **Wider BE-series support.** Investigate firmware support for the other ASUS BE-series
-  routers built on the Broadcom BCM4916.
+- **RT-BE88U port — build-validated (v1.5.0e, both variants).** First-ever RT-BE88U build:
+  blobs restored, target.mak de-clouded, dual-band 10G/SFP+. Build-only, **no metal test**.
+  Model-specific build note: BE88U uniquely sets `BCM_JUMBO_FRAME=y` + a NEW
+  `BCM_MAX_MTU_SIZE` kernel symbol, so it must be built **clean, single-pass** (the standard
+  two-pass model script re-triggers kernel `syncconfig` on that NEW symbol and errors).
+
+## Known issues — ported models (GT-BE98 / siblings)
+
+- **GT-BE98: empty Wi-Fi client list + ~half wired throughput.** **[owed — needs diagnosis]**
+  Field report on the shipped GT-BE98 image: (1) the **Wi-Fi client list appears empty**
+  (associated stations not enumerated), and (2) a **speed test shows ~half the actual wired
+  (Ethernet) rate**. Not yet investigated. This is almost certainly a **source/blob issue,
+  not a build artifact** — so a rebuild alone won't fix it; it needs real diagnosis.
+  - **First step: confirm which image the tester flashed** — the v1.5.0e build (imported
+    *gnuton* `DEV_3006.102.7_2` blobs from ASUS GPL 39099) or the v1.5.1 build (blobs
+    **re-based** onto official ASUS GPL 102_39274). GT-BE98 is **Tier B** (second-hand blobs +
+    `reaper_chanlist_shim` + a HAS_6G/quad-band gap that was only fixed in the v1.5.1 rebase),
+    so version matters a lot here.
+  - **Empty client list** → suspect the wl/dhd driver ↔ userspace station-info path
+    (`wl assoclist`/dhd → `networkmap`/`stainfo` → httpd client table); a driver/userspace
+    version skew or the chanlist/station shim is the prime candidate.
+  - **~Half wired throughput** → suspect hardware flow-acceleration not offloading (Broadcom
+    Runner/Archer/CTF flow cache); traffic falling to the slow path halves wired speed. Check
+    `fcctl`/`archer` status and runner state on-device, and whether a blob/kernel-accel
+    mismatch disabled offload. (Also sanity-check port link/duplex.)
+  - Was build-validated only until now (no prior GT-BE98 metal test), consistent with a
+    latent blob/accel issue surfacing on real hardware.
+  - **ROOT CAUSE LIKELY IDENTIFIED (2026-07-15):** the **4th radio `wl3` (6 GHz) is missing** —
+    a tester's stock `3006.102.7_2_rog` GT-BE98 shows wl0–wl3, the Reaper build shows only
+    wl0–wl2. GT-BE98 non-Pro is quad-band (2.4 / 5 / 5-2 / **6**); wl3 = the 6 GHz radio. The
+    `target.mak` GT-BE98 block had **`HAS_6G` unset in v1.5.0e** (documented latent gap) → 6 GHz
+    radio never enabled → dashboard radio-count logic sees `wl3_nband` empty and drops it →
+    3 radios. This also explains the empty-client-list (no 6 GHz clients) + ~half-throughput
+    (a whole radio down). **`HAS_6G=y` was added in v1.5.1** — but v1.5.1 is **build-validated
+    only, never metal-confirmed to actually light up wl3.** NEXT: (1) confirm which Reaper
+    version the tester flashed; if `< v1.5.1`, flash **v1.5.1** and check wl3. (2) If v1.5.1
+    still shows only 3 radios, `HAS_6G=y` is necessary-but-insufficient → investigate the
+    `MODEL_GTBE98` band table (`wlif_utils_ax.c`), the generated `config_gt-be98` wl3 defaults,
+    and whether the imported Tier-B (GPL-39274) blobs support the 6 GHz radio — then rebuild +
+    **metal-test the 4-radio bring-up.** (Deferred per owner's "RT-BE96U first" directive.)

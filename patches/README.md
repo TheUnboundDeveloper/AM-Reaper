@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**153 patches, v1.0 → v1.5.0d**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**178 patches, v1.0 → v1.5.9**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (153 patches, v1.0 → v1.5.0d)
+## What the series contains (178 patches, v1.0 → v1.5.9)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -72,8 +72,33 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - `0152` — **v1.5.0c**: compliance hygiene — SPDX `GPL-2.0-only` + copyright headers on the Reaper-authored source files, and the SIL OFL 1.1 text installed as `www/fonts/OFL.txt` so the Inter/Rajdhani font license ships in the image. No functional change.
 - `0153` — **v1.5.0d**: de-ASUS rebrand (UI only) — the `REAPER1.png` wordmark banner replaces the logo in the header, the login/logout card, and the stock-page banner; the AiMesh node-card backdrop uses `RLogo.png` (and the `ASUSLogo.png` asset is removed); the "ASUS · Merlin · Reaper" rail wordmark becomes a live, themed, 24-hour router-time clock (reusing the stock `<% uptime(); %>` hook, offset-proof).
 
+### v1.5.0e → v1.5.4 — reset-loop fix, boot efficiency, QoS v5 (`0154`–`0163`)
+- `0154`–`0155` — **v1.5.0e**: never bounce the first-run gate pages (fixes the factory-reset
+  UI redirect loop that looked like a brick); make the branch buildable from a clean checkout.
+- `0156`–`0157` — **v1.5.2** boot-efficiency round 1: no httpd restart on USB mount, unblocked
+  watchdog waits. (v1.5.1 was the GT-BE98 sibling-model GPL re-base — no RT-BE96U change.)
+- `0158`–`0161` — **v1.5.3**: **Hardware QoS v5 download side** (WAN-ingress RX policer +
+  downstream DSCP→WMM class lift), Traffic Analyzer Live tightened to 100 ms (matched pair),
+  device-identity rows (name + "IP · MAC"), i18n strings.
+- `0162`–`0163` — **v1.5.4**: QoS v5.1 policer burst/rate fixes from on-hardware tuning.
+
+### v1.5.5 → v1.5.9 — first-boot wizard, Advisor tool, audit fixes, wireless page (`0164`–`0178`)
+- `0164` — **v1.5.5**: unbypassable first-boot / factory-reset credentials wizard
+  (`Reaper_FirstBoot.asp`), AI Advisor IP-pin retention, themed waiting overlay,
+  self-updating internet status during boot.
+- `0165` — **v1.5.6**: AI Advisor `get_wireless_stations` curated read tool.
+- `0166`–`0171` — **v1.5.7** audit-fix rung (from a 34-agent adversarial code sweep):
+  un-hidden wl driver errors in the System Log, Smart Connect band-bitmask indexing,
+  `rtrafd` hot-path/rate fixes, `rmcpd` per-command time bounds + earlier cleanup arming,
+  QoS mangle flush / port-forward / cfgsync / Advisor-CSS fixes.
+- `0172`–`0175` — **v1.5.8**: the `Reaper_Wireless.asp` diagnostics page (radio snapshot,
+  channel Lock/Unlock pin, exclusion-list visibility, on-demand channel-quality capture),
+  `psc6g` duplicate-default fix, a collector build fix.
+- `0176`–`0178` — **v1.5.9**: Traffic Analyzer wedge-proof live polling + stalled indicator +
+  history auto-refresh; the app shell's master page scrollbar themed.
+
 ## Notes
 
 - **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted.
-- Regenerated for **v1.5.0a** from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr`.
+- Regenerated for **v1.5.9** (2026-07-17) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (zero diff under `release/src/router`).

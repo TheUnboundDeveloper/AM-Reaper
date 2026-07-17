@@ -1,0 +1,147 @@
+From 1e1e11882ce770b6ff9deaa873bac6d73184cee9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 14 Jul 2026 21:14:49 -0400
+Subject: [PATCH] boot-efficiency: stop httpd bounce on USB mount + unblock
+ watchdog waits
+
+Owner-reported symptom: router appears to reboot several times and takes up to
+~10 min to stabilize after boot. Boot syslog analysis (2026-07-14) showed no real
+extra reboots - the perceived instability is service churn during the settle
+window (plus the expected 60s DFS CAC on 5GHz, kept by owner decision).
+
+Three churn sources fixed:
+1. rc/usb.c: rc/Makefile ships -DDEBUG_RCTEST unconditionally, so a debug-only
+   stop_httpd()/start_httpd() pair fired on EVERY USB partition mount - killing
+   the web UI mid-boot (observed live in the boot log: hotplug notify_rc
+   stop_httpd 1s after the ext4 mount). Removed; httpd needs no restart to see
+   a new mount.
+2. rc/watchdog.c acsd re-kick: notify_rc_and_wait_1min(restart_acsd) blocked the
+   entire watchdog loop up to 60s per early acsd wobble, starving every other
+   health check (daemons then looked dead -> restart cascade). Now async
+   notify_rc + 60s uptime()-based cooldown (same re-fire rate, no blocking).
+3. rc/watchdog.c debug_monitor (BE_4916): start_dhd_monitor(); sleep(5);
+   killall(hostapd, SIGUSR2) blocked the loop 5s AND reloaded hostapd (dropping
+   all wifi clients) on every attempt even while debug_monitor kept dying. Now
+   non-blocking: kick hostapd once, >=5s after debug_monitor is confirmed alive.
+4. rc/watchdog.c cfgsync (CAP): notify_rc_and_wait_2min(start_cfgsync) - the
+   worst blocking wait (120s). Same async + 120s cooldown treatment.
+
+DFS decision recorded: wl1 keeps reg_mode=h/acs_dfs=1 (160MHz needs DFS in US;
+CAC is 60s FCC). See boot-efficiency memory for the full analysis.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rc/usb.c      |  7 +++--
+ release/src/router/rc/watchdog.c | 44 +++++++++++++++++++++++++++-----
+ 2 files changed, 41 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index eb4d8ef2a5..1b4794df66 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -2544,10 +2544,9 @@ _dprintf("%s: start_cloudsync.\n", __func__);
+ 		}
+ #endif
+ 
+-#ifdef DEBUG_RCTEST
+-		stop_httpd();
+-		start_httpd();
+-#endif
++	/* REAPER boot-efficiency: rc/Makefile ships -DDEBUG_RCTEST unconditionally, so this
++	 * debug-only httpd bounce fired on EVERY USB partition mount - killing the web UI
++	 * mid-boot (and on any hotplug). httpd does not need a restart to see a new mount. */
+ 	}
+ #ifdef RTCONFIG_USBRESET
+ 	else if(strcmp(type, "unknown")){ // Can't mount the the known partition.
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index b1651accd7..6d2bfd7092 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -228,6 +228,14 @@ static int ledg_count = 0;
+ static int wanduck_count = 0;
+ #ifdef RTCONFIG_HND_ROUTER_BE_4916
+ static int dm_count = 0;
++/* REAPER boot-efficiency: non-blocking debug_monitor->hostapd kick state */
++static long dm_kick_time = 0;
++static int dm_kick_pending = 0;
++#endif
++/* REAPER boot-efficiency: fire-and-poll cooldowns replacing blocking notify_rc_and_wait_* */
++static long acsd_kick_time = 0;
++#ifdef RTCONFIG_CFGSYNC
++static long cfgsync_kick_time = 0;
+ #endif
+ static int btn_pressed = 0;
+ static int btn_count = 0;
+@@ -10084,8 +10092,14 @@ void cfgsync_check()
+ 			}
+ 			cfgsync_restart_count = 0;
+ 		}
+-		_dprintf("start cfgsync\n");
+-		notify_rc_and_wait_2min("start_cfgsync");
++		/* REAPER boot-efficiency: was notify_rc_and_wait_2min() - blocked this watchdog
++		 * loop up to 120s while cfg_server/cfg_client settled at boot (worst offender of
++		 * the blocking waits). Async + 120s uptime cooldown preserves the re-fire rate. */
++		if (uptime() - cfgsync_kick_time >= 120) {
++			cfgsync_kick_time = uptime();
++			_dprintf("start cfgsync\n");
++			notify_rc("start_cfgsync");
++		}
+ 	}
+ #endif	/* RTCONFIG_SW_HW_AUTH */
+ }
+@@ -11706,6 +11720,10 @@ void watchdog(int sig)
+ 	}
+ #endif
+ #if defined(RTCONFIG_BCMWL6) && !defined(RTCONFIG_BCM_MFG)
++	/* REAPER boot-efficiency: was notify_rc_and_wait_1min() - a SYNCHRONOUS wait that
++	 * blocked this whole watchdog loop up to 60s per acsd wobble, starving every other
++	 * health check (daemons then looked dead and got restarted -> cascade churn).
++	 * Now: async notify_rc + a 60s uptime-based cooldown (same effective re-fire rate). */
+ 	if (!no_need_acsd() &&
+ 		nvram_get_int("wlready") &&
+ 		nvram_get_int("success_start_service") &&
+@@ -11714,8 +11732,12 @@ void watchdog(int sig)
+ #else
+ 		!pids("acsd")
+ #endif
+-	)
+-		notify_rc_and_wait_1min("restart_acsd");
++	) {
++		if (uptime() - acsd_kick_time >= 60) {
++			acsd_kick_time = uptime();
++			notify_rc("restart_acsd");
++		}
++	}
+ #endif
+ #if defined(RTAX3000N) || defined(RPAX58)
+ 	parse_ptf();
+@@ -11729,14 +11751,24 @@ void watchdog(int sig)
+ 	}
+ 
+ #ifdef RTCONFIG_HND_ROUTER_BE_4916
++	/* REAPER boot-efficiency: was start_dhd_monitor(); sleep(5); killall(hostapd,SIGUSR2)
++	 * - the sleep(5) blocked the watchdog loop, and the unconditional SIGUSR2 reloaded
++	 * hostapd (dropping wifi clients) on EVERY attempt even when debug_monitor kept dying,
++	 * which reads as "wifi bouncing" through the whole boot-settle window.
++	 * Now: start it, then kick hostapd ONCE, >=5s later, only after debug_monitor is
++	 * confirmed alive - no blocking, no reload spam. */
+ 	if (nvram_get_int("wlready") && !pids("debug_monitor")) {
+ 		dm_count = (dm_count + 1) % 2;
+ 		if (!dm_count) {
+ 			start_dhd_monitor();
+-			sleep(5);
+-			killall("hostapd", SIGUSR2);
++			dm_kick_time = uptime();
++			dm_kick_pending = 1;
+ 		}
+ 	}
++	else if (dm_kick_pending && pids("debug_monitor") && (uptime() - dm_kick_time >= 5)) {
++		killall("hostapd", SIGUSR2);
++		dm_kick_pending = 0;
++	}
+ #endif
+ 
+ 	if(nvram_match("ntp_ready", "1")) {
+-- 
+2.25.1
+

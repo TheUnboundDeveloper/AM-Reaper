@@ -1,0 +1,38 @@
+From 4e87ee56f1e22eb0f8a6b48b41ff4b47048c9cfe Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 22:31:00 -0400
+Subject: [PATCH] shared: align duplicate psc6g default to 1
+
+defaults.c carried psc6g twice: a 6G-gated entry with value 1 (the
+commented intent) and an ungated stray with value 0. A factory reset
+walked the table to the stray and landed psc6g=0 while an upgrade
+key-fill landed 1. Align the stray to 1. GUI-only impact (the PSC
+checkbox state and the 6 GHz channel dropdown filter).
+
+Found by the 2026-07-16 stock channel-selection audit (finding B2).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 6036859df5..9f8b02f8c5 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -6777,7 +6777,11 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wans_extwan", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wan_ifname_x", "eth0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "noconsole", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "psc6g", "0", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* reaper v1.5.8: this ungated entry duplicated the gated 6G entry near the top
++	 * of the table with a conflicting value ("0" here, "1" there), so a factory
++	 * reset landed psc6g=0 while an upgrade key-fill landed 1. Align to the
++	 * intended default. */
++	{ "psc6g", "1", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wps_version2", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wps_config_method", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wps_modelname", "Wi-Fi Protected Setup Router", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-- 
+2.25.1
+

@@ -1,0 +1,36 @@
+From 82025ec876f2c9e0861974e9408643c386e66c84 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 11:40:27 -0400
+Subject: [PATCH] rtrafd: fix a comment terminator that broke the build
+
+A comment referring to the live accumulators as "lv_cli_*/lv_net_*" reads
+fine in prose and is a comment TERMINATOR in C: the */ inside lv_cli_*/
+closed the block early, so the rest of the sentence was parsed as code
+("unknown type name 'lv_net_'"). Name the two families in words instead.
+
+Rule for this codebase, where these explanatory comments are common: never
+let a * be immediately followed by a / inside a block comment - writing a
+variable family as foo_*/bar_* is the natural way to say it and always
+wrong. Write "the foo_ and bar_ accumulators".
+---
+ release/src/router/rtrafd/rtrafd.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index ab51fc1bd6..83b8e1eaff 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -668,8 +668,8 @@ static void poll_conntrack(void)
+ 			ci = cli_slot(mac, src);
+ 			ring_add(r_cli[ci], drb, dob);	/* rx=download(reply), tx=upload(orig) */
+ 			/* Feed the LIVE per-device rates as well. poll_fcache() zeroes
+-			 * lv_cli_*/lv_net_* at the top of each sample and repopulates them
+-			 * on its own path; when it hands off to this fallback it has
++			 * the lv_cli_ and lv_net_ accumulators at the top of each sample
++			 * and repopulates them on its own path; when it hands off here it has
+ 			 * already zeroed them and nothing here filled them back in, so the
+ 			 * live per-device rows read a flat zero for as long as a software
+ 			 * QoS engine (type 0/9, accelerator off) is selected. Same
+-- 
+2.25.1
+

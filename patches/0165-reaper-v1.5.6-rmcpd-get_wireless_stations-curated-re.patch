@@ -1,0 +1,116 @@
+From ec3803a49ef0ba3f4353bfcabca6a4c5e8c3c48a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 10:00:35 -0400
+Subject: [PATCH] reaper v1.5.6: rmcpd get_wireless_stations curated read tool
+
+Adds a BASE-tier read-only MCP tool exposing per-STA wireless link
+detail: for every wl BSS the kernel exposes, list associated stations
+with full `wl sta_info` (power-save state, negotiated bandwidth, tx/rx
+rate, retries, rssi), plus per-radio `chanim_stats` channel health and
+the live chanspec.
+
+Takes NO caller-supplied input: the interface list comes from
+/sys/class/net and STA MACs come from `assoclist`, so the fixed popen
+pipeline carries no injection surface (same model as tool_firewall).
+Output is raw `wl` text returned verbatim; it carries MACs/rates/rssi
+only, never a PSK. MCP-only, so it is automatically absent from the
+noMCP variant.
+
+Built and metal-passed on RT-BE96U 2026-07-15: flashed, armed with diag
+consent, connected over MCP from LAN; tools/list returns 10 base + 4
+diag, all real data. Image sha 44c1bf65, loader ab3dbd9a.
+
+This tool produced the per-STA data that exonerated the 6 GHz radio
+under load (PS off, 320 MHz, EHT-MCS9, 3.6-4.3 Gbps PHY held across a
+sustained download) and is the instrument for the ongoing 6 GHz
+sawtooth investigation.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf      |  2 +-
+ release/src/router/rmcpd/rmcpd.c | 43 ++++++++++++++++++++++++++++++++
+ 2 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 23a53f5d7c..4359f08a4a 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.5.5
++EXTENDNO=Reaper_v1.5.6
+ 
+ RCNO=0
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index 6ea87ec562..c394959373 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -528,6 +528,47 @@ static void tool_audit(sbuf_t *s)
+ 	sb_puts(s, "}");
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* per-STA wireless link detail (added for 6 GHz / roaming diagnosis)   */
++/* ------------------------------------------------------------------ */
++
++/* get_wireless_stations: for every wl BSS the kernel exposes, list its
++ * associated stations with the full `wl sta_info` link detail (power-save
++ * state, negotiated bandwidth, tx/rx rate, retries, rssi) plus per-radio
++ * `chanim_stats` channel health and the live chanspec. All read-only `wl`
++ * queries. It takes NO caller-supplied input: the interface list comes from
++ * /sys/class/net and the STA MACs come from `assoclist` output, so this fixed
++ * popen pipeline carries no injection surface (same model as tool_firewall).
++ * Output is the raw `wl` text, returned verbatim for the model to parse - it
++ * carries MACs/rates/rssi only, never a PSK. `wl` is invoked bare via PATH
++ * like iptables in tool_firewall; if a metal run returns empty, hardcode the
++ * abspath (/usr/sbin/wl) the way the diag tier notes for busybox tools. */
++static void tool_wifi_stations(sbuf_t *s)
++{
++	sb_puts(s, "{\"report\":");
++	{
++		sbuf_t t; sb_init(&t);
++		sb_addcmd(&t,
++			"for IF in $(ls /sys/class/net 2>/dev/null | "
++				"grep -E '^wl[0-9]+(\\.[0-9]+)?$' | sort); do "
++			"  echo \"=== $IF ===\"; "
++			"  case \"$IF\" in "
++			"    wl[0-9]|wl[0-9][0-9]) "
++			"      echo \"[chanspec] $(wl -i \"$IF\" chanspec 2>/dev/null)\"; "
++			"      echo '[chanim_stats]'; wl -i \"$IF\" chanim_stats 2>/dev/null ;; "
++			"  esac; "
++			"  for MAC in $(wl -i \"$IF\" assoclist 2>/dev/null | awk '{print $2}'); do "
++			"    echo \"[sta $MAC]\"; wl -i \"$IF\" sta_info \"$MAC\" 2>/dev/null; "
++			"    echo \"[rssi] $(wl -i \"$IF\" rssi \"$MAC\" 2>/dev/null)\"; "
++			"  done; "
++			"done",
++			200 * 1024);
++		sb_json_str(s, t.p ? t.p : "");
++		sb_free(&t);
++	}
++	sb_puts(s, "}");
++}
++
+ /* ------------------------------------------------------------------ */
+ /* active-diagnostics tier (v1.5.0): bounded ping/traceroute/dns/netstat, */
+ /* gated by per-session consent (g_diag). argv-exec via _eval (NEVER a    */
+@@ -723,6 +764,7 @@ static int run_tool(const char *name, struct json_object *args, sbuf_t *out)
+ {
+ 	if (!strcmp(name, "get_overview"))        { tool_overview(out); return 0; }
+ 	if (!strcmp(name, "get_wireless_status")) { tool_wireless(out); return 0; }
++	if (!strcmp(name, "get_wireless_stations")) { tool_wifi_stations(out); return 0; }
+ 	if (!strcmp(name, "get_clients"))         { tool_clients(out); return 0; }
+ 	if (!strcmp(name, "get_qos"))             { tool_qos(out); return 0; }
+ 	if (!strcmp(name, "get_traffic")) {
+@@ -752,6 +794,7 @@ static const char *TOOLS_CATALOG =
+ "["
+ "{\"name\":\"get_overview\",\"description\":\"Router model, firmware, uptime, load, memory.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_wireless_status\",\"description\":\"Per-radio security mode + the network SSIDs (friendly names from SDN); never the PSK.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_wireless_stations\",\"description\":\"Associated stations per radio/BSS with per-STA link detail (power-save state, negotiated bandwidth, tx/rx rate, retries, rssi) plus per-radio channel health (chanim_stats) and live chanspec. Read-only wl queries; for diagnosing 6GHz/roaming/throughput. No PSKs.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_clients\",\"description\":\"Connected clients from ARP and DHCP leases.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_qos\",\"description\":\"QoS engine, type, and bandwidth configuration.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_traffic\",\"description\":\"Traffic Analyzer snapshot for a window.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"string\",\"enum\":[\"live\",\"m5\",\"hour\",\"day\",\"month\"]}}}},"
+-- 
+2.25.1
+

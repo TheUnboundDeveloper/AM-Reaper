@@ -1,0 +1,78 @@
+From 4f52b67cdb2b05a3cb138d0f35443960c2e21793 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 16 Jul 2026 11:25:22 -0400
+Subject: [PATCH] webui: stop hiding Broadcom wl driver errors from the System
+ Log
+
+The System Log page applies a client-side filter list from
+www/ajax/logFilter.json (Main_LogStatus_Content.asp), inherited verbatim
+from the vendor. One of its entries is "WLC_SCB_", which suppresses every
+WLC_SCB_DEAUTHORIZE line - the exact signature of the Broadcom Wi-Fi 7
+driver defect currently being reported across the RT-BE range.
+
+A firmware whose whole purpose is to hand the operator control of their
+own router should not hide its driver's errors from them. The lines are
+present in /tmp/syslog.log and in a downloaded log; only the GUI view
+dropped them, so the effect was to make the one surface most users look
+at the least truthful one.
+
+Drop "WLC_SCB_" from the list. The remaining entries (UDB add/update
+noise, send_redir_page) are genuine cfgsync chatter and stay filtered.
+
+Also remove logFilter.json from the www `update:` target. That target is
+a manual maintainer refresh from the vendor CDN, not part of a build, but
+running it would silently restore the vendor's list and undo this. The
+file is ours to curate now.
+
+Credit: the filter was spotted by Reddit user AdventurousTravel366 and
+confirmed against a downloaded log by littlebighuman.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Makefile            |  6 +++++-
+ release/src/router/www/ajax/logFilter.json | 17 ++++++++---------
+ 2 files changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index 4c8c54770d..d4f280e9c6 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -29,7 +29,11 @@ endif # HND_ROUTER && RTCONFIG_VISUALIZATION
+ update:
+ 	wget https://nw-dlcdnet.asus.com/plugin/js/tz_db.json -O ajax/tz_db.json
+ 	wget https://nw-dlcdnet.asus.com/plugin/js/gameList.json -O ajax/gameList.json
+-	wget https://nw-dlcdnet.asus.com/plugin/js/logFilter.json -O ajax/logFilter.json
++# ajax/logFilter.json is deliberately NOT refreshed from the vendor CDN.
++# Upstream's copy filters "WLC_SCB_" out of the System Log view, which hides
++# Broadcom wl driver errors (SCB deauthorize / MLO) from the router's own
++# operator. Reaper curates this file by hand - see the entry in the log-filter
++# fix. Re-adding the wget here would silently restore the vendor filter list.
+ 	wget https://nw-dlcdnet.asus.com/plugin/js/extend_custom_icon.json -O ajax/extend_custom_icon.json
+ 	wget https://nw-dlcdnet.asus.com/plugin/js/pppIspList_V2.json -O ajax/pppIspList_V2.json
+ 	wget https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json -O ajax/DNS_List.json
+diff --git a/release/src/router/www/ajax/logFilter.json b/release/src/router/www/ajax/logFilter.json
+index 2e404f5ca9..64a6e26428 100644
+--- a/release/src/router/www/ajax/logFilter.json
++++ b/release/src/router/www/ajax/logFilter.json
+@@ -1,9 +1,8 @@
+-{
+-  "filter": [
+-    "already exist in UDB, can't add it",
+-    "not mesh client, can't update it's ip",
+-    "not exist in UDB, can't update it",
+-    "WLC_SCB_",
+-    "send_redir_page"
+-  ]
+-}
+\ No newline at end of file
++{
++  "filter": [
++    "already exist in UDB, can't add it",
++    "not mesh client, can't update it's ip",
++    "not exist in UDB, can't update it",
++    "send_redir_page"
++  ]
++}
+-- 
+2.25.1
+

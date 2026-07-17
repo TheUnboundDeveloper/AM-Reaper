@@ -1,0 +1,533 @@
+From 1d7feb0d149d6aea7d697bb0bc4755cb8b37a6dd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 15 Jul 2026 08:57:56 -0400
+Subject: [PATCH] qos v5.1: policer burst/rate fixes from metal tuning
+ (2026-07-15)
+
+Owner metal iteration results (router built-in WAN speedtest, no wifi hop):
+- qos_ibw at ~100% of measured line + any bucket size: throughput collapse
+  (reaches line rate, then synchronized multi-stream TCP backoff halves it
+  repeatedly until the transfer aborts; Cloudflare read ~1/6 of line).
+- qos_ibw at ~90% of measured (2150400 kbps on a 2353 Mb/s line) + 100ms
+  bucket (26,880,000 bytes): holds 2071 Mb/s steady, ping DROPS 10.2->8.7ms,
+  jitter 0.57ms. The feature works; the old 10ms bucket and the at-line-rate
+  guidance gap were the failures.
+
+Changes:
+1. burst = ~100ms of rate (ibw*12.5 bytes), floor 64KB, cap 100MB (the
+   rdpa_policer.h CBS legal max; old code capped at 8MB which silently
+   truncated the needed bucket on multi-gig links).
+2. stop branch: getportrxrate readback guard - skip the clear when already
+   (0, 0, 0), silencing the one-time kernel ERR _drv_policer_clear_profile
+   observed on the first apply after boot.
+3. WMM stamp goes LIFT-ONLY: the v1.5.3 map demoted Q5 to CS1/AC_BK, but Q5
+   in the shipped class template is the catch-all DEFAULT class - so nearly
+   all wifi-bound traffic (including upload ACK streams) rode the starved
+   background AC. Metal: healthy 6GHz/320MHz client read 433/265 Mb/s with
+   1.5% loss and 77ms jitter, policer off. Now only Q1->CS6 and Q2->CS5 are
+   stamped; Q3/Q4/Q5 stay at best-effort. Rule: never stamp the default
+   class down.
+4. RQOS_117/RQOS_119 (all 25 dicts): never-100% policer warning; lift-only
+   wording.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c    | 35 ++++++++++++++++++++++------------
+ release/src/router/www/BR.dict |  4 ++--
+ release/src/router/www/CN.dict |  4 ++--
+ release/src/router/www/CZ.dict |  4 ++--
+ release/src/router/www/DA.dict |  4 ++--
+ release/src/router/www/DE.dict |  4 ++--
+ release/src/router/www/EN.dict |  4 ++--
+ release/src/router/www/ES.dict |  4 ++--
+ release/src/router/www/FI.dict |  4 ++--
+ release/src/router/www/FR.dict |  4 ++--
+ release/src/router/www/HU.dict |  4 ++--
+ release/src/router/www/IT.dict |  4 ++--
+ release/src/router/www/JP.dict |  4 ++--
+ release/src/router/www/KR.dict |  4 ++--
+ release/src/router/www/MS.dict |  4 ++--
+ release/src/router/www/NL.dict |  4 ++--
+ release/src/router/www/NO.dict |  4 ++--
+ release/src/router/www/PL.dict |  4 ++--
+ release/src/router/www/RO.dict |  4 ++--
+ release/src/router/www/RU.dict |  4 ++--
+ release/src/router/www/SL.dict |  4 ++--
+ release/src/router/www/SV.dict |  4 ++--
+ release/src/router/www/TH.dict |  4 ++--
+ release/src/router/www/TR.dict |  4 ++--
+ release/src/router/www/TW.dict |  4 ++--
+ release/src/router/www/UK.dict |  4 ++--
+ 26 files changed, 73 insertions(+), 62 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 393f8eeb9c..eb93cceb63 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -954,10 +954,15 @@ static int add_qos_rules(char *pcWANIF)
+ 	 * engine only, "0" kills). The Broadcom driver picks the WMM access
+ 	 * category on AP egress from the DSCP precedence bits, so stamping
+ 	 * LAN-bound packets of classified connections lifts Q1 to AC_VO (CS6) and
+-	 * Q2 to AC_VI (CS5) and drops Q5 bulk to AC_BK (CS1) on every wireless
+-	 * client - the classful model then steers BOTH directions. Q3/Q4 stay
+-	 * unstamped: precedence 3/4 would also land in AC_VI/AC_BE and dilute the
+-	 * Q2 lift. connmark reads conntrack directly, so this needs no
++	 * Q2 to AC_VI (CS5) on every wireless
++	 * client - the classful model then steers BOTH directions. LIFT-ONLY
++	 * (v1.5.4): Q3/Q4/Q5 stay unstamped at AC_BE. The original v1.5.3 map also
++	 * demoted Q5 to CS1/AC_BK - but Q5 in the shipped class template IS the
++	 * catch-all default class, so that demotion put nearly ALL wifi-bound
++	 * traffic (including upload ACK streams) into the starved background AC:
++	 * metal showed 433/265 Mb/s with 1.5%% loss and 77ms jitter on a healthy
++	 * 6GHz/320MHz client. NEVER stamp the default class down. connmark reads
++	 * conntrack directly, so this needs no
+ 	 * restore-mark ordering; the stamp happens before HW offload freezes the
+ 	 * flow and is replayed by the blogged header mods thereafter. Same
+ 	 * connection-start freeze semantics as every type-11 rule: classify on
+@@ -966,7 +971,6 @@ static int add_qos_rules(char *pcWANIF)
+ 		static const struct { int cls; const char *dscp; } wmm_map[] = {
+ 			{ 1, "CS6" },	/* Q1 highest -> AC_VO */
+ 			{ 2, "CS5" },	/* Q2         -> AC_VI */
+-			{ 5, "CS1" },	/* Q5 bulk    -> AC_BK */
+ 		};
+ 		int wi;
+ 		for (wi = 0; wi < (int)(sizeof(wmm_map)/sizeof(wmm_map[0])); wi++) {
+@@ -3246,21 +3250,28 @@ int start_hwqos_classful(void)
+ 	 * the egress shapers; backed by an rdpa policer object, so the flow
+ 	 * accelerator stays on). A policer has no queue: excess is dropped early and
+ 	 * TCP/QUIC back off before the ISP's upstream buffer ever fills - which is
+-	 * why qos_ibw must be ~90%% of MEASURED downlink, not line rate. Unlike the
+-	 * XRDP egress shapers, burstsize IS honored here: sized to ~10ms of the
+-	 * configured rate (kbps * 1.25 = bytes per 10ms), floored at 64KB so low
+-	 * rates keep a workable token bucket, capped at 8MB. qos_ipolicer="0" kills. */
++	 * why qos_ibw must be ~90%% of MEASURED downlink, NOT line rate: at 100%% the
++	 * token bucket never refills and multi-stream TCP collapses in synchronized
++	 * backoff (metal-observed 2026-07-15: rate=line gave ~1/6 throughput and
++	 * aborted transfers at ANY bucket size; 90%% held full rated speed with
++	 * LOWER ping). Burst = ~100ms of the configured rate (kbps * 12.5 = bytes
++	 * per 100ms; 10ms also collapsed on metal - the bucket must ride out
++	 * slow-start overshoot), floored at 64KB for low rates, capped at 100MB
++	 * (rdpa_policer.h CBS legal range is 1K-100M). qos_ipolicer="0" kills. */
+ 	ibw = strtoul(nvram_safe_get("qos_ibw"), NULL, 10);
+ 	if (ibw > 0 && !nvram_match("qos_ipolicer", "0")) {
+-		burst = ibw + ibw / 4;
++		burst = ibw * 12 + ibw / 2;
+ 		if (burst < 65536) burst = 65536;
+-		if (burst > 8388608) burst = 8388608;
++		if (burst > 100000000) burst = 100000000;
+ 		fprintf(f, "\ttmctl setportrxrate --devtype 0 --if $WANIF --shapingrate %u --burstsize %u\n", ibw, burst);
+ 	}
+ 
+ 	fprintf(f, "\t;;\nstop)\n");
+ 	fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate 0\n");
+-	fprintf(f, "\ttmctl setportrxrate --devtype 0 --if $WANIF --shapingrate 0 --burstsize 0\n");
++	/* readback guard: clearing a policer that was never set logs a one-time
++	 * kernel ERR (_drv_policer_clear_profile, metal-observed on first apply
++	 * after boot) - skip the clear when the readback already shows (0, 0, 0) */
++	fprintf(f, "\ttmctl getportrxrate --devtype 0 --if $WANIF 2>/dev/null | grep -q '(0, 0, 0)' || tmctl setportrxrate --devtype 0 --if $WANIF --shapingrate 0 --burstsize 0\n");
+ 	/* v4: restore strict priority on any queue this script reconfigured
+ 	 * (setqcfg first, mirroring the start ordering; weight 1 is the lowest
+ 	 * legal value and is ignored in SP mode - the tool rejects weight 0) */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 41972ad491..1d0fab4822 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 1fa719be2b..f586e1f7e8 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 1a6aae0d4a..aedc293544 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index ed8fb3ee8e..f552f09946 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 5e8edfaf55..d71c544e6d 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 27a00468a4..c76791e628 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index a8919a4d09..b4a54db89a 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index c72d81aa69..84ca35bcbe 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 036dc6cc3b..d325ec02dd 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 8823a309de..b2bfba5ec4 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index be98edc1af..e995c58548 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 9787aaa72d..97273541cc 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 20609a081b..8e09f1b590 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index c4cfb623ff..3108aadf27 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 5d464daf8d..f3af59b471 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 06df141c5c..318e8870cd 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 7f93a7e698..21da8e89ec 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 83b3aa745d..084a6183af 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 1f5a4aa919..2150de181a 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 1b51987dba..a6f22a608a 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 26696f6871..1d7089d597 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 9ac3601d7c..2be3a8f844 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index d6c9c4392a..ca2d26cfe4 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index f5c1469c49..c21c4c208e 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 7ddb8e9709..5031aa1563 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5585,9 +5585,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. A policer has no queue: a small share of packets is dropped early to signal senders, which is why the figure must be ~90% of what a speed test <i>measures</i>.
++RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic by class &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime), bulk Q5 to CS1 (background) &mdash; so Wi-Fi serves the same priorities on the download side. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+ RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+-- 
+2.25.1
+

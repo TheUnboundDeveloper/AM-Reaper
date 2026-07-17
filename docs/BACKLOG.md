@@ -13,13 +13,16 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / validation owed
 
-- **v1.5.9 metal test.** The Traffic Analyzer resilience fix + the shell master-scrollbar
-  theme (see `CHANGELOG.md` v1.5.9). Checks: (a) far-right scrollbar is black/crimson on
-  shell-framed pages (e.g. Network Map); (b) Analyzer Live view rides through an apply /
-  Wi-Fi drop — pill flips to amber "No response", then recovers on its own (no more
-  permanent freeze); (c) history windows visibly refresh (~30 s); (d) Live view survives a
-  laptop sleep/resume; (e) second-language spot-check of the new "No response" string
-  (`RTRF_72`; English in all dicts for now).
+- **v1.5.9 metal test.** **Built + shipped 2026-07-17** (both variants on the
+  `reaper-firmware/` ladder: MCP image sha `f1e21d19…`, noMCP `a79c68f0…`, hashes in
+  `SHA256SUMS-v1.5.9.txt`) — awaiting flash. The Traffic Analyzer resilience fix + the shell
+  master-scrollbar theme (see `CHANGELOG.md` v1.5.9); full 6-point checklist in
+  `reaper-firmware/METAL-TEST-v1.5.9.md`. Highlights: (a) far-right scrollbar is
+  black/crimson on shell-framed pages (e.g. Network Map); (b) Analyzer Live view rides
+  through an apply / Wi-Fi drop — pill flips to amber "No response", then recovers on its
+  own (no more permanent freeze); (c) history windows visibly refresh (~30 s); (d) Live view
+  survives a laptop sleep/resume; (e) second-language spot-check of the new "No response"
+  string (`RTRF_72`; English in all dicts for now).
 
 - **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
   reset → wizard appears → no page/dashboard reachable until username+password set → forced

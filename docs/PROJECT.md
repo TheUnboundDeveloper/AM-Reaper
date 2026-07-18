@@ -1,6 +1,6 @@
 # RT-BE96U "Reaper" — Project Overview
 
-A security-hardened, **de-clouded** single-model fork of **Asuswrt-Merlin** focused exclusively on the **ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. Current version **v1.5.0a** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
+A security-hardened, **de-clouded** single-model fork of **Asuswrt-Merlin** focused exclusively on the **ASUS RT-BE96U** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. Current version **v1.6.0** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
 > This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder.
 
@@ -13,7 +13,7 @@ A security-hardened, **de-clouded** single-model fork of **Asuswrt-Merlin** focu
 - **Threat-model north star:** only **physical access** should be able to compromise the device. Eliminate remotely/LAN-reachable compromise (command injection, buffer overflows from network/nvram/WAN input, format strings, auth bypass). The hardening is invisible in normal use — its benefit is reduced attack surface.
 - **Also de-cloud:** remove AI-branded and cloud-coupled surface (Alexa/Google Assistant, Trend Micro DPI, AiCloud/WebDAV, the AiDisk wizard, the AAE cloud tunnel, the first-boot consent screens) so the base image stays lean, local-only, and auditable.
 - **And add genuinely-local features:** two Hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, an **optional, read-only, LAN-only AI Advisor** (compiled out of the Standard build entirely; with an opt-in, per-session bounded network-diagnostics mode), and **on-router network diagnostics** — ping/traceroute/DNS/netstat via the AI Advisor.
-- **Branding:** `reaper`. The build version reads `RT-BE96U 3006.102.8_Reaper_v<X>` (e.g. `…_Reaper_v1.5.0a`).
+- **Branding:** `reaper`. The build version reads `RT-BE96U 3006.102.8_Reaper_v<X>` (e.g. `…_Reaper_v1.6.0`).
 
 ## Scope & hard rules
 

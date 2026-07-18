@@ -13,19 +13,35 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / validation owed
 
-- **v1.6.0 metal test (RT-BE96U).** **Built + shipped 2026-07-17** (both variants on the
+- **v1.6.0 metal test (RT-BE96U).** **Built + shipped + FLASHED 2026-07-17** (both variants on the
   `reaper-firmware/` ladder: MCP sha `622b6ec2…`, noMCP `4d47f00c…`, hashes in
-  `SHA256SUMS-v1.6.0.txt`) — awaiting flash. Includes all of v1.5.9, so it supersedes the
-  v1.5.9 RT-BE96U test below. Checks: (a) **AI Advisor → "Save settings" persists** on hardware
-  (port / timeout / client-pin survive a re-open — the one behavior the fix could not prove
-  off-metal; a rejected save now shows an error instead of a false "saved"). (b) **Non-English
-  UI spot-check** — switch language and confirm the rail clock shows localized weekday + month
-  names, the QoS / Traffic / Advisor help prose is translated, and a label too long for its
-  space truncates with a hover tooltip that shows the full word (the `.rtip` mechanism).
-  (c) **Traffic Analyzer still correct** after the collector perf edits (per-device /
-  per-network / top-talker rows populate under load; live rates sane; no freeze). (d) General
-  smoke — dashboard live, Reaper favicon on the Login/Logout browser tab. *The 24-language
-  translation is machine-assisted; native review is recommended before any public release.*
+  `SHA256SUMS-v1.6.0.txt`). Includes all of v1.5.9, so it supersedes the v1.5.9 RT-BE96U test
+  below. **Confirmed on hardware:** the Wireless diagnostics page enumerates all three radios on
+  6 GHz and channel **Lock/Unlock is live** (used it, plus the on-router `chanim` capture, to run
+  the 6 GHz investigation below); dashboard live; 6 GHz reaches **1 Gbps+** on a clean 320 MHz
+  channel. **Still owed:** (a) **AI Advisor → "Save settings" persists** on hardware (port /
+  timeout / client-pin survive a re-open — the one behavior the fix could not prove off-metal; a
+  rejected save now shows an error instead of a false "saved"). (b) **Non-English UI spot-check** —
+  switch language and confirm the rail clock shows localized weekday + month names, the QoS /
+  Traffic / Advisor help prose is translated, and an over-long label truncates with a hover
+  tooltip showing the full word (the `.rtip` mechanism). (c) **Traffic Analyzer under load** after
+  the collector perf edits (per-device / per-network / top-talker rows populate; live rates sane;
+  no freeze). *The 24-language translation is machine-assisted; native review is recommended
+  before any public release.*
+
+- **6 GHz 320 MHz latency "sawtooth" — RESOLVED (environmental, not firmware) 2026-07-17.** A long-
+  running RT-BE96U symptom (a clean ~18 s latency ramp to ~128 ms then snap-back, 0% loss, only at
+  320 MHz, only on 6 GHz) was chased to ground on metal using the v1.5.8/v1.6.0 Wireless page +
+  an on-router `chanim_stats` capture. Findings, in order: the 10G-WAN-PHY hypothesis was
+  **refuted** (unplugging the 10G WAN did not change the ~50% `nopkt` occupancy); a **clean 320 MHz
+  channel exists** (`6g69/320-1`: `nopkt` ~1 %, `txop` ~99 %) while low/high blocks sat at ~50 %,
+  proving the interference is **localized external RF**, not the radio bonding to 320; and the
+  likely **physical root cause is PC-side RFI** — the owner's Wi-Fi antenna feedline was draped
+  across a USB 3.0 hub + a patched audio wire (broadband emitter coupling into the receive path),
+  which also fits the band-specificity and why a phone never reproduced it. **Router / wl driver /
+  acsd all exonerated — nothing to patch.** Fix = channel selection (park 6 GHz in a clean window,
+  e.g. ch 69 / 320, held by the Lock feature) and reroute the feedline away from the emitters. The
+  earlier 10G-WAN auto-guard idea is **dropped** (built on the wrong trigger). [resolved]
 
 - **v1.5.9 metal test.** **Built + shipped 2026-07-17** (both variants on the
   `reaper-firmware/` ladder: MCP image sha `f1e21d19…`, noMCP `a79c68f0…`, hashes in

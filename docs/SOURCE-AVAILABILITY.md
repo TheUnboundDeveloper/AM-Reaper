@@ -84,7 +84,7 @@ GPL-compliant to everyone who receives one.
 - **Subject:** `Reaper build request — RT-BE96U`
 - **Variant:** `Standard` (no AI Advisor) **or** `AI Advisor` (the optional,
   off-by-default MCP build)
-- **Version:** a specific version (e.g. `v1.5.0d`) or `latest`
+- **Version:** a specific version (e.g. `v1.6.0`) or `latest`
 
 You receive the flashable `.pkgtb` (plus its recovery `_loader.pkgtb`) and the
 complete corresponding source per §1. Under GPL v2 you may then use, study,

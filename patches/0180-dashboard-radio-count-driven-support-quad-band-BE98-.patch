@@ -1,0 +1,188 @@
+From aee2589e6d54a06a21cc0df9ecb1f4bff8bb15ee Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 13 Jul 2026 17:33:30 -0400
+Subject: [PATCH] dashboard: radio-count-driven (support quad-band BE98, keep
+ tri-band BE96U)
+
+Make Main_ReaperDash.asp render an arbitrary radio count instead of a
+hardcoded 2.4/5/6 triple. Emit wl0..wl3, filter radios with no nband
+(BE96U keeps 3, BE98 keeps 4), assign a stable index and a band label
+that disambiguates two radios on the same band ('5 GHz (2)'). Radio
+tiles and per-radio MAC rows are generated from the WL[] list and keyed
+by radio index; MWL fronthaul SSID/MAC are matched by band bitmask.
+Client band-bars are unchanged (already band-aggregated via isWL).
+
+Shared UI change; carried on both BE98 branches.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 85 ++++++++++++++--------
+ 1 file changed, 54 insertions(+), 31 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 2f9b74a6e5..e8618e04d8 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -318,7 +318,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   <!-- MAIN -->
+   <main>
+     <header class="top">
+-      <a class="brand" href="#" title="REAPER &mdash; RT-BE96U"><img src="/images/REAPER1.png" alt="REAPER RT-BE96U"></a>
++      <a class="brand" href="#" title="REAPER"><img src="/images/REAPER1.png" alt="REAPER"></a>
+       <div class="pills">
+         <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
+         <div class="pill"><span class="k"><#DSL_Mode#></span><span class="v" id="i_opmode">&mdash;</span></div>
+@@ -446,10 +446,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+           <div class="head"><h3><#Connections#></h3><span class="eyebrow"><#RDSH_19#></span></div>
+ 
+           <div class="conngroup"><span class="cglabel"><#menu5_1#></span><span class="cgline"></span></div>
+-          <div class="ports">
+-            <div class="port" id="w24"><div class="pn">2.4 GHz</div><div class="ps">&mdash;</div><div class="led"></div></div>
+-            <div class="port" id="w5"><div class="pn">5 GHz</div><div class="ps">&mdash;</div><div class="led"></div></div>
+-            <div class="port" id="w6"><div class="pn">6 GHz</div><div class="ps">&mdash;</div><div class="led"></div></div>
++          <div class="ports" id="wl_ports">
++            <div class="port"><div class="pn">&mdash;</div><div class="ps"><#RDSH_20#>&hellip;</div><div class="led"></div></div>
+           </div>
+ 
+           <div class="conngroup"><span class="cglabel"><#wan_ethernet#></span><span class="cgline"></span></div>
+@@ -466,14 +464,11 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         <!-- ROUTER IDENTITY -->
+         <section class="card col4">
+           <div class="head"><h3><#RDSH_21#></h3><span class="eyebrow" id="rid_model">&mdash;</span></div>
+-          <div class="idrows">
++          <div class="idrows" id="rid_idrows">
+             <div class="idrow"><span class="k"><#menu5_2_1#></span><span class="v mono" id="rid_lanip">&mdash;</span></div>
+             <div class="idrow"><span class="k"><#RDSH_22#></span><span class="v mono" id="rid_pin">&mdash;</span></div>
+             <div class="idrow" id="rid_sn_row"><span class="k"><#Serial_Number#></span><span class="v mono" id="rid_sn">&mdash;</span></div>
+             <div class="idrow"><span class="k"><#RDSH_23#></span><span class="v mono" id="rid_lanmac">&mdash;</span></div>
+-            <div class="idrow"><span class="k"><#RDSH_24#></span><span class="v mono" id="rid_mac24">&mdash;</span></div>
+-            <div class="idrow"><span class="k"><#RDSH_25#></span><span class="v mono" id="rid_mac5">&mdash;</span></div>
+-            <div class="idrow"><span class="k"><#RDSH_26#></span><span class="v mono" id="rid_mac6">&mdash;</span></div>
+           </div>
+         </section>
+ 
+@@ -553,12 +548,25 @@ var SSI = {
+   serial:   '<% nvram_get("serial_no"); %>',
+   lanmac:   '<% get_lan_hwaddr(); %>'
+ };
+-/* per-radio config (BE96U: wl0=2.4 GHz, wl1=5 GHz, wl2=6 GHz &mdash; labelled via nband) */
++/* per-radio config, radio-count-driven: emit wl0..wl3, then drop any radio with
++   no nband (RT-BE96U is tri-band -> wl3 empty -> filtered to 3; quad-band BE98
++   keeps 4). Each surviving radio gets a stable idx and a band label; two radios
++   on the same band are disambiguated with a trailing count ("5 GHz (2)"). */
+ var WL = [
+-  {nband:'<% nvram_get("wl0_nband"); %>', radio:'<% nvram_get("wl0_radio"); %>', auth:'<% nvram_get("wl0_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl0_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl0_ssid"); %>')},
+-  {nband:'<% nvram_get("wl1_nband"); %>', radio:'<% nvram_get("wl1_radio"); %>', auth:'<% nvram_get("wl1_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl1_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl1_ssid"); %>')},
+-  {nband:'<% nvram_get("wl2_nband"); %>', radio:'<% nvram_get("wl2_radio"); %>', auth:'<% nvram_get("wl2_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl2_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl2_ssid"); %>')}
++  {idx:0, nband:'<% nvram_get("wl0_nband"); %>', radio:'<% nvram_get("wl0_radio"); %>', auth:'<% nvram_get("wl0_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl0_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl0_ssid"); %>')},
++  {idx:1, nband:'<% nvram_get("wl1_nband"); %>', radio:'<% nvram_get("wl1_radio"); %>', auth:'<% nvram_get("wl1_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl1_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl1_ssid"); %>')},
++  {idx:2, nband:'<% nvram_get("wl2_nband"); %>', radio:'<% nvram_get("wl2_radio"); %>', auth:'<% nvram_get("wl2_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl2_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl2_ssid"); %>')},
++  {idx:3, nband:'<% nvram_get("wl3_nband"); %>', radio:'<% nvram_get("wl3_radio"); %>', auth:'<% nvram_get("wl3_auth_mode_x"); %>', hwaddr:'<% nvram_get("wl3_hwaddr"); %>', ssid:decodeURIComponent('<% nvram_char_to_ascii("WLANConfig11b", "wl3_ssid"); %>')}
+ ];
++WL = WL.filter(function(w){ return w.nband; });
++(function(){
++  function base(nb){ return nb==='2'?'2.4 GHz':(nb==='4'?'6 GHz':'5 GHz'); }
++  var seen={};
++  for(var i=0;i<WL.length;i++){
++    var b=base(WL[i].nband); seen[b]=(seen[b]||0)+1;
++    WL[i].band=b; WL[i].label=(seen[b]>1)?(b+' ('+seen[b]+')'):b;
++  }
++})();
+ var USBINFO = <% get_usb_info(); %>;
+ var WAN6 = <% wan_ipv6_network(); %>;   /* {status, Connection_Type, IPv6_Address, Link_Local_Address, IPv6_Gateway, DNS_Servers} */
+ var UPSTR = "<% sysuptime(); %>";
+@@ -652,12 +660,11 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+         default:         return {t:a||'?',c:'warn'};
+       }
+     }
+-    function bandName(nb){ return nb==='2'?'2.4G':(nb==='4'?'6G':'5G'); }
+     var encParts=[], encWorst='ok', encRank={ok:0,warn:1,danger:2};
+     for(var wi=0; wi<WL.length; wi++){
+-      var wcfg=WL[wi]; if(!wcfg.nband) continue;
+-      if(wcfg.radio!=='1'){ encParts.push(bandName(wcfg.nband)+' <#RDSH_49#>'); continue; }
+-      var einf=encInfo(wcfg.auth); encParts.push(bandName(wcfg.nband)+' '+einf.t);
++      var wcfg=WL[wi];
++      if(wcfg.radio!=='1'){ encParts.push(wcfg.label+' <#RDSH_49#>'); continue; }
++      var einf=encInfo(wcfg.auth); encParts.push(wcfg.label+' '+einf.t);
+       if(encRank[einf.c]>encRank[encWorst]) encWorst=einf.c;
+     }
+     if(encParts.length){
+@@ -700,8 +707,14 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+     if(SSI.serial) setTxt('rid_sn', SSI.serial);
+     else { var snr=$id('rid_sn_row'); if(snr) snr.style.display='none'; }
+     setTxt('rid_lanmac', SSI.lanmac);
+-    var macMap={'2':'rid_mac24','1':'rid_mac5','4':'rid_mac6'};
+-    for(var mi=0; mi<WL.length; mi++){ if(WL[mi].nband && WL[mi].hwaddr) setTxt(macMap[WL[mi].nband], WL[mi].hwaddr); }
++    var _ridbox=$id('rid_idrows');
++    if(_ridbox){
++      var _ridh='';
++      for(var mi=0; mi<WL.length; mi++){
++        _ridh+='<div class="idrow"><span class="k">'+esc(WL[mi].label)+' MAC</span><span class="v mono" id="rid_wlmac'+WL[mi].idx+'">'+esc(WL[mi].hwaddr||'\u2014')+'</span></div>';
++      }
++      _ridbox.insertAdjacentHTML('beforeend', _ridh);
++    }
+ 
+     /* uptime from sysuptime (/proc/uptime) &mdash; offset-proof, ticks locally */
+     var UPS = String(UPSTR).replace(/\s*since boot\s*$/i,'').trim();
+@@ -937,17 +950,23 @@ pollClients(); setInterval(pollClients, 10000);
+    Resolve sdn_rl -> MAINFH -> apm<idx>_ssid/_dut_list (band bitmask: 1=2.4G,
+    2/4/8=5G, 16/32/64=6G); fall back to wlX_ssid on non-MWL configs. */
+ (function(){
+-  var map={'2':{id:'w24',bits:1},'1':{id:'w5',bits:14},'4':{id:'w6',bits:112}};
+-  function setTile(nband, ssid){
+-    var mm=map[nband]; if(!mm) return;
+-    var tile=$id(mm.id); if(!tile) return;
+-    var w=null;
+-    for(var i=0;i<WL.length;i++) if(WL[i].nband===nband) w=WL[i];
+-    var on = w ? (w.radio==='1') : false;
++  /* one tile per radio, keyed by radio index so two same-band radios each get
++     their own tile; MWL fronthaul SSID is matched to radios by band bitmask
++     (2.4G=1, 5G=2/4/8, 6G=16/32/64). */
++  function bandBits(nb){ return nb==='2'?1:(nb==='4'?112:14); }
++  var _wlbox=$id('wl_ports');
++  if(_wlbox){
++    var _wlh='';
++    for(var i=0;i<WL.length;i++) _wlh+='<div class="port" id="wltile'+WL[i].idx+'"><div class="pn">'+esc(WL[i].label)+'</div><div class="ps">&mdash;</div><div class="led"></div></div>';
++    _wlbox.innerHTML=_wlh;
++  }
++  function setTile(w, ssid){
++    var tile=$id('wltile'+w.idx); if(!tile) return;
++    var on=(w.radio==='1');
+     tile.className='port'+(on?' up':'');
+     var sub=tile.querySelector('.ps'); if(sub) sub.textContent = on ? (ssid||'<#Reaper_c_on#>') : '<#RDSH_78#>';
+   }
+-  function fallback(){ for(var i=0;i<WL.length;i++) setTile(WL[i].nband, WL[i].ssid); }
++  function fallback(){ for(var i=0;i<WL.length;i++) setTile(WL[i], WL[i].ssid); }
+   function appGetAscii(names, cb){
+     var hook=[];
+     for(var i=0;i<names.length;i++) hook.push('nvram_char_to_ascii('+names[i]+','+names[i]+')');
+@@ -980,9 +999,9 @@ pollClients(); setInterval(pollClients, 10000);
+         var dut=decodeURIComponent(a['apm'+idx+'_dut_list']||'').split('<');
+         var mask=(dut[1] ? parseInt(dut[1].split('>')[1]||'0',10) : 0)||0;
+         if(en!=='1' || !ssid) continue;
+-        for(var nb in map){ if((mask & map[nb].bits) && !done[nb]){ done[nb]=1; setTile(nb, ssid); } }
++        for(var wi=0; wi<WL.length; wi++){ var w=WL[wi]; if(!done[w.idx] && (mask & bandBits(w.nband))){ done[w.idx]=1; setTile(w, ssid); } }
+       }
+-      for(var j=0;j<WL.length;j++){ if(WL[j].nband && !done[WL[j].nband]) setTile(WL[j].nband, WL[j].ssid); }
++      for(var j=0;j<WL.length;j++){ if(!done[WL[j].idx]) setTile(WL[j], WL[j].ssid); }
+     });
+   });
+ })();
+@@ -999,8 +1018,12 @@ pollClients(); setInterval(pollClients, 10000);
+       var nodes=j.get_cfg_clientlist;
+       if(nodes && nodes.length) setTxt('p_mesh', String(Math.max(0, nodes.length-1)));  /* [0] = this router (CAP); rest = mesh nodes */
+       var cap=(nodes && nodes[0]) || null; if(!cap) return;
+-      var m={'ap2g':'rid_mac24','ap5g':'rid_mac5','ap6g':'rid_mac6'};
+-      for(var k in m){ if(cap[k+'_ssid_fh'] && cap[k+'_fh']) setTxt(m[k], cap[k+'_fh']); }
++      var m={'ap2g':'2','ap5g':'1','ap6g':'4'};
++      for(var k in m){
++        if(cap[k+'_ssid_fh'] && cap[k+'_fh']){
++          for(var wi=0; wi<WL.length; wi++){ if(WL[wi].nband===m[k]){ setTxt('rid_wlmac'+WL[wi].idx, cap[k+'_fh']); break; } }
++        }
++      }
+     }catch(e){}
+   };
+   x.send();
+-- 
+2.25.1
+

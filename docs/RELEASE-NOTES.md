@@ -1,7 +1,7 @@
 # RT-BE96U "Reaper" — Release Notes
 
-**Release:** v1.5.0a (both variants build-verified; AI Advisor + network-diagnostics tier metal-validated on the RT-BE96U)
-**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.5.0a`
+**Release:** v1.6.0 (both variants built + shipped; hardening pass + full 24-language UI; awaiting metal validation on the RT-BE96U)
+**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.6.0`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
 **Model:** ASUS RT-BE96U **only** (WiFi 7, Broadcom BCM4916/BCM6813)
 **Flash images:** two variants — **with** or **without** the AI Advisor (see §2)
@@ -37,21 +37,40 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BE96U_…_Reaper_v1.5.0a_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.5.0a_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BE96U_…_Reaper_v1.6.0_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.6.0_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v1.5.0a_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v1.5.0a_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v1.6.0_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v1.6.0_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
+
+### Hardening pass + full 24-language UI (v1.6.0)
+- **The whole UI is now translated into all 24 non-English languages** it ships (previously the
+  Reaper-authored pages fell back to English in every dictionary). Switch language from the
+  left-rail selector and the QoS, Traffic Analyzer and AI Advisor pages — help prose included —
+  follow, along with the dashboard and the rail clock's localized weekday/month names. Where a
+  translated label runs longer than its space it truncates with an ellipsis and reveals the full
+  text on hover, so the layout never stretches. *Machine-assisted translation; English stays
+  selectable, and native review is recommended before relying on the non-English help text.*
+- **Collector efficiency + robustness.** The traffic collector no longer re-reads settings from
+  nvram on every 100 ms tick (cached, refreshed once a second), reads the WAN counters without
+  reopening their files each tick, resolves each top-talker's MAC once, and throttles the Live
+  tables to their real ~1 Hz data rate; every one of its allocations is now failure-checked, and
+  the Advisor daemon closes a rare descriptor/child leak. No visible change — the page just costs
+  less.
+- **Defense-in-depth + fixes.** Input validation on the two spots that write a stored value into a
+  session file / firewall command; an **AI Advisor "Save settings"** fix so a rejected save is
+  reported instead of silently claimed (and its Refresh button moved next to the title); a
+  **Reaper favicon** on the Login/Logout browser tab; and dead-code cleanups.
 
 ### Network Diagnostics — optional AI network probes (v1.5.0a)
 - **No bundled packet capture.** An earlier internal build carried a `tcpdump`-based Packet
@@ -234,20 +253,22 @@ Release-candidate build hashes (SHA-256):
 
 | Artifact | SHA-256 |
 |---|---|
-| `RT-BE96U_3006_102.8_Reaper_v1.5.0a_nand_squashfs.pkgtb` (with AI Advisor, flash this) | `999dc390e3803b23f4fda36e026639b31fd3a7a3e3ab307c0b07f43d58f0a435` |
-| `RT-BE96U_3006_102.8_Reaper_v1.5.0a_noMCP_nand_squashfs.pkgtb` (Standard, flash this) | `2d7e23c9eadbc4b23dfd0775d2430aae24e91c61b01df59fab21ffc59ec3e3f0` |
+| `RT-BE96U_3006_102.8_Reaper_v1.6.0_nand_squashfs.pkgtb` (with AI Advisor, flash this) | `622b6ec2fb1796f6dce74dd4597ecae64d08434e4000f334191095b63c85f32a` |
+| `RT-BE96U_3006_102.8_Reaper_v1.6.0_noMCP_nand_squashfs.pkgtb` (Standard, flash this) | `4d47f00c34db8cb94fc84374e20b9db67418dac715ed15f852d8f72cc54778af` |
 
-> Hashes above are the current build-candidate images (currently named
-> `…_Reaper_v1.4.2` for the Advisor build and `…_Reaper_v1.4.2_noMCP` for Standard).
-> They are re-stamped for the final release build once the version is finalized.
+> Hashes above are the v1.6.0 images built + shipped 2026-07-17 (both variants, staged-fs
+> verified), on the `reaper-firmware/` ladder alongside `SHA256SUMS-v1.6.0.txt` (which also
+> lists the two `…_loader.pkgtb` recovery images).
 
 **Validation status.** Everything through **v1.3.3** is validated on the physical
 RT-BE96U — security hardening rounds 1–4 + latent T1–T4, the avahi CVE backport, all
 Hardware QoS engines (v1 global, Classful, v3, v4) end-to-end on metal, the Traffic
-Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **v1.4.x AI
-Advisor** is feature-complete and build-verified; its on-hardware validation (arming,
-LAN-only bind, token auth, secret redaction, timeout/USB-key teardown) is **in
-progress** and is the gating item for the final v1.4.2 release.
+Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **AI Advisor**
+(arming, LAN-only bind, token auth, secret redaction, USB third-factor, and the
+network-diagnostics tier) is **metal-validated** on the RT-BE96U (v1.4.x–v1.5.0a). In the
+v1.5.x line the newest fully metal-validated build is **v1.5.6**; **v1.6.0** (this release)
+is built + shipped for the RT-BE96U in both variants and **awaits flashing** — its
+metal-test checklist is in [`BACKLOG.md`](BACKLOG.md).
 
 ---
 

@@ -13,6 +13,20 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / validation owed
 
+- **v1.6.0 metal test (RT-BE96U).** **Built + shipped 2026-07-17** (both variants on the
+  `reaper-firmware/` ladder: MCP sha `622b6ec2…`, noMCP `4d47f00c…`, hashes in
+  `SHA256SUMS-v1.6.0.txt`) — awaiting flash. Includes all of v1.5.9, so it supersedes the
+  v1.5.9 RT-BE96U test below. Checks: (a) **AI Advisor → "Save settings" persists** on hardware
+  (port / timeout / client-pin survive a re-open — the one behavior the fix could not prove
+  off-metal; a rejected save now shows an error instead of a false "saved"). (b) **Non-English
+  UI spot-check** — switch language and confirm the rail clock shows localized weekday + month
+  names, the QoS / Traffic / Advisor help prose is translated, and a label too long for its
+  space truncates with a hover tooltip that shows the full word (the `.rtip` mechanism).
+  (c) **Traffic Analyzer still correct** after the collector perf edits (per-device /
+  per-network / top-talker rows populate under load; live rates sane; no freeze). (d) General
+  smoke — dashboard live, Reaper favicon on the Login/Logout browser tab. *The 24-language
+  translation is machine-assisted; native review is recommended before any public release.*
+
 - **v1.5.9 metal test.** **Built + shipped 2026-07-17** (both variants on the
   `reaper-firmware/` ladder: MCP image sha `f1e21d19…`, noMCP `a79c68f0…`, hashes in
   `SHA256SUMS-v1.5.9.txt`) — awaiting flash. The Traffic Analyzer resilience fix + the shell
@@ -65,10 +79,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Mobile Compatibility** Need to work on the UI so that it looks clean in a mobile format like and iPad.
 - **Shell cut Off** SDN.asp gets cut off when a network is selected and "Advanced Settings" is not 
   exapnded then you try to expand just the general settings.
-- **DICT** Run another pass through the whole firmware to ensure all items that can be are translated.
-  where the area is too small use an abrevation in the lauguage requested. Truncate words instead of 
-  expanding the page elements. Any truncated words or abbreviations should have a hover over tooltip 
-  built in that shows the whole word when you hover over it with your mouse.
+
+*(Done in v1.6.0, moved to `CHANGELOG.md`: the full-firmware DICT translation pass +
+truncate/hover-tooltip mechanism, the AI Advisor Refresh-button move, and the Login/Logout
+favicon.)*
 
 ## Known issues (cause identified)
 
@@ -126,6 +140,27 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
   lost — decide later.
 - **QoS v6?** Look into further QoS improvements.
 
+## Code-scan findings — v1.5.9 6-agent sweep — SHIPPED in v1.6.0 (2026-07-17)
+
+The v1.5.9 6-agent audit of the Reaper-owned surface (**no critical / high / reachable
+external vuln**; ~87 hardening patches verified sound; both daemons judged "unusually
+defensive") left a short list of survivors, **all addressed in v1.6.0** (see
+[`CHANGELOG.md`](CHANGELOG.md)): the `rtrafd write_live()` nvram cache (30→3/s), the
+top-talker MAC cache, `poll_ifaces` open-once + `pread`, the ~1 Hz throttle on the
+Analyzer Live tables, all 83 ring-`calloc` NULL-checks, the `rmcpd popen_pid` fd/zombie
+leak, the `rmcp_client` + `lan_ifname` input validation, the AI Advisor `saveSettings`
+`http_id` + response check, and the `Reaper_QoS.asp` / `state.js` / `watchdog.c` SLOP
+cleanups. (These live in files identical across all four model branches, so folding them
+onto the sibling branches is a clean shared rung when those are next bumped.)
+
+**Deliberately deferred (with reason), still open:**
+- **`poll_fcache` O(n²)→hash pairing** (`rtrafd.c`). Bounded to ≤1536 flows every 5 s and
+  it sits in the metal-validated per-client accounting path — a rewrite of a millisecond-
+  scale loop isn't worth the regression risk. Revisit only if a flow-heavy box shows real
+  cost. [shelved]
+- **`poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal already measured 2–3 % CPU
+  at the class-poll cadence; treating this as a non-issue per the prior finding. [shelved]
+
 ## Documentation
 
 - **Note the non-functional retained features.** Document that the firmware
@@ -143,6 +178,15 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
 
 ## Platform / expansion
 
+- **RT-BE86U — brought to v1.5.9, built + shipped (both variants). [metal test owed].**
+  The v1.5.2..v1.5.9 stack was cherry-picked onto the `rt-be86u` branch (from v1.5.0e)
+  with zero conflicts; both variants built (`MAKE_EXIT=0`) and shipped to the
+  `reaper-firmware/` ladder (MCP sha `3d48f3e0…`, noMCP `4b40985d…`), folded into the
+  16-image `SHA256SUMS-v1.5.9.txt`. **All four models (RT-BE96U, GT-BE98, GT-BE98_PRO,
+  RT-BE86U) are now at v1.5.9.** No RT-BE86U metal test yet — build-validated only. Note
+  the RT-BE86U-specific `LnxHtmlEnumDict` SIGSEGV on Captive-Portal templates is
+  non-fatal (valid images) but may leave those pages' lang-pack dict incomplete — spot-
+  check before a metal test.
 - **RT-BE88U port — build-validated (v1.5.0e, both variants).** First-ever RT-BE88U build:
   blobs restored, target.mak de-clouded, dual-band 10G/SFP+. Build-only, **no metal test**.
   Model-specific build note: BE88U uniquely sets `BCM_JUMBO_FRAME=y` + a NEW
@@ -151,10 +195,29 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
 
 ## Known issues — ported models (GT-BE98 / siblings)
 
-- **GT-BE98: empty Wi-Fi client list + ~half wired throughput.** **[owed — needs diagnosis]**
-  Field report on the shipped GT-BE98 image: (1) the **Wi-Fi client list appears empty**
+- **GT-BE98: empty Wi-Fi client list + ~half wired throughput + missing 6 GHz radio.**
+  **[FIX SHIPPED v1.5.9 2026-07-17 — metal test owed].** Root cause found: the v1.5.0e/v1.5.1
+  non-Pro build linked **four GT-BE98_PRO** closed objects as a version-skew workaround
+  (`rc/broadcom.o`, `rc/private.o`, `shared/spwenc.o`, `shared/nvpriv.o`). `rc/broadcom.o` is
+  the closed half of model-specific radio/board bring-up, and the Pro board (2.4/5/6/6 GHz)
+  differs from the non-Pro (2.4/5/5/6 GHz) — the prime suspect for all three symptoms.
+  **Fixed:** all four swapped to the **official ASUS GT-BE98 GPL 102_39274** objects; the
+  compat shim reworked for the three helpers those objects predate. A quad-band bug in the
+  new Wireless page (`RWIFI_MAXUNIT`, hid the 4th radio) was fixed alongside. Both BE98
+  variants built + shipped at v1.5.9. **Metal test owed** — checklist in
+  `reaper-firmware/METAL-TEST-GT-BE98-v1.5.9.md`; the decisive check is 4 radio rows (incl.
+  6 GHz) on the Wireless page. If it still shows 3, the next suspect layer is the wl/dhd
+  driver or dongle firmware. Original diagnosis notes retained below for the record.
+- **GT-BE98 product/port images are the Pro's copies. [cosmetic]** The five
+  `www/sysdep/GT-BE98/www/images/*` product/port PNGs (`Model_product_20.png`,
+  `model_port.png`, `wanport_plugin*.png`, `GT-bg_header_20.png`) are byte-identical to the
+  GT-BE98_PRO assets; the ASUS GT-BE98 GPL 39274 drop carries no www assets to source the real
+  ones. The non-Pro UI may therefore show Pro product art. Would need art from a stock GT-BE98
+  firmware extraction to correct.
+
+  *Original field report (retained):* (1) the **Wi-Fi client list appears empty**
   (associated stations not enumerated), and (2) a **speed test shows ~half the actual wired
-  (Ethernet) rate**. Not yet investigated. This is almost certainly a **source/blob issue,
+  (Ethernet) rate**. This is almost certainly a **source/blob issue,
   not a build artifact** — so a rebuild alone won't fix it; it needs real diagnosis.
   - **First step: confirm which image the tester flashed** — the v1.5.0e build (imported
     *gnuton* `DEV_3006.102.7_2` blobs from ASUS GPL 39099) or the v1.5.1 build (blobs

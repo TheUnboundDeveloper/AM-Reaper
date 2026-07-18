@@ -13,10 +13,50 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 > validated on the physical RT-BE96U. In the v1.5.x line, **v1.5.6** is the newest
 > fully metal-validated build; the v1.5.7 checklist is owed, **v1.5.8** was flashed
 > to the router 2026-07-16 with its checklist owed, and **v1.5.9** (built and shipped
-> 2026-07-17, both variants) awaits flashing + its checklist. Sibling-model builds
+> 2026-07-17, both variants) awaits flashing + its checklist. **v1.6.0** (built and
+> shipped 2026-07-17, both variants — hardening pass + full 24-language UI) is the
+> newest RT-BE96U build and awaits flashing + its checklist. Sibling-model builds
 > (v1.5.0e/v1.5.1, and the **v1.5.9 GT-BE98 / GT-BE98 Pro** builds carrying the GT-BE98
 > field-report fix) are build-validated only. See `RELEASE-NOTES.md` for the current
 > release's status.
+
+---
+
+## v1.6.0 — hardening pass + full 24-language UI
+- **Traffic collector (`rtrafd`) efficiency.** The live-view writer took the nvram lock three
+  times on every 100 ms tick for values that only change on a settings apply (~30 lookups/s for
+  the router's whole uptime); those are now cached and refreshed once a second (**30/s → 3/s**).
+  The WAN byte counters are read by holding the sysfs files open and using `pread` instead of
+  reopening them every tick; each top-talker's MAC is resolved once when its row is built rather
+  than re-scanned on every write; and the Traffic Analyzer Live view rebuilds its per-device /
+  per-network / top-talker tables at ~1 Hz (their data only changes every 5 s) while the rolling
+  charts still draw every poll. All bounded — no behavior change.
+- **Robustness.** All 83 of `rtrafd`'s ring allocations are NULL-checked at startup (was 4); the
+  Advisor daemon (`rmcpd`) no longer leaks a pipe descriptor and a zombie child if a command's
+  output handle fails to open after the fork.
+- **Input-validation hardening (defense-in-depth).** The Advisor arm handler strips CR/LF and
+  validates the client pin as a dotted-quad before writing it into its newline-delimited session
+  file; the boot-time firewall sweep validates `lan_ifname` before splicing it into an `iptables`
+  command.
+- **AI Advisor — "Save settings" now confirmed.** It was posting to the apply CGI without the CSRF
+  token and reporting success unconditionally; it now sends the token and checks the response, so a
+  rejected save is reported instead of silently claimed (metal-confirm the port/timeout/client pin
+  actually persist). The **Refresh** button was also moved in next to the title.
+- **Login / Logout favicon.** Both screens show the Reaper emblem in the browser tab (were the
+  stock ASUS icon).
+- **Full UI translation — 24 languages.** Every Reaper-authored page string is now translated into
+  all 24 non-English languages the firmware ships (was English-in-every-dict fallback). A
+  completeness sweep also caught the last hardcoded strings — the rail clock's weekday/month names,
+  the AI Advisor "Copy snippet" button, the traffic-quota line, the Wi-Fi encryption labels, the
+  dashboard tab title — and tokenized them. Where a translated label runs longer than its space it
+  now truncates with an ellipsis and reveals the full text on hover, instead of stretching the
+  layout. *Machine-assisted translation — native review recommended before relying on the
+  non-English help prose; English stays selectable.*
+- **Cleanup.** Removed a never-fired QoS mode-link branch; stranded the disabled EULA-policy check
+  as a no-op stub; corrected a stale watchdog comment about the acsd cooldown.
+- Both images, built + shipped 2026-07-17 (staged-fs verified: tooltip helper + favicon present,
+  all 25 dicts lockstep, German/French carry real translations). RT-BE96U only this release;
+  pending metal validation.
 
 ---
 

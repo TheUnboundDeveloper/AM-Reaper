@@ -18,7 +18,7 @@ Hard constraint (unchanged): the Broadcom closed blobs (wl/dhd/runner fast-path,
 
 ---
 
-## Phase 0 — Done / in place (shipped through v1.5.0a)
+## Phase 0 — Done / in place (shipped through v1.6.0)
 
 *Per-version detail in [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).*
 

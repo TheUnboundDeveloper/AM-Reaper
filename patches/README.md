@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**178 patches, v1.0 → v1.5.9**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**181 patches, v1.0 → v1.6.0**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (178 patches, v1.0 → v1.5.9)
+## What the series contains (181 patches, v1.0 → v1.6.0)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -82,7 +82,7 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
   device-identity rows (name + "IP · MAC"), i18n strings.
 - `0162`–`0163` — **v1.5.4**: QoS v5.1 policer burst/rate fixes from on-hardware tuning.
 
-### v1.5.5 → v1.5.9 — first-boot wizard, Advisor tool, audit fixes, wireless page (`0164`–`0178`)
+### v1.5.5 → v1.6.0 — first-boot wizard, Advisor tool, audit fixes, wireless page, hardening + i18n (`0164`–`0181`)
 - `0164` — **v1.5.5**: unbypassable first-boot / factory-reset credentials wizard
   (`Reaper_FirstBoot.asp`), AI Advisor IP-pin retention, themed waiting overlay,
   self-updating internet status during boot.
@@ -96,9 +96,17 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
   `psc6g` duplicate-default fix, a collector build fix.
 - `0176`–`0178` — **v1.5.9**: Traffic Analyzer wedge-proof live polling + stalled indicator +
   history auto-refresh; the app shell's master page scrollbar themed.
+- `0179`–`0180` — **v1.5.9 wireless backfill**: the `Reaper_Wireless.asp` radio-unit ceiling raised
+  to quad-band, and the dashboard made radio-count-driven (both keep tri-band RT-BE96U behavior;
+  they ship in the RT-BE96U image and were folded onto the RT-BE96U branch during the v1.6.0 sync).
+- `0181` — **v1.6.0**: hardening pass (`rtrafd` per-tick nvram-read caching + open-once WAN counters
+  + ~1 Hz Live-table throttle, all ring-alloc NULL-checks, `rmcpd` `popen` fd/child-leak fix,
+  `rmcp_client` / `lan_ifname` input validation, AI Advisor "Save settings" `http_id` + response
+  check) plus the full 24-language UI translation (with the truncate/hover-tooltip overflow helper
+  and a Reaper favicon on the Login/Logout tab).
 
 ## Notes
 
 - **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted.
-- Regenerated for **v1.5.9** (2026-07-17) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (zero diff under `release/src/router`).
+- Regenerated for **v1.6.0** (2026-07-18) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (matching `release/src/router` tree hash).

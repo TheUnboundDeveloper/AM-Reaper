@@ -1,0 +1,989 @@
+From b3e202e779ebb770da26d21d1992c727e92e1f1a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 18 Jul 2026 21:13:07 -0400
+Subject: [PATCH] v1.6.1: Auto Scan refinements - dedup-by-block,
+ terminate-on-leave, progress, report, QoL
+
+Live pre-validation showed the candidate selection was wrong (an arbitrary
+spread could scan redundant same-block channels and skip the clean one);
+rwifi_scan_candidates now keeps one PSC representative per physical 320 block -
+the 6 real positions across both 320-1/320-2 sub-grids.
+
+Auto Scan UX:
+- terminate the sweep if the tab is closed / navigated away: the browser poll
+  is a heartbeat (the worker aborts + restores the channel when it goes stale)
+  plus a sendBeacon(scanstop) on pagehide for an instant stop.
+- progress bar (candidates done/total, active pulse) + ETA.
+- keep the admin session alive during the scan; the normal idle timeout resumes
+  on its own when the scan ends.
+- mark the current channel in results; best-vs-current on the Pin confirm;
+  pinned toast; friendly "capture running" busy message.
+- syslog one-line winner summary; capture noise floor (knoise) per candidate.
+
+Downloadable report: a self-contained landscape HTML document (Print / Save PDF
+via a hidden print iframe, or Download) with the ranked table (incl. noise
+floor) and an SVG spectrum plot placing each 320 block by frequency, colored by
+occupancy with direct labels + legend.
+
+i18n: RWIF_50-57 across all 25 language dicts, lockstep.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             | 116 ++++++++-----
+ release/src/router/www/BR.dict             |   8 +
+ release/src/router/www/CN.dict             |   8 +
+ release/src/router/www/CZ.dict             |   8 +
+ release/src/router/www/DA.dict             |   8 +
+ release/src/router/www/DE.dict             |   8 +
+ release/src/router/www/EN.dict             |   8 +
+ release/src/router/www/ES.dict             |   8 +
+ release/src/router/www/FI.dict             |   8 +
+ release/src/router/www/FR.dict             |   8 +
+ release/src/router/www/HU.dict             |   8 +
+ release/src/router/www/IT.dict             |   8 +
+ release/src/router/www/JP.dict             |   8 +
+ release/src/router/www/KR.dict             |   8 +
+ release/src/router/www/MS.dict             |   8 +
+ release/src/router/www/NL.dict             |   8 +
+ release/src/router/www/NO.dict             |   8 +
+ release/src/router/www/PL.dict             |   8 +
+ release/src/router/www/RO.dict             |   8 +
+ release/src/router/www/RU.dict             |   8 +
+ release/src/router/www/Reaper_Wireless.asp | 191 +++++++++++++++++++--
+ release/src/router/www/SL.dict             |   8 +
+ release/src/router/www/SV.dict             |   8 +
+ release/src/router/www/TH.dict             |   8 +
+ release/src/router/www/TR.dict             |   8 +
+ release/src/router/www/TW.dict             |   8 +
+ release/src/router/www/UK.dict             |   8 +
+ 27 files changed, 458 insertions(+), 49 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index bf1711b142..b010f5dcf6 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21710,9 +21710,11 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ #define RWIFI_RUN	RWIFI_DIR "/run"
+ #define RWIFI_SCAN	RWIFI_DIR "/scan.json"	/* auto-scan progress + ranked results */
+ #define RWIFI_SRUN	RWIFI_DIR "/scanrun"	/* auto-scan run token; unlink = abort */
++#define RWIFI_SHB	RWIFI_DIR "/scanhb"	/* auto-scan heartbeat; browser poll refreshes it */
+ #define RWIFI_CHQ	"/tmp/reaper_chq/live.json"	/* rchqd passive monitor snapshot */
++#define RWIFI_SCAN_HB	12	/* abort the sweep if the browser stops polling for this long (s) */
+ #define RWIFI_MAXUNIT	3	/* quad-band ceiling; absent units have no wlN_ifname and are skipped */
+-#define RWIFI_SCAN_MAX		5	/* candidate channels a sweep will visit */
++#define RWIFI_SCAN_MAX		8	/* max candidate channels a sweep will visit (one per physical 320 block) */
+ #define RWIFI_SCAN_DWELL	5	/* chanim samples averaged per candidate (s) */
+ #define RWIFI_SCAN_SETTLE	25	/* max wait for a restart to land on the chanspec (s) */
+ 
+@@ -21840,7 +21842,7 @@ static void rwifi_worker(int unit, int secs)
+  * so nothing survives a reboot and only the user's explicit "Pin best" - which
+  * goes through the normal apply/commit flow - makes a choice permanent. */
+ 
+-struct rwifi_scres { char cs[24]; int nopkt, txop, glitch, score; };
++struct rwifi_scres { char cs[24]; int nopkt, txop, glitch, knoise, score; };
+ 
+ static int rwifi_is_psc(int ch)
+ {
+@@ -21852,50 +21854,54 @@ static int rwifi_is_psc(int ch)
+ 	return 0;
+ }
+ 
+-/* distinct PSC-anchored 6 GHz 320 MHz chanspecs the driver reports as valid,
+- * spread across the band if there are more than `max` of them */
++/* distinct PHYSICAL 6 GHz 320 MHz channels the driver reports as valid. Every
++ * primary inside one 320 block occupies the SAME spectrum, so scanning more
++ * than one of them is redundant - keep just one PSC-anchored representative per
++ * block. The -1 grid starts at ch1 and the -2 grid at ch33; each 320 block
++ * spans 64 twenty-MHz channels. This yields the ~6 real 320 positions across
++ * both sub-grids (low/mid/high on each), with no wasted restarts. */
+ static int rwifi_scan_candidates(const char *ifname, char cand[][24], int max)
+ {
+-	char cmd[128], line[256], all[64][24], tok[24];
++	char cmd[128], line[256], tok[24], seen[16][8], key[8];
+ 	FILE *p;
+-	int nall = 0, i, ch;
++	int nseen = 0, n = 0, ch, sub, base, blk, i;
+ 
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspecs 2>/dev/null", ifname);
+ 	if ((p = popen(cmd, "r")) == NULL)
+ 		return 0;
+-	while (fgets(line, sizeof(line), p) && nall < 64) {
++	while (fgets(line, sizeof(line), p) && n < max && nseen < 16) {
+ 		if (sscanf(line, "%23s", tok) != 1)
+ 			continue;
+-		if (!strstr(tok, "/320"))
++		/* need both the primary channel and the -1/-2 sub-block index */
++		if (sscanf(tok, "6g%d/320-%d", &ch, &sub) != 2)
+ 			continue;
+-		if (sscanf(tok, "6g%d/", &ch) != 1 || !rwifi_is_psc(ch))
++		if (!rwifi_is_psc(ch))
+ 			continue;
+-		for (i = 0; i < nall; i++)
+-			if (strcmp(all[i], tok) == 0)
+-				break;
+-		if (i < nall)
++		base = (sub == 2) ? 33 : 1;
++		blk = (ch - base) / 64;			/* 0,1,2 within this grid */
++		if (blk < 0)
+ 			continue;
+-		snprintf(all[nall], 24, "%s", tok);
+-		nall++;
++		snprintf(key, sizeof(key), "%d_%d", sub, blk);
++		for (i = 0; i < nseen; i++)
++			if (strcmp(seen[i], key) == 0)
++				break;
++		if (i < nseen)
++			continue;			/* already have this physical block */
++		snprintf(seen[nseen], sizeof(seen[0]), "%s", key);
++		nseen++;
++		snprintf(cand[n], 24, "%s", tok);
++		n++;
+ 	}
+ 	pclose(p);
+-	if (nall == 0)
+-		return 0;
+-	if (nall <= max) {
+-		for (i = 0; i < nall; i++)
+-			snprintf(cand[i], 24, "%s", all[i]);
+-		return nall;
+-	}
+-	for (i = 0; i < max; i++)
+-		snprintf(cand[i], 24, "%s", all[(int)((long)i * nall / max)]);
+-	return max;
++	return n;
+ }
+ 
+-/* average chanim_stats over nsec on-channel samples; glitch is a max */
+-static void rwifi_avg_sample(const char *ifname, int nsec, int *nopkt, int *txop, int *glitch)
++/* average chanim_stats over nsec on-channel samples; glitch is a max, knoise
++ * (noise floor, dBm - negative) is averaged too */
++static void rwifi_avg_sample(const char *ifname, int nsec, int *nopkt, int *txop, int *glitch, int *knz)
+ {
+ 	char cmd[128], line[512], chspec[32];
+-	int i, gotn = 0, sN = 0, sT = 0, mg = 0;
++	int i, gotn = 0, sN = 0, sT = 0, mg = 0, sK = 0;
+ 	int tx, inbss, obss, nocat, np, doze, to, goodtx, badtx, gl, badplcp, knoise, idle, busy;
+ 
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats 2>/dev/null", ifname);
+@@ -21906,7 +21912,7 @@ static void rwifi_avg_sample(const char *ifname, int nsec, int *nopkt, int *txop
+ 				if (sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+ 					chspec, &tx, &inbss, &obss, &nocat, &np, &doze, &to,
+ 					&goodtx, &badtx, &gl, &badplcp, &knoise, &idle, &busy) == 15) {
+-					sN += np; sT += to; if (gl > mg) mg = gl; gotn++;
++					sN += np; sT += to; sK += knoise; if (gl > mg) mg = gl; gotn++;
+ 					break;
+ 				}
+ 			}
+@@ -21914,8 +21920,8 @@ static void rwifi_avg_sample(const char *ifname, int nsec, int *nopkt, int *txop
+ 		}
+ 		sleep(1);
+ 	}
+-	if (gotn == 0) { *nopkt = 100; *txop = 0; *glitch = 0; return; }
+-	*nopkt = sN / gotn; *txop = sT / gotn; *glitch = mg;
++	if (gotn == 0) { *nopkt = 100; *txop = 0; *glitch = 0; *knz = 0; return; }
++	*nopkt = sN / gotn; *txop = sT / gotn; *glitch = mg; *knz = sK / gotn;
+ }
+ 
+ /* rank result indices by score ascending (lower score = cleaner) */
+@@ -21945,8 +21951,8 @@ static void rwifi_scan_publish(int done, int aborted, const char *cur, int idx,
+ 		done, aborted, cur ? cur : "", idx, total);
+ 	for (i = 0; i < n; i++) {
+ 		k = order[i];
+-		fprintf(f, "%s{\"chanspec\":\"%s\",\"nopkt\":%d,\"txop\":%d,\"glitch\":%d,\"score\":%d}",
+-			i ? "," : "", r[k].cs, r[k].nopkt, r[k].txop, r[k].glitch, r[k].score);
++		fprintf(f, "%s{\"chanspec\":\"%s\",\"nopkt\":%d,\"txop\":%d,\"glitch\":%d,\"knoise\":%d,\"score\":%d}",
++			i ? "," : "", r[k].cs, r[k].nopkt, r[k].txop, r[k].glitch, r[k].knoise, r[k].score);
+ 	}
+ 	fprintf(f, "]}");
+ 	fclose(f);
+@@ -21968,16 +21974,32 @@ static void rwifi_wait_chanspec(const char *ifname, const char *target, int maxs
+ 	}
+ }
+ 
++/* the sweep is alive while the run token exists AND the browser is still polling
++ * (heartbeat fresh). A closed tab / navigated-away page stops polling, the
++ * heartbeat goes stale, and the sweep aborts + restores the channel. */
++static int rwifi_scan_alive(void)
++{
++	struct stat st;
++
++	if (stat(RWIFI_SRUN, &st) != 0)
++		return 0;			/* explicit stop (scanstop unlinked it) */
++	if (stat(RWIFI_SHB, &st) != 0)
++		return 0;
++	if (time(NULL) - st.st_mtime >= RWIFI_SCAN_HB)
++		return 0;			/* browser stopped polling */
++	return 1;
++}
++
+ static void rwifi_scan_worker(int unit)
+ {
+ 	char ifname[32], orig_cs[64], orig_bw[16], nvk[32], cand[RWIFI_SCAN_MAX][24], cur[24];
+ 	struct rwifi_scres r[RWIFI_SCAN_MAX];
+ 	int order[RWIFI_SCAN_MAX];
+ 	int i, n = 0, ncand, aborted;
+-	struct stat st;
+ 
+ 	if (!rwifi_ifname(unit, ifname, sizeof(ifname))) {
+ 		unlink(RWIFI_SRUN);
++		unlink(RWIFI_SHB);
+ 		_exit(0);
+ 	}
+ 
+@@ -21991,12 +22013,13 @@ static void rwifi_scan_worker(int unit)
+ 	if (ncand <= 0) {
+ 		rwifi_scan_publish(1, 0, "", 0, 0, r, 0, order);
+ 		unlink(RWIFI_SRUN);
++		unlink(RWIFI_SHB);
+ 		_exit(0);
+ 	}
+ 
+ 	for (i = 0; i < ncand; i++) {
+-		if (stat(RWIFI_SRUN, &st) != 0)
+-			break;			/* user hit stop */
++		if (!rwifi_scan_alive())
++			break;			/* stopped, or the browser left */
+ 		snprintf(cur, sizeof(cur), "%s", cand[i]);
+ 		rwifi_scan_rank(r, n, order);
+ 		rwifi_scan_publish(0, 0, cur, i + 1, ncand, r, n, order);
+@@ -22009,11 +22032,11 @@ static void rwifi_scan_worker(int unit)
+ 		notify_rc("restart_wireless");
+ 		rwifi_wait_chanspec(ifname, cand[i], RWIFI_SCAN_SETTLE);
+ 
+-		if (stat(RWIFI_SRUN, &st) != 0)
++		if (!rwifi_scan_alive())
+ 			break;			/* stopped during the slow restart */
+ 
+ 		snprintf(r[n].cs, sizeof(r[n].cs), "%s", cand[i]);
+-		rwifi_avg_sample(ifname, RWIFI_SCAN_DWELL, &r[n].nopkt, &r[n].txop, &r[n].glitch);
++		rwifi_avg_sample(ifname, RWIFI_SCAN_DWELL, &r[n].nopkt, &r[n].txop, &r[n].glitch, &r[n].knoise);
+ 		r[n].score = r[n].nopkt + (100 - r[n].txop) +
+ 			     (r[n].glitch > 200 ? 200 : r[n].glitch) / 10;
+ 		n++;
+@@ -22021,7 +22044,7 @@ static void rwifi_scan_worker(int unit)
+ 		rwifi_scan_publish(0, 0, cur, i + 1, ncand, r, n, order);
+ 	}
+ 
+-	aborted = (stat(RWIFI_SRUN, &st) != 0);
++	aborted = !rwifi_scan_alive();
+ 
+ 	/* restore the pre-scan channel regardless of how we got here */
+ 	snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
+@@ -22032,7 +22055,12 @@ static void rwifi_scan_worker(int unit)
+ 
+ 	rwifi_scan_rank(r, n, order);
+ 	rwifi_scan_publish(1, aborted ? 1 : 0, "", ncand, ncand, r, n, order);
++	if (!aborted && n > 0)
++		logmessage("reaper_scan",
++			"auto-scan: best %s (nopkt %d%%, score %d) of %d channels",
++			r[order[0]].cs, r[order[0]].nopkt, r[order[0]].score, n);
+ 	unlink(RWIFI_SRUN);
++	unlink(RWIFI_SHB);
+ 	_exit(0);
+ }
+ 
+@@ -22181,6 +22209,10 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 			fprintf(f, "%d\n", unit);
+ 			fclose(f);
+ 		}
++		if ((f = fopen(RWIFI_SHB, "w")) != NULL) {	/* seed the browser heartbeat */
++			fputc('1', f);
++			fclose(f);
++		}
+ 		unlink(RWIFI_SCAN);
+ 		pid = fork();
+ 		if (pid == 0) {
+@@ -22212,6 +22244,12 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	}
+ 
+ 	if (strcmp(act, "scandata") == 0) {
++		/* browser poll = heartbeat: refresh it while a sweep runs so the worker
++		 * knows the page is still open (a closed tab self-aborts the sweep) */
++		if (stat(RWIFI_SRUN, &st) == 0 && (f = fopen(RWIFI_SHB, "w")) != NULL) {
++			fputc('1', f);
++			fclose(f);
++		}
+ 		if ((f = fopen(RWIFI_SCAN, "r")) == NULL) {
+ 			websWrite(stream, "{\"done\":0,\"results\":[]}");
+ 			return;
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index fbaa2a30d1..6833597b02 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 4394ae8395..5c3d5c9848 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 61c5188502..1353b2bcd7 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index d7297df98f..05a921a824 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 4fb1ee56a3..87788caa92 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 572937ede5..cdc7b1d07f 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 389f46df70..f80c13dd2a 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index cc81616ecc..a446198080 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 0ee838007b..f3af130512 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index cd6a88e8b0..80a553fb83 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 3e6b82da5e..82e82ce706 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 5c8879ad27..ba3351a081 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 63d3d6fe58..fdc5852c44 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 931b1f75b6..ffdb6a8c6f 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 5a59ba926e..dc18f08f80 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 71146b3398..28a89e4fd0 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index f6f7799328..6b9c8f983b 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 1296c398da..36ab77bc02 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 06cbc1604c..b33251d933 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 853128f56b..4cca2fd048 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -79,6 +79,16 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+ .verdict.ok{color:var(--jade)} .verdict.bad{color:var(--crimson)}
+ .exwrap{max-height:240px;overflow:auto;border:1px solid var(--line-soft);border-radius:10px;margin-top:10px}
+ .empty{padding:22px 8px;text-align:center;color:var(--steel);font-size:12.5px}
++.pbar{height:10px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:999px;overflow:hidden;margin:12px 0 6px;display:none}
++.pfill{height:100%;width:0;background:linear-gradient(90deg,var(--crimson),var(--crimson-deep));border-radius:999px;transition:width .5s ease}
++.pfill.active{animation:pulse 1.2s ease-in-out infinite}
++@keyframes pulse{50%{opacity:.5}}
++.badge.best{color:var(--jade);border-color:rgba(79,178,134,.45)}
++.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--panel-2);border:1px solid var(--line);
++  color:var(--bone);font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.04em;padding:11px 18px;border-radius:10px;
++  box-shadow:0 8px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .3s;z-index:50}
++.toast.show{opacity:1}
++tr.curchan td{background:rgba(224,169,59,.07)}
+ </style>
+ </head>
+ <body>
+@@ -142,18 +152,24 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+     <button class="btn hot" id="scango" onclick="scanStart()"><#RWIF_32#></button>
+     <button class="btn" id="scanstop" onclick="scanStop()" disabled><#RWIF_12#></button>
+     <button class="btn" id="scanpin" onclick="scanPin()" disabled><#RWIF_35#></button>
++    <button class="btn ghost" id="scanprint" onclick="printReport()" disabled><#RWIF_50#></button>
++    <button class="btn ghost" id="scandl" onclick="downloadReport()" disabled><#RWIF_51#></button>
+   </div>
++  <div class="pbar" id="scanbar"><div class="pfill" id="scanfill"></div></div>
+   <div class="note" id="scanprog"></div>
+   <div class="exwrap" id="scanwrap" style="display:none">
+     <table class="ta" id="scantable">
+       <thead><tr><th>#</th><th><#WLANConfig11b_Channel_itemname#></th><th class="num">nopkt</th>
+-      <th class="num">txop</th><th class="num">glitch</th><th class="num"><#RWIF_36#></th></tr></thead>
++      <th class="num">txop</th><th class="num">glitch</th><th class="num">knoise</th><th class="num"><#RWIF_36#></th></tr></thead>
+       <tbody></tbody>
+     </table>
+   </div>
+   <div class="empty" id="scanempty"><#RWIF_37#></div>
+ </div>
+ 
++<iframe id="reportframe" style="position:absolute;width:0;height:0;border:0" aria-hidden="true"></iframe>
++<div class="toast" id="toast"></div>
++
+ <div class="panel">
+   <h2><#RWIF_43#></h2>
+   <div class="sub"><#RWIF_44#></div>
+@@ -438,6 +454,36 @@ function six_band(){
+   for(i=0;ST&&i<ST.bands.length;i++) if(ST.bands[i].nband===4) return ST.bands[i];
+   return null;
+ }
++function curCs(){ var b=six_band(); return (b&&b.run_chanspec)||""; }
++/* physical 320 block id: primaries in one block share spectrum (matches the C) */
++function blockKey(cs){
++  var m=/^6g(\d+)\/320-(\d+)/.exec(cs||""); if(!m) return "";
++  var ch=+m[1], sub=+m[2], base=sub===2?33:1;
++  return sub+"_"+Math.floor((ch-base)/64);
++}
++function chFreqMHz(ch){ return 5950+5*ch; }
++function blockRange(cs){
++  var m=/^6g(\d+)\/320-(\d+)/.exec(cs||""); if(!m) return null;
++  var ch=+m[1], sub=+m[2], base=sub===2?33:1, blk=Math.floor((ch-base)/64);
++  var lo=base+blk*64, hi=lo+63;
++  return {loMHz:chFreqMHz(lo)-10, hiMHz:chFreqMHz(hi)+10};
++}
++function freqSpan(cs){
++  var b=blockRange(cs); if(!b) return "&ndash;";
++  return (b.loMHz/1000).toFixed(2)+"&ndash;"+(b.hiMHz/1000).toFixed(2)+" GHz";
++}
++function showToast(msg){
++  var t=document.getElementById("toast"); if(!t) return;
++  t.textContent=msg; t.className="toast show";
++  setTimeout(function(){t.className="toast";},3500);
++}
++/* keep the admin session alive during a scan: the 2s poll already refreshes the
++ * server session; this also resets any client-side shell idle timer. It stops
++ * when the scan ends, so the normal idle timeout resumes on its own. */
++function keepSessionAlive(){
++  try{ document.dispatchEvent(new MouseEvent("mousemove")); }catch(e){}
++  try{ if(window.parent&&window.parent!==window) window.parent.document.dispatchEvent(new MouseEvent("mousemove")); }catch(e){}
++}
+ function scanStart(){
+   var six=six_band();
+   if(!six){alert("<#RWIF_38#>");return;}
+@@ -447,7 +493,11 @@ function scanStart(){
+   x.onreadystatechange=function(){
+     if(x.readyState!==4) return;
+     var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
+-    if(!r||!r.ok){document.getElementById("scanprog").textContent=(r&&r.err)?("error: "+r.err):"error";return;}
++    if(!r||!r.ok){
++      document.getElementById("scanprog").textContent =
++        (r&&r.err==="busy") ? "<#RWIF_55#>" : ((r&&r.err)?("error: "+r.err):"error");
++      return;
++    }
+     scanPoll();
+   };
+   x.send();
+@@ -461,7 +511,10 @@ function scanPoll(){
+   document.getElementById("scango").disabled=true;
+   document.getElementById("scanstop").disabled=false;
+   if(SCANPOLL) return;
++  keepSessionAlive();
++  var ka=0;
+   SCANPOLL=setInterval(function(){
++    if((++ka % 25)===0) keepSessionAlive();      /* ~every 50s */
+     var x=new XMLHttpRequest();
+     x.open("GET","/reaper_wifi.cgi?action=scandata&_="+Date.now(),true);
+     x.onreadystatechange=function(){
+@@ -480,35 +533,142 @@ function scanPoll(){
+ }
+ function renderScan(){
+   if(!SCANDATA) return;
++  var res=SCANDATA.results||[], total=SCANDATA.total||0, done=res.length;
+   var prog=document.getElementById("scanprog");
++  var bar=document.getElementById("scanbar"), fill=document.getElementById("scanfill");
+   if(!SCANDATA.done){
++    bar.style.display="";
++    fill.style.width=(total?Math.round(done/total*100):0)+"%";
++    fill.className="pfill active";
++    var remain=Math.max(0,total-done), eta=remain*22;
++    var etatxt=eta>=60?("~"+Math.ceil(eta/60)+" <#RWIF_53#>"):("~"+eta+" <#RWIF_54#>");
+     prog.innerHTML="<span class=\"badge warn\">scanning</span> "+esc(SCANDATA.cur||"")+
+-      " ("+(SCANDATA.idx||0)+"/"+(SCANDATA.total||0)+") &middot; <#RWIF_34#>";
++      " ("+(SCANDATA.idx||0)+"/"+total+") &middot; "+etatxt;
+   } else {
++    fill.style.width="100%"; fill.className="pfill";
++    setTimeout(function(){bar.style.display="none";},1200);
+     prog.textContent=SCANDATA.aborted?"<#RWIF_39#>":"<#RWIF_40#>";
+   }
+-  var res=SCANDATA.results||[];
++  var ck=blockKey(curCs());
+   document.getElementById("scanempty").style.display=res.length?"none":"";
+   document.getElementById("scanwrap").style.display=res.length?"":"none";
+-  var rows="",i,r;
++  var rows="",i,r,iscur;
+   for(i=0;i<res.length;i++){
+-    r=res[i];
+-    rows+="<tr><td class=\"num\">"+(i+1)+"</td>"+
+-      "<td class=\"mono\">"+esc(r.chanspec)+(i===0?" <span class=\"badge auto\"><#RWIF_41#></span>":"")+"</td>"+
++    r=res[i]; iscur=ck&&blockKey(r.chanspec)===ck;
++    rows+="<tr"+(iscur?" class=\"curchan\"":"")+"><td class=\"num\">"+(i+1)+"</td>"+
++      "<td class=\"mono\">"+esc(r.chanspec)+
++        (i===0?" <span class=\"badge best\"><#RWIF_41#></span>":"")+
++        (iscur?" <span class=\"badge warn\"><#RWIF_52#></span>":"")+"</td>"+
+       "<td class=\"num\" style=\""+(+r.nopkt>=20?"color:var(--crimson)":"")+"\">"+(+r.nopkt).toFixed(0)+"</td>"+
+       "<td class=\"num\">"+(+r.txop).toFixed(0)+"</td>"+
+       "<td class=\"num\">"+esc(r.glitch)+"</td>"+
++      "<td class=\"num\">"+(r.knoise!=null?(+r.knoise).toFixed(0):"&ndash;")+"</td>"+
+       "<td class=\"num\">"+(+r.score).toFixed(0)+"</td></tr>";
+   }
+   document.querySelector("#scantable tbody").innerHTML=rows;
+   SCANBEST=res.length?res[0]:null;
+-  document.getElementById("scanpin").disabled=!(SCANDATA.done&&SCANBEST&&SCANBEST.chanspec);
++  var have=SCANDATA.done&&res.length>0;
++  document.getElementById("scanpin").disabled=!(have&&SCANBEST&&SCANBEST.chanspec);
++  document.getElementById("scanprint").disabled=!have;
++  document.getElementById("scandl").disabled=!have;
+ }
+ function scanPin(){
+   var six=six_band();
+   if(!six||!SCANBEST||!SCANBEST.chanspec) return;
+-  if(!confirm("<#RWIF_42#> "+SCANBEST.chanspec)) return;
++  var msg="<#RWIF_42#> "+SCANBEST.chanspec+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
++  var res=(SCANDATA&&SCANDATA.results)||[], ck=blockKey(curCs()), j;
++  for(j=0;j<res.length;j++) if(ck&&blockKey(res[j].chanspec)===ck){
++    msg+="\n<#RWIF_56#> "+res[j].chanspec+" (nopkt "+(+res[j].nopkt).toFixed(0)+"%)"; break;
++  }
++  if(!confirm(msg)) return;
+   submitApply(six.unit,SCANBEST.chanspec,bwCode(SCANBEST.chanspec));
++  showToast("<#RWIF_57#> "+SCANBEST.chanspec);
++}
++/* ---- downloadable / printable landscape report (self-contained HTML + SVG) ---- */
++function buildSpectrumSVG(res, cur){
++  if(!res.length) return "";
++  var W=1000, padL=8, padR=8, plotW=W-padL-padR, fMin=5925, fMax=7125, span=fMax-fMin;
++  function X(m){ return padL+(m-fMin)/span*plotW; }
++  var ck=blockKey(cur);
++  var items=res.map(function(r){ var b=blockRange(r.chanspec)||{loMHz:fMin,hiMHz:fMin}; return {r:r,b:b}; })
++    .sort(function(a,b){ return a.b.loMHz-b.b.loMHz; });
++  var gh=40+items.length*34, H=gh+34;
++  var s='<svg viewBox="0 0 '+W+' '+H+'" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial,sans-serif">';
++  s+='<text x="'+padL+'" y="18" font-size="12" fill="#333" font-weight="700">6 GHz band occupancy &mdash; each bar is one 320 MHz channel, placed by frequency</text>';
++  var f;
++  for(f=6000;f<=7100;f+=200){
++    var gx=X(f).toFixed(1);
++    s+='<line x1="'+gx+'" y1="30" x2="'+gx+'" y2="'+gh+'" stroke="#e6e6e6" stroke-width="1"/>';
++    s+='<text x="'+gx+'" y="'+(gh+16)+'" font-size="10" fill="#999" text-anchor="middle">'+(f/1000).toFixed(1)+'</text>';
++  }
++  s+='<text x="'+(W-padR)+'" y="'+(gh+16)+'" font-size="10" fill="#999" text-anchor="end">GHz</text>';
++  var i;
++  for(i=0;i<items.length;i++){
++    var r=items[i].r, b=items[i].b, y=36+i*34, x1=X(b.loMHz), x2=X(b.hiMHz), w=Math.max(8,x2-x1), np=+r.nopkt;
++    var col=np<10?"#1a7f4b":(np<25?"#d4a017":"#c1121f");
++    var isbest=(r===res[0]), iscur=ck&&blockKey(r.chanspec)===ck;
++    s+='<rect x="'+x1.toFixed(1)+'" y="'+y+'" width="'+w.toFixed(1)+'" height="26" rx="4" fill="'+col+'" fill-opacity="0.88" stroke="'+(isbest?"#111":"#0003")+'" stroke-width="'+(isbest?2:1)+'"/>';
++    s+='<text x="'+(x1+7).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#fff" font-weight="600">'+esc(r.chanspec)+(isbest?" ★":"")+(iscur?" (current)":"")+'</text>';
++    s+='<text x="'+(x2-7).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#fff" font-weight="700" text-anchor="end">'+np.toFixed(0)+'%</text>';
++  }
++  return s+'</svg>';
++}
++function buildReportHTML(){
++  var res=(SCANDATA&&SCANDATA.results)||[], cur=curCs()||"-", ck=blockKey(cur);
++  var when=new Date().toLocaleString(), terr=(ST&&ST.territory)||"-";
++  var best=res.length?res[0].chanspec:"-", rows="", i;
++  for(i=0;i<res.length;i++){
++    var r=res[i], iscur=ck&&blockKey(r.chanspec)===ck;
++    var cls=r.nopkt<10?"clean":(r.nopkt<25?"mod":"dirty");
++    rows+="<tr class=\""+(i===0?"best ":"")+(iscur?"cur":"")+"\"><td>"+(i+1)+(i===0?" ★":"")+"</td>"+
++      "<td class=\"m\">"+esc(r.chanspec)+(iscur?" (current)":"")+"</td>"+
++      "<td class=\"m\">"+freqSpan(r.chanspec)+"</td>"+
++      "<td class=\"n "+cls+"\">"+(+r.nopkt).toFixed(0)+"%</td>"+
++      "<td class=\"n\">"+(+r.txop).toFixed(0)+"%</td>"+
++      "<td class=\"n\">"+esc(r.glitch)+"</td>"+
++      "<td class=\"n\">"+(r.knoise!=null?(+r.knoise).toFixed(0)+" dBm":"-")+"</td>"+
++      "<td class=\"n\">"+(+r.score).toFixed(0)+"</td></tr>";
++  }
++  return '<!doctype html><html><head><meta charset="utf-8"><title>Reaper 6 GHz Channel Scan</title>'+
++    '<style>@page{size:landscape;margin:12mm}'+
++    'body{font-family:Segoe UI,Arial,sans-serif;color:#111;margin:0;padding:18px}'+
++    'h1{font-size:19px;margin:0 0 2px}.sub{color:#555;font-size:12px;margin-bottom:12px}'+
++    '.meta{font-size:12px;margin-bottom:12px}.meta b{color:#000}'+
++    'table{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px}'+
++    'th,td{border:1px solid #ccc;padding:5px 8px;text-align:left}th{background:#f2f2f2}'+
++    'td.n{text-align:right}td.m{font-family:Consolas,monospace}'+
++    'tr.best td{font-weight:700}tr.cur td{background:#fff7e6}'+
++    '.clean{color:#1a7f4b}.mod{color:#b5851f}.dirty{color:#c1121f}'+
++    '.legend{font-size:11px;margin:10px 0}.legend span{margin-right:16px}'+
++    '.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}'+
++    'footer{margin-top:14px;color:#888;font-size:10px}</style></head><body>'+
++    '<h1>Reaper &mdash; 6 GHz Channel Quality Scan</h1>'+
++    '<div class="sub">Auto Scan of the 6 GHz 320 MHz channels, ranked by cleanliness (lower score = cleaner).</div>'+
++    '<div class="meta"><b>Generated:</b> '+esc(when)+' &nbsp;&middot;&nbsp; <b>Region:</b> '+esc(terr)+
++      ' &nbsp;&middot;&nbsp; <b>Current channel:</b> '+cur+' &nbsp;&middot;&nbsp; <b>Recommended:</b> '+best+'</div>'+
++    buildSpectrumSVG(res, cur)+
++    '<div class="legend"><span><i class="sw" style="background:#1a7f4b"></i>Clean (nopkt &lt;10%)</span>'+
++      '<span><i class="sw" style="background:#d4a017"></i>Moderate (10&ndash;25%)</span>'+
++      '<span><i class="sw" style="background:#c1121f"></i>Dirty (&gt;25%)</span></div>'+
++    '<table><thead><tr><th>#</th><th>Channel</th><th>Frequency</th><th>nopkt</th><th>txop</th><th>glitch</th><th>noise</th><th>score</th></tr></thead><tbody>'+
++    rows+'</tbody></table>'+
++    '<footer>Reaper firmware &middot; on-router chanim_stats (~5 samples/channel) &middot; nopkt = undecodable-energy occupancy; txop = free airtime; lower score = cleaner.</footer>'+
++    '</body></html>';
++}
++function printReport(){
++  if(!(SCANDATA&&SCANDATA.results&&SCANDATA.results.length)) return;
++  var f=document.getElementById("reportframe"); if(!f) return;
++  var d=f.contentWindow.document;
++  d.open(); d.write(buildReportHTML()); d.close();
++  setTimeout(function(){ try{f.contentWindow.focus();f.contentWindow.print();}catch(e){} },350);
++}
++function downloadReport(){
++  if(!(SCANDATA&&SCANDATA.results&&SCANDATA.results.length)) return;
++  var blob=new Blob([buildReportHTML()],{type:"text/html"});
++  var a=document.createElement("a"); a.href=URL.createObjectURL(blob);
++  a.download="reaper_6g_scan.html";
++  document.body.appendChild(a); a.click();
++  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},2000);
+ }
+ 
+ /* ---- Passive Channel Monitor (rchqd): opt-in, read-only, advises only ---- */
+@@ -551,7 +711,18 @@ function chqRenderLive(d){
+ window.RW={lock:lock,unlock:unlock};
+ window.capStart=capStart; window.capStop=capStop; window.capDownload=capDownload; window.capClear=capClear;
+ window.scanStart=scanStart; window.scanStop=scanStop; window.scanPin=scanPin;
++window.printReport=printReport; window.downloadReport=downloadReport;
+ window.chqToggle=chqToggle;
++
++/* stop a running sweep immediately if the tab is closed or navigated away, so
++ * the radio is not left bouncing unattended (the heartbeat is the crash backstop) */
++function scanUnloadStop(){
++  if(SCANPOLL && navigator.sendBeacon){
++    try{ navigator.sendBeacon("/reaper_wifi.cgi?action=scanstop"); }catch(e){}
++  }
++}
++window.addEventListener("pagehide",scanUnloadStop);
++window.addEventListener("beforeunload",scanUnloadStop);
+ fetchStatus();
+ setInterval(function(){if(!CAPPOLL) fetchStatus();},30000);
+ })();
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 380dc32503..1cebb55ca1 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 77d2b681c4..a02f220c6a 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 864933ddea..490e5ccaad 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 85ce7bc06e..ed07ff5f9d 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 012ef447a0..3982cef054 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index a8c3d414e0..5e7ba4bff5 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5667,3 +5667,11 @@ RWIF_46=Disable monitor
+ RWIF_47=Monitor off
+ RWIF_48=degrading - consider Auto Scan
+ RWIF_49=looks clean
++RWIF_50=Print / Save PDF
++RWIF_51=Download report
++RWIF_52=current
++RWIF_53=min left
++RWIF_54=sec left
++RWIF_55=A capture is running - stop it first.
++RWIF_56=vs current:
++RWIF_57=Pinned to
+-- 
+2.25.1
+

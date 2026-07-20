@@ -1,0 +1,101 @@
+From 14aff19aa55c1b6855d990aaa5b547b4ee9bd9fb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 19 Jul 2026 16:02:56 -0400
+Subject: [PATCH] v1.6.5: QoS download - policer applies 90% headroom (safe by
+ design) + cake shaper 90% consistency
+
+---
+ release/src-rt/version.conf    |  2 +-
+ release/src/router/rc/qos.c    | 39 ++++++++++++++++++++++------------
+ release/src/router/www/EN.dict |  2 +-
+ 3 files changed, 27 insertions(+), 16 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 2e616f6a72..935537f091 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.6.4
++EXTENDNO=Reaper_v1.6.5
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 16b883a305..c3cf629dcb 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2960,6 +2960,13 @@ int start_cake(void)
+ 	ibw = strtoul(nvram_safe_get("qos_ibw"), NULL, 10);
+ 	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
+ 
++	/* v1.6.5: the bandwidth fields are the user's MEASURED speeds (same contract
++	 * as the type-11 policer). Shape cake at ~90%% so it owns the bottleneck - a
++	 * shaper at 100%% of measured leaves the standing queue at the ISP and defeats
++	 * the point. Consistent 10%% headroom across both download engines. */
++	if (ibw > 0) ibw -= ibw / 10;
++	if (obw > 0) obw -= obw / 10;
++
+ 	if (ibw == 0)
+ 		*ibwstr = '\0';
+ 	else
+@@ -3261,24 +3268,28 @@ int start_hwqos_classful(void)
+ 	if (obw > 0 && !nvram_match("qos_pshaper", "0"))
+ 		fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate %u\n", obw);
+ 
+-	/* v5: download cap - WAN ingress RX policer at qos_ibw (kbps, same units as
+-	 * the egress shapers; backed by an rdpa policer object, so the flow
+-	 * accelerator stays on). A policer has no queue: excess is dropped early and
+-	 * TCP/QUIC back off before the ISP's upstream buffer ever fills - which is
+-	 * why qos_ibw must be ~90%% of MEASURED downlink, NOT line rate: at 100%% the
+-	 * token bucket never refills and multi-stream TCP collapses in synchronized
+-	 * backoff (metal-observed 2026-07-15: rate=line gave ~1/6 throughput and
+-	 * aborted transfers at ANY bucket size; 90%% held full rated speed with
+-	 * LOWER ping). Burst = ~100ms of the configured rate (kbps * 12.5 = bytes
+-	 * per 100ms; 10ms also collapsed on metal - the bucket must ride out
+-	 * slow-start overshoot), floored at 64KB for low rates, capped at 100MB
+-	 * (rdpa_policer.h CBS legal range is 1K-100M). qos_ipolicer="0" kills. */
++	/* v5: download cap - WAN ingress RX policer (kbps, same units as the egress
++	 * shapers; backed by an rdpa policer object, so the flow accelerator stays
++	 * on). A policer has no queue: excess is dropped early and TCP/QUIC back off
++	 * before the ISP's upstream buffer ever fills. A policer at 100%% of real
++	 * downlink collapses multi-stream TCP in synchronized backoff (metal 2026-07-15:
++	 * rate=line gave ~1/6 throughput and aborted transfers at ANY bucket size;
++	 * ~90%% held full rated speed with LOWER ping).
++	 * v1.6.5: qos_ibw now means the user's MEASURED download speed, and the ~10%%
++	 * headroom is applied HERE (prate = 90%% of qos_ibw), not left to the user to
++	 * compute - entering a line-rate/measured figure is therefore safe by design
++	 * (this was the #1 misconfiguration: the field was left at line rate). Burst
++	 * = ~100ms of the APPLIED rate (kbps * 12.5 = bytes per 100ms; 10ms also
++	 * collapsed on metal - the bucket must ride out slow-start overshoot), floored
++	 * at 64KB, capped at 100MB (rdpa_policer.h CBS legal range 1K-100M).
++	 * qos_ipolicer="0" kills. */
+ 	ibw = strtoul(nvram_safe_get("qos_ibw"), NULL, 10);
+ 	if (ibw > 0 && !nvram_match("qos_ipolicer", "0")) {
+-		burst = ibw * 12 + ibw / 2;
++		unsigned int prate = ibw - ibw / 10;   /* apply 90%% headroom */
++		burst = prate * 12 + prate / 2;
+ 		if (burst < 65536) burst = 65536;
+ 		if (burst > 100000000) burst = 100000000;
+-		fprintf(f, "\ttmctl setportrxrate --devtype 0 --if $WANIF --shapingrate %u --burstsize %u\n", ibw, burst);
++		fprintf(f, "\ttmctl setportrxrate --devtype 0 --if $WANIF --shapingrate %u --burstsize %u\n", prate, burst);
+ 	}
+ 
+ 	fprintf(f, "\t;;\nstop)\n");
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index c2e6c2372c..2b4094ac9c 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress at the download figure above, so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. <b>The figure must be ~90% of what a speed test measures, never 100%:</b> at line rate the token bucket never refills and download throughput collapses (metal-verified). At 90% the cap holds full rated speed with lower ping. Burst sizing is automatic.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic.
+ RQOS_118=Wi-Fi downstream priority (WMM)
+ RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
+ RQOS_120=How does the download side work?
+-- 
+2.25.1
+

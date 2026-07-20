@@ -7,52 +7,72 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 > Applied security fixes are tracked in [`REAPER-FIXES.md`](REAPER-FIXES.md); the
 > per-version history is in [`CHANGELOG.md`](CHANGELOG.md); strategy/roadmap is in
 > [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md). Completed backlog items are
-> moved to the changelog and removed from this file (housekeeping pass 2026-07-17).
+> moved to the changelog and removed from this file (housekeeping pass 2026-07-18).
 
 ---
 
 ## Testing / validation owed
 
+- **v1.6.3 (RT-BE96U) — SHIPPED 2026-07-19, metal test owed.** rchqd degraded-event syslog
+  trail (edge-triggered per radio, throttled 15 min, recovery line at NOTICE; JSON/UI advisory
+  unchanged). MCP sha `100851e1…`, noMCP `a22707cf…`, `SHA256SUMS-v1.6.3.txt`; both variants
+  MAKE_EXIT=0, staged `rchqd` carries the new strings, built==shipped verified. **Verify on
+  device (needs `rchq_enable=1`):** a degraded 6 GHz channel logs one WARNING with chanspec +
+  avg nopkt, no repeat within 15 min, and a recovery NOTICE when it clears.
+- **v1.6.4 — SHIPPED 2026-07-19 (both variants), metal test owed.** Tree at commit
+  `0bf494a148` on `be96u-only`. MCP sha `7e1adcd7…`, noMCP `c126beb8…`, `SHA256SUMS-v1.6.4.txt`;
+  both variants `MAKE_EXIT=0`, built==shipped verified, staged fs confirms the audit strings, the
+  numeric-converted FirstBoot tokens, and the removed VPN cache-bust query. Batches four workstreams:
+  1. **VPN nested-frame theme 404 fix + palette sweep** (VPN Client/Server; see `CHANGELOG.md`).
+  2. **SDN/MLO expand cut-off fix** + **tablet/iPad viewport pan** (see `CHANGELOG.md`).
+  3. **i18n full pass** — `Reaper_FirstBoot.asp` tokenized (it postdated the earlier sweeps and
+     was 100% hardcoded English); 14 new `RFB_*` keys **translated across all 25 dicts** (reused
+     `CTL_secure` / `PM_Confirm_Pwd` / `FreeWiFi_Continue`); the other 6 Reaper pages re-verified
+     clean; dicts now 5692-key lockstep. Machine-assisted translation — native review owed.
+  4. **Pre-build security/quality audit** (2-agent adversarial scan of the v1.6.2→v1.6.4 delta,
+     reachability-disciplined). **No exploitable issues** (injection / XSS / memory-corruption
+     all clean). Fixes applied: `rchqd` logging decoupled from the JSON file (full RAM disk can no
+     longer silence it), torn-write can't clobber the last good snapshot, radio state closed out
+     on wireless restart, log throttle moved to `CLOCK_MONOTONIC`, per-tick `wl` fork load halved;
+     web-side ResizeObservers released on frame navigation, tablet width-grow made convergent; a
+     permanent lint rule added for JS-context dict keys.
+  - **Verify on device (v1.6.4):** VPN Client (all three protocol tabs) + VPN Server colors
+    (buttons, checkboxes, focus rings, jade connected-status); a wide page (e.g. Advanced Wireless)
+    pans on iPad in portrait + landscape and the dashboard is unaffected; the SDN cut-off repro
+    (select a network, Advanced collapsed, expand General) plus the MLO page; the first-boot wizard
+    renders in a non-English language; and a factory-reset flow still completes. Plus the v1.6.3
+    rchqd syslog check.
+
 - **v1.6.0 metal test (RT-BE96U).** **Built + shipped + FLASHED 2026-07-17** (both variants on the
   `reaper-firmware/` ladder: MCP sha `622b6ec2…`, noMCP `4d47f00c…`, hashes in
-  `SHA256SUMS-v1.6.0.txt`). Includes all of v1.5.9, so it supersedes the v1.5.9 RT-BE96U test
-  below. **Confirmed on hardware:** the Wireless diagnostics page enumerates all three radios on
+  `SHA256SUMS-v1.6.0.txt`). Includes all of v1.5.9 (Traffic Analyzer resilience fix + shell
+  master-scrollbar theme), so the earlier standalone v1.5.9 RT-BE96U metal test is retired.
+  **Confirmed on hardware:** the Wireless diagnostics page enumerates all three radios on
   6 GHz and channel **Lock/Unlock is live** (used it, plus the on-router `chanim` capture, to run
   the 6 GHz investigation below); dashboard live; 6 GHz reaches **1 Gbps+** on a clean 320 MHz
-  channel. **Still owed:** (a) **AI Advisor → "Save settings" persists** on hardware (port /
-  timeout / client-pin survive a re-open — the one behavior the fix could not prove off-metal; a
-  rejected save now shows an error instead of a false "saved"). (b) **Non-English UI spot-check** —
+  channel. **Still owed:** (a) **Non-English UI spot-check** —
   switch language and confirm the rail clock shows localized weekday + month names, the QoS /
   Traffic / Advisor help prose is translated, and an over-long label truncates with a hover
-  tooltip showing the full word (the `.rtip` mechanism). (c) **Traffic Analyzer under load** after
+  tooltip showing the full word (the `.rtip` mechanism). (b) **Traffic Analyzer under load** after
   the collector perf edits (per-device / per-network / top-talker rows populate; live rates sane;
   no freeze). *The 24-language translation is machine-assisted; native review is recommended
   before any public release.*
 
-- **6 GHz 320 MHz latency "sawtooth" — RESOLVED (environmental, not firmware) 2026-07-17.** A long-
-  running RT-BE96U symptom (a clean ~18 s latency ramp to ~128 ms then snap-back, 0% loss, only at
-  320 MHz, only on 6 GHz) was chased to ground on metal using the v1.5.8/v1.6.0 Wireless page +
-  an on-router `chanim_stats` capture. Findings, in order: the 10G-WAN-PHY hypothesis was
-  **refuted** (unplugging the 10G WAN did not change the ~50% `nopkt` occupancy); a **clean 320 MHz
-  channel exists** (`6g69/320-1`: `nopkt` ~1 %, `txop` ~99 %) while low/high blocks sat at ~50 %,
-  proving the interference is **localized external RF**, not the radio bonding to 320; and the
-  likely **physical root cause is PC-side RFI** — the owner's Wi-Fi antenna feedline was draped
-  across a USB 3.0 hub + a patched audio wire (broadband emitter coupling into the receive path),
-  which also fits the band-specificity and why a phone never reproduced it. **Router / wl driver /
-  acsd all exonerated — nothing to patch.** Fix = channel selection (park 6 GHz in a clean window,
-  e.g. ch 69 / 320, held by the Lock feature) and reroute the feedline away from the emitters. The
-  earlier 10G-WAN auto-guard idea is **dropped** (built on the wrong trigger). [resolved]
-
-- **v1.5.9 metal test.** **Built + shipped 2026-07-17** (both variants on the
-  `reaper-firmware/` ladder: MCP image sha `f1e21d19…`, noMCP `a79c68f0…`, hashes in
-  `SHA256SUMS-v1.5.9.txt`) — awaiting flash. The Traffic Analyzer resilience fix + the shell
-  master-scrollbar theme (see `CHANGELOG.md` v1.5.9); full 6-point checklist in
-  `reaper-firmware/METAL-TEST-v1.5.9.md`. Highlights: (a) far-right scrollbar is
-  black/crimson on shell-framed pages (e.g. Network Map); (b) Analyzer Live view rides
-  through an apply / Wi-Fi drop — pill flips to amber "No response", then recovers on its
-  own (no more permanent freeze); (c) history windows visibly refresh (~30 s); (d) Live view
-  survives a laptop sleep/resume; (e) second-language spot-check of the new "No response"
-  string (`RTRF_72`; English in all dicts for now).
+- **6 GHz 320 MHz latency "sawtooth" — RESOLVED (environmental, not firmware).** A long-running
+  RT-BE96U symptom (a clean ~18 s latency ramp to ~128 ms then snap-back, 0% loss, only at 320 MHz,
+  only on 6 GHz) was chased to ground on metal using the Wireless page + an on-router
+  `chanim_stats` capture. **Router / wl driver / acsd all exonerated — nothing to patch.** The
+  cause is **localized external RF**: a clean 320 MHz channel exists (`6g69/320-1`: `nopkt` ~1 %,
+  `txop` ~99 %) while the low/high blocks sit at ~50 % occupancy. Both the 10G-WAN-PHY theory
+  (unplugging the WAN didn't change `nopkt`) and the self-induced-320-bonding theory (a clean 320
+  channel exists) were **refuted on metal**. A PC-desk RFI source (antenna feedline draped over a
+  USB 3.0 hub + a patched audio wire) was the leading physical candidate, but a **2026-07-18
+  recheck found the low blocks dirty again after re-routing the feedline** — so the **emitter's
+  identity is still open**; what holds is that it is external and frequency-selective. **Fix =
+  channel selection** (park 6 GHz in a clean window, e.g. ch 69 / 320, held by the Lock feature).
+  The Channel-Quality **Auto Scan** feature (see *Features to add*) is the planned productization
+  of this fix. The 10G-WAN auto-guard idea is **dropped** (wrong trigger). [resolved — no firmware
+  change]
 
 - **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
   reset → wizard appears → no page/dashboard reachable until username+password set → forced
@@ -64,41 +84,23 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   [`CHANGELOG.md`](CHANGELOG.md) v1.5.5; it replaces the stock forced password gate and is
   the concrete mitigation for deferred finding **H15** (see the AA26-194A section below).
 
-  **EXPERIMENTAL / OPTIONAL**
-
-- **AI Advisor on hardware — remaining sub-tests.** Arming, LAN-only bind, token auth
-  (good→200 / wrong+missing→401), and secret redaction are **confirmed on metal** (v1.4.1,
-  re-confirmed v1.4.5 / v1.4.8). **Mode-B USB 3FA confirmed (2026-07-12):** enroll →
-  arm-requires-stick → **pull-stick-locks** — verified live (the endpoint went from HTTP 200
-  to *connection refused* within ~1s of pulling the key; the daemon's `cleanup()` removed the
-  firewall ACCEPT rule and deleted the session file). The same `cleanup()` path also covers
-  session-timeout teardown. **Still owed (physical / edge):** stick-without-the-enrolled-key
-  rejected (a blank/other stick — note a **copied `reaper.key` on another stick still
-  passes**; the USB check is content-hash based, not device-bound — see the hardware-token
-  item under Features to add), Disable teardown, reboot-comes-up-dark, WAN-side refused.
-  **v1.4.9 owed:** metal-test the new USB-binding (unenroll refused unless the enrolled stick
-  is inserted; lost key → factory-reset only) and the Advisor page now flipping to "locked"
-  within seconds of a key pull.
-  **v1.5.0a done:** the bundled **Packet Capture** tool was **removed** in v1.5.0a (no metal-test
-  owed). In an armed `_MCP` session the **network-diagnostics tier** is **metal-validated** (v1.5.0a,
-  on the RT-BE96U): consent-gated `net_*` tools, ping/traceroute/DNS/netstat return bounded output,
-  single-flight enforced, a private/off-LAN target is rejected, IPv6 loopback (`::1`) and `0.0.0.0`
-  are rejected, an option-shaped DNS name (leading `-`) is rejected, and each run writes a syslog
-  audit line. busybox probe applets resolve on-device.
-  **v1.5.x shelved:** a bounded bufferbloat (latency-under-load) probe for the diagnostics tier.
+*(AI Advisor backlog retired 2026-07-19 per owner: functional as shipped — arming, LAN-only
+bind, token auth, redaction, Mode-B USB 3FA, and the network-diagnostics tier are all
+metal-confirmed; the remaining physical/edge sub-tests are waived. The Advisor is expected to
+be expanded further for public use; that work will be scoped fresh when it starts. The
+optional hardware-token (FIDO2/U2F) anti-clone idea is preserved in project memory.)*
 
 ## UI / UX polish
 
-- **VPN submenu colors.** A few off-theme colors still need correcting. 
 - **Restart/Boot Effciency** Investigate why the wifi and router reboots several times and 
   takes 10 min to stablize. Potential reordering of boot could make this quicker.
-- **Mobile Compatibility** Need to work on the UI so that it looks clean in a mobile format like and iPad.
-- **Shell cut Off** SDN.asp gets cut off when a network is selected and "Advanced Settings" is not 
-  exapnded then you try to expand just the general settings.
+- **WD** REAPER Wireless Diagnostics need to be reworked for visual clarity and information.
 
-*(Done in v1.6.0, moved to `CHANGELOG.md`: the full-firmware DICT translation pass +
-truncate/hover-tooltip mechanism, the AI Advisor Refresh-button move, and the Login/Logout
-favicon.)*
+*(Fixed items moved to `CHANGELOG.md`: the first-boot wizard language selector — v1.6.6; VPN
+submenu colors, tablet/iPad layout, and the SDN page cut-off — all v1.6.4; Wireless Diagnostics
+reports follow the router language via the v1.6.0/v1.6.1 page tokenization; and the v1.6.0 DICT
+translation pass + truncate/hover-tooltip mechanism, the AI Advisor Refresh-button move, and the
+Login/Logout favicon.)*
 
 ## Known issues (cause identified)
 
@@ -121,17 +123,17 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
 *(The primary credential item — the unbypassable first-boot wizard — shipped in v1.5.5; see
 `CHANGELOG.md` and the metal-test entry at the top of this file.)*
 
-- **SNMP hardening — un-shelve.** **[owed]** The primary advisory vector is SNMP with
-  default/common community strings. Ensure the shipped default is **off / LAN-only**, reject
-  default and common community strings, **disable SNMPv1/v2**, and prefer **SNMPv3 with
-  `authPriv`**. `RTCONFIG_SNMPD=y` in the build — verify the current default state. This
-  revisits the SNMPv3 line currently **[shelved]** under *Packages* / `PACKAGE-UPDATES.md`;
-  the advisory is grounds to re-evaluate that "LAN-only risk accepted" decision.
+- **SNMP hardening.** Default state **verified off** in the live audit 2026-07-19
+  (`snmpd_enable=0`, `snmpd_wan=0`, no snmpd listening) — the primary advisory vector is closed
+  by default. Remaining (optional, **[shelved]**): the SNMPv3-`authPriv` / reject-common-strings
+  enhancement for users who *enable* SNMP (revisits the shelved SNMPv3 line in
+  `PACKAGE-UPDATES.md`). Full posture in `LIVE-AUDIT-2026-07-19.md`.
 
-- **WAN-side management-exposure audit.** **[owed]** The advisory targets internet-reachable
-  devices. Verify that the web UI, SSH, Telnet, SNMP, and TFTP are all **OFF on the WAN
-  interface by default**, and that no admin/management daemon listens on the WAN out of the
-  box. Document the default posture per service.
+- **WAN-side management-exposure audit — DONE (compliant), see `LIVE-AUDIT-2026-07-19.md`.** The
+  live audit confirmed the web UI, SSH (`sshd_enable=2` LAN-only), Telnet, SNMP, FTP, and TFTP are
+  all off or LAN-only, WAN INPUT default-denies with WAN ping dropped, no port-forwards/DMZ, UPnP
+  off on WAN, and IPv6 fully disabled with an ip6tables DROP policy. No WAN-reachable management
+  surface. Posture documented per service in the report.
 
 - **Detection / logging for the advisory TTPs.** Surface and log config-exfil attempts and
   anomalous SNMP polling (spoofed-source reads). Ties into the **Remote syslog push/fetch**
@@ -144,17 +146,17 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
   systems — most SIEM/analytics pipelines are push-based.
 - **NIST-grade auditing.** Consider adding audit capabilities aligned to a NIST
   baseline.
-- **AI Advisor — hardware-token USB factor (FIDO2 / U2F / smartcard, e.g. a YubiKey).**
-  **[optional — NOT committed; reminder of optionality]** The current USB factor is a
-  *carried secret file* (`reaper.key`, verified by SHA-256), so it is copyable — anyone who
-  can read the enrolled stick can clone it and the copy works (including for the v1.4.9
-  binding, which checks possession of the key *file*). A hardware token doing
-  challenge-response, where the private key never leaves the device, would make the third
-  factor **clone-proof**: `rmcpd` would verify a signature instead of a file hash. Larger
-  change (different hardware assumption + a crypto protocol in `rmcpd`); binding to a USB
-  serial/VID/PID is only marginal (device-reported, spoofable). Recorded so the option is not
-  lost — decide later.
-- **QoS v6?** Look into further QoS improvements.
+- **QoS download — latency-under-load baseline (optional).** The v1.6.5 download-cap footgun fix
+  and cake headroom consistency shipped (see `CHANGELOG.md`); the per-class-HW-download question was
+  investigated and closed as not-feasible/already-optimal (full analysis in
+  [`QOS-DOWNLOAD-INVESTIGATION.md`](QOS-DOWNLOAD-INVESTIGATION.md)). The one open, optional item is a
+  **latency-under-load measurement** (a download-saturation run with a concurrent ping) to quantify
+  the bufferbloat baseline and confirm the policer headroom holds full rated speed with lower ping.
+  Needs an active test; no wireless restart required.
+
+*(Done in v1.6.1, moved to `CHANGELOG.md`: the Channel-Quality **Auto Scan** + downloadable
+landscape report, the **Clear-results** button, and the opt-in passive channel-health daemon
+`rchqd`.)*
 
 ## Code-scan findings — v1.5.9 6-agent sweep — SHIPPED in v1.6.0 (2026-07-17)
 
@@ -194,20 +196,31 @@ onto the sibling branches is a clean shared rung when those are next bumped.)
 
 ## Platform / expansion
 
-- **RT-BE86U — brought to v1.5.9, built + shipped (both variants). [metal test owed].**
-  The v1.5.2..v1.5.9 stack was cherry-picked onto the `rt-be86u` branch (from v1.5.0e)
-  with zero conflicts; both variants built (`MAKE_EXIT=0`) and shipped to the
-  `reaper-firmware/` ladder (MCP sha `3d48f3e0…`, noMCP `4b40985d…`), folded into the
-  16-image `SHA256SUMS-v1.5.9.txt`. **All four models (RT-BE96U, GT-BE98, GT-BE98_PRO,
-  RT-BE86U) are now at v1.5.9.** No RT-BE86U metal test yet — build-validated only. Note
-  the RT-BE86U-specific `LnxHtmlEnumDict` SIGSEGV on Captive-Portal templates is
-  non-fatal (valid images) but may leave those pages' lang-pack dict incomplete — spot-
-  check before a metal test.
-- **RT-BE88U port — build-validated (v1.5.0e, both variants).** First-ever RT-BE88U build:
-  blobs restored, target.mak de-clouded, dual-band 10G/SFP+. Build-only, **no metal test**.
-  Model-specific build note: BE88U uniquely sets `BCM_JUMBO_FRAME=y` + a NEW
-  `BCM_MAX_MTU_SIZE` kernel symbol, so it must be built **clean, single-pass** (the standard
-  two-pass model script re-triggers kernel `syncconfig` on that NEW symbol and errors).
+**Model version status (2026-07-18):**
+- **v1.6.2** — RT-BE96U (shipped; Auto Scan **all bands** + report + passive monitor; 6 GHz
+  Auto Scan metal-validated, 5/2.4 GHz metal test owed).
+- **v1.6.0** — RT-BE88U (shipped), RT-BE86U (shipped). RT-BE96U now at v1.6.2.
+- **v1.5.9** — GT-BE98, GT-BE98_PRO (v1.6.x fold pending; metal test owed — see *Known issues —
+  ported models* below).
+
+- **RT-BE86U — brought to v1.6.0, built + shipped (both variants). [metal test owed].** The v1.6.0
+  rung (hardening + full i18n; all model-agnostic shared source) was already committed on the
+  `rt-be86u` branch (`40ff2e0b39`) — no cherry-pick needed. Both variants built clean
+  (`MAKE_EXIT=0`) from `build_model_v160.sh` and shipped to the `reaper-firmware/` ladder (MCP sha
+  `7ab959a0…`, noMCP `43ced442…`), folded into `SHA256SUMS-v1.6.0.txt` (12 images verify OK).
+  Safety-tagged `rt-be86u-pre-v160`. No metal test planned — build-validated only. Note the
+  RT-BE86U-specific `LnxHtmlEnumDict` SIGSEGV on Captive-Portal templates is non-fatal (valid
+  images) but may leave those pages' lang-pack dict incomplete — spot-check before a metal test.
+  **No `target.mak` jumbo issue** (BE86U does not kernel-enable jumbo frames, unlike BE88U).
+- **RT-BE88U — brought to v1.6.0, built + shipped (both variants). [metal test owed].** Clean start
+  from v1.5.0e (first-ever BE88U build: blobs restored, target.mak de-clouded, dual-band 10G/SFP+),
+  advanced to v1.6.0. **Model-specific build note (regression watch):** BE88U uniquely
+  kernel-enables jumbo frames — its `rt-be88u` `target.mak` block needs the full
+  `EXTRA_KERNEL_CONFIGS="BCM_JUMBO_FRAME=y BCM_MAX_MTU_SIZE=10240 CONFIG_BCM_IGNORE_BRIDGE_MTU=y"`
+  (matching RT-BE96U). The stock line was half-written (`BCM_MAX_MTU_SIZE` present as a kernel
+  symbol but unanswered), which hangs the two-pass build at kernel `syncconfig` on the new-value
+  prompt; completing the line fixed it. Jumbo frames matter for NAS/SMB use, so this is a core
+  function, not cosmetic. No metal test yet.
 
 ## Known issues — ported models (GT-BE98 / siblings)
 

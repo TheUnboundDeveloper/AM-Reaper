@@ -1,0 +1,1734 @@
+From acbf51f8660c7a7b607b9083f71f23f945f36a82 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 18 Jul 2026 18:06:55 -0400
+Subject: [PATCH] v1.6.1: Channel-Quality Auto Scan + Clear button + passive
+ rchqd monitor
+
+Wireless page (Reaper_Wireless.asp) + do_reaper_wifi_cgi:
+- Clear button resets the capture results view without a page reload.
+- Auto Scan: user-initiated 6 GHz sweep. Pins each PSC-anchored 320 MHz
+  candidate through the existing nvram + restart_wireless path (a live
+  wl chanspec set does not stick on a running AP), samples chanim_stats,
+  ranks by cleanliness, then restores the pre-scan channel; the user clicks
+  Pin best to commit the winner. This is the only httpd path that changes a
+  channel - deliberately disruptive, warned before it runs.
+- New CGI actions scanstart/scanstop/scandata + chq/chqset; status now
+  reports scan + chq_on.
+
+rchqd (new daemon): opt-in (nvram rchq_enable, default 0), READ-ONLY passive
+channel-quality monitor. Samples chanim_stats on each radio's CURRENT channel
+only (no retune, no restart_wireless), publishes /tmp/reaper_chq/live.json and
+raises a soft "degraded" advisory whose remedy is the user running Auto Scan.
+Wired into services.c (boot / rc dispatcher / teardown), rc.h, defaults.c, and
+the router Makefile (obj-y + install target), modeled on rtrafd.
+
+i18n: RWIF_29-49 added (English) across all 25 language dicts, lockstep.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                |   2 +-
+ release/src/router/Makefile                |   7 +
+ release/src/router/httpd/web.c             | 311 ++++++++++++++++++++-
+ release/src/router/rc/rc.h                 |   2 +
+ release/src/router/rc/services.c           |  28 ++
+ release/src/router/rchqd/Makefile          |  55 ++++
+ release/src/router/rchqd/rchqd.c           | 180 ++++++++++++
+ release/src/router/shared/defaults.c       |   3 +
+ release/src/router/www/BR.dict             |  21 ++
+ release/src/router/www/CN.dict             |  21 ++
+ release/src/router/www/CZ.dict             |  21 ++
+ release/src/router/www/DA.dict             |  21 ++
+ release/src/router/www/DE.dict             |  21 ++
+ release/src/router/www/EN.dict             |  21 ++
+ release/src/router/www/ES.dict             |  21 ++
+ release/src/router/www/FI.dict             |  21 ++
+ release/src/router/www/FR.dict             |  21 ++
+ release/src/router/www/HU.dict             |  21 ++
+ release/src/router/www/IT.dict             |  21 ++
+ release/src/router/www/JP.dict             |  21 ++
+ release/src/router/www/KR.dict             |  21 ++
+ release/src/router/www/MS.dict             |  21 ++
+ release/src/router/www/NL.dict             |  21 ++
+ release/src/router/www/NO.dict             |  21 ++
+ release/src/router/www/PL.dict             |  21 ++
+ release/src/router/www/RO.dict             |  21 ++
+ release/src/router/www/RU.dict             |  21 ++
+ release/src/router/www/Reaper_Wireless.asp | 177 +++++++++++-
+ release/src/router/www/SL.dict             |  21 ++
+ release/src/router/www/SV.dict             |  21 ++
+ release/src/router/www/TH.dict             |  21 ++
+ release/src/router/www/TR.dict             |  21 ++
+ release/src/router/www/TW.dict             |  21 ++
+ release/src/router/www/UK.dict             |  21 ++
+ 34 files changed, 1286 insertions(+), 4 deletions(-)
+ create mode 100644 release/src/router/rchqd/Makefile
+ create mode 100644 release/src/router/rchqd/rchqd.c
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 99b53d1146..20ac6206bd 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.6.0
++EXTENDNO=Reaper_v1.6.1
+ 
+ RCNO=0
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 2a292eca37..92d544ddab 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1199,6 +1199,8 @@ endif
+ endif
+ # reaper v1.3.0: traffic collector (per-client/per-net/per-class history + probe)
+ obj-y += rtrafd
++# reaper v1.6.1: passive channel-quality monitor (opt-in nvram rchq_enable, read-only)
++obj-y += rchqd
+ # reaper v1.4.0: read-only LAN MCP advisor (off by default, never boot-started)
+ obj-$(RTCONFIG_REAPER_MCP) += rmcpd json-c
+ ifeq ($(RTCONFIG_DSL),y)
+@@ -6397,6 +6399,11 @@ rtrafd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rtrafd-install:
+ 	$(MAKE) -C rtrafd INSTALLDIR=$(INSTALLDIR)/rtrafd install
+ 
++rchqd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
++
++rchqd-install:
++	$(MAKE) -C rchqd INSTALLDIR=$(INSTALLDIR)/rchqd install
++
+ rmcpd: nvram$(BCMEX)$(EX7) shared json-c mssl $(if $(BCM_502L07P2),ethctl_lib)
+ 
+ rmcpd-install:
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 62281d3f89..bf1711b142 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21708,7 +21708,13 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ #define RWIFI_DIR	"/tmp/reaper_wifi"
+ #define RWIFI_CSV	RWIFI_DIR "/cap.csv"
+ #define RWIFI_RUN	RWIFI_DIR "/run"
++#define RWIFI_SCAN	RWIFI_DIR "/scan.json"	/* auto-scan progress + ranked results */
++#define RWIFI_SRUN	RWIFI_DIR "/scanrun"	/* auto-scan run token; unlink = abort */
++#define RWIFI_CHQ	"/tmp/reaper_chq/live.json"	/* rchqd passive monitor snapshot */
+ #define RWIFI_MAXUNIT	3	/* quad-band ceiling; absent units have no wlN_ifname and are skipped */
++#define RWIFI_SCAN_MAX		5	/* candidate channels a sweep will visit */
++#define RWIFI_SCAN_DWELL	5	/* chanim samples averaged per candidate (s) */
++#define RWIFI_SCAN_SETTLE	25	/* max wait for a restart to land on the chanspec (s) */
+ 
+ static int rwifi_ifname(int unit, char *buf, size_t blen)
+ {
+@@ -21823,6 +21829,213 @@ static void rwifi_worker(int unit, int secs)
+ 	_exit(0);
+ }
+ 
++/* ---- Auto Scan: sweep the 6 GHz 320 MHz channels, rank by cleanliness ----
++ *
++ * This is the ONLY httpd path that changes a channel. It pins each candidate
++ * through the same nvram + restart_wireless flow the Lock button uses (a live
++ * "wl chanspec" set does not stick on a running AP - wlconf re-applies at radio
++ * init), samples chanim_stats on it, then RESTORES the pre-scan channel. It is
++ * deliberately disruptive (a wireless restart per candidate) and user-initiated
++ * only; the page warns before starting. nvram is set in RAM (never committed),
++ * so nothing survives a reboot and only the user's explicit "Pin best" - which
++ * goes through the normal apply/commit flow - makes a choice permanent. */
++
++struct rwifi_scres { char cs[24]; int nopkt, txop, glitch, score; };
++
++static int rwifi_is_psc(int ch)
++{
++	static const int psc[] = { 5,21,37,53,69,85,101,117,133,149,165,181,197,213,229,0 };
++	int i;
++	for (i = 0; psc[i]; i++)
++		if (psc[i] == ch)
++			return 1;
++	return 0;
++}
++
++/* distinct PSC-anchored 6 GHz 320 MHz chanspecs the driver reports as valid,
++ * spread across the band if there are more than `max` of them */
++static int rwifi_scan_candidates(const char *ifname, char cand[][24], int max)
++{
++	char cmd[128], line[256], all[64][24], tok[24];
++	FILE *p;
++	int nall = 0, i, ch;
++
++	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspecs 2>/dev/null", ifname);
++	if ((p = popen(cmd, "r")) == NULL)
++		return 0;
++	while (fgets(line, sizeof(line), p) && nall < 64) {
++		if (sscanf(line, "%23s", tok) != 1)
++			continue;
++		if (!strstr(tok, "/320"))
++			continue;
++		if (sscanf(tok, "6g%d/", &ch) != 1 || !rwifi_is_psc(ch))
++			continue;
++		for (i = 0; i < nall; i++)
++			if (strcmp(all[i], tok) == 0)
++				break;
++		if (i < nall)
++			continue;
++		snprintf(all[nall], 24, "%s", tok);
++		nall++;
++	}
++	pclose(p);
++	if (nall == 0)
++		return 0;
++	if (nall <= max) {
++		for (i = 0; i < nall; i++)
++			snprintf(cand[i], 24, "%s", all[i]);
++		return nall;
++	}
++	for (i = 0; i < max; i++)
++		snprintf(cand[i], 24, "%s", all[(int)((long)i * nall / max)]);
++	return max;
++}
++
++/* average chanim_stats over nsec on-channel samples; glitch is a max */
++static void rwifi_avg_sample(const char *ifname, int nsec, int *nopkt, int *txop, int *glitch)
++{
++	char cmd[128], line[512], chspec[32];
++	int i, gotn = 0, sN = 0, sT = 0, mg = 0;
++	int tx, inbss, obss, nocat, np, doze, to, goodtx, badtx, gl, badplcp, knoise, idle, busy;
++
++	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats 2>/dev/null", ifname);
++	for (i = 0; i < nsec; i++) {
++		FILE *p = popen(cmd, "r");
++		if (p) {
++			while (fgets(line, sizeof(line), p)) {
++				if (sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
++					chspec, &tx, &inbss, &obss, &nocat, &np, &doze, &to,
++					&goodtx, &badtx, &gl, &badplcp, &knoise, &idle, &busy) == 15) {
++					sN += np; sT += to; if (gl > mg) mg = gl; gotn++;
++					break;
++				}
++			}
++			pclose(p);
++		}
++		sleep(1);
++	}
++	if (gotn == 0) { *nopkt = 100; *txop = 0; *glitch = 0; return; }
++	*nopkt = sN / gotn; *txop = sT / gotn; *glitch = mg;
++}
++
++/* rank result indices by score ascending (lower score = cleaner) */
++static void rwifi_scan_rank(struct rwifi_scres *r, int n, int *order)
++{
++	int i, j, t;
++	for (i = 0; i < n; i++)
++		order[i] = i;
++	for (i = 0; i < n; i++)
++		for (j = i + 1; j < n; j++)
++			if (r[order[j]].score < r[order[i]].score) {
++				t = order[i]; order[i] = order[j]; order[j] = t;
++			}
++}
++
++static void rwifi_scan_publish(int done, int aborted, const char *cur, int idx, int total,
++			       struct rwifi_scres *r, int n, int *order)
++{
++	char tmp[80];
++	FILE *f;
++	int i, k;
++
++	snprintf(tmp, sizeof(tmp), "%s.tmp", RWIFI_SCAN);
++	if ((f = fopen(tmp, "w")) == NULL)
++		return;
++	fprintf(f, "{\"done\":%d,\"aborted\":%d,\"cur\":\"%s\",\"idx\":%d,\"total\":%d,\"results\":[",
++		done, aborted, cur ? cur : "", idx, total);
++	for (i = 0; i < n; i++) {
++		k = order[i];
++		fprintf(f, "%s{\"chanspec\":\"%s\",\"nopkt\":%d,\"txop\":%d,\"glitch\":%d,\"score\":%d}",
++			i ? "," : "", r[k].cs, r[k].nopkt, r[k].txop, r[k].glitch, r[k].score);
++	}
++	fprintf(f, "]}");
++	fclose(f);
++	rename(tmp, RWIFI_SCAN);
++}
++
++/* block until the radio reports `target` as its running chanspec, or timeout */
++static void rwifi_wait_chanspec(const char *ifname, const char *target, int maxsec)
++{
++	char run[64];
++	int i;
++	for (i = 0; i < maxsec; i++) {
++		sleep(1);
++		rwifi_run_chanspec(ifname, run);
++		if (strcmp(run, target) == 0) {
++			sleep(1);	/* small settle once it lands */
++			return;
++		}
++	}
++}
++
++static void rwifi_scan_worker(int unit)
++{
++	char ifname[32], orig_cs[64], orig_bw[16], nvk[32], cand[RWIFI_SCAN_MAX][24], cur[24];
++	struct rwifi_scres r[RWIFI_SCAN_MAX];
++	int order[RWIFI_SCAN_MAX];
++	int i, n = 0, ncand, aborted;
++	struct stat st;
++
++	if (!rwifi_ifname(unit, ifname, sizeof(ifname))) {
++		unlink(RWIFI_SRUN);
++		_exit(0);
++	}
++
++	snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
++	snprintf(orig_cs, sizeof(orig_cs), "%s", nvram_safe_get(nvk));
++	snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
++	snprintf(orig_bw, sizeof(orig_bw), "%s", nvram_safe_get(nvk));
++
++	ncand = rwifi_scan_candidates(ifname, cand, RWIFI_SCAN_MAX);
++	rwifi_scan_rank(r, 0, order);
++	if (ncand <= 0) {
++		rwifi_scan_publish(1, 0, "", 0, 0, r, 0, order);
++		unlink(RWIFI_SRUN);
++		_exit(0);
++	}
++
++	for (i = 0; i < ncand; i++) {
++		if (stat(RWIFI_SRUN, &st) != 0)
++			break;			/* user hit stop */
++		snprintf(cur, sizeof(cur), "%s", cand[i]);
++		rwifi_scan_rank(r, n, order);
++		rwifi_scan_publish(0, 0, cur, i + 1, ncand, r, n, order);
++
++		/* pin candidate (RAM only, no commit) and restart the radio */
++		snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
++		nvram_set(nvk, cand[i]);
++		snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
++		nvram_set(nvk, "6");
++		notify_rc("restart_wireless");
++		rwifi_wait_chanspec(ifname, cand[i], RWIFI_SCAN_SETTLE);
++
++		if (stat(RWIFI_SRUN, &st) != 0)
++			break;			/* stopped during the slow restart */
++
++		snprintf(r[n].cs, sizeof(r[n].cs), "%s", cand[i]);
++		rwifi_avg_sample(ifname, RWIFI_SCAN_DWELL, &r[n].nopkt, &r[n].txop, &r[n].glitch);
++		r[n].score = r[n].nopkt + (100 - r[n].txop) +
++			     (r[n].glitch > 200 ? 200 : r[n].glitch) / 10;
++		n++;
++		rwifi_scan_rank(r, n, order);
++		rwifi_scan_publish(0, 0, cur, i + 1, ncand, r, n, order);
++	}
++
++	aborted = (stat(RWIFI_SRUN, &st) != 0);
++
++	/* restore the pre-scan channel regardless of how we got here */
++	snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
++	nvram_set(nvk, orig_cs);
++	snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
++	nvram_set(nvk, orig_bw);
++	notify_rc("restart_wireless");
++
++	rwifi_scan_rank(r, n, order);
++	rwifi_scan_publish(1, aborted ? 1 : 0, "", ncand, ncand, r, n, order);
++	unlink(RWIFI_SRUN);
++	_exit(0);
++}
++
+ static void
+ do_reaper_wifi_cgi(char *url, FILE *stream)
+ {
+@@ -21842,8 +22055,9 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	if (strcmp(act, "status") == 0) {
+ 		websWrite(stream, "{\"territory\":");
+ 		rwifi_json_str(stream, nvram_safe_get("territory_code"));
+-		websWrite(stream, ",\"psc6g\":\"%d\",\"cap\":%d,\"bands\":[",
+-			nvram_get_int("psc6g"), stat(RWIFI_RUN, &st) == 0 ? 1 : 0);
++		websWrite(stream, ",\"psc6g\":\"%d\",\"cap\":%d,\"scan\":%d,\"chq_on\":%d,\"bands\":[",
++			nvram_get_int("psc6g"), stat(RWIFI_RUN, &st) == 0 ? 1 : 0,
++			stat(RWIFI_SRUN, &st) == 0 ? 1 : 0, nvram_get_int("rchq_enable"));
+ 		first = 1;
+ 		for (unit = 0; unit <= RWIFI_MAXUNIT; unit++) {
+ 			if (!rwifi_ifname(unit, ifname, sizeof(ifname)))
+@@ -21943,6 +22157,99 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	if (strcmp(act, "scanstart") == 0) {
++		unit = -1;
++		up = get_cgi("unit");
++		if (up && strlen(up) == 1 && up[0] >= '0' && up[0] <= '0' + RWIFI_MAXUNIT)
++			unit = up[0] - '0';
++		snprintf(tmp, sizeof(tmp), "wl%d_nband", unit < 0 ? 0 : unit);
++		/* auto-scan is 6 GHz only (nband 4); it retunes the radio */
++		if (unit < 0 || !rwifi_ifname(unit, ifname, sizeof(ifname)) ||
++		    nvram_get_int(tmp) != 4) {
++			websWrite(stream, "{\"err\":\"params\"}");
++			return;
++		}
++		mkdir(RWIFI_DIR, 0700);
++		/* refuse if a capture or another scan is still live */
++		if ((stat(RWIFI_RUN, &st) == 0 && time(NULL) - st.st_mtime < 400) ||
++		    (stat(RWIFI_SRUN, &st) == 0 && time(NULL) - st.st_mtime < 600)) {
++			websWrite(stream, "{\"err\":\"busy\"}");
++			return;
++		}
++		unlink(RWIFI_SRUN);
++		if ((f = fopen(RWIFI_SRUN, "w")) != NULL) {
++			fprintf(f, "%d\n", unit);
++			fclose(f);
++		}
++		unlink(RWIFI_SCAN);
++		pid = fork();
++		if (pid == 0) {
++			/* detach a grandchild so httpd reaps immediately */
++			if (fork() == 0) {
++				int fd;
++				setsid();
++				for (fd = 0; fd < 64; fd++)
++					close(fd);
++				fd = open("/dev/null", O_RDWR);
++				if (fd == 0) {
++					dup2(0, 1);
++					dup2(0, 2);
++				}
++				rwifi_scan_worker(unit);
++			}
++			_exit(0);
++		}
++		if (pid > 0)
++			waitpid(pid, NULL, 0);
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (strcmp(act, "scanstop") == 0) {
++		unlink(RWIFI_SRUN);
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (strcmp(act, "scandata") == 0) {
++		if ((f = fopen(RWIFI_SCAN, "r")) == NULL) {
++			websWrite(stream, "{\"done\":0,\"results\":[]}");
++			return;
++		}
++		while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++			fwrite(buf, 1, n, stream);
++		fclose(f);
++		return;
++	}
++
++	/* rchqd passive monitor: read its snapshot */
++	if (strcmp(act, "chq") == 0) {
++		if ((f = fopen(RWIFI_CHQ, "r")) == NULL) {
++			websWrite(stream, "{\"radios\":[]}");
++			return;
++		}
++		while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++			fwrite(buf, 1, n, stream);
++		fclose(f);
++		return;
++	}
++
++	/* enable/disable the passive monitor (opt-in, persisted); read-only daemon */
++	if (strcmp(act, "chqset") == 0) {
++		up = get_cgi("on");
++		if (up && up[0] == '1') {
++			nvram_set("rchq_enable", "1");
++			nvram_commit();
++			notify_rc("start_rchqd");
++		} else {
++			nvram_set("rchq_enable", "0");
++			nvram_commit();
++			notify_rc("stop_rchqd");
++		}
++		websWrite(stream, "{\"ok\":1,\"chq_on\":%d}", nvram_get_int("rchq_enable"));
++		return;
++	}
++
+ 	websWrite(stream, "{\"err\":\"action\"}");
+ }
+ 
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index b97ecf61c0..1badd4c337 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2975,6 +2975,8 @@ extern void stop_httpd(void);
+ extern void stop_rstats(void);
+ extern void stop_rtraf(void);	/* reaper v1.3.0 traffic collector */
+ extern void start_rtraf(void);
++extern void stop_rchqd(void);	/* reaper v1.6.1 passive channel-quality monitor */
++extern void start_rchqd(void);
+ #ifdef RTCONFIG_REAPER_MCP
+ extern void stop_rmcp(void);	/* reaper v1.4.0 read-only MCP advisor */
+ extern void start_rmcp(void);	/* NOTE: never called from the boot path */
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 34abe03484..5c57722aab 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7107,6 +7107,7 @@ stop_misc(void)
+ 	stop_snooper();
+ 	stop_rstats();
+ 	stop_rtraf();	/* reaper v1.3.0 */
++	stop_rchqd();	/* reaper v1.6.1 */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	stop_rmcp();	/* reaper v1.4.0 - ensure the advisor never survives a service teardown */
+ #endif
+@@ -7627,6 +7628,27 @@ start_rtraf(void)
+ 	xstart("rtrafd");
+ }
+ 
++/* reaper v1.6.1: passive channel-quality monitor. Opt-in (nvram rchq_enable),
++ * read-only - it samples chanim_stats on each radio's current channel and
++ * publishes /tmp/reaper_chq/live.json; it NEVER changes a channel or restarts
++ * wireless. Safe to run always-on because on-channel chanim reads do not
++ * disturb clients. It also self-exits if rchq_enable is later cleared. */
++void
++stop_rchqd(void)
++{
++	if (pids("rchqd"))
++		killall_tk("rchqd");
++}
++
++void
++start_rchqd(void)
++{
++	stop_rchqd();
++	if (!is_routing_enabled()) return;
++	if (nvram_match("rchq_enable", "0")) return;
++	xstart("rchqd");
++}
++
+ #ifdef RTCONFIG_REAPER_MCP
+ /* reaper v1.4.0: read-only LAN MCP advisor. This is the ONE deliberate inbound
+  * listener in an otherwise listener-free build, so it is fenced hard:
+@@ -13388,6 +13410,7 @@ start_services(void)
+ 	start_infosvr();
+ 	restart_rstats();
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
++	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	reaper_mcp_boot_sweep();	/* reaper v1.4.4 - drop stale advisor rule/session from an unclean prior exit; never starts the daemon */
+ #endif
+@@ -21569,6 +21592,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rtraf();
+ 		if(action & RC_SERVICE_START) start_rtraf();
+ 	}
++	else if (strcmp(script, "rchqd") == 0)	/* reaper v1.6.1 channel-quality monitor */
++	{
++		if(action & RC_SERVICE_STOP) stop_rchqd();
++		if(action & RC_SERVICE_START) start_rchqd();
++	}
+ #ifdef RTCONFIG_REAPER_MCP
+ 	else if (strcmp(script, "rmcp") == 0)
+ 	{
+diff --git a/release/src/router/rchqd/Makefile b/release/src/router/rchqd/Makefile
+new file mode 100644
+index 0000000000..1aed3949dd
+--- /dev/null
++++ b/release/src/router/rchqd/Makefile
+@@ -0,0 +1,55 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 the Reaper project maintainer
++# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++include ../common.mak
++
++CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared
++# exploit-mitigation hardening (matches rtrafd/rmcpd): FORTIFY + strong canaries
++# + format-security + PIE; the BCM base ships neither by default.
++CFLAGS	+= -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIE
++LDFLAGS	= -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared
++ifeq ($(RTCONFIG_BCM_502L07P2),y)
++LDFLAGS += -L$(TOP_PLATFORM)/ethctl_lib -lethctl
++endif
++ifeq ($(HND_ROUTER),y)
++LDFLAGS += -L$(TOP_PLATFORM)/wlcsm -lwlcsm
++endif
++LDFLAGS += -pie -Wl,-z,relro,-z,now
++
++ifeq ($(RTCONFIG_BCMARM),y)
++CFLAGS += -I$(SRCBASE)/shared/bcmwifi/include -DTYPEDEF_FLOAT_T
++CFLAGS += -I$(SRCBASE)/common/include
++endif
++
++OBJS = rchqd.o
++
++all: rchqd
++
++rchqd: $(OBJS)
++	@echo " [rchqd] CC -o $@"
++	$(CC) $(LDFLAGS) -o $@ $(OBJS)
++
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f rchqd .*.depend
++	rm -f *.o
++
++install: all
++	@echo " [rchqd] Installing..."
++	install -D rchqd $(INSTALLDIR)/bin/rchqd
++	$(STRIP) $(INSTALLDIR)/bin/rchqd
++
++%.o: %.c .%.depend
++	@echo " [rchqd] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.depend: $(OBJS:%.o=%.c)
++	@$(CC) $(CFLAGS) -M $^ > .depend
++
++.%.depend: %.c
++	@$(CC) $(CFLAGS) -M $< > $@
++
++-include $(OBJS:%.o=.%.depend)
+diff --git a/release/src/router/rchqd/rchqd.c b/release/src/router/rchqd/rchqd.c
+new file mode 100644
+index 0000000000..51f473c90c
+--- /dev/null
++++ b/release/src/router/rchqd/rchqd.c
+@@ -0,0 +1,180 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. */
++/*
++ * rchqd - reaper channel-quality monitor (v1, firmware v1.6.1)
++ *
++ * A PASSIVE, opt-in always-on health watcher for the Wi-Fi radios. Once per
++ * RCHQ_TICK it reads `wl chanim_stats` on each radio's CURRENT operating
++ * channel - the same on-channel read the Wireless page's capture panel already
++ * does live, with no client disruption - and publishes a per-radio health
++ * snapshot to /tmp/reaper_chq/live.json for the UI.
++ *
++ * It is deliberately READ-ONLY: it never sets a chanspec, never restarts
++ * wireless, never hops off-channel. When a radio's undecodable-energy (nopkt)
++ * stays high it raises a soft "degraded" advisory - the remedy is the user
++ * running Auto Scan on the Wireless page, never an action taken here. Gated by
++ * nvram rchq_enable (default 0); services.c only launches it when enabled and
++ * it also exits on its own if the flag is later cleared.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <time.h>
++#include <signal.h>
++#include <syslog.h>
++#include <ctype.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++
++#include <bcmnvram.h>
++#include <shutils.h>
++#include <shared.h>
++
++#define RCHQ_DIR	"/tmp/reaper_chq"
++#define RCHQ_LIVE	RCHQ_DIR "/live.json"
++#define RCHQ_TICK	10		/* seconds between passive samples */
++#define RCHQ_MAXUNIT	3		/* quad-band ceiling */
++#define RCHQ_DEGRADED	20		/* smoothed nopkt %% at/above = degraded advisory */
++
++static volatile sig_atomic_t running = 1;
++static void on_term(int sig) { (void)sig; running = 0; }
++
++/* per-radio smoothed nopkt (EWMA) so one noisy second does not flip the flag */
++static int ewma_nopkt[RCHQ_MAXUNIT + 1];
++static int have_ewma[RCHQ_MAXUNIT + 1];
++
++static int rchq_ifname(int unit, char *buf, size_t blen)
++{
++	char key[32];
++	const char *v;
++	int i;
++
++	snprintf(key, sizeof(key), "wl%d_ifname", unit);
++	v = nvram_safe_get(key);
++	if (*v == 0 || strlen(v) >= blen)
++		return 0;
++	for (i = 0; v[i]; i++)
++		if (!isalnum((unsigned char)v[i]) && v[i] != '.' && v[i] != '_' && v[i] != '-')
++			return 0;
++	strcpy(buf, v);
++	return 1;
++}
++
++static void rchq_chanspec(const char *ifname, char *out, size_t olen)
++{
++	char cmd[128], line[256], tok[64];
++	FILE *p;
++
++	out[0] = 0;
++	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspec 2>/dev/null", ifname);
++	if ((p = popen(cmd, "r")) == NULL)
++		return;
++	if (fgets(line, sizeof(line), p) && sscanf(line, "%63s", tok) == 1)
++		snprintf(out, olen, "%s", tok);
++	pclose(p);
++}
++
++/* one on-channel chanim sample; returns 1 on success (no retune, no disruption) */
++static int rchq_sample(const char *ifname, int *nopkt, int *txop, int *glitch)
++{
++	char cmd[128], line[512], chspec[32];
++	FILE *p;
++	int tx, inbss, obss, nocat, np, doze, to, goodtx, badtx, gl, badplcp, knoise, idle, busy;
++	int got = 0;
++
++	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats 2>/dev/null", ifname);
++	if ((p = popen(cmd, "r")) == NULL)
++		return 0;
++	while (fgets(line, sizeof(line), p)) {
++		if (sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
++			chspec, &tx, &inbss, &obss, &nocat, &np, &doze, &to,
++			&goodtx, &badtx, &gl, &badplcp, &knoise, &idle, &busy) == 15) {
++			*nopkt = np; *txop = to; *glitch = gl; got = 1;
++			break;
++		}
++	}
++	pclose(p);
++	return got;
++}
++
++/* JSON string emit keeping only chanspec-safe characters */
++static void j_str(FILE *f, const char *s)
++{
++	int i;
++
++	fputc('"', f);
++	for (i = 0; s && s[i]; i++) {
++		unsigned char c = (unsigned char)s[i];
++		if (isalnum(c) || strchr(",/._:-", c))
++			fputc(c, f);
++	}
++	fputc('"', f);
++}
++
++int main(int argc, char **argv)
++{
++	(void)argc; (void)argv;
++
++	if (daemon(0, 0) < 0)
++		return 1;
++	openlog("rchqd", LOG_PID, LOG_DAEMON);
++	signal(SIGTERM, on_term);
++	signal(SIGINT, on_term);
++	mkdir(RCHQ_DIR, 0700);
++	syslog(LOG_NOTICE, "rchqd: started (passive channel-quality monitor)");
++
++	while (running) {
++		char tmp[80], ifname[32], cs[64], rkey[32];
++		FILE *f;
++		int unit, first = 1, s;
++
++		/* honor a runtime disable without needing a signal */
++		if (!nvram_get_int("rchq_enable")) {
++			syslog(LOG_NOTICE, "rchqd: rchq_enable cleared, exiting");
++			break;
++		}
++
++		snprintf(tmp, sizeof(tmp), "%s.tmp", RCHQ_LIVE);
++		if ((f = fopen(tmp, "w")) != NULL) {
++			fprintf(f, "{\"tick\":%d,\"radios\":[", RCHQ_TICK);
++			for (unit = 0; unit <= RCHQ_MAXUNIT; unit++) {
++				int nopkt = 0, txop = 0, glitch = 0, degraded;
++
++				if (!rchq_ifname(unit, ifname, sizeof(ifname)))
++					continue;
++				snprintf(rkey, sizeof(rkey), "wl%d_radio", unit);
++				if (!nvram_get_int(rkey)) { have_ewma[unit] = 0; continue; }
++				if (!rchq_sample(ifname, &nopkt, &txop, &glitch))
++					continue;
++				rchq_chanspec(ifname, cs, sizeof(cs));
++
++				/* EWMA: new = 3/4 old + 1/4 sample */
++				if (!have_ewma[unit]) { ewma_nopkt[unit] = nopkt; have_ewma[unit] = 1; }
++				else ewma_nopkt[unit] = (ewma_nopkt[unit] * 3 + nopkt) / 4;
++				degraded = (ewma_nopkt[unit] >= RCHQ_DEGRADED) ? 1 : 0;
++
++				fprintf(f, "%s{\"unit\":%d,\"ifname\":", first ? "" : ",", unit);
++				j_str(f, ifname);
++				fprintf(f, ",\"chanspec\":");
++				j_str(f, cs);
++				fprintf(f, ",\"nopkt\":%d,\"txop\":%d,\"glitch\":%d,\"avg_nopkt\":%d,\"degraded\":%d}",
++					nopkt, txop, glitch, ewma_nopkt[unit], degraded);
++				first = 0;
++			}
++			fprintf(f, "],\"ts\":%ld}", (long)time(NULL));
++			fclose(f);
++			rename(tmp, RCHQ_LIVE);
++		}
++
++		for (s = 0; s < RCHQ_TICK && running; s++)
++			sleep(1);
++	}
++
++	unlink(RCHQ_LIVE);
++	syslog(LOG_NOTICE, "rchqd: stopped");
++	closelog();
++	return 0;
++}
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 9f8b02f8c5..6c1a664fc6 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3091,6 +3091,9 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "rtraf_probe", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* opt-in WAN latency probe target (empty = off; no forced outbound) */
+ 	{ "rtraf_cap_gb", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* monthly WAN quota in GB (0 = off); warns via syslog at 80/100% */
+ 
++	/* reaper v1.6.1 passive channel-quality monitor (rchqd), opt-in, read-only */
++	{ "rchq_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* monitor on/off (no listener, never changes channel) */
++
+ #ifdef RTCONFIG_REAPER_MCP
+ 	/* reaper v1.4.0: read-only LAN MCP advisor (rmcpd). No runtime enable flag by
+ 	 * design - the daemon runs ONLY while an armed session file exists in /tmp, so
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 2300d2a9bc..fbaa2a30d1 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=set
+ Reaper_c_mon_9=out
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dez
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 217eda4b6f..4394ae8395 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=9 月
+ Reaper_c_mon_9=10 月
+ Reaper_c_mon_10=11 月
+ Reaper_c_mon_11=12 月
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 0d068cc4b1..61c5188502 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=zář
+ Reaper_c_mon_9=říj
+ Reaper_c_mon_10=lis
+ Reaper_c_mon_11=pro
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 25e92518ae..d7297df98f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=sep.
+ Reaper_c_mon_9=okt.
+ Reaper_c_mon_10=nov.
+ Reaper_c_mon_11=dec.
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 0f74e36227..4fb1ee56a3 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=Sep
+ Reaper_c_mon_9=Okt
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dez
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index d548b03379..572937ede5 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=Sep
+ Reaper_c_mon_9=Oct
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dec
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index dcbf2707eb..389f46df70 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=Sep
+ Reaper_c_mon_9=Oct
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dic
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 2dcac13b9a..cc81616ecc 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=syys
+ Reaper_c_mon_9=loka
+ Reaper_c_mon_10=marras
+ Reaper_c_mon_11=joulu
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 4dc1923197..0ee838007b 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=sept.
+ Reaper_c_mon_9=oct.
+ Reaper_c_mon_10=nov.
+ Reaper_c_mon_11=déc.
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 53900dd742..cd6a88e8b0 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=szept
+ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 79d2233887..3e6b82da5e 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=Set
+ Reaper_c_mon_9=Ott
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dic
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 5280bc6e3c..5c8879ad27 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=9月
+ Reaper_c_mon_9=10月
+ Reaper_c_mon_10=11月
+ Reaper_c_mon_11=12月
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 2805123457..63d3d6fe58 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=9월
+ Reaper_c_mon_9=10월
+ Reaper_c_mon_10=11월
+ Reaper_c_mon_11=12월
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index df35898899..931b1f75b6 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=Sep
+ Reaper_c_mon_9=Okt
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dis
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index ea7b73ebc8..5a59ba926e 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=sep
+ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index b363a649ec..71146b3398 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=sep
+ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=des
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index edf37a0ae3..f6f7799328 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=wrz
+ Reaper_c_mon_9=paź
+ Reaper_c_mon_10=lis
+ Reaper_c_mon_11=gru
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 71080f3b20..1296c398da 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=sept.
+ Reaper_c_mon_9=oct.
+ Reaper_c_mon_10=nov.
+ Reaper_c_mon_11=dec.
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 66fc556a2a..06cbc1604c 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=сен
+ Reaper_c_mon_9=окт
+ Reaper_c_mon_10=ноя
+ Reaper_c_mon_11=дек
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 38b1c29758..853128f56b 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -116,6 +116,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+     <button class="btn hot" id="capgo" onclick="capStart()"><#RWIF_11#></button>
+     <button class="btn" id="capstop" onclick="capStop()" disabled><#RWIF_12#></button>
+     <button class="btn ghost" id="capdl" onclick="capDownload()" disabled><#RWIF_13#></button>
++    <button class="btn" id="capclear" onclick="capClear()" disabled><#RWIF_29#></button>
+   </div>
+   <div class="tiles" id="captiles" style="display:none">
+     <div class="tile"><div class="k">nopkt &middot; <#RWIF_14#></div><div class="v" id="t_nopkt">&ndash;</div></div>
+@@ -134,6 +135,34 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <div class="empty" id="capempty"><#RWIF_18#></div>
+ </div>
+ 
++<div class="panel">
++  <h2><#RWIF_30#></h2>
++  <div class="sub"><#RWIF_31#></div>
++  <div>
++    <button class="btn hot" id="scango" onclick="scanStart()"><#RWIF_32#></button>
++    <button class="btn" id="scanstop" onclick="scanStop()" disabled><#RWIF_12#></button>
++    <button class="btn" id="scanpin" onclick="scanPin()" disabled><#RWIF_35#></button>
++  </div>
++  <div class="note" id="scanprog"></div>
++  <div class="exwrap" id="scanwrap" style="display:none">
++    <table class="ta" id="scantable">
++      <thead><tr><th>#</th><th><#WLANConfig11b_Channel_itemname#></th><th class="num">nopkt</th>
++      <th class="num">txop</th><th class="num">glitch</th><th class="num"><#RWIF_36#></th></tr></thead>
++      <tbody></tbody>
++    </table>
++  </div>
++  <div class="empty" id="scanempty"><#RWIF_37#></div>
++</div>
++
++<div class="panel">
++  <h2><#RWIF_43#></h2>
++  <div class="sub"><#RWIF_44#></div>
++  <div>
++    <button class="btn" id="chqtog" onclick="chqToggle()">&ndash;</button>
++  </div>
++  <div class="note" id="chqbody" style="margin-top:10px"></div>
++</div>
++
+ <form method="post" name="lockform" action="/start_apply.htm" target="hidden_frame">
+   <input type="hidden" name="current_page" value="Reaper_Wireless.asp">
+   <input type="hidden" name="next_page" value="Reaper_Wireless.asp">
+@@ -162,6 +191,8 @@ var W6="0x7202,0x7242,0x7282,0x72c2,0x7302,0x7342,0x7382,0x73c2";
+ 
+ var BANDNAME={2:"2.4 GHz",1:"5 GHz",4:"6 GHz"};
+ var ST=null, CAPPOLL=null, CSV="";
++var SCANPOLL=null, SCANDATA=null, SCANBEST=null;
++var CHQPOLL=null;
+ 
+ function esc(s){return String(s).replace(/[&<>"']/g,function(c){return "&#"+c.charCodeAt(0)+";"});}
+ 
+@@ -273,6 +304,14 @@ function render(){
+   document.getElementById("capstop").disabled=!ST.cap;
+   document.getElementById("capgo").disabled=!!ST.cap;
+   if(ST.cap&&!CAPPOLL) capPoll();
++  if(ST.scan&&!SCANPOLL) scanPoll();
++
++  var tog=document.getElementById("chqtog");
++  if(tog){
++    tog.textContent=ST.chq_on?"<#RWIF_46#>":"<#RWIF_45#>";
++    if(ST.chq_on){ if(!CHQPOLL) chqPoll(); }
++    else { if(CHQPOLL){clearInterval(CHQPOLL);CHQPOLL=null;} document.getElementById("chqbody").innerHTML="<#RWIF_47#>"; }
++  }
+ }
+ 
+ /* channel lock: pin the RUNNING chanspec through the stock apply flow so
+@@ -337,6 +376,7 @@ function renderCap(){
+   document.getElementById("capwrap").style.display=n?"":"none";
+   document.getElementById("captiles").style.display=n?"":"none";
+   document.getElementById("capdl").disabled=!n;
++  document.getElementById("capclear").disabled=!n||!!CAPPOLL;
+   if(!n){document.getElementById("capverdict").textContent="";return;}
+   var i,c,sumNo=0,sumTx=0,maxGl=0,rows="";
+   for(i=0;i<n;i++){
+@@ -374,9 +414,144 @@ function capDownload(){
+   document.body.appendChild(a); a.click();
+   setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},2000);
+ }
++/* clear the capture results view without a page reload; no-op mid-capture */
++function capClear(){
++  if(CAPPOLL) return;
++  CSV="";
++  document.querySelector("#captable tbody").innerHTML="";
++  document.getElementById("capwrap").style.display="none";
++  document.getElementById("captiles").style.display="none";
++  document.getElementById("capverdict").textContent="";
++  document.getElementById("capempty").style.display="";
++  document.getElementById("capdl").disabled=true;
++  document.getElementById("capclear").disabled=true;
++}
++
++/* ---- Auto Scan: server-driven sweep of the 6 GHz 320 MHz channels ----
++ * The worker (reaper_wifi.cgi?action=scanstart) pins each candidate through
++ * the same nvram+restart_wireless path Lock uses, samples chanim_stats on it,
++ * ranks them, and RESTORES the original channel. This page only polls results
++ * and, on the user's click, pins the winner. It is the only path here that
++ * changes the channel - exactly one deliberate, warned action. */
++function six_band(){
++  var i;
++  for(i=0;ST&&i<ST.bands.length;i++) if(ST.bands[i].nband===4) return ST.bands[i];
++  return null;
++}
++function scanStart(){
++  var six=six_band();
++  if(!six){alert("<#RWIF_38#>");return;}
++  if(!confirm("<#RWIF_33#>")) return;
++  var x=new XMLHttpRequest();
++  x.open("GET","/reaper_wifi.cgi?action=scanstart&unit="+six.unit+"&_="+Date.now(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4) return;
++    var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
++    if(!r||!r.ok){document.getElementById("scanprog").textContent=(r&&r.err)?("error: "+r.err):"error";return;}
++    scanPoll();
++  };
++  x.send();
++}
++function scanStop(){
++  var x=new XMLHttpRequest();
++  x.open("GET","/reaper_wifi.cgi?action=scanstop&_="+Date.now(),true);
++  x.send();
++}
++function scanPoll(){
++  document.getElementById("scango").disabled=true;
++  document.getElementById("scanstop").disabled=false;
++  if(SCANPOLL) return;
++  SCANPOLL=setInterval(function(){
++    var x=new XMLHttpRequest();
++    x.open("GET","/reaper_wifi.cgi?action=scandata&_="+Date.now(),true);
++    x.onreadystatechange=function(){
++      if(x.readyState!==4) return;
++      try{SCANDATA=JSON.parse(x.responseText);}catch(e){SCANDATA=null;}
++      renderScan();
++      if(SCANDATA&&SCANDATA.done){
++        clearInterval(SCANPOLL);SCANPOLL=null;
++        document.getElementById("scango").disabled=false;
++        document.getElementById("scanstop").disabled=true;
++        setTimeout(function(){fetchStatus();},1000);
++      }
++    };
++    x.send();
++  },2000);
++}
++function renderScan(){
++  if(!SCANDATA) return;
++  var prog=document.getElementById("scanprog");
++  if(!SCANDATA.done){
++    prog.innerHTML="<span class=\"badge warn\">scanning</span> "+esc(SCANDATA.cur||"")+
++      " ("+(SCANDATA.idx||0)+"/"+(SCANDATA.total||0)+") &middot; <#RWIF_34#>";
++  } else {
++    prog.textContent=SCANDATA.aborted?"<#RWIF_39#>":"<#RWIF_40#>";
++  }
++  var res=SCANDATA.results||[];
++  document.getElementById("scanempty").style.display=res.length?"none":"";
++  document.getElementById("scanwrap").style.display=res.length?"":"none";
++  var rows="",i,r;
++  for(i=0;i<res.length;i++){
++    r=res[i];
++    rows+="<tr><td class=\"num\">"+(i+1)+"</td>"+
++      "<td class=\"mono\">"+esc(r.chanspec)+(i===0?" <span class=\"badge auto\"><#RWIF_41#></span>":"")+"</td>"+
++      "<td class=\"num\" style=\""+(+r.nopkt>=20?"color:var(--crimson)":"")+"\">"+(+r.nopkt).toFixed(0)+"</td>"+
++      "<td class=\"num\">"+(+r.txop).toFixed(0)+"</td>"+
++      "<td class=\"num\">"+esc(r.glitch)+"</td>"+
++      "<td class=\"num\">"+(+r.score).toFixed(0)+"</td></tr>";
++  }
++  document.querySelector("#scantable tbody").innerHTML=rows;
++  SCANBEST=res.length?res[0]:null;
++  document.getElementById("scanpin").disabled=!(SCANDATA.done&&SCANBEST&&SCANBEST.chanspec);
++}
++function scanPin(){
++  var six=six_band();
++  if(!six||!SCANBEST||!SCANBEST.chanspec) return;
++  if(!confirm("<#RWIF_42#> "+SCANBEST.chanspec)) return;
++  submitApply(six.unit,SCANBEST.chanspec,bwCode(SCANBEST.chanspec));
++}
++
++/* ---- Passive Channel Monitor (rchqd): opt-in, read-only, advises only ---- */
++function chqToggle(){
++  var on=(ST&&ST.chq_on)?0:1;
++  var x=new XMLHttpRequest();
++  x.open("GET","/reaper_wifi.cgi?action=chqset&on="+on+"&_="+Date.now(),true);
++  x.onreadystatechange=function(){if(x.readyState===4) setTimeout(function(){fetchStatus();},600);};
++  x.send();
++}
++function chqPoll(){
++  if(CHQPOLL) return;
++  var tick=function(){
++    var x=new XMLHttpRequest();
++    x.open("GET","/reaper_wifi.cgi?action=chq&_="+Date.now(),true);
++    x.onreadystatechange=function(){
++      if(x.readyState!==4) return;
++      var d=null; try{d=JSON.parse(x.responseText);}catch(e){}
++      chqRenderLive(d);
++    };
++    x.send();
++  };
++  tick();
++  CHQPOLL=setInterval(tick,10000);
++}
++function chqRenderLive(d){
++  var body=document.getElementById("chqbody");
++  if(!body) return;
++  if(!d||!d.radios||!d.radios.length){ body.innerHTML="<#RWIF_47#>"; return; }
++  var i,r,bad,h="";
++  for(i=0;i<d.radios.length;i++){
++    r=d.radios[i]; bad=r.degraded;
++    h+="<div style=\"margin:3px 0\"><span class=\"mono\">"+esc(r.chanspec||r.ifname)+"</span> &middot; nopkt "+
++       "<b style=\""+(bad?"color:var(--crimson)":"color:var(--jade)")+"\">"+(+r.avg_nopkt)+"%</b> &middot; "+
++       (bad?"<span class=\"badge warn\"><#RWIF_48#></span>":"<span class=\"badge auto\"><#RWIF_49#></span>")+"</div>";
++  }
++  body.innerHTML=h;
++}
+ 
+ window.RW={lock:lock,unlock:unlock};
+-window.capStart=capStart; window.capStop=capStop; window.capDownload=capDownload;
++window.capStart=capStart; window.capStop=capStop; window.capDownload=capDownload; window.capClear=capClear;
++window.scanStart=scanStart; window.scanStop=scanStop; window.scanPin=scanPin;
++window.chqToggle=chqToggle;
+ fetchStatus();
+ setInterval(function(){if(!CAPPOLL) fetchStatus();},30000);
+ })();
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 8fb09a0e37..380dc32503 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=sep
+ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 1bde60a69c..77d2b681c4 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=sep
+ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index a3e54a8d29..864933ddea 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=ก.ย.
+ Reaper_c_mon_9=ต.ค.
+ Reaper_c_mon_10=พ.ย.
+ Reaper_c_mon_11=ธ.ค.
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 2804f5d26e..85ce7bc06e 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=Eyl
+ Reaper_c_mon_9=Eki
+ Reaper_c_mon_10=Kas
+ Reaper_c_mon_11=Ara
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index d9e89044cd..012ef447a0 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=9 月
+ Reaper_c_mon_9=10 月
+ Reaper_c_mon_10=11 月
+ Reaper_c_mon_11=12 月
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 15b62566ab..a8c3d414e0 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5646,3 +5646,24 @@ Reaper_c_mon_8=вер.
+ Reaper_c_mon_9=жовт.
+ Reaper_c_mon_10=лист.
+ Reaper_c_mon_11=груд.
++RWIF_29=Clear
++RWIF_30=Auto Scan (6 GHz)
++RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_32=Start Auto Scan
++RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_34=each channel restarts the radio
++RWIF_35=Pin best
++RWIF_36=score
++RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
++RWIF_38=No 6 GHz radio found on this device.
++RWIF_39=Scan stopped - original channel restored.
++RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
++RWIF_41=best
++RWIF_42=Pin 6 GHz to this channel?
++RWIF_43=Passive Channel Monitor
++RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
++RWIF_45=Enable monitor
++RWIF_46=Disable monitor
++RWIF_47=Monitor off
++RWIF_48=degrading - consider Auto Scan
++RWIF_49=looks clean
+-- 
+2.25.1
+

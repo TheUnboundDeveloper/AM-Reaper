@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**181 patches, v1.0 → v1.6.0**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**190 patches, v1.0 → v1.6.6**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (181 patches, v1.0 → v1.6.0)
+## What the series contains (190 patches, v1.0 → v1.6.6)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -105,8 +105,26 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
   check) plus the full 24-language UI translation (with the truncate/hover-tooltip overflow helper
   and a Reaper favicon on the Login/Logout tab).
 
+### v1.6.1 → v1.6.6 — Channel-Quality Auto Scan, rchqd syslog trail, UI/i18n fixes, QoS download + Cake tuning (`0182`–`0190`)
+- `0182`–`0183` — **v1.6.1**: Channel-Quality **Auto Scan** on the wireless diagnostics page
+  (+ Clear button, passive `rchqd` monitor), then Auto Scan refinements (dedup-by-block,
+  terminate-on-leave, progress display, landscape report, QoL).
+- `0184` — **v1.6.2**: Auto Scan generalized to **all bands** (band selector) + noise-settle fix.
+- `0185` — **v1.6.3**: `rchqd` degraded-event **syslog trail** (edge-triggered per radio,
+  throttled; opt-in via the diagnostics page).
+- `0186`–`0188` — **v1.6.4**: VPN nested-frame theme 404 fix + SPA palette sweep, SDN/MLO
+  expand cut-off fix, tablet viewport pan; i18n sweep (`Reaper_FirstBoot` tokenized,
+  `RFB_01`–`14` translated in all 25 dictionaries); audit fixes (`rchqd` JSON/syslog
+  decoupling + state close-out + monotonic throttle + halved fork load, www ResizeObserver
+  disconnect + width-grow measurement).
+- `0189` — **v1.6.5**: QoS download — the policer applies **90% headroom** by design + cake
+  shaper 90% consistency both directions.
+- `0190` — **v1.6.6**: first-boot wizard **language selector** (carries into the UI) + QoS
+  Cake jitter tuning (ack-filter on the upload cake, 50 ms rtt target both directions with
+  the `qos_cake_rtt` override).
+
 ## Notes
 
 - **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted.
-- Regenerated for **v1.6.0** (2026-07-18) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (matching `release/src/router` tree hash).
+- Regenerated for **v1.6.6** (2026-07-19) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (matching `release/src/router` tree hash).

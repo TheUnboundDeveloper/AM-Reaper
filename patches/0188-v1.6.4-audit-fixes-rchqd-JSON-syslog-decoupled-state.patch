@@ -1,0 +1,321 @@
+From 0bf494a1489a3a6f767136b6f71dfc745b89b558 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 19 Jul 2026 13:12:54 -0400
+Subject: [PATCH] v1.6.4 audit fixes: rchqd JSON/syslog decoupled + state
+ close-out + monotonic throttle + halved fork load; www ResizeObserver
+ disconnect + width-grow measured from cleared state
+
+---
+ release/src/router/rchqd/rchqd.c              | 153 +++++++++++++-----
+ release/src/router/www/reaper_shell.asp       |   8 +-
+ .../router/www/sysdep/FUNCTION/SDN/MLO.asp    |   3 +-
+ .../router/www/sysdep/FUNCTION/SDN/SDN.asp    |   3 +-
+ .../VPNC_V2/Advanced_VPNClient_Content.asp    |   3 +-
+ .../VPNS_V2/Advanced_VPNServer_Content.asp    |   3 +-
+ 6 files changed, 126 insertions(+), 47 deletions(-)
+
+diff --git a/release/src/router/rchqd/rchqd.c b/release/src/router/rchqd/rchqd.c
+index 411e933d39..ea0948e9c5 100644
+--- a/release/src/router/rchqd/rchqd.c
++++ b/release/src/router/rchqd/rchqd.c
+@@ -2,7 +2,7 @@
+  * Copyright (C) 2026 the Reaper project maintainer
+  * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. */
+ /*
+- * rchqd - reaper channel-quality monitor (v2, firmware v1.6.3)
++ * rchqd - reaper channel-quality monitor (v3, firmware v1.6.4)
+  *
+  * A PASSIVE, opt-in always-on health watcher for the Wi-Fi radios. Once per
+  * RCHQ_TICK it reads `wl chanim_stats` on each radio's CURRENT operating
+@@ -58,6 +58,40 @@ static int have_ewma[RCHQ_MAXUNIT + 1];
+ static int log_degraded[RCHQ_MAXUNIT + 1];
+ static time_t log_last[RCHQ_MAXUNIT + 1];
+ 
++/* consecutive failed samples per radio; at RCHQ_MAXMISS the radio's state is
++ * closed out so a stale EWMA or a dangling degraded line cannot survive a
++ * wireless restart or interface re-enumeration (v1.6.4 audit) */
++#define RCHQ_MAXMISS	3
++static int miss[RCHQ_MAXUNIT + 1];
++
++/* per-radio chanspec cache: chanim_stats already carries the hex chanspec
++ * token, so the pretty `wl chanspec` form is re-fetched only when the hex
++ * moves - halves the steady-state fork load per tick (v1.6.4 audit) */
++static char cs_hex[RCHQ_MAXUNIT + 1][32];
++static char cs_pretty[RCHQ_MAXUNIT + 1][64];
++
++/* CLOCK_MONOTONIC for the log throttles - immune to NTP wall-clock steps */
++static time_t mono_now(void)
++{
++	struct timespec ts;
++
++	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
++		return time(NULL);
++	return ts.tv_sec;
++}
++
++/* close out a radio's state when its samples go away (radio disabled, wireless
++ * restart, interface renamed) so the log never shows an orphan degraded line */
++static void rchq_close_unit(int unit, const char *why)
++{
++	if (log_degraded[unit]) {
++		syslog(LOG_NOTICE, "rchqd: wl%d %s - degraded state cleared", unit, why);
++		log_degraded[unit] = 0;
++	}
++	have_ewma[unit] = 0;
++	cs_hex[unit][0] = 0;
++}
++
+ static int rchq_ifname(int unit, char *buf, size_t blen)
+ {
+ 	char key[32];
+@@ -89,8 +123,11 @@ static void rchq_chanspec(const char *ifname, char *out, size_t olen)
+ 	pclose(p);
+ }
+ 
+-/* one on-channel chanim sample; returns 1 on success (no retune, no disruption) */
+-static int rchq_sample(const char *ifname, int *nopkt, int *txop, int *glitch)
++/* one on-channel chanim sample; returns 1 on success (no retune, no disruption).
++ * Also hands back the hex chanspec token so the caller can skip the second
++ * `wl chanspec` fork when the channel has not moved. */
++static int rchq_sample(const char *ifname, int *nopkt, int *txop, int *glitch,
++		       char *hexcs, size_t hlen)
+ {
+ 	char cmd[128], line[512], chspec[32];
+ 	FILE *p;
+@@ -105,6 +142,7 @@ static int rchq_sample(const char *ifname, int *nopkt, int *txop, int *glitch)
+ 			chspec, &tx, &inbss, &obss, &nocat, &np, &doze, &to,
+ 			&goodtx, &badtx, &gl, &badplcp, &knoise, &idle, &busy) == 15) {
+ 			*nopkt = np; *txop = to; *glitch = gl; got = 1;
++			snprintf(hexcs, hlen, "%s", chspec);
+ 			break;
+ 		}
+ 	}
+@@ -138,8 +176,16 @@ int main(int argc, char **argv)
+ 	mkdir(RCHQ_DIR, 0700);
+ 	syslog(LOG_NOTICE, "rchqd: started (passive channel-quality monitor)");
+ 
++	{
++	static time_t fopen_warned;
++	char tmp[96];
++
++	/* PID-suffixed scratch name: an rc restart race (old instance in its last
++	 * tick while the new one starts) can no longer interleave into one file */
++	snprintf(tmp, sizeof(tmp), "%s.%d.tmp", RCHQ_LIVE, (int)getpid());
++
+ 	while (running) {
+-		char tmp[80], ifname[32], cs[64], rkey[32];
++		char ifname[32], hex[32], rkey[32];
+ 		FILE *f;
+ 		int unit, first = 1, s;
+ 
+@@ -149,59 +195,86 @@ int main(int argc, char **argv)
+ 			break;
+ 		}
+ 
+-		snprintf(tmp, sizeof(tmp), "%s.tmp", RCHQ_LIVE);
+-		if ((f = fopen(tmp, "w")) != NULL) {
++		/* the JSON snapshot is best-effort: sampling and the syslog trail
++		 * below run regardless, so a full tmpfs cannot blind the log */
++		if ((f = fopen(tmp, "w")) != NULL)
+ 			fprintf(f, "{\"tick\":%d,\"radios\":[", RCHQ_TICK);
+-			for (unit = 0; unit <= RCHQ_MAXUNIT; unit++) {
+-				int nopkt = 0, txop = 0, glitch = 0, degraded;
+-
+-				if (!rchq_ifname(unit, ifname, sizeof(ifname)))
+-					continue;
+-				snprintf(rkey, sizeof(rkey), "wl%d_radio", unit);
+-				if (!nvram_get_int(rkey)) { have_ewma[unit] = 0; log_degraded[unit] = 0; continue; }
+-				if (!rchq_sample(ifname, &nopkt, &txop, &glitch))
+-					continue;
+-				rchq_chanspec(ifname, cs, sizeof(cs));
+-
+-				/* EWMA: new = 3/4 old + 1/4 sample */
+-				if (!have_ewma[unit]) { ewma_nopkt[unit] = nopkt; have_ewma[unit] = 1; }
+-				else ewma_nopkt[unit] = (ewma_nopkt[unit] * 3 + nopkt) / 4;
+-				degraded = (ewma_nopkt[unit] >= RCHQ_DEGRADED) ? 1 : 0;
+-
+-				if (degraded && !log_degraded[unit]) {
+-					time_t now = time(NULL);
+-					if (now - log_last[unit] >= RCHQ_LOG_HOLDOFF) {
+-						syslog(LOG_WARNING,
+-							"rchqd: wl%d (%s, %s) channel quality degraded - avg nopkt %d%% (threshold %d%%); run Auto Scan on the Wireless page for a cleaner channel",
+-							unit, ifname, cs[0] ? cs : "?",
+-							ewma_nopkt[unit], RCHQ_DEGRADED);
+-						log_last[unit] = now;
+-						log_degraded[unit] = 1;
+-					}
+-				} else if (!degraded && log_degraded[unit]) {
+-					syslog(LOG_NOTICE,
+-						"rchqd: wl%d (%s, %s) channel quality recovered - avg nopkt %d%%",
+-						unit, ifname, cs[0] ? cs : "?", ewma_nopkt[unit]);
+-					log_degraded[unit] = 0;
++		else if (mono_now() - fopen_warned >= RCHQ_LOG_HOLDOFF) {
++			syslog(LOG_WARNING, "rchqd: cannot write %s (%m) - JSON snapshot skipped, monitoring continues", tmp);
++			fopen_warned = mono_now();
++		}
++
++		for (unit = 0; unit <= RCHQ_MAXUNIT; unit++) {
++			int nopkt = 0, txop = 0, glitch = 0, degraded;
++
++			if (!rchq_ifname(unit, ifname, sizeof(ifname))) {
++				if (++miss[unit] == RCHQ_MAXMISS) rchq_close_unit(unit, "interface gone");
++				continue;
++			}
++			snprintf(rkey, sizeof(rkey), "wl%d_radio", unit);
++			if (!nvram_get_int(rkey)) { miss[unit] = 0; rchq_close_unit(unit, "radio disabled"); continue; }
++			if (!rchq_sample(ifname, &nopkt, &txop, &glitch, hex, sizeof(hex))) {
++				if (++miss[unit] == RCHQ_MAXMISS) rchq_close_unit(unit, "samples unavailable");
++				continue;
++			}
++			miss[unit] = 0;
++			/* refresh the pretty chanspec only when the hex form moved */
++			if (strcmp(hex, cs_hex[unit]) != 0 || cs_pretty[unit][0] == 0) {
++				rchq_chanspec(ifname, cs_pretty[unit], sizeof(cs_pretty[unit]));
++				if (cs_pretty[unit][0])
++					snprintf(cs_hex[unit], sizeof(cs_hex[unit]), "%s", hex);
++			}
++
++			/* EWMA: new = 3/4 old + 1/4 sample */
++			if (!have_ewma[unit]) { ewma_nopkt[unit] = nopkt; have_ewma[unit] = 1; }
++			else ewma_nopkt[unit] = (ewma_nopkt[unit] * 3 + nopkt) / 4;
++			degraded = (ewma_nopkt[unit] >= RCHQ_DEGRADED) ? 1 : 0;
++
++			if (degraded && !log_degraded[unit]) {
++				time_t now = mono_now();
++				if (now - log_last[unit] >= RCHQ_LOG_HOLDOFF) {
++					syslog(LOG_WARNING,
++						"rchqd: wl%d (%s, %s) channel quality degraded - avg nopkt %d%% (threshold %d%%); run Auto Scan on the Wireless page for a cleaner channel",
++						unit, ifname, cs_pretty[unit][0] ? cs_pretty[unit] : "?",
++						ewma_nopkt[unit], RCHQ_DEGRADED);
++					log_last[unit] = now;
++					log_degraded[unit] = 1;
+ 				}
++			} else if (!degraded && log_degraded[unit]) {
++				syslog(LOG_NOTICE,
++					"rchqd: wl%d (%s, %s) channel quality recovered - avg nopkt %d%%",
++					unit, ifname, cs_pretty[unit][0] ? cs_pretty[unit] : "?", ewma_nopkt[unit]);
++				log_degraded[unit] = 0;
++			}
+ 
++			if (f) {
+ 				fprintf(f, "%s{\"unit\":%d,\"ifname\":", first ? "" : ",", unit);
+ 				j_str(f, ifname);
+ 				fprintf(f, ",\"chanspec\":");
+-				j_str(f, cs);
++				j_str(f, cs_pretty[unit]);
+ 				fprintf(f, ",\"nopkt\":%d,\"txop\":%d,\"glitch\":%d,\"avg_nopkt\":%d,\"degraded\":%d}",
+ 					nopkt, txop, glitch, ewma_nopkt[unit], degraded);
+ 				first = 0;
+ 			}
++		}
++
++		if (f) {
++			int bad;
++
+ 			fprintf(f, "],\"ts\":%ld}", (long)time(NULL));
+-			fclose(f);
+-			rename(tmp, RCHQ_LIVE);
++			/* never rename a short write over the last good snapshot */
++			bad = ferror(f);
++			if (fclose(f) != 0) bad = 1;
++			if (!bad) rename(tmp, RCHQ_LIVE);
++			else unlink(tmp);
+ 		}
+ 
+ 		for (s = 0; s < RCHQ_TICK && running; s++)
+ 			sleep(1);
+ 	}
+ 
++	unlink(tmp);
++	}
+ 	unlink(RCHQ_LIVE);
+ 	syslog(LOG_NOTICE, "rchqd: stopped");
+ 	closelog();
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 69657346f0..e01af45c4f 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -381,11 +381,13 @@ function buildRail(menuTree){
+       /* v1.6.4 tablet: also grow WIDTH when the framed page cannot shrink to
+          the column (fixed 760px stock tables on a narrow viewport) - the .stage
+          then pans on its own scrollbar instead of clipping (scrolling=no
+-         swallows any inner pan). Cleared once the column is wide enough. */
++         swallows any inner pan). ALWAYS measure from the cleared (column-width)
++         state so a page whose overflow tracks the frame width cannot drive an
++         unbounded grow (v1.6.4 audit); set once when content truly exceeds. */
+       var cw=f.parentElement?f.parentElement.clientWidth:0;
++      if(f.style.width) f.style.width='';
+       var w=Math.max(d.documentElement.scrollWidth, d.body?d.body.scrollWidth:0);
+-      if(cw>0 && w>cw+4){ if(Math.abs(w-f.offsetWidth)>4) f.style.width=w+'px'; }
+-      else if(f.style.width) f.style.width='';
++      if(cw>0 && w>cw+4) f.style.width=w+'px';
+     }catch(e){}
+   }
+   f.addEventListener('load', function(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp b/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
+index ced44f4eac..5a940ee7ba 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
+@@ -27,9 +27,10 @@
+ function reaperGrowFrame(ifr){
+ 	try{
+ 		var d=ifr.contentDocument; if(!d) return;
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
+ 	}catch(e){}
+ }
+ function initial(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+index 4d7cbb075e..07678edb42 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+@@ -31,9 +31,10 @@
+ function reaperGrowFrame(ifr){
+ 	try{
+ 		var d=ifr.contentDocument; if(!d) return;
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
+ 	}catch(e){}
+ }
+ function initial(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+index 726797ed74..d79b369eed 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+@@ -34,9 +34,10 @@ function reaperThemeFrame(ifr){
+ 			   head close tag, so serve-time injection cannot cover it either) */
+ 			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
+ 		}
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
+ 	}catch(e){}
+ }
+ function initial(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+index 0407c7fdae..8d76bdfe0d 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+@@ -34,9 +34,10 @@ function reaperThemeFrame(ifr){
+ 			   this hook is its belt-and-braces */
+ 			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
+ 		}
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
+ 	}catch(e){}
+ }
+ function initial(){
+-- 
+2.25.1
+

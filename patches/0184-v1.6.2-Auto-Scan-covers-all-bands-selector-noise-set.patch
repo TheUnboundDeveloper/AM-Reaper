@@ -1,0 +1,1172 @@
+From 46037f888f1b8174b0f42c6fd11f4535ec31d904 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 18 Jul 2026 22:09:45 -0400
+Subject: [PATCH] v1.6.2: Auto Scan covers all bands (selector) + noise-settle
+ fix
+
+Generalizes the 6 GHz Auto Scan to all three radios via a band selector - one
+band at a time, a separate report per band, and Pin-best pinning the winner to
+that radio.
+
+- 6 GHz: distinct 320 blocks (unchanged; metal-validated in v1.6.1).
+- 5 GHz: the 9 non-DFS 20 MHz channels (UNII-1 36-48 + UNII-3 149-165); DFS
+  52-144 skipped. Pin-best pins the 80 MHz block around the winner.
+- 2.4 GHz: 1 / 6 / 11.
+
+web.c: band-aware rwifi_scan_candidates (per-band enumeration), per-candidate
+bandwidth (rwifi_bw_of), scanstart accepts any radio, scan.json carries the
+scanned unit. Noise-settle hardening: discard the first post-restart chanim
+sample + a 2s settle (fixes the transient -15 dBm knoise seen on metal).
+
+ASP: band selector; band-aware channel/frequency math, spectrum plot (per-band
+axis, outside labels for the narrow 20 MHz bars) and report (band in the title);
+pinTarget maps a 5 GHz 20 MHz winner to its 80 MHz block.
+
+i18n: RWIF_58 (Band) added; RWIF_30/31/33 made band-generic. 25 dicts, lockstep.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                |   2 +-
+ release/src/router/httpd/web.c             | 158 ++++++++++++++-------
+ release/src/router/www/BR.dict             |   7 +-
+ release/src/router/www/CN.dict             |   7 +-
+ release/src/router/www/CZ.dict             |   7 +-
+ release/src/router/www/DA.dict             |   7 +-
+ release/src/router/www/DE.dict             |   7 +-
+ release/src/router/www/EN.dict             |   7 +-
+ release/src/router/www/ES.dict             |   7 +-
+ release/src/router/www/FI.dict             |   7 +-
+ release/src/router/www/FR.dict             |   7 +-
+ release/src/router/www/HU.dict             |   7 +-
+ release/src/router/www/IT.dict             |   7 +-
+ release/src/router/www/JP.dict             |   7 +-
+ release/src/router/www/KR.dict             |   7 +-
+ release/src/router/www/MS.dict             |   7 +-
+ release/src/router/www/NL.dict             |   7 +-
+ release/src/router/www/NO.dict             |   7 +-
+ release/src/router/www/PL.dict             |   7 +-
+ release/src/router/www/RO.dict             |   7 +-
+ release/src/router/www/RU.dict             |   7 +-
+ release/src/router/www/Reaper_Wireless.asp | 153 ++++++++++++++------
+ release/src/router/www/SL.dict             |   7 +-
+ release/src/router/www/SV.dict             |   7 +-
+ release/src/router/www/TH.dict             |   7 +-
+ release/src/router/www/TR.dict             |   7 +-
+ release/src/router/www/TW.dict             |   7 +-
+ release/src/router/www/UK.dict             |   7 +-
+ 28 files changed, 315 insertions(+), 173 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 20ac6206bd..ad8080f84f 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.6.1
++EXTENDNO=Reaper_v1.6.2
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b010f5dcf6..552d6bc720 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21714,7 +21714,7 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ #define RWIFI_CHQ	"/tmp/reaper_chq/live.json"	/* rchqd passive monitor snapshot */
+ #define RWIFI_SCAN_HB	12	/* abort the sweep if the browser stops polling for this long (s) */
+ #define RWIFI_MAXUNIT	3	/* quad-band ceiling; absent units have no wlN_ifname and are skipped */
+-#define RWIFI_SCAN_MAX		8	/* max candidate channels a sweep will visit (one per physical 320 block) */
++#define RWIFI_SCAN_MAX		12	/* max candidate channels a sweep will visit (6 GHz ~6 blocks, 5 GHz 9 non-DFS) */
+ #define RWIFI_SCAN_DWELL	5	/* chanim samples averaged per candidate (s) */
+ #define RWIFI_SCAN_SETTLE	25	/* max wait for a restart to land on the chanspec (s) */
+ 
+@@ -21854,46 +21854,100 @@ static int rwifi_is_psc(int ch)
+ 	return 0;
+ }
+ 
+-/* distinct PHYSICAL 6 GHz 320 MHz channels the driver reports as valid. Every
+- * primary inside one 320 block occupies the SAME spectrum, so scanning more
+- * than one of them is redundant - keep just one PSC-anchored representative per
+- * block. The -1 grid starts at ch1 and the -2 grid at ch33; each 320 block
+- * spans 64 twenty-MHz channels. This yields the ~6 real 320 positions across
+- * both sub-grids (low/mid/high on each), with no wasted restarts. */
+-static int rwifi_scan_candidates(const char *ifname, char cand[][24], int max)
++/* the wlN_bw code for a candidate chanspec, from its width suffix */
++static const char *rwifi_bw_of(const char *cs)
+ {
+-	char cmd[128], line[256], tok[24], seen[16][8], key[8];
++	if (strstr(cs, "/320")) return "6";
++	if (strstr(cs, "/160")) return "5";
++	if (strstr(cs, "/80"))  return "3";
++	if (strstr(cs, "/40"))  return "2";
++	return "1";				/* bare number = 20 MHz */
++}
++
++/* non-DFS 20 MHz channels swept per lower band (US plan). 5 GHz skips the DFS
++ * block 52-144 entirely (each DFS channel would cost a 60s radar check). */
++static const int rwifi_5g_chans[] = { 36, 40, 44, 48, 149, 153, 157, 161, 165, 0 };
++static const int rwifi_2g_chans[] = { 1, 6, 11, 0 };
++
++/* candidate channels to sweep, per band. Each returned string is a chanspec the
++ * driver reports as valid:
++ *  - 6 GHz: distinct physical 320 MHz blocks, one PSC representative each (every
++ *    primary inside one 320 block shares the same spectrum, so scanning more is
++ *    redundant; -1 grid starts ch1, -2 grid ch33, each block spans 64 channels).
++ *  - 5 GHz: the non-DFS 20 MHz channels (UNII-1 + UNII-3).
++ *  - 2.4 GHz: the non-overlapping 1 / 6 / 11. */
++static int rwifi_scan_candidates(int unit, const char *ifname, char cand[][24], int max)
++{
++	char cmd[128], line[256], tok[24], nvk[32];
+ 	FILE *p;
+-	int nseen = 0, n = 0, ch, sub, base, blk, i;
++	int n = 0, nband, i;
+ 
++	snprintf(nvk, sizeof(nvk), "wl%d_nband", unit);
++	nband = nvram_get_int(nvk);
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspecs 2>/dev/null", ifname);
+-	if ((p = popen(cmd, "r")) == NULL)
+-		return 0;
+-	while (fgets(line, sizeof(line), p) && n < max && nseen < 16) {
+-		if (sscanf(line, "%23s", tok) != 1)
+-			continue;
+-		/* need both the primary channel and the -1/-2 sub-block index */
+-		if (sscanf(tok, "6g%d/320-%d", &ch, &sub) != 2)
+-			continue;
+-		if (!rwifi_is_psc(ch))
+-			continue;
+-		base = (sub == 2) ? 33 : 1;
+-		blk = (ch - base) / 64;			/* 0,1,2 within this grid */
+-		if (blk < 0)
+-			continue;
+-		snprintf(key, sizeof(key), "%d_%d", sub, blk);
+-		for (i = 0; i < nseen; i++)
+-			if (strcmp(seen[i], key) == 0)
+-				break;
+-		if (i < nseen)
+-			continue;			/* already have this physical block */
+-		snprintf(seen[nseen], sizeof(seen[0]), "%s", key);
+-		nseen++;
+-		snprintf(cand[n], 24, "%s", tok);
+-		n++;
++
++	if (nband == 4) {
++		char seen[16][8], key[8];
++		int nseen = 0, ch, sub, base, blk;
++
++		if ((p = popen(cmd, "r")) == NULL)
++			return 0;
++		while (fgets(line, sizeof(line), p) && n < max && nseen < 16) {
++			if (sscanf(line, "%23s", tok) != 1)
++				continue;
++			if (sscanf(tok, "6g%d/320-%d", &ch, &sub) != 2)
++				continue;
++			if (!rwifi_is_psc(ch))
++				continue;
++			base = (sub == 2) ? 33 : 1;
++			blk = (ch - base) / 64;
++			if (blk < 0)
++				continue;
++			snprintf(key, sizeof(key), "%d_%d", sub, blk);
++			for (i = 0; i < nseen; i++)
++				if (strcmp(seen[i], key) == 0)
++					break;
++			if (i < nseen)
++				continue;
++			snprintf(seen[nseen], sizeof(seen[0]), "%s", key);
++			nseen++;
++			snprintf(cand[n], 24, "%s", tok);
++			n++;
++		}
++		pclose(p);
++		return n;
+ 	}
+-	pclose(p);
+-	return n;
++
++	if (nband == 1 || nband == 2) {
++		const int *want = (nband == 1) ? rwifi_5g_chans : rwifi_2g_chans;
++		int present[80], npr = 0, k, c;
++
++		if ((p = popen(cmd, "r")) == NULL)
++			return 0;
++		while (fgets(line, sizeof(line), p) && npr < 80) {
++			if (sscanf(line, "%23s", tok) != 1)
++				continue;
++			/* bare 20 MHz form only: all digits, no '/' and no l/u suffix */
++			for (i = 0; tok[i]; i++)
++				if (!isdigit((unsigned char)tok[i]))
++					break;
++			if (i == 0 || tok[i] != 0)
++				continue;
++			present[npr++] = atoi(tok);
++		}
++		pclose(p);
++		for (k = 0; want[k] && n < max; k++) {
++			c = want[k];
++			for (i = 0; i < npr; i++)
++				if (present[i] == c)
++					break;
++			if (i < npr)
++				snprintf(cand[n++], 24, "%d", c);
++		}
++		return n;
++	}
++
++	return 0;
+ }
+ 
+ /* average chanim_stats over nsec on-channel samples; glitch is a max, knoise
+@@ -21905,14 +21959,18 @@ static void rwifi_avg_sample(const char *ifname, int nsec, int *nopkt, int *txop
+ 	int tx, inbss, obss, nocat, np, doze, to, goodtx, badtx, gl, badplcp, knoise, idle, busy;
+ 
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats 2>/dev/null", ifname);
+-	for (i = 0; i < nsec; i++) {
++	for (i = 0; i <= nsec; i++) {		/* nsec+1 reads; the first is a discarded warm-up */
+ 		FILE *p = popen(cmd, "r");
+ 		if (p) {
+ 			while (fgets(line, sizeof(line), p)) {
+ 				if (sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+ 					chspec, &tx, &inbss, &obss, &nocat, &np, &doze, &to,
+ 					&goodtx, &badtx, &gl, &badplcp, &knoise, &idle, &busy) == 15) {
+-					sN += np; sT += to; sK += knoise; if (gl > mg) mg = gl; gotn++;
++					if (i > 0) {	/* skip the settle sample - avoids post-restart garbage (e.g. -15 dBm noise) */
++						sN += np; sT += to; sK += knoise;
++						if (gl > mg) mg = gl;
++						gotn++;
++					}
+ 					break;
+ 				}
+ 			}
+@@ -21937,7 +21995,7 @@ static void rwifi_scan_rank(struct rwifi_scres *r, int n, int *order)
+ 			}
+ }
+ 
+-static void rwifi_scan_publish(int done, int aborted, const char *cur, int idx, int total,
++static void rwifi_scan_publish(int unit, int done, int aborted, const char *cur, int idx, int total,
+ 			       struct rwifi_scres *r, int n, int *order)
+ {
+ 	char tmp[80];
+@@ -21947,8 +22005,8 @@ static void rwifi_scan_publish(int done, int aborted, const char *cur, int idx,
+ 	snprintf(tmp, sizeof(tmp), "%s.tmp", RWIFI_SCAN);
+ 	if ((f = fopen(tmp, "w")) == NULL)
+ 		return;
+-	fprintf(f, "{\"done\":%d,\"aborted\":%d,\"cur\":\"%s\",\"idx\":%d,\"total\":%d,\"results\":[",
+-		done, aborted, cur ? cur : "", idx, total);
++	fprintf(f, "{\"unit\":%d,\"done\":%d,\"aborted\":%d,\"cur\":\"%s\",\"idx\":%d,\"total\":%d,\"results\":[",
++		unit, done, aborted, cur ? cur : "", idx, total);
+ 	for (i = 0; i < n; i++) {
+ 		k = order[i];
+ 		fprintf(f, "%s{\"chanspec\":\"%s\",\"nopkt\":%d,\"txop\":%d,\"glitch\":%d,\"knoise\":%d,\"score\":%d}",
+@@ -21968,7 +22026,7 @@ static void rwifi_wait_chanspec(const char *ifname, const char *target, int maxs
+ 		sleep(1);
+ 		rwifi_run_chanspec(ifname, run);
+ 		if (strcmp(run, target) == 0) {
+-			sleep(1);	/* small settle once it lands */
++			sleep(2);	/* settle after it lands before sampling */
+ 			return;
+ 		}
+ 	}
+@@ -22008,10 +22066,10 @@ static void rwifi_scan_worker(int unit)
+ 	snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
+ 	snprintf(orig_bw, sizeof(orig_bw), "%s", nvram_safe_get(nvk));
+ 
+-	ncand = rwifi_scan_candidates(ifname, cand, RWIFI_SCAN_MAX);
++	ncand = rwifi_scan_candidates(unit, ifname, cand, RWIFI_SCAN_MAX);
+ 	rwifi_scan_rank(r, 0, order);
+ 	if (ncand <= 0) {
+-		rwifi_scan_publish(1, 0, "", 0, 0, r, 0, order);
++		rwifi_scan_publish(unit, 1, 0, "", 0, 0, r, 0, order);
+ 		unlink(RWIFI_SRUN);
+ 		unlink(RWIFI_SHB);
+ 		_exit(0);
+@@ -22022,13 +22080,13 @@ static void rwifi_scan_worker(int unit)
+ 			break;			/* stopped, or the browser left */
+ 		snprintf(cur, sizeof(cur), "%s", cand[i]);
+ 		rwifi_scan_rank(r, n, order);
+-		rwifi_scan_publish(0, 0, cur, i + 1, ncand, r, n, order);
++		rwifi_scan_publish(unit, 0, 0, cur, i + 1, ncand, r, n, order);
+ 
+ 		/* pin candidate (RAM only, no commit) and restart the radio */
+ 		snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
+ 		nvram_set(nvk, cand[i]);
+ 		snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
+-		nvram_set(nvk, "6");
++		nvram_set(nvk, rwifi_bw_of(cand[i]));
+ 		notify_rc("restart_wireless");
+ 		rwifi_wait_chanspec(ifname, cand[i], RWIFI_SCAN_SETTLE);
+ 
+@@ -22041,7 +22099,7 @@ static void rwifi_scan_worker(int unit)
+ 			     (r[n].glitch > 200 ? 200 : r[n].glitch) / 10;
+ 		n++;
+ 		rwifi_scan_rank(r, n, order);
+-		rwifi_scan_publish(0, 0, cur, i + 1, ncand, r, n, order);
++		rwifi_scan_publish(unit, 0, 0, cur, i + 1, ncand, r, n, order);
+ 	}
+ 
+ 	aborted = !rwifi_scan_alive();
+@@ -22054,7 +22112,7 @@ static void rwifi_scan_worker(int unit)
+ 	notify_rc("restart_wireless");
+ 
+ 	rwifi_scan_rank(r, n, order);
+-	rwifi_scan_publish(1, aborted ? 1 : 0, "", ncand, ncand, r, n, order);
++	rwifi_scan_publish(unit, 1, aborted ? 1 : 0, "", ncand, ncand, r, n, order);
+ 	if (!aborted && n > 0)
+ 		logmessage("reaper_scan",
+ 			"auto-scan: best %s (nopkt %d%%, score %d) of %d channels",
+@@ -22191,9 +22249,9 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 		if (up && strlen(up) == 1 && up[0] >= '0' && up[0] <= '0' + RWIFI_MAXUNIT)
+ 			unit = up[0] - '0';
+ 		snprintf(tmp, sizeof(tmp), "wl%d_nband", unit < 0 ? 0 : unit);
+-		/* auto-scan is 6 GHz only (nband 4); it retunes the radio */
++		/* any real radio: 2.4 (nband 2), 5 (1) or 6 (4) GHz; the sweep retunes it */
+ 		if (unit < 0 || !rwifi_ifname(unit, ifname, sizeof(ifname)) ||
+-		    nvram_get_int(tmp) != 4) {
++		    (nvram_get_int(tmp) != 1 && nvram_get_int(tmp) != 2 && nvram_get_int(tmp) != 4)) {
+ 			websWrite(stream, "{\"err\":\"params\"}");
+ 			return;
+ 		}
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 6833597b02..27efe25a50 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=out
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dez
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 5c3d5c9848..a7c1e0d2e4 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=10 月
+ Reaper_c_mon_10=11 月
+ Reaper_c_mon_11=12 月
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 1353b2bcd7..0830f72f4b 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=říj
+ Reaper_c_mon_10=lis
+ Reaper_c_mon_11=pro
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 05a921a824..70aaa8f10e 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=okt.
+ Reaper_c_mon_10=nov.
+ Reaper_c_mon_11=dec.
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 87788caa92..ec35c20c31 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=Okt
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dez
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index cdc7b1d07f..ac876363f2 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=Oct
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dec
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index f80c13dd2a..8bc69e3cb7 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=Oct
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dic
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index a446198080..0ed9cd3a50 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=loka
+ Reaper_c_mon_10=marras
+ Reaper_c_mon_11=joulu
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index f3af130512..6d4642100c 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=oct.
+ Reaper_c_mon_10=nov.
+ Reaper_c_mon_11=déc.
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 80a553fb83..0b6923e9b8 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 82e82ce706..c14591eeec 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=Ott
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dic
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index ba3351a081..3194d6bb73 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=10月
+ Reaper_c_mon_10=11月
+ Reaper_c_mon_11=12月
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index fdc5852c44..09699c73d6 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=10월
+ Reaper_c_mon_10=11월
+ Reaper_c_mon_11=12월
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index ffdb6a8c6f..4d8d83a7f0 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=Okt
+ Reaper_c_mon_10=Nov
+ Reaper_c_mon_11=Dis
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index dc18f08f80..380daa60f9 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 28a89e4fd0..57aaa505c3 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=des
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 6b9c8f983b..9e2072663a 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=paź
+ Reaper_c_mon_10=lis
+ Reaper_c_mon_11=gru
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 36ab77bc02..1d33206ad4 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=oct.
+ Reaper_c_mon_10=nov.
+ Reaper_c_mon_11=dec.
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index b33251d933..4baf8ce7b3 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=окт
+ Reaper_c_mon_10=ноя
+ Reaper_c_mon_11=дек
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 4cca2fd048..c2cec36d0e 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -148,6 +148,7 @@ tr.curchan td{background:rgba(224,169,59,.07)}
+ <div class="panel">
+   <h2><#RWIF_30#></h2>
+   <div class="sub"><#RWIF_31#></div>
++  <div class="fld"><label><#RWIF_58#></label><select id="scanband"></select></div>
+   <div>
+     <button class="btn hot" id="scango" onclick="scanStart()"><#RWIF_32#></button>
+     <button class="btn" id="scanstop" onclick="scanStop()" disabled><#RWIF_12#></button>
+@@ -315,6 +316,17 @@ function render(){
+       cu.appendChild(o);
+     }
+   }
++  var sb=document.getElementById("scanband");
++  if(sb&&sb.options.length===0){
++    var so;
++    for(i=0;i<ST.bands.length;i++){
++      b=ST.bands[i];
++      so=document.createElement("option");
++      so.value=b.unit; so.text=(BANDNAME[b.nband]||b.ifname);
++      if(b.nband===4) so.selected=true;
++      sb.appendChild(so);
++    }
++  }
+   var pill=document.getElementById("cappill");
+   pill.style.display=ST.cap?"":"none";
+   document.getElementById("capstop").disabled=!ST.cap;
+@@ -454,24 +466,58 @@ function six_band(){
+   for(i=0;ST&&i<ST.bands.length;i++) if(ST.bands[i].nband===4) return ST.bands[i];
+   return null;
+ }
+-function curCs(){ var b=six_band(); return (b&&b.run_chanspec)||""; }
+-/* physical 320 block id: primaries in one block share spectrum (matches the C) */
+-function blockKey(cs){
+-  var m=/^6g(\d+)\/320-(\d+)/.exec(cs||""); if(!m) return "";
+-  var ch=+m[1], sub=+m[2], base=sub===2?33:1;
+-  return sub+"_"+Math.floor((ch-base)/64);
+-}
+-function chFreqMHz(ch){ return 5950+5*ch; }
+-function blockRange(cs){
+-  var m=/^6g(\d+)\/320-(\d+)/.exec(cs||""); if(!m) return null;
+-  var ch=+m[1], sub=+m[2], base=sub===2?33:1, blk=Math.floor((ch-base)/64);
+-  var lo=base+blk*64, hi=lo+63;
+-  return {loMHz:chFreqMHz(lo)-10, hiMHz:chFreqMHz(hi)+10};
+-}
+-function freqSpan(cs){
+-  var b=blockRange(cs); if(!b) return "&ndash;";
++function nbandOf(unit){
++  var i; for(i=0;ST&&i<ST.bands.length;i++) if(ST.bands[i].unit===unit) return ST.bands[i].nband;
++  return 4;
++}
++/* band + current channel of the radio the sweep ran on (from SCANDATA.unit) */
++function scanNband(){ return SCANDATA?nbandOf(SCANDATA.unit):4; }
++function scanRunCs(){
++  var i,u=SCANDATA?SCANDATA.unit:-1;
++  for(i=0;ST&&i<ST.bands.length;i++) if(ST.bands[i].unit===u) return ST.bands[i].run_chanspec||"";
++  return "";
++}
++function chOf(cs){
++  var m=/6g(\d+)/.exec(cs||""); if(m) return +m[1];
++  m=/^(\d+)/.exec(cs||""); return m?+m[1]:0;
++}
++function chFreqMHz(ch,nb){
++  if(nb===4) return 5950+5*ch;   /* 6 GHz */
++  if(nb===1) return 5000+5*ch;   /* 5 GHz */
++  return 2407+5*ch;              /* 2.4 GHz (ch1=2412) */
++}
++/* identity for the "current channel" mark: 6 GHz by 320 block, 5/2.4 by channel */
++function blockKey(cs,nb){
++  if(nb===4){
++    var m=/^6g(\d+)\/320-(\d+)/.exec(cs||""); if(!m) return "";
++    var ch=+m[1], sub=+m[2], base=sub===2?33:1;
++    return "6_"+sub+"_"+Math.floor((ch-base)/64);
++  }
++  var c=chOf(cs); return c?((nb===1?"5_":"2_")+c):"";
++}
++function blockRange(cs,nb){
++  if(nb===4){
++    var m=/^6g(\d+)\/320-(\d+)/.exec(cs||""); if(!m) return null;
++    var ch=+m[1], sub=+m[2], base=sub===2?33:1, blk=Math.floor((ch-base)/64);
++    var lo=base+blk*64, hi=lo+63;
++    return {loMHz:chFreqMHz(lo,4)-10, hiMHz:chFreqMHz(hi,4)+10};
++  }
++  var c=chOf(cs); if(!c) return null;
++  return {loMHz:chFreqMHz(c,nb)-10, hiMHz:chFreqMHz(c,nb)+10};   /* 20 MHz wide */
++}
++function freqSpan(cs,nb){
++  var b=blockRange(cs,nb); if(!b) return "&ndash;";
+   return (b.loMHz/1000).toFixed(2)+"&ndash;"+(b.hiMHz/1000).toFixed(2)+" GHz";
+ }
++/* pin target per band: 6 GHz/2.4 pin as-is; 5 GHz maps the winning 20 MHz
++ * channel to its usable non-DFS 80 MHz block */
++function pinTarget(cs,nb){
++  if(nb!==1) return cs;
++  var c=chOf(cs);
++  if(c>=36&&c<=48) return "36/80";
++  if(c>=149&&c<=161) return "149/80";
++  return String(c);
++}
+ function showToast(msg){
+   var t=document.getElementById("toast"); if(!t) return;
+   t.textContent=msg; t.className="toast show";
+@@ -485,11 +531,12 @@ function keepSessionAlive(){
+   try{ if(window.parent&&window.parent!==window) window.parent.document.dispatchEvent(new MouseEvent("mousemove")); }catch(e){}
+ }
+ function scanStart(){
+-  var six=six_band();
+-  if(!six){alert("<#RWIF_38#>");return;}
++  var sel=document.getElementById("scanband");
++  var unit=(sel&&sel.value!=="")?parseInt(sel.value,10):-1;
++  if(isNaN(unit)||unit<0){ var six=six_band(); if(!six){alert("<#RWIF_38#>");return;} unit=six.unit; }
+   if(!confirm("<#RWIF_33#>")) return;
+   var x=new XMLHttpRequest();
+-  x.open("GET","/reaper_wifi.cgi?action=scanstart&unit="+six.unit+"&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=scanstart&unit="+unit+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4) return;
+     var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
+@@ -549,12 +596,12 @@ function renderScan(){
+     setTimeout(function(){bar.style.display="none";},1200);
+     prog.textContent=SCANDATA.aborted?"<#RWIF_39#>":"<#RWIF_40#>";
+   }
+-  var ck=blockKey(curCs());
++  var nb=scanNband(), ck=blockKey(scanRunCs(),nb);
+   document.getElementById("scanempty").style.display=res.length?"none":"";
+   document.getElementById("scanwrap").style.display=res.length?"":"none";
+   var rows="",i,r,iscur;
+   for(i=0;i<res.length;i++){
+-    r=res[i]; iscur=ck&&blockKey(r.chanspec)===ck;
++    r=res[i]; iscur=ck&&blockKey(r.chanspec,nb)===ck;
+     rows+="<tr"+(iscur?" class=\"curchan\"":"")+"><td class=\"num\">"+(i+1)+"</td>"+
+       "<td class=\"mono\">"+esc(r.chanspec)+
+         (i===0?" <span class=\"badge best\"><#RWIF_41#></span>":"")+
+@@ -573,63 +620,74 @@ function renderScan(){
+   document.getElementById("scandl").disabled=!have;
+ }
+ function scanPin(){
+-  var six=six_band();
+-  if(!six||!SCANBEST||!SCANBEST.chanspec) return;
+-  var msg="<#RWIF_42#> "+SCANBEST.chanspec+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
+-  var res=(SCANDATA&&SCANDATA.results)||[], ck=blockKey(curCs()), j;
+-  for(j=0;j<res.length;j++) if(ck&&blockKey(res[j].chanspec)===ck){
++  if(!SCANBEST||!SCANBEST.chanspec||!SCANDATA) return;
++  var u=SCANDATA.unit, nb=nbandOf(u), pin=pinTarget(SCANBEST.chanspec,nb);
++  var msg="<#RWIF_42#> "+pin+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
++  var res=(SCANDATA.results)||[], ck=blockKey(scanRunCs(),nb), j;
++  for(j=0;j<res.length;j++) if(ck&&blockKey(res[j].chanspec,nb)===ck){
+     msg+="\n<#RWIF_56#> "+res[j].chanspec+" (nopkt "+(+res[j].nopkt).toFixed(0)+"%)"; break;
+   }
+   if(!confirm(msg)) return;
+-  submitApply(six.unit,SCANBEST.chanspec,bwCode(SCANBEST.chanspec));
+-  showToast("<#RWIF_57#> "+SCANBEST.chanspec);
++  submitApply(u,pin,bwCode(pin));
++  showToast("<#RWIF_57#> "+pin);
+ }
++var BANDLBL={4:"6 GHz",1:"5 GHz",2:"2.4 GHz"};
+ /* ---- downloadable / printable landscape report (self-contained HTML + SVG) ---- */
+-function buildSpectrumSVG(res, cur){
++function buildSpectrumSVG(res, cur, nb){
+   if(!res.length) return "";
+-  var W=1000, padL=8, padR=8, plotW=W-padL-padR, fMin=5925, fMax=7125, span=fMax-fMin;
++  var AX={4:{lo:5925,hi:7125,step:200,dec:1,w:"320 MHz"},
++          1:{lo:5150,hi:5900,step:100,dec:2,w:"20 MHz"},
++          2:{lo:2400,hi:2495,step:20,dec:3,w:"20 MHz"}}[nb]||{lo:5925,hi:7125,step:200,dec:1,w:"320 MHz"};
++  var W=1000, padL=8, padR=8, plotW=W-padL-padR, fMin=AX.lo, fMax=AX.hi, span=fMax-fMin;
+   function X(m){ return padL+(m-fMin)/span*plotW; }
+-  var ck=blockKey(cur);
+-  var items=res.map(function(r){ var b=blockRange(r.chanspec)||{loMHz:fMin,hiMHz:fMin}; return {r:r,b:b}; })
++  var ck=blockKey(cur,nb);
++  var items=res.map(function(r){ var b=blockRange(r.chanspec,nb)||{loMHz:fMin,hiMHz:fMin}; return {r:r,b:b}; })
+     .sort(function(a,b){ return a.b.loMHz-b.b.loMHz; });
+   var gh=40+items.length*34, H=gh+34;
+   var s='<svg viewBox="0 0 '+W+' '+H+'" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial,sans-serif">';
+-  s+='<text x="'+padL+'" y="18" font-size="12" fill="#333" font-weight="700">6 GHz band occupancy &mdash; each bar is one 320 MHz channel, placed by frequency</text>';
++  s+='<text x="'+padL+'" y="18" font-size="12" fill="#333" font-weight="700">'+(BANDLBL[nb]||"")+' band occupancy &mdash; each bar is one '+AX.w+' channel, placed by frequency</text>';
+   var f;
+-  for(f=6000;f<=7100;f+=200){
++  for(f=Math.ceil(fMin/AX.step)*AX.step; f<=fMax; f+=AX.step){
+     var gx=X(f).toFixed(1);
+     s+='<line x1="'+gx+'" y1="30" x2="'+gx+'" y2="'+gh+'" stroke="#e6e6e6" stroke-width="1"/>';
+-    s+='<text x="'+gx+'" y="'+(gh+16)+'" font-size="10" fill="#999" text-anchor="middle">'+(f/1000).toFixed(1)+'</text>';
++    s+='<text x="'+gx+'" y="'+(gh+16)+'" font-size="10" fill="#999" text-anchor="middle">'+(f/1000).toFixed(AX.dec)+'</text>';
+   }
+   s+='<text x="'+(W-padR)+'" y="'+(gh+16)+'" font-size="10" fill="#999" text-anchor="end">GHz</text>';
+   var i;
+   for(i=0;i<items.length;i++){
+     var r=items[i].r, b=items[i].b, y=36+i*34, x1=X(b.loMHz), x2=X(b.hiMHz), w=Math.max(8,x2-x1), np=+r.nopkt;
+     var col=np<10?"#1a7f4b":(np<25?"#d4a017":"#c1121f");
+-    var isbest=(r===res[0]), iscur=ck&&blockKey(r.chanspec)===ck;
++    var isbest=(r===res[0]), iscur=ck&&blockKey(r.chanspec,nb)===ck;
++    var lbl=esc(r.chanspec)+(isbest?" ★":"")+(iscur?" (cur)":"");
+     s+='<rect x="'+x1.toFixed(1)+'" y="'+y+'" width="'+w.toFixed(1)+'" height="26" rx="4" fill="'+col+'" fill-opacity="0.88" stroke="'+(isbest?"#111":"#0003")+'" stroke-width="'+(isbest?2:1)+'"/>';
+-    s+='<text x="'+(x1+7).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#fff" font-weight="600">'+esc(r.chanspec)+(isbest?" ★":"")+(iscur?" (current)":"")+'</text>';
+-    s+='<text x="'+(x2-7).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#fff" font-weight="700" text-anchor="end">'+np.toFixed(0)+'%</text>';
++    if(w>=95){
++      s+='<text x="'+(x1+7).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#fff" font-weight="600">'+lbl+'</text>';
++      s+='<text x="'+(x2-7).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#fff" font-weight="700" text-anchor="end">'+np.toFixed(0)+'%</text>';
++    } else {
++      s+='<text x="'+(x1-5).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#333" font-weight="600" text-anchor="end">'+lbl+'</text>';
++      s+='<text x="'+(x2+5).toFixed(1)+'" y="'+(y+17)+'" font-size="11" fill="#333" font-weight="700">'+np.toFixed(0)+'%</text>';
++    }
+   }
+   return s+'</svg>';
+ }
+ function buildReportHTML(){
+-  var res=(SCANDATA&&SCANDATA.results)||[], cur=curCs()||"-", ck=blockKey(cur);
++  var res=(SCANDATA&&SCANDATA.results)||[], nb=scanNband(), bn=BANDLBL[nb]||"Wi-Fi";
++  var cur=scanRunCs()||"-", ck=blockKey(cur,nb);
+   var when=new Date().toLocaleString(), terr=(ST&&ST.territory)||"-";
+   var best=res.length?res[0].chanspec:"-", rows="", i;
+   for(i=0;i<res.length;i++){
+-    var r=res[i], iscur=ck&&blockKey(r.chanspec)===ck;
++    var r=res[i], iscur=ck&&blockKey(r.chanspec,nb)===ck;
+     var cls=r.nopkt<10?"clean":(r.nopkt<25?"mod":"dirty");
+     rows+="<tr class=\""+(i===0?"best ":"")+(iscur?"cur":"")+"\"><td>"+(i+1)+(i===0?" ★":"")+"</td>"+
+       "<td class=\"m\">"+esc(r.chanspec)+(iscur?" (current)":"")+"</td>"+
+-      "<td class=\"m\">"+freqSpan(r.chanspec)+"</td>"+
++      "<td class=\"m\">"+freqSpan(r.chanspec,nb)+"</td>"+
+       "<td class=\"n "+cls+"\">"+(+r.nopkt).toFixed(0)+"%</td>"+
+       "<td class=\"n\">"+(+r.txop).toFixed(0)+"%</td>"+
+       "<td class=\"n\">"+esc(r.glitch)+"</td>"+
+       "<td class=\"n\">"+(r.knoise!=null?(+r.knoise).toFixed(0)+" dBm":"-")+"</td>"+
+       "<td class=\"n\">"+(+r.score).toFixed(0)+"</td></tr>";
+   }
+-  return '<!doctype html><html><head><meta charset="utf-8"><title>Reaper 6 GHz Channel Scan</title>'+
++  return '<!doctype html><html><head><meta charset="utf-8"><title>Reaper '+bn+' Channel Scan</title>'+
+     '<style>@page{size:landscape;margin:12mm}'+
+     'body{font-family:Segoe UI,Arial,sans-serif;color:#111;margin:0;padding:18px}'+
+     'h1{font-size:19px;margin:0 0 2px}.sub{color:#555;font-size:12px;margin-bottom:12px}'+
+@@ -642,17 +700,17 @@ function buildReportHTML(){
+     '.legend{font-size:11px;margin:10px 0}.legend span{margin-right:16px}'+
+     '.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}'+
+     'footer{margin-top:14px;color:#888;font-size:10px}</style></head><body>'+
+-    '<h1>Reaper &mdash; 6 GHz Channel Quality Scan</h1>'+
+-    '<div class="sub">Auto Scan of the 6 GHz 320 MHz channels, ranked by cleanliness (lower score = cleaner).</div>'+
++    '<h1>Reaper &mdash; '+bn+' Channel Quality Scan</h1>'+
++    '<div class="sub">Auto Scan of the '+bn+' channels, ranked by cleanliness (lower score = cleaner).</div>'+
+     '<div class="meta"><b>Generated:</b> '+esc(when)+' &nbsp;&middot;&nbsp; <b>Region:</b> '+esc(terr)+
+       ' &nbsp;&middot;&nbsp; <b>Current channel:</b> '+cur+' &nbsp;&middot;&nbsp; <b>Recommended:</b> '+best+'</div>'+
+-    buildSpectrumSVG(res, cur)+
++    buildSpectrumSVG(res, cur, nb)+
+     '<div class="legend"><span><i class="sw" style="background:#1a7f4b"></i>Clean (nopkt &lt;10%)</span>'+
+       '<span><i class="sw" style="background:#d4a017"></i>Moderate (10&ndash;25%)</span>'+
+       '<span><i class="sw" style="background:#c1121f"></i>Dirty (&gt;25%)</span></div>'+
+     '<table><thead><tr><th>#</th><th>Channel</th><th>Frequency</th><th>nopkt</th><th>txop</th><th>glitch</th><th>noise</th><th>score</th></tr></thead><tbody>'+
+     rows+'</tbody></table>'+
+-    '<footer>Reaper firmware &middot; on-router chanim_stats (~5 samples/channel) &middot; nopkt = undecodable-energy occupancy; txop = free airtime; lower score = cleaner.</footer>'+
++    '<footer>Reaper firmware &middot; on-router chanim_stats &middot; nopkt = undecodable-energy occupancy; txop = free airtime; lower score = cleaner.</footer>'+
+     '</body></html>';
+ }
+ function printReport(){
+@@ -664,9 +722,10 @@ function printReport(){
+ }
+ function downloadReport(){
+   if(!(SCANDATA&&SCANDATA.results&&SCANDATA.results.length)) return;
++  var tag={4:"6g",1:"5g",2:"2g"}[scanNband()]||"wifi";
+   var blob=new Blob([buildReportHTML()],{type:"text/html"});
+   var a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+-  a.download="reaper_6g_scan.html";
++  a.download="reaper_"+tag+"_scan.html";
+   document.body.appendChild(a); a.click();
+   setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},2000);
+ }
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 1cebb55ca1..59b7657af7 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index a02f220c6a..7bbb280f3f 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=okt
+ Reaper_c_mon_10=nov
+ Reaper_c_mon_11=dec
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 490e5ccaad..2ca014bd44 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=ต.ค.
+ Reaper_c_mon_10=พ.ย.
+ Reaper_c_mon_11=ธ.ค.
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index ed07ff5f9d..09b23cb55c 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=Eki
+ Reaper_c_mon_10=Kas
+ Reaper_c_mon_11=Ara
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 3982cef054..14e34101fb 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=10 月
+ Reaper_c_mon_10=11 月
+ Reaper_c_mon_11=12 月
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 5e7ba4bff5..33cc08ac53 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5647,10 +5647,10 @@ Reaper_c_mon_9=жовт.
+ Reaper_c_mon_10=лист.
+ Reaper_c_mon_11=груд.
+ RWIF_29=Clear
+-RWIF_30=Auto Scan (6 GHz)
+-RWIF_31=Sweeps the 6 GHz 320 MHz channels, measures interference on each, and ranks them so you can pin the cleanest. This is the only tool here that changes the channel.
++RWIF_30=Auto Scan
++RWIF_31=Pick a band, sweep its channels, and rank them by cleanliness so you can pin the best. This is the only tool here that changes a channel.
+ RWIF_32=Start Auto Scan
+-RWIF_33=Auto Scan retunes the 6 GHz radio to each candidate channel in turn, briefly dropping every 6 GHz client each time, and takes about two minutes. Run it from a wired client or a device on another band. Continue?
++RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn, briefly dropping its clients each time, and takes a few minutes. Run it from a wired client or another band. Continue?
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+@@ -5675,3 +5675,4 @@ RWIF_54=sec left
+ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
++RWIF_58=Band
+-- 
+2.25.1
+

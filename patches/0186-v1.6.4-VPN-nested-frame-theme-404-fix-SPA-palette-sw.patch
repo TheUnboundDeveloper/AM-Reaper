@@ -1,0 +1,220 @@
+From 4e84a94ec58284fd73c9d60fb314dd2ea8583927 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 19 Jul 2026 12:26:05 -0400
+Subject: [PATCH] v1.6.4: VPN nested-frame theme 404 fix + SPA palette sweep;
+ SDN/MLO expand cut-off fix; tablet viewport pan
+
+---
+ release/src-rt/version.conf                   |  2 +-
+ .../src/router/www/reaper/reaper_content.css  | 42 +++++++++++++++++++
+ release/src/router/www/reaper_shell.asp       | 15 ++++++-
+ .../router/www/sysdep/FUNCTION/SDN/MLO.asp    | 12 +++++-
+ .../router/www/sysdep/FUNCTION/SDN/SDN.asp    | 16 ++++++-
+ .../VPNC_V2/Advanced_VPNClient_Content.asp    |  5 ++-
+ .../VPNS_V2/Advanced_VPNServer_Content.asp    |  5 ++-
+ 7 files changed, 90 insertions(+), 7 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index e8295ca277..2e616f6a72 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.6.3
++EXTENDNO=Reaper_v1.6.4
+ 
+ RCNO=0
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 67a4252fd7..39628e010e 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -737,3 +737,45 @@ body.bg,.container.no_highlights,.content_container{background:transparent!impor
+    space. Center the block so it reads as intentional (data-viz untouched). */
+ #graphArea{max-width:772px!important;margin-left:auto!important;margin-right:auto!important}
+ #svgContainer,#tableContainer{margin-left:auto!important;margin-right:auto!important}
++
++/* ---------- 22. VPN SPA palette sweep + nested-frame CSS 404 fix (v1.6.4) ----------
++   The reaperThemeFrame hook in the two VPN wrapper pages requested this file
++   with a ?t= cache-bust query; httpd 404s querystringed static paths, so the
++   hook NEVER loaded this file into vpnc.html (which has no head close tag, so
++   serve-time injection cannot reach it either) - sections 20-21 never rendered
++   there. Owner-confirmed live 2026-07-19 (devtools: 404 + stock blue button).
++   Fixed by dropping the query in both wrappers; these rules cover the stock
++   blues and cyan the GPL 102_39995 SPA carries beyond sections 20-21.
++   AUTH-GATED - validate on device. */
++/* primary action buttons (stock 0091FF / 0085FF) */
++.action_container .btn_container,.del_profile .action_btn_container .del,
++.customize_alert .action_btn_container .ok,
++.client_content_bg .client_contorl_bg .contorl_btn{background:#E10600!important;color:#fff!important}
++.btn_item .btn_container{border-color:rgba(225,6,0,.6)!important}
++/* checked checkbox / selected radio + option card: selection accent */
++.checkbox.on{background-color:#E10600!important;box-shadow:0 0 0 1.5px rgba(225,6,0,.7)!important}
++.radio_options_container .radio_container.selected,
++.btn_options_container .btn_container.selected{border-color:rgba(225,6,0,.6)!important}
++.radio_options_container .radio_container.selected .radio_icon{border-color:rgba(225,6,0,.6)!important}
++.radio_options_container .radio_container.selected .radio_icon:before{background-color:#E10600!important}
++/* text input focus ring */
++.textInput:focus,.textareaInput:focus{box-shadow:0 0 3px rgba(225,6,0,.6)!important;border-color:rgba(225,6,0,.6)!important}
++/* dropdown selected option + its check chevron */
++.custom_select_container .select_options_container div.selected{color:#E10600!important}
++.custom_select_container .select_options_container div.selected:before{border-color:#B7B1A4!important}
++/* connected-ok status text reads jade, not stock blue */
++.svr_item_container.internet,
++.svr_item_container.active .svr_item_sub_info .vpn_status,
++.svr_item_container.internet.connected .svr_item_sub_info,
++.wan_status_container.connected .connect_status_text{color:#4FB286!important}
++/* the small title indicator bar above "Internet" */
++.wan_status_container .connect_title:before{border-top-color:#E10600!important}
++/* policy links */
++.profile_setting_item.policy .text_content > a{color:#E0A93B!important}
++.feature_desc .title{color:#ECE7DB!important}
++/* VPN Server: active client detail icon + pinned pin */
++.client_content_bg .detail_icon.active{border-color:#E10600!important;color:#E10600!important}
++.client_content_bg .client_info_bg .push_pin.active{background-color:#E10600!important}
++/* VPN Server notice box: stock cyan 00DEDA (banned hue) to amber */
++.notice_container{border-color:#E0A93B!important}
++.notice_container .notice_title{color:#E0A93B!important}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index e530b24670..69657346f0 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -105,7 +105,7 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+    iframe scrollbar on long pages (SDN.asp). min-height keeps short pages
+    filling the viewport under the sticky 64px topbar. */
+ .stage{grid-column:2;grid-row:2;min-height:calc(100vh - 64px);background:var(--bg);
+-  display:flex;flex-direction:column}
++  display:flex;flex-direction:column;overflow-x:auto;-webkit-overflow-scrolling:touch}
+ #tabbar{display:none;gap:6px;padding:12px 16px 0;flex-wrap:wrap;flex:0 0 auto}
+ #tabbar a.rtab{font-family:var(--hdr);font-weight:600;letter-spacing:.05em;font-size:13px;
+   color:var(--bone-dim);text-decoration:none;padding:8px 14px;border:1px solid var(--line-soft);
+@@ -120,6 +120,9 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+ @media (max-width:1450px){ .pills .pill:nth-child(n+5){display:none} }
+ @media (max-width:1280px){ .pills .pill:nth-child(n+4){display:none} }
+ @media (max-width:1100px){ .pills .pill:nth-child(n+3){display:none} }
++/* tablets (iPad / Windows tablet): drop the pills so the header always fits;
++   wide framed pages pan on the stage scrollbar (width-grow JS below) */
++@media (max-width:1180px){ .pills{display:none} .top{gap:10px;padding:12px 14px} }
+ </style>
+ </head>
+ <body>
+@@ -375,10 +378,18 @@ function buildRail(menuTree){
+       if(!d||!d.documentElement) return;
+       var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0);
+       if(h>40 && Math.abs(h-f.offsetHeight)>4) f.style.height=h+'px';
++      /* v1.6.4 tablet: also grow WIDTH when the framed page cannot shrink to
++         the column (fixed 760px stock tables on a narrow viewport) - the .stage
++         then pans on its own scrollbar instead of clipping (scrolling=no
++         swallows any inner pan). Cleared once the column is wide enough. */
++      var cw=f.parentElement?f.parentElement.clientWidth:0;
++      var w=Math.max(d.documentElement.scrollWidth, d.body?d.body.scrollWidth:0);
++      if(cw>0 && w>cw+4){ if(Math.abs(w-f.offsetWidth)>4) f.style.width=w+'px'; }
++      else if(f.style.width) f.style.width='';
+     }catch(e){}
+   }
+   f.addEventListener('load', function(){
+-    f.style.height='';           /* reset before measuring the new page */
++    f.style.height=''; f.style.width='';   /* reset before measuring the new page */
+     try{
+       if(ro){ ro.disconnect(); ro=null; }
+       var d=f.contentDocument;
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp b/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
+index c6c4267904..ced44f4eac 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
+@@ -22,6 +22,16 @@
+ }
+ </style>
+ <script>
++/* reaper v1.6.4: same grow-only observer as SDN.asp - the MLO SPA shares the
++   rwd resize mechanism and its unhooked-expand cut-off */
++function reaperGrowFrame(ifr){
++	try{
++		var d=ifr.contentDocument; if(!d) return;
++		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
++		grow(); setTimeout(grow,400); setTimeout(grow,1200);
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++	}catch(e){}
++}
+ function initial(){
+ 	show_menu();
+ 	setTimeout(function(){
+@@ -40,7 +50,7 @@ function initial(){
+ 		if(curTheme != ""){
+ 			curTheme = "?current_theme=" + curTheme;
+ 		}
+-		document.getElementById("mlo_iframe").setAttribute("src", "/SDN/mlo.html" + curTheme);
++		var _mifr=document.getElementById("mlo_iframe"); _mifr.addEventListener("load", function(){ reaperGrowFrame(_mifr); }); _mifr.setAttribute("src", "/SDN/mlo.html" + curTheme);
+ 	},((window.location.protocol == "https:") ? 1000 : 50));
+ }
+ </script>
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+index 7033d989dd..4d7cbb075e 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+@@ -22,6 +22,20 @@
+ }
+ </style>
+ <script>
++/* reaper v1.6.4: stock resize_iframe_height (rwd_component.js) sizes the nested
++   SPA iframe only on the SPA's own events; expanding a section it does not hook
++   (SDN profile General settings) grows the content past the frame, and the
++   overflow-hidden SPA doc cannot scroll to it (the "shell cut off" bug).
++   Grow-only observer keeps the frame at least content-tall; stock keeps
++   ownership of shrinks. */
++function reaperGrowFrame(ifr){
++	try{
++		var d=ifr.contentDocument; if(!d) return;
++		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
++		grow(); setTimeout(grow,400); setTimeout(grow,1200);
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); }
++	}catch(e){}
++}
+ function initial(){
+ 	show_menu();
+ 	setTimeout(function(){
+@@ -40,7 +54,7 @@ function initial(){
+ 		if(curTheme != ""){
+ 			curTheme = "?current_theme=" + curTheme;
+ 		}
+-		document.getElementById("sdn_iframe").setAttribute("src", "/SDN/sdn.html" + curTheme);
++		var _sifr=document.getElementById("sdn_iframe"); _sifr.addEventListener("load", function(){ reaperGrowFrame(_sifr); }); _sifr.setAttribute("src", "/SDN/sdn.html" + curTheme);
+ 	},((window.location.protocol == "https:") ? 1000 : 50));
+ }
+ </script>
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+index 535959a8bf..726797ed74 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+@@ -29,7 +29,10 @@ function reaperThemeFrame(ifr){
+ 		var d=ifr.contentDocument; if(!d) return;
+ 		if(!d.querySelector('link[href*="reaper_content"]')){
+ 			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
+-			l.href="/reaper/reaper_content.css?t="+(new Date()).getTime(); (d.head||d.documentElement).appendChild(l);
++			/* NO cache-bust query: httpd 404s a querystringed static path, which
++			   silently killed this hook from v1.2.4b to v1.6.3 (vpnc.html has no
++			   head close tag, so serve-time injection cannot cover it either) */
++			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
+ 		}
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+index f9b5724eb1..0407c7fdae 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+@@ -29,7 +29,10 @@ function reaperThemeFrame(ifr){
+ 		var d=ifr.contentDocument; if(!d) return;
+ 		if(!d.querySelector('link[href*="reaper_content"]')){
+ 			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
+-			l.href="/reaper/reaper_content.css?t="+(new Date()).getTime(); (d.head||d.documentElement).appendChild(l);
++			/* NO cache-bust query: httpd 404s a querystringed static path (the
++			   vpnc.html lesson, v1.6.4) - vpns.html also gets serve-time injection,
++			   this hook is its belt-and-braces */
++			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
+ 		}
+ 		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-- 
+2.25.1
+

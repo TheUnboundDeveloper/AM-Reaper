@@ -306,10 +306,10 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (validated 2026-07-18, produced the 181-patch
-v1.6.0 series — `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a
-matching `release/src/router` tree hash; the 178-patch v1.5.9 and 150-patch v1.5.0a runs
-were validated the same way. NOTE the v1.6.0 sync also cherry-picked the `radio-count`
+**Patch-series regeneration recipe (validated 2026-07-19, produced the 190-patch
+v1.6.6 series — `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a
+matching `release/src/router` tree hash; the 181-patch v1.6.0, 178-patch v1.5.9 and
+150-patch v1.5.0a runs were validated the same way. NOTE the v1.6.0 sync also cherry-picked the `radio-count`
 dashboard + the v1.6.0 commit onto `be96u-only` — they had been built on the `rt-be86u`
 branch; always confirm `git branch --show-current` is `be96u-only` before an RT-BE96U
 build/commit). One extra step since the 2026-07-13 compliance scrub: after

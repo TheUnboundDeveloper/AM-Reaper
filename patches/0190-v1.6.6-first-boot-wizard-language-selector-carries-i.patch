@@ -1,0 +1,172 @@
+From 47c169a00973a77f5a93a1264bad0f8621bc0a42 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 19 Jul 2026 17:07:42 -0400
+Subject: [PATCH] v1.6.6: first-boot wizard language selector (carries into the
+ UI) + QoS cake jitter tuning (ack-filter on upload, rtt 50ms both directions)
+
+---
+ release/src-rt/version.conf                 |  2 +-
+ release/src/router/rc/qos.c                 | 24 +++++++-
+ release/src/router/www/Reaper_FirstBoot.asp | 67 +++++++++++++++++++++
+ 3 files changed, 89 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 935537f091..a728a86593 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.6.5
++EXTENDNO=Reaper_v1.6.6
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index c3cf629dcb..91348c06fc 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2998,6 +2998,18 @@ int start_cake(void)
+ 	snprintf(nvnat, sizeof (nvnat), "wan%d_nat_x", wan_primary_ifunit());
+ 	nat = nvram_get_int(nvnat);
+ 
++	/* v1.6.7: cake AQM RTT target. Cake's default "internet" tin assumes a
++	 * 100ms RTT; on a real broadband path the base RTT is well under that, so
++	 * the default lets the standing queue (and thus jitter) run larger than it
++	 * needs to. Default 50ms mildly tightens the target toward this link's true
++	 * base RTT - enough to trim jitter, not so aggressive it starts dropping
++	 * early and costing throughput. Overridable via nvram qos_cake_rtt (ms) so
++	 * it can be tuned on metal without a rebuild (0/unset -> 50). */
++	int cake_rtt = nvram_get_int("qos_cake_rtt");
++	if (cake_rtt <= 0) cake_rtt = 50;
++	char rttstr[24];
++	snprintf(rttstr, sizeof(rttstr), "rtt %dms", cake_rtt);
++
+ 	/* Config parameters */
+ 	fprintf(f,
+ 		"#!/bin/sh\n\n"
+@@ -3010,8 +3022,12 @@ int start_cake(void)
+ 		"FRAMING='%s'\n"
+ 		"ULPRIOQUEUE='diffserv3'\n"
+ 		"DLPRIOQUEUE='besteffort'\n"
+-		"ULOPTIONS='%s dual-srchost'\n"
+-		"DLOPTIONS='%s wash dual-dsthost ingress'\n",
++		/* ack-filter is upload-only: the uplink is the constrained direction and
++		 * carries the ACK flood for every big download. Thinning redundant ACKs
++		 * frees uplink headroom and cuts the upstream jitter that asymmetry
++		 * (here ~2.5:1) creates. Do NOT put it on the download tin. */
++		"ULOPTIONS='%s ack-filter dual-srchost %s'\n"
++		"DLOPTIONS='%s wash dual-dsthost ingress %s'\n",
+ 
+ 		wan_ifname,
+ 		wan_ifname,
+@@ -3021,7 +3037,9 @@ int start_cake(void)
+ 		overheadstr,
+ 		mode,
+ 		(nat ? "nat" : ""),
+-		(nat ? "nat" : "")
++		rttstr,
++		(nat ? "nat" : ""),
++		rttstr
+ 	);
+ 
+ 	append_custom_config("cake-qos.conf",f);
+diff --git a/release/src/router/www/Reaper_FirstBoot.asp b/release/src/router/www/Reaper_FirstBoot.asp
+index b6fb738c00..0bb838512d 100644
+--- a/release/src/router/www/Reaper_FirstBoot.asp
++++ b/release/src/router/www/Reaper_FirstBoot.asp
+@@ -65,10 +65,21 @@ input:focus{border-color:var(--crimson)}
+ .steps span{flex:1;height:3px;border-radius:2px;background:var(--line-soft)}
+ .steps span.on{background:var(--crimson)}
+ .spin{display:none;margin-top:18px;text-align:center;font-size:12.5px;color:var(--bone-dim)}
++/* language selector: lets a non-English user switch the wizard (and the rest of the
++   UI) to their language before setting credentials */
++.langbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:-8px -4px 8px}
++.langbar .lbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.14em;font-size:9.5px;color:var(--steel)}
++.langsel{background:#0b0b0e;color:var(--bone-dim);border:1px solid var(--line-soft);border-radius:7px;
++  font-family:var(--body);font-size:12px;padding:5px 8px;outline:none;cursor:pointer;max-width:180px}
++.langsel:focus{border-color:var(--crimson)}
++.fbov{display:none;position:fixed;inset:0;z-index:50;background:rgba(4,4,5,.88);
++  align-items:center;justify-content:center;font-family:var(--hdr);letter-spacing:.16em;
++  text-transform:uppercase;font-size:13px;color:var(--bone)}
+ </style>
+ </head>
+ <body>
+ <div class="card">
++  <div class="langbar"><span class="lbl"><#Reaper_c_language#></span><select class="langsel" id="fb_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+   <div class="brand"><div class="mark">R<b>3</b>APER</div></div>
+   <div class="eyebrow"><#RFB_01#></div>
+   <div class="steps"><span class="on"></span><span id="step2bar"></span></div>
+@@ -94,6 +105,24 @@ input:focus{border-color:var(--crimson)}
+   </form>
+ </div>
+ 
++<!-- language-selector plumbing (mirrors the shell): shown_language_css emits the
++     localized language list; the change handler applies via titleForm and reloads so
++     the wizard re-renders in the chosen language. preferred_lang is nvram, so the
++     choice carries through to the rest of the UI once the wizard is satisfied. -->
++<div class="fbov" id="fb_lang_ov"><#Reaper_c_applying#></div>
++<iframe name="fb_hidden" id="fb_hidden" style="display:none" title="hidden"></iframe>
++<form method="post" name="titleForm" id="titleForm" action="/start_apply.htm" target="fb_hidden" style="display:none">
++  <input type="hidden" name="next_page" value="">
++  <input type="hidden" name="current_page" value="Reaper_FirstBoot.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="">
++  <input type="hidden" name="action_wait" value="5">
++  <input type="hidden" name="flag" value="">
++  <input type="hidden" name="preferred_lang" value="<% nvram_get("preferred_lang"); %>">
++</form>
++<span id="lang_src" style="display:none"><% shown_language_css(); %></span>
++<span id="lang_cur_name" style="display:none"><#selected_language#></span>
++
+ <script>
+ (function(){
+   "use strict";
+@@ -148,6 +177,44 @@ input:focus{border-color:var(--crimson)}
+     $("fb_user").focus();
+   });
+ })();
++
++/* language selector (self-contained; mirrors reaper_shell.asp). shown_language_css()
++   emits <dd><a id=CODE>Name</a> for every non-current language; prepend the current one
++   (shown_language_css omits it) so it shows selected. On change, apply set_language via
++   titleForm and reload - the wizard then renders in the new language and preferred_lang
++   (nvram) carries the choice into the rest of the UI after the wizard is done. */
++(function(){
++  function $(id){return document.getElementById(id);}
++  var src=$("lang_src"), sel=$("fb_lang"); if(!src||!sel) return;
++  var cur=""; try{ cur=document.titleForm.preferred_lang.value; }catch(e){}
++  var curName=""; try{ curName=($("lang_cur_name").textContent||"").replace(/\s+/g," ").trim(); }catch(e){}
++  var as=src.querySelectorAll("dd a");
++  if(!as.length){ var bar=sel.parentNode; if(bar) bar.style.display="none"; return; }
++  if(cur){
++    var oc=document.createElement("option");
++    oc.value=cur; oc.textContent=curName||cur; oc.selected=true; sel.appendChild(oc);
++  }
++  for(var i=0;i<as.length;i++){
++    var code=as[i].id||""; if(!code||code===cur) continue;
++    var o=document.createElement("option");
++    o.value=code; o.textContent=(as[i].textContent||code).replace(/\s+/g," ").trim();
++    sel.appendChild(o);
++  }
++  sel.addEventListener("change", function(){
++    if(!this.value || this.value===cur) return;
++    var f=document.titleForm; if(!f) return;
++    try{
++      f.current_page.value="Reaper_FirstBoot.asp";
++      f.preferred_lang.value=this.value;
++      f.flag.value="set_language";
++      f.action_script.value="email_info";
++      f.action="/start_apply.htm";
++      var ov=$("fb_lang_ov"); if(ov) ov.style.display="flex";
++      f.submit();
++    }catch(e){ return; }
++    setTimeout(function(){ try{ location.reload(); }catch(e){} }, 5500);
++  });
++})();
+ </script>
+ </body>
+ </html>
+-- 
+2.25.1
+

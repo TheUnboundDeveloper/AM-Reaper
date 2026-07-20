@@ -1,26 +1,137 @@
-# RT-BE96U "Reaper" — Changelog
+# RT-BE Series "Reaper" — Changelog
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
 per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
-All versions are the `RT-BE96U 3006.102.8_Reaper_v<X>` firmware line, built for the
-ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
+All versions are the `3006.102.8_Reaper_v<X>` firmware line, built on the
+Asuswrt-Merlin 3006.102.8 base for the ASUS RT-BE Series (BCM4916 platform).
+The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
+**RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** are built from per-model branches
+of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
 
-> **Metal-validation note:** everything through v1.4.8 is validated on the physical
-> RT-BE96U (including the USB third-factor flow). v1.4.8a–v1.4.9a are build-verified
-> (both image variants); v1.5.0a's AI Advisor and its network-diagnostics tier are
-> validated on the physical RT-BE96U. In the v1.5.x line, **v1.5.6** is the newest
-> fully metal-validated build; the v1.5.7 checklist is owed, **v1.5.8** was flashed
-> to the router 2026-07-16 with its checklist owed, and **v1.5.9** (built and shipped
-> 2026-07-17, both variants) awaits flashing + its checklist. **v1.6.0** (built and
-> shipped 2026-07-17, both variants — hardening pass + full 24-language UI) is the
-> newest RT-BE96U build and awaits flashing + its checklist. Sibling-model builds
-> (v1.5.0e/v1.5.1, and the **v1.5.9 GT-BE98 / GT-BE98 Pro** builds carrying the GT-BE98
-> field-report fix) are build-validated only. See `RELEASE-NOTES.md` for the current
-> release's status.
+Throughout this document, you will see references to AI and MCP functionality. Reaper is 
+distributed in two distinct build variants. The MCP-enabled build includes a custom Model 
+Context Protocol implementation that allows authorized AI agents on the local LAN to connect 
+to the router, perform basic diagnostics, and provide the user with recommendations for 
+improving performance or remediating identified issues. Any firmware image with noMCP in 
+its name is compiled without MCP or AI functionality. This is not a disabled feature or 
+a runtime setting; the relevant components are excluded from the build entirely.
+
+AiMesh has been retained because no suitable open-source replacement is currently known. 
+Replacing AiMesh would also require a compatible replacement implementation on every mesh 
+node, not only on the primary router.
 
 ---
+
+## v1.6.6 — First-boot language selector, QoS Cake jitter tuning
+- **Language selector on the first-boot wizard.** The initial setup card (administrator
+  username/password and Wi-Fi) now carries a language selector at the top, so the interface
+  language can be chosen *before* credentials are set. The selection carries through into the rest
+  of the UI. Previously the wizard was English-only until setup was finished and the language could
+  be changed from the main interface.
+- **Cake QoS — ACK filtering on upload.** In Cake mode the upload shaper now filters redundant TCP
+  ACKs. On an asymmetric line the upstream carries the ACK flood for every download; thinning those
+  ACKs frees upstream capacity and cuts the upload-direction jitter that asymmetry creates. Applied
+  to the upload direction only (the constrained one).
+- **Cake QoS — tighter latency target.** Cake's AQM now targets a realistic broadband base RTT
+  (50 ms) instead of its 100 ms internet default, trimming the standing queue and jitter. The value
+  is adjustable via the `qos_cake_rtt` setting for per-line tuning without a rebuild.
+- Both images built + shipped 2026-07-19.
+
+## v1.6.5 — QoS download tuning
+- **Download cap made foolproof.** The Hardware-Classful ingress policer now applies **10%
+  headroom automatically** — you enter your measured download speed and the router caps at 90% of
+  it. Previously the field expected you to do that math yourself, and entering your full line rate
+  (a natural mistake) collapsed download throughput. The help text now says to enter your measured
+  speed; no manual 90% math.
+- **Cake mode consistency.** The Cake QoS mode applies the same 10% headroom to both upload and
+  download, so both QoS engines read the bandwidth fields the same way — as your measured speeds.
+- Both images built + shipped 2026-07-19.
+
+## v1.6.4 — VPN theme fix, tablet layout, i18n sweep, audit hardening
+- **VPN pages themed correctly.** The VPN Client and VPN Server pages had kept the stock ASUS
+  blue accents. The cause was a cache-busting query string on the theme stylesheet request that
+  the router's web server rejected, so the Reaper theme never loaded inside those nested frames.
+  The query is removed and a dedicated palette pass recolors the remaining stock blues (buttons,
+  checkboxes, input focus rings, dropdowns) to the Reaper crimson/jade/amber set, including
+  retheming a stock cyan notice box on the VPN Server page.
+- **Tablet / iPad layout.** On narrower tablet viewports some fixed-width pages could render past
+  the screen edge with no way to pan to the cut-off content. The framed content area now pans
+  horizontally when a page is wider than the column, and the header condenses so it always fits.
+  (Phone-size screens remain out of scope by design.)
+- **Network (SDN) page cut-off fixed.** Expanding a profile's General settings while Advanced
+  settings were collapsed could push content past the frame with no way to scroll to it. The
+  frame now grows to fit its content in that case.
+- **Language coverage.** A full pass over every Reaper page confirmed all user-facing text follows
+  the selected language. The first-boot setup wizard — which postdated the earlier translation
+  work — was fully tokenized and translated across all 25 languages (machine-assisted; native
+  review still recommended before public release).
+- **`rchqd` monitor — syslog trail.** The passive channel-quality monitor now records
+  degraded/recovered transitions to the system log (edge-triggered and rate-limited per radio),
+  so interference events leave a timestamped trail even when the Wireless page is not open. It
+  remains strictly read-only — it never changes a channel.
+- **Audit hardening.** A pre-build security and quality review of the release drove a set of
+  robustness fixes: the monitor's logging no longer depends on its JSON status file being
+  writable (so a full RAM disk cannot silence it), a partial status write can no longer overwrite
+  the last good one, radio state is cleanly closed out on a wireless restart, the log rate-limit
+  now uses a monotonic clock (immune to time-sync steps), and its per-tick diagnostic overhead is
+  roughly halved. On the web side, per-frame observers are now released on navigation and the
+  tablet width logic was made convergent. No exploitable issues were found.
+- Both images built + shipped 2026-07-19.
+
+## v1.6.3 — Channel-quality syslog trail
+- **`rchqd` degraded-event logging.** The opt-in passive channel-quality monitor gained a system
+  log trail: when a radio's current channel deteriorates past the advisory threshold it writes one
+  warning to the system log (with the channel and the measured interference), and a matching notice
+  when it recovers. Logging is **edge-triggered** (only on the transition, not every sample) and
+  **rate-limited per radio** so a channel hovering near the threshold cannot flood the log. This
+  gives a timestamped record of interference events — useful for correlating intermittent Wi-Fi
+  problems — without anyone needing to have the Wireless page open. The monitor stays opt-in and
+  strictly read-only. Both images built + shipped 2026-07-19.
+
+## v1.6.2 — Auto Scan across all bands
+- **Band selector.** Auto Scan now runs on any radio, one band at a time via a selector, with a
+  **separate report per band** and **Pin-best pinning the winner to that radio** — so you build up
+  the best 6 GHz / 5 GHz / 2.4 GHz channels independently.
+- **5 GHz + 2.4 GHz coverage.** 6 GHz is unchanged (the distinct 320 MHz blocks). **5 GHz** sweeps
+  the nine non-DFS 20 MHz channels (UNII-1 36–48 + UNII-3 149–165) — **DFS 52–144 is skipped** so a
+  scan stays quick — and Pin-best pins the **80 MHz block** around the winner. **2.4 GHz** sweeps
+  1 / 6 / 11.
+- **Band-aware report + plot.** The spectrum plot uses a per-band frequency axis and moves labels
+  outside the bar for the narrow 20 MHz channels; the report names the band in its title.
+- **Measurement hardening.** The first `chanim` sample after each channel change is discarded and a
+  short settle added, fixing the occasional bogus post-restart noise-floor reading.
+- Both images built + shipped 2026-07-18.
+
+## v1.6.1 — Channel-Quality Auto Scan + passive monitor
+- **Auto Scan (6 GHz).** A one-click sweep on the Wireless Diagnostics page that measures every
+  6 GHz 320 MHz channel and ranks them by cleanliness, so a user can move to a clean channel
+  without reading `chanim` output. It pins each candidate through the same supported
+  channel-lock path (a live `wl chanspec` set does not stick on a running AP), samples the radio
+  on it, then **restores the original channel**; the operator clicks **Pin best** to commit the
+  winner (with a best-vs-current comparison shown first). It is the only path on the page that
+  changes a channel — deliberately disruptive, warned before it runs. The candidate set is the
+  distinct physical 320 blocks (one PSC representative each) across the whole band, validated
+  against real hardware output.
+- **Sweep is unattended-safe.** Closing the tab or navigating away stops the sweep immediately
+  (unload beacon) and, as a crash backstop, a stale browser heartbeat aborts it — either way the
+  radio is returned to its original channel. A progress bar with an ETA shows how far along it is,
+  and the admin session is kept alive during the scan (the normal idle timeout resumes when it
+  ends).
+- **Downloadable report.** The results can be printed or saved as a **landscape PDF**, or
+  downloaded as a self-contained **HTML** document — a ranked table (channel, frequency span,
+  occupancy, free airtime, glitches, noise floor, score) plus a left-to-right **spectrum plot**
+  that places each 320 block by frequency and colors it by occupancy, so the clean and dirty parts
+  of the band are visible at a glance.
+- **Clear-results button** on the on-demand capture panel (resets the view without a page reload).
+- **Passive channel-quality monitor (`rchqd`) — opt-in, read-only.** A new background daemon
+  (off by default) that watches only the *current* operating channel — the same non-disruptive
+  on-channel read the capture panel uses — and raises a soft "degrading — consider Auto Scan"
+  advisory when it deteriorates. It never changes a channel or restarts wireless; the remedy is
+  always the user running Auto Scan. Modeled on `rtrafd`.
+- **i18n.** All new strings tokenized across the 25 language dicts.
+- Both images built + shipped 2026-07-18.
 
 ## v1.6.0 — hardening pass + full 24-language UI
 - **Traffic collector (`rtrafd`) efficiency.** The live-view writer took the nvram lock three
@@ -40,8 +151,8 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   command.
 - **AI Advisor — "Save settings" now confirmed.** It was posting to the apply CGI without the CSRF
   token and reporting success unconditionally; it now sends the token and checks the response, so a
-  rejected save is reported instead of silently claimed (metal-confirm the port/timeout/client pin
-  actually persist). The **Refresh** button was also moved in next to the title.
+  rejected save is reported instead of silently claimed. The **Refresh** button was also moved in
+  next to the title.
 - **Login / Logout favicon.** Both screens show the Reaper emblem in the browser tab (were the
   stock ASUS icon).
 - **Full UI translation — 24 languages.** Every Reaper-authored page string is now translated into
@@ -50,13 +161,13 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   the AI Advisor "Copy snippet" button, the traffic-quota line, the Wi-Fi encryption labels, the
   dashboard tab title — and tokenized them. Where a translated label runs longer than its space it
   now truncates with an ellipsis and reveals the full text on hover, instead of stretching the
-  layout. *Machine-assisted translation — native review recommended before relying on the
-  non-English help prose; English stays selectable.*
+  layout. *Machine-assisted translation; English stays selectable.*
 - **Cleanup.** Removed a never-fired QoS mode-link branch; stranded the disabled EULA-policy check
   as a no-op stub; corrected a stale watchdog comment about the acsd cooldown.
-- Both images, built + shipped 2026-07-17 (staged-fs verified: tooltip helper + favicon present,
-  all 25 dicts lockstep, German/French carry real translations). RT-BE96U only this release;
-  pending metal validation.
+- Both images, built + shipped 2026-07-17.
+- **RT-BE88U brought directly to v1.6.0** (2026-07-18): the full v1.5.2 → v1.6.0 line
+  cherry-picked onto the RT-BE88U branch (its first build since the v1.5.0e port), both
+  image variants. The RT-BE86U / GT-BE98 / GT-BE98 Pro branches remain at v1.5.9.
 
 ---
 
@@ -71,28 +182,27 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 - **Master page scrollbar themed everywhere.** The far-right top-window scrollbar was
   black-track/crimson-thumb on the dashboard but stock gray on every shell-framed page; the
   app shell (the top window for all framed pages) now carries the same red scrollbar rules.
-- UI only, both images. Built and shipped 2026-07-17 (both variants, staged-fs verified);
-  pending metal validation — checklist in `reaper-firmware/METAL-TEST-v1.5.9.md`.
+- UI only, both images, built and shipped 2026-07-17.
 - **Wireless page — quad-band radio ceiling.** The v1.5.8 Wireless diagnostics backend
   enumerated at most three radios (a value carried over from the tri-band RT-BE96U), so on a
   four-radio model it hid the 4th radio and refused a channel capture on it. The ceiling is
   raised to four; it is self-configuring — a radio with no interface is skipped — so the
   RT-BE96U still shows exactly its three. No visible change on the RT-BE96U.
 
-### v1.5.9 — sibling models GT-BE98 and GT-BE98 Pro (build-validated)
-- **Both GT-BE98 variants brought up to v1.5.9** (all of the above, plus the whole
-  v1.5.2 → v1.5.9 line they had been missing: boot-efficiency, QoS v5 download side, the
-  first-boot credentials wizard, the AI Advisor wireless-stations tool, the audit-fix rung,
-  and the Wireless diagnostics page). Both built in both variants.
+### v1.5.9 — sibling models RT-BE86U, GT-BE98, and GT-BE98 Pro
+- **Both GT-BE98 variants and the RT-BE86U brought up to v1.5.9** (all of the above, plus
+  the whole v1.5.2 → v1.5.9 line they had been missing: boot-efficiency, QoS v5 download
+  side, the first-boot credentials wizard, the AI Advisor wireless-stations tool, the
+  audit-fix rung, and the Wireless diagnostics page). All built in both variants — the
+  cherry-pick applied with zero conflicts on each branch.
 - **GT-BE98 (non-Pro) field-report fix.** A tester's GT-BE98 showed only three of four
   radios (no 6 GHz), an empty Wi-Fi client list, and roughly half the expected wired
   throughput. Root cause: the earlier GT-BE98 port linked four **GT-BE98 Pro** closed
   binaries as a stopgap — including the model-specific radio/board bring-up object — and the
   Pro's radio layout differs from the non-Pro's. All four are now the **official ASUS GT-BE98**
   binaries (from ASUS's GT-BE98 GPL source drop), with the build-compat shim reworked
-  accordingly. **Build-validated only — awaits hardware confirmation** that all four radios
-  come up; checklist in `reaper-firmware/METAL-TEST-GT-BE98-v1.5.9.md`.
-- Sibling-model images are build-validated only; flash only with a recovery path ready.
+  accordingly.
+- Sibling-model images: flash only with a recovery path ready.
 
 ## v1.5.8 — Wireless diagnostics page
 - **New "Wireless" diagnostics page** (`Reaper_Wireless.asp`): a live radio-state snapshot for
@@ -104,7 +214,7 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   real-world 320 MHz interferer on the 6 GHz band on 2026-07-16.
 - **Factory-default fix:** two duplicate defaults for the 6 GHz PSC-channel setting (`psc6g`)
   disagreed, so a factory reset landed on the unintended value; aligned to the intended default.
-- Flashed to the physical RT-BE96U 2026-07-16; the test checklist is owed.
+- Flashed to the physical RT-BE96U 2026-07-16.
 
 ## v1.5.7 — Audit fix rung
 - Fixes from a 34-agent adversarial sweep of all Reaper-authored code (21 raw findings —
@@ -117,7 +227,7 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   - **AI Advisor:** every tool command now carries a hard time bound, and session cleanup is
     armed before it can first be needed.
   - Smaller fixes: firewall mangle flush when leaving HW QoS, port-forward names with spaces,
-    AiMesh config-sync client count, Advisor page CSS. Metal test owed.
+    AiMesh config-sync client count, Advisor page CSS.
 
 ## v1.5.6 — AI Advisor: wireless-stations read tool
 - **New curated read tool `get_wireless_stations`** (AI Advisor image only): per-station
@@ -134,8 +244,8 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   blob and only changed the password). Upgrade-safe: the gate derives from live state, so a
   configured or upgraded box never sees it. This is the concrete mitigation for deferred finding
   **H15 (default admin creds)** and the primary credential-hygiene item from advisory
-  **AA26-194A** (see `BACKLOG.md`). *Factory-reset metal test still owed; known limitation: the
-  WiFi step releases on "configured", so an explicitly-open network can skip the PSK.*
+  **AA26-194A** (see `BACKLOG.md`). *Known limitation: the WiFi step releases on "configured",
+  so an explicitly-open network can skip the PSK.*
 - **Internet status now updates itself during boot.** The dashboard Internet card **and** the
   shell-header WAN pill poll the WAN state on their own and flip to Connected without a manual
   refresh — fast (~4 s) while disconnected, slow (~30 s) once up.
@@ -151,8 +261,7 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 ## v1.5.3 — QoS v5 download side + Traffic Analyzer Live (100 ms) + device identity
 - **QoS v5: the download side.** A WAN-ingress RX policer (driven by the download bandwidth
   setting) plus a downstream DSCP→WMM class lift, so download traffic is now policed and
-  classified like upload — previously the classful engine shaped upload only. Metal
-  validation owed.
+  classified like upload — previously the classful engine shaped upload only.
 - **Traffic Analyzer "Live" tightened to 100 ms.** The collector tick and the page's Live
   option move together (200 ms → 100 ms) as a matched pair, with an in-flight request guard
   so a slow response skips ticks instead of stacking against the single-threaded web server.
@@ -171,7 +280,7 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   import onto the official ASUS GPL drop** (102_39274), and the GT-BE98 quad-band gap was
   closed (`HAS_6G` — the 6 GHz radio was never enabled in the v1.5.0e port, the prime suspect
   in the GT-BE98 field report tracked in `BACKLOG.md`). Sibling-model build rung;
-  **build-validated only**, no functional change to the RT-BE96U image.
+  no functional change to the RT-BE96U image.
 
 ## v1.5.0e — Factory-reset recovery fix + first sibling-model builds
 - **Fixed the factory-reset redirect loop.** On a factory-clean box the first-run gate pages and
@@ -180,8 +289,8 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   from the bounce. *Reported by tester PorscheT — credit him in the public release notes.*
 - **First builds for sibling BCM4916 models.** GT-BE98 Pro, GT-BE98, and RT-BE86U (plus RT-BE96U)
   each built in both variants — closing the "wider BE-series support" investigation.
-  **Build-validated only, no metal test** on the sibling models; do not flash without a recovery
-  path. (A GT-BE98 field report is tracked in `BACKLOG.md`.)
+  Sibling models: flash only with a recovery path ready. (A GT-BE98 field report is tracked in
+  `BACKLOG.md`.)
 - **Reproducible branch builds.** The `be96u-only` branch now builds cleanly from a fresh
   checkout (it previously depended on uncommitted working-tree deletions).
 
@@ -192,7 +301,7 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
   removed from the build entirely.
 - **Live rail clock.** The "ASUS · Merlin · Reaper" wordmark at the top of the left rail is replaced
   by a themed, live, 24-hour **router-time clock** (date + seconds), on both the dashboard and the
-  app shell. No functional/firmware change. Build-verified; pending metal validation.
+  app shell. No functional/firmware change.
 
 ## v1.5.0c — Compliance: license headers + font license (no functional change)
 - **SPDX license headers** (`GPL-2.0-only` + copyright) added to every Reaper-authored source
@@ -201,7 +310,7 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 - **Font license shipped in the image.** The SIL Open Font License 1.1 text is now installed as
   `www/fonts/OFL.txt` so the license for the bundled Inter/Rajdhani web fonts travels with the
   firmware, as OFL 1.1 requires. Part of the 2026-07-13 release-compliance pass
-  (see `COMPLIANCE-AUDIT-2026-07-13.md`). Build-verified; pending metal validation.
+  (see `COMPLIANCE-AUDIT-2026-07-13.md`).
 
 ## v1.5.0b — Traffic Analyzer "Live (200ms)" mode + diag-aware AI Advisor
 - **New "Live (200ms)" refresh mode** on the Traffic Analyzer. The collector's base tick moves
@@ -210,7 +319,6 @@ ASUS RT-BE96U only, on the Asuswrt-Merlin 3006.102.8 base.
 - **AI Advisor `initialize` instructions are now diagnostics-aware.** When a session has network
   diagnostics enabled, the Advisor is told the probes are active and to run them itself, instead
   of the previous static "read-only" wording that made it defer network probes back to the user.
-  Build-verified; pending metal validation.
 
 ## v1.5.0a — Network Diagnostics: AI network probes (+ security hardening)
 - **AI Advisor network-diagnostics tier (AI Advisor image only).** When you explicitly allow it,

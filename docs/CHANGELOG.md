@@ -24,6 +24,36 @@ node, not only on the primary router.
 
 ---
 
+## v1.6.7 — Reaper Diagnostics
+- **One-click sanitized diagnostic report.** New **Administration &rsaquo; Diagnostics** tab with a
+  single Download button. It collects everything a network engineer would gather by hand — model
+  and firmware identity, per-radio channel/width/signal health and client counts, wired port link
+  states, hardware-acceleration and QoS engine readings, DHCP lease and service overview, and
+  recent kernel/system log excerpts — in one pass, then pushes the **entire report through a
+  redaction engine** before a single byte is written out.
+- **Privacy by architecture, not by checklist.** Passwords, Wi-Fi keys and tokens are *never
+  collected* (the report only notes SET/EMPTY); every MAC address becomes a consistent pseudonym
+  (`MAC-3`), Wi-Fi names, usernames and hostnames become tokens, and all public IPv4/IPv6
+  addresses are masked. Pseudonyms stay consistent within one report — a device can be followed
+  across sections without revealing which device it is — and every report opens with a ledger
+  counting exactly what was withheld. Because the whole document passes through the engine, even
+  log lines nothing anticipated cannot leak identifiers.
+- **Plain text, downloaded, never transmitted.** The report saves through the browser as a
+  readable text file for review before sharing; the router sends nothing anywhere on its own.
+  A busy overlay guards the 20–30 second collection. Available in all 25 interface languages,
+  and the same collector is callable from SSH as `reaper_diag`.
+- Both images built + shipped 2026-07-20.
+
+## v1.6.6a — GT-BE98 System Info fix (GT-BE98 only)
+- **Quad-band radio mapping on System Info.** Field testing on the GT-BE98 showed the System Info
+  page mishandling this model's unusual radio order (both 5 GHz radios first, 6 GHz third, 2.4 GHz
+  *last*): wireless client counts appeared under the wrong band headings with the 6 GHz row empty,
+  the Temperatures panel rendered blank, and the fourth radio was missing from the Wireless Driver
+  Version list. The page's per-model mapping had entries for the GT-BE98 Pro but never for the
+  non-Pro — it now handles both, restoring correct client counts per band, all four radio
+  temperatures with live charts, and the full driver-version list.
+- GT-BE98 images only; built + shipped 2026-07-20.
+
 ## v1.6.6 — First-boot language selector, QoS Cake jitter tuning
 - **Language selector on the first-boot wizard.** The initial setup card (administrator
   username/password and Wi-Fi) now carries a language selector at the top, so the interface

@@ -1,0 +1,474 @@
+From ed96325742eb8b1d7bd0b492a150a4da02377860 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 21 Jul 2026 17:01:18 -0400
+Subject: [PATCH] Reaper v1.7.1: security remediation batch (audit 2026-07-21)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Addresses the findings in Reaper_v1.7.0_Security_Audit. All on be96u-only canon;
+siblings port later. No critical/high existed; these harden the confirmed items.
+
+M1 (med) CSRF: do_reaper_wifi_cgi now requires http_id on every state-changing
+  action (capstart/capstop/scanstart/scanstop/chqset), matching the gk/mcp CGIs;
+  Reaper_Wireless.asp sends the token on all 6 mutating calls. Stale "read-only
+  toward the radio" header comment corrected (scanstart retunes).
+M2 (med) gk_rl lost-update race: gkd expire_guests() now re-reads gk_rl FRESH
+  under an flock(/tmp/gk/rl.lock), and httpd gk_rl_update() takes the same lock,
+  so an admin approve/block can no longer be clobbered by a concurrent guest
+  expiry.
+L1 (low) injection: gk_gen_apply validates each MAC with gk_valid_mac() before
+  it flows unquoted into the root-run apply.sh (was length-only).
+L4 gkd devs[] TTL eviction (no more 256-cap wedge). L3 FirstBoot checks the
+  chpass result (no more false success). L2 FirstBoot sets the credential via
+  POST (password out of the URL) with a GET fallback so it cannot regress the
+  v1.6.6c lockout. L5 self_heal throttled to every 3rd poll. §4 self_heal now
+  probes GKI/GKN/ip6tables too. I1 gkd reloads seen.tsv on start (no duplicate
+  new-device logs across a self-restart). I2 rtrafd class poll 2s->4s.
+---
+ release/src-rt/version.conf                 |  2 +-
+ release/src/router/gkd/gkd.c                | 82 ++++++++++++++++++---
+ release/src/router/httpd/web.c              | 48 +++++++++---
+ release/src/router/rc/gatekeeper.c          | 19 ++++-
+ release/src/router/rtrafd/rtrafd.c          |  2 +-
+ release/src/router/www/Reaper_FirstBoot.asp | 43 ++++++++---
+ release/src/router/www/Reaper_Wireless.asp  | 15 ++--
+ 7 files changed, 174 insertions(+), 37 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 37af9cfba3..43d6512f06 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.7.0
++EXTENDNO=Reaper_v1.7.1
+ 
+ RCNO=0
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 92a6bd75dd..8f395b1d2a 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -29,7 +29,9 @@
+ #include <signal.h>
+ #include <time.h>
+ #include <ctype.h>
++#include <fcntl.h>
+ #include <sys/stat.h>
++#include <sys/file.h>	/* flock() - gk_rl RMW serialization (reaper v1.7.1) */
+ #include <syslog.h>
+ #include <dirent.h>
+ 
+@@ -44,7 +46,9 @@
+ #define CHAIN_STAMP   GK_DIR "/chains.ok"
+ #define POLL_SECS     10
+ #define WL_REFRESH    3        /* assoclist sweep every POLL_SECS * WL_REFRESH */
++#define HEAL_EVERY    3        /* self-heal probe every POLL_SECS * HEAL_EVERY (v1.7.1 L5) */
+ #define MAX_DEV       256
++#define DEV_TTL       (24*3600) /* evict a device unseen this long (v1.7.1 L4) */
+ #define LEASE_FILE    "/var/lib/misc/dnsmasq.leases"
+ 
+ typedef struct {
+@@ -247,6 +251,48 @@ static void write_seen(void)
+ 	rename(SEEN_TMP, SEEN_TSV);
+ }
+ 
++/* L4 (v1.7.1): drop devices unseen within DEV_TTL so the fixed devs[] table
++ * cannot wedge at MAX_DEV on a busy/guest-heavy LAN and silently stop
++ * discovering new MACs. Enforcement is unaffected (the iptables/ebtables
++ * catch-all handles unknowns); this only keeps visibility + new-device
++ * alerts working on long uptime. */
++static void compact_devs(long now)
++{
++	int i, k = 0;
++	for (i = 0; i < ndev; i++)
++		if (devs[i].online || (now - devs[i].last) < DEV_TTL)
++			devs[k++] = devs[i];
++	ndev = k;
++}
++
++/* I1 (v1.7.1): reload the last seen.tsv on startup so a self-restart
++ * (restart_gk fired by a guest-pass expiry) does not reset first-seen times or
++ * re-log every already-known device as "new". Manual tab-split so an empty
++ * field (e.g. a device with no hostname) is preserved, not swallowed. */
++static void load_seen(void)
++{
++	FILE *f = fopen(SEEN_TSV, "r");
++	char line[256];
++	if (!f) return;
++	while (ndev < MAX_DEV && fgets(line, sizeof(line), f)) {
++		char *fld[8]; int nf = 0; char *p = line, *nl;
++		dev_t_gk *d;
++		if ((nl = strchr(line, '\n')) != NULL) *nl = 0;
++		fld[nf++] = p;
++		while (nf < 8 && (p = strchr(p, '\t')) != NULL) { *p++ = 0; fld[nf++] = p; }
++		if (nf < 7 || !valid_mac(fld[0])) continue;
++		d = &devs[ndev];
++		memset(d, 0, sizeof(*d));
++		snprintf(d->mac, sizeof(d->mac), "%s", fld[0]);
++		norm_mac(d->mac);
++		d->first = strtol(fld[5], NULL, 10);
++		d->last  = strtol(fld[6], NULL, 10);
++		d->logged = 1;	/* known before restart - suppress duplicate new-device log */
++		ndev++;
++	}
++	fclose(f);
++}
++
+ static void notify_new(const char *rl)
+ {
+ 	int i;
+@@ -264,16 +310,23 @@ static void notify_new(const char *rl)
+ 	}
+ }
+ 
+-static void expire_guests(const char *rl_in)
++static void expire_guests(void)
+ {
+-	char *rl = strdup(rl_in), *out, *tok, *sp = NULL;
+-	int changed = 0;
++	char *rl, *out, *tok, *sp = NULL;
++	int changed = 0, lf;
+ 	long now = time(NULL);
+ 	size_t cap;
+-	if (!rl) return;
++	/* M2 (v1.7.1): serialize against httpd gk_rl_update and read gk_rl FRESH
++	 * inside the lock - never the poll-start snapshot, which is seconds stale
++	 * after the blocking scans and would clobber an admin approve/block that
++	 * landed during this poll. */
++	lf = open(GK_DIR "/rl.lock", O_CREAT | O_RDWR, 0600);
++	if (lf >= 0) flock(lf, LOCK_EX);
++	rl = strdup(nvram_safe_get("gk_rl"));
++	if (!rl) { if (lf >= 0) { flock(lf, LOCK_UN); close(lf); } return; }
+ 	cap = strlen(rl) + 2;
+ 	out = calloc(1, cap);
+-	if (!out) { free(rl); return; }
++	if (!out) { free(rl); if (lf >= 0) { flock(lf, LOCK_UN); close(lf); } return; }
+ 	/* entries are "<MAC>state>expiry" - split on '<' */
+ 	for (tok = strtok_r(rl, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+ 		char mac[18] = ""; int st = -1; long exp = 0;
+@@ -289,8 +342,10 @@ static void expire_guests(const char *rl_in)
+ 	if (changed) {
+ 		nvram_set("gk_rl", out);
+ 		nvram_commit();
+-		notify_rc("restart_gk");
+ 	}
++	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
++	if (changed)
++		notify_rc("restart_gk");	/* outside the lock - it kills+respawns this gkd */
+ 	free(out);
+ 	free(rl);
+ }
+@@ -304,7 +359,13 @@ static void self_heal(void)
+ 	 * teardown+rebuild, safe to re-run. */
+ 	struct stat st;
+ 	if (stat(APPLY_SH, &st)) return;
++	/* §4 (v1.7.1): probe EVERY enforcement component, not just GKF + the
++	 * ebtables hook. apply.sh always creates GKF/GKI/GKN (v4+v6) and the
++	 * ebtables chain, so any one missing means a flush occurred - reapply. */
+ 	if (system("iptables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
++	    system("iptables -nL REAPER_GKI >/dev/null 2>&1") == 0 &&
++	    system("iptables -t nat -nL REAPER_GKN >/dev/null 2>&1") == 0 &&
++	    system("ip6tables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
+ 	    system("ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0)
+ 		return;
+ 	logmessage("gatekeeper", "enforcement chains missing (firewall/wireless restart?) - reapplying");
+@@ -322,6 +383,7 @@ int main(int argc, char **argv)
+ 
+ 	if (daemon(1, 0) < 0) return 1;
+ 	mkdir(GK_DIR, 0700);
++	load_seen();	/* I1: restore known devices so a self-restart doesn't re-log them */
+ 	logmessage("gatekeeper", "watcher started (%s mode)",
+ 		nvram_match("gk_default", "1") ? "alert-only" : "quarantine");
+ 
+@@ -334,12 +396,14 @@ int main(int argc, char **argv)
+ 		scan_arp(now);
+ 		scan_ndp(now);
+ 		scan_leases();
+-		if ((tick++ % WL_REFRESH) == 0) scan_wl();
++		if ((tick % WL_REFRESH) == 0) scan_wl();
+ 
++		compact_devs(now);	/* L4: evict stale entries before the table fills */
+ 		notify_new(rl);
+-		expire_guests(rl);
++		expire_guests();	/* M2: reads gk_rl fresh under lock (rl above is snapshot for notify_new only) */
+ 		write_seen();
+-		self_heal();
++		if ((tick % HEAL_EVERY) == 0) self_heal();	/* L5: throttle the probe forks */
++		tick++;
+ 
+ 		for (i = 0; i < POLL_SECS && !g_stop; i++) sleep(1);
+ 	}
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 6cc687df71..13fa681e87 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -52,6 +52,7 @@
+ #include <proto/ethernet.h>   //add by Viz 2010.08
+ #include <net/route.h>
+ #include <sys/ioctl.h>
++#include <sys/file.h>	/* flock() - gk_rl RMW serialization (reaper v1.7.1) */
+ #ifndef MUSL_LIBC
+ #include <math.h>	//for ceil()
+ #endif	// !MUSL_LIBC
+@@ -21743,9 +21744,11 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ 
+ /* reaper v1.5.8: backend for Reaper_Wireless.asp - radio state snapshot plus an
+  * on-demand channel-quality capture (the 1 Hz chanim_stats loop that located a
+- * real-world 320 MHz interferer on 2026-07-16, productized). Read-only toward
+- * the radio: the page changes chanspec through the stock start_apply flow,
+- * never through this endpoint.
++ * real-world 320 MHz interferer on 2026-07-16, productized). NOTE (v1.7.1): the
++ * later auto-scan (action=scanstart) DOES retune the radio (wlN_chanspec +
++ * restart_wireless across candidate channels), and chqset persists rchq_enable,
++ * so this endpoint is NOT read-only. All state-changing actions therefore
++ * require the http_id CSRF token (gated at the top of do_reaper_wifi_cgi).
+  *
+  * Security model (same as do_reaper_traffic_cgi and rmcpd): no request string
+  * is ever placed in a shell command. The radio unit and capture duration are
+@@ -22189,6 +22192,21 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	if (act == NULL)
+ 		act = "status";
+ 
++	/* CSRF: state-changing actions must carry http_id (same guard as the gk/mcp
++	 * CGIs). Reaper CGIs aren't in the prebuilt mime_referers[] whitelist, so
++	 * referer_check never runs and do_auth alone is cross-site rideable. The
++	 * read-only actions (status/capdata/scandata/chq) stay token-free; every
++	 * mutating action (capstart/capstop/scanstart/scanstop/chqset) is gated. */
++	if (strcmp(act, "status") != 0 && strcmp(act, "capdata") != 0 &&
++	    strcmp(act, "scandata") != 0 && strcmp(act, "chq") != 0) {
++		char *hid = get_cgi("http_id");
++		char *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"err\":\"token\"}");
++			return;
++		}
++	}
++
+ 	if (strcmp(act, "status") == 0) {
+ 		websWrite(stream, "{\"territory\":");
+ 		rwifi_json_str(stream, nvram_safe_get("territory_code"));
+@@ -22439,12 +22457,23 @@ gk_rl_find(const char *rl, const char *mac, int *state, long *expiry)
+ static void
+ gk_rl_update(const char *mac, int state, long expiry)
+ {
+-	char *rl = nvram_safe_get("gk_rl");
+-	size_t cap = strlen(rl) + 64;
+-	char *out = calloc(1, cap);
+-	char *buf = strdup(rl);
+-	char *tok, *sp = NULL;
+-	if (!out || !buf) { free(out); free(buf); return; }
++	char *rl, *out, *buf, *tok, *sp = NULL;
++	size_t cap;
++	/* serialize the gk_rl read-modify-write against gkd's expire_guests
++	 * (reaper v1.7.1, audit M2). The lock is held only across the tiny RMW
++	 * below - the fresh nvram read must happen INSIDE it. If /tmp/gk is not
++	 * yet present the lock is skipped (degrades to pre-1.7.1 behaviour). */
++	int lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR, 0600);
++	if (lf >= 0) flock(lf, LOCK_EX);
++	rl = nvram_safe_get("gk_rl");
++	cap = strlen(rl) + 64;
++	out = calloc(1, cap);
++	buf = strdup(rl);
++	if (!out || !buf) {
++		free(out); free(buf);
++		if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
++		return;
++	}
+ 	for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+ 		char m[18] = "";
+ 		if (sscanf(tok, "%17[^>]", m) != 1 || !gk_valid_mac(m)) continue;
+@@ -22458,6 +22487,7 @@ gk_rl_update(const char *mac, int state, long expiry)
+ 		strlcat(out, add, cap);
+ 	}
+ 	nvram_set("gk_rl", out);
++	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
+ 	free(out);
+ 	free(buf);
+ }
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 5eb684bb36..1c6e236973 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -37,6 +37,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <ctype.h>
+ #include <sys/stat.h>
+ 
+ #include "rc.h"
+@@ -45,6 +46,22 @@
+ #define GK_DIR    "/tmp/gk"
+ #define GK_APPLY  GK_DIR "/apply.sh"
+ 
++/* strict MAC check - identical to httpd gk_valid_mac / gkd valid_mac. Every
++ * gk_rl consumer validates before use; this generator must too, since the
++ * mac flows UNQUOTED into the root-run apply.sh (a hostile 17-char token with
++ * shell metacharacters would otherwise inject). Not reachable via the feature
++ * writers (all validate), but closes the sink for a direct-nvram-seeded value. */
++static int gk_valid_mac(const char *m)
++{
++	int i;
++	if (!m || strlen(m) != 17) return 0;
++	for (i = 0; i < 17; i++) {
++		if ((i % 3) == 2) { if (m[i] != ':') return 0; }
++		else if (!isxdigit((unsigned char)m[i])) return 0;
++	}
++	return 1;
++}
++
+ /* emit one per-MAC rule line into every chain that takes it */
+ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ {
+@@ -120,7 +137,7 @@ static void gk_gen_apply(void)
+ 			char mac[18] = "";
+ 			int st = -1;
+ 			if (sscanf(tok, "%17[^>]>%d", mac, &st) != 2) continue;
+-			if (strlen(mac) != 17 || st < 0 || st > 3) continue;
++			if (!gk_valid_mac(mac) || st < 0 || st > 3) continue;
+ 			gk_emit_mac(f, mac, st, quarantine);
+ 		}
+ 		free(buf);
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index cfd2521fbe..77e1347bbd 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -51,7 +51,7 @@
+  * 5-min/hour/day/month slots. */
+ #define TICK_MS		100	/* base tick / WAN + live.json cadence (ms) */
+ #define TPS		(1000 / TICK_MS)	/* ticks per second */
+-#define CLASS_EVERY	(2 * TPS)	/* poll per-QoS-class every 2 s */
++#define CLASS_EVERY	(4 * TPS)	/* poll per-QoS-class every 4 s (v1.7.1 I2: halve the 7x tmctl fork rate; ring binning is cadence-independent) */
+ #define HEAVY_EVERY	(5 * TPS)	/* poll flow cache (per-dev/net/top) every 5 s */
+ #define PROBE_EVERY	(5 * TPS)	/* ping probe every 5 s */
+ #define FCACHE_SECS	(HEAVY_EVERY * TICK_MS / 1000)	/* flow-cache sample interval (s) */
+diff --git a/release/src/router/www/Reaper_FirstBoot.asp b/release/src/router/www/Reaper_FirstBoot.asp
+index 93b689bcb1..f3790dfaf9 100644
+--- a/release/src/router/www/Reaper_FirstBoot.asp
++++ b/release/src/router/www/Reaper_FirstBoot.asp
+@@ -143,6 +143,32 @@ input:focus{border-color:var(--crimson)}
+     return "";
+   }
+ 
++  /* v1.7.1 (audit L2+L3): set the admin credential via POST so the base64
++     password rides the request BODY, not the GET query string, AND return a
++     checkable result (the shared httpApi.chpass defaults to GET and swallows
++     failures). Param contract mirrors httpApi.chpass exactly (btoa user+pw).
++     If POST fails for ANY reason (e.g. chpass.cgi is GET-only) we fall back to
++     the metal-proven shared GET path, so this can never reintroduce the
++     v1.6.6c lockout. Returns true only when the credential was actually set. */
++  function reaperSetCred(u, p){
++    try{
++      var x=new XMLHttpRequest();
++      var body="new_username="+encodeURIComponent(btoa(u))
++             + "&new_passwd="+encodeURIComponent(btoa(p))
++             + "&restart_httpd=0&defpass_enable=0";
++      x.open("POST","/chpass.cgi",false);
++      x.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
++      x.send(body);
++      if(x.status===200){
++        var r=null; try{ r=JSON.parse(x.responseText); }catch(e){}
++        if(r && String(r.statusCode)==="200") return true;
++      }
++    }catch(e){}
++    /* fallback: proven shared GET path (metal-validated v1.6.6c) */
++    var sc=httpApi.chpass({"restart_httpd":"0","new_username":u,"new_passwd":p,"defpass_enable":"0"});
++    return (String(sc)==="200");
++  }
++
+   function submit(){
+     clrErr();
+     var u=$("fb_user").value.trim(), p=$("fb_pw").value, p2=$("fb_pw2").value;
+@@ -150,16 +176,13 @@ input:focus{border-color:var(--crimson)}
+     if(msg){ showErr(msg); return; }
+ 
+     $("fb_go").disabled=true; $("fb_spin").style.display="block";
+-    /* httpApi.chpass is synchronous (async:false) -> http_passwd/http_username are
+-       set in nvram (pw_enc-encrypted by do_chpass) before we continue. */
+-    try{
+-      httpApi.chpass({
+-        "restart_httpd":"0",
+-        "new_username":u,
+-        "new_passwd":p,
+-        "defpass_enable":"0"
+-      });
+-    }catch(e){
++    /* Synchronous credential set -> http_passwd/http_username are committed
++       (pw_enc-encrypted by do_chpass) before we continue. v1.7.1 (L3): unlike
++       the old unchecked call, reaperSetCred RETURNS success, so a failed set is
++       caught here and shown instead of silently proceeding to a false success. */
++    var credOK=false;
++    try{ credOK=reaperSetCred(u,p); }catch(e){ credOK=false; }
++    if(!credOK){
+       showErr("<#RFB_13#>");
+       $("fb_go").disabled=false; $("fb_spin").style.display="none";
+       return;
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index c2cec36d0e..f7107eb62c 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -362,17 +362,20 @@ function submitApply(unit,cs,bw){
+   setTimeout(function(){fetchStatus();},18000);
+ }
+ 
++/* v1.7.1 (audit M1): CSRF token for every state-changing reaper_wifi.cgi call */
++var REAPER_HTTPID = '<% nvram_get("http_id"); %>';
++function reaperTok(){ return "&http_id="+encodeURIComponent(REAPER_HTTPID); }
+ function capStart(){
+   var u=document.getElementById("capunit").value;
+   var s=document.getElementById("capsecs").value;
+   var x=new XMLHttpRequest();
+-  x.open("GET","/reaper_wifi.cgi?action=capstart&unit="+u+"&secs="+s+"&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=capstart&unit="+u+"&secs="+s+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){if(x.readyState===4){fetchStatus();capPoll();}};
+   x.send();
+ }
+ function capStop(){
+   var x=new XMLHttpRequest();
+-  x.open("GET","/reaper_wifi.cgi?action=capstop&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=capstop"+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){if(x.readyState===4) fetchStatus();};
+   x.send();
+ }
+@@ -536,7 +539,7 @@ function scanStart(){
+   if(isNaN(unit)||unit<0){ var six=six_band(); if(!six){alert("<#RWIF_38#>");return;} unit=six.unit; }
+   if(!confirm("<#RWIF_33#>")) return;
+   var x=new XMLHttpRequest();
+-  x.open("GET","/reaper_wifi.cgi?action=scanstart&unit="+unit+"&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=scanstart&unit="+unit+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4) return;
+     var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
+@@ -551,7 +554,7 @@ function scanStart(){
+ }
+ function scanStop(){
+   var x=new XMLHttpRequest();
+-  x.open("GET","/reaper_wifi.cgi?action=scanstop&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=scanstop"+reaperTok()+"&_="+Date.now(),true);
+   x.send();
+ }
+ function scanPoll(){
+@@ -734,7 +737,7 @@ function downloadReport(){
+ function chqToggle(){
+   var on=(ST&&ST.chq_on)?0:1;
+   var x=new XMLHttpRequest();
+-  x.open("GET","/reaper_wifi.cgi?action=chqset&on="+on+"&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=chqset&on="+on+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){if(x.readyState===4) setTimeout(function(){fetchStatus();},600);};
+   x.send();
+ }
+@@ -777,7 +780,7 @@ window.chqToggle=chqToggle;
+  * the radio is not left bouncing unattended (the heartbeat is the crash backstop) */
+ function scanUnloadStop(){
+   if(SCANPOLL && navigator.sendBeacon){
+-    try{ navigator.sendBeacon("/reaper_wifi.cgi?action=scanstop"); }catch(e){}
++    try{ navigator.sendBeacon("/reaper_wifi.cgi?action=scanstop"+reaperTok()); }catch(e){}
+   }
+ }
+ window.addEventListener("pagehide",scanUnloadStop);
+-- 
+2.25.1
+

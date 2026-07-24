@@ -1,0 +1,155 @@
+From ef090660ad3bc0272ac4fa521545b4386e7bd4d6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 21 Jul 2026 07:50:20 -0400
+Subject: [PATCH] UI fixes (4): firstboot loop, VIEW LIST modal, DNS-List clip,
+ Network-Map scrollbar
+
+Series-wide reaper UI bugs found on the GT-BE98 v1.6.6a field test; all live in
+shared code (byte-identical across model branches) so fixed here on be96u-only
+and propagated to each model branch.
+
+A) FIRSTBOOT LOOP (severe): state.js gate 3 sends a factory-default box
+   (sdn_rl == sdn_rl_default) to Advanced_Wireless_Content.asp?firstboot=1, but
+   that page was missing from reaper_inject.c reaper_skip[] -> the bounce rewrote
+   it into reaper_shell.asp, whose state.js re-fired the gate = dashboard<->firstboot
+   loop (no settings reachable on a fresh flash). Added it to reaper_skip[] alongside
+   the gate-1/gate-2 targets (Main_Password.asp / QIS_wizard.htm) that are skip-listed
+   for the same reason. First-run Wi-Fi page now loads once, top-level; after setup
+   sdn_rl != default and the gate never fires.
+
+B) VIEW LIST (series-wide): the CLIENTS panel "VIEW LIST" control was inert
+   placeholder markup (<a class="link" href="#"> with no id/handler and no modal).
+   Implemented a client-list modal (#cl_overlay) that groups all LIVE_CLIENTS by band
+   (6/5/2.4/Wired) with name/IP/IPv6/MAC, reusing the existing .cl-item styling and
+   overlay pattern; wired by id + addEventListener (open/close/backdrop/Esc). Reuses
+   existing dict tokens (Full_Clients/CTL_close/tm_wired/RDSH_77) - no new i18n keys.
+
+C) DNS-LIST CLIP (WAN page): #dns_list_Block inherits stock device-map.css
+   (position:absolute; margin-top:-920px; height:auto; overflow:auto) tuned for the
+   short device-map list; the tall 6-category WAN DNS list overflows the viewport and
+   height:auto defeats its own overflow -> lower rows clipped/unreachable. Added a
+   reaper_content.css override: position:fixed; centered; max-height:88vh; overflow-y:auto.
+
+D) NETWORK-MAP SCROLLBAR: the 760px status iframe holds a taller clients.asp doc with
+   no inner scroll region -> the iframe scrollbar stacks against the page = double bar.
+   Added reaper_content.css override giving #client_list_Block max-height + overflow-y:auto
+   so scrolling lives on the list (reaper_content.css is loaded inside the statusframe).
+
+Mock-validated the VIEW LIST modal (renders, groups, counts, close; no JS error).
+A is C-side; C/D are scoped CSS, metal-validatable.
+---
+ release/src/router/httpd/reaper_inject.c      |  7 ++++
+ release/src/router/www/Main_ReaperDash.asp    | 36 ++++++++++++++++++-
+ .../src/router/www/reaper/reaper_content.css  | 20 +++++++++++
+ 3 files changed, 62 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 49d31a9766..6bf21a0a19 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -91,6 +91,13 @@ static const char *reaper_skip[] = {
+ 	   matched by the prefix check in reaper_should_inject().) */
+ 	"Main_Password.asp",
+ 	"QIS_wizard.htm",
++	/* state.js gate 3 (v1.6.6b fix): on a factory-clean box with sdn_rl still at
++	   default, state.js force-redirects TOP to Advanced_Wireless_Content.asp?firstboot=1
++	   for the first-run Wi-Fi setup. Without this skip entry the bounce rewrote it into
++	   reaper_shell.asp, whose state.js re-fired the same gate -> dashboard<->firstboot
++	   loop (no settings page reachable on a fresh flash). Keep it TOP-LEVEL so the
++	   first-run Wi-Fi page loads once; after setup sdn_rl != default and it never fires. */
++	"Advanced_Wireless_Content.asp",
+ 	/* Reaper first-boot credential gate: reaper-native page with its own chrome,
+ 	   forced top-level by state.js on a factory-clean box (see Reaper_FirstBoot.asp). */
+ 	"Reaper_FirstBoot.asp",
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index f56d9a5410..7493048c35 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -425,7 +425,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+         <!-- CLIENTS -->
+         <section class="card col4">
+-          <div class="head"><h3><#Full_Clients#></h3><a class="link" href="#"><#View_List#></a></div>
++          <div class="head"><h3><#Full_Clients#></h3><a class="link" href="#" id="cl_viewlist"><#View_List#></a></div>
+           <div class="cbig"><span class="n mono" id="c_total">&mdash;</span><span class="u"><#RDSH_17#></span></div>
+           <div class="bands">
+             <div class="band"><span class="bl">6 GHz</span><span class="bar"><i id="b6i" style="width:0%"></i></span><span class="bn mono" id="b6n">0</span></div>
+@@ -509,6 +509,16 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+     <div style="margin-top:10px;color:var(--steel);font-size:12px"><#RDSH_27#></div>
+   </div>
+ </div>
++<!-- v1.6.6b: full client-list modal (VIEW LIST). Reuses LIVE_CLIENTS + .cl-item styling. -->
++<div id="cl_overlay" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(4,4,5,.92);backdrop-filter:blur(3px)">
++  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden">
++    <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--line-soft)">
++      <h3 style="font-family:var(--hdr);color:var(--bone);font-size:16px;letter-spacing:.1em;text-transform:uppercase;margin:0"><#Full_Clients#> <span class="mono" id="clv_total" style="color:var(--steel);font-size:13px"></span></h3>
++      <button type="button" id="clv_close" aria-label="<#CTL_close#>" style="background:none;border:0;color:var(--steel);font-size:26px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
++    </div>
++    <div id="clv_body" style="overflow-y:auto;padding:6px 18px 18px"></div>
++  </div>
++</div>
+ 
+ <script>
+ /* ---- real values injected server-side via SSI ---- */
+@@ -945,6 +955,30 @@ function pollClients(){
+ (function(){ var sel=$id('cl_filter'); if(sel){ sel.addEventListener('change',renderClients); renderClients(); } })();
+ pollClients(); setInterval(pollClients, 10000);
+ 
++/* ---- VIEW LIST modal: all clients grouped by band (v1.6.6b) ---- */
++function renderViewList(){
++  var groups=[['6','6 GHz'],['5','5 GHz'],['24','2.4 GHz'],['eth','<#tm_wired#>']], h='', tot=0;
++  for(var g=0;g<groups.length;g++){
++    var list=LIVE_CLIENTS[groups[g][0]]||[];
++    if(!list.length) continue;
++    tot+=list.length;
++    h+='<div class="conngroup" style="margin:14px 0 6px"><span class="cglabel">'+groups[g][1]+'</span><span class="cgline"></span><span class="mono" style="color:var(--steel);margin-left:8px">'+list.length+'</span></div>';
++    for(var i=0;i<list.length;i++){ h+='<div class="cl-item"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span>'+(list[i].ip6?' &middot; <span class="mono">'+esc(list[i].ip6)+'</span>':'')+' &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div>'; }
++  }
++  if(!h) h='<div class="cd" style="padding:8px"><#RDSH_77#></div>';
++  var b=$id('clv_body'); if(b) b.innerHTML=h;
++  var t=$id('clv_total'); if(t) t.textContent=tot?('- '+tot):'';
++}
++(function(){
++  var open=$id('cl_viewlist'), ov=$id('cl_overlay'), close=$id('clv_close');
++  function show(e){ if(e) e.preventDefault(); renderViewList(); if(ov) ov.style.display='block'; }
++  function hide(){ if(ov) ov.style.display='none'; }
++  if(open) open.addEventListener('click',show);
++  if(close) close.addEventListener('click',hide);
++  if(ov) ov.addEventListener('click',function(e){ if(e.target===ov) hide(); });
++  document.addEventListener('keydown',function(e){ if(e.key==='Escape') hide(); });
++})();
++
+ /* ---- wireless radio tiles ----
+    On this FW (RTCONFIG_MULTILAN_MWL) the broadcast SSID lives in the SDN MAINFH
+    profile (apmX_ssid); physical wlX_ssid holds an internal onboarding ID.
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 39628e010e..242a44d40b 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -779,3 +779,23 @@ body.bg,.container.no_highlights,.content_container{background:transparent!impor
+ /* VPN Server notice box: stock cyan 00DEDA (banned hue) to amber */
+ .notice_container{border-color:#E0A93B!important}
+ .notice_container .notice_title{color:#E0A93B!important}
++
++/* ---------- v1.6.6b overflow fixes (bugs C + D) ---------- */
++/* BUG C: WAN-page "DNS List" flyout (#dns_list_Block.clientlist_viewlist) inherits
++   the stock device-map.css rule (position:absolute; margin-top:-920px; height:auto;
++   overflow:auto) tuned for the short device-map list. The tall six-category WAN DNS
++   list grows past the viewport and height:auto defeats its own overflow, so the lower
++   rows are clipped/unreachable. Re-anchor it to the viewport with a real inner scroll. */
++#dns_list_Block.clientlist_viewlist{
++  position:fixed!important;
++  top:50%!important;left:50%!important;
++  margin-top:0!important;margin-left:0!important;
++  transform:translate(-50%,-50%)!important;
++  max-height:88vh!important;overflow-y:auto!important}
++
++/* BUG D: Network Map status iframe (#statusframe) is pinned to 760px but the inner
++   clients.asp document (client rows + tall NM min-heights) is taller and has no inner
++   scroll region, so the iframe's own scrollbar stacks against the page scrollbar = a
++   persistent double/stray bar. Give the client list its own scroll so the iframe stops
++   overflowing (reaper_content.css is loaded inside the statusframe document). */
++#client_list_Block{max-height:600px!important;overflow-y:auto!important;overflow-x:hidden!important}
+-- 
+2.25.1
+

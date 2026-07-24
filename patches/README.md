@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**190 patches, v1.0 → v1.6.6**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**211 patches, v1.0 → v1.7.4**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (190 patches, v1.0 → v1.6.6)
+## What the series contains (211 patches, v1.0 → v1.7.4)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -123,8 +123,40 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
   Cake jitter tuning (ack-filter on the upload cake, 50 ms rtt target both directions with
   the `qos_cake_rtt` override).
 
+### v1.6.7 — Reaper Diagnostics (`0191`–`0194`)
+- `0191` — **v1.6.7**: one-click **Reaper Diagnostics** (Administration &rsaquo; Diagnostics) — a
+  sanitized diagnostic report via an authenticated CGI + a `/usr/sbin/reaper_diag` collector,
+  with `RDIAG_*` strings in all 25 dictionaries.
+- `0192`–`0194` — diag polish + first-metal-run fixes (download-hint wording, CJK full-stops,
+  redaction/layout corrections from the on-hardware run).
+
+### v1.7.0 → v1.7.1 — Gatekeeper + security remediation (`0195`–`0204`)
+- `0195`–`0196` — **Gatekeeper** (v1.6.8): opt-in **default-deny device access control** (nvram
+  `gk_*`, the `gkd` watcher, `rc/gatekeeper.c` iptables/ebtables enforcement, `Reaper_GK.asp` +
+  the captive "awaiting approval" page); noMCP-build fix (CGI helpers moved out of the MCP ifdef).
+- `0197`–`0198` — UI fixes (first-boot loop, View-List modal, WAN DNS-List clip) + the first-boot
+  credential apply (`saveNvram;restart_chpass`).
+- `0199`–`0200` — **v1.7.0**: Gatekeeper promoted to release + 5 shared UI/credential fixes;
+  BE96U-canon chanlist-shim OBJS guard.
+- `0201`–`0204` — **v1.7.1**: security-remediation batch (Gatekeeper hardening — CSRF, MAC
+  validation, device-table TTL eviction, self-heal throttle) + the **Network Map** client-status
+  panel horizontal-scroll fix (widened box in `NM_style.css`).
+
+### v1.7.2 → v1.7.4 — AiMesh onboarding, UI/i18n, Gatekeeper reliability (`0205`–`0211`)
+- `0205`–`0209` — **v1.7.2**: AiMesh node onboarding restored (factory `x_Setting`/`w_Setting`
+  back to stock so a fresh node beacons; QIS stays retired at the httpd layer), static-DHCP
+  dropdown clip fix, stock-theme-flash pre-paint, full menu + page **translation pass** (24
+  languages), version bump.
+- `0210` — **v1.7.3**: **Gatekeeper reliability** — no admin lockout (turn-on grandfathers
+  ARP + DHCP leases + the named-client list; the firewall always leaves the HTTPS admin page
+  reachable) + dependable cold-boot arming (run-time LAN resolution, deferred until the bridge
+  is up) + an "Arming" / "Not enforcing" status stamp.
+- `0211` — **v1.7.4**: static-DHCP client picker re-anchored to its input and opened **upward**
+  with an inner scroll; **Wireless/DHCP** theme-flash eliminated (framed page held dark until themed).
+
 ## Notes
 
 - **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted.
 - Regenerated for **v1.6.6** (2026-07-19) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (matching `release/src/router` tree hash).
+- Extended through **v1.7.4** (2026-07-22): patches `0191`–`0211` (v1.6.7 → v1.7.4) appended from the same commit stack with the same author normalization. Re-run the full `git am --keep-cr` reproduce-check before a public release.

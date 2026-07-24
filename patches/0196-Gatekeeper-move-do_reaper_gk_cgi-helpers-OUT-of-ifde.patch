@@ -1,0 +1,284 @@
+From 82211e5d178827ba47f1d2b529f64a30b72676cf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 21 Jul 2026 00:16:37 -0400
+Subject: [PATCH] Gatekeeper: move do_reaper_gk_cgi + helpers OUT of #ifdef
+ RTCONFIG_REAPER_MCP (noMCP build fix)
+
+The Gatekeeper CGI and its helpers were inadvertently placed between the rmcp
+KDF helpers and rmcp_require_code, i.e. INSIDE the RTCONFIG_REAPER_MCP block.
+The MCP image built fine (function present), but the noMCP image compiled the
+function out while its mime_handlers registration (not gated) remained, giving
+`web.c: 'do_reaper_gk_cgi' undeclared here`. Relocated the whole gk block to
+just before the `#ifdef RTCONFIG_REAPER_MCP` so it ships in both images; the
+rmcp region (helpers + require_code + do_reaper_mcp_cgi) is unchanged. No
+behavioral change to either image. Both MCP and noMCP now build MAKE_EXIT=0.
+
+RULE: any reaper-added, non-MCP-gated CGI/helper must live OUTSIDE the
+RTCONFIG_REAPER_MCP ifdef - the MCP build will hide this class of mistake.
+---
+ release/src/router/httpd/web.c | 242 +++++++++++++++++----------------
+ 1 file changed, 123 insertions(+), 119 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 3a4a3c9774..6cc687df71 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22400,125 +22400,9 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"err\":\"action\"}");
+ }
+ 
+-#ifdef RTCONFIG_REAPER_MCP
+-/* reaper v1.4.0: arming control plane for the read-only MCP advisor (rmcpd).
+- *
+- * This endpoint is the SECOND FACTOR gate. The advisor daemon never runs at boot
+- * and refuses to start without an armed session file; only a successful "arm"
+- * here (admin session AND the out-of-band arming code) writes that file and asks
+- * rc to launch the daemon. The arming code is NEVER stored - only its salt and
+- * PBKDF2-HMAC-SHA256 hash, so a flash-dump attacker gets an uncrackable hash and
+- * still cannot arm. Repeated wrong codes lock arming for 15 minutes.
+- *
+- * Actions (GET param "action"): status | provision | deprovision | arm | disarm.
+- * The arming token and connection snippet are returned once, on a successful arm. */
+-
+-#define RMCP_ITER	120000
+-#define RMCP_STATE_DIR	"/tmp/reaper_mcp"
+-#define RMCP_SESSION	RMCP_STATE_DIR "/session"
+-#define RMCP_LOCK_SECS	900
+-#define RMCP_MAX_FAIL	5
+-
+-static void rmcp_hex(const unsigned char *in, int n, char *out)
+-{
+-	static const char *h = "0123456789abcdef";
+-	int i;
+-	for (i = 0; i < n; i++) {
+-		out[i * 2]     = h[(in[i] >> 4) & 0xf];
+-		out[i * 2 + 1] = h[in[i] & 0xf];
+-	}
+-	out[n * 2] = 0;
+-}
+-
+-static int rmcp_unhex(const char *hex, unsigned char *out, int maxout)
+-{
+-	int n = 0;
+-	while (hex[0] && hex[1] && n < maxout) {
+-		char b[3] = { hex[0], hex[1], 0 };
+-		out[n++] = (unsigned char)strtol(b, NULL, 16);
+-		hex += 2;
+-	}
+-	return n;
+-}
+-
+-/* PBKDF2-HMAC-SHA256(code, salt) -> 32-byte digest, hex-encoded into hashhex */
+-static int rmcp_kdf(const char *code, const unsigned char *salt, int saltlen, char *hashhex)
+-{
+-	unsigned char dk[32];
+-	if (PKCS5_PBKDF2_HMAC(code, strlen(code), salt, saltlen, RMCP_ITER,
+-			      EVP_sha256(), sizeof(dk), dk) != 1)
+-		return -1;
+-	rmcp_hex(dk, sizeof(dk), hashhex);
+-	return 0;
+-}
+-
+-/* Mode B (optional USB key) helpers. SHA-256 a file -> hex (64 chars). */
+-static int rmcp_sha256_file(const char *path, char *hexout)
+-{
+-	FILE *f = fopen(path, "rb");
+-	EVP_MD_CTX *ctx;
+-	unsigned char buf[4096], md[32];
+-	unsigned int mdlen = 0;
+-	size_t n;
+-	if (!f) return -1;
+-	if (!(ctx = EVP_MD_CTX_new())) { fclose(f); return -1; }
+-	EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+-	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+-		EVP_DigestUpdate(ctx, buf, n);
+-	EVP_DigestFinal_ex(ctx, md, &mdlen);
+-	EVP_MD_CTX_free(ctx);
+-	fclose(f);
+-	rmcp_hex(md, 32, hexout);
+-	return 0;
+-}
+-
+-/* first writable /tmp/mnt/<vol> mountpoint (where we can drop the keyfile) */
+-static int rmcp_usb_writable_dir(char *out, size_t outsz)
+-{
+-	DIR *d = opendir("/tmp/mnt");
+-	struct dirent *e;
+-	if (!d) return -1;
+-	while ((e = readdir(d))) {
+-		char p[288];
+-		if (e->d_name[0] == '.') continue;
+-		snprintf(p, sizeof(p), "/tmp/mnt/%s", e->d_name);
+-		if (access(p, W_OK) == 0) { snprintf(out, outsz, "%s", p); closedir(d); return 0; }
+-	}
+-	closedir(d);
+-	return -1;
+-}
+-
+-/* scan mounted USB volumes for a reaper.key whose SHA-256 == wanthash */
+-static int rmcp_usb_find_key(const char *wanthash, char *out, size_t outsz)
+-{
+-	DIR *d = opendir("/tmp/mnt");
+-	struct dirent *e;
+-	int found = -1;
+-	if (!d) return -1;
+-	while ((e = readdir(d)) != NULL && found != 0) {
+-		char kp[300], h[80];
+-		if (e->d_name[0] == '.') continue;
+-		snprintf(kp, sizeof(kp), "/tmp/mnt/%s/reaper.key", e->d_name);
+-		if (access(kp, R_OK) != 0) continue;
+-		if (rmcp_sha256_file(kp, h) == 0 && strlen(h) == strlen(wanthash) &&
+-		    CRYPTO_memcmp(h, wanthash, strlen(wanthash)) == 0) {
+-			snprintf(out, outsz, "%s", kp);
+-			found = 0;
+-		}
+-	}
+-	closedir(d);
+-	return found;
+-}
+-
+-/* CSRF / second-factor guard for the destructive advisor actions. reaper_mcp.cgi
+- * is a Reaper-added CGI, so it is NOT in the (prebuilt, closed) httpd Referer
+- * whitelist - do_referer stays 0 and referer_check() never runs for it. do_auth
+- * only proves a live admin cookie, which a CSRF POST rides. Proving knowledge of
+- * the current arming code - a secret the browser never holds - defeats that for
+- * the security-relevant actions (wiping the code, dropping the USB 2nd factor),
+- * mirroring the code-rotation guard already used in 'provision'. Shares the same
+- * fail-count + lockout accounting. Returns 1 to proceed; on failure it has already
+- * written the JSON error and the caller must return. */
++/* reaper v1.6.8 Gatekeeper: device-access-control CGI + captive helpers.
++ * NOT MCP-gated (ships in both builds) - kept OUTSIDE the RTCONFIG_REAPER_MCP
++ * block below so the noMCP image still defines do_reaper_gk_cgi. */
+ static int
+ gk_valid_mac(const char *m)
+ {
+@@ -22879,6 +22763,126 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
+ }
+ 
++#ifdef RTCONFIG_REAPER_MCP
++/* reaper v1.4.0: arming control plane for the read-only MCP advisor (rmcpd).
++ *
++ * This endpoint is the SECOND FACTOR gate. The advisor daemon never runs at boot
++ * and refuses to start without an armed session file; only a successful "arm"
++ * here (admin session AND the out-of-band arming code) writes that file and asks
++ * rc to launch the daemon. The arming code is NEVER stored - only its salt and
++ * PBKDF2-HMAC-SHA256 hash, so a flash-dump attacker gets an uncrackable hash and
++ * still cannot arm. Repeated wrong codes lock arming for 15 minutes.
++ *
++ * Actions (GET param "action"): status | provision | deprovision | arm | disarm.
++ * The arming token and connection snippet are returned once, on a successful arm. */
++
++#define RMCP_ITER	120000
++#define RMCP_STATE_DIR	"/tmp/reaper_mcp"
++#define RMCP_SESSION	RMCP_STATE_DIR "/session"
++#define RMCP_LOCK_SECS	900
++#define RMCP_MAX_FAIL	5
++
++static void rmcp_hex(const unsigned char *in, int n, char *out)
++{
++	static const char *h = "0123456789abcdef";
++	int i;
++	for (i = 0; i < n; i++) {
++		out[i * 2]     = h[(in[i] >> 4) & 0xf];
++		out[i * 2 + 1] = h[in[i] & 0xf];
++	}
++	out[n * 2] = 0;
++}
++
++static int rmcp_unhex(const char *hex, unsigned char *out, int maxout)
++{
++	int n = 0;
++	while (hex[0] && hex[1] && n < maxout) {
++		char b[3] = { hex[0], hex[1], 0 };
++		out[n++] = (unsigned char)strtol(b, NULL, 16);
++		hex += 2;
++	}
++	return n;
++}
++
++/* PBKDF2-HMAC-SHA256(code, salt) -> 32-byte digest, hex-encoded into hashhex */
++static int rmcp_kdf(const char *code, const unsigned char *salt, int saltlen, char *hashhex)
++{
++	unsigned char dk[32];
++	if (PKCS5_PBKDF2_HMAC(code, strlen(code), salt, saltlen, RMCP_ITER,
++			      EVP_sha256(), sizeof(dk), dk) != 1)
++		return -1;
++	rmcp_hex(dk, sizeof(dk), hashhex);
++	return 0;
++}
++
++/* Mode B (optional USB key) helpers. SHA-256 a file -> hex (64 chars). */
++static int rmcp_sha256_file(const char *path, char *hexout)
++{
++	FILE *f = fopen(path, "rb");
++	EVP_MD_CTX *ctx;
++	unsigned char buf[4096], md[32];
++	unsigned int mdlen = 0;
++	size_t n;
++	if (!f) return -1;
++	if (!(ctx = EVP_MD_CTX_new())) { fclose(f); return -1; }
++	EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
++	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++		EVP_DigestUpdate(ctx, buf, n);
++	EVP_DigestFinal_ex(ctx, md, &mdlen);
++	EVP_MD_CTX_free(ctx);
++	fclose(f);
++	rmcp_hex(md, 32, hexout);
++	return 0;
++}
++
++/* first writable /tmp/mnt/<vol> mountpoint (where we can drop the keyfile) */
++static int rmcp_usb_writable_dir(char *out, size_t outsz)
++{
++	DIR *d = opendir("/tmp/mnt");
++	struct dirent *e;
++	if (!d) return -1;
++	while ((e = readdir(d))) {
++		char p[288];
++		if (e->d_name[0] == '.') continue;
++		snprintf(p, sizeof(p), "/tmp/mnt/%s", e->d_name);
++		if (access(p, W_OK) == 0) { snprintf(out, outsz, "%s", p); closedir(d); return 0; }
++	}
++	closedir(d);
++	return -1;
++}
++
++/* scan mounted USB volumes for a reaper.key whose SHA-256 == wanthash */
++static int rmcp_usb_find_key(const char *wanthash, char *out, size_t outsz)
++{
++	DIR *d = opendir("/tmp/mnt");
++	struct dirent *e;
++	int found = -1;
++	if (!d) return -1;
++	while ((e = readdir(d)) != NULL && found != 0) {
++		char kp[300], h[80];
++		if (e->d_name[0] == '.') continue;
++		snprintf(kp, sizeof(kp), "/tmp/mnt/%s/reaper.key", e->d_name);
++		if (access(kp, R_OK) != 0) continue;
++		if (rmcp_sha256_file(kp, h) == 0 && strlen(h) == strlen(wanthash) &&
++		    CRYPTO_memcmp(h, wanthash, strlen(wanthash)) == 0) {
++			snprintf(out, outsz, "%s", kp);
++			found = 0;
++		}
++	}
++	closedir(d);
++	return found;
++}
++
++/* CSRF / second-factor guard for the destructive advisor actions. reaper_mcp.cgi
++ * is a Reaper-added CGI, so it is NOT in the (prebuilt, closed) httpd Referer
++ * whitelist - do_referer stays 0 and referer_check() never runs for it. do_auth
++ * only proves a live admin cookie, which a CSRF POST rides. Proving knowledge of
++ * the current arming code - a secret the browser never holds - defeats that for
++ * the security-relevant actions (wiping the code, dropping the USB 2nd factor),
++ * mirroring the code-rotation guard already used in 'provision'. Shares the same
++ * fail-count + lockout accounting. Returns 1 to proceed; on failure it has already
++ * written the JSON error and the caller must return. */
++
+ static int
+ rmcp_require_code(FILE *stream, const char *code, time_t now, long lock_until)
+ {
+-- 
+2.25.1
+

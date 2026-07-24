@@ -9,14 +9,24 @@
 > the disclosure to class-level detail for still-unpatched issues. See
 > [`COMPLIANCE-AUDIT-2026-07-13.md`](COMPLIANCE-AUDIT-2026-07-13.md) item **M6** and
 > [`../SECURITY.md`](../SECURITY.md).
+>
+> **Reachability / PoC dossier (ASUS PSIRT case 1006563):** the per-item "direct utilization"
+> analysis PSIRT requested for the `shared/` items C5/C6, H10–H14, and the `shared/` M/L set is in
+> [`REAPER-POC-DISCLOSURE-2026-07-23.md`](REAPER-POC-DISCLOSURE-2026-07-23.md) — **confidential, do not
+> publish while unremediated.** That analysis surfaced one new defect of our own: the C6 fix was
+> point-fixed in `shared/misc.c` but an independent twin (`asus_libpasswd_openssl_crypt`) also shipped
+> in `libpasswd/passwd.c` — tracked as **C6b** (commit `19638dba8d`). Drafted during PSIRT coordination on
+> 2026-07-23 (still reported as unpatched in `REAPER-POC-DISCLOSURE-2026-07-23.md` §4.1, which predates
+> the fix), it was **built and shipped in v1.7.5 (2026-07-24)**, class-fixing every `openssl passwd`
+> sink. See the C6b row below.
 
 Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 
 - **Base version:** 3006.102.8_beta2
-- **Custom version string:** the base-firmware security hardening catalogued here landed in **v1.0** and is carried unchanged through the current **v1.6.0** release. Later versions added features and de-cloud removals rather than new *stock-firmware* findings; the security work since v1.0 — post-feature injection re-audits, the v1.4.3 / v1.4.4 security-review remediation of Reaper-introduced changes, v1.4.5 exploit-mitigation build hardening (FORTIFY + stack-protector-strong + PIE + full-RELRO on the Reaper daemons), and the injection-safe design of the v1.5.0 network-diagnostics tools (fixed-argument exec, never a shell), and the **v1.6.0** defense-in-depth pass on the Reaper daemons (CR/LF + dotted-quad validation of the Advisor session-file client value, `lan_ifname` validation before the boot-sweep `iptables` call, plus a `popen` fd/child-leak fix and full allocation-NULL hardening in `rmcpd`/`rtrafd`) — is summarized in [`CHANGELOG.md`](CHANGELOG.md). The v1.0 image details below are the record of when these base-firmware fixes shipped.
+- **Custom version string:** the base-firmware security hardening catalogued here landed in **v1.0** and is carried unchanged through the current **v1.7.7** release. Later versions added features and de-cloud removals rather than new *stock-firmware* findings (the one exception — **C6b**, a `libpasswd/passwd.c` twin of C6 that surfaced during ASUS PSIRT coordination on 2026-07-23 — was class-fixed and **built + shipped in v1.7.5**, 2026-07-24); the security work since v1.0 — post-feature injection re-audits, the v1.4.3 / v1.4.4 security-review remediation of Reaper-introduced changes, v1.4.5 exploit-mitigation build hardening (FORTIFY + stack-protector-strong + PIE + full-RELRO on the Reaper daemons), the injection-safe design of the v1.5.0 network-diagnostics tools (fixed-argument exec, never a shell), the **v1.6.0** defense-in-depth pass on the Reaper daemons (CR/LF + dotted-quad validation of the Advisor session-file client value, `lan_ifname` validation before the boot-sweep `iptables` call, plus a `popen` fd/child-leak fix and full allocation-NULL hardening in `rmcpd`/`rtrafd`), the **v1.7.1** remediation of the post-Gatekeeper audit round (2026-07-21 — Wireless-diagnostics CSRF guard, Gatekeeper device-list race + MAC validation, and related hardening), and the **v1.7.5** class-closure of C6 across every `openssl passwd` sink (**C6b**, ASUS PSIRT case 1006563) — is summarized in [`CHANGELOG.md`](CHANGELOG.md). The v1.0 image details below are the record of when these base-firmware fixes shipped.
 - **Branch:** `be96u-only` (local only — never pushed upstream)
 - **Release:** **v1.0 (2026-07-07).** Image sha256 `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`). Contents: hardening rounds 1-4 + round-3 injection pass + avahi CVE backport + T1-T4 latent hardening + the v1.0 pre-release audit fixes, plus both Hardware QoS engines and the Reaper UI. The predecessor image `b81e482c` was flashed to the physical RT-BE96U 2026-07-05 and ran clean; v1.0's QoS + UI additions were validated on metal through 2026-07-07.
-- **Build target / applicable model:** **RT-BE96U only.** This tree was stripped to the RT-BE96U (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware, but this hardened image is produced for the RT-BE96U exclusively. The "Model" column reflects what this build delivers.
+- **Build target / applicable model:** at v1.0, **RT-BE96U only** — the tree was stripped to the RT-BE96U (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware. *(Currency note: since v1.5.0e the sibling BCM4916 models — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro — were reintroduced from per-model branches and all five now ship as of v1.7.7. Because these fixes are in shared source, every model carries them; RT-BE96U remains the primary, hardware-validated build.)* The "Model" column reflects what this build delivers.
 
 > Scope note: a few items are present in the source but **not compiled/active** in the RT-BE96U build (gated off by config). They were fixed defensively where cheap, and are flagged below.
 
@@ -26,13 +36,13 @@ Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 
 | Severity | Fixed | Deferred (design decision) | Not in BE96U build |
 |---|---|---|---|
-| Critical | C1 C2 C3 C4 C5 C6 C7 C8 (8) | — | — |
-| High | H1 H2 H5 H6 H7 H8 H9 H10 H11 H12 H13 H14 (12) | H15 | H3, H4 |
+| Critical | C1 C2 C3 C4 C5 C6 C6b C7 C8 (9) | — | — |
+| High | H1 H2 H5 H6 H7 H8 H9 H10 H11 H12 H13 H14 (12) | H15 | H3, H4 (and H5 — fixed defensively but its TR069/TR181 opt-125 path is likewise not compiled; counted under Fixed, also listed in "Not present in build" below) |
 | Medium | M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16 M17 M18 M19 (19) | M20, M21 | M22 |
 | Low | L1 L2 L3 L4 L5 (5) | — | — |
 | Internal | N1 N2 N3 N4 (IPsec shell sinks) | — | — |
 
-Every Critical/High/Medium/Low present in the RT-BE96U-built source is fixed except the three deferred design items (H15, M20, M21).
+Every Critical/High/Medium/Low present in the RT-BE96U-built source is fixed except the three deferred design items (H15, M20, M21). **C6b** (`libpasswd/passwd.c` twin of C6) was drafted during ASUS PSIRT coordination on 2026-07-23 and **built + shipped in v1.7.5** (2026-07-24), class-fixing every `openssl passwd` sink (see the header note and the C6b row below); the Critical row above lists it as the ninth Critical finding.
 
 Bundled third-party **package CVE backports** (avahi 0.8 mDNS DoS — CVE-2023-38469/-38470/-38473) are tracked in the [Package CVE backports](#package-cve-backports--bundled-system-libraries-2026-07-05) section. Items that are **still open and must be worked** (known-vulnerable EOL libraries, the closed-source blob auth boundary) plus the **abandoned AiCloud set** (disabled by decision, pending removal) and lower-priority latent hardening are catalogued with severities in [Open security items still requiring work](#open-security-items-still-requiring-work-2026-07-05) at the end of this file.
 
@@ -53,6 +63,7 @@ All rows apply to **RT-BE96U**. "Commit" is the short hash on `be96u-only`.
 | C4 | rc/snmpd.c | snmpd.conf config-injection → RCE — strip CR/LF from community/sysName/Location/Contact | cbbbb83db3 |
 | C5 | shared/nvparse.c | `get_wds_wsec` stack overflow — `strcpy`→`strlcpy` | 50d6fe9a59 |
 | C6 | shared/misc.c | `asus_openssl_crypt` command injection — `popen`→argv exec helper | 8bc3189fa6 |
+| C6b | libpasswd/passwd.c | `asus_libpasswd_openssl_crypt` command injection (**C6 twin** — an independent copy the C6 fix missed; reached via HTTP + WebDAV/SMB basic-auth on the libc-`crypt()` fallback) — `popen`→argv exec helper. Found during ASUS PSIRT case 1006563 coordination. **STATUS: built + shipped in v1.7.5 (2026-07-24)** — class-fixes every `openssl passwd` sink. | v1.7.5 (commit `19638dba8d`) |
 | C7 | rc/rc_ipsec.c | IPsec `ca_txt_parse` unbounded copies — bounded + NUL-guarded | c950d8cf35 |
 | C8 | httpd/web.c | `ej_cgi_get` format string — `websWrite(wp,"%s",v)` (defensive; handler unregistered) | 9096344d8a |
 
@@ -67,7 +78,7 @@ All rows apply to **RT-BE96U**. "Commit" is the short hash on `be96u-only`.
 | H8 | rc/usb.c | DLNA `dms_friendly_name` NULL deref — `nvram_safe_get` | e0b01476c8 |
 | H9 | rc/snmpd.c | SNMPv3 `createUser` field injection — sanitize user/passwords | cbbbb83db3 |
 | H10 | shared/nvparse.c | port/filter `desc` format strings — `"%s"` | 50d6fe9a59 |
-| H11 | shared/misc.c | `set_crt_parsed` cert-accumulation overflow — bounded | 7f831fa82a |
+| H11 | shared/misc.c | `set_crt_parsed` cert-accumulation overflow — bounded (**note: the vulnerable `buffer[8000]` `#else` branch is `#ifdef`-excluded on the NAND/UBIFS RT-BE96U — LATENT on this image, DIRECT on stock models built without a JFFS2/UBIFS/JFFS macro; see PoC dossier §4.2**) | 7f831fa82a |
 | H12 | shared/mtlan_utils.c | `get_vpns_iprange` NULL deref — guard each `strpbrk` | e9f2c88ef6 |
 | H13 | shared/wlif_utils.c | `wl_wlif_save_wpa_settings` negative-index write — clamp index | 28e7ebc511 |
 | H14 | shared/mtlan_utils.c | `cpN_local_auth_profile` missing NUL-term — `strlcpy` | e9f2c88ef6 |
@@ -289,7 +300,7 @@ pre-auth defect in the default configuration.
 ## Verification
 Each changed file was compiled with the real RT-BE96U userspace toolchain (gcc-10.3, 32-bit ARM) and confirmed to build clean with no new warnings at the edit sites; `rc_ipsec.c` additionally passed a warning-diff vs the pre-hardening baseline. The **round-4** fixes were validated by a full end-to-end `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"), with all four changes confirmed present in the staged rootfs (`web.c`/`qos.c` recompiled into httpd/rc; both www edits in the minified `fs/www`), plus the mock-router XSS round-trip above. Image sha256 `c76aac232b2eca251403640c02ccc7bb0426d4fe763fabc97547727d16a3d8fa`.
 
-The **avahi CVE backport** was validated by a full `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `libavahi-core`, `libavahi-common` and `avahi-daemon` recompiled and relinked with no errors, and all three source hunks are staged. Release image sha256 `07c86c4cc7ac6931a3abdf03f17a25d96324ed85294193755fb24d354cae73e5`.
+The **avahi CVE backport** was validated by a full `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `libavahi-core`, `libavahi-common` and `avahi-daemon` recompiled and relinked with no errors, and all three source hunks are staged. Interim avahi-validation build sha256 `07c86c4cc7ac6931a3abdf03f17a25d96324ed85294193755fb24d354cae73e5` (the combined image actually flashed to metal on 2026-07-05 is `b81e482c…`, per the avahi status note above).
 
 The **latent buffer hardening (T1-T4, commit `f9c6d316e7`)** was validated by a full `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `libcodb`, `rc` (udhcpc/qos) and `libshared` recompiled with **zero errors and no new warnings at any edited line** (the surviving `strncat` "bound equals source length" warnings are pre-existing on the untouched string-literal calls). Current release image sha256 `b81e482cb3e027b1e7980b8376dda9d181a75532d75dc9cd200607b02de96e51` (loader `34eb84ff1f9a73740cdbbf687c4921f46f00cf3a2a983d06e94b5de6860ea240`).
 

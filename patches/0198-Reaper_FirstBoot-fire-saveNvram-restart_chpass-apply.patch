@@ -1,0 +1,86 @@
+From 36aecbb0aab4c07ca4424d89e3cf38e32fb98983 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 21 Jul 2026 09:06:13 -0400
+Subject: [PATCH] Reaper_FirstBoot: fire saveNvram;restart_chpass apply
+ (factory-reset login lockout fix)
+
+FIELD BUG: after a factory reset + forced admin credential change, users were
+locked out at login with their brand-new password (V2 web login rejected -> the
+5-fail / 300s lockout, and in SG-mode the permanent "reset to factory" lock).
+
+ROOT CAUSE: Reaper_FirstBoot.asp fired ONLY httpApi.chpass, dropping the
+`saveNvram;restart_chpass` apply that stock Main_Password.asp (submitForm) fires
+alongside it. Confirmed stock uses the identical action_script (Main_Password.asp
+form: action_mode=apply, action_script="saveNvram;restart_chpass"). Two gaps:
+  (1) no guaranteed nvram_commit -> the new http_passwd lived in nvram RAM only
+      and reverted to the default on the next httpd restart / reboot;
+  (2) restart_chpass (-> setup_passwd -> create_passwd, services.c:873/896) never
+      ran, so /etc/passwd + /etc/shadow kept the OLD password -> SSH/Samba/FTP and
+      the V1 login path were also wrong.
+The write itself is otherwise stock-equivalent: chpass -> do_chpass (closed lib)
+pw_enc-encrypts http_passwd; V2 login pw_dec's it back and compares. So the store
+was fine; the missing commit/shadow-sync was the fault.
+
+FIX: after the (synchronous) httpApi.chpass, submit the existing hidden titleForm
+to /start_apply.htm with action_script="saveNvram;restart_chpass" (target=fb_hidden
+iframe, so the page never navigates). Runs AFTER chpass so restart_chpass rebuilds
+/etc/shadow from the just-committed nvram value. titleForm carries NO http_passwd_x
+field, so there is zero risk of a plaintext field overwriting the encrypted value
+(safer than stock). Redirect delay 2600->3200ms so the apply/commit lands first.
+
+Router login (web V2 + SSH/Samba via shadow) is now set AND persisted; Wi-Fi is
+unaffected (SSID/PSK are set in the separate first-run Wi-Fi step). Shared page ->
+propagates to all model branches. METAL confirm: reset -> set password -> reboot
+-> log in (should now succeed; nvram http_passwd survives the reboot).
+---
+ release/src/router/www/Reaper_FirstBoot.asp | 25 ++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_FirstBoot.asp b/release/src/router/www/Reaper_FirstBoot.asp
+index 0bb838512d..93b689bcb1 100644
+--- a/release/src/router/www/Reaper_FirstBoot.asp
++++ b/release/src/router/www/Reaper_FirstBoot.asp
+@@ -150,7 +150,8 @@ input:focus{border-color:var(--crimson)}
+     if(msg){ showErr(msg); return; }
+ 
+     $("fb_go").disabled=true; $("fb_spin").style.display="block";
+-    /* same call Main_Password.asp uses -- no bespoke apply path */
++    /* httpApi.chpass is synchronous (async:false) -> http_passwd/http_username are
++       set in nvram (pw_enc-encrypted by do_chpass) before we continue. */
+     try{
+       httpApi.chpass({
+         "restart_httpd":"0",
+@@ -163,10 +164,28 @@ input:focus{border-color:var(--crimson)}
+       $("fb_go").disabled=false; $("fb_spin").style.display="none";
+       return;
+     }
++    /* v1.6.6c LOGIN-LOCKOUT FIX: mirror Main_Password.asp, which fires chpass AND a
++       saveNvram;restart_chpass apply. Dropping that apply left two gaps that locked
++       users out with their brand-new password after a factory reset:
++         (1) no guaranteed nvram_commit -> the new http_passwd lived in RAM only and
++             reverted to default on the next httpd restart/reboot;
++         (2) /etc/passwd + /etc/shadow were never rewritten -> SSH/Samba/FTP and the
++             V1 login path kept the OLD password.
++       Reuse the hidden titleForm (posts to /start_apply.htm via the fb_hidden iframe,
++       so it never navigates the page); run it AFTER chpass so restart_chpass rebuilds
++       /etc/shadow from the just-committed nvram value. */
++    try{
++      var tf=$("titleForm");
++      tf.action_script.value="saveNvram;restart_chpass";
++      tf.flag.value="";
++      tf.next_page.value="";
++      tf.submit();
++    }catch(e){}
+     /* Changing the admin password may drop this session. Head to "/"; state.js then
+        forces the Wi-Fi step (Advanced_Wireless_Content.asp) until a PSK is set, or
+-       to the login page to re-authenticate with the new password. */
+-    setTimeout(function(){ top.location.href = "/"; }, 2600);
++       to the login page to re-authenticate with the new password. Wait a beat longer
++       than stock (3000ms) so the apply/commit lands before we leave. */
++    setTimeout(function(){ top.location.href = "/"; }, 3200);
+   }
+ 
+   document.addEventListener("DOMContentLoaded", function(){
+-- 
+2.25.1
+

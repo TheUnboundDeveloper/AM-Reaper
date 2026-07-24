@@ -8,7 +8,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 
 ## 0. Ground rules (read first)
 
-- **Target is the RT-BE96U only.** Built from `release/src-rt-5.04behnd.4916`, model `rt-be96u` (Broadcom BCM4916 / WiFi 7).
+- **Primary target is the RT-BE96U.** Built from `release/src-rt-5.04behnd.4916`, model `rt-be96u` (Broadcom BCM4916 / WiFi 7). The RT-BE96U is the hardware-validated model; the same tree also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`). This guide walks the RT-BE96U path; the sibling builds are the same recipe with a different target.
 - **Never push.** All work stays on the local `be96u-only` branch. `origin` points at the upstream/mirror — do **not** `git push`.
 - **Don't touch the blobs.** The Broadcom WiFi drivers and prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, `spwenc`, `hostapd`/`wpa_supplicant` Broadcom forks) are closed and driver-coupled. Harden the **open-source userspace** only; treat the blobs as documented residual risk.
 - **Legal:** the proprietary components (ASUS/Broadcom/Trend Micro/Tuxera) are licensed for ASUS hardware only — see [`README.proprietary`](README.proprietary). The GPL parts are GPL — publish changes if you redistribute.
@@ -151,6 +151,8 @@ From the platform tree, as the non-root user:
 cd /home/reaper/asuswrt-be96u/release/src-rt-5.04behnd.4916
 make rt-be96u            # NOTE: -j1 (see below)
 ```
+(For the sibling models, build the corresponding target from that model's branch —
+`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` — same recipe, same caveats.)
 
 The non-obvious parts:
 

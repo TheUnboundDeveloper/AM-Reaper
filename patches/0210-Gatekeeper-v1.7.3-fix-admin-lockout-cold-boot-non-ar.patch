@@ -1,0 +1,884 @@
+From 6b664b3771a1851bbf6a5ac3608bad379ec11a13 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 22 Jul 2026 20:40:05 -0400
+Subject: [PATCH 210/211] Gatekeeper v1.7.3: fix admin lockout + cold-boot
+ non-arm; graceful arming
+
+Field reports: Gatekeeper locked the router (admin could not reach the UI to
+disable it) and did not re-arm after a hard reboot. Root causes and fixes:
+
+- Admin lockout: in quarantine mode a held device (incl. a mis-grandfathered
+  admin box, or any device asleep at enable time) could reach only DHCP/DNS/
+  tcp80 on the router, fencing the admin off from the UI that disables the
+  feature. Fix: REAPER_GKI always RETURNs the admin port (HTTPS via the httpd
+  do_ssl carve-out, or the plain-HTTP admin port on an HTTP-only router with
+  the captive redirect suppressed); the baseline snapshot now grandfathers
+  ARP + DHCP leases + custom_clientlist so idle/known devices are not held.
+
+- Cold-boot non-arm: apply.sh baked lan_ifname at generation time; on a cold
+  boot start_gk ran before the bridge existed, so rules never hooked and the
+  firewall/self-heal paths only re-ran the stale file. Fix: apply.sh resolves
+  LANIF/LANIP/admin-port at run time and defers cleanly (exit 1) until the
+  bridge is up; start_gk logs the deferral; gkd self-heal re-runs it and arms.
+
+- Graceful failure / visibility: gkd maintains /tmp/gk/chains.ok and the status
+  CGI exposes "armed"; the page shows an amber "Arming" state that escalates to
+  a red "Not enforcing - check System Log" fault if it persists. stop_gk clears
+  the stamp on disable.
+
+Addresses a 3-agent adversarial review (admin lockout, HTTP-only hatch, stale
+stamp, respawn re-log, broadcast MAC, 443 fallback, DNAT LANIP guard, UI
+escalation). Built clean for RT-BE96U (MCP variant); on-metal exercise owed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf          |   2 +-
+ release/src/router/gkd/gkd.c         |  46 ++++++++--
+ release/src/router/httpd/httpd.c     |  14 +++
+ release/src/router/httpd/web.c       | 123 +++++++++++++++++++++------
+ release/src/router/rc/gatekeeper.c   |  60 ++++++++++---
+ release/src/router/www/BR.dict       |   4 +
+ release/src/router/www/CN.dict       |   4 +
+ release/src/router/www/CZ.dict       |   4 +
+ release/src/router/www/DA.dict       |   4 +
+ release/src/router/www/DE.dict       |   4 +
+ release/src/router/www/EN.dict       |   4 +
+ release/src/router/www/ES.dict       |   4 +
+ release/src/router/www/FI.dict       |   4 +
+ release/src/router/www/FR.dict       |   4 +
+ release/src/router/www/HU.dict       |   4 +
+ release/src/router/www/IT.dict       |   4 +
+ release/src/router/www/JP.dict       |   4 +
+ release/src/router/www/KR.dict       |   4 +
+ release/src/router/www/MS.dict       |   4 +
+ release/src/router/www/NL.dict       |   4 +
+ release/src/router/www/NO.dict       |   4 +
+ release/src/router/www/PL.dict       |   4 +
+ release/src/router/www/RO.dict       |   4 +
+ release/src/router/www/RU.dict       |   4 +
+ release/src/router/www/Reaper_GK.asp |  34 +++++++-
+ release/src/router/www/SL.dict       |   4 +
+ release/src/router/www/SV.dict       |   4 +
+ release/src/router/www/TH.dict       |   4 +
+ release/src/router/www/TR.dict       |   4 +
+ release/src/router/www/TW.dict       |   4 +
+ release/src/router/www/UK.dict       |   4 +
+ 31 files changed, 330 insertions(+), 49 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 9f367fe08d..4fcc7aa073 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.7.2
++EXTENDNO=Reaper_v1.7.3
+ 
+ RCNO=0
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 8f395b1d2a..ad8b3e81e5 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -356,19 +356,49 @@ static void self_heal(void)
+ 	 * start_lan/lan_up/restart_wireless/setup_dnsmq/wanduck run a full
+ 	 * "ebtables -F" (chains survive but EMPTY, hook rules gone) - so test
+ 	 * the iptables CHAIN but the ebtables HOOK RULE. apply.sh is a full
+-	 * teardown+rebuild, safe to re-run. */
++	 * teardown+rebuild, safe to re-run.
++	 *
++	 * reaper v1.7.3: also maintains /tmp/gk/chains.ok - the "armed" stamp the
++	 * status CGI reports to the UI - and logs only the armed<->unarmed
++	 * TRANSITIONS, so a cold-boot deferral (LAN not up yet, apply.sh re-runs
++	 * every cycle) does not spam the log while it waits for the bridge. */
++	static int last_armed = -1;	/* -1 = unknown at startup */
+ 	struct stat st;
+-	if (stat(APPLY_SH, &st)) return;
++	int armed;
++
++	/* gkd is killed+respawned by restart_gk on every guest-pass expiry; seed
++	 * the transition tracker from the persisted stamp so a respawn while already
++	 * armed does not re-log a phantom "enforcement active". */
++	if (last_armed == -1)
++		last_armed = (stat(CHAIN_STAMP, &st) == 0) ? 1 : 0;
++
++	if (stat(APPLY_SH, &st)) {
++		if (last_armed != 0) { unlink(CHAIN_STAMP); last_armed = 0; }
++		return;
++	}
+ 	/* §4 (v1.7.1): probe EVERY enforcement component, not just GKF + the
+ 	 * ebtables hook. apply.sh always creates GKF/GKI/GKN (v4+v6) and the
+ 	 * ebtables chain, so any one missing means a flush occurred - reapply. */
+-	if (system("iptables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
+-	    system("iptables -nL REAPER_GKI >/dev/null 2>&1") == 0 &&
+-	    system("iptables -t nat -nL REAPER_GKN >/dev/null 2>&1") == 0 &&
+-	    system("ip6tables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
+-	    system("ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0)
++	armed = (system("iptables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
++	         system("iptables -nL REAPER_GKI >/dev/null 2>&1") == 0 &&
++	         system("iptables -t nat -nL REAPER_GKN >/dev/null 2>&1") == 0 &&
++	         system("ip6tables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
++	         system("ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0);
++
++	if (armed) {
++		int fd = open(CHAIN_STAMP, O_CREAT | O_WRONLY | O_TRUNC, 0600);
++		if (fd >= 0) close(fd);
++		if (last_armed != 1) {
++			logmessage("gatekeeper", "enforcement active");
++			last_armed = 1;
++		}
+ 		return;
+-	logmessage("gatekeeper", "enforcement chains missing (firewall/wireless restart?) - reapplying");
++	}
++	unlink(CHAIN_STAMP);
++	if (last_armed != 0) {
++		logmessage("gatekeeper", "enforcement chains missing (firewall/wireless restart or LAN not ready) - reapplying");
++		last_armed = 0;
++	}
+ 	system("sh " APPLY_SH);
+ }
+ 
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index e07464267f..ff0b3f8ca1 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1299,6 +1299,20 @@ reaper_gk_captive_check(const char *client_ip)
+ 
+ 	if (!nvram_match("gk_enable", "1"))
+ 		return 0;
++	/* reaper v1.7.3 admin escape hatch: never serve the waiting page on the
++	 * HTTPS admin instance (do_ssl). Captive interception is for plain-HTTP OS
++	 * portal probes; masking HTTPS would fence a held admin off from the very
++	 * page that disables Gatekeeper. The REAPER_GKI firewall chain likewise
++	 * always permits the HTTPS admin port, so the owner can always recover. */
++	if (do_ssl)
++		return 0;
++	/* HTTP-only router (no HTTPS instance): the escape hatch lives on the
++	 * plain-HTTP admin port, so we must not captive-intercept it or the owner
++	 * is locked out. Enforcement still holds via the REAPER_GKF/ebtables gates;
++	 * only the waiting-room page is skipped in this uncommon config (gatekeeper.c
++	 * likewise suppresses the port-80 DNAT when http_enable==0). */
++	if (nvram_get_int("http_enable") == 0)
++		return 0;
+ 	if (nvram_match("gk_captive", "0") || nvram_match("gk_default", "1"))
+ 		return 0;
+ 	if (!client_ip || !client_ip[0] || !strcmp(client_ip, "127.0.0.1"))
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 13fa681e87..4d83812331 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22594,40 +22594,104 @@ gk_emit_seen(FILE *stream, struct gk_seen *d, int rand_flag)
+ 	websWrite(stream, "}");
+ }
+ 
+-/* one-time approve-everything-present baseline when the feature is enabled
+- * with an empty list; sources ARP directly since gkd has never run yet */
++/* append "<MAC>1>0" (approved/full) to the baseline buffer, uppercased,
++ * validated, and de-duplicated. reaper v1.7.3 */
++static void
++gk_seed_add(char *out, size_t cap, const char *macraw)
++{
++	char mac[18], key[20], add[48];
++	int i;
++	if (!macraw || strlen(macraw) != 17)
++		return;
++	for (i = 0; i < 17; i++)
++		mac[i] = toupper((unsigned char)macraw[i]);
++	mac[17] = 0;
++	if (!gk_valid_mac(mac))
++		return;
++	/* never grandfather broadcast / all-zero (can appear in leases/clientlist);
++	 * matches gkd's valid_mac() rejects. */
++	if (!strcasecmp(mac, "FF:FF:FF:FF:FF:FF") || !strcasecmp(mac, "00:00:00:00:00:00"))
++		return;
++	snprintf(key, sizeof(key), "<%s>", mac);
++	if (strcasestr(out, key))		/* already grandfathered from another source */
++		return;
++	snprintf(add, sizeof(add), "<%s>1>0", mac);
++	if (strlen(out) + strlen(add) + 1 < cap)
++		strlcat(out, add, cap);
++}
++
++/* one-time approve-everything-known baseline when the feature is enabled with
++ * an empty list. reaper v1.7.3: unions live ARP with the DHCP lease table and
++ * the router's known-client registry so devices that are merely asleep/idle at
++ * enable time (or IPv6-only) are grandfathered too - the ARP-only snapshot
++ * mass-quarantined half a normal household the instant the switch was flipped. */
+ static void
+ gk_baseline_snapshot(void)
+ {
+-	FILE *f = fopen("/proc/net/arp", "r");
+-	char line[256], ip[64], hw[64], dif[32];
+-	unsigned flags;
+-	char *rl;
+-	size_t cap = 1;
+-	char *out;
+-	if (!f) return;
+-	out = calloc(1, cap = 8192);
+-	if (!out) { fclose(f); return; }
+-	if (fgets(line, sizeof(line), f)) { /* header */ }
+-	while (fgets(line, sizeof(line), f)) {
+-		if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dif) != 4)
+-			continue;
+-		if (!(flags & 2) || strncmp(dif, "br", 2) || !gk_valid_mac(hw))
+-			continue;
+-		{
+-			char add[48];
+-			int i;
+-			for (i = 0; hw[i]; i++) hw[i] = toupper((unsigned char)hw[i]);
+-			snprintf(add, sizeof(add), "<%s>1>0", hw);
+-			if (strlen(out) + strlen(add) + 1 < cap)
+-				strlcat(out, add, cap);
++	const size_t cap = 16384;
++	char line[512];
++	char *out, *rl;
++	FILE *f;
++	int n = 0;
++
++	out = calloc(1, cap);
++	if (!out)
++		return;
++
++	/* 1. live ARP - completed entries on the LAN bridge (currently talking) */
++	f = fopen("/proc/net/arp", "r");
++	if (f) {
++		char ip[64], hw[64], dif[32];
++		unsigned flags;
++		if (fgets(line, sizeof(line), f)) { /* header */ }
++		while (fgets(line, sizeof(line), f)) {
++			if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dif) != 4)
++				continue;
++			if (!(flags & 2) || strncmp(dif, "br", 2))
++				continue;
++			gk_seed_add(out, cap, hw);
+ 		}
++		fclose(f);
++	}
++
++	/* 2. DHCP leases - devices the router knows but that are asleep/idle now */
++	f = fopen("/var/lib/misc/dnsmasq.leases", "r");
++	if (f) {
++		char mac[64];
++		while (fgets(line, sizeof(line), f)) {
++			if (sscanf(line, "%*s %63s", mac) != 1)
++				continue;
++			gk_seed_add(out, cap, mac);
++		}
++		fclose(f);
++	}
++
++	/* 3. custom_clientlist "<name>MAC>type>..." - the named-client registry */
++	{
++		char *buf = strdup(nvram_safe_get("custom_clientlist"));
++		char *tok, *sp = NULL;
++		if (buf) {
++			for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++				char *m = strchr(tok, '>'), *m2;
++				if (!m)
++					continue;
++				m++;
++				if ((m2 = strchr(m, '>')) != NULL)
++					*m2 = 0;
++				gk_seed_add(out, cap, m);
++			}
++			free(buf);
++		}
++	}
++
++	{
++		char *q = out;
++		while ((q = strchr(q, '<')) != NULL) { n++; q++; }
+ 	}
+-	fclose(f);
+ 	rl = nvram_safe_get("gk_rl");
+ 	if (!rl[0] && out[0]) {
+ 		nvram_set("gk_rl", out);
+-		logmessage("gatekeeper", "enabled - baseline snapshot approved the devices already present");
++		logmessage("gatekeeper", "enabled - baseline approved %d known device(s) (ARP + DHCP leases + client list)", n);
+ 	}
+ 	free(out);
+ }
+@@ -22656,8 +22720,13 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		int i, first;
+ 		char *buf, *tok, *sp = NULL;
+ 
+-		websWrite(stream, "{\"enable\":%d,\"def\":%d,\"guest_hours\":%d,\"captive\":%d,\"notify\":%d",
++		/* reaper v1.7.3: "armed" reflects whether the enforcement chains are
++		 * actually present (gkd stamps /tmp/gk/chains.ok when they are). It can
++		 * lag "enable" right after a cold boot until the LAN bridge comes up -
++		 * the UI surfaces that gap so the admin is never left guessing. */
++		websWrite(stream, "{\"enable\":%d,\"armed\":%d,\"def\":%d,\"guest_hours\":%d,\"captive\":%d,\"notify\":%d",
+ 			nvram_match("gk_enable", "1") ? 1 : 0,
++			f_exists("/tmp/gk/chains.ok") ? 1 : 0,
+ 			nvram_match("gk_default", "1") ? 1 : 0,
+ 			nvram_get_int("gk_guest_hours") > 0 ? nvram_get_int("gk_guest_hours") : 24,
+ 			nvram_match("gk_captive", "0") ? 0 : 1,
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 1c6e236973..016801dc02 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -45,6 +45,7 @@
+ 
+ #define GK_DIR    "/tmp/gk"
+ #define GK_APPLY  GK_DIR "/apply.sh"
++#define GK_STAMP  GK_DIR "/chains.ok"	/* gkd's "armed" marker; keep in lockstep with gkd.c CHAIN_STAMP */
+ 
+ /* strict MAC check - identical to httpd gk_valid_mac / gkd valid_mac. Every
+  * gk_rl consumer validates before use; this generator must too, since the
+@@ -98,17 +99,37 @@ static void gk_gen_apply(void)
+ {
+ 	FILE *f;
+ 	char *rl, *buf, *tok, *sp = NULL;
+-	const char *lanif = nvram_safe_get("lan_ifname");
+-	const char *lanip = nvram_safe_get("lan_ipaddr");
+ 	int quarantine = !nvram_match("gk_default", "1");
+-	int captive = !nvram_match("gk_captive", "0");
+ 
+ 	f = fopen(GK_APPLY, "w");
+ 	if (!f) return;
+ 
++	/* reaper v1.7.3: the LAN identity (bridge ifname, router IP, admin port) is
++	 * resolved at RUN time via `nvram get`, not baked in when this script is
++	 * generated. On a cold boot start_gk can fire before the LAN bridge exists;
++	 * a later re-run of this same script by the firewall hook or gkd self-heal
++	 * (once the bridge is up) then arms correctly with no regeneration. If the
++	 * bridge is still not ready the script defers cleanly (exit 1) rather than
++	 * writing half-built rules with an empty interface. */
+ 	fprintf(f, "#!/bin/sh\n"
+ 		   "# generated by start_gk - do not edit; idempotent (teardown+rebuild)\n"
+-		   "LANIF=%s\n"
++		   "LANIF=\"$(nvram get lan_ifname)\"\n"
++		   "LANIP=\"$(nvram get lan_ipaddr)\"\n"
++		   /* Admin escape-hatch port. With HTTPS admin present (http_enable != 0) a
++		    * held device reaches the real login on the HTTPS port - the httpd
++		    * do_ssl carve-out serves the login there, not the waiting page. On an
++		    * HTTP-only router (http_enable == 0) there is no HTTPS instance, so the
++		    * hatch falls back to the plain-HTTP admin port and the captive redirect
++		    * is suppressed below, else the owner would be locked out. Fallbacks
++		    * mirror start_httpd (443 / 80); a non-numeric value is rejected. */
++		   "GKHTTPEN=\"$(nvram get http_enable)\"\n"
++		   "GKADMIN=\"$(nvram get https_lanport)\"\n"
++		   "[ \"$GKHTTPEN\" = \"0\" ] && GKADMIN=\"$(nvram get http_lanport)\"\n"
++		   "case \"$GKADMIN\" in ''|0|*[!0-9]*) if [ \"$GKHTTPEN\" = \"0\" ]; then GKADMIN=80; else GKADMIN=443; fi;; esac\n"
++		   "if [ -z \"$LANIF\" ]; then\n"
++		   "  logger -t gatekeeper 'lan_ifname not ready - enforcement deferred' 2>/dev/null\n"
++		   "  exit 1\n"
++		   "fi\n"
+ 		   "# ---- teardown ----\n"
+ 		   "for T in iptables ip6tables; do\n"
+ 		   "  $T -D FORWARD -i $LANIF -j REAPER_GKF 2>/dev/null\n"
+@@ -126,8 +147,7 @@ static void gk_gen_apply(void)
+ 		   "  $T -N REAPER_GKI\n"
+ 		   "done\n"
+ 		   "iptables -t nat -N REAPER_GKN\n"
+-		   "ebtables -N REAPER_GK -P RETURN\n",
+-		   lanif);
++		   "ebtables -N REAPER_GK -P RETURN\n");
+ 
+ 	/* per-device rules */
+ 	rl = nvram_safe_get("gk_rl");
+@@ -155,17 +175,30 @@ static void gk_gen_apply(void)
+ 			"iptables -A REAPER_GKI -p udp --dport 53 -j RETURN\n"
+ 			"iptables -A REAPER_GKI -p tcp --dport 53 -j RETURN\n"
+ 			"iptables -A REAPER_GKI -p tcp --dport 80 -j RETURN\n"
++			/* reaper v1.7.3 admin escape hatch: a held device must ALWAYS be
++			 * able to reach the HTTPS admin UI to turn Gatekeeper back off,
++			 * otherwise a mis-grandfathered admin box (asleep/idle at enable
++			 * time, so not in the baseline) locks itself out with no recovery
++			 * short of a factory reset. HTTPS only - the plain-HTTP port stays
++			 * captive-redirected so OS portal probes still pop the sheet. */
++			"iptables -A REAPER_GKI -p tcp --dport $GKADMIN -j RETURN\n"
+ 			"iptables -A REAPER_GKI -j DROP\n"
+ 			"ip6tables -A REAPER_GKI -p icmpv6 -j RETURN\n"       /* NDP must live */
+ 			"ip6tables -A REAPER_GKI -p udp --dport 546:547 -j RETURN\n"
+ 			"ip6tables -A REAPER_GKI -p udp --dport 53 -j RETURN\n"
+ 			"ip6tables -A REAPER_GKI -p tcp --dport 53 -j RETURN\n"
+ 			"ip6tables -A REAPER_GKI -p tcp --dport 80 -j RETURN\n"
++			"ip6tables -A REAPER_GKI -p tcp --dport $GKADMIN -j RETURN\n"  /* admin escape hatch (v6) */
+ 			"ip6tables -A REAPER_GKI -j DROP\n"
+ 			"ebtables -A REAPER_GK -j DROP\n");
+-		if (captive)
+-			fprintf(f, "iptables -t nat -A REAPER_GKN -p tcp --dport 80 "
+-				   "-j DNAT --to-destination %s:80\n", lanip);
++		/* captive redirect - decided at run time so it always agrees with httpd's
++		 * live view: only when gk_captive is on, an HTTPS admin instance exists
++		 * (http_enable != 0, so the escape hatch survives), and the router IP is
++		 * known (else the DNAT target would be malformed). */
++		fprintf(f,
++			"if [ \"$(nvram get gk_captive)\" != \"0\" ] && [ \"$GKHTTPEN\" != \"0\" ] && [ -n \"$LANIP\" ]; then\n"
++			"  iptables -t nat -A REAPER_GKN -p tcp --dport 80 -j DNAT --to-destination $LANIP:80\n"
++			"fi\n");
+ 	}
+ 
+ 	/* hooks at position 1: revocation must beat any ESTABLISHED shortcut */
+@@ -209,6 +242,9 @@ void stop_gk(void)
+ 		killall_tk("gkd");
+ 	gk_teardown_rules();
+ 	unlink(GK_APPLY);
++	/* clear the "armed" marker so the UI never shows enforcing after a disable
++	 * (gkd is not respawned when gk_enable=0, so it can't clear it itself). */
++	unlink(GK_STAMP);
+ }
+ 
+ void start_gk(void)
+@@ -220,6 +256,10 @@ void start_gk(void)
+ 		return;
+ 	mkdir(GK_DIR, 0700);
+ 	gk_gen_apply();
+-	system("sh " GK_APPLY);
++	/* apply.sh exits non-zero when the LAN bridge is not up yet (cold boot):
++	 * that is expected, not an error - gkd's self-heal and the firewall hook
++	 * re-run the same script and arm enforcement the moment the bridge appears. */
++	if (system("sh " GK_APPLY) != 0)
++		logmessage("gatekeeper", "LAN not ready at boot - enforcement deferred, will arm automatically once the bridge is up");
+ 	xstart("gkd");
+ }
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index bd9b2dd41c..41c5d30259 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5777,6 +5777,10 @@ RGK_53=visto pela primeira vez
+ RGK_54=restantes
+ RGK_55=Remover
+ RGK_56=Nenhum dispositivo corresponde ao seu filtro.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Limitador de tráfego
+ Reaper_c_nfs_exports=Exportações NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index f542db6ac3..695bbb2f48 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5777,6 +5777,10 @@ RGK_53=首次出现
+ RGK_54=剩余
+ RGK_55=移除
+ RGK_56=没有符合筛选条件的设备。
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=流量限制器
+ Reaper_c_nfs_exports=NFS 导出
+ Reaper_c_dns_director=DNS 定向
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 806ada0683..78f0f21759 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5777,6 +5777,10 @@ RGK_53=poprvé viděno
+ RGK_54=zbývá
+ RGK_55=Odebrat
+ RGK_56=Žádná zařízení neodpovídají filtru.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Omezovač provozu
+ Reaper_c_nfs_exports=Exporty NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index bcd92e9713..3bcc060ed7 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5777,6 +5777,10 @@ RGK_53=først set
+ RGK_54=tilbage
+ RGK_55=Fjern
+ RGK_56=Ingen enheder matcher dit filter.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Trafikbegrænser
+ Reaper_c_nfs_exports=NFS-eksporter
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 05f755135c..ca21ea50ca 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5777,6 +5777,10 @@ RGK_53=zuerst gesehen
+ RGK_54=verbleibend
+ RGK_55=Entfernen
+ RGK_56=Keine Geräte entsprechen Ihrem Filter.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Traffic-Limiter
+ Reaper_c_nfs_exports=NFS-Freigaben
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 68bfcaf31d..86782fde76 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5777,6 +5777,10 @@ RGK_53=first seen
+ RGK_54=left
+ RGK_55=Remove
+ RGK_56=No devices match your filter.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Traffic Limiter
+ Reaper_c_nfs_exports=NFS Exports
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index f7df235d7a..ca0fb6aa2f 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5777,6 +5777,10 @@ RGK_53=visto por primera vez
+ RGK_54=restantes
+ RGK_55=Quitar
+ RGK_56=Ningún dispositivo coincide con su filtro.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Limitador de tráfico
+ Reaper_c_nfs_exports=Exportaciones NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 24da40158c..96d56f57cd 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5777,6 +5777,10 @@ RGK_53=nähty ensi kerran
+ RGK_54=jäljellä
+ RGK_55=Poista
+ RGK_56=Mikään laite ei vastaa suodatinta.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Liikennerajoitin
+ Reaper_c_nfs_exports=NFS-jaot
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e02099986e..47c326f795 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5777,6 +5777,10 @@ RGK_53=première apparition
+ RGK_54=restant
+ RGK_55=Retirer
+ RGK_56=Aucun appareil ne correspond à votre filtre.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Limiteur de trafic
+ Reaper_c_nfs_exports=Exports NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 3e5e3deb05..3564cd4c12 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5777,6 +5777,10 @@ RGK_53=először látva
+ RGK_54=van hátra
+ RGK_55=Eltávolítás
+ RGK_56=Nincs a szűrőnek megfelelő eszköz.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Forgalomkorlátozó
+ Reaper_c_nfs_exports=NFS exportok
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 1efbc0f960..8e22a3478f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5777,6 +5777,10 @@ RGK_53=primo rilevamento
+ RGK_54=rimanenti
+ RGK_55=Rimuovi
+ RGK_56=Nessun dispositivo corrisponde al filtro.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Limitatore di traffico
+ Reaper_c_nfs_exports=Export NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 132c6fcac1..1fb419d30d 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5777,6 +5777,10 @@ RGK_53=初回検出
+ RGK_54=残り
+ RGK_55=削除
+ RGK_56=フィルターに一致するデバイスはありません。
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=トラフィックリミッター
+ Reaper_c_nfs_exports=NFS エクスポート
+ Reaper_c_dns_director=DNS ディレクター
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index b8042263dc..509e42a72c 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5777,6 +5777,10 @@ RGK_53=처음 발견
+ RGK_54=남음
+ RGK_55=제거
+ RGK_56=필터와 일치하는 장치가 없습니다.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=트래픽 리미터
+ Reaper_c_nfs_exports=NFS 내보내기
+ Reaper_c_dns_director=DNS 디렉터
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 6170348856..763e6f8ec5 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5777,6 +5777,10 @@ RGK_53=pertama dilihat
+ RGK_54=lagi
+ RGK_55=Buang
+ RGK_56=Tiada peranti sepadan dengan penapis anda.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Pengehad Trafik
+ Reaper_c_nfs_exports=Eksport NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 341c305af9..442c95cda9 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5777,6 +5777,10 @@ RGK_53=voor het eerst gezien
+ RGK_54=resterend
+ RGK_55=Verwijderen
+ RGK_56=Geen apparaten voldoen aan je filter.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Verkeersbegrenzer
+ Reaper_c_nfs_exports=NFS-exports
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 02ab7e5da8..17ba9c0d23 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5777,6 +5777,10 @@ RGK_53=først sett
+ RGK_54=igjen
+ RGK_55=Fjern
+ RGK_56=Ingen enheter samsvarer med filteret ditt.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Trafikkbegrenser
+ Reaper_c_nfs_exports=NFS-eksporter
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 2aad565f92..d803999405 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5777,6 +5777,10 @@ RGK_53=pierwszy raz widziane
+ RGK_54=pozostało
+ RGK_55=Usuń
+ RGK_56=Żadne urządzenie nie pasuje do filtra.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Ogranicznik ruchu
+ Reaper_c_nfs_exports=Eksporty NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index e4f24666cc..68ff1d14af 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5777,6 +5777,10 @@ RGK_53=văzut prima dată
+ RGK_54=rămas
+ RGK_55=Elimină
+ RGK_56=Niciun dispozitiv nu corespunde filtrului.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Limitator de trafic
+ Reaper_c_nfs_exports=Exporturi NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 295c23b4e3..501cf82baf 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5777,6 +5777,10 @@ RGK_53=впервые замечено
+ RGK_54=осталось
+ RGK_55=Удалить
+ RGK_56=Ни одно устройство не соответствует фильтру.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Ограничитель трафика
+ Reaper_c_nfs_exports=Экспорты NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+index 011ecf8841..df733608b1 100644
+--- a/release/src/router/www/Reaper_GK.asp
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -40,6 +40,12 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .tg.on::after{left:21px;background:var(--bone)}
+ .offbanner{display:none;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
+ .offbanner b{color:var(--bone)}
++.statuspill.warn{color:var(--amber);border-color:rgba(217,164,65,.35)}
++.statuspill.danger{color:var(--danger);border-color:rgba(255,59,48,.4)}
++.armbanner{display:none;background:var(--panel);border:1px solid rgba(217,164,65,.35);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.armbanner b{color:var(--amber)}
++.armbanner.fault{border-color:rgba(255,59,48,.4)}
++.armbanner.fault b{color:var(--danger)}
+ .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
+ .stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
+ .stat .n{font-family:var(--hdr);font-weight:700;font-size:26px;color:var(--bone);font-variant-numeric:tabular-nums}
+@@ -115,6 +121,7 @@ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--
+ <p class="lede"><#RGK_02#></p>
+ 
+ <div class="offbanner" id="offbanner"><b><#RGK_00#></b> &mdash; <#RGK_39#></div>
++<div class="armbanner" id="armbanner"><b id="armttl"><#RGK_57#></b> &mdash; <span id="armmsg"><#RGK_58#></span></div>
+ 
+ <div class="stats" id="statwrap">
+   <div class="stat attn"><div class="n" id="n_pend">0</div><div class="l"><#RGK_03#></div></div>
+@@ -181,7 +188,10 @@ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--
+ 
+ <script>
+ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* F4 CSRF token */
+-(function(){ window.GK = { st:null, filter:'all', busy:false }; })();
++(function(){ window.GK = { st:null, filter:'all', busy:false, notArmedSince:0 }; })();
++/* server-substituted once so gkPaint can swap arming<->fault wording client-side */
++var GK_TXT = { arming:'<#RGK_57#>', warm:'<#RGK_58#>', fault:'<#RGK_59#>', faultMsg:'<#RGK_60#>' };
++var GK_STUCK_MS = 60000;  /* enabled-but-not-armed past this = treat as a fault, not warmup */
+ 
+ function gkEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+ 
+@@ -228,12 +238,30 @@ function gkRefresh(){
+ 
+ function gkPaint(){
+   var j = GK.st, on = j.enable === 1;
++  /* absent 'armed' (older CGI / partial response) => assume armed, so we never
++     raise a false alarm on an actually-enforcing box. */
++  var armed = j.armed !== 0;
+   document.getElementById('tgmaster').className = 'tg' + (on ? ' on' : '');
+   var pill = document.getElementById('pill');
+   var devs = j.devices || [], pend = j.pending || [];
+-  pill.className = 'statuspill' + (on ? '' : ' off');
+-  pill.textContent = on ? ('<#RGK_51#> - ' + (devs.length + pend.length)) : '<#RGK_38#>';
++  /* Enabled-but-not-armed is normal for a few seconds after enabling / a cold
++     boot (amber "Arming"). If it PERSISTS past GK_STUCK_MS the rules keep
++     dropping - escalate to a red fault so a stuck, unprotected network is not
++     disguised as benign warmup (gkd logs the detail to the System Log). */
++  var nowms = Date.now();
++  if(on && !armed){ if(!GK.notArmedSince) GK.notArmedSince = nowms; }
++  else { GK.notArmedSince = 0; }
++  var stuck = on && !armed && GK.notArmedSince && (nowms - GK.notArmedSince > GK_STUCK_MS);
++
++  pill.className = 'statuspill' + (on ? (armed ? '' : (stuck ? ' danger' : ' warn')) : ' off');
++  pill.textContent = on ? (armed ? ('<#RGK_51#> - ' + (devs.length + pend.length))
++                                 : (stuck ? GK_TXT.fault : GK_TXT.arming)) : '<#RGK_38#>';
+   document.getElementById('offbanner').style.display = on ? 'none' : 'block';
++  var ab = document.getElementById('armbanner');
++  ab.style.display = (on && !armed) ? 'block' : 'none';
++  ab.className = 'armbanner' + (stuck ? ' fault' : '');
++  document.getElementById('armttl').textContent = stuck ? GK_TXT.fault : GK_TXT.arming;
++  document.getElementById('armmsg').textContent = stuck ? GK_TXT.faultMsg : GK_TXT.warm;
+   document.getElementById('statwrap').style.opacity = on ? '1' : '.45';
+ 
+   var nf = 0, ni = 0, nb = 0;
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 924806576b..34e7289ec7 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5777,6 +5777,10 @@ RGK_53=prvič videna
+ RGK_54=preostalo
+ RGK_55=Odstrani
+ RGK_56=Nobena naprava ne ustreza vašemu filtru.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Omejevalnik prometa
+ Reaper_c_nfs_exports=Izvozi NFS
+ Reaper_c_dns_director=Usmerjanje DNS
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index c413775b17..38419f01e1 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5777,6 +5777,10 @@ RGK_53=först sedd
+ RGK_54=kvar
+ RGK_55=Ta bort
+ RGK_56=Inga enheter matchar ditt filter.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Trafikbegränsare
+ Reaper_c_nfs_exports=NFS-exporter
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 24ede8153d..59e6fada8d 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5777,6 +5777,10 @@ RGK_53=พบครั้งแรก
+ RGK_54=คงเหลือ
+ RGK_55=นำออก
+ RGK_56=ไม่มีอุปกรณ์ที่ตรงกับตัวกรอง
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=ตัวจำกัดทราฟฟิก
+ Reaper_c_nfs_exports=เอ็กซ์พอร์ต NFS
+ Reaper_c_dns_director=DNS ไดเรกเตอร์
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 814a3747a4..220ff5f306 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5777,6 +5777,10 @@ RGK_53=ilk görülme
+ RGK_54=kaldı
+ RGK_55=Kaldır
+ RGK_56=Filtrenizle eşleşen cihaz yok.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Trafik Sınırlayıcı
+ Reaper_c_nfs_exports=NFS Paylaşımları
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 1ae5e96283..b3ebd938a1 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5777,6 +5777,10 @@ RGK_53=首次出現
+ RGK_54=剩餘
+ RGK_55=移除
+ RGK_56=沒有符合篩選條件的裝置。
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=流量限制器
+ Reaper_c_nfs_exports=NFS 匯出
+ Reaper_c_dns_director=DNS 導向
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index a271e6d46c..926116a6c7 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5777,6 +5777,10 @@ RGK_53=вперше помічено
+ RGK_54=залишилось
+ RGK_55=Видалити
+ RGK_56=Жоден пристрій не відповідає фільтру.
++RGK_57=Arming
++RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
++RGK_59=Not enforcing
++RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
+ Reaper_c_traffic_limiter=Обмежувач трафіку
+ Reaper_c_nfs_exports=Експорти NFS
+ Reaper_c_dns_director=DNS Director
+-- 
+2.25.1
+

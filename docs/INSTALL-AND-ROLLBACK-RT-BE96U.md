@@ -1,9 +1,9 @@
 # Reaper Firmware — Installation & Rollback Guide (ASUS RT‑BE96U)
 
-**Applies to:** Reaper (Asuswrt‑Merlin 3006.102.8 fork) for the **ASUS RT‑BE96U only** (Broadcom BCM4916, WiFi 7).
+**Applies to:** Reaper (Asuswrt‑Merlin 3006.102.8 fork), current release **v1.7.7** (`3006.102.8_Reaper_v1.7.7`), for the **ASUS RT‑BE96U** (Broadcom BCM4916, WiFi 7). This guide is written for the RT‑BE96U specifically; Reaper also ships for the sibling BCM4916 models **RT‑BE86U**, **RT‑BE88U**, **GT‑BE98**, and **GT‑BE98 Pro**, and the **same flash and rollback procedure below applies to each — using that model's own image**.
 **Status:** DRAFT — user‑facing. Items marked **⚠ VERIFY ON UNIT** are based on general ASUS/Merlin behaviour and should be bench‑confirmed on an actual RT‑BE96U before this ships publicly.
 
-> **Read first — this firmware is for the RT‑BE96U and nothing else.** Flashing an image built for a different model/SoC can brick the router. Do not cross‑flash. Always keep a stock ASUS RT‑BE96U firmware file on hand before you begin (your rollback/rescue image).
+> **Read first — flash only the image built for your exact model.** These instructions cover the RT‑BE96U; if you have a sibling model (RT‑BE86U / RT‑BE88U / GT‑BE98 / GT‑BE98 Pro) follow the same steps with that model's image. Flashing an image built for a different model/SoC can brick the router. Do **not** cross‑flash between models. Always keep a stock ASUS firmware file **for your exact model** on hand before you begin (your rollback/rescue image).
 
 ---
 

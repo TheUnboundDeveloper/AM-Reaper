@@ -1,0 +1,181 @@
+From 55d6cc8a4584bac79ca5a9533feac895becbc6cd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 23 Jul 2026 22:48:24 -0400
+Subject: [PATCH] Reaper v1.7.6: fix VPN Client+Server theme ping-pong resize
+ loop + speedtest iframe autosize
+
+reaperThemeFrame fought the SPA resize_iframe_height() (scrollHeight vs container+30px), ping-ponging the iframe height forever = constant reflow/paint churn. Defer sizing to the SPA; keep only a collapse fallback + keep the reaper sheet last. Applied to BOTH VPNC_V2 + VPNS_V2 wrappers. Shell speedtest fix grows the nested #internetSpeed_iframe to content.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ release/src/router/www/reaper_shell.asp       | 33 +++++++++++++++
+ .../VPNC_V2/Advanced_VPNClient_Content.asp    | 41 ++++++++++++++-----
+ .../VPNS_V2/Advanced_VPNServer_Content.asp    | 36 +++++++++++-----
+ 4 files changed, 89 insertions(+), 23 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index be4186ac1f..0de0da1927 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.7.5
++EXTENDNO=Reaper_v1.7.6
+ 
+ RCNO=0
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 659a92f5ab..00310709d5 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -397,6 +397,22 @@ function buildRail(menuTree){
+     try{
+       var d=f.contentDocument;
+       if(!d||!d.documentElement) return;
++      /* AdaptiveQoS_InternetSpeed nests the speedtest widget one level deeper in
++         #internetSpeed_iframe, which reaper_content.css caps at a viewport height
++         so the widget scrolls inside it (a 2nd, inner scrollbar). Grow that inner
++         frame to its OWN content first (inline !important beats the stylesheet
++         cap), so the height we then measure for #page_frame includes the whole
++         widget and the single browser scrollbar carries it. Only this page has
++         the element; every other page skips this block. */
++      try{
++        var sf=d.getElementById('internetSpeed_iframe');
++        if(sf){ var sd=sf.contentDocument;
++          if(sd && sd.documentElement){
++            var sh=Math.max(sd.documentElement.scrollHeight, sd.body?sd.body.scrollHeight:0);
++            if(sh>40 && Math.abs(sh-sf.offsetHeight)>4) sf.style.setProperty('height', sh+'px', 'important');
++          }
++        }
++      }catch(e){}
+       var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0);
+       if(h>40 && Math.abs(h-f.offsetHeight)>4) f.style.height=h+'px';
+       /* v1.6.4 tablet: also grow WIDTH when the framed page cannot shrink to
+@@ -421,6 +437,23 @@ function buildRail(menuTree){
+         if(d.documentElement) ro.observe(d.documentElement);
+         if(d.body) ro.observe(d.body);
+       }
++      /* AdaptiveQoS_InternetSpeed: its speedtest widget is a 2nd-level iframe
++         (#internetSpeed_iframe) whose src (internet_speed.html + async history)
++         lands after the page's own load. Observe it too and re-fit when its
++         content arrives, so fit() grows it to content. The page's load_page()
++         clears the inline height once (from an empty FormTitle) - this load hook
++         fires after that and fit() re-applies. Guarded; no-op on other pages. */
++      var sf=d?d.getElementById('internetSpeed_iframe'):null;
++      if(sf){
++        var hook=function(){
++          try{ var sd=sf.contentDocument;
++            if(sd && ro){ if(sd.documentElement) ro.observe(sd.documentElement); if(sd.body) ro.observe(sd.body); }
++          }catch(e){}
++          fit();
++        };
++        sf.addEventListener('load', hook);
++        hook();
++      }
+     }catch(e){}
+     fit();
+     window.scrollTo(0,0);   /* v1.4.7: bounce to top so the tab strip is never hidden */
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+index d79b369eed..ab2886f4c5 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+@@ -27,17 +27,36 @@
+ function reaperThemeFrame(ifr){
+ 	try{
+ 		var d=ifr.contentDocument; if(!d) return;
+-		if(!d.querySelector('link[href*="reaper_content"]')){
+-			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
+-			/* NO cache-bust query: httpd 404s a querystringed static path, which
+-			   silently killed this hook from v1.2.4b to v1.6.3 (vpnc.html has no
+-			   head close tag, so serve-time injection cannot cover it either) */
+-			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
+-		}
+-		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+-		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+-		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
++		/* keep the reaper sheet PRESENT and LAST in <head>. vpnc.html's own ready
++		   block appends theme sheets via $('link').last().after(), and the SPA can
++		   re-append on re-render; a later equal-!important stock rule then re-stocks
++		   the server-list cards even though reaper_content.css is loaded (owner report
++		   v1.7.5: sheet present but cards still teal). Re-appending an already-loaded
++		   <link> only reorders it - no extra network request. */
++		var ensureCss=function(){ try{
++			var head=d.head||d.documentElement; if(!head) return;
++			var l=d.querySelector('link[href*="reaper_content"]');
++			if(!l){
++				l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
++				/* NO cache-bust query: httpd 404s a querystringed static path, which
++				   silently killed this hook from v1.2.4b to v1.6.3 (vpnc.html has no
++				   head close tag, so serve-time injection cannot cover it either) */
++				l.href="/reaper/reaper_content.css"; head.appendChild(l);
++			} else if(l!==head.lastElementChild){
++				head.appendChild(l);   /* out-order any late-appended stock theme sheet */
++			}
++		}catch(e){} };
++		/* DO NOT run a ResizeObserver / continuous height sync here. vpnc.html sizes
++		   the parent .rwd_iframe ITSELF via resize_iframe_height() (Math.max(menu,
++		   container, popup)+30px, called from ~10 render/resize events). The old
++		   reaper grow() set a DIFFERENT target (scrollHeight); the two resizers
++		   ping-ponged ~30px apart forever through this observer = the constant
++		   reflow/paint churn + "endless loading" the owner saw on v1.7.5. Let the
++		   SPA own the height; only fall back if it left the frame collapsed, and
++		   re-assert the reaper sheet a few times as the SPA renders. */
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }
++		var tick=function(){ ensureCss(); try{ if(ifr.offsetHeight<120){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>120) ifr.style.height=h+"px"; } }catch(e){} };
++		tick(); setTimeout(tick,400); setTimeout(tick,1200);
+ 	}catch(e){}
+ }
+ function initial(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+index 8d76bdfe0d..9c05aa8b40 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+@@ -27,17 +27,31 @@
+ function reaperThemeFrame(ifr){
+ 	try{
+ 		var d=ifr.contentDocument; if(!d) return;
+-		if(!d.querySelector('link[href*="reaper_content"]')){
+-			var l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
+-			/* NO cache-bust query: httpd 404s a querystringed static path (the
+-			   vpnc.html lesson, v1.6.4) - vpns.html also gets serve-time injection,
+-			   this hook is its belt-and-braces */
+-			l.href="/reaper/reaper_content.css"; (d.head||d.documentElement).appendChild(l);
+-		}
+-		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+-		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40) ifr.style.height=h+"px"; }catch(e){} };
+-		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
++		/* keep the reaper sheet PRESENT and LAST in <head> (vpns.html also gets
++		   serve-time injection, so this is belt-and-braces): re-appending an
++		   already-loaded <link> only reorders it - no extra request - so it
++		   out-orders any theme sheet the SPA appends via $('link').last().after(). */
++		var ensureCss=function(){ try{
++			var head=d.head||d.documentElement; if(!head) return;
++			var l=d.querySelector('link[href*="reaper_content"]');
++			if(!l){
++				l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
++				/* NO cache-bust query: httpd 404s a querystringed static path (the
++				   vpnc.html lesson, v1.6.4) */
++				l.href="/reaper/reaper_content.css"; head.appendChild(l);
++			} else if(l!==head.lastElementChild){
++				head.appendChild(l);   /* out-order any late-appended stock theme sheet */
++			}
++		}catch(e){} };
++		/* DO NOT run a ResizeObserver / continuous height sync here. vpns.html sizes
++		   the parent .rwd_iframe ITSELF via resize_iframe_height() (vpns_general.js).
++		   The old reaper grow() set a DIFFERENT target (scrollHeight); the two
++		   resizers ping-ponged forever = constant reflow/paint churn. Let the SPA own
++		   the height; only fall back if it left the frame collapsed, and re-assert the
++		   reaper sheet a few times as the SPA renders. */
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }
++		var tick=function(){ ensureCss(); try{ if(ifr.offsetHeight<120){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>120) ifr.style.height=h+"px"; } }catch(e){} };
++		tick(); setTimeout(tick,400); setTimeout(tick,1200);
+ 	}catch(e){}
+ }
+ function initial(){
+-- 
+2.25.1
+

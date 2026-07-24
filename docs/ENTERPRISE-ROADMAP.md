@@ -18,18 +18,19 @@ Hard constraint (unchanged): the Broadcom closed blobs (wl/dhd/runner fast-path,
 
 ---
 
-## Phase 0 — Done / in place (shipped through v1.6.0)
+## Phase 0 — Done / in place (shipped through v1.7.7)
 
 *Per-version detail in [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).*
 
-- **Security hardening (Rounds 1–4 + latent T1–T4 + avahi CVE backport)** — see `REAPER-FIXES.md`. ~70+ issues across rc / httpd / shared / libdisk, the network-facing ASUS daemons, and libcodb. (v1.0)
+- **Security hardening (Rounds 1–4 + latent T1–T4 + avahi CVE backport)** — see `REAPER-FIXES.md`. ~70+ issues across rc / httpd / shared / libdisk, the network-facing ASUS daemons, and libcodb. (v1.0) Extended since by the **v1.7.1** post-Gatekeeper audit remediation (2026-07-21) and the **v1.7.5** class-closure of C6 across every `openssl passwd` sink (**C6b**, ASUS PSIRT case 1006563).
 - **Hardware QoS** — `qos_type=10` (PI2 AQM + shaper in the Broadcom Runner, accelerator stays on, upload) and the `qos_type=11` **Classful** engine (v1.0); extended with aggregate cap / guaranteed minimums / DSCP trust / live stats (**v3**, v1.2.8) and per-class WRR weights + experimental L4S (**v4**, v1.2.9). The local-only QoS the project favours over DPI-based Adaptive QoS.
 - **Traffic Analyzer** (v1.3.x) — native per-device / per-network / per-class history, live view, top talkers, quota, opt-in WAN probe; offload-accurate (reads the Runner flow table).
 - **AI Advisor** (v1.4.x) — **optional**, read-only, LAN-only MCP server; off by default; compiled out of the Standard build entirely (`RTCONFIG_REAPER_MCP`). Mode A arming code + optional Mode B USB key; **v1.5.0a** adds an opt-in, per-session bounded network-diagnostics tier (ping/traceroute/DNS/netstat). **EXPERIMENTAL**
 - **Network Diagnostics** (v1.5.0a) — the AI Advisor's opt-in, per-session bounded network-probe tier (ping/traceroute/DNS/netstat); local, read-only, injection-safe (fixed-argument exec, never a shell; targets scoped so it can't scan the internal network). *A bundled `tcpdump` packet-capture page was evaluated and deliberately left out to keep the image lean — install `tcpdump` via Entware if you need capture.*
 - **De-cloud removals (Phase 1 — EXECUTED, shipped v1.2):** Alexa/Google Assistant, Trend Micro DPI (`bwdpi`), AiCloud/WebDAV, the AiDisk wizard, the AAE/AiHome cloud tunnel, and the first-boot EULA/consent surface (v1.2.7).
+- **Gatekeeper** (v1.7.0, hardened v1.7.3) — opt-in, **default-deny** device access control with its own page: known devices are grandfathered on enable, new devices are held at the gate (approve / block / internet-only / timed guest pass), enforced at the firewall/bridge layer with self-heal. Off by default, fully on-router (no cloud); arms reliably after a cold boot and always leaves the HTTPS admin page reachable so the owner can never be locked out.
 - **Reaper UI** — full rebrand + serve-time theme injection with a runtime kill-switch (v1.0).
-- **Sibling-model strip** — only the RT-BE96U is retained in the tree.
+- **Multi-model fleet** — the v1.0 tree was stripped to the RT-BE96U; the sibling BCM4916 models (**RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro**) were reintroduced from per-model branches starting v1.5.0e, and all five ship as of **v1.7.7** in both variants. RT-BE96U remains the primary, hardware-validated build; sibling metal validation is owed.
 
 ---
 

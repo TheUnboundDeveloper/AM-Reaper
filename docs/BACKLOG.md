@@ -13,12 +13,27 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / validation owed
 
-- **v1.6.3 (RT-BE96U) — SHIPPED 2026-07-19, metal test owed.** rchqd degraded-event syslog
-  trail (edge-triggered per radio, throttled 15 min, recovery line at NOTICE; JSON/UI advisory
-  unchanged). MCP sha `100851e1…`, noMCP `a22707cf…`, `SHA256SUMS-v1.6.3.txt`; both variants
-  MAKE_EXIT=0, staged `rchqd` carries the new strings, built==shipped verified. **Verify on
-  device (needs `rchq_enable=1`):** a degraded 6 GHz channel logs one WARNING with chanspec +
-  avg nopkt, no repeat within 15 min, and a recovery NOTICE when it clears.
+- **v1.7.3 — Gatekeeper reliability (RT-BE96U), FIRST on-hardware exercise.** Gatekeeper had
+  never run on real hardware before this rung, so v1.7.3 *is* its first metal test. Verify on
+  device: (a) **anti-lockout** — enable Gatekeeper in quarantine mode from one device with
+  another device asleep; the household is not mass-quarantined and the **HTTPS admin page stays
+  reachable** so the feature can always be turned off; (b) **cold-boot arming** — with Gatekeeper
+  on, full power-cycle, then confirm the syslog shows it arms and the enforcement chains are
+  actually present (`iptables -nvL FORWARD | grep REAPER_GKF`; `ebtables -L FORWARD | grep
+  REAPER_GK`), and that `/tmp/gk/apply.sh` has the real bridge in `LANIF`; (c) the page shows
+  "Arming" then "Active", and toggling Gatekeeper off clears it. This image also folds in the
+  v1.7.2 commits (AiMesh node onboarding, static-DHCP, theme-flash, full menu i18n).
+- **v1.7.5 + v1.7.6 (RT-BE96U) — BUILT, metal test owed.** v1.7.5 = C6-twin command-injection fix
+  in `libpasswd` (security rung; MCP+noMCP shipped). v1.7.6 (built 2026-07-23, MCP) = the VPN
+  Client+Server theme **ping-pong resize-loop** fix (was: server-list cards stuck stock-colored +
+  constant reflow/XHR churn = "endless loading"), plus the speedtest nested-iframe auto-size in
+  `reaper_shell.asp`. Verify on device: VPN Client (all protocol tabs) + VPN Server render themed
+  with no endless-loading churn; the Adaptive-QoS Internet-Speed page shows a single scrollbar.
+- **Ship completion owed (v1.7.2–v1.7.6).** Only the RT-BE96U **MCP** variant is built for these
+  rungs (v1.7.5 shipped both variants). Still owed before a full release: the **noMCP** RT-BE96U
+  variant for v1.7.6, and the **sibling fan-out** (RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro)
+  with an updated `SHA256SUMS-v1.7.6.txt`.
+
 - **v1.6.4 — SHIPPED 2026-07-19 (both variants), metal test owed.** Tree at commit
   `0bf494a148` on `be96u-only`. MCP sha `7e1adcd7…`, noMCP `c126beb8…`, `SHA256SUMS-v1.6.4.txt`;
   both variants `MAKE_EXIT=0`, built==shipped verified, staged fs confirms the audit strings, the
@@ -36,43 +51,12 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
      on wireless restart, log throttle moved to `CLOCK_MONOTONIC`, per-tick `wl` fork load halved;
      web-side ResizeObservers released on frame navigation, tablet width-grow made convergent; a
      permanent lint rule added for JS-context dict keys.
-  - **Verify on device (v1.6.4):** VPN Client (all three protocol tabs) + VPN Server colors
-    (buttons, checkboxes, focus rings, jade connected-status); a wide page (e.g. Advanced Wireless)
-    pans on iPad in portrait + landscape and the dashboard is unaffected; the SDN cut-off repro
-    (select a network, Advanced collapsed, expand General) plus the MLO page; the first-boot wizard
-    renders in a non-English language; and a factory-reset flow still completes. Plus the v1.6.3
-    rchqd syslog check.
-
-- **v1.6.0 metal test (RT-BE96U).** **Built + shipped + FLASHED 2026-07-17** (both variants on the
-  `reaper-firmware/` ladder: MCP sha `622b6ec2…`, noMCP `4d47f00c…`, hashes in
-  `SHA256SUMS-v1.6.0.txt`). Includes all of v1.5.9 (Traffic Analyzer resilience fix + shell
-  master-scrollbar theme), so the earlier standalone v1.5.9 RT-BE96U metal test is retired.
-  **Confirmed on hardware:** the Wireless diagnostics page enumerates all three radios on
-  6 GHz and channel **Lock/Unlock is live** (used it, plus the on-router `chanim` capture, to run
-  the 6 GHz investigation below); dashboard live; 6 GHz reaches **1 Gbps+** on a clean 320 MHz
-  channel. **Still owed:** (a) **Non-English UI spot-check** —
-  switch language and confirm the rail clock shows localized weekday + month names, the QoS /
-  Traffic / Advisor help prose is translated, and an over-long label truncates with a hover
-  tooltip showing the full word (the `.rtip` mechanism). (b) **Traffic Analyzer under load** after
-  the collector perf edits (per-device / per-network / top-talker rows populate; live rates sane;
-  no freeze). *The 24-language translation is machine-assisted; native review is recommended
-  before any public release.*
-
-- **6 GHz 320 MHz latency "sawtooth" — RESOLVED (environmental, not firmware).** A long-running
-  RT-BE96U symptom (a clean ~18 s latency ramp to ~128 ms then snap-back, 0% loss, only at 320 MHz,
-  only on 6 GHz) was chased to ground on metal using the Wireless page + an on-router
-  `chanim_stats` capture. **Router / wl driver / acsd all exonerated — nothing to patch.** The
-  cause is **localized external RF**: a clean 320 MHz channel exists (`6g69/320-1`: `nopkt` ~1 %,
-  `txop` ~99 %) while the low/high blocks sit at ~50 % occupancy. Both the 10G-WAN-PHY theory
-  (unplugging the WAN didn't change `nopkt`) and the self-induced-320-bonding theory (a clean 320
-  channel exists) were **refuted on metal**. A PC-desk RFI source (antenna feedline draped over a
-  USB 3.0 hub + a patched audio wire) was the leading physical candidate, but a **2026-07-18
-  recheck found the low blocks dirty again after re-routing the feedline** — so the **emitter's
-  identity is still open**; what holds is that it is external and frequency-selective. **Fix =
-  channel selection** (park 6 GHz in a clean window, e.g. ch 69 / 320, held by the Lock feature).
-  The Channel-Quality **Auto Scan** feature (see *Features to add*) is the planned productization
-  of this fix. The 10G-WAN auto-guard idea is **dropped** (wrong trigger). [resolved — no firmware
-  change]
+  - **Verify on device (v1.6.4):** a wide page (e.g. Advanced Wireless) pans on iPad in portrait +
+    landscape and the dashboard is unaffected; the SDN cut-off repro (select a network, Advanced
+    collapsed, expand General) plus the MLO page; the first-boot wizard renders in a non-English
+    language; and a factory-reset flow still completes. (VPN Client/Server colors moved to the
+    v1.7.6 check above — the ping-pong loop that masked them is fixed there; the v1.6.3 rchqd syslog
+    check is done.)
 
 - **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
   reset → wizard appears → no page/dashboard reachable until username+password set → forced
@@ -90,17 +74,37 @@ metal-confirmed; the remaining physical/edge sub-tests are waived. The Advisor i
 be expanded further for public use; that work will be scoped fresh when it starts. The
 optional hardware-token (FIDO2/U2F) anti-clone idea is preserved in project memory.)*
 
+- **Cron?** Asses users feedback: I've gone back to Merlin for now. The experience was great 
+until I realised some of my custom logs weren't updating which, along with some observations, 
+lead me to believe cron jobs weren't running right. No time to diagnose. I may be wrong.
+
+- **Gatekeeper Feedback** We already adjusted the code but I didn't want to leave this feedback 
+ out as it could be benifical in the case the new changes do not work we can roll it back and 
+ take a different approach. 
+ "One more observation regarding the "Gatekeeper" section: After a router reboot, the feature 
+ works entirely as intended. The section activated fine, and all existing devices were 
+ displayed as approved. I tested blocking a few devices—the restriction works properly. New 
+ devices that haven't connected to the network before correctly land in the "Pending approval" 
+ list. Everything functions as expected here: approving a device grants access, while rejecting 
+ it blocks the connection. So it seems the glitch and router crash only occurred during the 
+ initial activation of "Gatekeeper". After subsequent reboots, the section appears to be working 
+ flawlessly."
+
 ## UI / UX polish
 
 - **Restart/Boot Effciency** Investigate why the wifi and router reboots several times and 
   takes 10 min to stablize. Potential reordering of boot could make this quicker.
 - **WD** REAPER Wireless Diagnostics need to be reworked for visual clarity and information.
+- **Dungeon Master** The admin logged in when the Gatekeeper is activated is automatically 
+  added to the approved list with full access.
 
-*(Fixed items moved to `CHANGELOG.md`: the first-boot wizard language selector — v1.6.6; VPN
-submenu colors, tablet/iPad layout, and the SDN page cut-off — all v1.6.4; Wireless Diagnostics
-reports follow the router language via the v1.6.0/v1.6.1 page tokenization; and the v1.6.0 DICT
-translation pass + truncate/hover-tooltip mechanism, the AI Advisor Refresh-button move, and the
-Login/Logout favicon.)*
+*(Fixed items moved to `CHANGELOG.md`: the split-second **stock-theme flash** ("Old Style") —
+first cut v1.7.2, completed for the heavy Wireless/DHCP pages in v1.7.4; the **static-DHCP client
+picker** ("StaticDHCP") — un-clipped in v1.7.2, then re-anchored to its input and opened upward in
+v1.7.4; the first-boot wizard language selector — v1.6.6; VPN submenu colors, tablet/iPad layout,
+and the SDN page cut-off — all v1.6.4; Wireless Diagnostics reports follow the router language via
+the v1.6.0/v1.6.1 page tokenization; and the v1.6.0 DICT translation pass + truncate/hover-tooltip
+mechanism, the AI Advisor Refresh-button move, and the Login/Logout favicon.)*
 
 ## Known issues (cause identified)
 
@@ -128,12 +132,6 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
   by default. Remaining (optional, **[shelved]**): the SNMPv3-`authPriv` / reject-common-strings
   enhancement for users who *enable* SNMP (revisits the shelved SNMPv3 line in
   `PACKAGE-UPDATES.md`). Full posture in `LIVE-AUDIT-2026-07-19.md`.
-
-- **WAN-side management-exposure audit — DONE (compliant), see `LIVE-AUDIT-2026-07-19.md`.** The
-  live audit confirmed the web UI, SSH (`sshd_enable=2` LAN-only), Telnet, SNMP, FTP, and TFTP are
-  all off or LAN-only, WAN INPUT default-denies with WAN ping dropped, no port-forwards/DMZ, UPnP
-  off on WAN, and IPv6 fully disabled with an ip6tables DROP policy. No WAN-reachable management
-  surface. Posture documented per service in the report.
 
 - **Detection / logging for the advisory TTPs.** Surface and log config-exfil attempts and
   anomalous SNMP polling (spoofed-source reads). Ties into the **Remote syslog push/fetch**
@@ -196,12 +194,15 @@ onto the sibling branches is a clean shared rung when those are next bumped.)
 
 ## Platform / expansion
 
-**Model version status (2026-07-18):**
-- **v1.6.2** — RT-BE96U (shipped; Auto Scan **all bands** + report + passive monitor; 6 GHz
-  Auto Scan metal-validated, 5/2.4 GHz metal test owed).
-- **v1.6.0** — RT-BE88U (shipped), RT-BE86U (shipped). RT-BE96U now at v1.6.2.
-- **v1.5.9** — GT-BE98, GT-BE98_PRO (v1.6.x fold pending; metal test owed — see *Known issues —
-  ported models* below).
+**Model version status (updated 2026-07-23):**
+- **v1.7.6** — RT-BE96U (primary, hardware-validated line; **MCP built**, noMCP owed). Carries the
+  full v1.7.x stack: v1.7.0 Gatekeeper, v1.7.1 security remediation + Network Map fix, v1.7.2
+  (AiMesh onboarding + UI/i18n), v1.7.3 Gatekeeper reliability (no lockout + cold-boot arming),
+  v1.7.4 DHCP-dropdown + theme-flash, v1.7.5 libpasswd C6-twin fix (both variants), v1.7.6 VPN
+  theme ping-pong + speedtest iframe autosize.
+- **v1.7.1** — RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro (all shipped in the v1.7.1 fleet). The
+  **v1.7.2–v1.7.6 fan-out onto these branches is owed** (all shared source; a clean rung once
+  RT-BE96U metal-passes).
 
 - **RT-BE86U — brought to v1.6.0, built + shipped (both variants). [metal test owed].** The v1.6.0
   rung (hardening + full i18n; all model-agnostic shared source) was already committed on the

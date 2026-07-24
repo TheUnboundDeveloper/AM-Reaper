@@ -24,6 +24,156 @@ node, not only on the primary router.
 
 ---
 
+## v1.7.7 — VPN pages: no theme flash, plus a Network-Map lighting-control fix
+- **No more stock-color flash on the VPN pages.** Opening **VPN &rsaquo; VPN Client** (PPTP/L2TP)
+  or **VPN Server** could show the original blue ASUS styling for a split second before the Reaper
+  theme took over. The nested settings panel now stays hidden over a dark background until it is
+  fully themed, then fades in — so only the Reaper look is ever visible.
+- **AURA/RGB lighting: no stray scrollbar.** On models with AURA/RGB lighting, the effect-scheme
+  selector on the **Network Map** router panel showed an unnecessary horizontal scrollbar. That list
+  already pages with its own left/right arrows, so the scrollbar has been removed. *(Affects the
+  RGB-capable models; the RT-BE96U has no AURA hardware.)*
+
+## v1.7.6 — VPN theming: no stuck colors, no endless loading, single scrollbar
+- **VPN Client/Server pages theme correctly and settle down.** On **VPN &rsaquo; VPN Client**
+  (PPTP/L2TP) and **VPN Server**, the server-list cards could stay stuck in the original ASUS
+  blue/teal, and the page never went idle — a constant churn of background activity that some users
+  saw as the page "always loading." Two routines were fighting over the panel's size and fell into a
+  loop; the build now lets the page size itself and simply keeps the Reaper theme on top, so the
+  pages render in the Reaper colors and go quiet once loaded.
+- **One scrollbar on the Internet Speed test.** Under **Traffic Manager &rsaquo; Internet Speed**
+  (Adaptive QoS), the page could show a second, inner scrollbar. The speed-test panel now grows to
+  fit its content, so the page uses a single page scrollbar.
+
+## v1.7.5 — Security: close the last `openssl passwd` command-injection path (ASUS PSIRT case 1006563)
+- **Removed a root command-injection path in password verification.** An internal helper that
+  falls back to the `openssl passwd` command-line tool (used only when the C library's own
+  password hasher is unavailable) built that command as a shell string with the *supplied
+  password* embedded in it — so a password containing shell metacharacters could have run
+  arbitrary commands as root. This was a second, independent copy of a flaw already fixed
+  elsewhere in v1.0 (finding **C6**); this copy lived in the `libpasswd` helper reached from the
+  HTTP and WebDAV/SMB basic-authentication paths, with the attacker-supplied password as the
+  injected value. The helper now runs `openssl` directly with the password as a literal
+  argument — never through a shell — so no metacharacter can be interpreted. No change for
+  normal logins.
+- Found and closed while preparing the coordinated-disclosure proof-of-concept material
+  requested by **ASUS PSIRT (case 1006563)**; the C6 fix was point-fixed in v1.0 and is now
+  class-fixed across every `openssl passwd` sink. See [`REAPER-FIXES.md`](REAPER-FIXES.md).
+
+## v1.7.4 — DHCP client picker + Wireless page theme-flash (on-metal fixes)
+- **Static-DHCP client picker back on the button.** On **LAN &rsaquo; DHCP Server**, the
+  "select a client" dropdown for the Manually Assigned IP table is again anchored to its
+  input and now opens **upward** with its own scroll — instead of floating detached in the
+  middle of the page (a side effect of the earlier clip fix). Opening upward also keeps the
+  full list on screen without the framed page having to grow.
+- **Wireless page no longer flashes stock colors.** The heavier settings pages (Wireless,
+  DHCP) could still show the old ASUS styling for a split second when opened, because the
+  framed content was revealed a touch too early. The frame now stays dark until it is fully
+  themed, so the flash is gone there too.
+
+## v1.7.3 — Gatekeeper reliability: no lockout, dependable cold-boot arming
+- **No more admin lockout.** With Gatekeeper on, a device that was asleep or idle when you
+  enabled the feature — potentially including the computer you administer from — could be held
+  at the gate with no route back to the page that turns Gatekeeper off, and enabling it could
+  quarantine much of the household at once. Turn-on now grandfathers every device the router
+  already knows (its address table, its DHCP leases, and its named-client list), not only the
+  ones talking at that instant, and the firewall now always leaves the HTTPS admin page
+  reachable, so the owner can never be fenced out of the control that disables the feature.
+- **Dependable arming after a cold boot.** After a full power-cycle, Gatekeeper could come up
+  reading "on" without actually enforcing, because it tried to build its rules before the
+  network was ready. It now resolves the network details when the rules are applied and
+  re-applies them the moment the bridge is up, so enforcement is in place on its own.
+- **Clear on/off state.** The Gatekeeper page now shows an "Arming" state while enforcement is
+  coming up, and escalates to a visible "Not enforcing — check the System Log" warning if it
+  ever fails to arm — so the feature is never silently off while appearing on.
+
+## v1.7.2 — AiMesh node onboarding fix + UI polish + full menu translation
+- **AiMesh node onboarding restored.** A factory-fresh router running Reaper could not be
+  **found** when another router searched for a new AiMesh node — the search would run and
+  return nothing. Cause: the v1.2.7 first-boot cleanup set the "already configured" flags on
+  by default, which (as a side effect deep in the closed Wi-Fi stack) stopped the onboarding
+  radio beacon a fresh node uses to announce itself, and left WPS onboarding enrollment
+  disabled. The factory defaults are back to stock, and the first-boot setup wizard stays
+  retired the intended way — at the web-server layer — so nothing about the login/first-run
+  experience changes. A mesh already built under stock/Merlin firmware and then flashed to
+  Reaper was never affected; this only concerns onboarding a **new** Reaper node. (After
+  updating, a router intended as a node must be factory-reset on this firmware to become
+  discoverable.)
+- **Static-DHCP client picker no longer clips.** On **LAN &rsaquo; DHCP Server**, the
+  "select a client" dropdown on the Manually Assigned IP table was cut off at the bottom of
+  the page (adding a few rows to the table was a partial workaround). It now floats centered
+  with its own scroll, so the full client list is always reachable.
+- **No more stock-style flash.** Some settings pages briefly showed the old ASUS blue for a
+  split second before the Reaper theme took over. Pages now paint dark from the first frame,
+  and the framed content stays hidden until it is themed, so the flash is gone.
+- **Full menu + page translation pass.** A sweep for untranslated interface text found that
+  the **Gatekeeper** page and the **Wireless** diagnostics page still carried English in the
+  24 non-English languages, and fourteen menu/tab labels (AI Advisor, System Info, VPN Status,
+  VPN Director, DNS Director, Site Survey, Traffic Limiter, NFS Exports, Temperature,
+  Notification, Tweaks, and others) were hard-coded English. All are now translated across the
+  full language set (machine-assisted; native review still recommended before public release).
+  Product and protocol names (Gatekeeper, AiMesh, VPN, IPv6, SNMP, MAC, Wi-Fi&hellip;) stay in
+  their standard form, matching the stock UI's own convention. *Known limit:* the Gatekeeper
+  "awaiting approval" waiting-room page is generated by the web server itself, outside the
+  translation system, and remains English.
+- All four changes are in shared code, so every model (RT-BE96U / RT-BE86U / RT-BE88U /
+  GT-BE98 / GT-BE98 Pro) carries them; RT-BE96U is the primary, hardware-validated build.
+
+## v1.7.1 — Security remediation batch + Network Map panel fix
+- **Post-release security review — every finding fixed.** A full security audit of the v1.7.0
+  release (centered on the new Gatekeeper subsystem) found no critical or high-severity issues;
+  all ten findings — two medium, five low, three informational — are fixed in this rung:
+  - **Wireless Diagnostics CSRF guard.** The Wireless page's control endpoint now requires the
+    router's request token on every state-changing action (channel scans, captures, the
+    channel-quality monitor toggle), the same guard the other Reaper endpoints already carried —
+    a page you were tricked into visiting can no longer bounce a radio.
+  - **Gatekeeper device-list race closed.** A decision saved at the same moment a guest pass
+    expires can no longer be silently lost — both writers now re-read the device list under a
+    lock before updating it.
+  - **Gatekeeper MAC validation (defense-in-depth).** Every stored device entry is validated as
+    a real MAC address before it reaches the firewall apply script, so a corrupted or hand-seeded
+    hostile value is dropped, never executed.
+  - **Robustness and hardening:** the Gatekeeper daemon ages out stale devices so its table can't
+    fill over long uptimes; the first-boot wizard now submits the new password by POST (not in
+    the URL) and actually checks the result — a failed credential save shows an error instead of
+    redirecting as if it worked; reduced Gatekeeper self-heal fork churn; duplicate new-device
+    log entries suppressed across daemon restarts; Traffic Analyzer per-queue QoS counter reads
+    batched.
+- **Network Map client panel fixed.** The client-status panel could overflow sideways into a
+  horizontal scrollbar; the panel and its content box are now sized to fit, and the map's
+  content area was widened to use the space properly.
+- RT-BE96U flashed on hardware 2026-07-21 (core UI and Network Map verified; Gatekeeper's first
+  on-hardware exercise still pending). All 5 models built + shipped, both variants each
+  (RT-BE96U / GT-BE98 / GT-BE98 Pro / RT-BE86U on 2026-07-21, RT-BE88U on 2026-07-22).
+
+## v1.7.0 — Gatekeeper: device access control + field-test fixes
+- **Gatekeeper — you decide who gets on your network.** A new opt-in, **default-deny device
+  access control** with its own page and menu entry. When you enable it, everything already on
+  the network is grandfathered in; from then on each newly seen device is **held at the gate** —
+  no internet, no reaching other LAN devices — until you choose: **Block**, **Full access**,
+  **Internet only**, or a **timed Guest pass**. A held device that opens a web page sees a themed
+  "awaiting approval" notice instead of a dead connection, and every new arrival is recorded in
+  the system log. Enforcement lives at the firewall/bridge layer and **self-heals** — if a stock
+  service flushes the rules, they are re-applied within seconds. Off by default. The page states
+  the honest limitation: a MAC address *identifies* a device, it doesn't *authenticate* it — a
+  determined user behind your Wi-Fi password can spoof one.
+- **Factory-reset first-run fixes** (found in GT-BE98 field testing, applied to all models):
+  a factory-fresh box could bounce forever between the dashboard and the first-run wizard (the
+  wizard's Wi-Fi step was being rewritten into the app shell, which re-fired the gate — no
+  settings reachable at all); and credentials entered in the first-boot wizard could fail to
+  actually apply, locking the new login out after a factory reset. Both fixed.
+- **UI fixes (series-wide).** The dashboard client panel's "VIEW LIST" control — previously an
+  inert placeholder — now opens a client-list modal grouped by band (6 / 5 / 2.4 GHz / Wired)
+  with name, IP, IPv6 and MAC; the WAN page's assigned-DNS list no longer clips its lower rows
+  off-screen; the Network Map no longer stacks a double scrollbar.
+- **Diagnostics v1.0.1** — fixes from the diagnostic report's first on-hardware run: MAC
+  addresses written *without* colons are now pseudonymized like every other form (a redaction
+  gap); over-eager masking of short brand words fixed; hardware-acceleration and QoS sections no
+  longer come back empty on tools the shell lacks; per-station detail now covers guest and
+  secondary interfaces; and the page layout was tightened around the download button.
+- Consolidates the internal v1.6.8 build. All 5 models, both variants, built + shipped
+  2026-07-21.
+
 ## v1.6.7 — Reaper Diagnostics
 - **One-click sanitized diagnostic report.** New **Administration &rsaquo; Diagnostics** tab with a
   single Download button. It collects everything a network engineer would gather by hand — model

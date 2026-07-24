@@ -1,0 +1,3483 @@
+From d767b6767fc55c7a4ade99ea3255cd85194130bf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 20 Jul 2026 22:05:01 -0400
+Subject: [PATCH] Gatekeeper: default-deny device access control (reaper
+ v1.6.8)
+
+New opt-in feature (off by default). Unknown devices joining the LAN are
+held at the gate - no internet AND no access to other LAN devices - until
+the owner approves them. Four per-device states: full, internet-only,
+guest (internet-only + timed expiry), blocked. Enabling snapshots the
+devices already present as approved so nothing breaks at turn-on.
+
+Enforcement (rc/gatekeeper.c writes an idempotent /tmp/gk/apply.sh):
+- iptables/ip6tables FORWARD REAPER_GKF : internet gate (approved RETURN,
+  else DROP; hooked at position 1 so a revocation beats any ESTABLISHED
+  shortcut; fc flush on every apply so offloaded flows re-traverse)
+- iptables/ip6tables INPUT REAPER_GKI : router-services gate (a held
+  device may reach only DHCP/DNS/HTTP-captive; fences the admin UI off)
+- iptables nat PREROUTING REAPER_GKN : tcp/80 DNAT to httpd for the
+  captive "awaiting approval" page (OS captive probes are plain HTTP)
+- ebtables FORWARD REAPER_GK : LAN isolation at the bridge (only
+  approved-FULL MACs source bridged frames; internet-only/guest/blocked/
+  unknown cannot see, scan or ARP other LAN devices)
+Re-applied from start_firewall (chains just rebuilt) and self-healed by
+gkd after the lan/wireless/dnsmq/wanduck ebtables -F flushes.
+
+gkd (new daemon, obj-y, no listener): ARP + IPv6-neigh + DHCP-lease +
+per-BSS assoclist discovery -> /tmp/gk/seen.tsv for the UI; syslogs first
+sight of a new MAC (gk_notify); expires guest passes; self-heals rules.
+
+httpd: reaper_gk.cgi (do_auth, http_id CSRF) status/set/remove/config +
+enable-time baseline snapshot; pre-auth captive intercept in handle_request
+serves a self-contained waiting page to unapproved MACs in quarantine mode.
+
+UI: Reaper_GK.asp (reaper-native) - master toggle, summary strip, pending
+approvals, device table with per-row state control, settings, captive
+preview, honest limits. Own left-rail entry (menuTree + dashboard rail).
+RGK_00-56 in all 25 dicts (EN seeded across all; real translations owed).
+
+nvram (defaults.c): gk_enable/gk_default/gk_guest_hours/gk_captive/
+gk_notify (all off/safe defaults) + gk_rl (CKN_STR_MAX device list).
+EBTABLES userspace already =y in config_rt-be96u.
+
+HONEST LIMIT baked into the page + docs: a MAC is identity not auth
+(spoofable behind WPA) - defense in depth, not a first wall. METAL PROBE
+OWED before claiming intra-SSID isolation: same-BSS client-to-client
+traffic may be bridged inside the Broadcom driver below ebtables.
+
+Version bumped to Reaper_v1.6.8.
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/Makefile                   |   7 +
+ release/src/router/gkd/Makefile               |  51 +++
+ release/src/router/gkd/gkd.c                  | 348 +++++++++++++++++
+ release/src/router/httpd/httpd.c              | 120 ++++++
+ release/src/router/httpd/web.c                | 361 ++++++++++++++++++
+ release/src/router/rc/Makefile                |   2 +
+ release/src/router/rc/firewall.c              |   5 +
+ release/src/router/rc/gatekeeper.c            | 208 ++++++++++
+ release/src/router/rc/rc.h                    |   3 +
+ release/src/router/rc/services.c              |   7 +
+ release/src/router/shared/defaults.c          |  11 +
+ release/src/router/www/BR.dict                |  57 ++-
+ release/src/router/www/CN.dict                |  57 ++-
+ release/src/router/www/CZ.dict                |  57 ++-
+ release/src/router/www/DA.dict                |  57 ++-
+ release/src/router/www/DE.dict                |  57 ++-
+ release/src/router/www/EN.dict                |  57 ++-
+ release/src/router/www/ES.dict                |  57 ++-
+ release/src/router/www/FI.dict                |  57 ++-
+ release/src/router/www/FR.dict                |  57 ++-
+ release/src/router/www/HU.dict                |  57 ++-
+ release/src/router/www/IT.dict                |  57 ++-
+ release/src/router/www/JP.dict                |  57 ++-
+ release/src/router/www/KR.dict                |  57 ++-
+ release/src/router/www/MS.dict                |  57 ++-
+ release/src/router/www/Main_ReaperDash.asp    |   1 +
+ release/src/router/www/NL.dict                |  57 ++-
+ release/src/router/www/NO.dict                |  57 ++-
+ release/src/router/www/PL.dict                |  57 ++-
+ release/src/router/www/RO.dict                |  57 ++-
+ release/src/router/www/RU.dict                |  57 ++-
+ release/src/router/www/Reaper_GK.asp          | 338 ++++++++++++++++
+ release/src/router/www/SL.dict                |  57 ++-
+ release/src/router/www/SV.dict                |  57 ++-
+ release/src/router/www/TH.dict                |  57 ++-
+ release/src/router/www/TR.dict                |  57 ++-
+ release/src/router/www/TW.dict                |  57 ++-
+ release/src/router/www/UK.dict                |  57 ++-
+ .../router/www/require/menuTrees/menuTree.js  |   9 +
+ 40 files changed, 2872 insertions(+), 26 deletions(-)
+ create mode 100644 release/src/router/gkd/Makefile
+ create mode 100644 release/src/router/gkd/gkd.c
+ create mode 100644 release/src/router/rc/gatekeeper.c
+ create mode 100644 release/src/router/www/Reaper_GK.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index a722853db3..ca3be21e0a 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.6.7
++EXTENDNO=Reaper_v1.6.8
+ 
+ RCNO=0
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 92d544ddab..23ef6a4578 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1201,6 +1201,8 @@ endif
+ obj-y += rtrafd
+ # reaper v1.6.1: passive channel-quality monitor (opt-in nvram rchq_enable, read-only)
+ obj-y += rchqd
++# reaper v1.6.8: Gatekeeper watcher (detection/expiry only; enforcement lives in rc)
++obj-y += gkd
+ # reaper v1.4.0: read-only LAN MCP advisor (off by default, never boot-started)
+ obj-$(RTCONFIG_REAPER_MCP) += rmcpd json-c
+ ifeq ($(RTCONFIG_DSL),y)
+@@ -6399,6 +6401,11 @@ rtrafd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rtrafd-install:
+ 	$(MAKE) -C rtrafd INSTALLDIR=$(INSTALLDIR)/rtrafd install
+ 
++gkd: nvram$(BCMEX)$(EX7) shared
++
++gkd-install:
++	$(MAKE) -C gkd INSTALLDIR=$(INSTALLDIR)/gkd install
++
+ rchqd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ 
+ rchqd-install:
+diff --git a/release/src/router/gkd/Makefile b/release/src/router/gkd/Makefile
+new file mode 100644
+index 0000000000..2c82fa68ce
+--- /dev/null
++++ b/release/src/router/gkd/Makefile
+@@ -0,0 +1,51 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 the Reaper project maintainer
++# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++include ../common.mak
++
++CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared
++# same exploit-mitigation set as rtrafd/rmcpd (reaper v1.4.5 convention)
++CFLAGS	+= -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIE
++LDFLAGS	= -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared
++ifeq ($(HND_ROUTER),y)
++LDFLAGS += -L$(TOP_PLATFORM)/wlcsm -lwlcsm
++endif
++LDFLAGS += -pie -Wl,-z,relro,-z,now
++
++ifeq ($(RTCONFIG_BCMARM),y)
++CFLAGS += -I$(SRCBASE)/shared/bcmwifi/include -DTYPEDEF_FLOAT_T
++CFLAGS += -I$(SRCBASE)/common/include
++endif
++
++OBJS = gkd.o
++
++all: gkd
++
++gkd: $(OBJS)
++	@echo " [gkd] CC -o $@"
++	$(CC) $(LDFLAGS) -o $@ $(OBJS)
++
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f gkd .*.depend
++	rm -f *.o
++
++install: all
++	@echo " [gkd] Installing..."
++	install -D gkd $(INSTALLDIR)/bin/gkd
++	$(STRIP) $(INSTALLDIR)/bin/gkd
++
++%.o: %.c .%.depend
++	@echo " [gkd] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.depend: $(OBJS:%.o=%.c)
++	@$(CC) $(CFLAGS) -M $^ > .depend
++
++.%.depend: %.c
++	@$(CC) $(CFLAGS) -M $< > $@
++
++-include $(OBJS:%.o=.%.depend)
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+new file mode 100644
+index 0000000000..92a6bd75dd
+--- /dev/null
++++ b/release/src/router/gkd/gkd.c
+@@ -0,0 +1,348 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ *
++ * gkd - Gatekeeper watcher (reaper v1.6.8)
++ *
++ * Small poller behind the Gatekeeper device-access-control feature. It never
++ * enforces anything itself - enforcement is the iptables/ebtables chain set
++ * written by rc's start_gk() into /tmp/gk/apply.sh. This daemon:
++ *
++ *   1. discovers devices (IPv4 ARP + IPv6 neighbours + DHCP leases + per-BSS
++ *      wireless assoclists) and maintains /tmp/gk/seen.json for the UI;
++ *   2. syslogs the first sight of an unknown MAC (gk_notify);
++ *   3. expires guest passes: entry removed from gk_rl (device returns to the
++ *      gate), nvram committed, rules refreshed via notify_rc("restart_gk");
++ *   4. self-heals: if the enforcement chains vanish (firewall/wireless
++ *      restarts flush tables), re-runs /tmp/gk/apply.sh.
++ *
++ * No listener, no outbound traffic, nothing persisted outside nvram.
++ */
++
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE	/* strcasestr */
++#endif
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <unistd.h>
++#include <signal.h>
++#include <time.h>
++#include <ctype.h>
++#include <sys/stat.h>
++#include <syslog.h>
++#include <dirent.h>
++
++#include <bcmnvram.h>
++#include <shutils.h>
++#include <shared.h>
++
++#define GK_DIR        "/tmp/gk"
++#define SEEN_TSV      GK_DIR "/seen.tsv"
++#define SEEN_TMP      GK_DIR "/seen.tsv.new"
++#define APPLY_SH      GK_DIR "/apply.sh"
++#define CHAIN_STAMP   GK_DIR "/chains.ok"
++#define POLL_SECS     10
++#define WL_REFRESH    3        /* assoclist sweep every POLL_SECS * WL_REFRESH */
++#define MAX_DEV       256
++#define LEASE_FILE    "/var/lib/misc/dnsmasq.leases"
++
++typedef struct {
++	char mac[18];
++	char ip[46];
++	char host[33];
++	char band[8];          /* "2.4", "5", "6" or "" */
++	int wired;
++	long first;
++	long last;
++	int online;
++	int logged;            /* new-device syslog emitted */
++} dev_t_gk;
++
++static dev_t_gk devs[MAX_DEV];
++static int ndev = 0;
++static volatile sig_atomic_t g_stop = 0;
++
++static void on_sig(int sig) { (void)sig; g_stop = 1; }
++
++static void norm_mac(char *m)
++{
++	for (; *m; m++) *m = toupper((unsigned char)*m);
++}
++
++static int valid_mac(const char *m)
++{
++	int i;
++	if (strlen(m) != 17) return 0;
++	for (i = 0; i < 17; i++) {
++		if ((i % 3) == 2) { if (m[i] != ':') return 0; }
++		else if (!isxdigit((unsigned char)m[i])) return 0;
++	}
++	/* ignore broadcast + all-zero */
++	if (!strcasecmp(m, "FF:FF:FF:FF:FF:FF")) return 0;
++	if (!strcasecmp(m, "00:00:00:00:00:00")) return 0;
++	return 1;
++}
++
++static dev_t_gk *find_dev(const char *mac)
++{
++	int i;
++	for (i = 0; i < ndev; i++)
++		if (!strcasecmp(devs[i].mac, mac)) return &devs[i];
++	return NULL;
++}
++
++static dev_t_gk *touch_dev(const char *mac, long now)
++{
++	dev_t_gk *d = find_dev(mac);
++	if (!d) {
++		if (ndev >= MAX_DEV) return NULL;
++		d = &devs[ndev++];
++		memset(d, 0, sizeof(*d));
++		snprintf(d->mac, sizeof(d->mac), "%s", mac);
++		norm_mac(d->mac);
++		d->first = now;
++	}
++	d->last = now;
++	d->online = 1;
++	return d;
++}
++
++/* mac appears (any state) in gk_rl? gk_rl = "<MAC>state>expiry<MAC>state>expiry..." */
++static int in_rl(const char *rl, const char *mac)
++{
++	const char *p = rl;
++	size_t n = strlen(mac);
++	while ((p = strcasestr(p, mac)) != NULL) {
++		if (p != rl && *(p - 1) == '<' && *(p + n) == '>') return 1;
++		p += n;
++	}
++	return 0;
++}
++
++static void scan_arp(long now)
++{
++	FILE *f = fopen("/proc/net/arp", "r");
++	char line[256], ip[64], hw[64], dev_if[32];
++	unsigned flags;
++	if (!f) return;
++	if (!fgets(line, sizeof(line), f)) { fclose(f); return; }   /* header */
++	while (fgets(line, sizeof(line), f)) {
++		if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dev_if) != 4)
++			continue;
++		if (!(flags & 2)) continue;                 /* incomplete */
++		if (strncmp(dev_if, "br", 2)) continue;     /* LAN bridge only */
++		if (!valid_mac(hw)) continue;
++		{
++			dev_t_gk *d = touch_dev(hw, now);
++			if (d) snprintf(d->ip, sizeof(d->ip), "%s", ip);
++		}
++	}
++	fclose(f);
++}
++
++static void scan_ndp(long now)
++{
++	/* IPv6-only devices never show in ARP; merge the v6 neighbour table. */
++	FILE *p = popen("ip -6 neigh show 2>/dev/null", "r");
++	char line[256];
++	if (!p) return;
++	while (fgets(line, sizeof(line), p)) {
++		char ip6[64] = "", mac[64] = "";
++		char *ll = strstr(line, "lladdr ");
++		if (!ll) continue;
++		if (sscanf(line, "%63s", ip6) != 1) continue;
++		if (sscanf(ll + 7, "%63s", mac) != 1) continue;
++		if (strncasecmp(ip6, "fe80", 4) == 0) continue;   /* link-local noise */
++		if (!strstr(line, " br")) continue;
++		if (!valid_mac(mac)) continue;
++		{
++			dev_t_gk *d = touch_dev(mac, now);
++			if (d && !d->ip[0]) snprintf(d->ip, sizeof(d->ip), "%s", ip6);
++		}
++	}
++	pclose(p);
++}
++
++static void scan_leases(void)
++{
++	FILE *f = fopen(LEASE_FILE, "r");
++	char line[512];
++	if (!f) return;
++	while (fgets(line, sizeof(line), f)) {
++		char mac[64], ip[64], host[64];
++		if (sscanf(line, "%*s %63s %63s %63s", mac, ip, host) != 3) continue;
++		if (!valid_mac(mac)) continue;
++		{
++			dev_t_gk *d = find_dev(mac);
++			if (d && strcmp(host, "*")) snprintf(d->host, sizeof(d->host), "%.32s", host);
++		}
++	}
++	fclose(f);
++}
++
++static const char *unit_band(int unit)
++{
++	char key[24];
++	snprintf(key, sizeof(key), "wl%d_nband", unit);
++	switch (nvram_get_int(key)) {
++	case 2: return "2.4";
++	case 1: return "5";
++	case 4: return "6";
++	}
++	return "";
++}
++
++static void scan_wl(void)
++{
++	/* every wl BSS (base + VIF - MULTILAN puts user networks on VIFs) */
++	DIR *dh = opendir("/sys/class/net");
++	struct dirent *e;
++	if (!dh) return;
++	while ((e = readdir(dh)) != NULL) {
++		int unit = -1, sub = -1;
++		char cmd[128], line[128];
++		FILE *p;
++		if (sscanf(e->d_name, "wl%d.%d", &unit, &sub) != 2 &&
++		    sscanf(e->d_name, "wl%d", &unit) != 1)
++			continue;
++		if (strchr(e->d_name, ':')) continue;
++		snprintf(cmd, sizeof(cmd), "wl -i %s assoclist 2>/dev/null", e->d_name);
++		p = popen(cmd, "r");
++		if (!p) continue;
++		while (fgets(line, sizeof(line), p)) {
++			char mac[64];
++			if (sscanf(line, "assoclist %63s", mac) != 1) continue;
++			if (!valid_mac(mac)) continue;
++			{
++				dev_t_gk *d = find_dev(mac);
++				if (d) {
++					snprintf(d->band, sizeof(d->band), "%s", unit_band(unit));
++					d->wired = 0;
++				}
++			}
++		}
++		pclose(p);
++	}
++	closedir(dh);
++}
++
++static void write_seen(void)
++{
++	/* one device per line: mac \t ip \t host \t band \t wired \t first \t last \t online
++	 * (host is scrubbed of tab/ctrl chars; the CGI JSON-escapes on the way out) */
++	FILE *f = fopen(SEEN_TMP, "w");
++	int i;
++	char *c;
++	if (!f) return;
++	for (i = 0; i < ndev; i++) {
++		dev_t_gk *d = &devs[i];
++		for (c = d->host; *c; c++)
++			if ((unsigned char)*c < 0x20 || *c == '\t') *c = '?';
++		fprintf(f, "%s\t%s\t%s\t%s\t%d\t%ld\t%ld\t%d\n",
++			d->mac, d->ip, d->host, d->band,
++			d->wired, d->first, d->last, d->online);
++	}
++	fclose(f);
++	rename(SEEN_TMP, SEEN_TSV);
++}
++
++static void notify_new(const char *rl)
++{
++	int i;
++	if (nvram_match("gk_notify", "0")) return;
++	for (i = 0; i < ndev; i++) {
++		dev_t_gk *d = &devs[i];
++		if (d->logged || in_rl(rl, d->mac)) { d->logged = 1; continue; }
++		logmessage("gatekeeper", "new device %s%s%s (%s%s) - %s",
++			d->mac,
++			d->host[0] ? " " : "", d->host,
++			d->wired ? "wired" : "wifi",
++			d->band[0] ? d->band : "",
++			nvram_match("gk_default", "1") ? "allowed (alert-only mode)" : "held at the gate");
++		d->logged = 1;
++	}
++}
++
++static void expire_guests(const char *rl_in)
++{
++	char *rl = strdup(rl_in), *out, *tok, *sp = NULL;
++	int changed = 0;
++	long now = time(NULL);
++	size_t cap;
++	if (!rl) return;
++	cap = strlen(rl) + 2;
++	out = calloc(1, cap);
++	if (!out) { free(rl); return; }
++	/* entries are "<MAC>state>expiry" - split on '<' */
++	for (tok = strtok_r(rl, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++		char mac[18] = ""; int st = -1; long exp = 0;
++		if (sscanf(tok, "%17[^>]>%d>%ld", mac, &st, &exp) >= 2 &&
++		    st == 3 && exp > 0 && now >= exp) {
++			logmessage("gatekeeper", "guest pass expired for %s - back at the gate", mac);
++			changed = 1;
++			continue;
++		}
++		strlcat(out, "<", cap);
++		strlcat(out, tok, cap);
++	}
++	if (changed) {
++		nvram_set("gk_rl", out);
++		nvram_commit();
++		notify_rc("restart_gk");
++	}
++	free(out);
++	free(rl);
++}
++
++static void self_heal(void)
++{
++	/* start_firewall rebuilds iptables wholesale (user chains deleted) and
++	 * start_lan/lan_up/restart_wireless/setup_dnsmq/wanduck run a full
++	 * "ebtables -F" (chains survive but EMPTY, hook rules gone) - so test
++	 * the iptables CHAIN but the ebtables HOOK RULE. apply.sh is a full
++	 * teardown+rebuild, safe to re-run. */
++	struct stat st;
++	if (stat(APPLY_SH, &st)) return;
++	if (system("iptables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
++	    system("ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0)
++		return;
++	logmessage("gatekeeper", "enforcement chains missing (firewall/wireless restart?) - reapplying");
++	system("sh " APPLY_SH);
++}
++
++int main(int argc, char **argv)
++{
++	int tick = 0;
++	(void)argc; (void)argv;
++
++	signal(SIGTERM, on_sig);
++	signal(SIGINT, on_sig);
++	signal(SIGHUP, SIG_IGN);
++
++	if (daemon(1, 0) < 0) return 1;
++	mkdir(GK_DIR, 0700);
++	logmessage("gatekeeper", "watcher started (%s mode)",
++		nvram_match("gk_default", "1") ? "alert-only" : "quarantine");
++
++	while (!g_stop) {
++		char *rl = nvram_safe_get("gk_rl");
++		int i;
++		long now = time(NULL);
++
++		for (i = 0; i < ndev; i++) devs[i].online = 0;
++		scan_arp(now);
++		scan_ndp(now);
++		scan_leases();
++		if ((tick++ % WL_REFRESH) == 0) scan_wl();
++
++		notify_new(rl);
++		expire_guests(rl);
++		write_seen();
++		self_heal();
++
++		for (i = 0; i < POLL_SECS && !g_stop; i++) sleep(1);
++	}
++	logmessage("gatekeeper", "watcher stopped");
++	return 0;
++}
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 83b0553098..3359d2b91b 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -45,6 +45,9 @@
+ ** SUCH DAMAGE.
+ */
+ 
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE	/* reaper v1.6.8: strcasestr in the Gatekeeper captive check */
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -1232,6 +1235,111 @@ int append_etag_header(char *file, char *extra_header, char *if_none_match, char
+ 	return status;
+ }
+ 
++/* ---- reaper v1.6.8 Gatekeeper captive support ------------------------- */
++
++/* IPv4 client IP -> MAC via /proc/net/arp; tiny 2s single-entry cache since
++ * a quarantined phone hammers captive probes. Returns 1 on hit. */
++static int
++gk_ip_to_mac(const char *ip, char *mac, size_t maclen)
++{
++	static char c_ip[46] = "", c_mac[18] = "";
++	static time_t c_at = 0;
++	FILE *f;
++	char line[256], aip[64], hw[64], dif[32];
++	unsigned flags;
++	time_t now = time(NULL);
++
++	if (c_at && now - c_at <= 2 && !strcmp(ip, c_ip)) {
++		if (!c_mac[0]) return 0;
++		snprintf(mac, maclen, "%s", c_mac);
++		return 1;
++	}
++	snprintf(c_ip, sizeof(c_ip), "%s", ip);
++	c_mac[0] = 0;
++	c_at = now;
++
++	f = fopen("/proc/net/arp", "r");
++	if (!f) return 0;
++	if (fgets(line, sizeof(line), f)) { /* header */ }
++	while (fgets(line, sizeof(line), f)) {
++		if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", aip, &flags, hw, dif) != 4)
++			continue;
++		if (!(flags & 2) || strncmp(dif, "br", 2))
++			continue;
++		if (!strcmp(aip, ip) && strlen(hw) == 17) {
++			snprintf(c_mac, sizeof(c_mac), "%s", hw);
++			break;
++		}
++	}
++	fclose(f);
++	if (!c_mac[0]) return 0;
++	snprintf(mac, maclen, "%s", c_mac);
++	return 1;
++}
++
++/* is mac listed (any state) in gk_rl "<MAC>state>expiry..."? */
++static int
++gk_mac_known(const char *mac)
++{
++	char *rl = nvram_safe_get("gk_rl");
++	const char *p = rl;
++	size_t n = strlen(mac);
++	while ((p = strcasestr(p, mac)) != NULL) {
++		if (p != rl && *(p - 1) == '<' && *(p + n) == '>')
++			return 1;
++		p += n;
++	}
++	return 0;
++}
++
++int
++reaper_gk_captive_check(const char *client_ip)
++{
++	char mac[18];
++
++	if (!nvram_match("gk_enable", "1"))
++		return 0;
++	if (nvram_match("gk_captive", "0") || nvram_match("gk_default", "1"))
++		return 0;
++	if (!client_ip || !client_ip[0] || !strcmp(client_ip, "127.0.0.1"))
++		return 0;
++	if (strchr(client_ip, ':'))		/* v6 peer: ARP can't resolve - let it through */
++		return 0;
++	if (!gk_ip_to_mac(client_ip, mac, sizeof(mac)))
++		return 0;				/* unresolvable - fail open, chains still enforce */
++	return gk_mac_known(mac) ? 0 : 1;
++}
++
++const char *
++reaper_gk_wait_page(void)
++{
++	/* self-contained, ASCII-only, auto-refreshing; served to unauthenticated
++	 * quarantined devices so it carries no router details beyond the theme */
++	return
++	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
++	"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
++	"<meta http-equiv=\"refresh\" content=\"10\">"
++	"<title>Awaiting approval</title><style>"
++	"body{background:#08080a;color:#B7B1A4;font-family:system-ui,sans-serif;"
++	"display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}"
++	".c{max-width:320px;text-align:center;border:1px solid rgba(225,6,0,.25);"
++	"border-radius:14px;padding:30px 22px;background:#0f0f12}"
++	".g{width:38px;height:38px;margin:0 auto 14px;border-radius:50%;"
++	"border:2px solid #E10600;position:relative}"
++	".g:after{content:\"\";position:absolute;left:17px;top:8px;width:2px;height:12px;"
++	"background:#E10600;transform-origin:bottom;transform:rotate(45deg)}"
++	"h1{color:#ECE7DB;font-size:19px;margin:0 0 8px;letter-spacing:.03em}"
++	"p{font-size:13px;line-height:1.55;margin:0}"
++	"</style></head><body><div class=\"c\"><div class=\"g\"></div>"
++	"<h1>Awaiting approval</h1>"
++	"<p>This device is connected to the network but is being held at the gate. "
++	"The network owner has been notified - access opens the moment it is approved. "
++	"This page refreshes automatically.</p>"
++	"</div></body></html>";
++}
++
++/* ---- end Gatekeeper captive support ----------------------------------- */
++
+ static void
+ handle_request(void)
+ {
+@@ -1508,6 +1616,18 @@ handle_request(void)
+ 		snprintf(current_page_name, sizeof(current_page_name), "%s", url);
+ 	}
+ 
++	/* reaper v1.6.8 Gatekeeper: pre-auth captive intercept. In quarantine mode
++	 * an unknown (not-yet-approved) LAN MAC gets the "awaiting approval" page
++	 * for ANY request - including OS captive-portal probes (their tcp/80 is
++	 * DNAT'd here by the REAPER_GKN chain) and direct hits on the admin UI,
++	 * which stays fenced off until the device is approved. Runs BEFORE auth;
++	 * self-contained response; approved/blocked and alert-only-mode clients
++	 * never reach this branch. */
++	if (reaper_gk_captive_check(temp_ip_str)) {
++		send_page( 200, "OK", (char*) 0, (char *)reaper_gk_wait_page(), 0);
++		return;
++	}
++
+ #if !defined(RTCONFIG_HND_ROUTER)
+ 	if (!strncmp(file, "Main_Login.asp", 14) && (uptime() - flush_cache_t1) > 10 * 60) {
+ 		/* free pagecahe when login, don't do it again in 10 minutes. */
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 0c13bb1e7e..3a4a3c9774 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22519,6 +22519,366 @@ static int rmcp_usb_find_key(const char *wanthash, char *out, size_t outsz)
+  * mirroring the code-rotation guard already used in 'provision'. Shares the same
+  * fail-count + lockout accounting. Returns 1 to proceed; on failure it has already
+  * written the JSON error and the caller must return. */
++static int
++gk_valid_mac(const char *m)
++{
++	int i;
++	if (!m || strlen(m) != 17) return 0;
++	for (i = 0; i < 17; i++) {
++		if ((i % 3) == 2) { if (m[i] != ':') return 0; }
++		else if (!isxdigit((unsigned char)m[i])) return 0;
++	}
++	return 1;
++}
++
++/* find mac in gk_rl ("<MAC>state>expiry..."); returns 1 + fills state/expiry */
++static int
++gk_rl_find(const char *rl, const char *mac, int *state, long *expiry)
++{
++	const char *p = rl;
++	size_t n = strlen(mac);
++	while ((p = strcasestr(p, mac)) != NULL) {
++		if (p != rl && *(p - 1) == '<' && *(p + n) == '>') {
++			if (state) *state = atoi(p + n + 1);
++			if (expiry) {
++				const char *e = strchr(p + n + 1, '>');
++				*expiry = e ? strtol(e + 1, NULL, 10) : 0;
++			}
++			return 1;
++		}
++		p += n;
++	}
++	return 0;
++}
++
++/* rewrite gk_rl with mac set to state (state < 0 = remove the entry) */
++static void
++gk_rl_update(const char *mac, int state, long expiry)
++{
++	char *rl = nvram_safe_get("gk_rl");
++	size_t cap = strlen(rl) + 64;
++	char *out = calloc(1, cap);
++	char *buf = strdup(rl);
++	char *tok, *sp = NULL;
++	if (!out || !buf) { free(out); free(buf); return; }
++	for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++		char m[18] = "";
++		if (sscanf(tok, "%17[^>]", m) != 1 || !gk_valid_mac(m)) continue;
++		if (!strcasecmp(m, mac)) continue;	/* old entry dropped */
++		strlcat(out, "<", cap);
++		strlcat(out, tok, cap);
++	}
++	if (state >= 0) {
++		char add[48];
++		snprintf(add, sizeof(add), "<%s>%d>%ld", mac, state, expiry);
++		strlcat(out, add, cap);
++	}
++	nvram_set("gk_rl", out);
++	free(out);
++	free(buf);
++}
++
++static void
++gk_json_esc(FILE *stream, const char *s)
++{
++	websWrite(stream, "\"");
++	for (; *s; s++) {
++		unsigned char c = (unsigned char)*s;
++		if (c == '"' || c == '\\') websWrite(stream, "\\%c", c);
++		else if (c < 0x20) websWrite(stream, "\\u%04x", c);
++		else websWrite(stream, "%c", c);
++	}
++	websWrite(stream, "\"");
++}
++
++/* look mac up in custom_clientlist ("<name>MAC>...") for a friendly name */
++static void
++gk_client_name(const char *mac, char *name, size_t nlen)
++{
++	char *cl = nvram_safe_get("custom_clientlist");
++	char *buf = strdup(cl), *tok, *sp = NULL;
++	name[0] = 0;
++	if (!buf) return;
++	for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++		char *f1 = strchr(tok, '>');
++		if (!f1) continue;
++		*f1++ = 0;
++		{
++			char *f2 = strchr(f1, '>');
++			if (f2) *f2 = 0;
++		}
++		if (!strcasecmp(f1, mac)) {
++			snprintf(name, nlen, "%.32s", tok);
++			break;
++		}
++	}
++	free(buf);
++}
++
++#define GK_SEEN_TSV "/tmp/gk/seen.tsv"
++#define GK_SEEN_MAX 256
++
++struct gk_seen {
++	char mac[18], ip[46], host[40], band[8];
++	int wired, online;
++	long first, last;
++};
++
++static int
++gk_load_seen(struct gk_seen *v, int max)
++{
++	/* tab-split by hand - fields (ip/host/band) are legitimately empty, which
++	 * sscanf("%[^\t]") cannot match, so it would desync every later column */
++	FILE *f = fopen(GK_SEEN_TSV, "r");
++	char line[256];
++	int n = 0;
++	if (!f) return 0;
++	while (n < max && fgets(line, sizeof(line), f)) {
++		struct gk_seen *d = &v[n];
++		char *fld[8] = {0};
++		char *p = line, *tab;
++		int i = 0;
++		line[strcspn(line, "\n")] = 0;
++		while (i < 8) {
++			fld[i++] = p;
++			tab = strchr(p, '\t');
++			if (!tab) break;
++			*tab = 0;
++			p = tab + 1;
++		}
++		if (i < 8) continue;			/* malformed row */
++		memset(d, 0, sizeof(*d));
++		snprintf(d->mac, sizeof(d->mac), "%s", fld[0]);
++		snprintf(d->ip, sizeof(d->ip), "%s", fld[1]);
++		snprintf(d->host, sizeof(d->host), "%s", fld[2]);
++		snprintf(d->band, sizeof(d->band), "%s", fld[3]);
++		d->wired  = atoi(fld[4]);
++		d->first  = strtol(fld[5], NULL, 10);
++		d->last   = strtol(fld[6], NULL, 10);
++		d->online = atoi(fld[7]);
++		if (!gk_valid_mac(d->mac)) continue;
++		n++;
++	}
++	fclose(f);
++	return n;
++}
++
++static void
++gk_emit_seen(FILE *stream, struct gk_seen *d, int rand_flag)
++{
++	char name[40];
++	if (!d->host[0]) gk_client_name(d->mac, name, sizeof(name));
++	else snprintf(name, sizeof(name), "%s", d->host);
++	websWrite(stream, "{\"mac\":\"%s\",\"ip\":", d->mac);
++	gk_json_esc(stream, d->ip);
++	websWrite(stream, ",\"host\":");
++	gk_json_esc(stream, name);
++	websWrite(stream, ",\"band\":\"%s\",\"wired\":%d,\"online\":%d,\"first\":%ld,\"last\":%ld",
++		d->band, d->wired, d->online, d->first, d->last);
++	if (rand_flag >= 0)
++		websWrite(stream, ",\"rand\":%d", rand_flag);
++	websWrite(stream, "}");
++}
++
++/* one-time approve-everything-present baseline when the feature is enabled
++ * with an empty list; sources ARP directly since gkd has never run yet */
++static void
++gk_baseline_snapshot(void)
++{
++	FILE *f = fopen("/proc/net/arp", "r");
++	char line[256], ip[64], hw[64], dif[32];
++	unsigned flags;
++	char *rl;
++	size_t cap = 1;
++	char *out;
++	if (!f) return;
++	out = calloc(1, cap = 8192);
++	if (!out) { fclose(f); return; }
++	if (fgets(line, sizeof(line), f)) { /* header */ }
++	while (fgets(line, sizeof(line), f)) {
++		if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dif) != 4)
++			continue;
++		if (!(flags & 2) || strncmp(dif, "br", 2) || !gk_valid_mac(hw))
++			continue;
++		{
++			char add[48];
++			int i;
++			for (i = 0; hw[i]; i++) hw[i] = toupper((unsigned char)hw[i]);
++			snprintf(add, sizeof(add), "<%s>1>0", hw);
++			if (strlen(out) + strlen(add) + 1 < cap)
++				strlcat(out, add, cap);
++		}
++	}
++	fclose(f);
++	rl = nvram_safe_get("gk_rl");
++	if (!rl[0] && out[0]) {
++		nvram_set("gk_rl", out);
++		logmessage("gatekeeper", "enabled - baseline snapshot approved the devices already present");
++	}
++	free(out);
++}
++
++static void
++do_reaper_gk_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++	char *rl = nvram_safe_get("gk_rl");
++
++	if (!action) action = "status";
++
++	/* CSRF: state-changing actions must carry http_id (same guard as rmcp) */
++	if (strcmp(action, "status") != 0) {
++		char *hid = get_cgi("http_id");
++		char *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\"}");
++			return;
++		}
++	}
++
++	if (!strcmp(action, "status")) {
++		static struct gk_seen seen[GK_SEEN_MAX];
++		int ns = gk_load_seen(seen, GK_SEEN_MAX);
++		int i, first;
++		char *buf, *tok, *sp = NULL;
++
++		websWrite(stream, "{\"enable\":%d,\"def\":%d,\"guest_hours\":%d,\"captive\":%d,\"notify\":%d",
++			nvram_match("gk_enable", "1") ? 1 : 0,
++			nvram_match("gk_default", "1") ? 1 : 0,
++			nvram_get_int("gk_guest_hours") > 0 ? nvram_get_int("gk_guest_hours") : 24,
++			nvram_match("gk_captive", "0") ? 0 : 1,
++			nvram_match("gk_notify", "0") ? 0 : 1);
++
++		/* pending = seen but not in gk_rl */
++		websWrite(stream, ",\"pending\":[");
++		first = 1;
++		for (i = 0; i < ns; i++) {
++			int rand_flag;
++			char c;
++			if (gk_rl_find(rl, seen[i].mac, NULL, NULL)) continue;
++			c = seen[i].mac[1];
++			rand_flag = (c == '2' || c == '6' || c == 'A' || c == 'E') ? 1 : 0;
++			if (!first) websWrite(stream, ",");
++			first = 0;
++			gk_emit_seen(stream, &seen[i], rand_flag);
++		}
++		websWrite(stream, "]");
++
++		/* devices = every gk_rl entry, enriched from seen when available */
++		websWrite(stream, ",\"devices\":[");
++		first = 1;
++		buf = strdup(rl);
++		if (buf) {
++			for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++				char mac[18] = "";
++				int st = -1;
++				long exp = 0;
++				struct gk_seen off, *d = NULL;
++				if (sscanf(tok, "%17[^>]>%d>%ld", mac, &st, &exp) < 2) continue;
++				if (!gk_valid_mac(mac) || st < 0 || st > 3) continue;
++				for (i = 0; i < ns; i++)
++					if (!strcasecmp(seen[i].mac, mac)) { d = &seen[i]; break; }
++				if (!d) {
++					memset(&off, 0, sizeof(off));
++					snprintf(off.mac, sizeof(off.mac), "%s", mac);
++					d = &off;
++				}
++				if (!first) websWrite(stream, ",");
++				first = 0;
++				websWrite(stream, "{\"mac\":\"%s\",\"state\":%d,\"expiry\":%ld,\"ip\":", d->mac, st, exp);
++				gk_json_esc(stream, d->ip);
++				websWrite(stream, ",\"host\":");
++				{
++					char name[40];
++					if (!d->host[0]) gk_client_name(d->mac, name, sizeof(name));
++					else snprintf(name, sizeof(name), "%s", d->host);
++					gk_json_esc(stream, name);
++				}
++				websWrite(stream, ",\"band\":\"%s\",\"wired\":%d,\"online\":%d,\"last\":%ld}",
++					d->band, d->wired, d->online, d->last);
++			}
++			free(buf);
++		}
++		websWrite(stream, "]}");
++		return;
++	}
++
++	if (!strcmp(action, "set")) {
++		char *mac = get_cgi("mac");
++		char *st = get_cgi("state");
++		char umac[18];
++		int state, i;
++		long expiry = 0;
++		if (!gk_valid_mac(mac) || !st) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac/state\"}");
++			return;
++		}
++		state = atoi(st);
++		if (state < 0 || state > 3) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad state\"}");
++			return;
++		}
++		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++		umac[17] = 0;
++		if (state == 3) {
++			int h = nvram_get_int("gk_guest_hours");
++			if (h < 1 || h > 168) h = 24;
++			expiry = (long)time(NULL) + (long)h * 3600;
++		}
++		gk_rl_update(umac, state, expiry);
++		nvram_commit();
++		notify_rc("restart_gk");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (!strcmp(action, "remove")) {
++		char *mac = get_cgi("mac");
++		char umac[18];
++		int i;
++		if (!gk_valid_mac(mac)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\"}");
++			return;
++		}
++		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++		umac[17] = 0;
++		gk_rl_update(umac, -1, 0);
++		nvram_commit();
++		notify_rc("restart_gk");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (!strcmp(action, "config")) {
++		char *v;
++		if ((v = get_cgi("enable")) != NULL && (*v == '0' || *v == '1')) {
++			if (*v == '1' && !nvram_match("gk_enable", "1") && !nvram_safe_get("gk_rl")[0])
++				gk_baseline_snapshot();
++			nvram_set("gk_enable", *v == '1' ? "1" : "0");
++		}
++		if ((v = get_cgi("def")) != NULL && (*v == '0' || *v == '1'))
++			nvram_set("gk_default", *v == '1' ? "1" : "0");
++		if ((v = get_cgi("captive")) != NULL && (*v == '0' || *v == '1'))
++			nvram_set("gk_captive", *v == '1' ? "1" : "0");
++		if ((v = get_cgi("notify")) != NULL && (*v == '0' || *v == '1'))
++			nvram_set("gk_notify", *v == '1' ? "1" : "0");
++		if ((v = get_cgi("guest_hours")) != NULL) {
++			int h = atoi(v);
++			if (h >= 1 && h <= 168) {
++				char hb[8];
++				snprintf(hb, sizeof(hb), "%d", h);
++				nvram_set("gk_guest_hours", hb);
++			}
++		}
++		nvram_commit();
++		notify_rc("restart_gk");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
++}
++
+ static int
+ rmcp_require_code(FILE *stream, const char *code, time_t now, long lock_until)
+ {
+@@ -29940,6 +30300,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
+ 	{ "reaper_wifi.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_wifi_cgi, do_auth },
+ 	{ "reaper_diag.cgi*", "text/plain", no_cache_IE7, do_html_post_and_get, do_reaper_diag_cgi, do_auth },
++	{ "reaper_gk.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_gk_cgi, do_auth },
+ #ifdef RTCONFIG_REAPER_MCP
+ 	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
+ #endif
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 15fdacefda..d17a302a6c 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -435,6 +435,8 @@ else
+ OBJS += qos.o
+ endif
+ OBJS += format.o
++# reaper v1.6.8: Gatekeeper device access control
++OBJS += gatekeeper.o
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+ OBJS += fwupg_flashing.o
+ endif
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 7542bbcbdf..d9c19c26a1 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9385,6 +9385,11 @@ leave:
+ 
+ 	run_custom_script("firewall-start", 0, wan_if, NULL);
+ 
++	/* reaper v1.6.8 Gatekeeper: this rebuild just deleted our chains - re-apply
++	 * immediately (gkd's 10s self-heal is only the backstop, not the primary). */
++	if (nvram_match("gk_enable", "1") && f_exists("/tmp/gk/apply.sh"))
++		system("sh /tmp/gk/apply.sh");
++
+ 	return 0;
+ }
+ 
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+new file mode 100644
+index 0000000000..5eb684bb36
+--- /dev/null
++++ b/release/src/router/rc/gatekeeper.c
+@@ -0,0 +1,208 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ *
++ * Gatekeeper (reaper v1.6.8) - default-deny device access control.
++ *
++ * Enforcement model (all driven from nvram gk_rl = "<MAC>state>expiry..."
++ * with state 0=block 1=full 2=internet-only 3=guest):
++ *
++ *   iptables/ip6tables FORWARD  REAPER_GKF  - internet gate. Approved MACs
++ *     RETURN, blocked MACs DROP, and in quarantine mode (gk_default=0) an
++ *     unknown MAC falls through to a terminal DROP. Hooked at position 1 so
++ *     no ESTABLISHED shortcut can bypass a revocation.
++ *   iptables/ip6tables INPUT    REAPER_GKI  - router-services gate. A held
++ *     or blocked device may only reach DHCP, DNS and HTTP (the captive
++ *     "awaiting approval" page); everything else to the router is dropped,
++ *     which also fences the admin UI off from unapproved devices.
++ *   iptables nat PREROUTING     REAPER_GKN  - captive redirect. Unknown
++ *     MACs get tcp/80 DNAT'd to httpd, whose pre-auth intercept serves the
++ *     waiting page (OS captive-portal probes are plain HTTP, so phones pop
++ *     the native sign-in sheet).
++ *   ebtables FORWARD            REAPER_GK   - LAN isolation at the bridge.
++ *     Only approved-FULL MACs may source bridged frames; internet-only,
++ *     guest, blocked and (in quarantine mode) unknown devices cannot reach,
++ *     probe or ARP-scan other LAN devices. Router-bound frames are local
++ *     bridge INPUT, not FORWARD, so DHCP/DNS/captive still work.
++ *
++ * The rule set is written to /tmp/gk/apply.sh (idempotent: full teardown
++ * then rebuild) so gkd can self-heal after a firewall or wireless restart
++ * flushes the tables. The flow accelerator is flushed on every apply so
++ * already-offloaded flows re-traverse the fresh rules.
++ *
++ * KNOWN LIMIT (documented on the page): two clients on the SAME wireless
++ * BSS may be bridged inside the Broadcom driver below ebtables. Metal
++ * probe owed; per-BSS ap_isolate is the fallback if the driver forwards.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++
++#include "rc.h"
++#include <shared.h>
++
++#define GK_DIR    "/tmp/gk"
++#define GK_APPLY  GK_DIR "/apply.sh"
++
++/* emit one per-MAC rule line into every chain that takes it */
++static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
++{
++	switch (state) {
++	case 0:	/* blocked: nothing, anywhere */
++		fprintf(f, "for T in iptables ip6tables; do\n"
++			   "  $T -A REAPER_GKF -m mac --mac-source %s -j DROP\n"
++			   "  $T -A REAPER_GKI -m mac --mac-source %s -j DROP\n"
++			   "done\n"
++			   "ebtables -A REAPER_GK -s %s -j DROP\n", mac, mac, mac);
++		break;
++	case 1:	/* full: internet + LAN */
++		fprintf(f, "for T in iptables ip6tables; do\n"
++			   "  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
++			   "  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
++			   "done\n"
++			   "ebtables -A REAPER_GK -s %s -j RETURN\n", mac, mac, mac);
++		break;
++	case 2:	/* internet-only */
++	case 3:	/* guest (internet-only + expiry, gkd handles the clock) */
++		fprintf(f, "for T in iptables ip6tables; do\n"
++			   "  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
++			   "  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
++			   "done\n"
++			   "ebtables -A REAPER_GK -s %s -j DROP\n", mac, mac, mac);
++		break;
++	}
++	/* known MACs never hit the captive redirect */
++	if (quarantine)
++		fprintf(f, "iptables -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN\n", mac);
++}
++
++static void gk_gen_apply(void)
++{
++	FILE *f;
++	char *rl, *buf, *tok, *sp = NULL;
++	const char *lanif = nvram_safe_get("lan_ifname");
++	const char *lanip = nvram_safe_get("lan_ipaddr");
++	int quarantine = !nvram_match("gk_default", "1");
++	int captive = !nvram_match("gk_captive", "0");
++
++	f = fopen(GK_APPLY, "w");
++	if (!f) return;
++
++	fprintf(f, "#!/bin/sh\n"
++		   "# generated by start_gk - do not edit; idempotent (teardown+rebuild)\n"
++		   "LANIF=%s\n"
++		   "# ---- teardown ----\n"
++		   "for T in iptables ip6tables; do\n"
++		   "  $T -D FORWARD -i $LANIF -j REAPER_GKF 2>/dev/null\n"
++		   "  $T -D INPUT -i $LANIF -j REAPER_GKI 2>/dev/null\n"
++		   "  $T -F REAPER_GKF 2>/dev/null; $T -X REAPER_GKF 2>/dev/null\n"
++		   "  $T -F REAPER_GKI 2>/dev/null; $T -X REAPER_GKI 2>/dev/null\n"
++		   "done\n"
++		   "iptables -t nat -D PREROUTING -i $LANIF -j REAPER_GKN 2>/dev/null\n"
++		   "iptables -t nat -F REAPER_GKN 2>/dev/null; iptables -t nat -X REAPER_GKN 2>/dev/null\n"
++		   "ebtables -D FORWARD --logical-in $LANIF -j REAPER_GK 2>/dev/null\n"
++		   "ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null\n"
++		   "# ---- build ----\n"
++		   "for T in iptables ip6tables; do\n"
++		   "  $T -N REAPER_GKF\n"
++		   "  $T -N REAPER_GKI\n"
++		   "done\n"
++		   "iptables -t nat -N REAPER_GKN\n"
++		   "ebtables -N REAPER_GK -P RETURN\n",
++		   lanif);
++
++	/* per-device rules */
++	rl = nvram_safe_get("gk_rl");
++	buf = strdup(rl);
++	if (buf) {
++		for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++			char mac[18] = "";
++			int st = -1;
++			if (sscanf(tok, "%17[^>]>%d", mac, &st) != 2) continue;
++			if (strlen(mac) != 17 || st < 0 || st > 3) continue;
++			gk_emit_mac(f, mac, st, quarantine);
++		}
++		free(buf);
++	}
++
++	if (quarantine) {
++		/* unknown MACs: held at the gate */
++		fprintf(f,
++			"# unknown devices - quarantine\n"
++			"for T in iptables ip6tables; do\n"
++			"  $T -A REAPER_GKF -j DROP\n"
++			"done\n"
++			/* router services a held device is allowed: DHCP, DNS, HTTP(captive) */
++			"iptables -A REAPER_GKI -p udp --dport 67:68 -j RETURN\n"
++			"iptables -A REAPER_GKI -p udp --dport 53 -j RETURN\n"
++			"iptables -A REAPER_GKI -p tcp --dport 53 -j RETURN\n"
++			"iptables -A REAPER_GKI -p tcp --dport 80 -j RETURN\n"
++			"iptables -A REAPER_GKI -j DROP\n"
++			"ip6tables -A REAPER_GKI -p icmpv6 -j RETURN\n"       /* NDP must live */
++			"ip6tables -A REAPER_GKI -p udp --dport 546:547 -j RETURN\n"
++			"ip6tables -A REAPER_GKI -p udp --dport 53 -j RETURN\n"
++			"ip6tables -A REAPER_GKI -p tcp --dport 53 -j RETURN\n"
++			"ip6tables -A REAPER_GKI -p tcp --dport 80 -j RETURN\n"
++			"ip6tables -A REAPER_GKI -j DROP\n"
++			"ebtables -A REAPER_GK -j DROP\n");
++		if (captive)
++			fprintf(f, "iptables -t nat -A REAPER_GKN -p tcp --dport 80 "
++				   "-j DNAT --to-destination %s:80\n", lanip);
++	}
++
++	/* hooks at position 1: revocation must beat any ESTABLISHED shortcut */
++	fprintf(f, "# ---- hooks ----\n"
++		   "for T in iptables ip6tables; do\n"
++		   "  $T -I FORWARD 1 -i $LANIF -j REAPER_GKF\n"
++		   "  $T -I INPUT 1 -i $LANIF -j REAPER_GKI\n"
++		   "done\n"
++		   "iptables -t nat -I PREROUTING 1 -i $LANIF -j REAPER_GKN\n"
++		   "ebtables -I FORWARD 1 --logical-in $LANIF -j REAPER_GK\n"
++		   "# offloaded flows must re-traverse the fresh rules\n"
++		   "fc flush 2>/dev/null\n");
++
++	fclose(f);
++	chmod(GK_APPLY, 0700);
++}
++
++void gk_teardown_rules(void)
++{
++	/* fixed, state-free teardown (mirrors the apply.sh preamble) */
++	const char *lanif = nvram_safe_get("lan_ifname");
++	char cmd[512];
++	snprintf(cmd, sizeof(cmd),
++		"for T in iptables ip6tables; do "
++		"$T -D FORWARD -i %s -j REAPER_GKF 2>/dev/null; "
++		"$T -D INPUT -i %s -j REAPER_GKI 2>/dev/null; "
++		"$T -F REAPER_GKF 2>/dev/null; $T -X REAPER_GKF 2>/dev/null; "
++		"$T -F REAPER_GKI 2>/dev/null; $T -X REAPER_GKI 2>/dev/null; done; "
++		"iptables -t nat -D PREROUTING -i %s -j REAPER_GKN 2>/dev/null; "
++		"iptables -t nat -F REAPER_GKN 2>/dev/null; iptables -t nat -X REAPER_GKN 2>/dev/null; "
++		"ebtables -D FORWARD --logical-in %s -j REAPER_GK 2>/dev/null; "
++		"ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null; "
++		"fc flush 2>/dev/null",
++		lanif, lanif, lanif, lanif);
++	system(cmd);
++}
++
++void stop_gk(void)
++{
++	if (pids("gkd"))
++		killall_tk("gkd");
++	gk_teardown_rules();
++	unlink(GK_APPLY);
++}
++
++void start_gk(void)
++{
++	stop_gk();
++	if (!is_routing_enabled())
++		return;
++	if (!nvram_match("gk_enable", "1"))
++		return;
++	mkdir(GK_DIR, 0700);
++	gk_gen_apply();
++	system("sh " GK_APPLY);
++	xstart("gkd");
++}
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 1badd4c337..ffe4dce11a 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2977,6 +2977,9 @@ extern void stop_rtraf(void);	/* reaper v1.3.0 traffic collector */
+ extern void start_rtraf(void);
+ extern void stop_rchqd(void);	/* reaper v1.6.1 passive channel-quality monitor */
+ extern void start_rchqd(void);
++extern void stop_gk(void);	/* reaper v1.6.8 Gatekeeper device access control (rc/gatekeeper.c) */
++extern void start_gk(void);
++extern void gk_teardown_rules(void);
+ #ifdef RTCONFIG_REAPER_MCP
+ extern void stop_rmcp(void);	/* reaper v1.4.0 read-only MCP advisor */
+ extern void start_rmcp(void);	/* NOTE: never called from the boot path */
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 5c57722aab..5706dd3d33 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7108,6 +7108,7 @@ stop_misc(void)
+ 	stop_rstats();
+ 	stop_rtraf();	/* reaper v1.3.0 */
+ 	stop_rchqd();	/* reaper v1.6.1 */
++	stop_gk();	/* reaper v1.6.8 Gatekeeper */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	stop_rmcp();	/* reaper v1.4.0 - ensure the advisor never survives a service teardown */
+ #endif
+@@ -13411,6 +13412,7 @@ start_services(void)
+ 	restart_rstats();
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
+ 	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
++	start_gk();	/* reaper v1.6.8 Gatekeeper (no-op unless gk_enable) */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	reaper_mcp_boot_sweep();	/* reaper v1.4.4 - drop stale advisor rule/session from an unclean prior exit; never starts the daemon */
+ #endif
+@@ -21597,6 +21599,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rchqd();
+ 		if(action & RC_SERVICE_START) start_rchqd();
+ 	}
++	else if (strcmp(script, "gk") == 0)	/* reaper v1.6.8 Gatekeeper device access control */
++	{
++		if(action & RC_SERVICE_STOP) stop_gk();
++		if(action & RC_SERVICE_START) start_gk();
++	}
+ #ifdef RTCONFIG_REAPER_MCP
+ 	else if (strcmp(script, "rmcp") == 0)
+ 	{
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 6c1a664fc6..7dc6008f77 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3116,6 +3116,17 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "rmcp_usb_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = USB key required to arm (opt-in) */
+ 	{ "rmcp_usb_hash", "", CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* SHA-256 (hex) of the enrolled keyfile; key itself lives on the stick */
+ #endif
++
++	/* reaper v1.6.8 Gatekeeper: default-deny device access control. Off by
++	 * default; enabling snapshots every currently-known device as approved so
++	 * nothing breaks at turn-on. The device list is authoritative here (not in
++	 * /jffs) so approvals survive reboot on every box. */
++	{ "gk_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ebtables) */
++	{ "gk_default", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* new unknown MAC: 0 = quarantine until approved, 1 = alert only */
++	{ "gk_guest_hours", "24", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* guest pass length in hours (internet-only + expiry) */
++	{ "gk_captive", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* quarantined devices get the "awaiting approval" page (HTTP DNAT) */
++	{ "gk_notify", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* syslog + UI alert on first sight of a new device */
++	{ "gk_rl", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* device rules: <MAC>state>expiry ... state 0=block 1=full 2=inet-only 3=guest; expiry epoch (0=permanent). custom_clientlist-sized precedent */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 9c6b2166fa..1d9999d088 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=O AiMesh combina mais de um roteador ASUS para formar um sistema de AiMesh, fornecendo cobertura para toda a casa e gerenciamento centralizado.
+ AiMesh_Desc2=Você pode clicar no botão \"Pesquisar\" no mapa de rede para encontrar seu nó AiMesh. <br>Se houver algum nó AiMesh disponível próximo que possa ser adicionado ao seu sistema AiMesh, eles aparecerão na sua lista de nós AiMesh disponíveis.
+ AiMesh_Desc3=Se você não consegue encontrar nenhum nó AiMesh disponível nas proximidades:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Seguro para publicar
+ RDIAG_29=Coletando dados
+ RDIAG_30=Lendo r&aacute;dios, portas e logs, depois higienizando o resultado. Permane&ccedil;a nesta p&aacute;gina.
+ RDIAG_31=A coleta falhou. Aguarde um momento e tente novamente; se persistir, verifique o log do sistema.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index d1b57a484e..19eb157427 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh 整合多台华硕路由器组成 AiMesh 系统，为您提供强大的家庭网络覆盖和集中式网络管理。
+ AiMesh_Desc2=您可以点击网络地图中的\"搜索\"按钮搜索您的 AiMesh 节点。<br>若附近有可以添加至 AiMesh 系统的可用 AiMesh 节点，将会显示在可用 AiMesh 节点列表中。
+ AiMesh_Desc3=若您无法搜索到任何附近可用的 AiMesh 节点：
+@@ -5722,3 +5722,58 @@ RDIAG_28=可安全公开
+ RDIAG_29=正在收集数据
+ RDIAG_30=正在读取无线、端口和日志，然后进行脱敏。请留在此页面。
+ RDIAG_31=采集失败。请稍候重试；若仍然失败，请查看系统日志。
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index ec12442dd2..7539f2f42a 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh kombinuje vytváří směrovačů ASUS do systému AiMesh, který zajišťuje pokrytí celé domácnosti a umožňuje centralizovanou správu.
+ AiMesh_Desc2=Klepnutím na tlačítko \"Hledat\" na mapě sítě vyhledejte svůj uzel AiMesh. <br>Pokud jsou v okolí dostupné uzly AiMesh, které lze přidat do vašeho systému AiMesh, zobrazí se ve vašem seznamu dostupných uzlů AiMesh.
+ AiMesh_Desc3=Pokud nelze v okolí najít žádné dostupné uzly AiMesh:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Bezpečné ke zveřejnění
+ RDIAG_29=Sběr dat
+ RDIAG_30=Čtení rádií, portů a logů, poté anonymizace. Zůstaňte prosím na této stránce.
+ RDIAG_31=Sběr selhal. Chvíli počkejte a zkuste to znovu; pokud potíže trvají, zkontrolujte systémový log.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index ce9caf49b7..85c793e7f4 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh kombinerer flere ASUS-routere, og danner derved et AiMesh-system, der giver hele hjemmet dækning og centraliseret styring.
+ AiMesh_Desc2=Du kan klikke på knappen \"Søg\" på netværkskortet. for at finde dit AiMesh-forbindelsespunkt. <br>Hvis der er nogen AiMesh-forbindelsespunkter i nærheden, der kan tilføjes til dit AiMesh-system, vises de på listen over AiMesh-forbindelsespunkter.
+ AiMesh_Desc3=Hvis du ikke kan finde nogen AiMesh-forbindelsespunkter i nærheden:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Sikker at offentliggøre
+ RDIAG_29=Indsamler data
+ RDIAG_30=Læser radioer, porte og logs og renser derefter resultatet. Bliv på denne side.
+ RDIAG_31=Indsamlingen mislykkedes. Vent et øjeblik, og prøv igen; fortsætter det, så tjek systemloggen.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 2ad1d40b12..a2c79905c3 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh verbindet mindestens zwei ASUS Router, um ein AiMesh-System aufzubauen, das für eine WLAN-Abdeckung in Ihrem gesamten Zuhause sorgt und die zentrale Verwaltung bietet.
+ AiMesh_Desc2=Sie können auf die Schaltfläche \"Suchen\" in der Netzwerkübersicht klicken, um Ihren AiMesh-Netzknoten zu finden. <br>Falls sich in der Nähe verfügbare AiMesh-Netzknoten befinden, die Ihrem AiMesh-System hinzugefügt werden können, werden diese in der Liste Ihrer verfügbaren AiMesh-Netzknoten angezeigt.
+ AiMesh_Desc3=Falls Sie keine verfügbaren AiMesh-Netzknoten in der Nähe finden können:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Unbedenklich zu ver&ouml;ffentlichen
+ RDIAG_29=Daten werden erfasst
+ RDIAG_30=Funkmodule, Ports und Protokolle werden gelesen und anschlie&szlig;end bereinigt. Bitte bleiben Sie auf dieser Seite.
+ RDIAG_31=Erfassung fehlgeschlagen. Bitte kurz warten und erneut versuchen; falls das Problem bleibt, pr&uuml;fen Sie das Systemprotokoll.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 51f482816c..3bda107c6b 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh combines more than one ASUS router to form an AiMesh system, providing whole-home coverage and centralized management.
+ AiMesh_Desc2=You can click the \"Search\" button on the network map to find your AiMesh node. <br>If there are any available AiMesh nodes nearby that can be added to your AiMesh system, they will appear in your available AiMesh node list.
+ AiMesh_Desc3=If you cannot find any available AiMesh nodes nearby:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Safe to post publicly
+ RDIAG_29=Collecting data
+ RDIAG_30=Reading radios, ports and logs, then sanitizing the result. Please stay on this page.
+ RDIAG_31=Collection failed. Please wait a moment and try again; if it persists, check the System Log.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 2afc06c929..68ebe245bf 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh combina más de un router de ASUS para formar un sistema AiMesh, proporcionando cobertura en toda la casa y una administración centralizada.
+ AiMesh_Desc2=Puede hacer clic en el botón \"Buscar\" del mapa de red para encontrar su nodo AiMesh. <br>Si hay algún nodo AiMesh disponible cercano que se pueda agregar al sistema AiMesh, aparecerá en la lista de nodos AiMesh disponibles.
+ AiMesh_Desc3=Si no puede encontrar ningún nodo AiMesh disponible cercano:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Seguro para publicar
+ RDIAG_29=Recopilando datos
+ RDIAG_30=Leyendo radios, puertos y registros, y despu&eacute;s saneando el resultado. Permanezca en esta p&aacute;gina.
+ RDIAG_31=La recogida fall&oacute;. Espere un momento y reint&eacute;ntelo; si persiste, revise el registro del sistema.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 19068c3fe6..d1d1673635 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh yhdistää useamman kuin yhden ASUS-reitittimen AiMesh-järjestelmän muodostamiseksi ja tarjoaa koko kodin kattavuuden ja keskitetyn hallinnan.
+ AiMesh_Desc2=Voit napsauttaa verkkokartan \"Haku\"-painiketta AiMesh-noodin löytämiseksi. <br>Jos lähellä on käytettävissä olevia AiMesh-noodeja, jotka voidaan lisätä AiMesh-järjestelmääsi, ne tulevat näkyviin käytettävissä olevien AiMesh-noodien luetteloon.
+ AiMesh_Desc3=Jollet löydä läheltä yhtään käytettävissä olevaa AiMesh-noodia:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Turvallista julkaista
+ RDIAG_29=Kerätään tietoja
+ RDIAG_30=Luetaan radiot, portit ja lokit, sitten siivotaan tulos. Pysy tällä sivulla.
+ RDIAG_31=Keräys epäonnistui. Odota hetki ja yritä uudelleen; jos ongelma jatkuu, tarkista järjestelmäloki.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 861a156815..64e94ef962 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh combine plusieurs routeurs ASUS pour former un système AiMesh, offrant ainsi une couverture de toute la maison et une gestion centralisée.
+ AiMesh_Desc2=Vous pouvez cliquer sur le bouton \"Rechercher\" de la carte réseau pour trouver votre nœud AiMesh. <br>Si des nœuds AiMesh disponibles à proximité peuvent être ajoutés à votre système AiMesh, ils s'afficheront dans la liste des nœuds AiMesh disponibles.
+ AiMesh_Desc3=Si aucun nœud AiMesh n'est disponible à proximité :
+@@ -5722,3 +5722,58 @@ RDIAG_28=Publiable sans risque
+ RDIAG_29=Collecte des donn&eacute;es
+ RDIAG_30=Lecture des radios, ports et journaux, puis anonymisation. Merci de rester sur cette page.
+ RDIAG_31=La collecte a &eacute;chou&eacute;. Patientez un instant et r&eacute;essayez ; si le probl&egrave;me persiste, consultez le journal syst&egrave;me.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 00a589f941..c6390b8ee2 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=Az AiMesh egy vagy több ASUS routert egyesít egyetlen AiMesh rendszerbe, ami teljes lefedettséget és központi kezelési lehetőséget kínál otthonában.
+ AiMesh_Desc2=Kattintson a hálózati térképen lévő \"Keresés\" gombra AiMesh csomópontja megkereséséhez. <br>Ha elérhető AiMesh csomópontok vannak a közelben, amelyek AiMesh rendszeréhez adhatók, meg fognak jelenni elérhető AiMesh csomópontjainak listáján.
+ AiMesh_Desc3=Ha nem találhatók elérhető AiMesh csomópontok a közelben:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Biztonságosan közzétehető
+ RDIAG_29=Adatgyűjtés
+ RDIAG_30=Rádiók, portok és naplók beolvasása, majd anonimizálás. Kérjük, maradjon ezen az oldalon.
+ RDIAG_31=A gyűjtés nem sikerült. Várjon egy pillanatot, és próbálja újra; ha továbbra sem megy, nézze meg a rendszernaplót.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index d37ee41652..6fa9c5ba9d 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh combina molteplici router ASUS per formare un sistema AiMesh, permettendo una copertura completa della casa e una gestione centralizzata.
+ AiMesh_Desc2=Puoi cliccare sul pulsante \"Cerca\" nella mappa di rete per trovare il nuovo nodo AiMesh. <br>Se nelle vicinanze sono presenti nodi AiMesh disponibili ad essere aggiunti al sistema AiMesh tali nodi verranno visualizzati nell'elenco dei nodi AiMesh disponibili.
+ AiMesh_Desc3=Se non riesci a trovare alcun nodo AiMesh disponibile:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Sicuro da pubblicare
+ RDIAG_29=Raccolta dati
+ RDIAG_30=Lettura di radio, porte e log, quindi anonimizzazione. Restate su questa pagina.
+ RDIAG_31=Raccolta non riuscita. Attendere e riprovare; se persiste, controllare il log di sistema.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index b23fa2834d..fbedf9db4b 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh は ASUS ルーターを組み合わせてメッシュネットワークを構成し、広範囲な通信、一元管理可能なシステムを提供します。
+ AiMesh_Desc2=ネットワークマップ上の AiMesh 設定内の「検索」ボタンをクリックします。AiMesh システムを構成できる ASUS メインルーターが近くにある場合は、ノードリストに表示されます。
+ AiMesh_Desc3=AiMesh ノードが表示されない場合は下記をご確認してください：
+@@ -5722,3 +5722,58 @@ RDIAG_28=公開しても安全
+ RDIAG_29=データを収集中
+ RDIAG_30=無線・ポート・ログを読み取り、匿名化しています。このページのままお待ちください。
+ RDIAG_31=収集に失敗しました。しばらく待って再試行してください。続く場合はシステムログを確認してください。
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 051e761aec..b742751005 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh 는 2 개이상의ASUS라우터를결합하여중앙에서집안전체를관리할수있는 AiMesh 시스템을구성합니다.
+ AiMesh_Desc2=네트워크맵에서\"검색\"버튼을클릭하여 AiMesh 노드를찾을수있습니다. <br>주변에 AiMesh 시스템에추가하는데사용할수있는 AiMesh 노드가있는경우해당노드가사용가능한 AiMesh 노드목록에표시됩니다.
+ AiMesh_Desc3=주변에서사용가능한AiMesh노드를찾을수없는경우:
+@@ -5722,3 +5722,58 @@ RDIAG_28=공개 게시 가능
+ RDIAG_29=데이터 수집 중
+ RDIAG_30=무선, 포트, 로그를 읽고 결과를 익명화하는 중입니다. 이 페이지에 머물러 주세요.
+ RDIAG_31=수집에 실패했습니다. 잠시 후 다시 시도하세요. 계속되면 시스템 로그를 확인하세요.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index bd787d17fa..8d6c9b4e14 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh menggabungkan lebih daripada satu penghala ASUS untuk membentuk sistem AiMesh, menyediakan liputan seluruh rumah dan pengurusan berpusat.
+ AiMesh_Desc2=Anda boleh mengklik butang \"Cari\" pada peta rangkaian untuk mencari nod AiMesh anda. <br>Jika terdapat sebarang nod AiMesh tersedia yang berdekatan dan boleh ditambah ke sistem AiMesh anda, ia akan muncul dalam senarai nod AiMesh anda yang tersedia.
+ AiMesh_Desc3=Jika anda tidak menemui sebarang nod AiMesh tersedia yang berdekatan:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Selamat untuk disiarkan
+ RDIAG_29=Mengumpul data
+ RDIAG_30=Membaca radio, port dan log, kemudian membersihkan hasilnya. Sila kekal di halaman ini.
+ RDIAG_31=Pengumpulan gagal. Tunggu sebentar dan cuba lagi; jika berterusan, semak Log Sistem.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 8d1106d081..f56d9a5410 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -293,6 +293,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+       <a href="/reaper_shell.asp#index.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span class="nl"><#menu1#></span></a>
+       <a href="/reaper_shell.asp#AiMesh.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg></span><span class="nl">AiMesh</span></a>
+       <a href="/reaper_shell.asp#SDN.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl"><#Network#></span></a>
++      <a href="/reaper_shell.asp#Reaper_GK.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M9 11v-1.5a3 3 0 0 1 6 0V11"/><rect x="9" y="11" width="6" height="5" rx="1"/></svg></span><span class="nl"><#RGK_00#></span></a>
+       <a href="/reaper_shell.asp#ParentalControl.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg></span><span class="nl"><#Parental_Control#></span></a>
+       <a href="/reaper_shell.asp#Reaper_QoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl"><#Menu_TrafficManager#></span></a>
+       <a href="/reaper_shell.asp#Reaper_Traffic.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl"><#Traffic_Analyzer#></span></a>
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 68379dd511..872955edaf 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh combineert meer dan één ASUS-router om een AiMesh-systeem te vormen dat dekking biedt voor de volledige woning met gecentraliseerd beheer.
+ AiMesh_Desc2=U kunt op de knop \"Zoeken\" op de netwerkkaart klikken om uw AiMesh-knooppunt te vinden. <br>Als er beschikbare AiMesh-knooppunten die kunnen worden toegevoegd aan uw AiMesh-systeem, in de buurt zijn, verschijnen ze in uw lijst met beschikbare AiMesh-knooppunten
+ AiMesh_Desc3=Als u geen beschikbare AiMesh-knooppunten in de buurt kunt vinden:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Veilig om te publiceren
+ RDIAG_29=Gegevens verzamelen
+ RDIAG_30=Radio's, poorten en logs worden gelezen en daarna opgeschoond. Blijf op deze pagina.
+ RDIAG_31=Verzamelen mislukt. Wacht even en probeer opnieuw; blijft het misgaan, controleer dan het systeemlog.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 7220a981e5..1b2bcb3525 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh kombinerer mer enn én ASUS-router for å danne et AiMesh-system, som gir dekning i hele hjemmet og sentralisert styring.
+ AiMesh_Desc2=Du kan klikke «Søk»-knappen på nettverkskartet for å finne AiMesh-noden din. <br>Hvis det finnes noen tilgjengelige AiMesh-noder i nærheten som kan legges til i AiMesh-systemet, vises de på listen over tilgjengelige AiMesh-noder.
+ AiMesh_Desc3=Hvis du ikke finner noen tilgjengelige AiMesh-noder i nærheten:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Trygg å publisere
+ RDIAG_29=Samler inn data
+ RDIAG_30=Leser radioer, porter og logger, deretter renses resultatet. Bli på denne siden.
+ RDIAG_31=Innsamlingen mislyktes. Vent litt og prøv igjen; vedvarer det, sjekk systemloggen.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index ddca1846ab..2971cf732e 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh umożliwia połączenie więcej niż jednego routera ASUS w system AiMesh, który zapewnia zasięg sieci w całym domu oraz scentralizowane zarządzanie.
+ AiMesh_Desc2=Możesz kliknąć przycisk \"Szukaj\" na mapie sieci, aby znaleźć węzeł AiMesh. <br>Jeśli w pobliżu znajdują się węzły AiMesh, które można dodać do systemu AiMesh, zostaną one wyświetlone na liście dostępnych węzłów AiMesh.
+ AiMesh_Desc3=Jeśli nie można znaleźć w pobliżu dostępnych węzłów AiMesh:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Bezpieczny do publikacji
+ RDIAG_29=Zbieranie danych
+ RDIAG_30=Odczyt radiów, portów i logów, następnie anonimizacja. Pozostań na tej stronie.
+ RDIAG_31=Zbieranie nie powiodło się. Odczekaj chwilę i spróbuj ponownie; jeśli problem trwa, sprawdź dziennik systemowy.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 9b903af4dc..5acdb0fdad 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh combină mai multe routere ASUS pentru a forma un sistem AiMesh, asigurând acoperire pentru întreaga casă și administrare centralizată.
+ AiMesh_Desc2=Puteți face clic pe butonul \"Căutare\" de pe harta rețelei pentru a vă găsi nodul AiMesh. <br>Dacă în apropiere există noduri AiMesh care pot fi adăugate la sistemul dvs. AiMesh, acestea vor apărea în lista cu noduri AiMesh disponibile.
+ AiMesh_Desc3=Dacă nu puteți găsi niciun nod AiMesh disponibil în apropiere:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Sigur de publicat
+ RDIAG_29=Se colectează date
+ RDIAG_30=Se citesc radiourile, porturile și jurnalele, apoi rezultatul este anonimizat. Rămâneți pe această pagină.
+ RDIAG_31=Colectarea a eșuat. Așteptați un moment și încercați din nou; dacă persistă, verificați jurnalul de sistem.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 676ddf9abc..4659f054d4 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh объединяет маршрутизаторы ASUS в единую сеть AiMesh, обеспечивая покрытие всего дома и централизованное управление.
+ AiMesh_Desc2=Для поиска узла AiMesh можно нажать кнопку \"Поиск\" на карте сети. <br> Если поблизости есть доступные узлы AiMesh, которые могут быть добавлены в систему AiMesh, они появятся в списке.
+ AiMesh_Desc3=Если не можете найти доступные узлы AiMesh:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Безопасно публиковать
+ RDIAG_29=Сбор данных
+ RDIAG_30=Чтение радиомодулей, портов и журналов, затем обезличивание. Оставайтесь на этой странице.
+ RDIAG_31=Сбор не удался. Подождите немного и повторите; если не помогает, проверьте системный журнал.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+new file mode 100644
+index 0000000000..011ecf8841
+--- /dev/null
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -0,0 +1,338 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RGK_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++.mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
++.lede{max-width:74ch;margin:6px 0 18px}
++.lede b{color:var(--bone);font-weight:600}
++.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;flex:0 0 40px}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.tg.on{background:#33333a}
++.tg.on::after{left:21px;background:var(--bone)}
++.offbanner{display:none;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.offbanner b{color:var(--bone)}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.stat .n{font-family:var(--hdr);font-weight:700;font-size:26px;color:var(--bone);font-variant-numeric:tabular-nums}
++.stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.stat.attn{border-color:var(--line)}
++.stat.attn .n{color:var(--crimson)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card>h2 .cnt{color:var(--crimson)}
++.card.hot{border-color:var(--line)}
++.pend{display:flex;align-items:center;gap:14px;padding:12px 4px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
++.pend:last-child{border-bottom:none}
++.pico{width:38px;height:38px;flex:0 0 38px;border-radius:9px;background:var(--panel-2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
++.pico svg{width:20px;height:20px;stroke:var(--crimson);fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
++.pinfo{flex:1 1 260px;min-width:0}
++.pname{color:var(--bone);font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
++.chip{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border-radius:4px;padding:1px 6px;border:1px solid var(--line-soft);color:var(--steel)}
++.chip.rand{color:var(--amber);border-color:rgba(217,164,65,.35)}
++.pmeta{font-size:12px;color:var(--steel);font-family:ui-monospace,Consolas,monospace}
++.pmeta b{color:var(--bone-dim);font-family:var(--body);font-weight:400}
++.pacts{display:flex;gap:8px;flex-wrap:wrap}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:7px 14px;cursor:pointer}
++.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:7px 14px;cursor:pointer}
++.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
++.btnd{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--danger);background:transparent;border:1px solid rgba(255,59,48,.4);border-radius:8px;padding:7px 14px;cursor:pointer}
++.nopend{font-size:12.5px;color:var(--steel);padding:6px 2px}
++.tblbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
++.fchip{font-size:11.5px;border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:3px 12px;color:var(--bone-dim);cursor:pointer;user-select:none}
++.fchip.on{border-color:var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10)}
++.search{margin-left:auto;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone-dim);font-family:var(--body);font-size:12.5px;padding:6px 12px;width:200px}
++.tblwrap{overflow-x:auto}
++table{width:100%;border-collapse:collapse;font-size:12.8px}
++th{font-family:var(--hdr);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
++td{padding:9px 10px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
++td.dev{color:var(--bone);font-weight:600}
++td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--steel)}
++.st{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;border-radius:5px;padding:2px 8px;border:1px solid var(--line-soft)}
++.st i{width:6px;height:6px;border-radius:50%;display:inline-block}
++.st.full{color:var(--jade)} .st.full i{background:var(--jade)}
++.st.inet{color:var(--amber)} .st.inet i{background:var(--amber)}
++.st.guest{color:var(--bone-dim)} .st.guest i{background:var(--bone-dim)}
++.st.block{color:var(--danger)} .st.block i{background:var(--danger)}
++.rowsel{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;color:var(--bone-dim);font-family:var(--body);font-size:11.5px;padding:4px 8px}
++.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px;max-width:1120px}
++.duo .card{margin:0}
++.setrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
++.setrow:last-child{border-bottom:none}
++.setrow .sl{flex:1;color:var(--bone);font-size:13px}
++.setrow .sd{font-size:11.5px;color:var(--steel);display:block;margin-top:1px;font-weight:400}
++.setsel{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:5px 10px}
++.portalprev{background:#050506;border:1px solid var(--line-soft);border-radius:10px;padding:22px 18px;text-align:center}
++.portalprev .pp-in{max-width:290px;margin:0 auto;border:1px solid var(--line);border-radius:12px;padding:22px 16px;background:var(--panel)}
++.portalprev h3{font-size:16px;margin:8px 0 6px}
++.portalprev p{font-size:11.8px;color:var(--bone-dim)}
++.portalprev .glyph{width:34px;height:34px;margin:0 auto;border-radius:50%;border:1.5px solid var(--crimson);display:flex;align-items:center;justify-content:center}
++.portalprev .glyph svg{width:17px;height:17px;stroke:var(--crimson);fill:none;stroke-width:1.7;stroke-linecap:round}
++.cap{font-size:10.5px;color:var(--steel);text-transform:uppercase;letter-spacing:.1em;margin-top:10px}
++.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:80ch}
++.card li{padding-left:16px;position:relative}
++.card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
++.card li b{color:var(--bone);font-weight:600}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <h1><#RGK_00#></h1>
++  <span class="ver"><#RGK_01#> &middot; v1.0</span>
++  <span class="statuspill off" id="pill"><#RGK_38#></span>
++  <span class="mastertg"><#RGK_37#> <span class="tg" id="tgmaster" onclick="gkToggle()"></span></span>
++</div>
++<p class="lede"><#RGK_02#></p>
++
++<div class="offbanner" id="offbanner"><b><#RGK_00#></b> &mdash; <#RGK_39#></div>
++
++<div class="stats" id="statwrap">
++  <div class="stat attn"><div class="n" id="n_pend">0</div><div class="l"><#RGK_03#></div></div>
++  <div class="stat"><div class="n" id="n_full">0</div><div class="l"><#RGK_40#></div></div>
++  <div class="stat"><div class="n" id="n_inet">0</div><div class="l"><#RGK_06#></div></div>
++  <div class="stat"><div class="n" id="n_block">0</div><div class="l"><#RGK_13#></div></div>
++</div>
++
++<div class="card hot" id="pendcard">
++  <h2><#RGK_03#> &middot; <span class="cnt" id="pendcnt">0</span></h2>
++  <div id="pendlist"><div class="nopend"><#RGK_36#></div></div>
++</div>
++
++<div class="card">
++  <h2><#RGK_09#></h2>
++  <div class="tblbar">
++    <span class="fchip on" data-f="all" onclick="gkFilter(this)"><#RGK_10#> &middot; <span id="n_all">0</span></span>
++    <span class="fchip" data-f="1" onclick="gkFilter(this)"><#RGK_11#></span>
++    <span class="fchip" data-f="2" onclick="gkFilter(this)"><#RGK_06#></span>
++    <span class="fchip" data-f="3" onclick="gkFilter(this)"><#RGK_07#></span>
++    <span class="fchip" data-f="0" onclick="gkFilter(this)"><#RGK_13#></span>
++    <input class="search" id="q" placeholder="<#RGK_14#>" oninput="gkRender()">
++  </div>
++  <div class="tblwrap">
++  <table>
++    <thead><tr><th><#RGK_15#></th><th>MAC</th><th><#RGK_17#></th><th><#RGK_18#></th><th><#RGK_19#></th><th></th></tr></thead>
++    <tbody id="devrows"></tbody>
++  </table>
++  </div>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RGK_20#></h2>
++    <div class="setrow"><span class="sl"><#RGK_21#><span class="sd"><#RGK_22#></span></span>
++      <select class="setsel" id="s_def" onchange="gkCfg()"><option value="0"><#RGK_23#></option><option value="1"><#RGK_24#></option></select></div>
++    <div class="setrow"><span class="sl"><#RGK_25#><span class="sd"><#RGK_26#></span></span>
++      <select class="setsel" id="s_hours" onchange="gkCfg()"><option value="4">4</option><option value="8">8</option><option value="24">24</option><option value="48">48</option></select></div>
++    <div class="setrow"><span class="sl"><#RGK_27#><span class="sd"><#RGK_28#></span></span><span class="tg" id="s_captive" onclick="gkTg(this)"></span></div>
++    <div class="setrow"><span class="sl"><#RGK_29#><span class="sd"><#RGK_30#></span></span><span class="tg" id="s_notify" onclick="gkTg(this)"></span></div>
++  </div>
++  <div class="card">
++    <h2><#RGK_31#></h2>
++    <div class="portalprev">
++      <div class="pp-in">
++        <div class="glyph"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
++        <h3><#RGK_32#></h3>
++        <p><#RGK_33#></p>
++      </div>
++      <div class="cap"><#RGK_34#></div>
++    </div>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RGK_35#></h2>
++  <ul>
++    <li><#RGK_41#></li>
++    <li><#RGK_42#></li>
++    <li><#RGK_43#></li>
++    <li><#RGK_44#></li>
++  </ul>
++</div>
++
++<script>
++var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* F4 CSRF token */
++(function(){ window.GK = { st:null, filter:'all', busy:false }; })();
++
++function gkEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
++
++function gkAgo(ep){
++  if(!ep) return '-';
++  var d = Math.max(0, Math.floor(Date.now()/1000) - ep);
++  if(d < 45) return '<#RGK_45#>';
++  if(d < 3600) return Math.floor(d/60) + ' <#RGK_46#>';
++  if(d < 86400) return Math.floor(d/3600) + ' <#RGK_47#>';
++  return Math.floor(d/86400) + ' <#RGK_48#>';
++}
++function gkLeft(ep){
++  var d = ep - Math.floor(Date.now()/1000);
++  if(d <= 0) return '0:00';
++  var h = Math.floor(d/3600), m = Math.floor((d%3600)/60);
++  return h + ':' + (m<10?'0':'') + m;
++}
++function gkConn(d){
++  if(d.band) return '<#RGK_50#> &middot; ' + gkEsc(d.band);
++  if(d.wired) return '<#RGK_49#>';
++  return '-';
++}
++
++function gkGet(url, cb){
++  var x = new XMLHttpRequest();
++  x.open('GET', url + '&_=' + Date.now(), true);
++  x.timeout = 12000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    var j = null;
++    if(x.status === 200){ try{ j = JSON.parse(x.responseText); }catch(e){} }
++    cb(j);
++  };
++  x.send();
++}
++
++function gkRefresh(){
++  gkGet('/reaper_gk.cgi?action=status', function(j){
++    if(!j) return;
++    GK.st = j;
++    gkPaint();
++  });
++}
++
++function gkPaint(){
++  var j = GK.st, on = j.enable === 1;
++  document.getElementById('tgmaster').className = 'tg' + (on ? ' on' : '');
++  var pill = document.getElementById('pill');
++  var devs = j.devices || [], pend = j.pending || [];
++  pill.className = 'statuspill' + (on ? '' : ' off');
++  pill.textContent = on ? ('<#RGK_51#> - ' + (devs.length + pend.length)) : '<#RGK_38#>';
++  document.getElementById('offbanner').style.display = on ? 'none' : 'block';
++  document.getElementById('statwrap').style.opacity = on ? '1' : '.45';
++
++  var nf = 0, ni = 0, nb = 0;
++  for(var i = 0; i < devs.length; i++){
++    var s = devs[i].state;
++    if(s === 1) nf++; else if(s === 2 || s === 3) ni++; else if(s === 0) nb++;
++  }
++  document.getElementById('n_pend').textContent = pend.length;
++  document.getElementById('n_full').textContent = nf;
++  document.getElementById('n_inet').textContent = ni;
++  document.getElementById('n_block').textContent = nb;
++  document.getElementById('n_all').textContent = devs.length;
++  document.getElementById('pendcnt').textContent = pend.length;
++
++  var ph = '';
++  for(var p = 0; p < pend.length; p++){
++    var d = pend[p], nm = d.host ? gkEsc(d.host) : '<#RGK_16#>';
++    ph += '<div class="pend">'
++      + '<div class="pico"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg></div>'
++      + '<div class="pinfo"><div class="pname">' + nm
++      + (d.rand ? ' <span class="chip rand"><#RGK_52#></span>' : '') + '</div>'
++      + '<div class="pmeta">' + gkEsc(d.mac) + ' &nbsp;&middot;&nbsp; <b>' + gkConn(d) + '</b> &nbsp;&middot;&nbsp; <b><#RGK_53#> ' + gkAgo(d.first) + '</b></div></div>'
++      + '<div class="pacts">'
++      + '<button class="btn" onclick="gkSet(\'' + d.mac + '\',1)"><#RGK_05#></button>'
++      + '<button class="btng" onclick="gkSet(\'' + d.mac + '\',2)"><#RGK_06#></button>'
++      + '<button class="btng" onclick="gkSet(\'' + d.mac + '\',3)"><#RGK_07#> &middot; ' + gkEsc(j.guest_hours) + ' h</button>'
++      + '<button class="btnd" onclick="gkSet(\'' + d.mac + '\',0)"><#RGK_08#></button>'
++      + '</div></div>';
++  }
++  document.getElementById('pendlist').innerHTML = ph || '<div class="nopend"><#RGK_36#></div>';
++
++  document.getElementById('s_def').value = String(j.def);
++  document.getElementById('s_hours').value = String(j.guest_hours);
++  document.getElementById('s_captive').className = 'tg' + (j.captive === 1 ? ' on' : '');
++  document.getElementById('s_notify').className = 'tg' + (j.notify === 1 ? ' on' : '');
++  gkRender();
++}
++
++function gkRender(){
++  var j = GK.st;
++  if(!j) return;
++  var q = document.getElementById('q').value.toLowerCase();
++  var rows = '';
++  var devs = j.devices || [];
++  var stName = {0:'<#RGK_13#>',1:'<#RGK_11#>',2:'<#RGK_06#>',3:'<#RGK_07#>'};
++  var stCls  = {0:'block',1:'full',2:'inet',3:'guest'};
++  for(var i = 0; i < devs.length; i++){
++    var d = devs[i];
++    if(GK.filter !== 'all' && String(d.state) !== GK.filter) continue;
++    var nm = d.host ? d.host : '<#RGK_16#>';
++    if(q && nm.toLowerCase().indexOf(q) < 0 && d.mac.toLowerCase().indexOf(q) < 0) continue;
++    var lbl = stName[d.state] || '?';
++    if(d.state === 3 && d.expiry) lbl += ' &middot; ' + gkLeft(d.expiry) + ' <#RGK_54#>';
++    rows += '<tr><td class="dev">' + gkEsc(nm) + '</td><td class="mac">' + gkEsc(d.mac) + '</td>'
++      + '<td>' + gkConn(d) + '</td>'
++      + '<td><span class="st ' + stCls[d.state] + '"><i></i>' + lbl + '</span></td>'
++      + '<td>' + (d.online ? '<#RGK_45#>' : gkAgo(d.last)) + '</td>'
++      + '<td><select class="rowsel" onchange="gkSet(\'' + d.mac + '\', this.value)">'
++      + '<option value="" selected disabled>...</option>'
++      + '<option value="1"><#RGK_11#></option><option value="2"><#RGK_06#></option>'
++      + '<option value="3"><#RGK_07#></option><option value="0"><#RGK_13#></option>'
++      + '<option value="-1"><#RGK_55#></option>'
++      + '</select></td></tr>';
++  }
++  document.getElementById('devrows').innerHTML = rows || '<tr><td colspan="6" class="nopend"><#RGK_56#></td></tr>';
++}
++
++function gkFilter(el){
++  GK.filter = el.getAttribute('data-f');
++  var c = document.querySelectorAll('.fchip');
++  for(var i = 0; i < c.length; i++) c[i].className = 'fchip' + (c[i] === el ? ' on' : '');
++  gkRender();
++}
++
++function gkAct(url){
++  if(GK.busy) return;
++  GK.busy = true;
++  gkGet(url + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(){ GK.busy = false; gkRefresh(); });
++}
++function gkSet(mac, state){
++  if(String(state) === '-1'){ gkAct('/reaper_gk.cgi?action=remove&mac=' + encodeURIComponent(mac)); return; }
++  gkAct('/reaper_gk.cgi?action=set&mac=' + encodeURIComponent(mac) + '&state=' + state);
++}
++function gkToggle(){
++  var on = document.getElementById('tgmaster').className.indexOf('on') >= 0;
++  gkAct('/reaper_gk.cgi?action=config&enable=' + (on ? 0 : 1));
++}
++function gkTg(el){
++  var key = el.id === 's_captive' ? 'captive' : 'notify';
++  var on = el.className.indexOf('on') >= 0;
++  gkAct('/reaper_gk.cgi?action=config&' + key + '=' + (on ? 0 : 1));
++}
++function gkCfg(){
++  gkAct('/reaper_gk.cgi?action=config&def=' + document.getElementById('s_def').value
++    + '&guest_hours=' + document.getElementById('s_hours').value);
++}
++
++gkRefresh();
++setInterval(gkRefresh, 5000);
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 418ca17d18..41ed99ed53 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh združuje več usmerjevalnikov ASUS v sistem AiMesh, ki zagotavlja pokritost s signalom omrežja za celoten dom in osrednje mesto za upravljanje.
+ AiMesh_Desc2=Kliknite gumb »Poišči« na zemljevidu omrežja, da poiščete svoje vozlišče AiMesh. <br>Če so v bližini na voljo vozlišča AiMesh, ki jih lahko dodate v svoje sistem AiMesh, se prikažejo na seznamu razpoložljivih vozlišč AiMesh.
+ AiMesh_Desc3=Če ne najdete nobenega vozlišča AiMesh v bližini:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Varno za objavo
+ RDIAG_29=Zbiranje podatkov
+ RDIAG_30=Branje radiev, vrat in dnevnikov, nato anonimizacija. Ostanite na tej strani.
+ RDIAG_31=Zbiranje ni uspelo. Počakajte trenutek in poskusite znova; če se ponavlja, preverite sistemski dnevnik.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 36c282a4eb..a670af6401 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh kombinerar mer än ASUS-router för att bilda ett AiMesh-system, som förser hela hemmet med täckning och centraliserad hantering.
+ AiMesh_Desc2=Du kan klicka på knappen \"Sök\" på nätverkskartan som du hittar på din AiMesh-nod. <br>Om det finns några tillgängliga AiMesh-noder i närheten som kan läggas till ditt AiMesh-system, så kommer de att dyka upp i din lista över tillgängliga AiMesh-noder.
+ AiMesh_Desc3=Om du inte hitta några tillgängliga AiMesh-noder i närheten:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Säker att publicera
+ RDIAG_29=Samlar in data
+ RDIAG_30=Läser radioenheter, portar och loggar, sanerar sedan resultatet. Stanna kvar på sidan.
+ RDIAG_31=Insamlingen misslyckades. Vänta en stund och försök igen; kvarstår felet, kontrollera systemloggen.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index c7404b3aa8..7e7ad6b170 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh รวมเราเตอร์ ASUS มากกว่าหนึ่งตัวเข้าด้วยกันเพื่อสร้างระบบ AiMesh ซึ่งจะช่วยให้สัญญาณครอบคลุมทั่วทั้งบ้านและการจัดการแบบรวมศูนย์
+ AiMesh_Desc2=คุณสามารถคลิกที่ปุ่ม \"ค้นหา\" บนแผนที่เครือข่ายเพื่อค้นหาโหนด AiMesh ของคุณ<br>หากมีโหนด AiMesh ใกล้เคียงที่สามารถเพิ่มลงในระบบ AiMesh ของคุณได้โหนดเหล่านั้นจะปรากฏในรายการโหนด AiMesh ที่มีอยู่ของคุณ
+ AiMesh_Desc3=หากไม่พบโหนดAiMeshที่มีอยู่ใกล้เคียง:
+@@ -5722,3 +5722,58 @@ RDIAG_28=ปลอดภัยที่จะเผยแพร่
+ RDIAG_29=กำลังเก็บข้อมูล
+ RDIAG_30=กำลังอ่านคลื่นวิทยุ พอร์ต และบันทึก จากนั้นปกปิดข้อมูล โปรดอยู่ที่หน้านี้
+ RDIAG_31=การเก็บข้อมูลล้มเหลว โปรดรอสักครู่แล้วลองใหม่ หากยังไม่ได้ให้ตรวจสอบบันทึกระบบ
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index b18afc9403..646f53c73b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh, bir AiMesh sistemi oluşturmak için birden fazla ASUS yönlendiriciyi birleştirerek tüm evde kapsama ve merkezî yönetim sağlar.
+ AiMesh_Desc2=AiMesh düğümünüzü bulmak için ağ haritasında \"Ara\" düğmesine tıklayabilirsiniz. <br>AiMesh sisteminize eklenebilecek, yakınlardaki kullanılabilir AiMesh düğümleri kullanılabilir AiMesh düğümü listenizde görünecektir.
+ AiMesh_Desc3=Yakınlarda herhangi bir kullanılabilir AiMesh düğümü bulamazsanız:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Herkese açık paylaşım için güvenli
+ RDIAG_29=Veri toplanıyor
+ RDIAG_30=Radyolar, bağlantı noktaları ve günlükler okunuyor, ardından sonuç temizleniyor. Lütfen bu sayfada kalın.
+ RDIAG_31=Toplama başarısız oldu. Biraz bekleyip yeniden deneyin; sürerse Sistem Günlüğünü kontrol edin.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index a24890ffdf..52c1db2002 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh 整合多台華碩路由器組成 AiMesh 系統，為您提供強大的家庭網路覆蓋和集中式網路管理。
+ AiMesh_Desc2=您可以點選網路地圖中的\"搜尋\"按鈕搜尋您的 AiMesh 節點。<br>若附近有可以新增至 AiMesh 系統的可用 AiMesh 節點，將會顯示在可用 AiMesh 節點清單中。
+ AiMesh_Desc3=若您無法搜尋到任何附近可用的AiMesh節點：
+@@ -5722,3 +5722,58 @@ RDIAG_28=可安全公開
+ RDIAG_29=正在收集資料
+ RDIAG_30=正在讀取無線、連接埠與記錄，接著進行去識別化。請留在此頁面。
+ RDIAG_31=蒐集失敗。請稍候再試；若仍失敗，請檢視系統記錄。
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index affe9b34f5..b19b31448b 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -1,4 +1,4 @@
+-﻿BOM=BOM
++BOM=BOM
+ AiMesh_Desc=AiMesh поєднує понад один маршрутизатор ASUS для створення системи AiMesh, що забезпечує покриття всієї оселі та централізоване керування.
+ AiMesh_Desc2=Можна натиснути кнопку (Пошук) на карті мережі, щоб знайти вузол AiMesh. <br>Якщо поблизу є будь-які вузли AiMesh, які можна додати до вашої системи AiMesh, вони з'являться у списку доступних вузлів AiMesh.
+ AiMesh_Desc3=Якщо ви не можете знайти жодних вузлів AiMesh поблизу:
+@@ -5722,3 +5722,58 @@ RDIAG_28=Безпечно публікувати
+ RDIAG_29=Збирання даних
+ RDIAG_30=Читання радіомодулів, портів і журналів, потім знеособлення. Залишайтеся на цій сторінці.
+ RDIAG_31=Збір не вдався. Зачекайте трохи та повторіть; якщо не допомагає, перевірте системний журнал.
++RGK_00=Gatekeeper
++RGK_01=Device access control
++RGK_02=New devices joining this network are held at the gate &mdash; no internet, no access to your other devices &mdash; until you approve them. Approve fully, restrict to internet-only, grant a timed guest pass, or block.
++RGK_03=Pending approval
++RGK_05=Approve
++RGK_06=Internet only
++RGK_07=Guest pass
++RGK_08=Block
++RGK_09=Devices
++RGK_10=All
++RGK_11=Full
++RGK_13=Blocked
++RGK_14=Search name or MAC...
++RGK_15=Device
++RGK_16=Unknown device
++RGK_17=Connection
++RGK_18=Access
++RGK_19=Last seen
++RGK_20=Settings
++RGK_21=New devices
++RGK_22=What happens when an unknown device joins
++RGK_23=Quarantine until approved
++RGK_24=Alert only (allow, notify)
++RGK_25=Guest pass length
++RGK_26=Timed internet-only access for visitors
++RGK_27=Waiting-room page
++RGK_28=Quarantined devices see an &ldquo;awaiting approval&rdquo; page
++RGK_29=Notify on new device
++RGK_30=Log &amp; dashboard alert when something joins
++RGK_31=What a quarantined device sees
++RGK_32=Awaiting approval
++RGK_33=This device is connected to the network but is being held at the gate. The network owner has been notified &mdash; access opens the moment it is approved.
++RGK_34=Shown automatically via the sign-in popup on phones and laptops
++RGK_35=How it works &amp; honest limits
++RGK_36=No devices are waiting. New devices appear here the moment they join.
++RGK_37=Enabled
++RGK_38=Off
++RGK_39=enforcement is paused. Turn Gatekeeper on to hold new devices at the gate.
++RGK_40=Approved &middot; full
++RGK_41=Turning Gatekeeper on trusts everything already here. Every device on your network at that moment is approved automatically, so nothing you own breaks.
++RGK_42=Quarantine blocks both directions: a held device cannot reach the internet and cannot see, scan, or talk to your other devices. Internet-only mode keeps the LAN side sealed permanently &mdash; right for cameras, TVs, and smart-home gear.
++RGK_43=This is a second wall, not the first. A MAC address is identity, not proof &mdash; someone who already has your Wi-Fi password could imitate an approved device. Gatekeeper stops rogue gadgets, shared-password guests, and anything plugged into an open port.
++RGK_44=Phones using a rotating private address may reappear as new devices; the pending list flags them so you know what you are looking at.
++RGK_45=now
++RGK_46=min ago
++RGK_47=hr ago
++RGK_48=days ago
++RGK_49=Wired
++RGK_50=Wi-Fi
++RGK_51=Active
++RGK_52=Private address
++RGK_53=first seen
++RGK_54=left
++RGK_55=Remove
++RGK_56=No devices match your filter.
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index dfe54b9a8e..b1b8f54a38 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -61,6 +61,15 @@ define(function(){
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
++			/* reaper v1.6.8: Gatekeeper - default-deny device access control */
++			{
++				menuName: "<#RGK_00#>",
++				index: "menu_ReaperGK",
++				tab: [
++					{url: "Reaper_GK.asp", tabName: "<#RGK_00#>"},
++					{url: "NULL", tabName: "__INHERIT__"}
++				]
++			},
+ 			{
+ 				menuName: "<#AiProtection_title_Dashboard_title#>",
+ 				index: "menu_NewDashboard",
+-- 
+2.25.1
+

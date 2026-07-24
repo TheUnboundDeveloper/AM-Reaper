@@ -1,0 +1,217 @@
+From bb6278a40c2a7442300c51e837cb0c8a4d3a49ea Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 20 Jul 2026 20:22:01 -0400
+Subject: [PATCH] diag v1.0.1: first-metal-run fixes + page layout (owner
+ request)
+
+Collector (field report from the owner's RT-BE96U v1.6.7 run):
+- FIX LEAK: bare 12-hex colonless MACs (bridge ids, serial: daemon args) are
+  now pseudonymized, mapping to the SAME MAC-n token as their colon form;
+  full-run matching keeps 16-hex kernel pointers and all-digit counters intact
+- over-redaction: min literal length 3->5; protect list for the model name and
+  ASUS/ASUSWRT (lan_hostname defaults to the model, which had redacted
+  productid and mangled ASUSWRT-Merlin)
+- have() switched from "command -v" (absent in on-router busybox ash - left
+  fc/fcctl/tmctl/ethctl sections empty on metal) to "type"
+- per-station detail now gathered on VIFs too (MULTILAN builds put user
+  networks and their stations on VIFs, not the primary)
+- http_passwd presence reported as PROTECTED (CKN_ENC_SVR encrypted nvram is
+  deliberately not shell-readable) instead of a misleading EMPTY
+- 32-hex physical SSID note reworded: normal internal radio id on this
+  firmware, user networks broadcast from VIF profiles (owner's healthy BE96U
+  confirmed; closes the GT-BE98 residue question)
+
+Page: download button moves up beside the ledger example; the hint text,
+do-not-navigate line and the three assurance checkmarks are removed (busy
+overlay retains the stay-on-page message). RDIAG_24-28 dict tokens now
+unused but retained for lockstep. Sanitizer regression harness re-run: zero
+leaks, keep-list intact.
+---
+ release/src/router/others/reaper_diag  | 47 +++++++++++++++++++++-----
+ release/src/router/www/Reaper_Diag.asp | 33 +++++++-----------
+ 2 files changed, 50 insertions(+), 30 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 3ff8391569..d9ff0d48c2 100755
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -17,7 +17,7 @@
+ #  meaningless across reports.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.0"
++VER="REAPER-DIAG v1.0.1"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+ STAMP="$(date +%Y%m%d_%H%M%S)"
+@@ -31,7 +31,7 @@ umask 077
+ trap 'rm -f $RAW $SLIST $SLIST.s $AWKP $BODY $LEDG' EXIT
+ 
+ sec() { echo ""; echo "#### $1 ####"; }
+-have() { command -v "$1" >/dev/null 2>&1; }
++have() { type "$1" >/dev/null 2>&1; }  # v1.0.1: on-router busybox ash lacks "command -v"
+ setchk() { v="$(nvram get "$1" 2>/dev/null)"; [ -n "$v" ] && echo "  $1 : SET (redacted)" || echo "  $1 : EMPTY"; }
+ 
+ # ---------------------------------------------------------------------------
+@@ -40,7 +40,7 @@ setchk() { v="$(nvram get "$1" 2>/dev/null)"; [ -n "$v" ] && echo "  $1 : SET (r
+ nvram show 2>/dev/null | awk -F= '
+   /^[A-Za-z0-9_.]+=/ {
+     k=$1; sub(/^[^=]*=/,""); v=$0
+-    if (length(v) < 3) next
++    if (length(v) < 5) next
+     if (v ~ /^[0-9]+$/ && length(v) < 6) next
+     cls=""
+     if (k ~ /passwd|password|_psk|wpa_psk|_key[0-9]?$|radius_key|_secret|secret_|token|private|pincode|pin_code|_pin$|wps_.*pin|serial_no|acc_list|auth_pass/) cls="SEC"
+@@ -51,10 +51,15 @@ nvram show 2>/dev/null | awk -F= '
+   }' > "$SLIST" 2>/dev/null
+ # DHCP client hostnames (dnsmasq leases field 4)
+ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases /jffs/nmp/dnsmasq.leases; do
+-  [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 3) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null && break
++  [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 5) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null && break
+ done
+-# longest-first so partial overlaps can not leak (dedupe must PRESERVE that order)
+-awk -F'\t' '{ print length($2) "\t" $0 }' "$SLIST" | sort -rn | cut -f2- | awk '!seen[$0]++' > "$SLIST.s"
++# longest-first so partial overlaps can not leak (dedupe must PRESERVE that order).
++# v1.0.1 protect list: never treat the model name or the ASUS brand as a secret
++# literal - lan_hostname defaults to the model, which redacted productid and
++# mangled "ASUSWRT-Merlin" in the field. Min literal length is 5 (was 3) so a
++# short username like "nas" cannot hit inside words like "nasapps".
++awk -F'\t' '{ print length($2) "\t" $0 }' "$SLIST" | sort -rn | cut -f2- | awk '!seen[$0]++' | \
++  awk -F'\t' -v mdl="$MODEL" 'toupper($2)!=toupper(mdl) && toupper($2)!="ASUS" && toupper($2)!="ASUSWRT"' > "$SLIST.s"
+ 
+ # ---------------------------------------------------------------------------
+ # 2. Sanitizer (busybox awk) - literals, MACs, IPv6, public IPv4
+@@ -104,6 +109,23 @@ function privip(ip,  a) {
+     line = substr(line, RSTART + RLENGTH)
+   }
+   line = out line
++  # pass 2b (v1.0.1): bare 12-hex runs = colonless MACs (bridge ids like
++  # 8000.107c6185fef0, "serial:..." daemon args) - field-observed leak. Full
++  # hex runs are matched so a 12-char window inside a 16-char kernel pointer
++  # can not false-positive; all-digit 12-char runs are left alone unless the
++  # colonized form was already seen (protects long decimal counters).
++  out = ""
++  while (match(line, /[0-9a-fA-F][0-9a-fA-F]*/)) {
++    m = substr(line, RSTART, RLENGTH); rep = m
++    if (RLENGTH == 12 && (m ~ /[a-fA-F]/ || (toupper(substr(m,1,2)":"substr(m,3,2)":"substr(m,5,2)":"substr(m,7,2)":"substr(m,9,2)":"substr(m,11,2)) in MMAP))) {
++      cm = toupper(substr(m,1,2)":"substr(m,3,2)":"substr(m,5,2)":"substr(m,7,2)":"substr(m,9,2)":"substr(m,11,2))
++      if (!(cm in MMAP)) { cM++; MMAP[cm] = "MAC-" cM }
++      rep = MMAP[cm]
++    }
++    out = out substr(line, 1, RSTART-1) rep
++    line = substr(line, RSTART + RLENGTH)
++  }
++  line = out line
+   # pass 3: IPv6 (compressed :: forms and long full forms) -> [IP6-n]
+   out = ""
+   while (match(line, /[0-9a-fA-F][0-9a-fA-F:]*::[0-9a-fA-F:.]*[0-9a-fA-F]|[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F:.]+/)) {
+@@ -148,7 +170,8 @@ for k in productid model odmpid build_name firmver buildno extendno territory_co
+ done
+ 
+ sec "2. CREDENTIAL / IDENTITY PRESENCE (values withheld by design)"
+-setchk http_username; setchk http_passwd
++setchk http_username
++echo "  http_passwd : PROTECTED (encrypted nvram, not shell-readable by design)"
+ setchk wan0_pppoe_username; setchk wan0_pppoe_passwd
+ setchk ddns_enable_x; setchk ddns_hostname_x
+ u=0; while [ $u -le 3 ]; do
+@@ -214,7 +237,7 @@ u=0; while [ $u -le 3 ]; do
+   case "$S" in
+     *[!0-9A-Fa-f]*) SC="normal";;
+     "") SC="empty";;
+-    *) [ "$SL" = "32" ] && SC="32-HEX (machine-generated? check for nvram residue)" || SC="hex-only";;
++    *) [ "$SL" = "32" ] && SC="32-hex (NORMAL on this firmware: internal radio id; user networks broadcast from the VIF profiles)" || SC="hex-only";;
+   esac
+   echo "     ssid: [see SSID token] len=$SL charset=$SC"
+   AC="$(wl -i $IFN assoclist 2>/dev/null | wc -l)"
+@@ -225,10 +248,16 @@ u=0; while [ $u -le 3 ]; do
+     echo "     .. sta $M:"
+     wl -i $IFN sta_info "$M" 2>/dev/null | grep -E "rate of last|rssi|smoothed|PS :|idle|in network|flags|link bandwidth|tx pkts:|tx failures" | sed 's/^/        /'
+   done
+-  # guest / extra VIFs on this unit
++  # guest / extra VIFs on this unit. v1.0.1: on MULTILAN builds the user
++  # networks (and therefore the stations) live on the VIFs, so per-station
++  # detail is gathered here too, not just on the primary.
+   for VIF in $(nvram get wl${u}_vifs 2>/dev/null); do
+     VAC="$(wl -i $VIF assoclist 2>/dev/null | wc -l)"
+     echo "     vif $VIF: up=$(ifconfig $VIF 2>/dev/null | grep -c UP) stations=${VAC:-0} ssid_len=$(nvram get ${VIF}_ssid 2>/dev/null | wc -c)"
++    wl -i $VIF assoclist 2>/dev/null | awk '{print $2}' | while read M; do
++      echo "     .. sta $M (on $VIF):"
++      wl -i $VIF sta_info "$M" 2>/dev/null | grep -E "rate of last|rssi|smoothed|PS :|idle|in network|flags|link bandwidth|tx pkts:|tx failures" | sed 's/^/        /'
++    done
+   done
+   u=$((u+1))
+ done
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 1a859a8de4..53f2fe8fa2 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -47,17 +47,14 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .ledger p{font-size:12.5px;max-width:70ch;margin:0 0 10px}
+ pre.sample{background:#050506;border:1px solid var(--line-soft);border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:11px;line-height:1.6;color:var(--bone-dim);font-family:ui-monospace,Consolas,monospace}
+ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{color:var(--bone)}
+-.dlrow{display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;max-width:1060px}
++.ledgrid{display:flex;gap:22px;align-items:center;flex-wrap:wrap}
++.lg-l{flex:1 1 480px;min-width:0}
++.lg-r{flex:0 1 auto;display:flex;flex-direction:column;align-items:center;gap:10px;padding:0 12px}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:13px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:9px;padding:11px 26px;cursor:pointer}
+ .btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
+ .btn:focus-visible{outline:2px solid var(--crimson);outline-offset:2px}
+ .btn[disabled]{opacity:.45;cursor:default}
+-.dlhint{font-size:12px;color:var(--steel);max-width:52ch}
+-.dlhint .dlwarn{display:block;margin-top:6px;color:var(--bone);font-weight:500}
+-.dlerr{display:none;margin-top:10px;color:var(--danger);font-size:12.5px;max-width:1060px}
+-.assure{display:flex;gap:22px;flex-wrap:wrap;margin:14px 2px 0;font-size:12px;max-width:1060px}
+-.assure span{display:flex;align-items:center;gap:7px}
+-.assure i{font-style:normal;color:var(--jade);font-weight:700}
++.dlerr{display:none;color:var(--danger);font-size:12.5px;max-width:26ch;text-align:center}
+ #ovl{position:fixed;inset:0;background:rgba(4,4,5,.82);display:none;align-items:center;justify-content:center;z-index:50}
+ #ovl.show{display:flex}
+ .ovlbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:30px 38px;text-align:center;max-width:380px}
+@@ -72,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.0</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.0.1</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+@@ -111,6 +108,8 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="ledger">
+   <h2><#RDIAG_21#></h2>
++  <div class="ledgrid">
++  <div class="lg-l">
+   <p><#RDIAG_22#></p>
+   <pre class="sample"><span class="w">#### 0. SANITIZATION LEDGER (what was found and withheld) ####</span>
+   secrets redacted           : <span class="g">2</span>
+@@ -120,20 +119,12 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+   public IPv4 redacted       : <span class="g">3</span>
+   <span class="r">NOTE: no credentials, MACs, host/user names or external IPs
+   are contained in this file. Safe to post publicly.</span></pre>
+-</div>
+-
+-<div class="dlrow">
+-  <button class="btn" id="dl" type="button"><#RDIAG_23#></button>
+-  <div class="dlhint">
+-    <#RDIAG_24#>
+-    <span class="dlwarn"><#RDIAG_25#></span>
+   </div>
+-</div>
+-<div class="dlerr" id="dlerr"><#RDIAG_31#></div>
+-<div class="assure">
+-  <span><i>&#10003;</i> <#RDIAG_26#></span>
+-  <span><i>&#10003;</i> <#RDIAG_27#></span>
+-  <span><i>&#10003;</i> <#RDIAG_28#></span>
++  <div class="lg-r">
++    <button class="btn" id="dl" type="button"><#RDIAG_23#></button>
++    <div class="dlerr" id="dlerr"><#RDIAG_31#></div>
++  </div>
++  </div>
+ </div>
+ 
+ <div id="ovl" role="alert" aria-busy="true">
+-- 
+2.25.1
+

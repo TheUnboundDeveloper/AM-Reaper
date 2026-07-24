@@ -1,0 +1,94 @@
+From c479c292cba706a64ed2476642496a33d9214d01 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 21 Jul 2026 20:12:22 -0400
+Subject: [PATCH] Reaper v1.7.1: Network Map widen - fix in NM_style.css (the
+ stylesheet index.asp ACTUALLY loads)
+
+ROOT CAUSE of the repeated failures: index.asp <link>s ONLY NM_style.css, NOT
+reaper_content.css (that sheet is injected into the device-map IFRAME docs, not
+the parent map page). So every .NM_table/#statusframe/.statusTitle width override
+placed in reaper_content.css was INERT on index.asp - the box stayed a stock 762px
+and the iframe 320px no matter what we built (measured via dev-tools).
+
+FIX in the files index.asp really reads:
+ - NM_style.css .NM_table 740->800px (both 50% columns -> 390px)
+ - NM_style.css .statusTitle + .NM_radius_bottom_container 320->360px, margin-left 45->15px
+ - index.asp #statusframe iframe inline width 320->360px (CSS can't touch inline; page doesn't load reaper CSS anyway)
+ => panel content 360-40(reaper body pad)=320 >= 293px client card, no h-scroll;
+    15+360=375 <= 390 column; box 800 capped to viewport (~790 measured) to avoid a PAGE h-scroll.
+reaper_content.css inert overrides removed + a NOTE left so this isn't re-attempted there.
+No JS sets these widths (verified). This is where the prior ~15 tries went wrong.
+---
+ release/src/router/www/NM_style.css              | 10 +++++-----
+ release/src/router/www/index.asp                 |  2 +-
+ release/src/router/www/reaper/reaper_content.css |  9 ++++++---
+ 3 files changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/www/NM_style.css b/release/src/router/www/NM_style.css
+index f1eb247162..3d24534b81 100644
+--- a/release/src/router/www/NM_style.css
++++ b/release/src/router/www/NM_style.css
+@@ -18,8 +18,8 @@
+ 	font-size:14px;
+ 	text-align:center;
+ 	height:36px;	
+-	width:320px;
+-	margin-left:45px;
++	width:360px;      /* reaper v1.7.1: was 320 - widen the Network-Map client-status panel so the fixed 293px client cards fit (client_status h-scroll fix). Must live in NM_style.css - index.asp does NOT load reaper_content.css. */
++	margin-left:15px; /* reaper v1.7.1: was 45 - reclaim margin so 15+360<=390px column (see .NM_table 800) */
+ 	-moz-box-shadow: 5px 5px 10px #333;
+ 	-webkit-box-shadow: 5px 5px 10px #333;
+ 	box-shadow: 5px 5px 10px #333;
+@@ -328,8 +328,8 @@
+ 	border-radius: 10px 10px 0 0;
+ }
+ .NM_radius_bottom_container{
+-	margin-left:45px;
+-	width: 320px;
++	margin-left:15px;	/* reaper v1.7.1: was 45 (align with .statusTitle) */
++	width: 360px;		/* reaper v1.7.1: was 320 - widen panel to fit 293px client cards */
+ 	height: 760px;
+ 	background-color:#2A3539;
+ 	-moz-box-shadow: 3px 8px 10px #333;
+@@ -372,7 +372,7 @@
+ 	padding:10px; 
+ 	padding-top:15px;
+ 	position:relative;
+-	width:740px;
++	width:800px;	/* reaper v1.7.1: was 740 - widen the Network-Map box so both 50% columns get room (390px each): left icon table (~386px) fits AND right client-status panel (15+360=375px) fits, no h-scrollbar. Capped at 800 so it doesn't exceed the viewport and cause a PAGE h-scroll (box measured ~790px of room). */
+ 	background-color:#7B888D;
+ 	border-width:0;
+ 	-webkit-border-radius: 5px;
+diff --git a/release/src/router/www/index.asp b/release/src/router/www/index.asp
+index 2f60b40e72..3c8e9d1f6d 100644
+--- a/release/src/router/www/index.asp
++++ b/release/src/router/www/index.asp
+@@ -2862,7 +2862,7 @@ if (isSupport("AURA_SCHED")) {
+ 							<div id="helpname" style="padding-top:10px;font-size:16px;"></div>
+ 						</div>
+ 						<div class="NM_radius_bottom_container">
+-							<iframe id="statusframe" class="NM_radius_bottom" style="display:none;margin-left:0px;height:760px;width:320px;\9" name="statusframe" frameborder="0"></iframe>
++							<iframe id="statusframe" class="NM_radius_bottom" style="display:none;margin-left:0px;height:760px;width:360px;\9" name="statusframe" frameborder="0"></iframe>
+ 						</div>
+ 						<script>
+ 							(function(){
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index 4fbffedfcf..ceb881af02 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -812,6 +812,9 @@ body.bg,.container.no_highlights,.content_container{background:transparent!impor
+    the iframe inline width. The panel is shared by every device-map view
+    (router/internet/disk/System Status/...): all simply gain room. +60px over stock
+    matches the empty gutter in the owner's screenshot, so no page-level h-scroll. */
+-.NM_table{width:800px!important}
+-#statusframe,.NM_radius_bottom_container,.statusTitle{width:370px!important}
+-.NM_radius_bottom_container,.statusTitle{margin-left:15px!important}
++/* NOTE (v1.7.1): the panel/box WIDTHS live in NM_style.css + the index.asp iframe
++   inline style, NOT here. index.asp loads ONLY NM_style.css (not reaper_content.css),
++   so .NM_table/#statusframe/.statusTitle overrides in THIS file were inert on the
++   parent Network-Map page - that cost ~15 build tries. This stylesheet only reaches
++   the device-map IFRAME documents (clients.asp etc.), which is why the #client_list_Block
++   rule above works. Do not re-add parent-page width rules here. */
+-- 
+2.25.1
+

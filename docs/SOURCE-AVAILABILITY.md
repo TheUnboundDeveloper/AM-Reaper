@@ -20,7 +20,8 @@ GPL-covered portions of any Reaper build is, deterministically:
    - Repository: <https://github.com/RMerl/asuswrt-merlin.ng>
    - Tag: `3006.102.8-beta2`
    - Commit: **`a7ebfa133a`**
-   - (Equivalently, ASUS's own GPL source tarball for the RT-BE96U from
+   - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
+     model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro — from
      <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 2. **The Reaper patch series** in [`../patches/`](../patches/) — the full set of
    `git format-patch` files that transform the pinned upstream tree into the
@@ -72,8 +73,9 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 
 ## 3. Requesting a build
 
-Reaper firmware images are **not publicly hosted.** A flashable build for the
-ASUS RT-BE96U is available **on request**, and is delivered together with the
+Reaper firmware images are **not publicly hosted.** A flashable build for any
+model in the ASUS RT-BE Series (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+GT-BE98 Pro) is available **on request**, and is delivered together with the
 complete corresponding source (§1) under GPL v2 — a §3(a) delivery to each
 recipient. This keeps the images off public, scraped pages while remaining fully
 GPL-compliant to everyone who receives one.
@@ -81,10 +83,11 @@ GPL-compliant to everyone who receives one.
 **Request format.** Email the project address **theunbounddeveloper@outlook.com**
 (or open an issue if you have repository access) with:
 
-- **Subject:** `Reaper build request — RT-BE96U`
+- **Subject:** `Reaper build request — <MODEL>` (e.g. `RT-BE96U`)
+- **Model:** one of `RT-BE96U` / `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98 Pro`
 - **Variant:** `Standard` (no AI Advisor) **or** `AI Advisor` (the optional,
   off-by-default MCP build)
-- **Version:** a specific version (e.g. `v1.6.0`) or `latest`
+- **Version:** a specific version (e.g. `v1.7.7`) or `latest`
 
 You receive the flashable `.pkgtb` (plus its recovery `_loader.pkgtb`) and the
 complete corresponding source per §1. Under GPL v2 you may then use, study,
@@ -93,8 +96,8 @@ build, please brand it as your own (see [`../LICENSE.reaper`](../LICENSE.reaper)
 
 > **Note.** A build bundles proprietary Broadcom/ASUS/Trend Micro/Tuxera
 > components licensed for use on genuine ASUS hardware only. They are provided for
-> flashing your own RT-BE96U and are **not** separately licensed for
-> redistribution. See § Proprietary components in
+> flashing your own ASUS RT-BE Series router and are **not** separately licensed
+> for redistribution. See § Proprietary components in
 > [`../THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
 
 ---

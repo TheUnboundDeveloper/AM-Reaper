@@ -11,7 +11,7 @@ inlined into 165 pages, do that refactor first (see "Appendix B").
 - **Branch:** `be96u-only` (local only, **never pushed** upstream)
 - **Build clone (authoritative):** `/home/reaper/asuswrt-be96u` on WSL `Ubuntu-20.04`, user `reaper`
 - **Upstream base of the current stack:** `a7ebfa133a` (the last real Asuswrt-Merlin commit; everything after it is reaper work)
-- **Model:** RT-BE96U only (`release/src-rt-5.04behnd.4916`, target `make rt-be96u`)
+- **Models:** RT-BE96U (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro (`release/src-rt-5.04behnd.4916`; targets `make rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`)
 
 ---
 
@@ -306,13 +306,19 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (validated 2026-07-19, produced the 190-patch
-v1.6.6 series — `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a
-matching `release/src/router` tree hash; the 181-patch v1.6.0, 178-patch v1.5.9 and
-150-patch v1.5.0a runs were validated the same way. NOTE the v1.6.0 sync also cherry-picked the `radio-count`
-dashboard + the v1.6.0 commit onto `be96u-only` — they had been built on the `rt-be86u`
-branch; always confirm `git branch --show-current` is `be96u-only` before an RT-BE96U
-build/commit). One extra step since the 2026-07-13 compliance scrub: after
+**Patch-series regeneration recipe (the series is now at 215 patches, `0215` = v1.7.7;
+it was 211 at v1.7.4, and the 190-patch v1.6.6 run on 2026-07-19 was validated
+`git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching
+`release/src/router` tree hash — as were the 181-patch v1.6.0, 178-patch v1.5.9 and
+150-patch v1.5.0a runs. NOTE: the four newest patches (`0212`–`0215`, v1.7.5–v1.7.7)
+were **appended** to the existing series, not produced by a full regeneration, to avoid
+re-introducing an old absolute build-path reference that a full regen would pull back in
+from an unscrubbed commit message. When you do run a full regeneration, expect gapless
+renumbering to `0215` and re-apply the message scrub below. NOTE the v1.6.0 sync also
+cherry-picked the `radio-count` dashboard + the v1.6.0 commit onto `be96u-only` — they
+had been built on the `rt-be86u` branch; always confirm `git branch --show-current` is
+`be96u-only` before an RT-BE96U build/commit.) One extra step since the 2026-07-13
+compliance scrub: after
 regenerating from the (unscrubbed) build clone, re-apply the message-level scrub
 `s|/home/nathan|/home/builder|g; s|ASUS-Merlin-Reaper|AM-Reaper|g` to the patch
 files — commit messages in the clone still carry the pre-scrub strings (patch 0038

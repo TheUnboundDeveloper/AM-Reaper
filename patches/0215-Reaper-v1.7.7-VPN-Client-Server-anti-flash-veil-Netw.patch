@@ -1,0 +1,163 @@
+From a8d1569017fed399b5afe3c71a2f68c1a59a8beb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 24 Jul 2026 08:32:10 -0400
+Subject: [PATCH] Reaper v1.7.7: VPN Client+Server anti-flash veil +
+ Network-Map AURA/LEDG scheme-carousel h-scrollbar fix
+
+VPN wrappers: hide the nested #vpn{c,s}_iframe (opacity:0 over #0f0f12) until reaper_content.css loads inside the SPA (reveal on onload / already-present, 2s failsafe) - kills the split-second stock-blue flash on VPN Client PPTP/L2TP. AURA+LEDG light_effect.css: .setting_scheme overflow-x auto->hidden (paging is the boundary arrows, not native scroll) - removes the spurious horizontal scrollbar on the device-map scheme carousel.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                     |  2 +-
+ .../FUNCTION/LIGHT_EFFECT/AURA/light_effect.css |  6 +++++-
+ .../FUNCTION/LIGHT_EFFECT/LEDG/light_effect.css |  6 +++++-
+ .../VPNC_V2/Advanced_VPNClient_Content.asp      | 17 ++++++++++++++---
+ .../VPNS_V2/Advanced_VPNServer_Content.asp      | 16 +++++++++++++---
+ 5 files changed, 38 insertions(+), 9 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 0de0da1927..6741510284 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.7.6
++EXTENDNO=Reaper_v1.7.7
+ 
+ RCNO=0
+diff --git a/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/AURA/light_effect.css b/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/AURA/light_effect.css
+index 62f94bfe4b..dfd52f9118 100644
+--- a/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/AURA/light_effect.css
++++ b/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/AURA/light_effect.css
+@@ -221,7 +221,11 @@
+ }
+ .setting_scheme {
+ 	display: flex;
+-	overflow-x: auto;
++	/* reaper: was overflow-x:auto - killed the spurious native horizontal scrollbar on the
++	   Network-Map AURA/LEDG scheme carousel (owner report 2026-07-24). Paging is the boundary
++	   arrows (control_scheme_list show/hide 4-per-page), NOT native scroll, so hidden loses
++	   nothing; the row already fits the fixed 320px device-map iframe. */
++	overflow-x: hidden;
+ 	overflow-y: hidden;
+ 	word-break: break-all;
+ 	width: 84%;
+diff --git a/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/LEDG/light_effect.css b/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/LEDG/light_effect.css
+index 8f0ed80d2f..cfb85b1591 100644
+--- a/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/LEDG/light_effect.css
++++ b/release/src/router/www/sysdep/FUNCTION/LIGHT_EFFECT/LEDG/light_effect.css
+@@ -275,7 +275,11 @@
+ }
+ .setting_scheme {
+ 	display: flex;
+-	overflow-x: auto;
++	/* reaper: was overflow-x:auto - killed the spurious native horizontal scrollbar on the
++	   Network-Map AURA/LEDG scheme carousel (owner report 2026-07-24). Paging is the boundary
++	   arrows (control_scheme_list show/hide 4-per-page), NOT native scroll, so hidden loses
++	   nothing; the row already fits the fixed 320px device-map iframe. */
++	overflow-x: hidden;
+ 	overflow-y: hidden;
+ 	word-break: break-all;
+ 	width: 84%;
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+index ab2886f4c5..2b5b959cc6 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+@@ -21,6 +21,12 @@
+ .rwd_iframe {
+ 	width: 100%;
+ }
++/* anti-flash veil for the nested SPA: vpnc.html paints stock-blue (vpnc.css) for a
++   beat before reaperThemeFrame injects the reaper theme into it. Hide the frame over
++   a dark backdrop until the reaper sheet has actually LOADED inside it, then fade in
++   - mirrors the shell's #page_frame veil, one level deeper. */
++#vpnc_iframe{opacity:0;transition:opacity .18s ease;background:#0f0f12}
++#vpnc_iframe.reaper-lit{opacity:1}
+ </style>
+ <script>
+ 
+@@ -33,6 +39,7 @@ function reaperThemeFrame(ifr){
+ 		   the server-list cards even though reaper_content.css is loaded (owner report
+ 		   v1.7.5: sheet present but cards still teal). Re-appending an already-loaded
+ 		   <link> only reorders it - no extra network request. */
++		var reveal=function(){ try{ ifr.classList.add("reaper-lit"); }catch(e){} };
+ 		var ensureCss=function(){ try{
+ 			var head=d.head||d.documentElement; if(!head) return;
+ 			var l=d.querySelector('link[href*="reaper_content"]');
+@@ -41,9 +48,12 @@ function reaperThemeFrame(ifr){
+ 				/* NO cache-bust query: httpd 404s a querystringed static path, which
+ 				   silently killed this hook from v1.2.4b to v1.6.3 (vpnc.html has no
+ 				   head close tag, so serve-time injection cannot cover it either) */
+-				l.href="/reaper/reaper_content.css"; head.appendChild(l);
+-			} else if(l!==head.lastElementChild){
+-				head.appendChild(l);   /* out-order any late-appended stock theme sheet */
++				l.href="/reaper/reaper_content.css";
++				l.onload=reveal; l.onerror=reveal;   /* unveil ONLY once the theme is applied */
++				head.appendChild(l);
++			} else {
++				if(l!==head.lastElementChild) head.appendChild(l);   /* out-order late stock sheet */
++				reveal();   /* sheet already present + loaded -> safe to show now */
+ 			}
+ 		}catch(e){} };
+ 		/* DO NOT run a ResizeObserver / continuous height sync here. vpnc.html sizes
+@@ -57,6 +67,7 @@ function reaperThemeFrame(ifr){
+ 		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }
+ 		var tick=function(){ ensureCss(); try{ if(ifr.offsetHeight<120){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>120) ifr.style.height=h+"px"; } }catch(e){} };
+ 		tick(); setTimeout(tick,400); setTimeout(tick,1200);
++		setTimeout(reveal,2000);   /* failsafe: never leave the frame veiled */
+ 	}catch(e){}
+ }
+ function initial(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+index 9c05aa8b40..1b6c39e500 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+@@ -21,6 +21,11 @@
+ .rwd_iframe {
+ 	width: 100%;
+ }
++/* anti-flash veil for the nested SPA: vpns.html paints stock-blue for a beat before
++   reaperThemeFrame injects the reaper theme. Hide the frame over a dark backdrop until
++   the reaper sheet has actually LOADED inside it, then fade in (shell veil, one deeper). */
++#vpns_iframe{opacity:0;transition:opacity .18s ease;background:#0f0f12}
++#vpns_iframe.reaper-lit{opacity:1}
+ </style>
+ <script>
+ 
+@@ -31,6 +36,7 @@ function reaperThemeFrame(ifr){
+ 		   serve-time injection, so this is belt-and-braces): re-appending an
+ 		   already-loaded <link> only reorders it - no extra request - so it
+ 		   out-orders any theme sheet the SPA appends via $('link').last().after(). */
++		var reveal=function(){ try{ ifr.classList.add("reaper-lit"); }catch(e){} };
+ 		var ensureCss=function(){ try{
+ 			var head=d.head||d.documentElement; if(!head) return;
+ 			var l=d.querySelector('link[href*="reaper_content"]');
+@@ -38,9 +44,12 @@ function reaperThemeFrame(ifr){
+ 				l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
+ 				/* NO cache-bust query: httpd 404s a querystringed static path (the
+ 				   vpnc.html lesson, v1.6.4) */
+-				l.href="/reaper/reaper_content.css"; head.appendChild(l);
+-			} else if(l!==head.lastElementChild){
+-				head.appendChild(l);   /* out-order any late-appended stock theme sheet */
++				l.href="/reaper/reaper_content.css";
++				l.onload=reveal; l.onerror=reveal;   /* unveil ONLY once the theme is applied */
++				head.appendChild(l);
++			} else {
++				if(l!==head.lastElementChild) head.appendChild(l);   /* out-order late stock sheet */
++				reveal();   /* sheet already present + loaded -> safe to show now */
+ 			}
+ 		}catch(e){} };
+ 		/* DO NOT run a ResizeObserver / continuous height sync here. vpns.html sizes
+@@ -52,6 +61,7 @@ function reaperThemeFrame(ifr){
+ 		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }
+ 		var tick=function(){ ensureCss(); try{ if(ifr.offsetHeight<120){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>120) ifr.style.height=h+"px"; } }catch(e){} };
+ 		tick(); setTimeout(tick,400); setTimeout(tick,1200);
++		setTimeout(reveal,2000);   /* failsafe: never leave the frame veiled */
+ 	}catch(e){}
+ }
+ function initial(){
+-- 
+2.25.1
+

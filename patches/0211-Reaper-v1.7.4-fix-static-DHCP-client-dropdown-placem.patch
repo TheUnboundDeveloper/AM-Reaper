@@ -1,0 +1,119 @@
+From 3c06e6468add96c32b9ff760b4ab20a09fce27aa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 22 Jul 2026 23:36:31 -0400
+Subject: [PATCH 211/211] Reaper v1.7.4: fix static-DHCP client dropdown
+ placement + Wireless theme flash
+
+Two www-only fixes from v1.7.3 on-metal testing:
+
+- static-DHCP client picker (LAN > DHCP Server): the v1.7.2 fix escaped the iframe
+  clip by centering the dropdown in the viewport (position:fixed), leaving it
+  detached far from the button. Re-anchor it to its own input cell and open it
+  UPWARD - overlaying the config already rendered above the input, so the shell
+  frame never has to grow (no clip) and it sits on the pull-arrow. Capped height +
+  inner scroll for long lists. reaper_content.css.
+
+- Wireless page theme-flash (FOUC): the anti-flash veil failsafe (700ms) lifted
+  before heavy/skip-listed stock pages (Wireless, DHCP - no serve-time pre-paint)
+  finished loading and got runtime-themed, flashing the stock chrome. Raised to 3s
+  so the load-handler themed reveal always wins; the dark stage shows during load,
+  never stock. reaper_shell.asp.
+
+version.conf EXTENDNO -> Reaper_v1.7.4.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ .../src/router/www/reaper/reaper_content.css  | 38 ++++++++++---------
+ release/src/router/www/reaper_shell.asp       | 11 ++++--
+ 3 files changed, 29 insertions(+), 22 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 4fcc7aa073..6fedf88d64 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.7.3
++EXTENDNO=Reaper_v1.7.4
+ 
+ RCNO=0
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index b34b2a37f2..fb6a17a30b 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -793,24 +793,28 @@ body.bg,.container.no_highlights,.content_container{background:transparent!impor
+   transform:translate(-50%,-50%)!important;
+   max-height:88vh!important;overflow-y:auto!important}
+ 
+-/* BACKLOG 2026-07-22 (owner-reported): static-DHCP client picker. On LAN > DHCP
+-   Server the Manually-Assigned-IP client dropdown (#ClientList_Block_PC) inherits
+-   .clientlist_dropdown (device-map.css:990): position:absolute + height:auto +
+-   overflow-y:auto - height:auto defeats its own overflow (same defect class as
+-   BUG C above), so the full LAN client list grows past the page body. The shell
+-   frame auto-sizes to BODY height only (an abspos overlay opening does not
+-   re-fire the fit), so the list clips at the frame edge; the default page (empty
+-   static-lease table = short body) is the worst case, which is why adding rows
+-   "works around" it. Same remedy as BUG C: re-anchor to the frame viewport with
+-   a real inner scroll. Scoped via :has() to this page's unique static-lease MAC
+-   input because ~20 other pages share the id and keep their stock anchoring
+-   (short lists, no clip); a browser without :has() just keeps today's behavior. */
++/* static-DHCP client picker (LAN > DHCP Server, owner-directed v1.7.4). The
++   Manually-Assigned-IP dropdown (#ClientList_Block_PC) inherits .clientlist_dropdown
++   (device-map.css:990): position:absolute + height:auto + overflow-y:auto - height:auto
++   defeats its own overflow, and the shell frame auto-sizes to BODY height only, so a
++   DOWNWARD list grows past the frame and clips. The first fix escaped the clip by
++   centering it in the viewport (position:fixed), which detached it far from the button
++   (owner-reported on v1.7.3 metal). FIX: anchor it to its own input cell and open it
++   UPWARD - the list then overlays the already-rendered DHCP config above the input, so
++   the frame never has to grow (no clip) and it sits right on the pull-arrow. Capped
++   height + inner scroll for long client lists. Scoped via :has() to this page's unique
++   static-lease MAC input; ~20 other pages share the id and keep their stock anchoring. */
++body:has(input[name="dhcp_staticmac_x_0"]) td:has(> input[name="dhcp_staticmac_x_0"]){
++  position:relative!important}
+ body:has(input[name="dhcp_staticmac_x_0"]) #ClientList_Block_PC.clientlist_dropdown{
+-  position:fixed!important;
+-  top:50%!important;left:50%!important;
+-  margin:0!important;
+-  transform:translate(-50%,-50%)!important;
+-  max-height:88vh!important;overflow-y:auto!important}
++  position:absolute!important;
++  top:auto!important;
++  bottom:100%!important;          /* open upward, directly above the input/button */
++  left:0!important;
++  margin:0 0 4px 0!important;
++  max-height:260px!important;
++  overflow-y:auto!important;
++  z-index:1000!important}
+ 
+ /* BUG D: Network Map status iframe (#statusframe) is pinned to 760px but the inner
+    clients.asp document (client rows + tall NM min-heights) is taller and has no inner
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index ee139d0a7e..659a92f5ab 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -284,12 +284,15 @@ function loadPage(page){
+   var f=$id('page_frame');
+   if(f){
+     /* anti-flash veil: hide the frame for the swap; the load handler below
+-       reveals it once the document is themed. The 700ms failsafe keeps slow
+-       server-side pages from sitting hidden - past that the dark pre-paint
+-       (reaper_inject.c) covers the remaining load. */
++       reveals it once the document is themed (a runtime-injected page unveils
++       only after its stylesheet lands). The failsafe is a LONG backstop (3s) so
++       it never preempts that reveal on a heavy page: the skip-listed stock pages
++       (Wireless, DHCP) carry no serve-time pre-paint, so an early reveal flashes
++       their stock chrome (owner-reported on Wireless, v1.7.3 metal). While the
++       page loads the dark stage shows through the veiled frame, never stock. */
+     f.classList.add('veil');
+     clearTimeout(f._veilT);
+-    f._veilT=setTimeout(function(){ f.classList.remove('veil'); }, 700);
++    f._veilT=setTimeout(function(){ f.classList.remove('veil'); }, 3000);
+     f.src = frameUrl(page);
+   }
+   try{ history.replaceState(null, '', '/reaper_shell.asp#' + page); }catch(e){}
+-- 
+2.25.1
+

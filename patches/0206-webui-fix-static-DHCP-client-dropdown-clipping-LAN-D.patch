@@ -1,0 +1,59 @@
+From 8745a78fa146eb3e8549ccbf76229f26d7463e94 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 22 Jul 2026 14:53:16 -0400
+Subject: [PATCH 206/211] webui: fix static-DHCP client dropdown clipping (LAN
+ > DHCP Server)
+
+The Manually-Assigned-IP client picker (#ClientList_Block_PC) inherits the
+stock .clientlist_dropdown rule (device-map.css: position:absolute +
+height:auto + overflow-y:auto). height:auto defeats its own overflow, so the
+full LAN client list grows past the framed page body; the shell frame sizes to
+BODY height and an abspos overlay opening does not re-fire the fit, so the list
+clips at the frame edge. Worst on the default page (empty static-lease table =
+short body), which is why adding rows 'works around' it.
+
+Same remedy as the v1.6.6b WAN DNS-list flyout (BUG C): re-anchor to the frame
+viewport (position:fixed, centered) with a real inner scroll (max-height:88vh).
+Scoped via :has(input[name=dhcp_staticmac_x_0]) to THIS page's unique
+static-lease MAC input - the ~20 other pages sharing the id keep stock
+anchoring (short lists, no clip); a browser without :has() just keeps today's
+behavior. reaper_content.css only, no logic.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .../src/router/www/reaper/reaper_content.css  | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index ceb881af02..b34b2a37f2 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -793,6 +793,25 @@ body.bg,.container.no_highlights,.content_container{background:transparent!impor
+   transform:translate(-50%,-50%)!important;
+   max-height:88vh!important;overflow-y:auto!important}
+ 
++/* BACKLOG 2026-07-22 (owner-reported): static-DHCP client picker. On LAN > DHCP
++   Server the Manually-Assigned-IP client dropdown (#ClientList_Block_PC) inherits
++   .clientlist_dropdown (device-map.css:990): position:absolute + height:auto +
++   overflow-y:auto - height:auto defeats its own overflow (same defect class as
++   BUG C above), so the full LAN client list grows past the page body. The shell
++   frame auto-sizes to BODY height only (an abspos overlay opening does not
++   re-fire the fit), so the list clips at the frame edge; the default page (empty
++   static-lease table = short body) is the worst case, which is why adding rows
++   "works around" it. Same remedy as BUG C: re-anchor to the frame viewport with
++   a real inner scroll. Scoped via :has() to this page's unique static-lease MAC
++   input because ~20 other pages share the id and keep their stock anchoring
++   (short lists, no clip); a browser without :has() just keeps today's behavior. */
++body:has(input[name="dhcp_staticmac_x_0"]) #ClientList_Block_PC.clientlist_dropdown{
++  position:fixed!important;
++  top:50%!important;left:50%!important;
++  margin:0!important;
++  transform:translate(-50%,-50%)!important;
++  max-height:88vh!important;overflow-y:auto!important}
++
+ /* BUG D: Network Map status iframe (#statusframe) is pinned to 760px but the inner
+    clients.asp document (client rows + tall NM min-heights) is taller and has no inner
+    scroll region, so the iframe's own scrollbar stacks against the page scrollbar = a
+-- 
+2.25.1
+

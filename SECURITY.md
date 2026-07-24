@@ -1,11 +1,13 @@
 # Security Policy
 
-This project exists to harden the RT-BE96U firmware, so security reports are very welcome.
+This project exists to harden the RT-BE Series firmware — **RT-BE96U** (primary, hardware-validated)
+plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (all BCM4916 / WiFi 7),
+so security reports are very welcome.
 
 ## Scope
 
 - **In scope:** the changes in this repo — everything under [`patches/`](patches/) — and the published `reaper` images (GitHub Releases), including both build variants (Standard and `_MCP`). That includes regressions introduced by the hardening itself, and the Reaper-authored subsystems (Hardware QoS, Traffic Analyzer, and the optional read-only LAN-only AI Advisor / MCP server — its arming, LAN-only binding, token auth, and secret redaction are all fair game).
-- **Out of scope:** bugs in stock Asuswrt-Merlin or ASUS's GPL drop that this project hasn't touched — report those upstream to [RMerl/asuswrt-merlin.ng](https://github.com/RMerl/asuswrt-merlin.ng/security) or ASUS. (If a stock bug is remotely/LAN-reachable on the BE96U, we still want to hear about it — fixing that class of bug is the point of this fork.)
+- **Out of scope:** bugs in stock Asuswrt-Merlin or ASUS's GPL drop that this project hasn't touched — report those upstream to [RMerl/asuswrt-merlin.ng](https://github.com/RMerl/asuswrt-merlin.ng/security) or ASUS. (If a stock bug is remotely/LAN-reachable on any RT-BE Series model, we still want to hear about it — fixing that class of bug is the point of this fork. Base-firmware findings are handled by coordinated disclosure; a recent example is the `openssl passwd` class-fix reported under ASUS PSIRT case 1006563.)
 - The proprietary Broadcom/ASUS blobs are a documented residual risk (see [`docs/REAPER-FIXES.md`](docs/REAPER-FIXES.md)); reports there are appreciated but may only be addressable by mitigation, not by patching the blob.
 
 ## Reporting

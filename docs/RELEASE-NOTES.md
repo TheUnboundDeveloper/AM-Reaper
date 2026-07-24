@@ -1,10 +1,10 @@
 # RT-BE96U "Reaper" — Release Notes
 
-**Release:** v1.6.0 (both variants built + shipped; hardening pass + full 24-language UI; awaiting metal validation on the RT-BE96U)
-**Firmware:** `RT-BE96U 3006.102.8_Reaper_v1.6.0`
+**Release:** v1.7.7 (VPN-page theming fixes + Network-Map AURA scrollbar; the v1.7 line also adds Gatekeeper device access control and a security-remediation batch. Built for all five models, both variants; metal validation owed.)
+**Firmware:** `3006.102.8_Reaper_v1.7.7`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Model:** ASUS RT-BE96U **only** (WiFi 7, Broadcom BCM4916/BCM6813)
-**Flash images:** two variants — **with** or **without** the AI Advisor (see §2)
+**Models:** ASUS **RT-BE96U** (primary, hardware-validated) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** (per-model branches of the same tree). WiFi 7, Broadcom BCM4916.
+**Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
 > RT-BE96U. This document is the release summary; the exhaustive security detail
@@ -16,7 +16,8 @@
 
 ## 1. What Reaper is
 
-Reaper narrows stock Asuswrt-Merlin to a single model (RT-BE96U), **hardens** the
+Reaper narrows stock Asuswrt-Merlin to the ASUS RT-BE Series (primary model RT-BE96U,
+plus the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings), **hardens** the
 open-source userspace against remote compromise, **removes** cloud-coupled and
 AI-branded attack surface, **rebrands** the web UI, and adds a few genuinely-local
 router features ASUS never shipped.
@@ -37,21 +38,43 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BE96U_…_Reaper_v1.6.0_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.6.0_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BE96U_…_Reaper_v1.7.7_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.7.7_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v1.6.0_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v1.6.0_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v1.7.7_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v1.7.7_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
+
+### VPN-page theming + Network-Map polish (v1.7.6 – v1.7.7)
+- **VPN Client/Server pages render cleanly.** On **VPN &rsaquo; VPN Client** (PPTP/L2TP) and **VPN
+  Server**, the settings panel no longer flashes the original ASUS blue before the Reaper theme
+  loads (v1.7.7), and an earlier fault where the cards could stay stuck in stock colors while the
+  page churned in the background — which some users read as "always loading" — is fixed (v1.7.6).
+  The Internet Speed test (Adaptive QoS) now uses a single page scrollbar.
+- **AURA/RGB lighting control.** On the RGB-capable models, the effect-scheme selector on the
+  Network Map router panel no longer shows a stray horizontal scrollbar (v1.7.7). *(The RT-BE96U has
+  no AURA hardware; this applies to the RGB-capable siblings.)*
+
+### Gatekeeper — default-deny device access control (v1.7.0, hardened v1.7.3)
+- **A new, fully-local device gate.** Gatekeeper lets you approve or block devices on your network:
+  the devices the router already knows are grandfathered in when you enable it, anything new lands
+  in a **"Pending approval"** list, and blocking is enforced in the firewall. It arms reliably after
+  a cold power-cycle and always leaves the HTTPS admin page reachable, so it can never fence the
+  administrator out of the control that turns it off. Off by default; entirely on-router, no cloud.
+
+### Security remediation batch + PSIRT class-fix (v1.7.1, v1.7.5)
+- **Another audit round (2026-07-21)** closed its findings in v1.7.1, and v1.7.5 class-fixed the last
+  `openssl passwd` command-injection sink found while preparing the coordinated-disclosure material
+  for **ASUS PSIRT (case 1006563)**. Exhaustive detail in [`REAPER-FIXES.md`](REAPER-FIXES.md).
 
 ### Hardening pass + full 24-language UI (v1.6.0)
 - **The whole UI is now translated into all 24 non-English languages** it ships (previously the
@@ -85,7 +108,7 @@ that includes it.
   scan the internal network). It still cannot change any setting.
 
 ### AI Advisor — optional, read-only, LAN-only (v1.4.x)
-An **optional** subsystem (present only in the `_MCP` variant, and **off by default**
+An **optional** subsystem (present only in the AI Advisor variant &mdash; the image with no `noMCP` suffix &mdash; and **off by default**
 there) that exposes the router as a read-only [Model Context Protocol](https://modelcontextprotocol.io)
 server on the LAN. Your **own** AI client, using your **own** API key, connects and
 can **read** the router's configuration and traffic to **audit and explain** it —
@@ -246,19 +269,31 @@ You can return to stock anytime by flashing an official ASUS image.
 
 ## 8. Build & image verification
 
-Built with the RT-BE96U userspace toolchain (gcc-10.3, 32-bit ARM) via
-`make rt-be96u`, `MAKE_EXIT=0`, "Done! Image 96813GW has been built".
+Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
+`make <target>` (`rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`), each
+`MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
+confirmed free of the AI Advisor.
 
-Release-candidate build hashes (SHA-256):
+**v1.7.7 flashable-image hashes (SHA-256)** — the `…_nand_squashfs.pkgtb` you flash. The full
+20-file set (both variants + the `…_loader.pkgtb` recovery images) is in `SHA256SUMS-v1.7.7.txt`
+on the `reaper-firmware/` ladder.
 
-| Artifact | SHA-256 |
+| Image (`3006_102.8_Reaper_v1.7.7…`) | SHA-256 |
 |---|---|
-| `RT-BE96U_3006_102.8_Reaper_v1.6.0_nand_squashfs.pkgtb` (with AI Advisor, flash this) | `622b6ec2fb1796f6dce74dd4597ecae64d08434e4000f334191095b63c85f32a` |
-| `RT-BE96U_3006_102.8_Reaper_v1.6.0_noMCP_nand_squashfs.pkgtb` (Standard, flash this) | `4d47f00c34db8cb94fc84374e20b9db67418dac715ed15f852d8f72cc54778af` |
+| `RT-BE96U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `eb0391c9da30f82ca03a13ee6fdcc56f888f62fe68824430b65bb8314d61f76e` |
+| `RT-BE96U_…_noMCP_nand_squashfs.pkgtb` (Standard) | `1338b4e1ed1862b895a2f130dc202f842055d7a9881879a146e49b8630e78ef0` |
+| `RT-BE86U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `12b96e1b1535d9b1d3d9733dc418072a85dbfe3e9400842a112e04dc5b74a9ea` |
+| `RT-BE86U_…_noMCP_nand_squashfs.pkgtb` (Standard) | `c6dc3094a1a4025c7b40839c9f50d45bad9ba3de52c502eb2b6105b70806da5b` |
+| `RT-BE88U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `a5bfeb1621b30da4ae26d8a0910c42dfbac7a0d67ebeb95329df93a2d7df25f0` |
+| `RT-BE88U_…_noMCP_nand_squashfs.pkgtb` (Standard) | `3ad3d6bd5ce99d500c5c3908c03df40d564e5cb293734c96704efb51aa6db26f` |
+| `GT-BE98_…_nand_squashfs.pkgtb` (+ AI Advisor) | `69823f8c7788051f907a7cca736edbdae7c626477c1fb414f856deba9879c2d0` |
+| `GT-BE98_…_noMCP_nand_squashfs.pkgtb` (Standard) | `10a7bcfb811c2cd4fbbeb13d8a3d77f2479dd921a773b1d10c14855d041923b5` |
+| `GT-BE98_PRO_…_nand_squashfs.pkgtb` (+ AI Advisor) | `c2ed0f388699bcc5643947a50c5ebd8db7f795f3a333cbdc61a3a70a23759cb8` |
+| `GT-BE98_PRO_…_noMCP_nand_squashfs.pkgtb` (Standard) | `c7c216fe7070e704fa30e492d4f493d47b1f4af2efb853f11e91b38f49ab2189` |
 
-> Hashes above are the v1.6.0 images built + shipped 2026-07-17 (both variants, staged-fs
-> verified), on the `reaper-firmware/` ladder alongside `SHA256SUMS-v1.6.0.txt` (which also
-> lists the two `…_loader.pkgtb` recovery images).
+> All five models built + shipped 2026-07-24 (both variants, staged-fs verified) on the
+> `reaper-firmware/` ladder alongside `SHA256SUMS-v1.7.7.txt` (which also lists the ten
+> `…_loader.pkgtb` recovery images). Metal validation is owed on every model.
 
 **Validation status.** Everything through **v1.3.3** is validated on the physical
 RT-BE96U — security hardening rounds 1–4 + latent T1–T4, the avahi CVE backport, all
@@ -266,9 +301,10 @@ Hardware QoS engines (v1 global, Classful, v3, v4) end-to-end on metal, the Traf
 Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **AI Advisor**
 (arming, LAN-only bind, token auth, secret redaction, USB third-factor, and the
 network-diagnostics tier) is **metal-validated** on the RT-BE96U (v1.4.x–v1.5.0a). In the
-v1.5.x line the newest fully metal-validated build is **v1.5.6**; **v1.6.0** (this release)
-is built + shipped for the RT-BE96U in both variants and **awaits flashing** — its
-metal-test checklist is in [`BACKLOG.md`](BACKLOG.md).
+v1.5.x line the newest fully metal-validated build is **v1.5.6**; every rung since —
+through the current **v1.7.7** — is built + shipped and **awaits flashing** (RT-BE96U in
+both variants for each rung; the v1.7.7 release adds the four sibling models, metal owed on
+all five). Per-version metal-test checklists are in [`BACKLOG.md`](BACKLOG.md).
 
 ---
 

@@ -1,0 +1,223 @@
+From fe082ffe64cc5bfc72f89527c9be4e69a914c2f4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 22 Jul 2026 14:13:37 -0400
+Subject: [PATCH 205/211] aimesh: restore factory x_Setting/w_Setting=0 so a
+ Reaper box is discoverable as a node; retire QIS at the httpd layer instead
+
+The v1.2.7 QIS removal flipped factory-default x_Setting/w_Setting 0->1
+(shared/defaults.c). Side effect (field-confirmed class, root-caused
+2026-07-22): a factory-fresh Reaper box can NEVER be onboarded as an
+AiMesh node -
+ - no_need_obd() (closed rc/prebuild/*/broadcom.o) returns -1 once
+   x_Setting==1, so start_obd()/start_eth_obd() never launch obd; the
+   box never broadcasts the onboarding probe-request VSIE
+   (obd_add_probe_req_vsie) and no CAP search can find it, wireless or
+   ethernet. The amas_bdlkey bundled-kit path (services.c) was dead too.
+ - w_Setting==1 left lan_wps_oob=disabled (init-broadcom.c), so even a
+   discovered box would refuse the WPS onboarding enrollment.
+
+Fix: restore the STOCK factory defaults (0/0) and keep the first-boot
+QIS wizard retired at the web layer instead of via the nvram flag:
+
+ - shared/defaults.c: x_Setting/w_Setting factory defaults back to 0/0
+   (non-DEMOUI branch; the ASUS_EULA/ASUS_NEW_EULA pre-signs stay).
+ - httpd/httpd.c is_firsttime(): hard-forced 0 - '/' always routes to
+   the login page, never QIS_default.cgi. web_hook.o (closed) links
+   against this source definition, so blob callers see the same answer.
+ - httpd/httpd.c: the three x_Setting==0 pre-auth allowances are
+   permanently disabled so a factory box keeps demanding login exactly
+   like every v1.2.7..v1.7.1 build (where x_Setting was always 1):
+   MIME_EXCEPTION_NOAUTH_FIRST auth skip, the repeater
+   start_apply2/apscan login-IP accounting skip, and the pre-auth QIS
+   token mint (QIS_default.cgi/page_default.cgi/posted x_Setting=1 ->
+   send_token_headers).
+ - www/state.js first-run gate 2: w_Setting==0 boxes now route to the
+   same first-run wireless page as gate 3
+   (Advanced_Wireless_Content.asp?firstboot=1, already in
+   reaper_inject.c reaper_skip[] - standing rule 27) instead of the
+   retired QIS wireless mini-wizard; self-exempts the target page and
+   QIS_* (the AiMesh add-node wizard runs framed).
+ - httpd/reaper_inject.c + www/index.asp: comments updated to the new
+   design (QIS_wizard.htm stays skip-listed for the framed AiMesh
+   add-node flow).
+
+Configured/upgraded boxes are unaffected: persisted nvram keeps
+x_Setting/w_Setting=1, and the stock web.c auto-flip restores 1/1 on
+the first real apply of a factory box configured as a router (which
+also stops obd). A box intended as a NODE just gets factory-reset with
+this firmware and left for the CAP's search to find - stock semantics.
+
+Shared source, all 5 models inherit at their next branch bump. NOT
+built yet - rides the next build rung with the rest of the batch.
+Metal owed: factory box discoverable + full onboard (wireless + eth),
+router-path first boot unchanged (login at '/', no QIS, no pre-auth
+token), obd gone after configuration ('rc no_need_obd' debug hook).
+
+This does NOT address the separate CAP-side field report (BE98-pair
+routers not finding STOCK nodes) - that triage is tracked separately.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/httpd.c         | 29 ++++++++++++++++++++----
+ release/src/router/httpd/reaper_inject.c | 14 +++++++-----
+ release/src/router/shared/defaults.c     | 17 ++++++++++----
+ release/src/router/www/index.asp         |  8 ++++---
+ release/src/router/www/state.js          |  9 ++++++--
+ 5 files changed, 57 insertions(+), 20 deletions(-)
+
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 3359d2b91b..e07464267f 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1776,7 +1776,13 @@ handle_request(void)
+ 	|| defined(GTBE19000) || defined(GTBE19000AI) || defined(GSBE18000) || defined(GSBE12000) || defined(GS7_PRO) || defined(GT7) || defined(GS7_PRO_MAX) || defined(GTBE96_AI)
+ 				httpd_switch_ledg(LEDG_QIS_FINISH);
+ #endif
+-				if ((mime_exception&MIME_EXCEPTION_NOAUTH_FIRST)&&!x_Setting) {
++				/* reaper: pre-auth first-boot exemption PERMANENTLY OFF. Stock skipped
++				 * auth for MIME_EXCEPTION_NOAUTH_FIRST pages (QIS_*, qis/*, *.css,
++				 * state.js, ...) while x_Setting==0 - the QIS wizard's NOAUTH window.
++				 * QIS is retired and x_Setting==0 now only means "discoverable as an
++				 * AiMesh node" (defaults.c), so a factory box must still demand login
++				 * for everything, exactly as the v1.2.7..v1.7.1 builds behaved. */
++				if (0 && (mime_exception&MIME_EXCEPTION_NOAUTH_FIRST)&&!x_Setting) {
+ 					//skip_auth=1;
+ 				}
+ #ifdef RTCONFIG_WIFI_SON
+@@ -1828,8 +1834,10 @@ handle_request(void)
+ 							&& !strstr(url, ".gif")
+ 							&& !strstr(url, ".webp")
+ 							&& !strstr(url, ".png")) {
+-#if defined(RTCONFIG_WIRELESSREPEATER) || defined(RTCONFIG_CONCURRENTREPEATER)					 
+-						if (nvram_match("x_Setting", "0") && (strstr(url, "start_apply2.htm") || strstr(url, "apscan.asp") || strstr(url, "data:image/")))
++#if defined(RTCONFIG_WIRELESSREPEATER) || defined(RTCONFIG_CONCURRENTREPEATER)
++						/* reaper: x_Setting==0 no longer implies first-boot QIS; keep the
++						 * login-IP accounting exactly as on a configured box. */
++						if (0 && nvram_match("x_Setting", "0") && (strstr(url, "start_apply2.htm") || strstr(url, "apscan.asp") || strstr(url, "data:image/")))
+ 							;//TODO
+ 						else
+ #endif
+@@ -1932,7 +1940,12 @@ handle_request(void)
+ 
+             status = append_etag_header(file, handler->extra_header, if_none_match, title, sizeof(title), final_header, sizeof(final_header));
+ 
+-			if (nvram_match("x_Setting", "0") &&
++			/* reaper: the pre-auth QIS token mint is PERMANENTLY OFF. Stock issued
++			 * auth-token headers for the first-boot bootstrap (QIS_default.cgi /
++			 * page_default.cgi / a posted x_Setting=1) while x_Setting==0. QIS is
++			 * retired; tokens are only ever minted by the normal login flow, same
++			 * as the v1.2.7..v1.7.1 builds where x_Setting was always 1. */
++			if (0 && nvram_match("x_Setting", "0") &&
+ 				(strcmp(url, "QIS_default.cgi") == 0 || strcmp(url, "page_default.cgi") == 0 ||
+ 				!strcmp(websGetVar(file, "x_Setting", ""), "1"))) {
+ 				if (!fromapp) set_referer_host();
+@@ -2224,6 +2237,14 @@ void http_logout(uaddr *uip, char *cookies, int fromapp_flag)
+ 
+ int is_firsttime(void)
+ {
++	/* reaper: ALWAYS 0 - the first-boot QIS wizard is retired at the web layer.
++	 * This keeps "/" routing to the login page (never QIS_default.cgi) regardless
++	 * of x_Setting, whose factory default is back to stock 0 so a factory box is
++	 * discoverable as an AiMesh node (obd gates on x_Setting==0; see defaults.c).
++	 * web_hook.o (closed) links against this source definition, so blob callers
++	 * see the same answer. Setup runs through the Reaper first-run gates instead
++	 * (state.js -> Reaper_FirstBoot.asp / Advanced_Wireless_Content.asp). */
++	return 0;
+ #if defined(RTAC58U) || defined(RTAC59U) || defined(RTAX58U) || defined(RTAX56U)
+ 	if (!strncmp(nvram_safe_get("territory_code"), "CX/01", 5)
+ 	 || !strncmp(nvram_safe_get("territory_code"), "CX/05", 5))
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 6bf21a0a19..e4bb16df8d 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -83,12 +83,14 @@ static const char *reaper_skip[] = {
+ 	"Nologin.asp",
+ 	/* First-run GATE pages: on a factory-clean box state.js force-redirects the
+ 	   TOP window to these until setup is complete -- Main_Password.asp while the
+-	   admin password is still default, QIS_wizard.htm while w_Setting=0 / sdn_rl
+-	   is unconfigured. If the bounce rewrites them into reaper_shell.asp, state.js
+-	   redirects straight back and it loops forever (a factory reset "bricks" the
+-	   UI, and the password page can never be reached to escape). Keep the gate
+-	   pages TOP-LEVEL so the user can finish setup. (All QIS_* pages are also
+-	   matched by the prefix check in reaper_should_inject().) */
++	   admin password is still default. If the bounce rewrites them into
++	   reaper_shell.asp, state.js redirects straight back and it loops forever
++	   (a factory reset "bricks" the UI, and the password page can never be
++	   reached to escape). Keep the gate pages TOP-LEVEL so the user can finish
++	   setup. QIS_wizard.htm is no longer a gate target (the w_Setting gate now
++	   routes to Advanced_Wireless_Content.asp below) but stays skip-listed: the
++	   AiMesh add-node flow loads it framed and it must render untouched. (All
++	   QIS_* pages are also matched by the prefix check in reaper_should_inject().) */
+ 	"Main_Password.asp",
+ 	"QIS_wizard.htm",
+ 	/* state.js gate 3 (v1.6.6b fix): on a factory-clean box with sdn_rl still at
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 7dc6008f77..c7078da53f 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3809,11 +3809,18 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "x_Setting", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is any setting set */
+ 	{ "w_Setting", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is wilreess set */
+ #else
+-	/* reaper: first-boot QIS retired - boot straight to login/dashboard; box routes on sane defaults
+-	 * (wan dhcp, LAN 192.168.50.1) and login forces Main_Password.asp while http_passwd is default.
+-	 * AiMesh onboarding REQUIRES x_Setting==1, so this also matches its precondition. */
+-	{ "x_Setting", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is any setting set */
+-	{ "w_Setting", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is wilreess set */
++	/* reaper: STOCK factory defaults (0/0) restored - the v1.2.7 flip to 1/1 made a factory
++	 * box permanently UNDISCOVERABLE as an AiMesh node: no_need_obd() (closed broadcom.o)
++	 * returns -1 once x_Setting==1, so obd/obd_eth never ran and the box never broadcast
++	 * the onboarding probe-request VSIE; w_Setting==1 additionally left lan_wps_oob
++	 * "disabled" (init-broadcom.c) so WPS onboarding enrollment could not proceed.
++	 * The first-boot QIS wizard stays retired - now at the httpd layer instead:
++	 * is_firsttime() is hard-forced 0 and the x_Setting==0 pre-auth exemptions are
++	 * neutralized (httpd.c), so "/" serves the login page and the Reaper first-run
++	 * gates (state.js) own setup. First real apply restores x_Setting/w_Setting=1
++	 * (web.c auto-flip), which stops obd on a configured router. */
++	{ "x_Setting", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is any setting set */
++	{ "w_Setting", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is wilreess set */
+ #endif
+ 	{ "r_Setting", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is repeater set */
+ 	{ "p_Setting", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* is passwd set */
+diff --git a/release/src/router/www/index.asp b/release/src/router/www/index.asp
+index 3c8e9d1f6d..c40a7bfb2c 100644
+--- a/release/src/router/www/index.asp
++++ b/release/src/router/www/index.asp
+@@ -184,9 +184,11 @@ var ipBindingFlag = false;
+ var timeSchedulingFlag = false;
+ var blockInternetFlag = false;
+ 
+-/* reaper: first-boot QIS redirect removed - QIS retired (x_Setting/w_Setting default 1 in defaults.c);
+- * also covers upgraded boxes with x_Setting=0 persisted in nvram. AiMesh keeps QIS_wizard.htm via
+- * aimesh_topology.html?flag=amas_addNode (framed), which never routes through this block. */
++/* reaper: first-boot QIS redirect removed - QIS retired at the httpd layer (is_firsttime()
++ * forced 0; x_Setting/w_Setting factory defaults are back to stock 0 so a factory box is
++ * discoverable as an AiMesh node - see defaults.c). Covers upgraded boxes with x_Setting=0
++ * persisted in nvram. AiMesh keeps QIS_wizard.htm via aimesh_topology.html?flag=amas_addNode
++ * (framed), which never routes through this block. */
+ 
+ // Live Update
+ var webs_state_update= '<% nvram_get("webs_state_update"); %>';
+diff --git a/release/src/router/www/state.js b/release/src/router/www/state.js
+index f7d013482b..a0b62601fd 100644
+--- a/release/src/router/www/state.js
++++ b/release/src/router/www/state.js
+@@ -933,8 +933,13 @@ if(navigator.userAgent.search("asusrouter") == -1){
+ 	// box -- including one upgrading to this build -- never sees the gate.
+ 	if((notice_pw_is_default == 1 || force_chgpass == 1) && window.location.pathname.toUpperCase().search("QIS_") < 0) //force to change http_passwd / http_username & except QIS settings
+ 		location.href = 'Reaper_FirstBoot.asp?nextPage=' + window.location.pathname.substring(1 ,window.location.pathname.length);
+-	else if(`<% nvram_get("w_Setting"); %>` == '0' && !isSwMode("RP") && window.location.pathname.toUpperCase().search("QIS_") < 0)
+-		location.href = '/QIS_wizard.htm?flag=wireless';
++	// reaper: w_Setting factory default is back to stock 0 (AiMesh node discoverability +
++	// WPS-OOB enrollment - see defaults.c). Stock sent w_Setting==0 boxes to the retired
++	// QIS wireless mini-wizard; route it to the same first-run wireless page as gate 3
++	// instead (target is in reaper_inject.c reaper_skip[] - standing rule 27). Exempt the
++	// target page itself and the QIS wizard (AiMesh add-node runs it framed).
++	else if(`<% nvram_get("w_Setting"); %>` == '0' && !isSwMode("RP") && window.location.pathname.toUpperCase().search("QIS_") < 0 && window.location.pathname.toUpperCase().search("ADVANCED_WIRELESS_CONTENT") < 0)
++		top.location.href = '/Advanced_Wireless_Content.asp?firstboot=1';
+ 	else if(isSupport("sdn_mwl") && (isSwMode("RT") || isSwMode("AP"))){
+ 		const sdn_rl = `<% nvram_get("sdn_rl"); %>`;
+ 		const sdn_rl_default = `<% nvram_default_get("sdn_rl"); %>`;
+-- 
+2.25.1
+

@@ -1,0 +1,1693 @@
+From 6d8a8bdfa652498c45734d482e3bb188f41fbc56 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 20 Jul 2026 14:35:40 -0400
+Subject: [PATCH] v1.6.7: Reaper Diagnostics - one-click sanitized diag report
+ (Administration tab)
+
+New Administration > Diagnostics tab (Reaper_Diag.asp, reaper-native) with a
+single Download action. The baked collector /usr/sbin/reaper_diag (busybox
+ash, model-agnostic: radios/ports discovered at runtime) gathers identity,
+radio/port/accel/QoS state, lease counts, services and log tails, then pushes
+the WHOLE report through one redaction pass: secret nvram values scrubbed
+longest-first (presence shown as SET/EMPTY), MACs -> MAC-n pseudonyms
+(consistent within a report), SSIDs/usernames/hostnames -> tokens, all IPv6
+and public IPv4 -> tokens (RFC1918/loopback/multicast and firmver kept). A
+sanitization ledger heads every report.
+
+- others/reaper_diag + Makefile install (0700, /usr/sbin)
+- httpd do_reaper_diag_cgi (do_auth, text/plain): runs collector, accepts
+  only /tmp/reaper_diag_* paths, lockfile vs overlapping runs, streams then
+  unlinks; body starts with ERROR: on failure (page JS surfaces it)
+- Reaper_Diag.asp: collected/masked/how-it-works cards, ledger sample,
+  download row with do-not-navigate warning, busy overlay (Collecting data
+  with building dots), XHR blob download named reaper_diag_<model>_<ts>.txt
+- menuTrees/menuTree.js: Administration tab entry (shell tab strip picks it
+  up; topbar/rail untouched)
+- RDIAG_00..31 appended to all 25 dicts in lockstep (translated)
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/web.c                |  52 +++
+ release/src/router/others/Makefile            |   1 +
+ release/src/router/others/reaper_diag         | 312 ++++++++++++++++++
+ release/src/router/www/BR.dict                |  32 ++
+ release/src/router/www/CN.dict                |  32 ++
+ release/src/router/www/CZ.dict                |  32 ++
+ release/src/router/www/DA.dict                |  32 ++
+ release/src/router/www/DE.dict                |  32 ++
+ release/src/router/www/EN.dict                |  32 ++
+ release/src/router/www/ES.dict                |  32 ++
+ release/src/router/www/FI.dict                |  32 ++
+ release/src/router/www/FR.dict                |  32 ++
+ release/src/router/www/HU.dict                |  32 ++
+ release/src/router/www/IT.dict                |  32 ++
+ release/src/router/www/JP.dict                |  32 ++
+ release/src/router/www/KR.dict                |  32 ++
+ release/src/router/www/MS.dict                |  32 ++
+ release/src/router/www/NL.dict                |  32 ++
+ release/src/router/www/NO.dict                |  32 ++
+ release/src/router/www/PL.dict                |  32 ++
+ release/src/router/www/RO.dict                |  32 ++
+ release/src/router/www/RU.dict                |  32 ++
+ release/src/router/www/Reaper_Diag.asp        | 198 +++++++++++
+ release/src/router/www/SL.dict                |  32 ++
+ release/src/router/www/SV.dict                |  32 ++
+ release/src/router/www/TH.dict                |  32 ++
+ release/src/router/www/TR.dict                |  32 ++
+ release/src/router/www/TW.dict                |  32 ++
+ release/src/router/www/UK.dict                |  32 ++
+ .../router/www/require/menuTrees/menuTree.js  |   1 +
+ 31 files changed, 1365 insertions(+), 1 deletion(-)
+ create mode 100755 release/src/router/others/reaper_diag
+ create mode 100644 release/src/router/www/Reaper_Diag.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index a728a86593..a722853db3 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.6.6
++EXTENDNO=Reaper_v1.6.7
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 552d6bc720..0c13bb1e7e 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21605,6 +21605,57 @@ do_set_ASUS_NEW_EULA_cgi(char *url, FILE *stream)
+ /* reaper v1.2.7: do_set_ASUS_EULA_cgi removed - legacy app-only EULA setter with zero www callers;
+  * EULA pre-signed in defaults.c. The modern set_ASUS_NEW_EULA.cgi path is KEPT (QIS wizard/AiMesh + httpApi.newEula). */
+ 
++/* reaper v1.6.7: sanitized diagnostic report download (Reaper_Diag.asp).
++ * Runs the baked /usr/sbin/reaper_diag collector and streams its plain-text
++ * report to the browser. The collector prints the report path on its final
++ * lines; only a path under /tmp/reaper_diag_ is accepted. A lockfile (stale
++ * after 180 s) rejects overlapping runs - the page also disables the button
++ * client-side. No request input is consumed (url ignored). On failure the
++ * body starts with ERROR: which the page JS surfaces instead of saving. */
++static void
++do_reaper_diag_cgi(char *url, FILE *stream)
++{
++	FILE *p, *f;
++	char line[256], path[128], buf[4096];
++	size_t n;
++	struct stat st;
++	const char *lock = "/tmp/.reaper_diag_busy";
++
++	path[0] = '\0';
++
++	if (stat(lock, &st) == 0 && (time(NULL) - st.st_mtime) < 180) {
++		websWrite(stream, "ERROR: a diagnostic collection is already running. Try again shortly.\n");
++		return;
++	}
++	if ((f = fopen(lock, "w")) != NULL)
++		fclose(f);
++
++	if ((p = popen("/usr/sbin/reaper_diag 2>/dev/null", "r")) != NULL) {
++		while (fgets(line, sizeof(line), p)) {
++			char *m = strstr(line, "written to: ");
++			if (m != NULL) {
++				snprintf(path, sizeof(path), "%s", m + 12);
++				m = strchr(path, '\n');
++				if (m != NULL)
++					*m = '\0';
++			}
++		}
++		pclose(p);
++	}
++
++	unlink(lock);
++
++	if (path[0] == '\0' || strncmp(path, "/tmp/reaper_diag_", 17) != 0 ||
++	    strstr(path, "..") != NULL || (f = fopen(path, "r")) == NULL) {
++		websWrite(stream, "ERROR: diagnostic collection failed. Check the system log and try again.\n");
++		return;
++	}
++	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++		fwrite(buf, 1, n, stream);
++	fclose(f);
++	unlink(path);
++}
++
+ /* reaper QoS v3: per-class egress queue counters for the Reaper_QoS.asp live
+  * stats tiles. Reads tmctl getqstats for WAN qids 0..6 and emits JSON. No
+  * request input is consumed (url ignored); the only interpolated value is the
+@@ -29888,6 +29939,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_qos_stats.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
+ 	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
+ 	{ "reaper_wifi.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_wifi_cgi, do_auth },
++	{ "reaper_diag.cgi*", "text/plain", no_cache_IE7, do_html_post_and_get, do_reaper_diag_cgi, do_auth },
+ #ifdef RTCONFIG_REAPER_MCP
+ 	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
+ #endif
+diff --git a/release/src/router/others/Makefile b/release/src/router/others/Makefile
+index 352ec5691e..b06616ecfa 100755
+--- a/release/src/router/others/Makefile
++++ b/release/src/router/others/Makefile
+@@ -33,6 +33,7 @@ endif
+ 
+ # amtm script
+ 	install -m 0700 amtm $(INSTALLDIR)/usr/sbin
++	install -m 0700 reaper_diag $(INSTALLDIR)/usr/sbin
+ 
+ ifeq ($(RTN14U)$(RTAC52U)$(RTAC51U)$(RTN11P)$(RTN300)$(RTN54U)$(RTAC1200HP)$(RTN56UB1)$(RTN56UB2)$(RTAC54U)$(RTAC1200)$(RTAC1200V2)$(RTAC1200GA1)$(RTAC1200GU)$(RTN11PB1)$(RTAC85U)$(RTAC85P)$(RPAC87)$(RTN800HP)$(RTACRH26),y)
+ # for read/write Ralink PHY registers
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+new file mode 100755
+index 0000000000..3ff8391569
+--- /dev/null
++++ b/release/src/router/others/reaper_diag
+@@ -0,0 +1,312 @@
++#!/bin/sh
++# ============================================================================
++#  REAPER-DIAG v1.0 (2026-07-20) - sanitized one-shot diagnostic bundle
++#  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
++#  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
++#
++#  PRIVACY BY ARCHITECTURE: everything is gathered raw into a private temp
++#  file, then pushed through ONE sanitizer pass before anything is written
++#  to the report. The report NEVER contains:
++#    - passwords / PSKs / keys / tokens  (presence reported as SET/EMPTY)
++#    - usernames, DDNS/host names, SSID values (consistent [USER-n]/[SSID-n])
++#    - any MAC address, router or client   (consistent MAC-n pseudonyms)
++#    - any public IPv4 / any IPv6 address  (consistent [EXT-IP-n]/[IP6-n])
++#  RFC1918/loopback/link-local IPv4 and channel/RF/QoS numbers are kept -
++#  they are the diagnostic payload and identify nothing.
++#  Pseudonyms are stable WITHIN one report (cross-referencing works) and
++#  meaningless across reports.
++# ============================================================================
++PATH=/sbin:/bin:/usr/sbin:/usr/bin
++VER="REAPER-DIAG v1.0"
++MODEL="$(nvram get productid 2>/dev/null)"
++EXTNO="$(nvram get extendno 2>/dev/null)"
++STAMP="$(date +%Y%m%d_%H%M%S)"
++RAW="/tmp/.rdiag_raw.$$"
++SLIST="/tmp/.rdiag_secrets.$$"
++AWKP="/tmp/.rdiag_awk.$$"
++BODY="/tmp/.rdiag_body.$$"
++LEDG="/tmp/.rdiag_ledger.$$"
++OUT="/tmp/reaper_diag_${MODEL}_${STAMP}.txt"
++umask 077
++trap 'rm -f $RAW $SLIST $SLIST.s $AWKP $BODY $LEDG' EXIT
++
++sec() { echo ""; echo "#### $1 ####"; }
++have() { command -v "$1" >/dev/null 2>&1; }
++setchk() { v="$(nvram get "$1" 2>/dev/null)"; [ -n "$v" ] && echo "  $1 : SET (redacted)" || echo "  $1 : EMPTY"; }
++
++# ---------------------------------------------------------------------------
++# 1. Collect sensitive literals -> $SLIST as "CLASS<TAB>value" (never printed)
++# ---------------------------------------------------------------------------
++nvram show 2>/dev/null | awk -F= '
++  /^[A-Za-z0-9_.]+=/ {
++    k=$1; sub(/^[^=]*=/,""); v=$0
++    if (length(v) < 3) next
++    if (v ~ /^[0-9]+$/ && length(v) < 6) next
++    cls=""
++    if (k ~ /passwd|password|_psk|wpa_psk|_key[0-9]?$|radius_key|_secret|secret_|token|private|pincode|pin_code|_pin$|wps_.*pin|serial_no|acc_list|auth_pass/) cls="SEC"
++    else if (k ~ /username|_user$|_account|http_username|login_name/) cls="USR"
++    else if (k ~ /_ssid$/) cls="SSID"
++    else if (k ~ /ddns_hostname|_hostname$|computer_name|lan_domain|ddns_username/) cls="HOST"
++    if (cls != "") print cls "\t" v
++  }' > "$SLIST" 2>/dev/null
++# DHCP client hostnames (dnsmasq leases field 4)
++for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases /jffs/nmp/dnsmasq.leases; do
++  [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 3) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null && break
++done
++# longest-first so partial overlaps can not leak (dedupe must PRESERVE that order)
++awk -F'\t' '{ print length($2) "\t" $0 }' "$SLIST" | sort -rn | cut -f2- | awk '!seen[$0]++' > "$SLIST.s"
++
++# ---------------------------------------------------------------------------
++# 2. Sanitizer (busybox awk) - literals, MACs, IPv6, public IPv4
++# ---------------------------------------------------------------------------
++cat > "$AWKP" <<'AWKEOF'
++BEGIN {
++  n = 0
++  while ((getline l < SFILE) > 0) {
++    t = index(l, "\t"); if (t < 2) continue
++    n++; CLS[n] = substr(l, 1, t-1); VAL[n] = substr(l, t+1)
++  }
++  cS=0; cU=0; cW=0; cH=0; cM=0; c6=0; c4=0
++}
++function toklit(cls, v) {
++  if (v in LMAP) return LMAP[v]
++  if (cls=="SEC")  { cS++; LMAP[v]="[REDACTED-SECRET-" cS "]" }
++  else if (cls=="USR")  { cU++; LMAP[v]="[USER-" cU "]" }
++  else if (cls=="SSID") { cW++; LMAP[v]="[SSID-" cW "]" }
++  else { cH++; LMAP[v]="[HOST-" cH "]" }
++  return LMAP[v]
++}
++function privip(ip,  a) {
++  if (ip == FWVER) return 1
++  split(ip, a, ".")
++  if (a[1]>255||a[2]>255||a[3]>255||a[4]>255) return 1
++  if (a[1]==10 || a[1]==127 || a[1]==0) return 1
++  if (a[1]==192 && a[2]==168) return 1
++  if (a[1]==172 && a[2]>=16 && a[2]<=31) return 1
++  if (a[1]==169 && a[2]==254) return 1
++  if (a[1]>=224) return 1
++  return 0
++}
++{
++  line = $0
++  # pass 1: sensitive literal values (longest first from sorted list)
++  for (i = 1; i <= n; i++) {
++    v = VAL[i]
++    while ((p = index(line, v)) > 0)
++      line = substr(line, 1, p-1) toklit(CLS[i], v) substr(line, p + length(v))
++  }
++  # pass 2: MAC addresses -> MAC-n
++  out = ""
++  while (match(line, /[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]/)) {
++    m = toupper(substr(line, RSTART, RLENGTH))
++    if (!(m in MMAP)) { cM++; MMAP[m] = "MAC-" cM }
++    out = out substr(line, 1, RSTART-1) MMAP[m]
++    line = substr(line, RSTART + RLENGTH)
++  }
++  line = out line
++  # pass 3: IPv6 (compressed :: forms and long full forms) -> [IP6-n]
++  out = ""
++  while (match(line, /[0-9a-fA-F][0-9a-fA-F:]*::[0-9a-fA-F:.]*[0-9a-fA-F]|[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F:.]+/)) {
++    m = substr(line, RSTART, RLENGTH)
++    if (!(m in M6)) { c6++; M6[m] = "[IP6-" c6 "]" }
++    out = out substr(line, 1, RSTART-1) M6[m]
++    line = substr(line, RSTART + RLENGTH)
++  }
++  line = out line
++  # pass 4: IPv4 - keep private/loopback/multicast/masks, token the rest
++  out = ""
++  while (match(line, /[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/)) {
++    m = substr(line, RSTART, RLENGTH)
++    if (privip(m)) rep = m
++    else { if (!(m in M4)) { c4++; M4[m] = "[EXT-IP-" c4 "]" }; rep = M4[m] }
++    out = out substr(line, 1, RSTART-1) rep
++    line = substr(line, RSTART + RLENGTH)
++  }
++  print out line
++}
++END {
++  print "  secrets redacted           : " cS   > "/dev/stderr"
++  print "  usernames redacted         : " cU   > "/dev/stderr"
++  print "  SSID values redacted       : " cW   > "/dev/stderr"
++  print "  hostnames redacted         : " cH   > "/dev/stderr"
++  print "  MAC addresses pseudonymized: " cM   > "/dev/stderr"
++  print "  IPv6 addresses redacted    : " c6   > "/dev/stderr"
++  print "  public IPv4 redacted       : " c4   > "/dev/stderr"
++}
++AWKEOF
++
++# ---------------------------------------------------------------------------
++# 3. Gather (raw; sanitized afterwards)
++# ---------------------------------------------------------------------------
++{
++sec "1. IDENTITY / VERSION"
++echo "  diag: $VER   generated: $(date)"
++echo "  uptime/load: $(uptime)"
++echo "  uname: $(uname -a)"
++for k in productid model odmpid build_name firmver buildno extendno territory_code sw_mode re_mode; do
++  echo "  $k = $(nvram get $k 2>/dev/null)"
++done
++
++sec "2. CREDENTIAL / IDENTITY PRESENCE (values withheld by design)"
++setchk http_username; setchk http_passwd
++setchk wan0_pppoe_username; setchk wan0_pppoe_passwd
++setchk ddns_enable_x; setchk ddns_hostname_x
++u=0; while [ $u -le 3 ]; do
++  [ -n "$(nvram get wl${u}_ifname 2>/dev/null)" ] && setchk wl${u}_wpa_psk
++  u=$((u+1))
++done
++
++sec "3. SYSTEM"
++echo "  loadavg: $(cat /proc/loadavg 2>/dev/null)"
++head -4 /proc/meminfo 2>/dev/null | sed 's/^/  /'
++echo "  -- storage --"; df -h 2>/dev/null | sed 's/^/  /'
++echo "  -- jffs/usb mounts --"; mount 2>/dev/null | grep -E "jffs|/mnt|usb|sd[a-z]" | sed 's/^/  /'
++echo "  -- top (snapshot) --"; top -bn1 2>/dev/null | head -12 | sed 's/^/  /'
++
++sec "4. LAN / BRIDGE"
++for k in lan_proto lan_ipaddr lan_netmask lan_ifname lan_ifnames lanports wanports dhcp_enable_x dhcp_start dhcp_end; do
++  echo "  $k = $(nvram get $k 2>/dev/null)"
++done
++echo "  -- brctl show --"; brctl show 2>/dev/null | sed 's/^/  /'
++echo "  -- br0 addrs --"; ifconfig br0 2>/dev/null | grep -E "inet|HWaddr" | sed 's/^/  /'
++
++sec "5. WAN"
++for k in wans_dualwan wan0_proto wan0_state_t wan0_sbstate_t wan0_auxstate_t link_wan switch_wantag; do
++  echo "  $k = $(nvram get $k 2>/dev/null)"
++done
++WIP="$(nvram get wan0_ipaddr 2>/dev/null)"
++case "$WIP" in
++  10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) echo "  wan0 IPv4: PRIVATE/CGN-or-LAN-range ($WIP)";;
++  ""|0.0.0.0) echo "  wan0 IPv4: NONE";;
++  *) echo "  wan0 IPv4: PUBLIC (present, redacted; mask $(nvram get wan0_netmask 2>/dev/null))";;
++esac
++echo "  -- DNS in use --"
++for d in $(nvram get wan0_dns 2>/dev/null) $(nvram get wan0_xdns 2>/dev/null) $(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null); do
++  case "$d" in
++    1.1.1.*|1.0.0.*) echo "  resolver: Cloudflare family ($d)";;
++    8.8.8.8|8.8.4.4) echo "  resolver: Google";;
++    9.9.9.*|149.112.112.*) echo "  resolver: Quad9";;
++    94.140.14.*|94.140.15.*) echo "  resolver: AdGuard";;
++    208.67.2*) echo "  resolver: OpenDNS";;
++    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|127.*) echo "  resolver: LAN-local ($d)";;
++    "") ;;
++    *) echo "  resolver: other-external (redacted)";;
++  esac
++done
++echo "  -- routes --"; ip route 2>/dev/null | sed 's/^/  /'
++
++sec "6. IPV6"
++echo "  ipv6_service = $(nvram get ipv6_service 2>/dev/null)"
++V6="$(ifconfig br0 2>/dev/null | grep -c 'Scope:Global')"
++echo "  br0 global IPv6: $( [ "${V6:-0}" -gt 0 ] && echo "PRESENT x$V6 (redacted)" || echo none )"
++
++sec "7. WIRELESS (radios discovered at runtime)"
++u=0; while [ $u -le 3 ]; do
++  IFN="$(nvram get wl${u}_ifname 2>/dev/null)"
++  [ -z "$IFN" ] && { u=$((u+1)); continue; }
++  NB="$(nvram get wl${u}_nband 2>/dev/null)"
++  case "$NB" in 1) BAND=5G;; 2) BAND=2.4G;; 4) BAND=6G;; *) BAND="nband=$NB";; esac
++  echo "  -- unit $u  ifname=$IFN  band=$BAND --"
++  echo "     radio_on=$(nvram get wl${u}_radio 2>/dev/null)  closed=$(nvram get wl${u}_closed 2>/dev/null)  country=$(nvram get wl${u}_country_code 2>/dev/null)"
++  echo "     chanspec: $(wl -i $IFN chanspec 2>/dev/null)"
++  S="$(nvram get wl${u}_ssid 2>/dev/null)"
++  SL=${#S}
++  case "$S" in
++    *[!0-9A-Fa-f]*) SC="normal";;
++    "") SC="empty";;
++    *) [ "$SL" = "32" ] && SC="32-HEX (machine-generated? check for nvram residue)" || SC="hex-only";;
++  esac
++  echo "     ssid: [see SSID token] len=$SL charset=$SC"
++  AC="$(wl -i $IFN assoclist 2>/dev/null | wc -l)"
++  echo "     associated stations: ${AC:-0}"
++  wl -i $IFN chanim_stats 2>/dev/null | head -4 | sed 's/^/     chanim: /'
++  # per-station diagnostic detail (MACs pseudonymized by the sanitizer)
++  wl -i $IFN assoclist 2>/dev/null | awk '{print $2}' | while read M; do
++    echo "     .. sta $M:"
++    wl -i $IFN sta_info "$M" 2>/dev/null | grep -E "rate of last|rssi|smoothed|PS :|idle|in network|flags|link bandwidth|tx pkts:|tx failures" | sed 's/^/        /'
++  done
++  # guest / extra VIFs on this unit
++  for VIF in $(nvram get wl${u}_vifs 2>/dev/null); do
++    VAC="$(wl -i $VIF assoclist 2>/dev/null | wc -l)"
++    echo "     vif $VIF: up=$(ifconfig $VIF 2>/dev/null | grep -c UP) stations=${VAC:-0} ssid_len=$(nvram get ${VIF}_ssid 2>/dev/null | wc -c)"
++  done
++  u=$((u+1))
++done
++
++sec "8. WIRED PORTS"
++for E in /sys/class/net/eth*; do
++  [ -e "$E" ] || continue
++  P="${E##*/}"
++  CAR="$(cat $E/carrier 2>/dev/null)"; SPD="$(cat $E/speed 2>/dev/null)"
++  echo "  -- $P  carrier=$CAR speed=${SPD}Mb/s --"
++  have ethctl && ethctl $P media-type 2>/dev/null | head -6 | sed 's/^/     /'
++done
++
++sec "9. FLOW ACCELERATION"
++have fc && fc status 2>/dev/null | head -14 | sed 's/^/  /'
++have fcctl && echo "  active flows: $(fcctl status 2>/dev/null | grep -i -m1 flow)"
++
++sec "10. QOS (engine + hardware readbacks)"
++for k in qos_enable qos_type qos_obw qos_ibw qos_pshaper qos_minrates qos_dscp_trust qos_ipolicer qos_dscp_wmm qos_sched qos_orates; do
++  echo "  $k = $(nvram get $k 2>/dev/null)"
++done
++WANIF="$(nvram get wan0_ifname 2>/dev/null)"; [ -z "$WANIF" ] && WANIF=eth0
++if have tmctl; then
++  echo "  -- tmctl portshaper ($WANIF) --"; tmctl getportshaper --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++  echo "  -- tmctl portrxrate ($WANIF) --"; tmctl getportrxrate --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++  q=0; while [ $q -le 6 ]; do
++    echo "  -- qcfg qid $q --"; tmctl getqcfg --devtype 0 --if $WANIF --qid $q 2>/dev/null | head -3 | sed 's/^/     /'
++    q=$((q+1))
++  done
++fi
++
++sec "11. DHCP LEASES (identities pseudonymized)"
++for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases; do
++  if [ -f "$LF" ]; then
++    echo "  lease count: $(wc -l < $LF)"
++    sed 's/^/  /' "$LF"
++    break
++  fi
++done
++
++sec "12. PROCESSES / LISTENING SOCKETS"
++ps w 2>/dev/null | sed 's/^/  /'
++echo "  -- listeners --"
++netstat -tuln 2>/dev/null | sed 's/^/  /'
++
++sec "13. ADDONS / JFFS"
++echo "  jffs scripts: $(ls /jffs/scripts 2>/dev/null | tr '\n' ' ')"
++echo "  entware: $( [ -d /opt/bin ] && echo present || echo absent )"
++echo "  amtm-ish mounts: $(mount 2>/dev/null | grep -c /tmp/mnt)"
++
++sec "14. KERNEL LOG (tail)"
++dmesg 2>/dev/null | tail -120 | sed 's/^/  /'
++
++sec "15. SYSLOG (tail)"
++tail -150 /tmp/syslog.log 2>/dev/null | sed 's/^/  /'
++
++echo ""; echo "#### END OF DIAG ####"
++} > "$RAW" 2>&1
++
++# ---------------------------------------------------------------------------
++# 4. Sanitize + assemble
++# ---------------------------------------------------------------------------
++awk -v SFILE="$SLIST.s" -v FWVER="$(nvram get firmver 2>/dev/null)" -f "$AWKP" "$RAW" > "$BODY" 2> "$LEDG"
++
++{
++  echo "==================== $MODEL Reaper sanitized diag ===================="
++  echo " $VER | firmware: $EXTNO | generated: $(date)"
++  echo ""
++  echo "#### 0. SANITIZATION LEDGER (what was found and withheld) ####"
++  cat "$LEDG"
++  echo "  NOTE: pseudonyms (MAC-n / [EXT-IP-n] / [SSID-n] ...) are consistent"
++  echo "  within this report only. No credentials, MACs, host/user names or"
++  echo "  external IPs are contained in this file. Safe to post publicly."
++  cat "$BODY"
++  echo "==================== end diag $(date) ===================="
++} > "$OUT"
++
++chmod 600 "$OUT"
++echo ""
++echo "Sanitized diagnostic written to: $OUT"
++echo "$(wc -l < "$OUT") lines. Review ledger at top; safe to share as-is."
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index fabbb7ffcc..3f7ff69571 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5690,3 +5690,35 @@ RFB_11=A senha não pode ser igual ao nome de usuário.
+ RFB_12=A senha não pode ser o valor padrão.
+ RFB_13=Não foi possível aplicar as credenciais. Tente novamente.
+ RFB_14=Aplicando &amp; reiniciando o serviço de administração&hellip;
++RDIAG_00=Diagn&oacute;stico
++RDIAG_01=Relat&oacute;rio higienizado
++RDIAG_02=Gera um retrato completo do estado do roteador para diagn&oacute;stico: os mesmos dados que um engenheiro de redes coletaria manualmente, reunidos de uma vez e <b>limpos de tudo que possa identificar voc&ecirc;, seus dispositivos ou sua rede</b>. O relat&oacute;rio &eacute; texto puro: abra, leia cada linha e compartilhe apenas se quiser. <b>O roteador n&atilde;o transmite nada</b>: o arquivo &eacute; baixado neste dispositivo e n&atilde;o vai para nenhum outro lugar.
++RDIAG_03=O que &eacute; coletado
++RDIAG_04=Identidade do modelo, vers&atilde;o do firmware, uptime e mem&oacute;ria
++RDIAG_05=Canal, largura, sa&uacute;de do sinal e clientes de cada r&aacute;dio
++RDIAG_06=Estado e velocidade das portas cabeadas
++RDIAG_07=Acelera&ccedil;&atilde;o de hardware e leituras do motor QoS
++RDIAG_08=Concess&otilde;es DHCP, servi&ccedil;os ativos e portas abertas
++RDIAG_09=Trechos recentes dos logs do kernel e do sistema
++RDIAG_10=Removido ou mascarado
++RDIAG_11=Senhas, chaves Wi-Fi e tokens: <b>nunca coletados</b>; o relat&oacute;rio anota apenas
++RDIAG_12=Nomes de usu&aacute;rio e de dispositivos viram
++RDIAG_13=Nomes de rede Wi-Fi viram
++RDIAG_14=Cada endere&ccedil;o MAC vira
++RDIAG_15=Seu IP p&uacute;blico e todos os endere&ccedil;os IPv6 viram
++RDIAG_16=Como o mascaramento funciona
++RDIAG_17=Endere&ccedil;os locais (192.168.x.x) s&atilde;o mantidos: n&atilde;o identificam nada fora da sua rede
++RDIAG_18=Nomes mascarados ficam <b>consistentes dentro do relat&oacute;rio</b>: d&aacute; para seguir um dispositivo entre se&ccedil;&otilde;es sem revelar qual &eacute;
++RDIAG_19=Os nomes n&atilde;o significam nada entre relat&oacute;rios: cada um recebe um conjunto novo
++RDIAG_20=Todo relat&oacute;rio abre com um registro contando exatamente o que foi retido
++RDIAG_21=Como fica o in&iacute;cio do seu relat&oacute;rio
++RDIAG_22=O registro de higieniza&ccedil;&atilde;o &eacute; impresso primeiro, para voc&ecirc; ver o que foi encontrado e retido antes de tudo:
++RDIAG_23=Baixar relat&oacute;rio
++RDIAG_24=A coleta leva 20-30 segundos. O navegador salvar&aacute; um arquivo de texto que voc&ecirc; pode revisar antes de compartilhar:
++RDIAG_25=N&atilde;o saia da p&aacute;gina nem altere configura&ccedil;&otilde;es durante a coleta.
++RDIAG_26=Texto puro: nada escondido
++RDIAG_27=Nunca enviado automaticamente
++RDIAG_28=Seguro para publicar
++RDIAG_29=Coletando dados
++RDIAG_30=Lendo r&aacute;dios, portas e logs, depois higienizando o resultado. Permane&ccedil;a nesta p&aacute;gina.
++RDIAG_31=A coleta falhou. Aguarde um momento e tente novamente; se persistir, verifique o log do sistema.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 8a6a3eb0eb..b3edf77669 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5690,3 +5690,35 @@ RFB_11=密码不能与用户名相同。
+ RFB_12=密码不能为默认值。
+ RFB_13=无法应用凭据，请重试。
+ RFB_14=正在应用 &amp; 重启管理服务&hellip;
++RDIAG_00=诊断
++RDIAG_01=脱敏报告
++RDIAG_02=生成路由器状态的完整快照用于排障——与网络工程师手工收集的数据相同，一次采集完成，并<b>清除所有可能识别您、您的设备或您的网络的信息</b>。报告为纯文本：打开后逐行查看，是否分享完全由您决定。<b>路由器不会发送任何内容</b>——文件只下载到本设备，不会去往其他任何地方。
++RDIAG_03=收集的内容
++RDIAG_04=型号信息、固件版本、运行时间和内存
++RDIAG_05=每个无线模块的信道、带宽、信号状况和客户端数量
++RDIAG_06=有线端口的链路状态和速率
++RDIAG_07=硬件加速和 QoS 引擎读数
++RDIAG_08=DHCP 租约数、运行中的服务和开放端口
++RDIAG_09=内核及系统日志的最新摘录
++RDIAG_10=移除或脱敏的内容
++RDIAG_11=密码、Wi-Fi 密钥和令牌——<b>从不收集</b>；报告仅记录
++RDIAG_12=用户名和设备名将变为
++RDIAG_13=Wi-Fi 网络名称将变为
++RDIAG_14=每个 MAC 地址将变为
++RDIAG_15=您的公网 IP 和所有 IPv6 地址将变为
++RDIAG_16=脱敏的工作方式
++RDIAG_17=本地地址（192.168.x.x）保持不变——在您的网络之外它们无法识别任何信息
++RDIAG_18=脱敏名称在<b>同一份报告内保持一致</b>：可以跨章节追踪某台设备，而不暴露它是哪一台
++RDIAG_19=不同报告之间名称没有意义——每份报告使用一套新名称
++RDIAG_20=每份报告开头都有一份台账，逐项统计被隐去的内容
++RDIAG_21=报告开头的样子
++RDIAG_22=脱敏台账最先打印，让您首先看到发现并隐去了哪些内容：
++RDIAG_23=下载报告
++RDIAG_24=采集需要 20-30 秒。浏览器将保存一个纯文本文件，分享前可先查看：
++RDIAG_25=采集期间请勿离开页面或更改设置。
++RDIAG_26=纯文本——没有隐藏内容
++RDIAG_27=绝不自动发送
++RDIAG_28=可安全公开
++RDIAG_29=正在收集数据
++RDIAG_30=正在读取无线、端口和日志，然后进行脱敏。请留在此页面。
++RDIAG_31=采集失败。请稍候重试；若仍然失败，请查看系统日志。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index f1f40bbc50..7d8c249f49 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Heslo nesmí být stejné jako uživatelské jméno.
+ RFB_12=Heslo nesmí být výchozí hodnota.
+ RFB_13=Přihlašovací údaje se nepodařilo použít. Zkuste to znovu.
+ RFB_14=Používám &amp; restartuji službu správy&hellip;
++RDIAG_00=Diagnostika
++RDIAG_01=Anonymizovaná zpráva
++RDIAG_02=Vytvoří úplný snímek stavu routeru pro řešení potíží — stejná data, která by síťový inženýr sbíral ručně, získaná najednou a <b>zbavená všeho, co by mohlo identifikovat vás, vaše zařízení nebo síť</b>. Zpráva je prostý text: otevřete ji, přečtěte každý řádek a sdílejte jen podle vlastního uvážení. <b>Router nic neodesílá</b> — soubor se stáhne do tohoto zařízení a nikam jinam nejde.
++RDIAG_03=Co se sbírá
++RDIAG_04=Model, verze firmwaru, doba běhu a paměť
++RDIAG_05=Kanál, šířka, kvalita signálu a počet klientů každého rádia
++RDIAG_06=Stav a rychlost drátových portů
++RDIAG_07=Hardwarová akcelerace a hodnoty QoS
++RDIAG_08=DHCP zápůjčky, běžící služby a otevřené porty
++RDIAG_09=Čerstvé výpisy z jádra a systémového logu
++RDIAG_10=Odstraněno nebo maskováno
++RDIAG_11=Hesla, Wi-Fi klíče a tokeny — <b>nikdy se nesbírají</b>; zpráva jen uvádí
++RDIAG_12=Uživatelská jména a názvy zařízení se mění na
++RDIAG_13=Názvy Wi-Fi sítí se mění na
++RDIAG_14=Každá MAC adresa se mění na
++RDIAG_15=Vaše veřejná IP a všechny adresy IPv6 se mění na
++RDIAG_16=Jak maskování funguje
++RDIAG_17=Místní adresy (192.168.x.x) zůstávají — mimo vaši síť nic neidentifikují
++RDIAG_18=Maskovaná jména jsou <b>konzistentní v rámci jedné zprávy</b>: zařízení lze sledovat napříč sekcemi, aniž by bylo odhaleno
++RDIAG_19=Mezi zprávami jména nic neznamenají — každá zpráva dostane novou sadu
++RDIAG_20=Každá zpráva začíná přehledem toho, co bylo zadrženo
++RDIAG_21=Jak vypadá začátek vaší zprávy
++RDIAG_22=Přehled anonymizace je vytištěn jako první, takže nejdřív vidíte, co bylo nalezeno a zadrženo:
++RDIAG_23=Stáhnout zprávu
++RDIAG_24=Sběr trvá 20-30 sekund. Prohlížeč uloží textový soubor, který můžete před sdílením zkontrolovat:
++RDIAG_25=Během sběru prosím neopouštějte stránku a neměňte nastavení.
++RDIAG_26=Prostý text — nic skrytého
++RDIAG_27=Nikdy se neodesílá automaticky
++RDIAG_28=Bezpečné ke zveřejnění
++RDIAG_29=Sběr dat
++RDIAG_30=Čtení rádií, portů a logů, poté anonymizace. Zůstaňte prosím na této stránce.
++RDIAG_31=Sběr selhal. Chvíli počkejte a zkuste to znovu; pokud potíže trvají, zkontrolujte systémový log.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 5c6487926c..f5cd614e97 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Adgangskoden må ikke være den samme som brugernavnet.
+ RFB_12=Adgangskoden må ikke være standardværdien.
+ RFB_13=Kunne ikke anvende loginoplysningerne. Prøv igen.
+ RFB_14=Anvender &amp; genstarter administrationstjenesten&hellip;
++RDIAG_00=Diagnostik
++RDIAG_01=Renset rapport
++RDIAG_02=Danner et komplet øjebliksbillede af routerens tilstand til fejlfinding — de samme data, som en netværkstekniker ville indsamle manuelt, hentet i én omgang og <b>renset for alt, der kunne identificere dig, dine enheder eller dit netværk</b>. Rapporten er ren tekst: åbn den, læs hver linje, og del den kun, hvis du vil. <b>Routeren sender intet</b> — filen downloades til denne enhed og går ingen andre steder hen.
++RDIAG_03=Hvad der indsamles
++RDIAG_04=Modelidentitet, firmwareversion, oppetid og hukommelse
++RDIAG_05=Kanal, bredde, signalkvalitet og antal klienter pr. radio
++RDIAG_06=Linkstatus og hastighed for kablede porte
++RDIAG_07=Hardwareacceleration og QoS-aflæsninger
++RDIAG_08=DHCP-leases, kørende tjenester og åbne porte
++RDIAG_09=Nylige uddrag af kerne- og systemlog
++RDIAG_10=Fjernet eller maskeret
++RDIAG_11=Adgangskoder, Wi-Fi-nøgler og tokens — <b>indsamles aldrig</b>; rapporten noterer kun
++RDIAG_12=Bruger- og enhedsnavne bliver til
++RDIAG_13=Wi-Fi-netværksnavne bliver til
++RDIAG_14=Hver MAC-adresse bliver til
++RDIAG_15=Din offentlige IP og alle IPv6-adresser bliver til
++RDIAG_16=Sådan virker maskeringen
++RDIAG_17=Lokale adresser (192.168.x.x) bevares — de identificerer intet uden for dit netværk
++RDIAG_18=Maskerede navne er <b>konsistente inden for én rapport</b>: en enhed kan følges på tværs af afsnit uden at afsløre hvilken
++RDIAG_19=På tværs af rapporter betyder navnene intet — hver rapport får et nyt sæt
++RDIAG_20=Hver rapport indledes med en fortegnelse over præcis, hvad der er tilbageholdt
++RDIAG_21=Sådan ser toppen af din rapport ud
++RDIAG_22=Renselsesfortegnelsen udskrives først, så du straks ser, hvad der blev fundet og tilbageholdt:
++RDIAG_23=Download rapport
++RDIAG_24=Indsamlingen tager 20-30 sekunder. Browseren gemmer en tekstfil, du kan gennemse, før du deler den:
++RDIAG_25=Forlad ikke siden, og ændr ikke indstillinger, mens indsamlingen kører.
++RDIAG_26=Ren tekst — intet skjult
++RDIAG_27=Sendes aldrig automatisk
++RDIAG_28=Sikker at offentliggøre
++RDIAG_29=Indsamler data
++RDIAG_30=Læser radioer, porte og logs og renser derefter resultatet. Bliv på denne side.
++RDIAG_31=Indsamlingen mislykkedes. Vent et øjeblik, og prøv igen; fortsætter det, så tjek systemloggen.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 699ee3733a..74b876d56d 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Das Passwort darf nicht dem Benutzernamen entsprechen.
+ RFB_12=Das Passwort darf nicht der Standardwert sein.
+ RFB_13=Zugangsdaten konnten nicht übernommen werden. Bitte erneut versuchen.
+ RFB_14=Übernehmen &amp; Neustart des Admin-Dienstes&hellip;
++RDIAG_00=Diagnose
++RDIAG_01=Bereinigter Bericht
++RDIAG_02=Erstellt eine vollst&auml;ndige Momentaufnahme des Routerzustands zur Fehlersuche &mdash; dieselben Daten, die ein Netzwerktechniker von Hand sammeln w&uuml;rde, in einem Durchlauf erfasst und <b>von allem bereinigt, was Sie, Ihre Ger&auml;te oder Ihr Netzwerk identifizieren k&ouml;nnte</b>. Der Bericht ist reiner Text: &ouml;ffnen Sie ihn, lesen Sie jede Zeile und geben Sie ihn nur weiter, wenn Sie es m&ouml;chten. <b>Der Router &uuml;bertr&auml;gt nichts</b> &mdash; die Datei wird auf dieses Ger&auml;t heruntergeladen und geht nirgendwo anders hin.
++RDIAG_03=Was erfasst wird
++RDIAG_04=Modellkennung, Firmware-Version, Laufzeit und Speicher
++RDIAG_05=Kanal, Bandbreite, Signalqualit&auml;t und Client-Anzahl je Funkmodul
++RDIAG_06=Linkstatus und Geschwindigkeit der LAN-Ports
++RDIAG_07=Hardware-Beschleunigung und QoS-Messwerte
++RDIAG_08=DHCP-Leases, laufende Dienste und offene Ports
++RDIAG_09=Aktuelle Kernel- und Systemprotokoll-Auszüge
++RDIAG_10=Entfernt oder maskiert
++RDIAG_11=Passw&ouml;rter, WLAN-Schl&uuml;ssel und Token &mdash; <b>werden nie erfasst</b>; der Bericht vermerkt nur
++RDIAG_12=Benutzer- und Ger&auml;tenamen werden zu
++RDIAG_13=WLAN-Namen werden zu
++RDIAG_14=Jede MAC-Adresse wird zu
++RDIAG_15=Ihre &ouml;ffentliche IP und alle IPv6-Adressen werden zu
++RDIAG_16=So funktioniert die Maskierung
++RDIAG_17=Lokale Adressen (192.168.x.x) bleiben erhalten &mdash; sie identifizieren nichts au&szlig;erhalb Ihres Netzwerks
++RDIAG_18=Maskierte Namen bleiben <b>innerhalb eines Berichts konsistent</b>, sodass ein Ger&auml;t &uuml;ber Abschnitte hinweg verfolgt werden kann, ohne es zu identifizieren
++RDIAG_19=Namen sind berichts&uuml;bergreifend bedeutungslos &mdash; jeder neue Bericht erh&auml;lt neue Namen
++RDIAG_20=Jeder Bericht beginnt mit einer Aufstellung dessen, was zur&uuml;ckgehalten wurde
++RDIAG_21=So sieht der Anfang Ihres Berichts aus
++RDIAG_22=Die Bereinigungs-Aufstellung steht ganz oben, damit Sie zuerst sehen, was gefunden und zur&uuml;ckgehalten wurde:
++RDIAG_23=Bericht herunterladen
++RDIAG_24=Die Erfassung dauert 20-30 Sekunden. Ihr Browser speichert eine Textdatei, die Sie vor dem Teilen pr&uuml;fen k&ouml;nnen:
++RDIAG_25=Bitte w&auml;hrend der Erfassung die Seite nicht verlassen und keine Einstellungen &auml;ndern.
++RDIAG_26=Reiner Text &mdash; nichts verborgen
++RDIAG_27=Wird nie automatisch gesendet
++RDIAG_28=Unbedenklich zu ver&ouml;ffentlichen
++RDIAG_29=Daten werden erfasst
++RDIAG_30=Funkmodule, Ports und Protokolle werden gelesen und anschlie&szlig;end bereinigt. Bitte bleiben Sie auf dieser Seite.
++RDIAG_31=Erfassung fehlgeschlagen. Bitte kurz warten und erneut versuchen; falls das Problem bleibt, pr&uuml;fen Sie das Systemprotokoll.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 2b4094ac9c..a3e38aec1b 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Password must not equal the username.
+ RFB_12=Password must not be the default value.
+ RFB_13=Could not apply credentials. Please try again.
+ RFB_14=Applying &amp; restarting the admin service&hellip;
++RDIAG_00=Diagnostics
++RDIAG_01=Sanitized report
++RDIAG_02=Generate a complete snapshot of this router's state for troubleshooting &mdash; the same data a network engineer would collect by hand, gathered in one pass and <b>scrubbed of anything that could identify you, your devices, or your network</b>. The report is plain text: open it, read every line, and share it only if you choose to. <b>Nothing is ever transmitted by the router</b> &mdash; the file downloads to this device and goes nowhere else.
++RDIAG_03=What is collected
++RDIAG_04=Model identity, firmware version, uptime and memory
++RDIAG_05=Each radio's channel, width, signal health and client counts
++RDIAG_06=Wired port link states and speeds
++RDIAG_07=Hardware acceleration and QoS engine readings
++RDIAG_08=DHCP lease count, running services and open ports
++RDIAG_09=Recent kernel and system log excerpts
++RDIAG_10=Removed or masked
++RDIAG_11=Passwords, Wi-Fi keys and tokens &mdash; <b>never collected</b>; the report only notes
++RDIAG_12=Usernames and device names become
++RDIAG_13=Wi-Fi network names become
++RDIAG_14=Every MAC address becomes
++RDIAG_15=Your public IP and all IPv6 addresses become
++RDIAG_16=How the masking works
++RDIAG_17=Local-only addresses (192.168.x.x) are kept &mdash; they identify nothing outside your own network
++RDIAG_18=Masked names stay <b>consistent inside one report</b>, so one device can be followed across sections without revealing which device it is
++RDIAG_19=Names are meaningless across reports &mdash; a new report gets a new set
++RDIAG_20=Every report opens with a ledger counting exactly what was withheld
++RDIAG_21=What the top of your report looks like
++RDIAG_22=The sanitization ledger is printed first, so you can see what was found and withheld before anything else:
++RDIAG_23=Download Report
++RDIAG_24=Collection takes 20-30 seconds. Your browser will save a plain-text file you can open and review before sharing:
++RDIAG_25=Please do not navigate away or change settings while the collection is running.
++RDIAG_26=Plain text &mdash; nothing hidden
++RDIAG_27=Never sent automatically
++RDIAG_28=Safe to post publicly
++RDIAG_29=Collecting data
++RDIAG_30=Reading radios, ports and logs, then sanitizing the result. Please stay on this page.
++RDIAG_31=Collection failed. Please wait a moment and try again; if it persists, check the System Log.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 053819330c..861785853b 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5690,3 +5690,35 @@ RFB_11=La contraseña no debe ser igual al nombre de usuario.
+ RFB_12=La contraseña no debe ser el valor predeterminado.
+ RFB_13=No se pudieron aplicar las credenciales. Inténtelo de nuevo.
+ RFB_14=Aplicando &amp; reiniciando el servicio de administración&hellip;
++RDIAG_00=Diagn&oacute;stico
++RDIAG_01=Informe saneado
++RDIAG_02=Genera una instant&aacute;nea completa del estado del router para la resoluci&oacute;n de problemas: los mismos datos que un ingeniero de redes recogeria a mano, reunidos en una sola pasada y <b>limpios de todo lo que pudiera identificarle a usted, a sus dispositivos o a su red</b>. El informe es texto plano: &aacute;bralo, lea cada linea y comp&aacute;rtalo solo si usted quiere. <b>El router no transmite nada</b>: el archivo se descarga en este dispositivo y no va a ninguna otra parte.
++RDIAG_03=Qu&eacute; se recopila
++RDIAG_04=Identidad del modelo, versi&oacute;n de firmware, tiempo activo y memoria
++RDIAG_05=Canal, ancho, salud de se&ntilde;al y clientes de cada radio
++RDIAG_06=Estado y velocidad de los puertos cableados
++RDIAG_07=Aceleraci&oacute;n por hardware y lecturas del motor QoS
++RDIAG_08=Concesiones DHCP, servicios en ejecuci&oacute;n y puertos abiertos
++RDIAG_09=Extractos recientes del registro del kernel y del sistema
++RDIAG_10=Eliminado o enmascarado
++RDIAG_11=Contrase&ntilde;as, claves Wi-Fi y tokens: <b>nunca se recopilan</b>; el informe solo anota
++RDIAG_12=Los nombres de usuario y de dispositivo pasan a ser
++RDIAG_13=Los nombres de red Wi-Fi pasan a ser
++RDIAG_14=Cada direcci&oacute;n MAC pasa a ser
++RDIAG_15=Su IP p&uacute;blica y todas las direcciones IPv6 pasan a ser
++RDIAG_16=C&oacute;mo funciona el enmascarado
++RDIAG_17=Las direcciones locales (192.168.x.x) se conservan: no identifican nada fuera de su red
++RDIAG_18=Los nombres enmascarados son <b>coherentes dentro de un informe</b>: un dispositivo puede seguirse entre secciones sin revelar cu&aacute;l es
++RDIAG_19=Los nombres no significan nada entre informes: cada informe recibe un juego nuevo
++RDIAG_20=Cada informe comienza con un registro que cuenta exactamente lo retenido
++RDIAG_21=As&iacute; se ve el comienzo de su informe
++RDIAG_22=El registro de saneamiento se imprime primero, para ver qu&eacute; se encontr&oacute; y retuvo antes que nada:
++RDIAG_23=Descargar informe
++RDIAG_24=La recogida tarda 20-30 segundos. Su navegador guardar&aacute; un archivo de texto que puede revisar antes de compartir:
++RDIAG_25=No salga de la p&aacute;gina ni cambie ajustes mientras se ejecuta la recogida.
++RDIAG_26=Texto plano: nada oculto
++RDIAG_27=Nunca se env&iacute;a autom&aacute;ticamente
++RDIAG_28=Seguro para publicar
++RDIAG_29=Recopilando datos
++RDIAG_30=Leyendo radios, puertos y registros, y despu&eacute;s saneando el resultado. Permanezca en esta p&aacute;gina.
++RDIAG_31=La recogida fall&oacute;. Espere un momento y reint&eacute;ntelo; si persiste, revise el registro del sistema.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index c280bd13c5..fbb147c82d 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Salasana ei saa olla sama kuin käyttäjätunnus.
+ RFB_12=Salasana ei saa olla oletusarvo.
+ RFB_13=Tunnusten käyttöönotto epäonnistui. Yritä uudelleen.
+ RFB_14=Otetaan käyttöön &amp; käynnistetään hallintapalvelu uudelleen&hellip;
++RDIAG_00=Diagnostiikka
++RDIAG_01=Siivottu raportti
++RDIAG_02=Luo täydellisen tilannekuvan reitittimen tilasta vianetsintää varten — samat tiedot, jotka verkkoinsinööri keräisi käsin, koottuna yhdellä kertaa ja <b>puhdistettuna kaikesta, mikä voisi tunnistaa sinut, laitteesi tai verkkosi</b>. Raportti on pelkkää tekstiä: avaa se, lue jokainen rivi ja jaa vain halutessasi. <b>Reititin ei lähetä mitään</b> — tiedosto ladataan tälle laitteelle eikä mene minnekään muualle.
++RDIAG_03=Mitä kerätään
++RDIAG_04=Mallitiedot, laiteohjelmistoversio, käyttöaika ja muisti
++RDIAG_05=Jokaisen radion kanava, leveys, signaalin kunto ja asiakasmäärät
++RDIAG_06=Langallisten porttien tila ja nopeus
++RDIAG_07=Laitteistokiihdytys ja QoS-lukemat
++RDIAG_08=DHCP-varaukset, käynnissä olevat palvelut ja avoimet portit
++RDIAG_09=Tuoreet otteet ydin- ja järjestelmälokista
++RDIAG_10=Poistettu tai peitetty
++RDIAG_11=Salasanat, Wi-Fi-avaimet ja tunnisteet — <b>ei kerätä koskaan</b>; raportti merkitsee vain
++RDIAG_12=Käyttäjä- ja laitenimet muuttuvat muotoon
++RDIAG_13=Wi-Fi-verkkojen nimet muuttuvat muotoon
++RDIAG_14=Jokainen MAC-osoite muuttuu muotoon
++RDIAG_15=Julkinen IP-osoitteesi ja kaikki IPv6-osoitteet muuttuvat muotoon
++RDIAG_16=Näin peittäminen toimii
++RDIAG_17=Paikalliset osoitteet (192.168.x.x) säilytetään — ne eivät tunnista mitään verkkosi ulkopuolella
++RDIAG_18=Peitetyt nimet ovat <b>johdonmukaisia yhden raportin sisällä</b>: laitetta voi seurata osioiden välillä paljastamatta, mikä laite on kyseessä
++RDIAG_19=Raporttien välillä nimillä ei ole merkitystä — jokainen raportti saa uuden sarjan
++RDIAG_20=Jokainen raportti alkaa luettelolla siitä, mitä tarkalleen jätettiin pois
++RDIAG_21=Miltä raporttisi alku näyttää
++RDIAG_22=Siivousluettelo tulostetaan ensimmäisenä, joten näet heti, mitä löydettiin ja jätettiin pois:
++RDIAG_23=Lataa raportti
++RDIAG_24=Keräys kestää 20-30 sekuntia. Selain tallentaa tekstitiedoston, jonka voit tarkistaa ennen jakamista:
++RDIAG_25=Älä poistu sivulta äläkä muuta asetuksia keräyksen aikana.
++RDIAG_26=Pelkkää tekstiä — mitään ei piilotettu
++RDIAG_27=Ei koskaan lähetetä automaattisesti
++RDIAG_28=Turvallista julkaista
++RDIAG_29=Kerätään tietoja
++RDIAG_30=Luetaan radiot, portit ja lokit, sitten siivotaan tulos. Pysy tällä sivulla.
++RDIAG_31=Keräys epäonnistui. Odota hetki ja yritä uudelleen; jos ongelma jatkuu, tarkista järjestelmäloki.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 3460b81c4b..c6a1c80ec7 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Le mot de passe ne doit pas être identique au nom d'utilisateur.
+ RFB_12=Le mot de passe ne doit pas être la valeur par défaut.
+ RFB_13=Impossible d'appliquer les identifiants. Veuillez réessayer.
+ RFB_14=Application &amp; redémarrage du service d'administration&hellip;
++RDIAG_00=Diagnostics
++RDIAG_01=Rapport anonymis&eacute;
++RDIAG_02=G&eacute;n&egrave;re un instantan&eacute; complet de l'&eacute;tat du routeur pour le d&eacute;pannage &mdash; les m&ecirc;mes donn&eacute;es qu'un ing&eacute;nieur r&eacute;seau collecterait &agrave; la main, r&eacute;unies en une seule passe et <b>purg&eacute;es de tout ce qui pourrait vous identifier, vous, vos appareils ou votre r&eacute;seau</b>. Le rapport est en texte brut : ouvrez-le, lisez chaque ligne et ne le partagez que si vous le souhaitez. <b>Le routeur ne transmet rien</b> &mdash; le fichier est t&eacute;l&eacute;charg&eacute; sur cet appareil et ne va nulle part ailleurs.
++RDIAG_03=Ce qui est collect&eacute;
++RDIAG_04=Identit&eacute; du mod&egrave;le, version du firmware, disponibilit&eacute; et m&eacute;moire
++RDIAG_05=Canal, largeur, qualit&eacute; du signal et nombre de clients par radio
++RDIAG_06=&Eacute;tat et vitesse des ports filaires
++RDIAG_07=Acc&eacute;l&eacute;ration mat&eacute;rielle et relev&eacute;s du moteur QoS
++RDIAG_08=Baux DHCP, services actifs et ports ouverts
++RDIAG_09=Extraits r&eacute;cents des journaux noyau et syst&egrave;me
++RDIAG_10=Supprim&eacute; ou masqu&eacute;
++RDIAG_11=Mots de passe, cl&eacute;s Wi-Fi et jetons &mdash; <b>jamais collect&eacute;s</b> ; le rapport note seulement
++RDIAG_12=Noms d'utilisateur et d'appareil deviennent
++RDIAG_13=Les noms de r&eacute;seau Wi-Fi deviennent
++RDIAG_14=Chaque adresse MAC devient
++RDIAG_15=Votre IP publique et toutes les adresses IPv6 deviennent
++RDIAG_16=Comment fonctionne le masquage
++RDIAG_17=Les adresses locales (192.168.x.x) sont conserv&eacute;es &mdash; elles n'identifient rien hors de votre r&eacute;seau
++RDIAG_18=Les noms masqu&eacute;s restent <b>coh&eacute;rents dans un m&ecirc;me rapport</b> : un appareil peut &ecirc;tre suivi d'une section &agrave; l'autre sans &ecirc;tre identifi&eacute;
++RDIAG_19=Les noms n'ont aucun sens d'un rapport &agrave; l'autre &mdash; chaque rapport re&ccedil;oit un nouveau jeu
++RDIAG_20=Chaque rapport commence par un registre comptant ce qui a &eacute;t&eacute; retenu
++RDIAG_21=&Agrave; quoi ressemble le d&eacute;but de votre rapport
++RDIAG_22=Le registre d'anonymisation est imprim&eacute; en premier, pour voir ce qui a &eacute;t&eacute; trouv&eacute; et retenu avant tout le reste :
++RDIAG_23=T&eacute;l&eacute;charger le rapport
++RDIAG_24=La collecte prend 20 &agrave; 30 secondes. Votre navigateur enregistrera un fichier texte que vous pourrez v&eacute;rifier avant de le partager :
++RDIAG_25=Merci de ne pas quitter la page ni modifier de r&eacute;glages pendant la collecte.
++RDIAG_26=Texte brut &mdash; rien de cach&eacute;
++RDIAG_27=Jamais envoy&eacute; automatiquement
++RDIAG_28=Publiable sans risque
++RDIAG_29=Collecte des donn&eacute;es
++RDIAG_30=Lecture des radios, ports et journaux, puis anonymisation. Merci de rester sur cette page.
++RDIAG_31=La collecte a &eacute;chou&eacute;. Patientez un instant et r&eacute;essayez ; si le probl&egrave;me persiste, consultez le journal syst&egrave;me.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 30964bd9f2..30beb26ba0 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5690,3 +5690,35 @@ RFB_11=A jelszó nem egyezhet meg a felhasználónévvel.
+ RFB_12=A jelszó nem lehet az alapértelmezett érték.
+ RFB_13=A hitelesítő adatokat nem sikerült alkalmazni. Próbálja újra.
+ RFB_14=Alkalmazás &amp; az adminisztrációs szolgáltatás újraindítása&hellip;
++RDIAG_00=Diagnosztika
++RDIAG_01=Anonimizált jelentés
++RDIAG_02=Teljes pillanatképet készít a router állapotáról hibakereséshez — ugyanazok az adatok, amelyeket egy hálózati mérnök kézzel gyűjtene, egy menetben összegyűjtve és <b>megtisztítva mindentől, ami azonosíthatná Önt, eszközeit vagy hálózatát</b>. A jelentés egyszerű szöveg: nyissa meg, olvassa el minden sorát, és csak akkor ossza meg, ha szeretné. <b>A router semmit sem küld el</b> — a fájl erre az eszközre töltődik le, és sehová máshová nem kerül.
++RDIAG_03=Mit gyűjtünk
++RDIAG_04=Modellazonosító, firmware-verzió, üzemidő és memória
++RDIAG_05=Csatorna, sávszélesség, jelminőség és klienss zám rádiónként
++RDIAG_06=Vezetékes portok állapota és sebessége
++RDIAG_07=Hardveres gyorsítás és QoS-mérések
++RDIAG_08=DHCP-bérletek, futó szolgáltatások és nyitott portok
++RDIAG_09=Friss kernel- és rendszernapló-részletek
++RDIAG_10=Eltávolítva vagy maszkolva
++RDIAG_11=Jelszavak, Wi-Fi kulcsok és tokenek — <b>soha nem kerülnek gyűjtésre</b>; a jelentés csak azt jelzi
++RDIAG_12=A felhasználó- és eszköznevek ezekké válnak
++RDIAG_13=A Wi-Fi hálózatnevek ezekké válnak
++RDIAG_14=Minden MAC-cím ezzé válik
++RDIAG_15=Publikus IP-je és minden IPv6-cím ezekké válnak
++RDIAG_16=Hogyan működik a maszkolás
++RDIAG_17=A helyi címek (192.168.x.x) megmaradnak — a hálózatán kívül semmit sem azonosítanak
++RDIAG_18=A maszkolt nevek <b>egy jelentésen belül következetesek</b>: egy eszköz szakaszokon át követhető anélkül, hogy kiderülne, melyik az
++RDIAG_19=Jelentések között a nevek semmit sem jelentenek — minden jelentés új készletet kap
++RDIAG_20=Minden jelentés a visszatartott elemek jegyzékével kezdődik
++RDIAG_21=Így néz ki a jelentés eleje
++RDIAG_22=Az anonimizálási jegyzék áll legelöl, így először azt látja, mit talált és tartott vissza a rendszer:
++RDIAG_23=Jelentés letöltése
++RDIAG_24=A gyűjtés 20-30 másodpercig tart. A böngésző szöveges fájlt ment, amelyet megosztás előtt átnézhet:
++RDIAG_25=Kérjük, a gyűjtés alatt ne hagyja el az oldalt és ne módosítson beállításokat.
++RDIAG_26=Egyszerű szöveg — semmi rejtett
++RDIAG_27=Soha nem küldjük el automatikusan
++RDIAG_28=Biztonságosan közzétehető
++RDIAG_29=Adatgyűjtés
++RDIAG_30=Rádiók, portok és naplók beolvasása, majd anonimizálás. Kérjük, maradjon ezen az oldalon.
++RDIAG_31=A gyűjtés nem sikerült. Várjon egy pillanatot, és próbálja újra; ha továbbra sem megy, nézze meg a rendszernaplót.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 0e25242507..229938b3ee 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5690,3 +5690,35 @@ RFB_11=La password non deve essere uguale al nome utente.
+ RFB_12=La password non deve essere il valore predefinito.
+ RFB_13=Impossibile applicare le credenziali. Riprova.
+ RFB_14=Applicazione &amp; riavvio del servizio di amministrazione&hellip;
++RDIAG_00=Diagnostica
++RDIAG_01=Report anonimizzato
++RDIAG_02=Genera un'istantanea completa dello stato del router per la risoluzione dei problemi: gli stessi dati che un tecnico di rete raccoglierebbe a mano, riuniti in un solo passaggio e <b>ripuliti da tutto ci&ograve; che potrebbe identificare voi, i vostri dispositivi o la vostra rete</b>. Il report &egrave; testo semplice: apritelo, leggete ogni riga e condividetelo solo se lo desiderate. <b>Il router non trasmette nulla</b>: il file viene scaricato su questo dispositivo e non va da nessun'altra parte.
++RDIAG_03=Cosa viene raccolto
++RDIAG_04=Identit&agrave; del modello, versione firmware, uptime e memoria
++RDIAG_05=Canale, larghezza, qualit&agrave; del segnale e client di ogni radio
++RDIAG_06=Stato e velocit&agrave; delle porte cablate
++RDIAG_07=Accelerazione hardware e letture del motore QoS
++RDIAG_08=Lease DHCP, servizi attivi e porte aperte
++RDIAG_09=Estratti recenti dei log di kernel e sistema
++RDIAG_10=Rimosso o mascherato
++RDIAG_11=Password, chiavi Wi-Fi e token: <b>mai raccolti</b>; il report annota solo
++RDIAG_12=Nomi utente e dei dispositivi diventano
++RDIAG_13=I nomi delle reti Wi-Fi diventano
++RDIAG_14=Ogni indirizzo MAC diventa
++RDIAG_15=Il vostro IP pubblico e tutti gli indirizzi IPv6 diventano
++RDIAG_16=Come funziona il mascheramento
++RDIAG_17=Gli indirizzi locali (192.168.x.x) restano: non identificano nulla fuori dalla vostra rete
++RDIAG_18=I nomi mascherati restano <b>coerenti nello stesso report</b>: un dispositivo si pu&ograve; seguire tra le sezioni senza rivelare quale sia
++RDIAG_19=I nomi non hanno significato tra report diversi: ogni report riceve un set nuovo
++RDIAG_20=Ogni report inizia con un registro che conta esattamente quanto trattenuto
++RDIAG_21=Come appare l'inizio del vostro report
++RDIAG_22=Il registro di anonimizzazione &egrave; stampato per primo, cos&igrave; vedete subito cosa &egrave; stato trovato e trattenuto:
++RDIAG_23=Scarica report
++RDIAG_24=La raccolta richiede 20-30 secondi. Il browser salver&agrave; un file di testo da controllare prima di condividerlo:
++RDIAG_25=Non lasciare la pagina e non modificare impostazioni durante la raccolta.
++RDIAG_26=Testo semplice: nulla di nascosto
++RDIAG_27=Mai inviato automaticamente
++RDIAG_28=Sicuro da pubblicare
++RDIAG_29=Raccolta dati
++RDIAG_30=Lettura di radio, porte e log, quindi anonimizzazione. Restate su questa pagina.
++RDIAG_31=Raccolta non riuscita. Attendere e riprovare; se persiste, controllare il log di sistema.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 0592903ec5..3b2f456714 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5690,3 +5690,35 @@ RFB_11=パスワードはユーザー名と同じにできません。
+ RFB_12=パスワードは初期値にできません。
+ RFB_13=資格情報を適用できませんでした。もう一度お試しください。
+ RFB_14=適用 &amp; 管理サービスを再起動しています&hellip;
++RDIAG_00=診断
++RDIAG_01=匿名化レポート
++RDIAG_02=トラブルシューティングのためにルーターの状態の完全なスナップショットを生成します。ネットワークエンジニアが手作業で集めるのと同じデータを一度に収集し、<b>あなた・お使いの機器・ネットワークを特定し得る情報をすべて除去</b>します。レポートはプレーンテキストです。開いて全行を確認し、共有するかどうかはご自身で決められます。<b>ルーターが自動送信することは一切ありません</b>。ファイルはこの端末にダウンロードされるだけです。
++RDIAG_03=収集される情報
++RDIAG_04=モデル情報、ファームウェアバージョン、稼働時間、メモリ
++RDIAG_05=各無線のチャンネル、帯域幅、信号品質、接続クライアント数
++RDIAG_06=有線ポートのリンク状態と速度
++RDIAG_07=ハードウェアアクセラレーションと QoS エンジンの読み値
++RDIAG_08=DHCP リース数、稼働中サービス、開放ポート
++RDIAG_09=カーネルおよびシステムログの最新抜粋
++RDIAG_10=削除またはマスクされる情報
++RDIAG_11=パスワード・Wi-Fi キー・トークンは<b>収集されません</b>。レポートに記録されるのは次の表記のみ:
++RDIAG_12=ユーザー名と機器名は次のようになります:
++RDIAG_13=Wi-Fi ネットワーク名は次のようになります:
++RDIAG_14=すべての MAC アドレスは次のようになります:
++RDIAG_15=グローバル IP とすべての IPv6 アドレスは次のようになります:
++RDIAG_16=マスキングの仕組み
++RDIAG_17=ローカルアドレス（192.168.x.x）は保持されます。ネットワークの外では何も特定できないためです
++RDIAG_18=マスクされた名前は<b>同一レポート内で一貫</b>しています。どの機器かを明かさずにセクション間で追跡できます
++RDIAG_19=レポートをまたぐと名前は無意味になり、毎回新しい名前が割り当てられます
++RDIAG_20=各レポートの冒頭には、除外された項目を数えた台帳が付きます
++RDIAG_21=レポート冒頭の例
++RDIAG_22=匿名化台帳が最初に出力されるため、何が検出・除外されたかを最初に確認できます:
++RDIAG_23=レポートをダウンロード
++RDIAG_24=収集には 20〜30 秒かかります。共有前に確認できるテキストファイルとして保存されます:
++RDIAG_25=収集中はページを移動したり設定を変更したりしないでください。
++RDIAG_26=プレーンテキスト — 隠された情報なし
++RDIAG_27=自動送信は一切なし
++RDIAG_28=公開しても安全
++RDIAG_29=データを収集中
++RDIAG_30=無線・ポート・ログを読み取り、匿名化しています。このページのままお待ちください。
++RDIAG_31=収集に失敗しました。しばらく待って再試行してください。続く場合はシステムログを確認してください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 2aed2c10b1..cfab74b874 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5690,3 +5690,35 @@ RFB_11=비밀번호는 사용자 이름과 같을 수 없습니다.
+ RFB_12=비밀번호는 기본값일 수 없습니다.
+ RFB_13=자격 증명을 적용하지 못했습니다. 다시 시도하세요.
+ RFB_14=적용 &amp; 관리 서비스 재시작 중&hellip;
++RDIAG_00=진단
++RDIAG_01=익명화된 보고서
++RDIAG_02=문제 해결을 위해 라우터 상태의 전체 스냅샷을 생성합니다. 네트워크 엔지니어가 수동으로 수집할 데이터를 한 번에 모으고, <b>사용자·기기·네트워크를 식별할 수 있는 모든 정보를 제거</b>합니다. 보고서는 일반 텍스트입니다. 열어서 모든 줄을 확인하고, 공유 여부는 직접 결정하세요. <b>라우터는 아무것도 전송하지 않습니다</b> — 파일은 이 기기로만 다운로드됩니다.
++RDIAG_03=수집되는 항목
++RDIAG_04=모델 정보, 펌웨어 버전, 가동 시간 및 메모리
++RDIAG_05=각 무선의 채널, 대역폭, 신호 상태 및 클라이언트 수
++RDIAG_06=유선 포트 링크 상태 및 속도
++RDIAG_07=하드웨어 가속 및 QoS 엔진 판독값
++RDIAG_08=DHCP 임대 수, 실행 중인 서비스 및 열린 포트
++RDIAG_09=커널 및 시스템 로그의 최근 발췌
++RDIAG_10=제거 또는 마스킹되는 항목
++RDIAG_11=비밀번호, Wi-Fi 키, 토큰은 <b>절대 수집되지 않습니다</b>. 보고서에는 다음만 표시됩니다:
++RDIAG_12=사용자 이름과 기기 이름은 다음으로 바뀝니다:
++RDIAG_13=Wi-Fi 네트워크 이름은 다음으로 바뀝니다:
++RDIAG_14=모든 MAC 주소는 다음으로 바뀝니다:
++RDIAG_15=공인 IP와 모든 IPv6 주소는 다음으로 바뀝니다:
++RDIAG_16=마스킹 작동 방식
++RDIAG_17=로컬 주소(192.168.x.x)는 유지됩니다. 네트워크 밖에서는 아무것도 식별하지 못하기 때문입니다
++RDIAG_18=마스킹된 이름은 <b>한 보고서 안에서 일관</b>됩니다. 어떤 기기인지 밝히지 않고도 섹션 간 추적이 가능합니다
++RDIAG_19=보고서 간에는 이름이 무의미하며, 보고서마다 새 이름이 부여됩니다
++RDIAG_20=모든 보고서는 제외된 항목을 집계한 원장으로 시작합니다
++RDIAG_21=보고서 상단 예시
++RDIAG_22=익명화 원장이 가장 먼저 출력되어, 무엇이 발견되고 제외되었는지 먼저 확인할 수 있습니다:
++RDIAG_23=보고서 다운로드
++RDIAG_24=수집에는 20-30초가 걸립니다. 공유 전에 검토할 수 있는 텍스트 파일로 저장됩니다:
++RDIAG_25=수집 중에는 페이지를 벗어나거나 설정을 변경하지 마세요.
++RDIAG_26=일반 텍스트 — 숨겨진 것 없음
++RDIAG_27=자동 전송 없음
++RDIAG_28=공개 게시 가능
++RDIAG_29=데이터 수집 중
++RDIAG_30=무선, 포트, 로그를 읽고 결과를 익명화하는 중입니다. 이 페이지에 머물러 주세요.
++RDIAG_31=수집에 실패했습니다. 잠시 후 다시 시도하세요. 계속되면 시스템 로그를 확인하세요.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 1d68b94852..3ec022ed01 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Kata laluan tidak boleh sama dengan nama pengguna.
+ RFB_12=Kata laluan tidak boleh nilai lalai.
+ RFB_13=Tidak dapat menggunakan kelayakan. Sila cuba lagi.
+ RFB_14=Menggunakan &amp; memulakan semula perkhidmatan pentadbiran&hellip;
++RDIAG_00=Diagnostik
++RDIAG_01=Laporan bersih
++RDIAG_02=Menjana gambaran lengkap keadaan penghala untuk penyelesaian masalah — data yang sama seperti yang dikumpul jurutera rangkaian secara manual, diambil sekali gus dan <b>dibersihkan daripada apa-apa yang boleh mengenal pasti anda, peranti anda atau rangkaian anda</b>. Laporan ialah teks biasa: buka, baca setiap baris dan kongsi hanya jika anda mahu. <b>Penghala tidak menghantar apa-apa</b> — fail dimuat turun ke peranti ini dan tidak ke mana-mana lagi.
++RDIAG_03=Apa yang dikumpul
++RDIAG_04=Identiti model, versi perisian tegar, masa hidup dan memori
++RDIAG_05=Saluran, lebar, kesihatan isyarat dan bilangan klien setiap radio
++RDIAG_06=Status dan kelajuan port berwayar
++RDIAG_07=Pecutan perkakasan dan bacaan enjin QoS
++RDIAG_08=Pajakan DHCP, perkhidmatan berjalan dan port terbuka
++RDIAG_09=Petikan terkini log kernel dan sistem
++RDIAG_10=Dibuang atau ditopeng
++RDIAG_11=Kata laluan, kunci Wi-Fi dan token — <b>tidak pernah dikumpul</b>; laporan hanya mencatat
++RDIAG_12=Nama pengguna dan peranti menjadi
++RDIAG_13=Nama rangkaian Wi-Fi menjadi
++RDIAG_14=Setiap alamat MAC menjadi
++RDIAG_15=IP awam anda dan semua alamat IPv6 menjadi
++RDIAG_16=Cara penopengan berfungsi
++RDIAG_17=Alamat setempat (192.168.x.x) dikekalkan — ia tidak mengenal pasti apa-apa di luar rangkaian anda
++RDIAG_18=Nama bertopeng kekal <b>konsisten dalam satu laporan</b>: peranti boleh dijejak merentas bahagian tanpa mendedahkan peranti yang mana
++RDIAG_19=Antara laporan, nama tiada makna — setiap laporan mendapat set baharu
++RDIAG_20=Setiap laporan bermula dengan senarai yang mengira apa yang ditahan
++RDIAG_21=Beginilah rupa bahagian atas laporan anda
++RDIAG_22=Senarai pembersihan dicetak dahulu supaya anda nampak apa yang ditemui dan ditahan sebelum yang lain:
++RDIAG_23=Muat Turun Laporan
++RDIAG_24=Pengumpulan mengambil 20-30 saat. Pelayar akan menyimpan fail teks yang boleh anda semak sebelum berkongsi:
++RDIAG_25=Jangan tinggalkan halaman atau ubah tetapan semasa pengumpulan berjalan.
++RDIAG_26=Teks biasa — tiada yang tersembunyi
++RDIAG_27=Tidak pernah dihantar secara automatik
++RDIAG_28=Selamat untuk disiarkan
++RDIAG_29=Mengumpul data
++RDIAG_30=Membaca radio, port dan log, kemudian membersihkan hasilnya. Sila kekal di halaman ini.
++RDIAG_31=Pengumpulan gagal. Tunggu sebentar dan cuba lagi; jika berterusan, semak Log Sistem.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 6212346c3d..6c3eb8d8c0 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Het wachtwoord mag niet gelijk zijn aan de gebruikersnaam.
+ RFB_12=Het wachtwoord mag niet de standaardwaarde zijn.
+ RFB_13=Kon de inloggegevens niet toepassen. Probeer het opnieuw.
+ RFB_14=Toepassen &amp; herstarten van de beheerservice&hellip;
++RDIAG_00=Diagnostiek
++RDIAG_01=Opgeschoond rapport
++RDIAG_02=Maakt een volledige momentopname van de routerstatus voor probleemoplossing: dezelfde gegevens die een netwerkengineer handmatig zou verzamelen, in &eacute;&eacute;n keer opgehaald en <b>ontdaan van alles wat u, uw apparaten of uw netwerk zou kunnen identificeren</b>. Het rapport is platte tekst: open het, lees elke regel en deel het alleen als u dat wilt. <b>De router verstuurt niets</b>: het bestand wordt naar dit apparaat gedownload en gaat nergens anders heen.
++RDIAG_03=Wat wordt verzameld
++RDIAG_04=Modelidentiteit, firmwareversie, uptime en geheugen
++RDIAG_05=Kanaal, breedte, signaalkwaliteit en clientaantallen per radio
++RDIAG_06=Linkstatus en snelheid van bekabelde poorten
++RDIAG_07=Hardwareversnelling en QoS-metingen
++RDIAG_08=DHCP-leases, actieve services en open poorten
++RDIAG_09=Recente fragmenten uit kernel- en systeemlog
++RDIAG_10=Verwijderd of gemaskeerd
++RDIAG_11=Wachtwoorden, wifi-sleutels en tokens: <b>nooit verzameld</b>; het rapport noteert alleen
++RDIAG_12=Gebruikers- en apparaatnamen worden
++RDIAG_13=Wifi-netwerknamen worden
++RDIAG_14=Elk MAC-adres wordt
++RDIAG_15=Uw publieke IP en alle IPv6-adressen worden
++RDIAG_16=Hoe het maskeren werkt
++RDIAG_17=Lokale adressen (192.168.x.x) blijven staan: ze identificeren niets buiten uw eigen netwerk
++RDIAG_18=Gemaskeerde namen blijven <b>consistent binnen &eacute;&eacute;n rapport</b>: een apparaat is door de secties te volgen zonder te onthullen welk apparaat het is
++RDIAG_19=Namen betekenen niets tussen rapporten: elk rapport krijgt een nieuwe set
++RDIAG_20=Elk rapport opent met een overzicht van wat precies is weggelaten
++RDIAG_21=Zo ziet de bovenkant van uw rapport eruit
++RDIAG_22=Het opschoningsoverzicht staat bovenaan, zodat u eerst ziet wat er is gevonden en weggelaten:
++RDIAG_23=Rapport downloaden
++RDIAG_24=Verzamelen duurt 20-30 seconden. Uw browser bewaart een tekstbestand dat u kunt controleren voordat u het deelt:
++RDIAG_25=Verlaat de pagina niet en wijzig geen instellingen terwijl het verzamelen loopt.
++RDIAG_26=Platte tekst: niets verborgen
++RDIAG_27=Nooit automatisch verzonden
++RDIAG_28=Veilig om te publiceren
++RDIAG_29=Gegevens verzamelen
++RDIAG_30=Radio's, poorten en logs worden gelezen en daarna opgeschoond. Blijf op deze pagina.
++RDIAG_31=Verzamelen mislukt. Wacht even en probeer opnieuw; blijft het misgaan, controleer dan het systeemlog.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 5a5bddf479..88412f8bfd 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Passordet kan ikke være likt brukernavnet.
+ RFB_12=Passordet kan ikke være standardverdien.
+ RFB_13=Kunne ikke ta i bruk påloggingsinformasjonen. Prøv igjen.
+ RFB_14=Tar i bruk &amp; starter administrasjonstjenesten på nytt&hellip;
++RDIAG_00=Diagnostikk
++RDIAG_01=Renset rapport
++RDIAG_02=Lager et komplett øyeblikksbilde av ruterens tilstand for feilsøking — de samme dataene en nettverksingeniør ville samlet inn manuelt, hentet i én omgang og <b>renset for alt som kan identifisere deg, enhetene dine eller nettverket ditt</b>. Rapporten er ren tekst: åpne den, les hver linje, og del den bare hvis du vil. <b>Ruteren sender ingenting</b> — filen lastes ned til denne enheten og går ingen andre steder.
++RDIAG_03=Hva som samles inn
++RDIAG_04=Modellidentitet, fastvareversjon, oppetid og minne
++RDIAG_05=Kanal, bredde, signalhelse og antall klienter per radio
++RDIAG_06=Linkstatus og hastighet for kablede porter
++RDIAG_07=Maskinvareakselerasjon og QoS-avlesninger
++RDIAG_08=DHCP-leier, kjørende tjenester og åpne porter
++RDIAG_09=Ferske utdrag fra kjerne- og systemlogg
++RDIAG_10=Fjernet eller maskert
++RDIAG_11=Passord, Wi-Fi-nøkler og tokens — <b>samles aldri inn</b>; rapporten noterer bare
++RDIAG_12=Bruker- og enhetsnavn blir til
++RDIAG_13=Wi-Fi-nettverksnavn blir til
++RDIAG_14=Hver MAC-adresse blir til
++RDIAG_15=Din offentlige IP og alle IPv6-adresser blir til
++RDIAG_16=Slik fungerer maskeringen
++RDIAG_17=Lokale adresser (192.168.x.x) beholdes — de identifiserer ingenting utenfor nettverket ditt
++RDIAG_18=Maskerte navn er <b>konsistente innenfor én rapport</b>: en enhet kan følges gjennom seksjonene uten å avsløre hvilken det er
++RDIAG_19=Mellom rapporter betyr navnene ingenting — hver rapport får et nytt sett
++RDIAG_20=Hver rapport starter med en oversikt over nøyaktig hva som ble holdt tilbake
++RDIAG_21=Slik ser toppen av rapporten din ut
++RDIAG_22=Renseoversikten skrives først, slik at du ser hva som ble funnet og holdt tilbake før noe annet:
++RDIAG_23=Last ned rapport
++RDIAG_24=Innsamlingen tar 20-30 sekunder. Nettleseren lagrer en tekstfil du kan se gjennom før du deler den:
++RDIAG_25=Ikke forlat siden eller endre innstillinger mens innsamlingen pågår.
++RDIAG_26=Ren tekst — ingenting skjult
++RDIAG_27=Sendes aldri automatisk
++RDIAG_28=Trygg å publisere
++RDIAG_29=Samler inn data
++RDIAG_30=Leser radioer, porter og logger, deretter renses resultatet. Bli på denne siden.
++RDIAG_31=Innsamlingen mislyktes. Vent litt og prøv igjen; vedvarer det, sjekk systemloggen.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 7ebca60682..753c986cb5 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Hasło nie może być takie samo jak nazwa użytkownika.
+ RFB_12=Hasło nie może być wartością domyślną.
+ RFB_13=Nie udało się zastosować danych logowania. Spróbuj ponownie.
+ RFB_14=Stosowanie &amp; ponowne uruchamianie usługi administracyjnej&hellip;
++RDIAG_00=Diagnostyka
++RDIAG_01=Zanonimizowany raport
++RDIAG_02=Tworzy pełny obraz stanu routera do diagnostyki — te same dane, które inżynier sieci zbierałby ręcznie, zebrane za jednym razem i <b>oczyszczone ze wszystkiego, co mogłoby zidentyfikować Ciebie, Twoje urządzenia lub sieć</b>. Raport to zwykły tekst: otwórz go, przeczytaj każdą linię i udostępnij tylko wtedy, gdy chcesz. <b>Router niczego nie wysyła</b> — plik pobiera się na to urządzenie i nigdzie indziej nie trafia.
++RDIAG_03=Co jest zbierane
++RDIAG_04=Model, wersja firmware, czas pracy i pamięć
++RDIAG_05=Kanał, szerokość, jakość sygnału i liczba klientów każdego radia
++RDIAG_06=Stan i prędkość portów przewodowych
++RDIAG_07=Akceleracja sprzętowa i odczyty silnika QoS
++RDIAG_08=Dzierżawy DHCP, uruchomione usługi i otwarte porty
++RDIAG_09=Najnowsze fragmenty logów jądra i systemu
++RDIAG_10=Usunięte lub zamaskowane
++RDIAG_11=Hasła, klucze Wi-Fi i tokeny — <b>nigdy nie są zbierane</b>; raport odnotowuje tylko
++RDIAG_12=Nazwy użytkowników i urządzeń stają się
++RDIAG_13=Nazwy sieci Wi-Fi stają się
++RDIAG_14=Każdy adres MAC staje się
++RDIAG_15=Twój publiczny adres IP i wszystkie adresy IPv6 stają się
++RDIAG_16=Jak działa maskowanie
++RDIAG_17=Adresy lokalne (192.168.x.x) pozostają — poza Twoją siecią niczego nie identyfikują
++RDIAG_18=Zamaskowane nazwy są <b>spójne w obrębie raportu</b>: urządzenie można śledzić między sekcjami, nie ujawniając, które to urządzenie
++RDIAG_19=Między raportami nazwy nie mają znaczenia — każdy raport dostaje nowy zestaw
++RDIAG_20=Każdy raport zaczyna się od rejestru zliczającego wszystko, co ukryto
++RDIAG_21=Tak wygląda początek raportu
++RDIAG_22=Rejestr anonimizacji jest drukowany na początku, aby najpierw było widać, co znaleziono i ukryto:
++RDIAG_23=Pobierz raport
++RDIAG_24=Zbieranie trwa 20-30 sekund. Przeglądarka zapisze plik tekstowy, który można sprawdzić przed udostępnieniem:
++RDIAG_25=Nie opuszczaj strony ani nie zmieniaj ustawień podczas zbierania.
++RDIAG_26=Zwykły tekst — nic ukrytego
++RDIAG_27=Nigdy nie wysyłany automatycznie
++RDIAG_28=Bezpieczny do publikacji
++RDIAG_29=Zbieranie danych
++RDIAG_30=Odczyt radiów, portów i logów, następnie anonimizacja. Pozostań na tej stronie.
++RDIAG_31=Zbieranie nie powiodło się. Odczekaj chwilę i spróbuj ponownie; jeśli problem trwa, sprawdź dziennik systemowy.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 3b6fdf292d..8a50184166 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Parola nu trebuie să fie identică cu numele de utilizator.
+ RFB_12=Parola nu trebuie să fie valoarea implicită.
+ RFB_13=Nu s-au putut aplica datele de autentificare. Încercați din nou.
+ RFB_14=Se aplică &amp; se repornește serviciul de administrare&hellip;
++RDIAG_00=Diagnosticare
++RDIAG_01=Raport anonimizat
++RDIAG_02=Generează o imagine completă a stării routerului pentru depanare — aceleași date pe care un inginer de rețea le-ar culege manual, adunate dintr-o singură trecere și <b>curățate de tot ce v-ar putea identifica pe dvs., dispozitivele sau rețeaua</b>. Raportul este text simplu: deschideți-l, citiți fiecare linie și distribuiți-l doar dacă doriți. <b>Routerul nu transmite nimic</b> — fișierul se descarcă pe acest dispozitiv și nu merge nicăieri altundeva.
++RDIAG_03=Ce se colectează
++RDIAG_04=Identitatea modelului, versiunea firmware, timpul de funcționare și memoria
++RDIAG_05=Canalul, lățimea, calitatea semnalului și numărul de clienți pentru fiecare radio
++RDIAG_06=Starea și viteza porturilor cu fir
++RDIAG_07=Accelerarea hardware și citirile motorului QoS
++RDIAG_08=Concesiuni DHCP, servicii active și porturi deschise
++RDIAG_09=Extrase recente din jurnalul kernelului și al sistemului
++RDIAG_10=Eliminat sau mascat
++RDIAG_11=Parolele, cheile Wi-Fi și tokenurile — <b>nu sunt colectate niciodată</b>; raportul notează doar
++RDIAG_12=Numele de utilizator și de dispozitiv devin
++RDIAG_13=Numele rețelelor Wi-Fi devin
++RDIAG_14=Fiecare adresă MAC devine
++RDIAG_15=IP-ul public și toate adresele IPv6 devin
++RDIAG_16=Cum funcționează mascarea
++RDIAG_17=Adresele locale (192.168.x.x) se păstrează — nu identifică nimic în afara rețelei dvs.
++RDIAG_18=Numele mascate rămân <b>consecvente în cadrul unui raport</b>: un dispozitiv poate fi urmărit între secțiuni fără a dezvălui care este
++RDIAG_19=Între rapoarte numele nu au sens — fiecare raport primește un set nou
++RDIAG_20=Fiecare raport începe cu un registru care numără exact ce a fost reținut
++RDIAG_21=Cum arată începutul raportului
++RDIAG_22=Registrul de anonimizare este tipărit primul, ca să vedeți întâi ce a fost găsit și reținut:
++RDIAG_23=Descarcă raportul
++RDIAG_24=Colectarea durează 20-30 de secunde. Browserul va salva un fișier text pe care îl puteți verifica înainte de a-l distribui:
++RDIAG_25=Vă rugăm să nu părăsiți pagina și să nu modificați setări în timpul colectării.
++RDIAG_26=Text simplu — nimic ascuns
++RDIAG_27=Nu se trimite niciodată automat
++RDIAG_28=Sigur de publicat
++RDIAG_29=Se colectează date
++RDIAG_30=Se citesc radiourile, porturile și jurnalele, apoi rezultatul este anonimizat. Rămâneți pe această pagină.
++RDIAG_31=Colectarea a eșuat. Așteptați un moment și încercați din nou; dacă persistă, verificați jurnalul de sistem.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 176515d393..07749ccc26 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Пароль не должен совпадать с именем пол
+ RFB_12=Пароль не должен быть значением по умолчанию.
+ RFB_13=Не удалось применить учётные данные. Попробуйте ещё раз.
+ RFB_14=Применение &amp; перезапуск службы администрирования&hellip;
++RDIAG_00=Диагностика
++RDIAG_01=Обезличенный отчёт
++RDIAG_02=Создаёт полный снимок состояния роутера для диагностики — те же данные, что сетевой инженер собирал бы вручную, за один проход и <b>очищенные от всего, что могло бы идентифицировать вас, ваши устройства или вашу сеть</b>. Отчёт — обычный текст: откройте его, прочитайте каждую строку и делитесь им только по своему желанию. <b>Роутер ничего не передаёт</b> — файл скачивается на это устройство и больше никуда не уходит.
++RDIAG_03=Что собирается
++RDIAG_04=Модель, версия прошивки, аптайм и память
++RDIAG_05=Канал, ширина, качество сигнала и число клиентов каждого радиомодуля
++RDIAG_06=Состояние и скорость проводных портов
++RDIAG_07=Аппаратное ускорение и показания движка QoS
++RDIAG_08=Аренды DHCP, запущенные службы и открытые порты
++RDIAG_09=Свежие фрагменты журналов ядра и системы
++RDIAG_10=Удалено или замаскировано
++RDIAG_11=Пароли, ключи Wi-Fi и токены — <b>никогда не собираются</b>; отчёт отмечает только
++RDIAG_12=Имена пользователей и устройств становятся
++RDIAG_13=Имена сетей Wi-Fi становятся
++RDIAG_14=Каждый MAC-адрес становится
++RDIAG_15=Ваш публичный IP и все адреса IPv6 становятся
++RDIAG_16=Как работает маскирование
++RDIAG_17=Локальные адреса (192.168.x.x) сохраняются — вне вашей сети они ничего не идентифицируют
++RDIAG_18=Маскированные имена <b>согласованы внутри одного отчёта</b>: устройство можно проследить по разделам, не раскрывая, какое это устройство
++RDIAG_19=Между отчётами имена не имеют смысла — каждый отчёт получает новый набор
++RDIAG_20=Каждый отчёт начинается с реестра, подсчитывающего всё скрытое
++RDIAG_21=Как выглядит начало вашего отчёта
++RDIAG_22=Реестр обезличивания печатается первым, чтобы вы сразу видели, что найдено и скрыто:
++RDIAG_23=Скачать отчёт
++RDIAG_24=Сбор занимает 20-30 секунд. Браузер сохранит текстовый файл, который можно просмотреть перед отправкой:
++RDIAG_25=Пожалуйста, не покидайте страницу и не меняйте настройки во время сбора.
++RDIAG_26=Обычный текст — ничего скрытого
++RDIAG_27=Никогда не отправляется автоматически
++RDIAG_28=Безопасно публиковать
++RDIAG_29=Сбор данных
++RDIAG_30=Чтение радиомодулей, портов и журналов, затем обезличивание. Оставайтесь на этой странице.
++RDIAG_31=Сбор не удался. Подождите немного и повторите; если не помогает, проверьте системный журнал.
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+new file mode 100644
+index 0000000000..e932cfc1f3
+--- /dev/null
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -0,0 +1,198 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RDIAG_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 40px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px;max-width:1060px}
++.pagehead h1{font-size:24px;font-weight:700}
++.pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
++.lede{max-width:68ch;margin:8px 0 18px;color:var(--bone-dim)}
++.lede b{color:var(--bone);font-weight:600}
++.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px;margin:0 0 16px;max-width:1060px}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px}
++.card h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card h2.red{color:var(--crimson)}
++.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px}
++.card li{padding-left:16px;position:relative}
++.card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
++.card.keep li::before{background:var(--jade)}
++.card.mask li::before{background:var(--crimson)}
++.card li b{color:var(--bone);font-weight:600}
++.tok{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--bone);background:var(--panel-2);border:1px solid var(--line-soft);border-radius:5px;padding:1px 5px;white-space:nowrap}
++.ledger{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1060px}
++.ledger h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
++.ledger p{font-size:12.5px;max-width:70ch;margin:0 0 10px}
++pre.sample{background:#050506;border:1px solid var(--line-soft);border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:11px;line-height:1.6;color:var(--bone-dim);font-family:ui-monospace,Consolas,monospace}
++pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{color:var(--bone)}
++.dlrow{display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;max-width:1060px}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:13px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:9px;padding:11px 26px;cursor:pointer}
++.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btn:focus-visible{outline:2px solid var(--crimson);outline-offset:2px}
++.btn[disabled]{opacity:.45;cursor:default}
++.dlhint{font-size:12px;color:var(--steel);max-width:52ch}
++.dlhint .fn{font-family:ui-monospace,Consolas,monospace;color:var(--bone-dim)}
++.dlhint .dlwarn{display:block;margin-top:6px;color:var(--bone);font-weight:500}
++.dlerr{display:none;margin-top:10px;color:var(--danger);font-size:12.5px;max-width:1060px}
++.assure{display:flex;gap:22px;flex-wrap:wrap;margin:14px 2px 0;font-size:12px;max-width:1060px}
++.assure span{display:flex;align-items:center;gap:7px}
++.assure i{font-style:normal;color:var(--jade);font-weight:700}
++#ovl{position:fixed;inset:0;background:rgba(4,4,5,.82);display:none;align-items:center;justify-content:center;z-index:50}
++#ovl.show{display:flex}
++.ovlbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:30px 38px;text-align:center;max-width:380px}
++.spin{width:34px;height:34px;margin:0 auto 14px;border-radius:50%;border:3px solid var(--panel-2);border-top-color:var(--crimson);animation:sp .9s linear infinite}
++@keyframes sp{to{transform:rotate(360deg)}}
++@media (prefers-reduced-motion:reduce){.spin{animation:none}}
++.ovlbox h3{font-size:17px;margin-bottom:6px}
++.ovlbox p{font-size:12.5px;color:var(--bone-dim);margin:0}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <h1><#RDIAG_00#></h1>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.0</span>
++</div>
++<p class="lede"><#RDIAG_02#></p>
++
++<div class="cards">
++  <div class="card keep">
++    <h2><#RDIAG_03#></h2>
++    <ul>
++      <li><#RDIAG_04#></li>
++      <li><#RDIAG_05#></li>
++      <li><#RDIAG_06#></li>
++      <li><#RDIAG_07#></li>
++      <li><#RDIAG_08#></li>
++      <li><#RDIAG_09#></li>
++    </ul>
++  </div>
++  <div class="card mask">
++    <h2 class="red"><#RDIAG_10#></h2>
++    <ul>
++      <li><#RDIAG_11#> <span class="tok">SET</span> / <span class="tok">EMPTY</span></li>
++      <li><#RDIAG_12#> <span class="tok">[USER-1]</span> <span class="tok">[HOST-2]</span></li>
++      <li><#RDIAG_13#> <span class="tok">[SSID-1]</span></li>
++      <li><#RDIAG_14#> <span class="tok">MAC-3</span></li>
++      <li><#RDIAG_15#> <span class="tok">[EXT-IP-1]</span> <span class="tok">[IP6-2]</span></li>
++    </ul>
++  </div>
++  <div class="card">
++    <h2><#RDIAG_16#></h2>
++    <ul>
++      <li><#RDIAG_17#></li>
++      <li><#RDIAG_18#></li>
++      <li><#RDIAG_19#></li>
++      <li><#RDIAG_20#></li>
++    </ul>
++  </div>
++</div>
++
++<div class="ledger">
++  <h2><#RDIAG_21#></h2>
++  <p><#RDIAG_22#></p>
++  <pre class="sample"><span class="w">#### 0. SANITIZATION LEDGER (what was found and withheld) ####</span>
++  secrets redacted           : <span class="g">2</span>
++  usernames redacted         : <span class="g">1</span>
++  SSID values redacted       : <span class="g">3</span>
++  MAC addresses pseudonymized: <span class="g">14</span>
++  public IPv4 redacted       : <span class="g">3</span>
++  <span class="r">NOTE: no credentials, MACs, host/user names or external IPs
++  are contained in this file. Safe to post publicly.</span></pre>
++</div>
++
++<div class="dlrow">
++  <button class="btn" id="dl" type="button"><#RDIAG_23#></button>
++  <div class="dlhint">
++    <#RDIAG_24#> <span class="fn" id="fn"></span>
++    <span class="dlwarn"><#RDIAG_25#></span>
++  </div>
++</div>
++<div class="dlerr" id="dlerr"><#RDIAG_31#></div>
++<div class="assure">
++  <span><i>&#10003;</i> <#RDIAG_26#></span>
++  <span><i>&#10003;</i> <#RDIAG_27#></span>
++  <span><i>&#10003;</i> <#RDIAG_28#></span>
++</div>
++
++<div id="ovl" role="alert" aria-busy="true">
++  <div class="ovlbox">
++    <div class="spin"></div>
++    <h3><#RDIAG_29#><span id="dots">.</span></h3>
++    <p><#RDIAG_30#></p>
++  </div>
++</div>
++
++<script>
++(function(){
++  var MODEL = '<% nvram_get("productid"); %>' || 'router';
++  function fname(){
++    var d=new Date(), p=function(n){return (n<10?'0':'')+n};
++    return 'reaper_diag_'+MODEL+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds())+'.txt';
++  }
++  document.getElementById('fn').textContent = 'reaper_diag_'+MODEL+'_....txt';
++
++  var busy=false, dotT=null;
++  function overlay(on){
++    var o=document.getElementById('ovl'), de=document.getElementById('dots');
++    if(on){
++      o.classList.add('show');
++      var n=1; de.textContent='.';
++      dotT=setInterval(function(){ n=n%3+1; de.textContent='...'.slice(0,n); },450);
++    }else{
++      o.classList.remove('show');
++      if(dotT){ clearInterval(dotT); dotT=null; }
++    }
++  }
++  document.getElementById('dl').addEventListener('click', function(){
++    if(busy) return;
++    busy=true;
++    var btn=this, err=document.getElementById('dlerr');
++    btn.disabled=true; err.style.display='none';
++    overlay(true);
++    var x=new XMLHttpRequest();
++    x.open('GET','/reaper_diag.cgi?_='+Date.now(), true);
++    x.timeout=180000;
++    x.onreadystatechange=function(){
++      if(x.readyState!==4) return;
++      overlay(false); busy=false; btn.disabled=false;
++      var t=x.responseText||'';
++      if(x.status===200 && t.length>200 && t.indexOf('ERROR:')!==0){
++        var a=document.createElement('a');
++        a.href=URL.createObjectURL(new Blob([t],{type:'text/plain'}));
++        a.download=fname();
++        document.body.appendChild(a); a.click();
++        setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },2000);
++      }else{
++        err.style.display='block';
++      }
++    };
++    x.ontimeout=function(){ overlay(false); busy=false; btn.disabled=false; document.getElementById('dlerr').style.display='block'; };
++    x.send();
++  });
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index e3d10b54b4..0a5fb7e592 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Geslo ne sme biti enako uporabniškemu imenu.
+ RFB_12=Geslo ne sme biti privzeta vrednost.
+ RFB_13=Poverilnic ni bilo mogoče uveljaviti. Poskusite znova.
+ RFB_14=Uveljavljanje &amp; ponovni zagon skrbniške storitve&hellip;
++RDIAG_00=Diagnostika
++RDIAG_01=Anonimizirano poročilo
++RDIAG_02=Ustvari popoln posnetek stanja usmerjevalnika za odpravljanje težav — iste podatke, ki bi jih omrežni inženir zbral ročno, zajete v enem koraku in <b>očiščene vsega, kar bi lahko identificiralo vas, vaše naprave ali omrežje</b>. Poročilo je navadno besedilo: odprite ga, preberite vsako vrstico in ga delite le, če želite. <b>Usmerjevalnik ničesar ne pošilja</b> — datoteka se prenese na to napravo in nikamor drugam.
++RDIAG_03=Kaj se zbira
++RDIAG_04=Model, različica strojne programske opreme, čas delovanja in pomnilnik
++RDIAG_05=Kanal, širina, kakovost signala in število odjemalcev vsakega radia
++RDIAG_06=Stanje in hitrost žičnih vrat
++RDIAG_07=Strojno pospeševanje in odčitki QoS
++RDIAG_08=Zakupi DHCP, aktivne storitve in odprta vrata
++RDIAG_09=Nedavni izvlečki jedrnega in sistemskega dnevnika
++RDIAG_10=Odstranjeno ali zamaskirano
++RDIAG_11=Gesla, ključi Wi-Fi in žetoni — <b>nikoli se ne zbirajo</b>; poročilo zabeleži le
++RDIAG_12=Uporabniška imena in imena naprav postanejo
++RDIAG_13=Imena omrežij Wi-Fi postanejo
++RDIAG_14=Vsak naslov MAC postane
++RDIAG_15=Vaš javni IP in vsi naslovi IPv6 postanejo
++RDIAG_16=Kako deluje maskiranje
++RDIAG_17=Lokalni naslovi (192.168.x.x) ostanejo — zunaj vašega omrežja ničesar ne identificirajo
++RDIAG_18=Zamaskirana imena so <b>dosledna znotraj enega poročila</b>: napravo je mogoče slediti med razdelki, ne da bi razkrili, katera je
++RDIAG_19=Med poročili imena nimajo pomena — vsako poročilo dobi nov nabor
++RDIAG_20=Vsako poročilo se začne z evidenco vsega zadržanega
++RDIAG_21=Tako je videti začetek vašega poročila
++RDIAG_22=Evidenca anonimizacije je natisnjena najprej, da takoj vidite, kaj je bilo najdeno in zadržano:
++RDIAG_23=Prenesi poročilo
++RDIAG_24=Zbiranje traja 20-30 sekund. Brskalnik bo shranil besedilno datoteko, ki jo lahko pregledate pred deljenjem:
++RDIAG_25=Med zbiranjem ne zapuščajte strani in ne spreminjajte nastavitev.
++RDIAG_26=Navadno besedilo — nič skritega
++RDIAG_27=Nikoli poslano samodejno
++RDIAG_28=Varno za objavo
++RDIAG_29=Zbiranje podatkov
++RDIAG_30=Branje radiev, vrat in dnevnikov, nato anonimizacija. Ostanite na tej strani.
++RDIAG_31=Zbiranje ni uspelo. Počakajte trenutek in poskusite znova; če se ponavlja, preverite sistemski dnevnik.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 198bfcee7c..7e3838175d 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Lösenordet får inte vara samma som användarnamnet.
+ RFB_12=Lösenordet får inte vara standardvärdet.
+ RFB_13=Kunde inte tillämpa inloggningsuppgifterna. Försök igen.
+ RFB_14=Tillämpar &amp; startar om administrationstjänsten&hellip;
++RDIAG_00=Diagnostik
++RDIAG_01=Sanerad rapport
++RDIAG_02=Skapar en komplett ögonblicksbild av routerns tillstånd för felsökning — samma data som en nätverkstekniker skulle samla in för hand, hämtade i ett svep och <b>rensade från allt som kan identifiera dig, dina enheter eller ditt nätverk</b>. Rapporten är ren text: öppna den, läs varje rad och dela den bara om du vill. <b>Routern skickar ingenting</b> — filen laddas ner till den här enheten och går ingen annanstans.
++RDIAG_03=Vad som samlas in
++RDIAG_04=Modellidentitet, firmwareversion, drifttid och minne
++RDIAG_05=Kanal, bredd, signalhälsa och antal klienter per radio
++RDIAG_06=Länkstatus och hastighet för trådbundna portar
++RDIAG_07=Hårdvaruacceleration och QoS-avläsningar
++RDIAG_08=DHCP-leasar, aktiva tjänster och öppna portar
++RDIAG_09=Färska utdrag ur kernel- och systemloggen
++RDIAG_10=Borttaget eller maskerat
++RDIAG_11=Lösenord, Wi-Fi-nycklar och tokens — <b>samlas aldrig in</b>; rapporten noterar bara
++RDIAG_12=Användar- och enhetsnamn blir
++RDIAG_13=Wi-Fi-nätverksnamn blir
++RDIAG_14=Varje MAC-adress blir
++RDIAG_15=Din publika IP och alla IPv6-adresser blir
++RDIAG_16=Så fungerar maskeringen
++RDIAG_17=Lokala adresser (192.168.x.x) behålls — de identifierar inget utanför ditt nätverk
++RDIAG_18=Maskerade namn är <b>konsekventa inom en rapport</b>: en enhet kan följas mellan avsnitt utan att avslöja vilken den är
++RDIAG_19=Mellan rapporter saknar namnen betydelse — varje rapport får en ny uppsättning
++RDIAG_20=Varje rapport inleds med en förteckning över exakt vad som hållits tillbaka
++RDIAG_21=Så ser början av din rapport ut
++RDIAG_22=Saneringsförteckningen skrivs först, så att du direkt ser vad som hittats och hållits tillbaka:
++RDIAG_23=Ladda ner rapport
++RDIAG_24=Insamlingen tar 20-30 sekunder. Webbläsaren sparar en textfil som du kan granska innan du delar den:
++RDIAG_25=Lämna inte sidan och ändra inga inställningar medan insamlingen pågår.
++RDIAG_26=Ren text — inget dolt
++RDIAG_27=Skickas aldrig automatiskt
++RDIAG_28=Säker att publicera
++RDIAG_29=Samlar in data
++RDIAG_30=Läser radioenheter, portar och loggar, sanerar sedan resultatet. Stanna kvar på sidan.
++RDIAG_31=Insamlingen misslyckades. Vänta en stund och försök igen; kvarstår felet, kontrollera systemloggen.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 5c7341ca7c..64ac2924a4 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5690,3 +5690,35 @@ RFB_11=รหัสผ่านต้องไม่เหมือนกับ
+ RFB_12=รหัสผ่านต้องไม่ใช่ค่าเริ่มต้น
+ RFB_13=ใช้ข้อมูลรับรองไม่สำเร็จ โปรดลองอีกครั้ง
+ RFB_14=กำลังปรับใช้ &amp; รีสตาร์ตบริการผู้ดูแลระบบ&hellip;
++RDIAG_00=การวินิจฉัย
++RDIAG_01=รายงานที่ปกปิดข้อมูลแล้ว
++RDIAG_02=สร้างภาพรวมสถานะเราเตอร์อย่างครบถ้วนเพื่อแก้ปัญหา — ข้อมูลชุดเดียวกับที่วิศวกรเครือข่ายจะเก็บด้วยตนเอง รวบรวมในครั้งเดียวและ<b>ลบทุกอย่างที่อาจระบุตัวคุณ อุปกรณ์ หรือเครือข่ายของคุณ</b> รายงานเป็นข้อความธรรมดา: เปิดอ่านทุกบรรทัด และแชร์เมื่อคุณต้องการเท่านั้น <b>เราเตอร์จะไม่ส่งข้อมูลใด ๆ ออกไปเอง</b> — ไฟล์ถูกดาวน์โหลดลงอุปกรณ์นี้เท่านั้น
++RDIAG_03=ข้อมูลที่เก็บ
++RDIAG_04=ข้อมูลรุ่น เวอร์ชันเฟิร์มแวร์ เวลาทำงาน และหน่วยความจำ
++RDIAG_05=ช่องสัญญาณ ความกว้าง คุณภาพสัญญาณ และจำนวนอุปกรณ์ของแต่ละคลื่น
++RDIAG_06=สถานะและความเร็วของพอร์ตแบบมีสาย
++RDIAG_07=การเร่งความเร็วด้วยฮาร์ดแวร์และค่าจากเอนจิน QoS
++RDIAG_08=จำนวน DHCP lease บริการที่ทำงานอยู่ และพอร์ตที่เปิด
++RDIAG_09=ข้อความล่าสุดจากบันทึกเคอร์เนลและระบบ
++RDIAG_10=ข้อมูลที่ลบหรือปกปิด
++RDIAG_11=รหัสผ่าน คีย์ Wi-Fi และโทเคน — <b>ไม่ถูกเก็บเด็ดขาด</b>; รายงานระบุเพียง
++RDIAG_12=ชื่อผู้ใช้และชื่ออุปกรณ์จะกลายเป็น
++RDIAG_13=ชื่อเครือข่าย Wi-Fi จะกลายเป็น
++RDIAG_14=ที่อยู่ MAC ทุกรายการจะกลายเป็น
++RDIAG_15=IP สาธารณะและที่อยู่ IPv6 ทั้งหมดจะกลายเป็น
++RDIAG_16=การปกปิดทำงานอย่างไร
++RDIAG_17=ที่อยู่ภายใน (192.168.x.x) จะถูกเก็บไว้ — นอกเครือข่ายของคุณมันไม่ระบุอะไรได้
++RDIAG_18=ชื่อที่ปกปิดจะ<b>สอดคล้องกันภายในรายงานเดียว</b>: ติดตามอุปกรณ์ข้ามส่วนต่าง ๆ ได้โดยไม่เปิดเผยว่าเป็นเครื่องใด
++RDIAG_19=ระหว่างรายงาน ชื่อไม่มีความหมาย — แต่ละรายงานได้ชุดใหม่
++RDIAG_20=ทุกรายงานเริ่มด้วยบัญชีรายการที่ถูกปกปิดไว้
++RDIAG_21=ส่วนต้นของรายงานมีหน้าตาแบบนี้
++RDIAG_22=บัญชีการปกปิดจะพิมพ์เป็นอันดับแรก เพื่อให้เห็นก่อนว่าพบและปกปิดอะไรไว้:
++RDIAG_23=ดาวน์โหลดรายงาน
++RDIAG_24=การเก็บข้อมูลใช้เวลา 20-30 วินาที เบราว์เซอร์จะบันทึกไฟล์ข้อความที่ตรวจสอบได้ก่อนแชร์:
++RDIAG_25=โปรดอย่าออกจากหน้านี้หรือเปลี่ยนการตั้งค่าระหว่างการเก็บข้อมูล
++RDIAG_26=ข้อความธรรมดา — ไม่มีอะไรซ่อน
++RDIAG_27=ไม่ส่งอัตโนมัติเด็ดขาด
++RDIAG_28=ปลอดภัยที่จะเผยแพร่
++RDIAG_29=กำลังเก็บข้อมูล
++RDIAG_30=กำลังอ่านคลื่นวิทยุ พอร์ต และบันทึก จากนั้นปกปิดข้อมูล โปรดอยู่ที่หน้านี้
++RDIAG_31=การเก็บข้อมูลล้มเหลว โปรดรอสักครู่แล้วลองใหม่ หากยังไม่ได้ให้ตรวจสอบบันทึกระบบ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 8d1d4cee0b..c286c80492 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Parola kullanıcı adıyla aynı olmamalıdır.
+ RFB_12=Parola varsayılan değer olmamalıdır.
+ RFB_13=Kimlik bilgileri uygulanamadı. Lütfen tekrar deneyin.
+ RFB_14=Uygulanıyor &amp; yönetim hizmeti yeniden başlatılıyor&hellip;
++RDIAG_00=Tanılama
++RDIAG_01=Temizlenmiş rapor
++RDIAG_02=Sorun giderme için yönlendiricinin durumunun eksiksiz bir anlık görüntüsünü oluşturur — bir ağ mühendisinin elle toplayacağı verilerin aynısı, tek seferde toplanır ve <b>sizi, cihazlarınızı veya ağınızı tanımlayabilecek her şeyden arındırılır</b>. Rapor düz metindir: açın, her satırı okuyun ve yalnızca isterseniz paylaşın. <b>Yönlendirici hiçbir şey iletmez</b> — dosya bu cihaza indirilir ve başka hiçbir yere gitmez.
++RDIAG_03=Neler toplanır
++RDIAG_04=Model kimliği, donanım yazılımı sürümü, çalışma süresi ve bellek
++RDIAG_05=Her radyonun kanalı, genişliği, sinyal sağlığı ve istemci sayısı
++RDIAG_06=Kablolu bağlantı noktalarının durumu ve hızı
++RDIAG_07=Donanım hızlandırma ve QoS motoru okumaları
++RDIAG_08=DHCP kiraları, çalışan hizmetler ve açık bağlantı noktaları
++RDIAG_09=Son çekirdek ve sistem günlüğü alıntıları
++RDIAG_10=Kaldırıldı veya maskelendi
++RDIAG_11=Parolalar, Wi-Fi anahtarları ve belirteçler — <b>asla toplanmaz</b>; rapor yalnızca şunu belirtir
++RDIAG_12=Kullanıcı ve cihaz adları şuna dönüşür
++RDIAG_13=Wi-Fi ağ adları şuna dönüşür
++RDIAG_14=Her MAC adresi şuna dönüşür
++RDIAG_15=Genel IP'niz ve tüm IPv6 adresleri şuna dönüşür
++RDIAG_16=Maskeleme nasıl çalışır
++RDIAG_17=Yerel adresler (192.168.x.x) korunur — ağınız dışında hiçbir şeyi tanımlamazlar
++RDIAG_18=Maskelenmiş adlar <b>tek rapor içinde tutarlıdır</b>: bir cihaz hangi cihaz olduğu açıklanmadan bölümler arasında izlenebilir
++RDIAG_19=Raporlar arasında adların anlamı yoktur — her rapor yeni bir küme alır
++RDIAG_20=Her rapor, tam olarak nelerin gizlendiğini sayan bir kayıtla başlar
++RDIAG_21=Raporunuzun başı böyle görünür
++RDIAG_22=Temizleme kaydı ilk basılır; böylece önce nelerin bulunup gizlendiğini görürsünüz:
++RDIAG_23=Raporu İndir
++RDIAG_24=Toplama 20-30 saniye sürer. Tarayıcınız, paylaşmadan önce inceleyebileceğiniz bir metin dosyası kaydeder:
++RDIAG_25=Lütfen toplama sürerken sayfadan ayrılmayın ve ayar değiştirmeyin.
++RDIAG_26=Düz metin — gizli hiçbir şey yok
++RDIAG_27=Asla otomatik gönderilmez
++RDIAG_28=Herkese açık paylaşım için güvenli
++RDIAG_29=Veri toplanıyor
++RDIAG_30=Radyolar, bağlantı noktaları ve günlükler okunuyor, ardından sonuç temizleniyor. Lütfen bu sayfada kalın.
++RDIAG_31=Toplama başarısız oldu. Biraz bekleyip yeniden deneyin; sürerse Sistem Günlüğünü kontrol edin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 3a13f2dfab..a3c2c9725c 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5690,3 +5690,35 @@ RFB_11=密碼不可與使用者名稱相同。
+ RFB_12=密碼不可為預設值。
+ RFB_13=無法套用認證資訊，請再試一次。
+ RFB_14=正在套用 &amp; 重新啟動管理服務&hellip;
++RDIAG_00=診斷
++RDIAG_01=去識別化報告
++RDIAG_02=產生路由器狀態的完整快照以供疑難排解——與網路工程師手動蒐集的資料相同，一次擷取完成，並<b>清除所有可能識別您、您的裝置或您的網路的資訊</b>。報告為純文字：開啟後逐行檢視，是否分享完全由您決定。<b>路由器不會傳送任何內容</b>——檔案只會下載到本裝置，不會流向其他任何地方。
++RDIAG_03=蒐集的內容
++RDIAG_04=型號資訊、韌體版本、運作時間與記憶體
++RDIAG_05=每個無線模組的頻道、頻寬、訊號狀況與用戶端數量
++RDIAG_06=有線連接埠的連線狀態與速率
++RDIAG_07=硬體加速與 QoS 引擎讀數
++RDIAG_08=DHCP 租約數、執行中的服務與開放的連接埠
++RDIAG_09=核心與系統記錄的最新摘錄
++RDIAG_10=移除或遮罩的內容
++RDIAG_11=密碼、Wi-Fi 金鑰與權杖——<b>從不蒐集</b>；報告僅記錄
++RDIAG_12=使用者名稱與裝置名稱會變為
++RDIAG_13=Wi-Fi 網路名稱會變為
++RDIAG_14=每個 MAC 位址會變為
++RDIAG_15=您的公用 IP 與所有 IPv6 位址會變為
++RDIAG_16=遮罩的運作方式
++RDIAG_17=本地位址（192.168.x.x）保持不變——在您的網路之外無法識別任何資訊
++RDIAG_18=遮罩名稱在<b>同一份報告內保持一致</b>：可以跨章節追蹤某台裝置，而不透露它是哪一台
++RDIAG_19=不同報告之間名稱沒有意義——每份報告使用一組新名稱
++RDIAG_20=每份報告開頭都有一份清單，逐項統計被隱去的內容
++RDIAG_21=報告開頭的樣子
++RDIAG_22=去識別化清單會最先列印，讓您先看到找到並隱去了哪些內容：
++RDIAG_23=下載報告
++RDIAG_24=蒐集需要 20-30 秒。瀏覽器將儲存一個純文字檔案，分享前可先檢視：
++RDIAG_25=蒐集期間請勿離開頁面或變更設定。
++RDIAG_26=純文字——沒有隱藏內容
++RDIAG_27=絕不自動傳送
++RDIAG_28=可安全公開
++RDIAG_29=正在收集資料
++RDIAG_30=正在讀取無線、連接埠與記錄，接著進行去識別化。請留在此頁面。
++RDIAG_31=蒐集失敗。請稍候再試；若仍失敗，請檢視系統記錄。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index b9da3bccc8..a0b1469e78 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5690,3 +5690,35 @@ RFB_11=Пароль не повинен збігатися з іменем ко
+ RFB_12=Пароль не повинен бути типовим значенням.
+ RFB_13=Не вдалося застосувати облікові дані. Спробуйте ще раз.
+ RFB_14=Застосування &amp; перезапуск служби адміністрування&hellip;
++RDIAG_00=Діагностика
++RDIAG_01=Знеособлений звіт
++RDIAG_02=Створює повний знімок стану маршрутизатора для діагностики — ті самі дані, які мережевий інженер збирав би вручну, за один прохід і <b>очищені від усього, що могло б ідентифікувати вас, ваші пристрої чи вашу мережу</b>. Звіт — звичайний текст: відкрийте його, прочитайте кожен рядок і діліться ним лише за власним бажанням. <b>Маршрутизатор нічого не передає</b> — файл завантажується на цей пристрій і більше нікуди не йде.
++RDIAG_03=Що збирається
++RDIAG_04=Модель, версія прошивки, час роботи та пам'ять
++RDIAG_05=Канал, ширина, якість сигналу та кількість клієнтів кожного радіомодуля
++RDIAG_06=Стан і швидкість дротових портів
++RDIAG_07=Апаратне прискорення та показники рушія QoS
++RDIAG_08=Оренди DHCP, запущені служби та відкриті порти
++RDIAG_09=Свіжі фрагменти журналів ядра та системи
++RDIAG_10=Видалено або замасковано
++RDIAG_11=Паролі, ключі Wi-Fi і токени — <b>ніколи не збираються</b>; звіт зазначає лише
++RDIAG_12=Імена користувачів і пристроїв стають
++RDIAG_13=Назви мереж Wi-Fi стають
++RDIAG_14=Кожна MAC-адреса стає
++RDIAG_15=Ваш публічний IP і всі адреси IPv6 стають
++RDIAG_16=Як працює маскування
++RDIAG_17=Локальні адреси (192.168.x.x) зберігаються — поза вашою мережею вони нічого не ідентифікують
++RDIAG_18=Замасковані імена <b>узгоджені в межах одного звіту</b>: пристрій можна простежити між розділами, не розкриваючи, який саме
++RDIAG_19=Між звітами імена не мають сенсу — кожен звіт отримує новий набір
++RDIAG_20=Кожен звіт починається з реєстру всього прихованого
++RDIAG_21=Який вигляд має початок вашого звіту
++RDIAG_22=Реєстр знеособлення друкується першим, щоб ви одразу бачили, що знайдено та приховано:
++RDIAG_23=Завантажити звіт
++RDIAG_24=Збір триває 20-30 секунд. Браузер збереже текстовий файл, який можна переглянути перед надсиланням:
++RDIAG_25=Будь ласка, не залишайте сторінку та не змінюйте налаштування під час збору.
++RDIAG_26=Звичайний текст — нічого прихованого
++RDIAG_27=Ніколи не надсилається автоматично
++RDIAG_28=Безпечно публікувати
++RDIAG_29=Збирання даних
++RDIAG_30=Читання радіомодулів, портів і журналів, потім знеособлення. Залишайтеся на цій сторінці.
++RDIAG_31=Збір не вдався. Зачекайте трохи та повторіть; якщо не допомагає, перевірте системний журнал.
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index c2c2fc1d05..dfe54b9a8e 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -333,6 +333,7 @@ define(function(){
+ 					{url: "Advanced_Notification_Content.asp", tabName: "Notification"},
+ 					{url: "Advanced_MultiFuncBtn.asp", tabName: "Multi-Function Button"},
+ 					{url: "Tools_OtherSettings.asp", tabName: "Tweaks"},
++					{url: "Reaper_Diag.asp", tabName: "<#RDIAG_00#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
+-- 
+2.25.1
+

@@ -63,7 +63,7 @@ in this repository. Per the upstream `README.proprietary`
 
 | Family | Where (in the buildable upstream tree) |
 |---|---|
-| Broadcom WiFi drivers / RDP / platform daemons | `release/src-rt-5.04behnd.4916/{bcmdrivers,rdp,router-sysdep.rt-be96u}` |
+| Broadcom WiFi drivers / RDP / platform daemons | `release/src-rt-5.04behnd.4916/{bcmdrivers,rdp,router-sysdep.<model>}` (e.g. `router-sysdep.rt-be96u`, one per RT-BE model) |
 | ASUS closed prebuilt objects (auth/token core, `web_hook.o`, `spwenc`, …) | `release/src/router/{shared,httpd}/prebuild/` |
 | Trend Micro DPI (`tdts*.ko`, `libshn_*.so`, signed rule/cert material) | `release/src/router/bwdpi_source/prebuild/` |
 | Tuxera NTFS/exFAT kernel driver | `release/src/router/tuxera` (+ `ntfs-3g`) |

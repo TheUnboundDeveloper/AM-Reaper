@@ -1,0 +1,261 @@
+From aea701aab9e74f93a1ebb9cb7e0745a0e0a58979 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 25 Jul 2026 08:36:20 -0400
+Subject: [PATCH 221/226] harden SNMP to v3-only + present SFTP as the default
+ file-transfer method
+
+Stage 1 (SNMP): lock out SNMPv1/v2c and require authenticated SNMPv3.
+- rc/snmpd.c: stop emitting rocommunity/rwcommunity (v1/v2c send the community
+  in cleartext with no auth); drop the noAuthNoPriv v3 path so the daemon
+  refuses to create an unauthenticated user. Weak/empty passphrases already
+  fail closed (net-snmp USM requires >= 8 chars).
+- shared/defaults.c: default v3_auth_type=SHA, v3_priv_type=AES.
+- www/Advanced_SNMP_Content.asp: remove the Get/Set Community fields and the
+  NONE auth option; add a v3-only note. Priv NONE (auth-only) kept as advanced.
+
+Stage 2 (SFTP UI + path): present SFTP as the preferred alternative to FTP.
+- www/Advanced_AiDisk_ftp.asp: add a File transfer method selector with SFTP
+  pre-selected (FTP only when already enabled); choosing SFTP hides the FTP
+  config and links to Administration > System > SSH. No auto-SSH.
+- dropbear/localoptions.h: point the SFTP subsystem at the in-image
+  /usr/libexec/sftp-server (was the /opt Entware mount). The sftp-server
+  binary is a follow-up; until then SFTP is non-functional as before (no regression).
+
+Verified: make rt-be96u (as reaper) MAKE_EXIT=0, image built.
+Follow-ups: openssh-sftp binary package, net-snmp 5.7.2 -> 5.9.x bump.
+---
+ release/src/router/dropbear/localoptions.h    |  2 +-
+ release/src/router/rc/snmpd.c                 | 22 +++---------
+ release/src/router/shared/defaults.c          |  4 +--
+ .../src/router/www/Advanced_AiDisk_ftp.asp    | 36 ++++++++++++++++---
+ .../src/router/www/Advanced_SNMP_Content.asp  | 30 +---------------
+ 5 files changed, 41 insertions(+), 53 deletions(-)
+
+diff --git a/release/src/router/dropbear/localoptions.h b/release/src/router/dropbear/localoptions.h
+index d1ac7d71f7..b57edff968 100644
+--- a/release/src/router/dropbear/localoptions.h
++++ b/release/src/router/dropbear/localoptions.h
+@@ -30,7 +30,7 @@
+  * OpenSSH), set the path below and set DROPBEAR_SFTPSERVER. 
+  * The sftp-server program is not provided by Dropbear itself */
+ #define DROPBEAR_SFTPSERVER 1
+-#define SFTPSERVER_PATH "/opt/libexec/sftp-server"
++#define SFTPSERVER_PATH "/usr/libexec/sftp-server"
+ 
+ /* The default path. This will often get replaced by the shell */
+ #define DEFAULT_PATH "/bin:/sbin:/usr/bin:/usr/sbin:/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin"
+diff --git a/release/src/router/rc/snmpd.c b/release/src/router/rc/snmpd.c
+index 7f1b72380d..f3bdfc2d0c 100644
+--- a/release/src/router/rc/snmpd.c
++++ b/release/src/router/rc/snmpd.c
+@@ -115,25 +115,13 @@ void start_snmpd(void)
+ 		else
+ 			cprintf("Wrong SNMPv3 Privacy Type!!\n");	
+ 	}
+-	else if(!strcmp(authType, "NONE"))
+-	{
+-		fprintf(fp, "createUser %s\n", user);
+-		fprintf(fp, "rwuser %s noauth\n", user);
+-	}
+ 	else
+-		cprintf("Wrong SNMPv3 Authentication type!!\n");
+-
+-	if(strlen(nvram_safe_get("roCommunity"))) {
+-		snmp_sanitize_token(cval, sizeof(cval), nvram_safe_get("roCommunity"));
+-		if(cval[0])
+-			fprintf(fp, "rocommunity %s default\n", cval);
+-	}
++		cprintf("SNMPv3: authenticated USM required; refusing to create an unauthenticated user\n");
+ 
+-	if(strlen(nvram_safe_get("rwCommunity"))) {
+-		snmp_sanitize_token(cval, sizeof(cval), nvram_safe_get("rwCommunity"));
+-		if(cval[0])
+-			fprintf(fp, "rwcommunity %s default\n", cval);
+-	}
++	/* SNMPv1/v2c community strings are intentionally NOT emitted. Both carry the
++	 * community in cleartext with no authentication, so they are locked out on
++	 * this hardened (reaper) build - only SNMPv3 USM (authenticated + encrypted,
++	 * above) is served. roCommunity/rwCommunity nvram values are ignored. */
+ 
+ #if 0
+ 	fprintf(fp, "com2sec	defROnlyUser	default	%s\n", nvram_get("roCommunity"));
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 2f22bd8344..8172c4f472 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -4561,8 +4561,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "sysLocation", "", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "roCommunity", "", CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "rwCommunity", "", CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "v3_auth_type", "", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "v3_priv_type", "", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "v3_auth_type", "SHA", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "v3_priv_type", "AES", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "v3_auth_passwd", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "v3_priv_passwd", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+diff --git a/release/src/router/www/Advanced_AiDisk_ftp.asp b/release/src/router/www/Advanced_AiDisk_ftp.asp
+index 230383c968..901f0b83c8 100644
+--- a/release/src/router/www/Advanced_AiDisk_ftp.asp
++++ b/release/src/router/www/Advanced_AiDisk_ftp.asp
+@@ -71,6 +71,11 @@ function initial(){
+ 	$("#FormTitle").css("display", "");
+ 
+ 	document.aidiskForm.protocol.value = PROTOCOL;
++	var xfer_init = (FTP_status == 1) ? "ftp" : "sftp";
++	if(document.getElementById("xfer_ftp")){
++		document.getElementById(xfer_init == "ftp" ? "xfer_ftp" : "xfer_sftp").checked = true;
++		change_xfer_method(xfer_init);
++	}
+ 	
+ 	if(is_KR_sku){
+ 		document.getElementById("radio_anonymous_enable_tr").style.display = "none";
+@@ -788,6 +793,21 @@ function secure_check(flag){
+ 		}
+ 	}
+ }
++function change_xfer_method(m){
++	var showFtp = (m == "ftp");
++	var ftpRows = ["ftprow_enable","ftprow_wan","radio_anonymous_enable_tr","radio_ftp_tls_enable_tr","ftprow_maxuser","ftprow_lang"];
++	for(var i=0;i<ftpRows.length;i++){
++		var el = document.getElementById(ftpRows[i]);
++		if(el) el.style.display = showFtp ? "" : "none";
++	}
++	if(showFtp){
++		if(is_KR_sku){ var a=document.getElementById("radio_anonymous_enable_tr"); if(a) a.style.display="none"; }
++		if(!isSupport("ftp_ssl")){ var t=document.getElementById("radio_ftp_tls_enable_tr"); if(t) t.style.display="none"; }
++	}
++	var ss=document.getElementById("shareStatus"); if(ss) ss.style.display = showFtp ? "" : "none";
++	var ab=document.getElementById("apply_btn"); if(ab) ab.style.display = showFtp ? "" : "none";
++	var sn=document.getElementById("sftp_note"); if(sn) sn.style.display = showFtp ? "none" : "";
++}
+ </script>
+ </head>
+ 
+@@ -854,7 +874,15 @@ function secure_check(flag){
+ 		<tr>
+ 		<td>
+ 			<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
+-				<tr>
++					<tr>
++						<th>File transfer method</th>
++						<td>
++							<input type="radio" name="file_xfer_method" id="xfer_sftp" class="input" value="sftp" onclick="change_xfer_method('sftp');">SFTP (recommended, encrypted)
++							<input type="radio" name="file_xfer_method" id="xfer_ftp" class="input" value="ftp" onclick="change_xfer_method('ftp');">FTP (legacy, unencrypted)
++							<div id="sftp_note" style="margin-top:6px;color:#FC0;">SFTP transfers files securely over SSH. Turn it on under <a href="javascript:void(0);" onclick="go_setting('/Advanced_System_Content.asp');" style="text-decoration:underline;color:#FC0;">Administration &gt; System &gt; SSH</a>. It gives the router admin account encrypted access to the whole filesystem. The FTP options below are only needed if you deliberately choose legacy, unencrypted FTP.</div>
++						</td>
++					</tr>
++				<tr id="ftprow_enable">
+ 				<th><#enableFTP#></th>
+ 					<td>
+ 						<div class="left" style="width:94px; float:left; cursor:pointer;" id="radio_ftp_enable"></div>
+@@ -873,7 +901,7 @@ function secure_check(flag){
+ 						<span id="ftpPortConflict"></span>
+ 					</td>
+ 				</tr>										
+-				<tr>
++				<tr id="ftprow_wan">
+ 				<th><#enableWANaccess#></th>
+ 					<td>
+ 						<div class="left" style="width:94px; float:left; cursor:pointer;" id="radio_wan_ftp_enable"></div>
+@@ -929,7 +957,7 @@ function secure_check(flag){
+ 						<span id="TLS_disabled" style="color:#FC0;margin-left:10px;"></span>
+ 					</td>
+ 				</tr>
+-				<tr>
++				<tr id="ftprow_maxuser">
+ 					<th>
+ 						<a class="hintstyle" href="javascript:void(0);" onClick="openHint(17,1);"><#ShareNode_MaximumLoginUser_itemname#></a>
+ 					</th>
+@@ -937,7 +965,7 @@ function secure_check(flag){
+ 						<input type="text" name="st_max_user" class="input_3_table" maxlength="2" value="<% nvram_get("st_max_user"); %>" onKeyPress="return validator.isNumber(this, event);" autocorrect="off" autocapitalize="off">
+ 					</td>
+ 				</tr>
+-				<tr>
++				<tr id="ftprow_lang">
+ 					<th>
+ 						<a class="hintstyle" href="javascript:void(0);" onClick="openHint(17,9);"><#ShareNode_FTPLANG_itemname#></a>
+ 					</th>
+diff --git a/release/src/router/www/Advanced_SNMP_Content.asp b/release/src/router/www/Advanced_SNMP_Content.asp
+index 83c777b2e9..723a6735e2 100644
+--- a/release/src/router/www/Advanced_SNMP_Content.asp
++++ b/release/src/router/www/Advanced_SNMP_Content.asp
+@@ -28,17 +28,6 @@ function applyRule(){
+ }
+ 
+ function validForm(){
+-	if(document.form.roCommunity.value == document.form.rwCommunity.value) {
+-		document.form.roCommunity.focus();			
+-		alert("Get Community and Set Community must be different.");
+-		return false;
+-	}
+-	if(document.form.v3_auth_type.value != "NONE" && document.form.v3_auth_passwd.value.length < 8) {
+-		document.form.v3_auth_passwd.focus();
+-		alert("Password cannot be less than 8 characters.");
+-		return false;
+-	}
+-
+ 	if(document.form.v3_priv_type.value != "NONE" && document.form.v3_priv_passwd.value.length < 8) {
+ 		document.form.v3_priv_passwd.focus();
+ 		alert("Password cannot be less than 8 characters.");
+@@ -63,8 +52,6 @@ function change_snmpd_enable(enabled){
+ 	document.getElementById("snmp_sysName_tr").style.display = (enabled == 1) ? "":"none";
+ 	document.getElementById("snmp_sysLocation_tr").style.display = (enabled == 1) ? "":"none";
+ 	document.getElementById("snmp_sysContact_tr").style.display = (enabled == 1) ? "":"none";
+-	document.getElementById("snmp_roCommunity_tr").style.display = (enabled == 1) ? "":"none";
+-	document.getElementById("snmp_rwCommunity_tr").style.display = (enabled == 1) ? "":"none";
+ 	document.getElementById("snmp_v3_auth_type_tr").style.display = (enabled == 1) ? "":"none";
+ 	document.getElementById("snmp_v3_auth_passwd_tr").style.display = (enabled == 1) ? "":"none";
+ 	document.getElementById("snmp_v3_priv_type_tr").style.display = (enabled == 1) ? "":"none";
+@@ -74,8 +61,6 @@ function change_snmpd_enable(enabled){
+ 		inputCtrl(document.form.sysName, 1);
+ 		inputCtrl(document.form.sysLocation, 1);
+ 		inputCtrl(document.form.sysContact, 1);
+-		inputCtrl(document.form.roCommunity, 1);
+-		inputCtrl(document.form.rwCommunity, 1);
+ 		inputCtrl(document.form.v3_auth_type, 1);
+ 		change_v3_auth_type(document.form.v3_auth_type.value);
+ 	}
+@@ -84,8 +69,6 @@ function change_snmpd_enable(enabled){
+ 		inputCtrl(document.form.sysName, 0);
+ 		inputCtrl(document.form.sysLocation, 0);
+ 		inputCtrl(document.form.sysContact, 0);
+-		inputCtrl(document.form.roCommunity, 0);
+-		inputCtrl(document.form.rwCommunity, 0);
+ 		inputCtrl(document.form.v3_auth_type, 0);
+ 		inputCtrl(document.form.v3_auth_passwd, 0);
+ 		inputCtrl(document.form.v3_priv_type, 0);
+@@ -160,7 +143,7 @@ function change_v3_priv_type(type){
+ 		  <div>&nbsp;</div>
+ 		  <div class="formfonttitle"><#menu5_6#> - SNMP</div>
+ 		  <div style="margin:10px 0 10px 5px;" class="splitLine"></div>
+-		  <div class="formfontdesc"></div>
++		  <div class="formfontdesc">This router serves SNMPv3 only (authenticated + encrypted USM). SNMPv1/v2c community access is disabled because it transmits credentials in cleartext. Set an authentication and privacy passphrase (min 8 chars) below.</div>
+ 
+ 	<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3"  class="FormTable">
+          <tr>
+@@ -194,21 +177,10 @@ function change_v3_priv_type(type){
+           <td><input type="text" maxlength="255" class="input_32_table" name="sysContact" value="<% nvram_get("sysContact"); %>" autocorrect="off" autocapitalize="off"></td>
+         </tr>
+ 
+-        <tr id="snmp_roCommunity_tr">
+-          <th>SNMP Get Community</th>
+-          <td><input type="text" maxlength="32" class="input_32_table" name="roCommunity" value="<% nvram_get("roCommunity"); %>" autocorrect="off" autocapitalize="off"></td>
+-        </tr>
+-
+-        <tr id="snmp_rwCommunity_tr">
+-          <th>SNMP Set Community</th>
+-          <td><input type="text" maxlength="32" class="input_32_table" name="rwCommunity" value="<% nvram_get("rwCommunity"); %>" autocorrect="off" autocapitalize="off"></td>
+-        </tr>
+-
+         <tr id="snmp_v3_auth_type_tr">
+           <th>SNMPv3 Authentication Type</th>
+ 		<td>
+ 		  <select name="v3_auth_type" class="input_option" onchange="change_v3_auth_type(this.value);">
+-		  	<option value="NONE" <% nvram_match("v3_auth_type", "NONE", "selected"); %>>NONE</option>
+ 		  	<option value="MD5" <% nvram_match("v3_auth_type", "MD5", "selected"); %>>MD5</option>
+ 		  	<option value="SHA" <% nvram_match("v3_auth_type", "SHA", "selected"); %>>SHA</option>
+ 		  </select>
+-- 
+2.25.1
+

@@ -1,0 +1,36 @@
+From f02f13e280142dcec27fc1839397e1e781c3f005 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 24 Jul 2026 15:33:31 -0400
+Subject: [PATCH 217/226] qos: default the download RX policer OFF
+ (qos_ipolicer 1 -> 0)
+
+The v5 WAN-ingress RX policer shipped default ON with kill-switch semantics, so any box with a download bandwidth set (qos_ibw>0) engaged it. A policer has no queue - it drops rather than delays excess - which clips loss-sensitive real-time UDP (metal 2026-07-20: Teams-call packet loss on the RT-BE96U owner box, mitigated by hand with qos_ipolicer=0). Default it OFF so no fresh install hits the footgun; it stays available as an opt-in for users who want bulk-download bufferbloat control and accept the loss-for-latency trade. Affects fresh nvram only (existing boxes keep their value). qos_dscp_wmm (the benign WMM-lift half) stays default ON. Shared source; ports to all sibling branches on their next rung.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index c7078da53f..2f22bd8344 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3080,9 +3080,12 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
+ 	{ "qos_sched", "p,p,p,p,p", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight */
+ 	{ "qos_l4s", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 EXPERIMENTAL: flag class queues L4S (DualPI2 ECT(1) marking) */
+-	/* reaper QoS v5 (download side): both inert until qos_type 11 is active and,
+-	 * for the policer, qos_ibw > 0 - so default ON with kill-switch semantics. */
+-	{ "qos_ipolicer", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 download cap: WAN ingress RX policer at qos_ibw */
++	/* reaper QoS v5 (download side): inert until qos_type 11 is active. The RX
++	 * policer defaults OFF ("0"); set "1" to opt in. A policer has no queue, so it
++	 * drops (not delays) excess and clips loss-sensitive real-time UDP (metal
++	 * 2026-07-20: Teams-call packet loss) - so it is opt-in, not on by default.
++	 * When opted in, qos_ibw > 0 arms it. qos_dscp_wmm (WMM-lift half) stays ON. */
++	{ "qos_ipolicer", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 download cap: WAN ingress RX policer at qos_ibw; default OFF (opt-in) */
+ 	{ "qos_dscp_wmm", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 downstream class->DSCP stamp (WMM AC lift on wifi egress) */
+ 
+ 	/* reaper v1.3.0 traffic collector (rtrafd) */
+-- 
+2.25.1
+

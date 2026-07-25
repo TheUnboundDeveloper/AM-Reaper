@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**211 patches, v1.0 → v1.7.4**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**226 patches, v1.0 → v1.7.8**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (211 patches, v1.0 → v1.7.4)
+## What the series contains (226 patches, v1.0 → v1.7.8)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -154,9 +154,54 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - `0211` — **v1.7.4**: static-DHCP client picker re-anchored to its input and opened **upward**
   with an inner scroll; **Wireless/DHCP** theme-flash eliminated (framed page held dark until themed).
 
+### v1.7.5 → v1.7.7 — libpasswd injection fix, VPN theme flash, AURA carousel (`0212`–`0215`)
+- `0212`–`0213` — **v1.7.5**: **command-injection fix** — `libpasswd`'s
+  `asus_libpasswd_openssl_crypt()` was a byte-identical copy of the C6 `openssl passwd`
+  `popen()` bug (built the shell string with the user-supplied password + salt, reached from
+  the HTTP basic-auth and lighttpd WebDAV/SMB basic-auth paths on the libc `crypt()==NULL`
+  fallback, running as root). Replaced `popen()` with an explicit-argv fork/execvp/pipe helper —
+  no shell, no behavioral change. Reported to ASUS PSIRT as the C6 twin (case 1006563); version bump.
+- `0214` — **v1.7.6**: fix the **VPN Client+Server theme ping-pong** — two competing iframe
+  resizers on the nested VPN SPA (reaper's grow vs. the SPA's own `resize_iframe_height`) fought
+  each other into an endless-load reflow; the reaper-side ResizeObserver is removed and sizing
+  deferred to the SPA. Firmware-wide (both VPN wrapper pages).
+- `0215` — **v1.7.7**: VPN Client+Server **anti-flash veil** (hold the nested `#vpn{c,s}_iframe`
+  hidden over `#0f0f12` until `reaper_content.css` loads inside the SPA — kills the split-second
+  stock-blue flash on VPN Client PPTP/L2TP) + the **Network Map AURA/LEDG** scheme-carousel
+  horizontal-scrollbar fix (`.setting_scheme` `overflow-x` auto→hidden; the carousel pages via
+  its arrow controls, not native scroll).
+
+### v1.7.8 — SMB3/Samba 4, SNMPv3-only + SFTP, USB-hub & MLO dashboard fixes (`0216`–`0226`)
+- `0216` — **v1.7.7a**: **Wireless Log** page — add **GT-BE98** to the quad-band radio branch
+  (`Main_WStatus_Content.asp`) so its four radios (`wl0=5 GHz-1, wl1=5 GHz-2, wl2=6 GHz, wl3=2.4 GHz`)
+  map correctly instead of falling through the tri-band `else`.
+- `0217` — **QoS download policer default OFF** (`qos_ipolicer` `1` → `0` in `defaults.c`): a policer
+  drops rather than delays, so the WAN-ingress download cap is now opt-in (it clipped loss-sensitive
+  real-time UDP). Fresh nvram only.
+- `0218`–`0219` — **QoS UI + i18n**: warn on the download-cap toggle (`RQOS_117`) that it is off by
+  default and, being a policer, can add packet loss to real-time video/voice; translated to all 24
+  other languages (122-key lockstep).
+- `0220` — **Reaper dash MLO fix**: the MWL SSID resolver now reads **all** `apmX_dut_list` entries
+  (ORs the band bits) so enabling MLO no longer pushes 2.4 GHz out of slot 0 and shows a raw hex
+  onboarding ID instead of the SSID on its tile.
+- `0221` — **SNMP v3-only + SFTP default**: lock out SNMPv1/v2c (cleartext community strings removed
+  from the daemon + UI), require authenticated **SNMPv3** (default SHA + AES); add a **File transfer
+  method** selector on the FTP page with **SFTP pre-selected** (links to the SSH page, no
+  auto-enable). Uses the in-image dropbear SFTP path.
+- `0222` — **openssh-sftp package**: bundle an `sftp-server` binary (OpenSSH 9.8p1, sftp-server target
+  only) so SFTP works over the existing dropbear SSH server.
+- `0223` — **net-snmp 5.7.2 → 5.9.4** (CVE hygiene; SNMPv3 already worked).
+- `0224` — **Reaper dash USB fix**: count hub sub-devices per physical port so a **USB hub** reads as
+  connected (was "empty" because `usb_pathN` is blank for a hub) and multi-device ports show a count.
+- `0225` — **Samba 4.15.13** (real **SMB3 / SMB3.1.1** with GnuTLS AES-GCM/CCM encryption) replacing
+  Samba 3.6.25 (SMB2 max), **RT-BE96U only**; new **"SMBv3 (encrypted)"** option (`smbd_protocol=3` =
+  SMB3-only + required encryption).
+- `0226` — **v1.7.8**: version bump `EXTENDNO` → `Reaper_v1.7.8`.
+
 ## Notes
 
 - **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
 - **The "BE96U-only" strip is not a patch here.** Making the tree single-model (removing the other BE sibling models' artifacts) was a large mechanical deletion (~5,650 files). It is **optional** — `make rt-be96u` builds fine from the full upstream tree — so it's omitted.
 - Regenerated for **v1.6.6** (2026-07-19) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (matching `release/src/router` tree hash).
-- Extended through **v1.7.4** (2026-07-22): patches `0191`–`0211` (v1.6.7 → v1.7.4) appended from the same commit stack with the same author normalization. Re-run the full `git am --keep-cr` reproduce-check before a public release.
+- Extended through **v1.7.7** (2026-07-24): patches `0191`–`0215` (v1.6.7 → v1.7.7) appended from the same commit stack with the same author normalization. Re-run the full `git am --keep-cr` reproduce-check before a public release.
+- Extended through **v1.7.8** (2026-07-25): patches `0216`–`0226` appended from commit `a8d1569017` (the v1.7.7 tip == `0215`) through the v1.7.8 version-bump HEAD, same author normalization and message scrub. Verified `git am --keep-cr` clean onto an `a8d1569017` worktree; the only reproduce-check delta is three vendored `openssh-sftp` documentation files (`README.md`, `SECURITY.md`, `.github/ci-status.md`) intentionally stripped by the `*.md` docs/meta exclusion — no source/code file differs.

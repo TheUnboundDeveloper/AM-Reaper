@@ -1,0 +1,57 @@
+From 58a7a56d92f4b50485914ff574a4d2b43d3663bc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 25 Jul 2026 10:08:50 -0400
+Subject: [PATCH 224/226] reaper dash: USB tiles count hub sub-devices per port
+ (hub no longer shows empty)
+
+A USB hub occupying a physical port leaves usb_pathN nvram empty (the real
+devices sit on sub-nodes 1.1, 1.2, ...), so the dashboard tile evaluated
+!!usb_pathN -> false -> "empty", even though the Network Map listed all the
+hub devices. Rebuild the tiles from get_usb_info (USBINFO, already on the page)
+grouped by usbPath (leading digit = physical port) - the same per-port grouping
+www/index.asp uses for its device dropdown and count badge. A port with any
+devices now reads connected; a port with more than one shows the count in the
+status line (N + RDSH_17 "connected"); a single device still shows its name;
+direct (non-hub) devices fall back to the usb_pathN name.
+
+Dashboard-only (www/Main_ReaperDash.asp); Network Map untouched. No new i18n
+token (reuses RDSH_17/RDSH_80). Runtime verify with a hub owed.
+---
+ release/src/router/www/Main_ReaperDash.asp | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 4ad9a77910..113cdd0f00 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1094,14 +1094,23 @@ function pollPorts(){
+ }
+ pollPorts(); setInterval(pollPorts, 5000);
+ 
+-/* ---- USB port tiles from usb_pathX nvram; storage usage from get_usb_info ---- */
++/* ---- USB port tiles: group detected devices by PHYSICAL port from get_usb_info
++   (USBINFO). usb_pathX nvram is EMPTY when a HUB occupies the port, so a hub's
++   devices live on sub-nodes (1.1, 1.2, ...) and show up only in USBINFO. Group
++   by usbPath (leading digit = physical port), exactly as the Network Map does,
++   so a hub reads as connected and multi-device ports show the device count. ---- */
+ (function(){
+   function usbLabel(spd,dflt){ return spd==='5000'?'USB 3.0':(spd==='480'?'USB 2.0':dflt); }
+-  var defs=[{v:SSI.usb1,s:SSI.usb1_spd,d:'USB 3.0'},{v:SSI.usb2,s:SSI.usb2_spd,d:'USB 2.0'}];
++  function dname(d){ try{ return decodeURIComponent(String(d.deviceName||'')); }catch(_){ return String(d.deviceName||''); } }
++  var byPort={'1':[],'2':[]};
++  (USBINFO||[]).forEach(function(d){ if(!d||!d.deviceName) return; var p=String(d.usbPath||'').charAt(0); if(byPort[p]) byPort[p].push(d); });
++  var defs=[{key:'1',v:SSI.usb1,s:SSI.usb1_spd,d:'USB 3.0'},{key:'2',v:SSI.usb2,s:SSI.usb2_spd,d:'USB 2.0'}];
+   var h='';
+   for(var i=0;i<defs.length;i++){
+-    var occ=!!defs[i].v;
+-    h+='<div class="port'+(occ?' up':'')+'"><div class="pn">'+usbLabel(defs[i].s,defs[i].d)+'</div><div class="ps">'+(occ?esc(defs[i].v):'<#RDSH_80#>')+'</div><div class="led"></div></div>';
++    var list=byPort[defs[i].key]||[], cnt=list.length;
++    var occ = cnt>0 || !!defs[i].v;
++    var sub = cnt>1 ? (cnt+' <#RDSH_17#>') : (cnt===1 ? esc(dname(list[0])) : (defs[i].v ? esc(defs[i].v) : '<#RDSH_80#>'));
++    h+='<div class="port'+(occ?' up':'')+'"><div class="pn">'+usbLabel(defs[i].s,defs[i].d)+'</div><div class="ps">'+sub+'</div><div class="led"></div></div>';
+   }
+   var box=$id('usb_ports'); if(box) box.innerHTML=h;
+ })();
+-- 
+2.25.1
+

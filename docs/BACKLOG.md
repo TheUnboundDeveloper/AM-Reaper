@@ -97,6 +97,13 @@ lead me to believe cron jobs weren't running right. No time to diagnose. I may b
 - **WD** REAPER Wireless Diagnostics need to be reworked for visual clarity and information.
 - **Dungeon Master** The admin logged in when the Gatekeeper is activated is automatically 
   added to the approved list with full access.
+- **VPN Fusion client-list — broken/unusable action buttons + menu. [owed — field report 2026-07-25]**
+  On the VPN CLIENT page (VPN Fusion-style list: "VPN Client (Max Limit :10)", WireGuard/OpenVPN
+  client rows e.g. "S21_Reaper-M", a "More Settings for Site to Site Usage" section), the per-client
+  row action buttons and a menu/view render as garbled solid-red blocks instead of usable controls
+  (RT-BE86U v1.7.7 screenshot). Suspect a Reaper theme CSS rule (background/background-color, likely
+  `!important`) clobbering the stock button/icon classes. Fix = scope the theme rule down so the
+  controls are operable while keeping the Reaper look. (Under audit — dedicated agent.)
 
 *(Fixed items moved to `CHANGELOG.md`: the split-second **stock-theme flash** ("Old Style") —
 first cut v1.7.2, completed for the heavy Wireless/DHCP pages in v1.7.4; the **static-DHCP client
@@ -113,6 +120,23 @@ mechanism, the AI Advisor Refresh-button move, and the Login/Logout favicon.)*
   the log with RADIUS codes for an unused radio. Traced to a **closed-source Broadcom
   blob**; a boot-time script to suppress it based on device settings did not work and
   was reverted. [blocked — blob; risk-accepted]
+
+## Known issues (under investigation)
+
+- **Speed test intermittently fails — CROSS-BOX. [owed — investigate 2026-07-25]** Both the Web-UI
+  internal speed test and the CLI speedtest intermittently **fail (fail once, work on retry)**,
+  reported by **multiple users on different models** (RT-BE96U owner + RT-BE86U tester) with QoS
+  **off** — so not a single-box/config artifact. On one heavily-loaded box (5+ VPN tunnels + unbound
+  + Diversion, 993 MB RAM) a speed test also froze the whole system ~30 s, self-recovered, no logs,
+  no reboot — consistent with resource starvation (router-originated speed tests aren't
+  flow-accelerated → CPU saturation, amplified if the test egresses a VPN tunnel), a *separate*
+  effect from the intermittent-fail. Under audit for a Reaper-side cause (de-cloud removed a
+  dependency? DNS/server-list first-run race? short timeout?). Field detail in project memory
+  (postgres `proj_asus` rows 78/80).
+- **Firmware-wide teardown audit (2026-07-25) — in progress.** Multi-agent walk of the tree for
+  de-cloud residue, dead/unreachable code, and broken/semi-working shims "where we tore a lot of
+  stuff out," plus the speed-test path, the VPN Fusion UI, and the ASUS-app remote-access surface.
+  Findings to be folded here as they land.
 
 ## Router hygiene — CISA/FBI/NSA advisory AA26-194A (Russian FSB "Static Tundra")
 

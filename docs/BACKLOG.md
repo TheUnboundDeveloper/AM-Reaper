@@ -97,13 +97,11 @@ lead me to believe cron jobs weren't running right. No time to diagnose. I may b
 - **WD** REAPER Wireless Diagnostics need to be reworked for visual clarity and information.
 - **Dungeon Master** The admin logged in when the Gatekeeper is activated is automatically 
   added to the approved list with full access.
-- **VPN Fusion client-list — broken/unusable action buttons + menu. [owed — field report 2026-07-25]**
-  On the VPN CLIENT page (VPN Fusion-style list: "VPN Client (Max Limit :10)", WireGuard/OpenVPN
-  client rows e.g. "S21_Reaper-M", a "More Settings for Site to Site Usage" section), the per-client
-  row action buttons and a menu/view render as garbled solid-red blocks instead of usable controls
-  (RT-BE86U v1.7.7 screenshot). Suspect a Reaper theme CSS rule (background/background-color, likely
-  `!important`) clobbering the stock button/icon classes. Fix = scope the theme rule down so the
-  controls are operable while keeping the Reaper look. (Under audit — dedicated agent.)
+- ~~**VPN Fusion client-list — broken/unusable action buttons + menu.**~~ **[FIXED v1.7.9]** Root
+  cause: `reaper_content.css` recolored all device/vendor icon glyphs theme-red with an *unscoped*
+  `!important` rule written for the Network-Map View List; on the VPN Fusion client rows the CSS-masked
+  icons rendered as solid red blocks. Rule scoped to `.clientlist_viewlist`. See `CHANGELOG.md` v1.7.9.
+  **Metal check owed** on an affected box (RT-BE86U reporter) once the sibling fan-out lands.
 
 *(Fixed items moved to `CHANGELOG.md`: the split-second **stock-theme flash** ("Old Style") —
 first cut v1.7.2, completed for the heavy Wireless/DHCP pages in v1.7.4; the **static-DHCP client
@@ -123,20 +121,29 @@ mechanism, the AI Advisor Refresh-button move, and the Login/Logout favicon.)*
 
 ## Known issues (under investigation)
 
-- **Speed test intermittently fails — CROSS-BOX. [owed — investigate 2026-07-25]** Both the Web-UI
-  internal speed test and the CLI speedtest intermittently **fail (fail once, work on retry)**,
-  reported by **multiple users on different models** (RT-BE96U owner + RT-BE86U tester) with QoS
-  **off** — so not a single-box/config artifact. On one heavily-loaded box (5+ VPN tunnels + unbound
-  + Diversion, 993 MB RAM) a speed test also froze the whole system ~30 s, self-recovered, no logs,
-  no reboot — consistent with resource starvation (router-originated speed tests aren't
-  flow-accelerated → CPU saturation, amplified if the test egresses a VPN tunnel), a *separate*
-  effect from the intermittent-fail. Under audit for a Reaper-side cause (de-cloud removed a
-  dependency? DNS/server-list first-run race? short timeout?). Field detail in project memory
-  (postgres `proj_asus` rows 78/80).
-- **Firmware-wide teardown audit (2026-07-25) — in progress.** Multi-agent walk of the tree for
-  de-cloud residue, dead/unreachable code, and broken/semi-working shims "where we tore a lot of
-  stuff out," plus the speed-test path, the VPN Fusion UI, and the ASUS-app remote-access surface.
-  Findings to be folded here as they land.
+- ~~**Speed test intermittently fails — CROSS-BOX.**~~ **[FIXED v1.7.9 — root-caused 2026-07-25]**
+  Stock-inherent, not a Reaper edit: the `ookla` binary fetches its `config.speedtest.net`
+  configuration exactly **once with no retry**, and the Go button was gated only on WAN carrier —
+  no NTP-clock or DNS-readiness check — so the first run after boot/idle aborted on cold DNS or a
+  pre-NTP TLS clock error and the retry succeeded. Fix: `internet_speed.html` now performs **one
+  silent auto-retry** per run (2 s backoff) on transient errors; a real WAN-down still errors
+  immediately. Also absorbs the page-load server-list fetch racing a quick Go click. (Reaper's
+  QIS removal made the window easier to hit by letting users reach the page earlier after boot.)
+  **Residual, separate:** on one heavily-loaded RT-BE86U (5+ VPN tunnels, unbound, Diversion,
+  993 MB RAM) the test also froze the box ~30 s and self-recovered — resource starvation:
+  router-*originated* traffic is not flow-accelerated, so a multi-gig test runs on CPU, worst if
+  it egresses a software-crypto VPN tunnel. Stock behavior; guidance is "expect a busy router
+  during the test on heavy configs." [risk-accepted unless field data worsens]
+- **Firmware-wide teardown audit (2026-07-25) — COMPLETE.** 4-agent walk + cross-check against the
+  current tree. Results: **no dangling references** to removed services (all compile-guarded), **no
+  broken shims**, `reaper_inject.c` filter sound; VPN Fusion glyph CSS + speed-test findings fixed
+  in v1.7.9 (above). The **ASUS-app question resolved: the AAE remote tunnel
+  (`mastiff`/`aaews`/`asusnatnl`) is severed on ALL five image models** — every sibling branch sets
+  `NATNL_AICLOUD=n`/`NATNL_AIHOME=n` (RT-BE96U removed entirely; v1.7.8 image verified clean) — so
+  "app still works" reports are **local-LAN access, benign**. Two hygiene leftovers: (1)
+  `be96u-only`'s *unused* copies of sibling target.mak blocks still show stock `NATNL=y` (build
+  nothing today, but a recreation trap — normalize to `=n` someday); (2) `RTCONFIG_ASUSCTRL=y` is
+  still compiled in — no phone-home path traced; verify or drop on a future rung. [low]
 
 ## Router hygiene — CISA/FBI/NSA advisory AA26-194A (Russian FSB "Static Tundra")
 
@@ -262,15 +269,14 @@ packages.)*
 
 ## Platform / expansion
 
-**Model version status (updated 2026-07-23):**
-- **v1.7.6** — RT-BE96U (primary, hardware-validated line; **MCP built**, noMCP owed). Carries the
-  full v1.7.x stack: v1.7.0 Gatekeeper, v1.7.1 security remediation + Network Map fix, v1.7.2
-  (AiMesh onboarding + UI/i18n), v1.7.3 Gatekeeper reliability (no lockout + cold-boot arming),
-  v1.7.4 DHCP-dropdown + theme-flash, v1.7.5 libpasswd C6-twin fix (both variants), v1.7.6 VPN
-  theme ping-pong + speedtest iframe autosize.
-- **v1.7.1** — RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro (all shipped in the v1.7.1 fleet). The
-  **v1.7.2–v1.7.6 fan-out onto these branches is owed** (all shared source; a clean rung once
-  RT-BE96U metal-passes).
+**Model version status (updated 2026-07-25):**
+- **v1.7.9 (building)** — RT-BE96U (primary, hardware-validated line). v1.7.8 (SMB3/Samba4 +
+  SNMPv3-only + SFTP + dashboard fixes; **MCP built + on metal**, noMCP owed) plus the v1.7.9
+  fixes: VPN Fusion buttons, speed-test auto-retry, 2.4 GHz MLO-excluded-band name. Earlier stack:
+  v1.7.0 Gatekeeper → v1.7.7 VPN anti-flash (see `CHANGELOG.md`).
+- **v1.7.7** — RT-BE86U, RT-BE88U, GT-BE98 (v1.7.7a hotfix), GT-BE98 Pro (v1.7.7 fleet, 20 images
+  + SHA256SUMS). The **v1.7.8/v1.7.9 fan-out onto these branches is owed** (Samba4 port waits on
+  the RT-BE96U SMB3 metal test; the v1.7.9 www fixes are clean shared-source cherry-picks).
 
 - **RT-BE86U — brought to v1.6.0, built + shipped (both variants). [metal test owed].** The v1.6.0
   rung (hardening + full i18n; all model-agnostic shared source) was already committed on the

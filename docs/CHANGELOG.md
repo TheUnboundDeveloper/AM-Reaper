@@ -24,6 +24,30 @@ node, not only on the primary router.
 
 ---
 
+## v1.7.9 — VPN page buttons restored, speed test made reliable, 2.4 GHz name fix completed
+- **VPN client page: the buttons work again.** On the VPN client list ("VPN Fusion"-style page),
+  the per-client controls rendered as solid **red blocks** and could not be used. Cause: a Reaper
+  theme rule that recolors device icons in the Network Map "View List" was applied **site-wide**,
+  and on the VPN page it painted the icon shapes into unreadable red squares. The rule is now
+  scoped to the one place it was designed for, so the VPN page (and any other page using device
+  icons) renders its controls normally — with the Reaper look unchanged where it belongs.
+- **Internet speed test: no more first-try failures.** The built-in speed test could fail on the
+  first run and then work on the second — reported across models. The test tool fetches its
+  configuration from the internet exactly **once, with no retry**, so a just-booted or long-idle
+  router could miss on a cold DNS lookup or a not-yet-synced clock and give up. The page now
+  **retries once, silently,** before reporting an error — a real internet outage still reports
+  immediately. In practice the "failed for no reason" case disappears.
+- **2.4 GHz dashboard name: the remaining case.** v1.7.8 fixed the 2.4 GHz tile showing an
+  internal ID when MLO reordered the network entries; field testing found one more path — when
+  **2.4 GHz is excluded from MLO**, the band was dropped from the network's membership mask
+  entirely, so the tile again fell back to the internal hex ID even though 2.4 GHz still
+  broadcasts your network name. The dashboard now uses the network's real name for any band the
+  mask misses (when a single main network exists), closing the loop.
+- *Also this cycle (no firmware change):* a firmware-wide audit re-verified that the **ASUS
+  cloud/remote-app tunnel is severed on every Reaper model** — reports of the ASUS app "still
+  working" are local-network access only, which is expected and harmless. The teardown audit
+  found no dangling references, broken shims, or dead-code hazards in the Reaper-owned surface.
+
 ## v1.7.8 — Encrypted SMB3 file sharing, SNMPv3-only, and SFTP as the secure default
 - **Encrypted SMB3 file sharing (new "SMBv3" option).** The router's file-sharing service moves
   from the old Samba 3.6 (SMB2 at best) up to **Samba 4**, which speaks modern **SMB3 / SMB3.1.1**.

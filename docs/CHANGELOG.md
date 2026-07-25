@@ -54,6 +54,16 @@ node, not only on the primary router.
 - *Under the hood:* the bundled **net-snmp** was modernized (5.7.2 -> 5.9.4) for current CVE
   hygiene; SNMPv3 already worked, this is maintenance.
 
+## v1.7.7a — GT-BE98: Wireless Log shows all four bands again (model-specific hotfix)
+- **The Wireless Log page now lists every radio on the GT-BE98.** On the quad-band **GT-BE98**,
+  **System Log &rsaquo; Wireless Log** was falling into the generic three-band layout, so the
+  **second 5 GHz band was missing** and the **2.4 GHz radio and its connected clients were dropped**
+  from the page. The GT-BE98 is now handled like its quad-band sibling (GT-AXE16000, which shares the
+  same band order), so all four sections — 5 GHz, 5 GHz-2, 6 GHz, and 2.4 GHz — and their client lists
+  appear correctly. *(This is a **GT-BE98-only** hotfix; the RT-BE96U, RT-BE86U, RT-BE88U, and
+  GT-BE98 Pro were not affected. The same fix is folded into the shared code for the next release of
+  every model, where it is a harmless no-op on the non-quad-band units.)*
+
 ## v1.7.7 — VPN pages: no theme flash, plus a Network-Map lighting-control fix
 - **No more stock-color flash on the VPN pages.** Opening **VPN &rsaquo; VPN Client** (PPTP/L2TP)
   or **VPN Server** could show the original blue ASUS styling for a split second before the Reaper

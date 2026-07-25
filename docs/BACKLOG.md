@@ -127,11 +127,12 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
 *(The primary credential item — the unbypassable first-boot wizard — shipped in v1.5.5; see
 `CHANGELOG.md` and the metal-test entry at the top of this file.)*
 
-- **SNMP hardening.** Default state **verified off** in the live audit 2026-07-19
+- **SNMP hardening. [DONE v1.7.8]** Default state **verified off** in the live audit 2026-07-19
   (`snmpd_enable=0`, `snmpd_wan=0`, no snmpd listening) — the primary advisory vector is closed
-  by default. Remaining (optional, **[shelved]**): the SNMPv3-`authPriv` / reject-common-strings
-  enhancement for users who *enable* SNMP (revisits the shelved SNMPv3 line in
-  `PACKAGE-UPDATES.md`). Full posture in `LIVE-AUDIT-2026-07-19.md`.
+  by default. The previously shelved SNMPv3-`authPriv` / reject-common-strings enhancement for
+  users who *enable* SNMP is now **delivered in v1.7.8**: SNMPv1/v2c cleartext community strings
+  are removed from the daemon and the UI, SNMP requires authenticated **SNMPv3** (default SHA +
+  AES), and net-snmp was modernized **5.7.2 -> 5.9.4**. Full posture in `LIVE-AUDIT-2026-07-19.md`.
 
 - **Detection / logging for the advisory TTPs.** Surface and log config-exfil attempts and
   anomalous SNMP polling (spoofed-source reads). Ties into the **Remote syslog push/fetch**
@@ -151,6 +152,32 @@ items below. Source: <https://www.cisa.gov/news-events/cybersecurity-advisories/
   **latency-under-load measurement** (a download-saturation run with a concurrent ping) to quantify
   the bufferbloat baseline and confirm the policer headroom holds full rated speed with lower ping.
   Needs an active test; no wireless restart required.
+
+- **QoS download policer — DEFAULT OFF (decided 2026-07-24; code change pending next build).** The
+  WAN-ingress RX policer (`qos_ipolicer`) shipped **default ON** with kill-switch semantics, so any
+  box with a download bandwidth set engaged it. A policer has **no queue** — it drops (not delays)
+  excess — so it clips loss-sensitive real-time UDP (metal 2026-07-20: Teams-call packet loss; the
+  RT-BE96U owner mitigated by hand with `qos_ipolicer=0`). **Decision:** flip the `defaults.c` default
+  to **`"0"` (opt-in)** so no fresh install hits the footgun; the download cap stays available for
+  users who specifically want bulk-download bufferbloat control and accept the loss-for-latency trade
+  (v5 metal measured ~90% held full rated speed with lower ping). One-line `defaults.c` flip on
+  `be96u-only` (shared source); applies to **fresh nvram only** (existing boxes keep their value).
+  Rides the next QoS/build rung. **Doc note DONE (English):** the download-cap toggle description
+  (`RQOS_117`, `Reaper_QoS.asp`) now warns it is off by default and, being a policer, can add packet
+  loss to real-time video/voice — commit `225399d2fc` on `be96u-only`. **Translated to all 24 other
+  languages** (commit `b29d33f8d1`; `RQOS_117` still 122-key lockstep) — machine-assisted, native
+  review owed. `qos_dscp_wmm` (the benign WMM-lift half) stays default ON.
+  - **Residue sub-thread CLOSED:** the `(0,160,0)` `getportrxrate` readback is a sub-legal inactive
+    descriptor (rate 0 < 100K CIR min, burst 160 < 1K CBS min per `rdpa_policer.h`) — cosmetic, not an
+    active bucket — and it clears on reboot (RT-BE96U diag 2026-07-24 read a clean `(0,0,0)` with the
+    policer off after 6h uptime). It was never the packet-loss cause; the active policer was. The
+    optional teardown log-hygiene tweak (treat rate 0 as "already off") is deferred as non-blocking.
+
+ - Users report that when using a USB Hub with the router that nothing is sidplayed under the USB 
+   image in the Network Map page. Clicking the dropdown arrow shows the list of devices. Currently 
+   plugging in a single drive shows the drive name that wont change. What we should do is that if 
+   mutiple device names are detected the count of the devices be displayed under the icon. Example, 
+   "3 Devices". 
 
 *(Done in v1.6.1, moved to `CHANGELOG.md`: the Channel-Quality **Auto Scan** + downloadable
 landscape report, the **Clear-results** button, and the opt-in passive channel-health daemon
@@ -185,12 +212,29 @@ onto the sibling branches is a clean shared rung when those are next bumped.)
 - **Annotate the system defaults.**
 - **Write a user guide** for other users.
 
-## Packages — [shelved]
+## Packages
 
-- **Samba 3.0+ investigation** and **net-snmp update / SNMPv3.** Captured in
-  `PACKAGE-UPDATES.md` and currently **shelved** (the EOL residual risk is accepted as
-  LAN-only and manageable). Listed here for visibility; revisit from that doc's
-  execution-order table if the decision changes.
+*(Done in v1.7.8, moved to `CHANGELOG.md`: the **Samba 3.0+ investigation** landed as
+**Samba 4.15.13** — real SMB3 / SMB3.1.1 with GnuTLS AES-GCM/CCM encryption, replacing Samba
+3.6.25 (SMB2 max), with a new "SMBv3 (encrypted)" option on the Samba page (`smbd_protocol=3`),
+RT-BE96U only for now; and the **net-snmp update / SNMPv3** landed as net-snmp 5.7.2 -> 5.9.4 with
+SNMPv3-only hardening. The EOL residual risk that had these shelved is resolved for those two
+packages.)*
+
+- **SMB3 / Samba 4 hardware test on RT-BE96U. [metal test owed — v1.7.8]** Verify on real
+  hardware that a client negotiates **SMB3 / SMB3.1.1** to the router (not SMB1/SMB2), that the new
+  **SMBv3 (encrypted)** option (`smbd_protocol=3`) actually forces GnuTLS AES-GCM/CCM encryption on
+  the wire (confirm with a capture / `smbstatus` showing an encrypted session), that share
+  read/write and browse still work, and that RAM/CPU headroom under a sustained transfer is
+  acceptable on the BE96U. Build only so far.
+- **Samba 4 / SMB3 sibling fan-out. [owed]** Samba 4.15.13 shipped **RT-BE96U only**; the siblings
+  (**RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro**) remain on **Samba 3.6.x** (SMB2 max) today. Port
+  the Samba-4 package + the SMBv3 UI option onto those branches once the RT-BE96U metal test passes
+  (shared source; a clean rung when those branches are next bumped).
+- **SMB3 follow-ups. [shelved]** Optional nice-to-haves on top of the Samba-4 base: **ACL support**
+  (`vfs_acl_xattr` / extended-ACL config) and **per-model UI gating** of the "SMBv3 (encrypted)"
+  option so it only surfaces on models that ship Samba 4 (hide it on siblings still on 3.6.x until
+  the fan-out lands).
 
 ## Platform / expansion
 
@@ -224,6 +268,32 @@ onto the sibling branches is a clean shared rung when those are next bumped.)
   function, not cosmetic. No metal test yet.
 
 ## Known issues — ported models (GT-BE98 / siblings)
+
+- **GT-BE98: Hardware QoS can't attach to the WAN (`vlan4094`). [owed — investigate; found 2026-07-24]**
+  Reaper Diagnostics v1.0.1 on GT-BE98 v1.7.7 (§10 QoS) shows every `tmctl` readback failing —
+  `portshaper`, `portrxrate`, and all seven `qcfg` queues return `is_port_wan.126: failed to
+  communicate with dev vlan4094` / `get_root_tm.687: Failed to get tm owner for vlan4094, ret[-5]`.
+  The GT-BE98's WAN egresses on **`vlan4094`** (a VLAN over the multi-gig WAN port), and `tmctl --if`
+  can't map that virtual netdev to an rdpa TM port. QoS was **disabled** on the reporting box
+  (`qos_enable=0`) so it was harmless there, but it means that if a GT-BE98 owner enables **Hardware
+  QoS**, the port shaper / download policer / classful queues will **silently fail to apply** on the
+  WAN. The engine resolves `$WANIF` to the raw WAN device; on models where the WAN rides a VLAN,
+  `tmctl` needs the **underlying physical port**, not the VLAN netdev. Fix direction: give the
+  HW-QoS `$WANIF` resolver a VLAN-aware path (resolve `vlan4094` → its base port for the `tmctl --if`
+  argument), or gate/adapt per model. Ties into the download-policer thread (the RT-BE96U 160-byte
+  residue work) — on GT-BE98 the policer wouldn't even attach. Build/diag observation only; no
+  GT-BE98 QoS metal test yet.
+
+- **GT-BE98: Wireless Log page mis-maps the quad-band radios (missing 5 GHz-2 + most clients).**
+  **[FIX in v1.7.7a — built 2026-07-24, metal test owed].** `Main_WStatus_Content.asp`'s `redraw()`
+  special-cases only `GT-AXE16000` and `GT-BE98_PRO`; **`GT-BE98` (non-Pro) fell into the generic
+  tri-band `else`**, which assumes `dataarray0 = 2.4 GHz` and can't render two 5 GHz radios plus
+  6 GHz at once. On GT-BE98 the units are `wl0=5 GHz-1, wl1=5 GHz-2, wl2=6 GHz, wl3=2.4 GHz`, so the
+  page mislabeled 5 GHz-1 as "2.4 GHz" (showed channel 48), dropped the real 2.4 GHz radio (`wl3`,
+  which held 6 of 8 Wi-Fi clients), and omitted the 5 GHz-2 section. Confirmed by diag v1.0.1
+  (`productid=GT-BE98`, §7 radio map) — **not** a model-identity bug and **not** a Reaper regression
+  (the block is byte-identical to stock Merlin, which never added a GT-BE98 case). **Fix:** add
+  `GT-BE98` to the existing `GT-AXE16000` branch (identical band plan). Upstream-worthy.
 
 - **GT-BE98: empty Wi-Fi client list + ~half wired throughput + missing 6 GHz radio.**
   **[FIX SHIPPED v1.5.9 2026-07-17 — metal test owed].** Root cause found: the v1.5.0e/v1.5.1

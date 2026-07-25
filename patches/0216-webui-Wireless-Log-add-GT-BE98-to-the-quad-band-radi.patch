@@ -1,0 +1,44 @@
+From 2ea3eafaf2341cec7c411d8eab67702520d361aa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 24 Jul 2026 14:50:10 -0400
+Subject: [PATCH 216/226] webui: Wireless Log - add GT-BE98 to the quad-band
+ radio branch
+
+Stock Merlin's redraw() special-cases only GT-AXE16000 and GT-BE98_PRO;
+GT-BE98 (non-Pro) fell into the generic tri-band else, which assumes
+dataarray0 = 2.4 GHz and cannot render two 5 GHz radios plus 6 GHz at
+once. On GT-BE98 the units are wl0=5G-1, wl1=5G-2, wl2=6G, wl3=2.4G, so
+the Wireless Log mislabeled 5 GHz-1 as "2.4 GHz", dropped the real
+2.4 GHz radio and its clients, and omitted the 5 GHz-2 section. GT-BE98
+shares the GT-AXE16000 band plan exactly, so add it to that branch.
+
+Confirmed against GT-BE98 diag v1.0.1 (productid=GT-BE98, runtime radio
+map). Not a Reaper regression - the block is byte-identical to stock,
+which never added a GT-BE98 case. Shared source; ports to gt-be98.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_WStatus_Content.asp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Main_WStatus_Content.asp b/release/src/router/www/Main_WStatus_Content.asp
+index b4d168c82c..5c8e2f76b7 100644
+--- a/release/src/router/www/Main_WStatus_Content.asp
++++ b/release/src/router/www/Main_WStatus_Content.asp
+@@ -122,7 +122,12 @@ function redraw(){
+ 	var bandname_array = [];
+ 	var code = "";
+ 
+-	if (based_modelid === 'GT-AXE16000') {
++	if (based_modelid === 'GT-AXE16000' || based_modelid === 'GT-BE98') {
++		// reaper: GT-BE98 (non-Pro) shares the GT-AXE16000 quad-band layout
++		// (wl0=5G-1, wl1=5G-2, wl2=6G, wl3=2.4G). Stock only special-cased
++		// GT-AXE16000/GT-BE98_PRO, so GT-BE98 fell into the generic tri-band
++		// else and mis-mapped the radios (2.4 GHz radio + its clients dropped,
++		// 5 GHz-2 section omitted). This branch orders/labels all four correctly.
+ 		apinfo_array = [dataarray3, dataarray0, dataarray1, dataarray2];
+ 		client_array = [wificlients3, wificlients0, wificlients1, wificlients2];
+ 		dfs_array = [[],dfs_statusarray0, dfs_statusarray1, []];
+-- 
+2.25.1
+

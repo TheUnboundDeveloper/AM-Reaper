@@ -24,6 +24,36 @@ node, not only on the primary router.
 
 ---
 
+## v1.7.8 — Encrypted SMB3 file sharing, SNMPv3-only, and SFTP as the secure default
+- **Encrypted SMB3 file sharing (new "SMBv3" option).** The router's file-sharing service moves
+  from the old Samba 3.6 (SMB2 at best) up to **Samba 4**, which speaks modern **SMB3 / SMB3.1.1**.
+  A new **"SMBv3 (encrypted)"** choice on the Samba page turns on SMB3-only sharing with the
+  transfer **encrypted end to end** (AES-GCM/CCM), so files copied to and from a USB drive on the
+  router are no longer sent in the clear on your LAN. Current Windows, macOS, and Linux clients
+  connect faster and more reliably over SMB3. *(Ships on the **RT-BE96U** first; the other models
+  stay on the older Samba for now.)*
+- **SNMP is now SNMPv3-only — no more cleartext monitoring.** If you use SNMP to monitor the
+  router, the insecure legacy versions (**SNMPv1 / SNMPv2c**, which send a plaintext "community
+  string" password over the network) are **removed** — from both the service and the settings page.
+  SNMP now requires authenticated, encrypted **SNMPv3** (default **SHA + AES**). This closes a
+  common router-hygiene weakness that internet scanners actively look for.
+- **SFTP is the recommended way to move files (FTP is now the deliberate legacy choice).** The
+  **FTP** page gains a **"File transfer method"** selector with **SFTP pre-selected**. SFTP runs
+  over the router's existing SSH service — your transfers and login are encrypted — whereas plain
+  FTP is unencrypted. Picking FTP is now an explicit "I want the old, unencrypted way" decision;
+  the page links you to the SSH settings (it never silently enables SSH for you). An `sftp-server`
+  is bundled in the image so SFTP works out of the box once SSH is on.
+- **USB dashboard: hubs no longer show "empty."** On the Reaper dashboard, plugging a **USB hub**
+  into a port used to leave that port's tile reading "empty." Ports are now grouped by their
+  physical slot, so a hub shows as connected and a port with several drives shows the **device
+  count**.
+- **2.4 GHz dashboard tile shows the right name again (with MLO on).** Turning on **MLO** could
+  reorder the Wi-Fi entries so the dashboard's 2.4 GHz tile displayed a raw internal ID instead of
+  the network name. The dashboard now reads all the radio entries, so each band's tile shows its
+  correct SSID regardless of MLO.
+- *Under the hood:* the bundled **net-snmp** was modernized (5.7.2 -> 5.9.4) for current CVE
+  hygiene; SNMPv3 already worked, this is maintenance.
+
 ## v1.7.7 — VPN pages: no theme flash, plus a Network-Map lighting-control fix
 - **No more stock-color flash on the VPN pages.** Opening **VPN &rsaquo; VPN Client** (PPTP/L2TP)
   or **VPN Server** could show the original blue ASUS styling for a split second before the Reaper

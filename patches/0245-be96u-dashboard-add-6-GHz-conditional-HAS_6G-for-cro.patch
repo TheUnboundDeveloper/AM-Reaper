@@ -1,0 +1,53 @@
+From 17aeb4d734434448d5dd1ecea1bc0c54ccb02d6c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 27 Jul 2026 13:41:28 -0400
+Subject: [PATCH 245/245] be96u dashboard: add 6 GHz-conditional (HAS_6G) for
+ cross-model file parity
+
+Functional NO-OP on the tri-band RT-BE96U (it has a 6 GHz radio, so HAS_6G is
+true and nothing is hidden). Added so all five model branches share the identical
+Main_ReaperDash.asp -> future be96u->sibling syncs carry it automatically. The
+shipped RT-BE96U v1.8.6 image is unchanged in behavior; no re-ship needed.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 60df479dfc..dd9adfeab6 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -429,13 +429,13 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+           <div class="head"><h3><#Full_Clients#></h3><a class="link" href="#" id="cl_viewlist"><#View_List#></a></div>
+           <div class="cbig"><span class="n mono" id="c_total">&mdash;</span><span class="u"><#RDSH_17#></span></div>
+           <div class="bands">
+-            <div class="band"><span class="bl">6 GHz</span><span class="bar"><i id="b6i" style="width:0%"></i></span><span class="bn mono" id="b6n">0</span></div>
++            <div class="band" id="brow6"><span class="bl">6 GHz</span><span class="bar"><i id="b6i" style="width:0%"></i></span><span class="bn mono" id="b6n">0</span></div>
+             <div class="band"><span class="bl">5 GHz</span><span class="bar"><i id="b5i" style="width:0%"></i></span><span class="bn mono" id="b5n">0</span></div>
+             <div class="band"><span class="bl">2.4 GHz</span><span class="bar"><i id="b24i" style="width:0%"></i></span><span class="bn mono" id="b24n">0</span></div>
+             <div class="band"><span class="bl"><#tm_wired#></span><span class="bar"><i id="beti" style="width:0%"></i></span><span class="bn mono" id="betn">0</span></div>
+           </div>
+           <select id="cl_filter" class="cl-filter" aria-label="<#RDSH_18#>">
+-            <option value="6">6 GHz</option>
++            <option value="6" id="clopt6">6 GHz</option>
+             <option value="5">5 GHz</option>
+             <option value="24">2.4 GHz</option>
+             <option value="eth"><#wan_ethernet#></option>
+@@ -579,6 +579,13 @@ WL = WL.filter(function(w){ return w.nband; });
+     WL[i].band=b; WL[i].label=(seen[b]>1)?(b+' ('+seen[b]+')'):b;
+   }
+ })();
++/* radios are band-aware (WL is filtered by wlX_nband); a router with no 6 GHz
++   radio (e.g. RT-BE88U/BE86U dual-band) must not show a phantom 6 GHz band. */
++var HAS_6G = WL.some(function(w){ return w.nband==='4'; });
++if(!HAS_6G){
++  var _b6=document.getElementById('brow6'); if(_b6) _b6.style.display='none';
++  var _o6=document.getElementById('clopt6'); if(_o6 && _o6.parentNode) _o6.parentNode.removeChild(_o6);
++}
+ var USBINFO = <% get_usb_info(); %>;
+ var WAN6 = <% wan_ipv6_network(); %>;   /* {status, Connection_Type, IPv6_Address, Link_Local_Address, IPv6_Gateway, DNS_Servers} */
+ var UPSTR = "<% sysuptime(); %>";
+-- 
+2.25.1
+

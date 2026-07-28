@@ -1,0 +1,72 @@
+From c6c362cc3281f455583d479969bde2bf4cb0e338 Mon Sep 17 00:00:00 2001
+From: reaper <reaper@localhost>
+Date: Sun, 26 Jul 2026 14:50:11 -0400
+Subject: [PATCH 235/245] lan: skip phy-power cycle + 10s wait on reboot; log
+ stop_lan teardown
+
+The HND_ROUTER_BE_4916 block in stop_lan() power-cycles every LAN PHY
+then sleeps a fixed 10s to nudge live clients into renewing their lease.
+That only matters on a live "restart lan"; on a reboot/halt the box is
+power-cycling anyway, so it is pure dead time. Gate it behind !g_reboot,
+mirroring the existing stop_wan()/stop_usb() reboot gates.
+
+Also add logmessage() markers around the phy-power block and each
+per-VIF wl radio off (synchronous closed-driver calls, prime suspects
+for the remaining teardown stall) so the next reboot names each sub-cost
+in syslog instead of only the console ring.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rc/lan.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index 4db0781dc2..cf8c3c296e 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -2899,9 +2899,19 @@ void stop_lan(void)
+ 	ifconfig(lan_ifname, 0, NULL, NULL);
+ 
+ #if defined(RTCONFIG_HND_ROUTER_BE_4916)
++	/* reaper: skip the phy-power cycle + fixed 10s client-release wait on
++	 * reboot/halt - it only nudges live LAN clients into renewing during a
++	 * `restart lan`, and is pure dead time when the box is power-cycling.
++	 * Mirrors the existing !g_reboot gates on stop_wan()/stop_usb(). Both
++	 * branches log to syslog so the cost is visible on the next boot. */
++	if (g_reboot) {
++		logmessage("stop_lan", "reboot: skipped phy-power cycle + 10s client-release wait");
++	} else {
+ 	phy_port_mapping port_mapping;
+ 	int eth_if_idx, i;
++	unsigned long _t0 = (unsigned long)uptime();
+ 
++	logmessage("stop_lan", "phy-power cycle + client-release wait: begin");
+ 	get_phy_port_mapping(&port_mapping);
+ 	for(eth_if_idx = 0; eth_if_idx < port_mapping.count && port_mapping.port[eth_if_idx].ifname != NULL; ++eth_if_idx){
+ 		if(port_mapping.port[eth_if_idx].ext_port_id != -1){
+@@ -2933,6 +2943,8 @@ void stop_lan(void)
+ 		eval("ethctl", port_mapping.port[eth_if_idx].ifname, "phy-power", "up");
+ 		_dprintf("%s(%lu) the release on %s is done.\n", __func__, uptime(), port_mapping.port[eth_if_idx].ifname);
+ 	}
++	logmessage("stop_lan", "phy-power cycle + client-release wait: done (%lu s)", (unsigned long)uptime() - _t0);
++	} /* !g_reboot */
+ #endif
+ 
+ #ifdef HND_ROUTER
+@@ -3008,8 +3020,13 @@ void stop_lan(void)
+ #ifdef GT10
+ 					ledbh_war(ifname);
+ #endif
++					/* reaper: name each radio-off in syslog - these
++					 * are synchronous calls into the closed wl driver
++					 * and are the prime suspects for the reboot stall. */
++					logmessage("stop_lan", "wl radio off %s: begin (uptime %lu)", ifname, (unsigned long)uptime());
+ 					eval("wlconf", ifname, "down");
+ 					eval("wl", "-i", ifname, "radio", "off");
++					logmessage("stop_lan", "wl radio off %s: done (uptime %lu)", ifname, (unsigned long)uptime());
+ 				}
+ 				ifconfig(ifname, 0, NULL, NULL);
+ #elif defined RTCONFIG_RALINK
+-- 
+2.25.1
+

@@ -1,0 +1,57 @@
+From 986eb9f04137ce960f612f038a309ba6722aac39 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 25 Jul 2026 15:51:17 -0400
+Subject: [PATCH 229/245] webui: speed test - one silent auto-retry on
+ transient failure (fixes intermittent first-run fail)
+
+The ookla binary fetches its hardcoded config.speedtest.net config exactly once with no retry, and the Go button is gated only on WAN carrier (link_internet==2) with no NTP-clock or DNS-readiness check. The first run after boot/idle can therefore abort on a cold DNS lookup or a pre-NTP TLS certificate-time error and succeed seconds later - the field-reported cross-model fails-once-works-on-retry. error_handling() now performs ONE silent retry per user-initiated run (2s backoff) for transient errors (timeout/terminate/unknown); a real WAN-down (ERR_DISCON) still surfaces immediately. Retry budget resets in start_speedTest(); button stays in testing state during the retry; test_start_time is re-armed by do_speedTest_exe() so the timeout window restarts. Also absorbs the page-load server-list fetch racing a quick Go click (killall ookla path). Stock-inherent defect; UI-layer fix keeps the vendored ookla binary untouched.
+---
+ release/src/router/www/internet_speed.html | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/release/src/router/www/internet_speed.html b/release/src/router/www/internet_speed.html
+index 354fa24d3f..cc9e687b6a 100644
+--- a/release/src/router/www/internet_speed.html
++++ b/release/src/router/www/internet_speed.html
+@@ -72,6 +72,7 @@ var test_timeout = 120000;
+ var go_btn_type = "go";
+ var LEVEL_ERR_MAX = 50;
+ var level_err_cnt = 0;
++var speedTest_retry_done = false;	/* reaper: one silent auto-retry per user-run to absorb a transient first-attempt failure (cold DNS / pre-NTP TLS on the single config.speedtest.net fetch) */
+ var ookla_states = {
+ 		"IDLE": "0",
+ 		"RUN": "1",
+@@ -379,6 +380,7 @@ function reset_speedTest_div(){
+ }
+ 
+ function start_speedTest(){
++	speedTest_retry_done = false;	/* reaper: fresh retry budget per user-initiated run */
+ 	reset_speedTest_div();
+ 	change_speedTestBtn("testing");
+ 	if(!enable_auto_server && cur_server_id != "")
+@@ -568,6 +570,22 @@ function show_eth_monitor_result(){
+ }
+ 
+ function error_handling(error_status){//2: wan disconnected 3: timeout  4: error  5:unknown
++	/* reaper: the ookla binary fetches its config.speedtest.net config once with no
++	   retry, so the first run after boot/idle can abort on cold DNS or a pre-NTP TLS
++	   clock error and then succeed seconds later. Absorb that with ONE silent retry
++	   per run for transient errors; a real WAN-down (ERR_DISCON) still errors out. */
++	if(!speedTest_retry_done && error_status != ookla_states.ERR_DISCON){
++		speedTest_retry_done = true;
++		level_err_cnt = 0;
++		set_ookla_state(ookla_states.IDLE);
++		setTimeout(function(){
++			if(!enable_auto_server && cur_server_id != "")
++				do_speedTest_exe("", cur_server_id);
++			else
++				do_speedTest_exe();
++		}, 2000);
++		return;
++	}
+ 	var error_msg = "<#InternetSpeed_Failure_Hint#>"
+ 	set_ookla_state(error_status);
+ 	reset_speedTest_div();
+-- 
+2.25.1
+

@@ -1,0 +1,1709 @@
+From 1a83610b4fe1dee9547d1728e768f0068eb81853 Mon Sep 17 00:00:00 2001
+From: reaper <reaper@localhost>
+Date: Sun, 26 Jul 2026 18:47:39 -0400
+Subject: [PATCH 243/245] audit batches B/C/D/E: rwarden, reaper_skip, i18n,
+ samba stamp
+
+Batch B (rc/rwarden.c):
+- C5 (LAN subnet %%) is a FALSE POSITIVE - the %% is an fprintf escape that
+  emits a single % in the generated shell (${LANIP%.*} -> 192.168.50.0/24,
+  verified). Left unchanged; changing it would emit a malformed %. conversion.
+- L2 (real, currently active): moved the LAN-source anti-lockout RETURN to
+  AFTER the outbound dst-drop rules so a LAN client reaching a blocked dst is
+  actually enforced (an early LAN RETURN exempted all LAN-sourced forwarded
+  traffic, silently disabling outbound blocking).
+- C6: geo update now builds into rw_geo_tmp and swaps only if non-empty (mirrors
+  the threat feed), so a transient fetch failure keeps the last-good country set
+  instead of the old flush-before-fetch fail-open.
+
+Batch C (httpd/reaper_inject.c): added error_page.htm, offline.htm,
+gotoHomePage.htm and blocking.asp to reaper_skip[] so WAN-outage / block pages
+render instead of bouncing an unauthenticated client to the login (C4 + L1).
+
+Batch D (www/*.dict): C7 - overwrote the RQOS_117 tooltip in all 24 non-EN
+dicts with the correct EN text in place (the translated "enter ~90%" guidance
+double-derated the download cap to ~81%). C8 - seeded the 43 EN RWDN_ (Warden)
+strings into all 24 non-EN dicts after RGK_60 (English placeholders, order
+matching EN). Native translation of RQOS_117 + RWDN_ is a follow-up i18n pass.
+
+Batch E (samba-4.15.13/build-reaper.sh): the build stamp now stores a sha256 of
+reaper-patches/ and the skip check compares it, so a patch add/change forces a
+rebuild instead of reshipping a stale binary with the Reaper suffix but without
+the current CVE patches (C33).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      |  9 ++++
+ release/src/router/rc/rwarden.c               | 31 ++++++++++---
+ .../src/router/samba-4.15.13/build-reaper.sh  | 11 +++--
+ release/src/router/www/BR.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/CN.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/CZ.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/DA.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/DE.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/ES.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/FI.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/FR.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/HU.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/IT.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/JP.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/KR.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/MS.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/NL.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/NO.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/PL.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/RO.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/RU.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/SL.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/SV.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/TH.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/TR.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/TW.dict                | 45 ++++++++++++++++++-
+ release/src/router/www/UK.dict                | 45 ++++++++++++++++++-
+ 27 files changed, 1098 insertions(+), 33 deletions(-)
+ mode change 100755 => 100644 release/src/router/samba-4.15.13/build-reaper.sh
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 0577e073da..bd70b2f414 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -128,6 +128,15 @@ static const char *reaper_skip[] = {
+ 	   skip them (guest-facing splash renders stock). */
+ 	"Captive_Portal.asp",
+ 	"Captive_Portal_Advanced.asp",
++	/* Standalone do_ej text/html status pages served with NULL auth: the WAN
++	   "No Internet" / outage pages and the parental-control / data-limit block
++	   page. Bouncing these into reaper_shell.asp sends an unauthenticated client
++	   to Main_Login.asp instead of the page it was meant to see (audit C4 / L1).
++	   Keep them top-level so the intended page renders. */
++	"error_page.htm",
++	"offline.htm",
++	"gotoHomePage.htm",
++	"blocking.asp",
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 26d5c35c34..28470eaf8d 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -163,11 +163,17 @@ static void rw_gen_apply(void)
+ 	if (nvram_match("rwarden_log", "1"))
+ 		fprintf(f, "iptables -A RW_DROP -j LOG --log-prefix \"REAPER-WARDEN \" --log-level 4\n");
+ 	fprintf(f, "iptables -A RW_DROP -j DROP\n");
+-	/* dispatch chain: anti-lockout RETURNs first, then set-match -> RW_DROP */
++	/* dispatch chain. Order matters for BOTH anti-lockout and outbound blocking:
++	 * ESTABLISHED/RELATED and the rw_allow whitelist RETURN first; then inbound
++	 * (src) drops; then outbound (dst) drops; and ONLY THEN the LAN-source
++	 * anti-lockout RETURN. The LAN RETURN must sit AFTER the dst drops (audit L2)
++	 * - a LAN client's forwarded traffic is LAN-sourced, so an early LAN RETURN
++	 * exempts it and silently disables all outbound blocking. LAN addresses never
++	 * appear in the feed sets, so the src drops above cannot lock out the admin,
++	 * and ESTABLISHED + rw_allow already cover live/whitelisted traffic. */
+ 	fprintf(f,
+ 	  "iptables -N REAPER_WARDEN\n"
+ 	  "iptables -A REAPER_WARDEN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN\n"
+-	  "iptables -A REAPER_WARDEN -s $LANNET -j RETURN\n"
+ 	  "iptables -A REAPER_WARDEN -m set --match-set rw_allow src -j RETURN\n");
+ 	/* inbound (src) matches - always on when enabled */
+ 	fprintf(f,
+@@ -180,6 +186,10 @@ static void rw_gen_apply(void)
+ 		  "iptables -A REAPER_WARDEN -m set --match-set rw_ban dst -j RW_DROP\n"
+ 		  "iptables -A REAPER_WARDEN -m set --match-set rw_threat dst -j RW_DROP\n"
+ 		  "iptables -A REAPER_WARDEN -m set --match-set rw_geo dst -j RW_DROP\n");
++	/* anti-lockout: LAN sources pass freely - AFTER the outbound dst drops (L2) so
++	 * a LAN client reaching a blocked dst is still enforced. */
++	fprintf(f,
++	  "iptables -A REAPER_WARDEN -s $LANNET -j RETURN\n");
+ 	/* hook: INPUT protects the router, FORWARD protects LAN clients */
+ 	fprintf(f,
+ 	  "iptables -I INPUT -j REAPER_WARDEN\n"
+@@ -225,8 +235,10 @@ static void rw_gen_update(void)
+ 	  "  sort -u $NEW | while read n; do ipset add rw_threat_tmp $n -exist; done\n"
+ 	  "  ipset swap rw_threat_tmp rw_threat; ipset destroy rw_threat_tmp\n"
+ 	  "fi\n");
+-	/* country CIDRs from ipdeny */
+-	fprintf(f, "ipset flush rw_geo\n");
++	/* country CIDRs from ipdeny -> temp file, then swap-if-nonempty (mirrors the
++	 * threat feed) so a transient fetch failure keeps the last-good geo set
++	 * instead of flushing it empty (audit C6: was flush-before-fetch = fail-open). */
++	fprintf(f, "GEO=/tmp/rwarden/geo.new; : > $GEO\n");
+ 	save = NULL;
+ 	list = strdup(nvram_safe_get("rwarden_geo"));
+ 	if (list) {
+@@ -236,15 +248,22 @@ static void rw_gen_update(void)
+ 			fprintf(f,
+ 			  "CC=$(echo '%s' | tr A-Z a-z)\n"
+ 			  "if $CURL \"https://www.ipdeny.com/ipblocks/data/aggregated/${CC}-aggregated.zone\" -o $TMP 2>/dev/null; then\n"
+-			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | while read n; do ipset add rw_geo $n -exist; done\n"
++			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP >> $GEO\n"
+ 			  "else\n"
+ 			  "  logger -t rwarden \"geo feed fetch FAILED for ${CC} - country block set may be incomplete this cycle\"\n"
+ 			  "fi\n", tok);
+ 		}
+ 		free(list);
+ 	}
++	/* atomically publish geo only when something was actually fetched */
++	fprintf(f,
++	  "if [ -s $GEO ]; then\n"
++	  "  ipset create rw_geo_tmp hash:net -exist; ipset flush rw_geo_tmp\n"
++	  "  sort -u $GEO | while read n; do ipset add rw_geo_tmp $n -exist; done\n"
++	  "  ipset swap rw_geo_tmp rw_geo; ipset destroy rw_geo_tmp\n"
++	  "fi\n");
+ 	fprintf(f,
+-	  "rm -f $TMP $NEW\n"
++	  "rm -f $TMP $NEW $GEO\n"
+ 	  "mkdir -p " RW_CACHE "\n"
+ 	  "ipset save rw_allow rw_ban rw_threat rw_geo > " RW_SAVE ".tmp 2>/dev/null && mv " RW_SAVE ".tmp " RW_SAVE "\n"
+ 	  "nvram set rwarden_lastupd=$(date +%%s); nvram commit\n"
+diff --git a/release/src/router/samba-4.15.13/build-reaper.sh b/release/src/router/samba-4.15.13/build-reaper.sh
+old mode 100755
+new mode 100644
+index 15db4bf6a9..1ba307642c
+--- a/release/src/router/samba-4.15.13/build-reaper.sh
++++ b/release/src/router/samba-4.15.13/build-reaper.sh
+@@ -15,6 +15,11 @@ STG="$B/staging"          # build-time prefix for crypto deps (headers/.pc/.so)
+ INSTROOT="$B/instroot"    # DESTDIR: rootfs subset with /usr paths baked in
+ SAMBA="$B/samba-4.15.13"
+ STAMP="$PKGDIR/.reaper-built"
++# reaper (audit C33): the stamp carries a hash of the reaper-patches/ set, so an
++# incremental rebuild re-runs whenever a patch is added/changed. A bare
++# file-exists stamp could otherwise skip the build and reship a stale binary
++# that still reports the Reaper vendor suffix WITHOUT the current CVE patches.
++STAMP_SIG="$(cat "$PKGDIR"/reaper-patches/*.patch 2>/dev/null | sha256sum | awk '{print $1}')"
+ 
+ TC="$(ls -d /opt/toolchains/crosstools-arm_softfp-gcc-10.3*/usr/bin 2>/dev/null | head -1)"
+ SYSROOT="$(ls -d /opt/toolchains/crosstools-arm_softfp-gcc-10.3*/arm-buildroot-linux-gnueabi/sysroot 2>/dev/null | head -1)"
+@@ -30,8 +35,8 @@ export PKG_CONFIG_PATH="$STG/lib/pkgconfig"
+ export QEMU_LD_PREFIX="$SYSROOT"        # qemu finds /lib/ld-linux.so.3 + libc for ARM codegen tools
+ J="$(nproc)"
+ 
+-if [ -f "$STAMP" ] && [ -x "$INSTROOT/usr/sbin/smbd" ]; then
+-  echo "[build-reaper] already built (stamp present); skipping"; exit 0
++if [ -f "$STAMP" ] && [ -x "$INSTROOT/usr/sbin/smbd" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$STAMP_SIG" ]; then
++  echo "[build-reaper] already built (patch set unchanged); skipping"; exit 0
+ fi
+ command -v qemu-arm-static >/dev/null 2>&1 || { echo "[build-reaper] ERROR: qemu-arm-static missing. Host prereq: apt install qemu-user-static binfmt-support libparse-yapp-perl; update-binfmts --enable qemu-arm"; exit 1; }
+ 
+@@ -107,5 +112,5 @@ make -j"$J"
+ echo "[build-reaper] === samba install -> $INSTROOT ==="
+ make install DESTDIR="$INSTROOT"
+ 
+-touch "$STAMP"
++printf '%s\n' "$STAMP_SIG" > "$STAMP"
+ echo "[build-reaper] DONE: $INSTROOT/usr/sbin/smbd"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index c5dfa8f569..b5bf8d5d1b 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Escolha um dispositivo ou insira um endereço MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download e upload devem ser cada um de pelo menos 0.1 Mb/s.
+ RQOS_115=Você pode limitar até 32 dispositivos.
+ RQOS_116=Limite de download (policiador de entrada)
+-RQOS_117=Policia a entrada da WAN no valor de download acima, para que downloads pesados recuem antes que o buffer do provedor encha &mdash; controle de bufferbloat de download com a aceleração por hardware ainda ligada. <b>O valor deve ser ~90% do que um teste de velocidade mede, nunca 100%:</b> na taxa da linha o token bucket nunca reabastece e a taxa de download desaba (verificado em metal). Em 90% o limite mantém a velocidade nominal completa com ping mais baixo. O dimensionamento do burst é automático. <b>Desativado por padrão:</b> um policer <i>descarta</i> o excesso em vez de enfileirá-lo, então ativá-lo pode causar perda de pacotes no tráfego em tempo real sensível à latência, como chamadas de vídeo e de voz &mdash; ative apenas para controle de bufferbloat de download se você aceitar essa contrapartida.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Prioridade de downstream Wi-Fi (WMM)
+ RQOS_119=Estampa DiffServ no tráfego destinado à LAN para as classes superiores &mdash; Q1 para CS6 (tempo de antena de voz), Q2 para CS5 (tempo de antena de vídeo) &mdash; para que o Wi-Fi atenda suas prioridades também no lado do download. Somente eleva: nada é jamais rebaixado abaixo do best-effort normal. Clientes com fio não são afetados; uma conexão mantém a classe com que começou.
+ RQOS_120=Como funciona o lado do download?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Limitador de tráfego
+ Reaper_c_nfs_exports=Exportações NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index aa1e06696c..a2f0ba086e 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=选择一个设备或输入 MAC 地址（AA:BB:CC:DD:EE:FF）。
+ RQOS_114=下载和上传各须至少 0.1 Mb/s。
+ RQOS_115=你最多可限制 32 个设备。
+ RQOS_116=下载上限（入口管制器）
+-RQOS_117=以上面的下载数值管制 WAN 入口，使大量下载在 ISP 缓冲区填满前退让 &mdash; 在硬件加速仍开启的情况下控制下载缓冲膨胀。<b>该数值须约为速度测试实测值的 90%，绝不能是 100%：</b>在线路速率下令牌桶永不补充，下载吞吐量会崩溃（已在实机验证）。在 90% 时上限保持完整额定速度且延迟更低。突发大小自动设定。 <b>默认关闭：</b>整流器（policer）会<i>丢弃</i>超额流量而不是排队，因此启用后可能会给对延迟敏感的实时流量（如视频和语音通话）带来丢包 &mdash; 仅在需要控制下载缓冲膨胀（bufferbloat）并且您接受这一取舍时才启用。
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi 下行优先级（WMM）
+ RQOS_119=为顶部类别的 LAN 方向流量打上 DiffServ 标记 &mdash; Q1 到 CS6（语音空口），Q2 到 CS5（视频空口）&mdash; 使 Wi-Fi 在下载侧也服务你的优先级。仅提升：绝不会将任何流量降到正常尽力而为之下。有线客户端不受影响；一个连接保持它开始时的类别。
+ RQOS_120=下载侧如何工作？
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=流量限制器
+ Reaper_c_nfs_exports=NFS 导出
+ Reaper_c_dns_director=DNS 定向
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index fe8b293579..33ad59f57c 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Vyberte zařízení nebo zadejte MAC adresu (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download i upload musí být každý alespoň 0.1 Mb/s.
+ RQOS_115=Můžete limitovat až 32 zařízení.
+ RQOS_116=Limit downloadu (ingress policer)
+-RQOS_117=Policuje WAN ingress na hodnotě downloadu výše, takže náročná stahování zpomalí dřív, než se naplní buffer poskytovatele &mdash; kontrola bufferbloatu downloadu se stále zapnutou hardwarovou akcelerací. <b>Hodnota musí být ~90 % toho, co naměří rychlostní test, nikdy 100 %:</b> při rychlosti linky se token bucket nikdy nedoplní a propustnost downloadu se zhroutí (ověřeno na železe). Při 90 % limit drží plnou tarifní rychlost s nižším pingem. Velikost shluku je automatická. <b>Ve výchozím nastavení vypnuto:</b> policer přebytečný provoz <i>zahazuje</i>, místo aby jej řadil do fronty, takže zapnutí může způsobit ztrátu paketů u provozu v reálném čase citlivého na latenci, jako jsou video- a hlasové hovory &mdash; zapněte jej pouze pro řízení bufferbloatu při stahování, pokud tento kompromis akceptujete.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Priorita Wi-Fi ve směru dolů (WMM)
+ RQOS_119=Označí DiffServ na provoz směřující do LAN pro horní třídy &mdash; Q1 na CS6 (hlasový éter), Q2 na CS5 (video éter) &mdash; takže Wi-Fi obslouží vaše priority i na straně downloadu. Pouze povýšení: nic není nikdy sníženo pod normální best-effort. Drátoví klienti nejsou dotčeni; spojení si zachová třídu, se kterou začalo.
+ RQOS_120=Jak funguje strana downloadu?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Omezovač provozu
+ Reaper_c_nfs_exports=Exporty NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 7aa508bf6a..7023c1ed64 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Vælg en enhed, eller indtast en MAC-adresse (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download og upload skal hver være mindst 0.1 Mb/s.
+ RQOS_115=Du kan begrænse op til 32 enheder.
+ RQOS_116=Download-loft (ingress-policer)
+-RQOS_117=Polices WAN-ingress ved download-tallet ovenfor, så tunge downloads trækker sig, før ISP-bufferen fyldes &mdash; download-bufferbloat-kontrol med hardware-acceleration stadig til. <b>Tallet skal være ~90% af, hvad en hastighedstest måler, aldrig 100%:</b> ved linjehastighed genopfyldes token-bucketten aldrig, og download-gennemløbet kollapser (metal-verificeret). Ved 90% holder loftet fuld nominel hastighed med lavere ping. Burst-dimensionering er automatisk. <b>Slået fra som standard:</b> en policer <i>kasserer</i> overskydende trafik i stedet for at sætte den i kø, så aktivering kan give pakketab på latensfølsom realtidstrafik som video- og taleopkald &mdash; aktivér den kun til styring af download-bufferbloat, hvis du accepterer den afvejning.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi-downstream-prioritet (WMM)
+ RQOS_119=Stempler DiffServ på LAN-bundet trafik for de øverste klasser &mdash; Q1 til CS6 (tale-airtime), Q2 til CS5 (video-airtime) &mdash; så Wi-Fi også betjener dine prioriteter på download-siden. Kun-løft: intet nedgraderes nogensinde under normal best-effort. Kablede klienter er upåvirkede; en forbindelse beholder den klasse, den startede med.
+ RQOS_120=Hvordan virker download-siden?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Trafikbegrænser
+ Reaper_c_nfs_exports=NFS-eksporter
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 75aeea2e87..787fbaaebd 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Wählen Sie ein Gerät oder geben Sie eine MAC-Adresse ein (AA:BB:CC:DD
+ RQOS_114=Download und Upload müssen jeweils mindestens 0.1 Mb/s betragen.
+ RQOS_115=Sie können bis zu 32 Geräte begrenzen.
+ RQOS_116=Download-Grenze (Ingress-Policer)
+-RQOS_117=Reguliert den WAN-Eingang auf den obigen Download-Wert, sodass schwere Downloads nachgeben, bevor der ISP-Puffer voll wird &mdash; Download-Bufferbloat-Kontrolle bei weiterhin aktiver Hardware-Beschleunigung. <b>Der Wert muss ~90% dessen sein, was ein Speedtest misst, nie 100%:</b> bei Leitungsrate füllt sich der Token-Bucket nie nach und der Download-Durchsatz bricht ein (metallverifiziert). Bei 90% hält die Grenze die volle Nennrate bei niedrigerem Ping. Die Burst-Größe ist automatisch. <b>Standardmäßig aus:</b> Ein Policer <i>verwirft</i> überschüssige Pakete, anstatt sie zu puffern &mdash; wird dies aktiviert, kann es zu Paketverlust bei latenzempfindlichem Echtzeit-Verkehr wie Video- und Sprachanrufen kommen. Nur zur Kontrolle von Download-Bufferbloat aktivieren, wenn Sie diesen Kompromiss akzeptieren.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=WLAN-Downstream-Priorität (WMM)
+ RQOS_119=Stempelt DiffServ auf LAN-gerichteten Traffic der obersten Klassen &mdash; Q1 auf CS6 (Sprach-Airtime), Q2 auf CS5 (Video-Airtime) &mdash; sodass WLAN Ihre Prioritäten auch auf der Download-Seite bedient. Nur Anhebung: nichts wird je unter normales Best-Effort herabgestuft. Kabelgebundene Clients bleiben unbeeinflusst; eine Verbindung behält die Klasse, mit der sie begann.
+ RQOS_120=Wie funktioniert die Download-Seite?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Traffic-Limiter
+ Reaper_c_nfs_exports=NFS-Freigaben
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 9ae8064df0..03dabe3deb 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Elige un dispositivo o introduce una dirección MAC (AA:BB:CC:DD:EE:FF)
+ RQOS_114=La bajada y la subida deben ser de al menos 0,1 Mb/s cada una.
+ RQOS_115=Puedes limitar hasta 32 dispositivos.
+ RQOS_116=Límite de bajada (policer de entrada)
+-RQOS_117=Regula la entrada WAN en la cifra de bajada de arriba, de modo que las descargas pesadas se moderen antes de que se llene el búfer del ISP &mdash; control de bufferbloat de bajada con la aceleración por hardware aún activa. <b>La cifra debe ser ~90% de lo que mide un test de velocidad, nunca 100%:</b> a velocidad de línea el cubo de tokens nunca se rellena y el rendimiento de bajada se desploma (verificado en metal). Al 90% el límite mantiene la velocidad nominal completa con menor ping. El dimensionado de ráfaga es automático. <b>Desactivado de forma predeterminada:</b> un policer <i>descarta</i> el exceso en lugar de ponerlo en cola, por lo que activarlo puede añadir pérdida de paquetes al tráfico en tiempo real sensible a la latencia, como las videollamadas y las llamadas de voz &mdash; actívalo solo para controlar el bufferbloat de descarga si aceptas esa contrapartida.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Prioridad Wi-Fi de bajada (WMM)
+ RQOS_119=Estampa DiffServ en el tráfico dirigido a la LAN para las clases superiores &mdash; Q1 a CS6 (tiempo de aire de voz), Q2 a CS5 (tiempo de aire de vídeo) &mdash; para que el Wi-Fi también atienda tus prioridades en el lado de bajada. Solo eleva: nada se degrada nunca por debajo del best-effort normal. Los clientes cableados no se ven afectados; una conexión mantiene la clase con la que empezó.
+ RQOS_120=¿Cómo funciona el lado de bajada?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Limitador de tráfico
+ Reaper_c_nfs_exports=Exportaciones NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 22426f1391..11f58ad068 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Valitse laite tai anna MAC-osoite (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Latauksen ja lähetyksen on kummankin oltava vähintään 0.1 Mb/s.
+ RQOS_115=Voit rajoittaa enintään 32 laitetta.
+ RQOS_116=Latausraja (tulopoliisi)
+-RQOS_117=Valvoo WAN-tuloa yllä olevalla latausluvulla, joten raskaat lataukset hidastavat ennen kuin ISP:n puskuri täyttyy &mdash; latauksen bufferbloat-hallinta laitteistokiihdytys yhä päällä. <b>Luvun on oltava ~90 % siitä, mitä nopeustesti mittaa, ei koskaan 100 %:</b> linjanopeudella token-ämpäri ei koskaan täyty uudelleen ja latauksen läpäisy romahtaa (metallilla varmistettu). 90 %:ssa raja pitää täyden nimellisnopeuden alhaisemmalla pingillä. Purskeen mitoitus on automaattinen. <b>Oletuksena pois päältä:</b> policer <i>pudottaa</i> ylimääräisen liikenteen sen sijaan, että asettaisi sen jonoon, joten sen käyttöönotto voi aiheuttaa pakettihäviötä viiveherkässä reaaliaikaisessa liikenteessä, kuten video- ja äänipuheluissa &mdash; ota se käyttöön vain latauksen bufferbloatin hallintaan, jos hyväksyt tämän kompromissin.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi-alavirran prioriteetti (WMM)
+ RQOS_119=Leimaa DiffServ:n LAN-suuntaiseen liikenteeseen ylimmille luokille &mdash; Q1 luokkaan CS6 (ääni-ilmaaika), Q2 luokkaan CS5 (video-ilmaaika) &mdash; jotta Wi-Fi palvelee prioriteettejasi myös lataus puolella. Vain nosto: mitään ei koskaan alenneta normaalin best-effortin alle. Langallisiin asiakkaisiin ei vaikuteta; yhteys säilyttää luokan, jolla se alkoi.
+ RQOS_120=Miten lataus puoli toimii?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Liikennerajoitin
+ Reaper_c_nfs_exports=NFS-jaot
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 4050b6ca46..30725f868f 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Choisissez un appareil ou saisissez une adresse MAC (AA:BB:CC:DD:EE:FF)
+ RQOS_114=Le download et l’upload doivent chacun être d’au moins 0,1 Mb/s.
+ RQOS_115=Vous pouvez limiter jusqu’à 32 appareils.
+ RQOS_116=Plafond de download (policer d’entrée)
+-RQOS_117=Régule l'entrée WAN à la valeur de download ci-dessus, si bien que les téléchargements lourds ralentissent avant que le tampon du FAI ne se remplisse &mdash; contrôle du bufferbloat en download avec l'accélération matérielle toujours active. <b>La valeur doit être d'environ 90 % de ce qu'un test de débit mesure, jamais 100 % :</b> au débit de la ligne, le seau à jetons ne se recharge jamais et le débit de download s'effondre (vérifié sur métal). À 90 %, le plafond maintient le plein débit annoncé avec un ping plus faible. Le dimensionnement des rafales est automatique. <b>Désactivé par défaut :</b> un policer <i>rejette</i> l'excédent au lieu de le mettre en file d'attente ; l'activer peut donc entraîner des pertes de paquets sur le trafic temps réel sensible à la latence, comme les appels vidéo et vocaux &mdash; ne l'activez que pour contrôler le bufferbloat en téléchargement si vous acceptez ce compromis.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Priorité descendante Wi-Fi (WMM)
+ RQOS_119=Estampille le DiffServ sur le trafic à destination du LAN pour les classes du haut &mdash; Q1 vers CS6 (temps d’antenne voix), Q2 vers CS5 (temps d’antenne vidéo) &mdash; afin que le Wi-Fi serve vos priorités aussi côté download. Élévation uniquement : rien n’est jamais rétrogradé sous le best-effort normal. Les clients filaires ne sont pas affectés ; une connexion garde la classe avec laquelle elle a commencé.
+ RQOS_120=Comment fonctionne le côté download ?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Limiteur de trafic
+ Reaper_c_nfs_exports=Exports NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 9c2ca1414d..15d806f6ad 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Válasszon egy eszközt, vagy adjon meg egy MAC címet (AA:BB:CC:DD:EE:
+ RQOS_114=A letöltésnek és feltöltésnek egyaránt legalább 0.1 Mb/s-nek kell lennie.
+ RQOS_115=Legfeljebb 32 eszközt korlátozhat.
+ RQOS_116=Letöltési plafon (bejövő szabályozó)
+-RQOS_117=A WAN bejövő forgalmát a fenti letöltési értéken szabályozza, így a nagy letöltések visszavesznek, mielőtt az ISP puffer megtelne &mdash; letöltési bufferbloat-kontroll bekapcsolt hardveres gyorsítással. <b>Az értéknek egy sebességteszt mért értékének kb. 90%-ának kell lennie, sosem 100%-nak:</b> vonali sebességen a token bucket sosem töltődik újra, és a letöltési áteresztőképesség összeomlik (hardveresen ellenőrizve). 90%-nál a plafon tartja a teljes névleges sebességet alacsonyabb pinggel. A burst méretezése automatikus. <b>Alapértelmezetten kikapcsolva:</b> a policer a felesleges forgalmat <i>eldobja</i>, ahelyett hogy sorba állítaná, ezért a bekapcsolása csomagvesztést okozhat a késleltetésre érzékeny valós idejű forgalomban, például a video- és hanghívásokban &mdash; csak letöltési bufferbloat-szabályozáshoz kapcsolja be, ha elfogadja ezt a kompromisszumot.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi letöltési prioritás (WMM)
+ RQOS_119=DiffServ-et bélyegez a LAN felé tartó forgalomra a felső osztályoknál &mdash; Q1 a CS6-ra (hang légidő), Q2 a CS5-re (videó légidő) &mdash; így a Wi-Fi a letöltési oldalon is kiszolgálja a prioritásait. Csak emel: soha semmi nem kerül a normál best-effort alá. A vezetékes klienseket nem érinti; egy kapcsolat megtartja azt az osztályt, amivel indult.
+ RQOS_120=Hogyan működik a letöltési oldal?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Forgalomkorlátozó
+ Reaper_c_nfs_exports=NFS exportok
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index d1d610d004..b24f0b4975 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Scegli un dispositivo o inserisci un indirizzo MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download e upload devono essere ciascuno almeno 0.1 Mb/s.
+ RQOS_115=Puoi limitare fino a 32 dispositivi.
+ RQOS_116=Cap di download (policer di ingresso)
+-RQOS_117=Controlla l'ingresso WAN al valore di download sopra, così i download pesanti rallentano prima che il buffer dell'ISP si riempia &mdash; controllo del bufferbloat in download con l'accelerazione hardware ancora attiva. <b>Il valore deve essere ~90% di ciò che uno speed test misura, mai 100%:</b> a velocità di linea il token bucket non si ricarica mai e il throughput di download collassa (verificato su hardware). Al 90% il cap mantiene la piena velocità nominale con ping più basso. Il dimensionamento del burst è automatico. <b>Disattivato per impostazione predefinita:</b> un policer <i>scarta</i> il traffico in eccesso anziché accodarlo, quindi attivarlo può causare perdita di pacchetti sul traffico in tempo reale sensibile alla latenza, come videochiamate e chiamate vocali &mdash; attivalo solo per il controllo del bufferbloat in download se accetti questo compromesso.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Priorità downstream Wi-Fi (WMM)
+ RQOS_119=Applica DiffServ al traffico diretto alla LAN per le classi principali &mdash; Q1 a CS6 (airtime voce), Q2 a CS5 (airtime video) &mdash; così il Wi-Fi serve le tue priorità anche sul lato download. Solo promozione: nulla viene mai declassato sotto il normale best-effort. I client cablati non sono influenzati; una connessione mantiene la classe con cui è iniziata.
+ RQOS_120=Come funziona il lato download?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Limitatore di traffico
+ Reaper_c_nfs_exports=Export NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index dd3f42bc22..2734c4a795 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=デバイスを選ぶか、MACアドレス（AA:BB:CC:DD:EE:FF）を入
+ RQOS_114=ダウンロードとアップロードはそれぞれ最低0.1 Mb/s必要です。
+ RQOS_115=最大32デバイスまで制限できます。
+ RQOS_116=ダウンロード上限（ingressポリサー）
+-RQOS_117=WAN受信を上のダウンロード値で制御し、重いダウンロードがISPバッファを満たす前に抑制します &mdash; ハードウェアアクセラレーションを有効にしたままのダウンロードバッファブロート制御です。<b>値は速度テストの実測値の約90%にし、100%にはしないでください:</b> 回線レートではトークンバケットが補充されず、ダウンロードスループットが崩壊します（実機検証済み）。90%なら上限が定格速度を保ちつつpingが下がります。バーストサイズは自動です。 <b>既定でオフ:</b> ポリサーは超過分をキューに入れずに<i>破棄</i>するため、有効にするとビデオ通話や音声通話などの遅延に敏感なリアルタイム通信でパケットロスが発生する可能性があります &mdash; ダウンロードのバッファブロート制御が必要で、このトレードオフを許容できる場合にのみ有効にしてください。
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi下り優先（WMM）
+ RQOS_119=上位クラスのLAN向けトラフィックにDiffServを刻印します &mdash; Q1をCS6（音声エアタイム）、Q2をCS5（映像エアタイム）に &mdash; そのためWi-Fiはダウンロード側でもあなたの優先度を尊重します。引き上げのみ: 通常のベストエフォート未満に降格されることはありません。有線クライアントは影響を受けません。接続は開始したクラスを維持します。
+ RQOS_120=ダウンロード側はどう機能する？
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=トラフィックリミッター
+ Reaper_c_nfs_exports=NFS エクスポート
+ Reaper_c_dns_director=DNS ディレクター
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index caf310a0cd..cac173ddfb 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=장치를 선택하거나 MAC 주소를 입력하세요 (AA:BB:CC:DD:EE
+ RQOS_114=다운로드와 업로드는 각각 최소 0.1 Mb/s 이상이어야 합니다.
+ RQOS_115=최대 32개 장치까지 제한할 수 있습니다.
+ RQOS_116=다운로드 상한 (인그레스 폴리서)
+-RQOS_117=위 다운로드 값으로 WAN 인그레스를 제어하여, 무거운 다운로드가 ISP 버퍼가 차기 전에 물러나게 합니다 &mdash; 하드웨어 가속을 유지한 채 다운로드 버퍼블로트를 제어합니다. <b>이 값은 속도 테스트로 측정한 값의 약 90%여야 하며 절대 100%가 아닙니다:</b> 회선 속도에서는 토큰 버킷이 다시 채워지지 않아 다운로드 처리량이 붕괴됩니다(실측 검증). 90%에서는 상한이 정격 속도를 유지하면서 ping이 낮아집니다. 버스트 크기는 자동으로 조정됩니다. <b>기본적으로 꺼짐:</b> 폴리서는 초과 트래픽을 대기열에 넣지 않고 <i>폐기</i>하므로, 이 기능을 켜면 영상·음성 통화처럼 지연에 민감한 실시간 트래픽에서 패킷 손실이 발생할 수 있습니다 &mdash; 다운로드 버퍼블로트 제어가 필요하고 이 절충을 감수할 수 있을 때만 켜세요.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi 다운스트림 우선순위 (WMM)
+ RQOS_119=상위 클래스의 LAN행 트래픽에 DiffServ를 표시합니다 &mdash; Q1은 CS6(음성 에어타임), Q2는 CS5(영상 에어타임) &mdash; 하여 Wi-Fi가 다운로드 측에서도 우선순위를 처리합니다. 상향만: 정상 베스트 에포트 아래로는 절대 강등되지 않습니다. 유선 클라이언트는 영향받지 않으며, 연결은 시작한 클래스를 유지합니다.
+ RQOS_120=다운로드 측은 어떻게 작동하나요?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=트래픽 리미터
+ Reaper_c_nfs_exports=NFS 내보내기
+ Reaper_c_dns_director=DNS 디렉터
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 5bf446c5dc..9be6a766df 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Pilih peranti atau masukkan alamat MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Muat turun dan muat naik mesti setiap satu sekurang-kurangnya 0.1 Mb/s.
+ RQOS_115=Anda boleh had sehingga 32 peranti.
+ RQOS_116=Had muat turun (pengawal ingres)
+-RQOS_117=Mengawal ingres WAN pada angka muat turun di atas, supaya muat turun berat berundur sebelum penimbal ISP penuh &mdash; kawalan bufferbloat muat turun dengan pemecutan perkakasan masih hidup. <b>Angka mesti ~90% daripada apa yang ujian kelajuan ukur, jangan sekali-kali 100%:</b> pada kadar talian baldi token tidak pernah isi semula dan truput muat turun runtuh (disahkan pada metal). Pada 90% had menahan kelajuan berkadar penuh dengan ping lebih rendah. Saiz letusan adalah automatik. <b>Dimatikan secara lalai:</b> policer <i>menggugurkan</i> trafik berlebihan dan bukannya membariskannya, jadi menghidupkannya boleh menyebabkan kehilangan paket pada trafik masa nyata yang sensitif kepada kependaman seperti panggilan video dan suara &mdash; hidupkannya hanya untuk kawalan bufferbloat muat turun jika anda menerima pertukaran itu.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Keutamaan hiliran Wi-Fi (WMM)
+ RQOS_119=Menanda DiffServ pada trafik menuju LAN untuk kelas teratas &mdash; Q1 ke CS6 (masa udara suara), Q2 ke CS5 (masa udara video) &mdash; supaya Wi-Fi melayani keutamaan anda di sisi muat turun juga. Angkat-sahaja: tiada apa pernah diturunkan di bawah usaha-terbaik biasa. Klien berwayar tidak terjejas; sambungan kekal kelas yang ia mula.
+ RQOS_120=Bagaimana sisi muat turun berfungsi?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Pengehad Trafik
+ Reaper_c_nfs_exports=Eksport NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 81c747e6e1..7a061c063a 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Kies een apparaat of voer een MAC-adres in (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download en upload moeten elk minstens 0.1 Mb/s zijn.
+ RQOS_115=U kunt maximaal 32 apparaten begrenzen.
+ RQOS_116=Downloadlimiet (ingress-policer)
+-RQOS_117=Reguleert WAN-ingress op de downloadwaarde hierboven, zodat zware downloads terugschakelen voordat de ISP-buffer vol raakt &mdash; download-bufferbloatcontrole met hardwareversnelling nog aan. <b>De waarde moet ~90% zijn van wat een snelheidstest meet, nooit 100%:</b> op lijnsnelheid vult de token-bucket nooit bij en stort de downloaddoorvoer in (metaal-geverifieerd). Bij 90% houdt de limiet de volledige nominale snelheid met lagere ping. Burst-dimensionering is automatisch. <b>Standaard uit:</b> een policer <i>verwerpt</i> overtollig verkeer in plaats van het in de wachtrij te zetten, dus inschakelen kan pakketverlies toevoegen aan latentiegevoelig realtimeverkeer zoals video- en spraakoproepen &mdash; schakel het alleen in voor download-bufferbloatbeheersing als u die afweging accepteert.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi downstream-prioriteit (WMM)
+ RQOS_119=Stempelt DiffServ op LAN-gebonden verkeer voor de topklassen &mdash; Q1 naar CS6 (spraak-airtime), Q2 naar CS5 (video-airtime) &mdash; zodat Wi-Fi uw prioriteiten ook aan de downloadkant bedient. Alleen-verhogen: niets wordt ooit onder normaal best-effort gedegradeerd. Bekabelde clients zijn onaangetast; een verbinding behoudt de klasse waarmee hij begon.
+ RQOS_120=Hoe werkt de downloadkant?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Verkeersbegrenzer
+ Reaper_c_nfs_exports=NFS-exports
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index fa60628d96..fdb9f95a6e 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Velg en enhet eller skriv inn en MAC-adresse (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Nedlasting og opplasting må hver være minst 0.1 Mb/s.
+ RQOS_115=Du kan begrense opptil 32 enheter.
+ RQOS_116=Nedlastingstak (ingress-policer)
+-RQOS_117=Polices WAN-ingress ved nedlastingstallet over, så tunge nedlastinger trapper ned før ISP-bufferen fylles &mdash; nedlastings-bufferbloat-kontroll med maskinvareakselerasjon fortsatt på. <b>Tallet må være ~90 % av det en hastighetstest måler, aldri 100 %:</b> ved linjehastighet fylles token-bøtten aldri på og nedlastingsgjennomstrømningen kollapser (metallverifisert). Ved 90 % holder taket full ratet hastighet med lavere ping. Burst-dimensjonering er automatisk. <b>Av som standard:</b> en policer <i>forkaster</i> overskuddstrafikk i stedet for å legge den i kø, så aktivering kan gi pakketap på latensfølsom sanntidstrafikk som video- og taleanrop &mdash; aktiver den bare for kontroll av nedlastings-bufferbloat hvis du godtar den avveiningen.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi nedstrøms-prioritet (WMM)
+ RQOS_119=Stempler DiffServ på LAN-bundet trafikk for toppklassene &mdash; Q1 til CS6 (tale-airtime), Q2 til CS5 (video-airtime) &mdash; så Wi-Fi betjener prioritetene dine på nedlastingssiden også. Kun løft: ingenting nedgraderes noensinne under normal best-effort. Kablede klienter er upåvirket; en tilkobling beholder klassen den startet med.
+ RQOS_120=Hvordan virker nedlastingssiden?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Trafikkbegrenser
+ Reaper_c_nfs_exports=NFS-eksporter
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 36c277ce76..542c16e494 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Wybierz urządzenie lub wprowadź adres MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Pobieranie i wysyłanie muszą wynosić co najmniej 0.1 Mb/s każde.
+ RQOS_115=Możesz ograniczyć do 32 urządzeń.
+ RQOS_116=Limit pobierania (policer ingress)
+-RQOS_117=Nadzoruje ingress WAN na powyższej wartości pobierania, więc ciężkie pobieranie zwalnia, zanim bufor ISP się zapełni &mdash; kontrola bufferbloat pobierania z wciąż włączonym przyspieszeniem sprzętowym. <b>Wartość musi wynosić ~90% tego, co mierzy test prędkości, nigdy 100%:</b> przy prędkości łącza wiadro tokenów nigdy się nie napełnia i przepustowość pobierania załamuje się (zweryfikowane na sprzęcie). Przy 90% limit utrzymuje pełną nominalną prędkość z niższym pingiem. Rozmiar skoku jest automatyczny. <b>Domyślnie wyłączone:</b> policer <i>odrzuca</i> nadmiarowy ruch, zamiast umieszczać go w kolejce, więc włączenie tej opcji może powodować utratę pakietów w ruchu czasu rzeczywistego wrażliwym na opóźnienia, takim jak połączenia wideo i głosowe &mdash; włącz ją tylko do kontroli bufferbloatu przy pobieraniu, jeśli akceptujesz ten kompromis.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Priorytet Wi-Fi dla pobierania (WMM)
+ RQOS_119=Stempluje DiffServ na ruch kierowany do LAN dla górnych klas &mdash; Q1 do CS6 (czas antenowy głosu), Q2 do CS5 (czas antenowy wideo) &mdash; więc Wi-Fi obsługuje Twoje priorytety także po stronie pobierania. Tylko podnoszenie: nic nie jest nigdy degradowane poniżej normalnego best-effort. Klienci przewodowi są bez zmian; połączenie zachowuje klasę, z którą się zaczęło.
+ RQOS_120=Jak działa strona pobierania?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Ogranicznik ruchu
+ Reaper_c_nfs_exports=Eksporty NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index a5df312dee..5edad3d6c1 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Alege un dispozitiv sau introdu o adresă MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Descărcarea și încărcarea trebuie să fie fiecare cel puțin 0.1 Mb/s.
+ RQOS_115=Poți limita până la 32 de dispozitive.
+ RQOS_116=Plafon de descărcare (poliția de intrare)
+-RQOS_117=Poliția intrării WAN la valoarea de descărcare de mai sus, astfel încât descărcările grele se retrag înainte ca bufferul ISP să se umple &mdash; control al bufferbloat la descărcare cu accelerarea hardware încă pornită. <b>Valoarea trebuie să fie ~90% din ce măsoară un test de viteză, niciodată 100%:</b> la rata liniei coșul de jetoane nu se reumple niciodată și debitul de descărcare se prăbușește (verificat pe metal). La 90% plafonul menține viteza nominală completă cu ping mai mic. Dimensionarea rafalei este automată. <b>Dezactivat implicit:</b> un policer <i>renunță</i> la traficul în exces în loc să îl pună în coadă, așa că activarea poate adăuga pierderi de pachete traficului în timp real sensibil la latență, cum ar fi apelurile video și vocale &mdash; activați-l doar pentru controlul bufferbloat la descărcare dacă acceptați acest compromis.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Prioritate în aval Wi-Fi (WMM)
+ RQOS_119=Ștampilează DiffServ pe traficul destinat LAN pentru clasele de top &mdash; Q1 la CS6 (timp aer voce), Q2 la CS5 (timp aer video) &mdash; astfel încât Wi-Fi să îți servească prioritățile și pe partea de descărcare. Doar-ridicare: nimic nu este vreodată retrogradat sub best-effort normal. Clienții cablați nu sunt afectați; o conexiune păstrează clasa cu care a început.
+ RQOS_120=Cum funcționează partea de descărcare?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Limitator de trafic
+ Reaper_c_nfs_exports=Exporturi NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 10a3ef9ea1..924089c8c4 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Выберите устройство или введите MAC-адр
+ RQOS_114=Загрузка и выгрузка каждая должны быть не менее 0.1 Mb/s.
+ RQOS_115=Можно ограничить до 32 устройств.
+ RQOS_116=Лимит загрузки (входящий полисер)
+-RQOS_117=Ограничивает входящий трафик WAN по величине загрузки выше, так что тяжёлые загрузки снижают темп до заполнения буфера провайдера &mdash; контроль bufferbloat при загрузке с сохранённым аппаратным ускорением. <b>Величина должна быть ~90% от того, что измеряет тест скорости, никогда не 100%:</b> на скорости линии token bucket никогда не пополняется и пропускная способность загрузки рушится (проверено на железе). При 90% лимит держит полную тарифную скорость с меньшим ping. Размер всплеска подбирается автоматически. <b>По умолчанию отключено:</b> полисер <i>отбрасывает</i> лишний трафик, а не ставит его в очередь, поэтому включение этой опции может привести к потере пакетов в чувствительном к задержкам трафике реального времени, таком как видео- и голосовые вызовы &mdash; включайте её только для контроля bufferbloat при загрузке, если согласны на этот компромисс.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Приоритет Wi-Fi на загрузку (WMM)
+ RQOS_119=Проставляет DiffServ на трафик, направленный в LAN, для верхних классов &mdash; Q1 в CS6 (эфирное время голоса), Q2 в CS5 (эфирное время видео) &mdash; так что Wi-Fi обслуживает ваши приоритеты и на стороне загрузки. Только повышение: ничто никогда не понижается ниже обычного best-effort. Проводные клиенты не затрагиваются; соединение сохраняет класс, с которым началось.
+ RQOS_120=Как работает сторона загрузки?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Ограничитель трафика
+ Reaper_c_nfs_exports=Экспорты NFS
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 368571d193..019418b060 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Izberite napravo ali vnesite MAC naslov (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Prenos in nalaganje morata biti vsak vsaj 0.1 Mb/s.
+ RQOS_115=Omejite lahko do 32 naprav.
+ RQOS_116=Omejitev prenosa (vhodni policer)
+-RQOS_117=Nadzira WAN vhod pri zgornji vrednosti prenosa, tako da težki prenosi popustijo, preden se napolni medpomnilnik ISP &mdash; nadzor bufferbloata pri prenosu z ohranjenim strojnim pospeškom. <b>Vrednost mora biti ~90% tega, kar izmeri test hitrosti, nikoli 100%:</b> pri polni hitrosti povezave se žetonovni koš nikoli ne napolni in prepustnost prenosa se sesuje (potrjeno na strojni opremi). Pri 90% omejitev drži polno nazivno hitrost z nižjim pingom. Velikost sunka je samodejna. <b>Privzeto izklopljeno:</b> policer odvečni promet <i>zavrže</i>, namesto da bi ga uvrstil v čakalno vrsto, zato lahko vklop povzroči izgubo paketov pri prometu v realnem času, občutljivem na zakasnitve, kot so video- in glasovni klici &mdash; vklopite ga le za nadzor bufferbloata pri prenosu, če sprejemate ta kompromis.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi prioriteta prenosa (WMM)
+ RQOS_119=Vtisne DiffServ na LAN usmerjeni promet za najvišje razrede &mdash; Q1 v CS6 (glasovni eter), Q2 v CS5 (video eter) &mdash; tako da Wi-Fi postreže vaše prioritete tudi na strani prenosa. Samo dvig: nič ni nikoli znižano pod običajni best-effort. Žični odjemalci niso prizadeti; povezava obdrži razred, s katerim je začela.
+ RQOS_120=Kako deluje stran prenosa?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Omejevalnik prometa
+ Reaper_c_nfs_exports=Izvozi NFS
+ Reaper_c_dns_director=Usmerjanje DNS
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index c93f02c54c..1d258401b9 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Välj en enhet eller ange en MAC-adress (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Nedladdning och uppladdning måste var och en vara minst 0.1 Mb/s.
+ RQOS_115=Du kan begränsa upp till 32 enheter.
+ RQOS_116=Nedladdningstak (ingress-polisierare)
+-RQOS_117=Polisierar WAN-ingress vid nedladdningsvärdet ovan, så att tunga nedladdningar backar innan ISP-bufferten fylls &mdash; nedladdnings-bufferbloat-kontroll med hårdvaruacceleration fortfarande på. <b>Värdet måste vara ~90% av vad ett hastighetstest mäter, aldrig 100%:</b> vid linjehastighet fylls token-hinken aldrig på och nedladdningsgenomströmningen kollapsar (metallverifierat). Vid 90% håller taket full nominell hastighet med lägre ping. Burst-storlek är automatisk. <b>Av som standard:</b> en policer <i>kastar</i> överskottstrafik i stället för att köa den, så att aktivera detta kan ge paketförlust för latenskänslig realtidstrafik som video- och röstsamtal &mdash; aktivera det endast för kontroll av nedladdnings-bufferbloat om du accepterar den kompromissen.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi nedströmsprioritet (WMM)
+ RQOS_119=Stämplar DiffServ på LAN-riktad trafik för toppklasserna &mdash; Q1 till CS6 (röst-sändningstid), Q2 till CS5 (video-sändningstid) &mdash; så att Wi-Fi betjänar dina prioriteter på nedladdningssidan också. Endast lyft: ingenting nedgraderas någonsin under normal best-effort. Trådbundna klienter påverkas inte; en anslutning behåller den klass den startade med.
+ RQOS_120=Hur fungerar nedladdningssidan?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Trafikbegränsare
+ Reaper_c_nfs_exports=NFS-exporter
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index f1dfa3b90b..7fe65c79ed 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=เลือกอุปกรณ์หรือป้อนที่
+ RQOS_114=ดาวน์โหลดและอัปโหลดต้องมีอย่างน้อย 0.1 Mb/s แต่ละอย่าง
+ RQOS_115=คุณจำกัดได้สูงสุด 32 อุปกรณ์
+ RQOS_116=ขีดจำกัดดาวน์โหลด (ตัวปรับแต่งขาเข้า)
+-RQOS_117=ควบคุมขาเข้า WAN ที่ค่าดาวน์โหลดด้านบน เพื่อให้การดาวน์โหลดหนักถอยก่อนบัฟเฟอร์ ISP เต็ม &mdash; ควบคุมบัฟเฟอร์บลอตดาวน์โหลดโดยยังเปิดการเร่งฮาร์ดแวร์ <b>ค่าต้องราว 90% ของที่ speed test วัดได้ ห้าม 100%:</b> ที่ความเร็วสาย token bucket ไม่เติมและ throughput ดาวน์โหลดจะพัง (พิสูจน์บนเมทัลแล้ว) ที่ 90% ขีดจำกัดคงความเร็วเต็มตามที่กำหนดด้วย ping ต่ำกว่า การกำหนดขนาด burst เป็นอัตโนมัติ <b>ปิดใช้งานตามค่าเริ่มต้น:</b> policer จะ<i>ทิ้ง</i>ทราฟฟิกส่วนเกินแทนการเข้าคิว ดังนั้นการเปิดใช้งานอาจทำให้เกิดการสูญเสียแพ็กเก็ตกับทราฟฟิกแบบเรียลไทม์ที่ไวต่อความหน่วง เช่น การโทรวิดีโอและเสียง &mdash; เปิดใช้งานเฉพาะเพื่อควบคุม bufferbloat ของการดาวน์โหลดเมื่อคุณยอมรับข้อแลกเปลี่ยนนี้
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=ลำดับความสำคัญขาลง Wi-Fi (WMM)
+ RQOS_119=ประทับ DiffServ ลงบนทราฟฟิกที่มุ่งสู่ LAN สำหรับคลาสบนสุด &mdash; Q1 ไป CS6 (airtime เสียง), Q2 ไป CS5 (airtime วิดีโอ) &mdash; เพื่อให้ Wi-Fi ให้บริการตามลำดับความสำคัญของคุณฝั่งดาวน์โหลดด้วย ยกอย่างเดียว: ไม่มีอะไรถูกลดต่ำกว่า best-effort ปกติ ไคลเอนต์แบบมีสายไม่ได้รับผลกระทบ การเชื่อมต่อคงคลาสที่เริ่มไว้
+ RQOS_120=ฝั่งดาวน์โหลดทำงานอย่างไร
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=ตัวจำกัดทราฟฟิก
+ Reaper_c_nfs_exports=เอ็กซ์พอร์ต NFS
+ Reaper_c_dns_director=DNS ไดเรกเตอร์
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 7e7a7fa2cd..364367a33b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Bir cihaz seçin veya bir MAC adresi girin (AA:BB:CC:DD:EE:FF).
+ RQOS_114=İndirme ve yükleme her biri en az 0.1 Mb/s olmalıdır.
+ RQOS_115=32 cihaza kadar sınırlayabilirsiniz.
+ RQOS_116=İndirme üst sınırı (giriş denetleyicisi)
+-RQOS_117=WAN girişini yukarıdaki indirme değerinde denetler, böylece yoğun indirmeler ISP arabelleği dolmadan geri çekilir &mdash; donanım hızlandırması hâlâ açıkken indirme bufferbloat kontrolü. <b>Değer bir hız testinin ölçtüğünün ~%90'ı olmalıdır, asla %100 değil:</b> hat hızında belirteç kovası asla yeniden dolmaz ve indirme verimi çöker (metal ile doğrulanmıştır). %90'da üst sınır tam derecelendirilmiş hızı daha düşük ping ile tutar. Patlama boyutlandırması otomatiktir. <b>Varsayılan olarak kapalı:</b> bir policer fazla trafiği kuyruğa almak yerine <i>düşürür</i>, bu nedenle bunu açmak video ve sesli aramalar gibi gecikmeye duyarlı gerçek zamanlı trafikte paket kaybına yol açabilir &mdash; yalnızca indirme bufferbloat denetimi için ve bu ödünleşimi kabul ediyorsanız etkinleştirin.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi indirme önceliği (WMM)
+ RQOS_119=LAN’a giden trafiğe üst sınıflar için DiffServ damgalar &mdash; Q1’i CS6’ya (ses yayın süresi), Q2’yi CS5’e (video yayın süresi) &mdash; böylece Wi-Fi önceliklerinize indirme tarafında da hizmet eder. Yalnızca yükseltme: hiçbir şey normal en iyi çabanın altına indirilmez. Kablolu istemciler etkilenmez; bir bağlantı başladığı sınıfı korur.
+ RQOS_120=İndirme tarafı nasıl çalışır?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Trafik Sınırlayıcı
+ Reaper_c_nfs_exports=NFS Paylaşımları
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 86a3eeaacf..37a7353d5b 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=選擇裝置或輸入 MAC 位址（AA:BB:CC:DD:EE:FF）。
+ RQOS_114=下載與上傳各須至少 0.1 Mb/s。
+ RQOS_115=最多可限制 32 個裝置。
+ RQOS_116=下載上限（入口管制器）
+-RQOS_117=以上方下載數值管制 WAN 入口，使大量下載在 ISP 緩衝區填滿前退讓 &mdash; 下載緩衝膨脹控制且硬體加速仍開啟。<b>此數值須為速度測試實測值的約 90%，絕不可 100%：</b>在線路速率時權杖桶永不補充，下載吞吐量崩潰（實機驗證）。在 90% 時上限維持完整額定速度並降低 ping。突發大小為自動。 <b>預設關閉：</b>整流器（policer）會<i>丟棄</i>超額流量而非排入佇列，因此啟用後可能會對延遲敏感的即時流量（如視訊與語音通話）造成封包遺失 &mdash; 僅在需要控制下載緩衝膨脹（bufferbloat）且您接受此取捨時才啟用。
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Wi-Fi 下行優先權（WMM）
+ RQOS_119=為前段類別的 LAN 導向流量標記 DiffServ &mdash; Q1 對應 CS6（語音空中時間）、Q2 對應 CS5（視訊空中時間）&mdash; 讓 Wi-Fi 在下載側也服務您的優先權。僅提升：絕不會降至正常盡力而為之下。有線用戶端不受影響；連線維持其開始時的類別。
+ RQOS_120=下載側如何運作？
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=流量限制器
+ Reaper_c_nfs_exports=NFS 匯出
+ Reaper_c_dns_director=DNS 導向
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 395e21697c..2b16755cb1 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5585,7 +5585,7 @@ RQOS_113=Виберіть пристрій або введіть MAC-адрес
+ RQOS_114=Завантаження та вивантаження мають бути щонайменше 0.1 Mb/s кожне.
+ RQOS_115=Можна обмежити до 32 пристроїв.
+ RQOS_116=Обмеження завантаження (вхідний полісер)
+-RQOS_117=Регулює вхідний трафік WAN за наведеним вище значенням завантаження, тож важкі завантаження знижують швидкість перш ніж заповниться буфер провайдера &mdash; керування bufferbloat завантаження з увімкненим апаратним прискоренням. <b>Значення має бути ~90% від того, що вимірює тест швидкості, ніколи не 100%:</b> на швидкості лінії кошик токенів ніколи не поповнюється, і пропускність завантаження обвалюється (перевірено на металі). На 90% обмеження тримає повну тарифну швидкість із нижчим ping. Розмір сплеску задається автоматично. <b>Типово вимкнено:</b> полісер <i>відкидає</i> надлишковий трафік замість того, щоб ставити його в чергу, тож увімкнення може спричинити втрату пакетів у чутливому до затримок трафіку реального часу, як-от відео- та голосові виклики &mdash; вмикайте його лише для контролю bufferbloat під час завантаження, якщо приймаєте цей компроміс.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+ RQOS_118=Пріоритет низхідного Wi-Fi (WMM)
+ RQOS_119=Штампує DiffServ на трафік у бік LAN для верхніх класів &mdash; Q1 у CS6 (голосовий ефірний час), Q2 у CS5 (відео ефірний час) &mdash; тож Wi-Fi обслуговує ваші пріоритети й на боці завантаження. Лише підвищення: ніщо ніколи не понижується нижче звичайного best-effort. Дротові клієнти не зачіпаються; з’єднання зберігає клас, з яким почалося.
+ RQOS_120=Як працює сторона завантаження?
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Обмежувач трафіку
+ Reaper_c_nfs_exports=Експорти NFS
+ Reaper_c_dns_director=DNS Director
+-- 
+2.25.1
+

@@ -1,0 +1,61 @@
+From af56863cf48350e5d5126ce57965bce822eeeeca Mon Sep 17 00:00:00 2001
+From: reaper <reaper@localhost>
+Date: Sun, 26 Jul 2026 16:24:39 -0400
+Subject: [PATCH 237/245] dash: fix IPv6 status icon staying dark on
+ native/DHCP-PD
+
+The dashboard treated IPv6 as up only when the WAN interface had a
+global address (status==='1' && IPv6_Address). On native DHCP-PD and
+6relayd passthrough - the common home setups - the delegated prefix
+lands on the LAN bridge and the WAN face has only a link-local, so
+IPv6_Address is empty and the icon stayed off despite working IPv6.
+
+Route both up-checks through v6Up(), which now also accepts a v6 default
+gateway as proof of connectivity. A stale gateway is not left behind
+when v6 goes down (ipv6_gateway_address reads the live route), so this
+adds no false positives. Also fall back to gateway/link-local for the
+displayed address so a lit chip never shows a blank line.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 20d50056cd..6d12171baa 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -595,8 +595,10 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+        IPv6 from wan_ipv6_network(). Card renders per the ipv6 mock:
+        v4-only = today, dual = v6 line + v6 meta row, v6-only = v6 hero. */
+     var wanUp = (SSI.wan_state==='2') && !!SSI.wanip && SSI.wanip!=='0.0.0.0';
+-    var v6addr = String((WAN6 && WAN6.IPv6_Address) || '').split('/')[0];
+-    var v6up = !!(WAN6 && WAN6.status==='1' && v6addr);
++    var v6addr = String((WAN6 && WAN6.IPv6_Address) || '').split('/')[0]
++              || String((WAN6 && WAN6.IPv6_Gateway) || '')
++              || String((WAN6 && WAN6.Link_Local_Address) || '').split('/')[0];
++    var v6up = v6Up();
+     var anyUp = wanUp || v6up;
+     setTxt('p_wan', anyUp?'<#Connected#>':'<#Disconnected#>');
+     var istate=$id('i_state');
+@@ -745,7 +747,16 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+    Internet card and the header WAN pill; poll fast while down, slow once up. */
+ (function(){
+   var FAST=4000, SLOW=30000;
+-  function v6Up(){ var a=String((WAN6&&WAN6.IPv6_Address)||'').split('/')[0]; return !!(WAN6&&WAN6.status==='1'&&a); }
++  function v6Up(){
++    if(!(WAN6 && WAN6.status==='1')) return false;
++    /* native/DHCP-PD & passthrough leave the WAN face with no global address
++     * (the delegated prefix lands on LAN); a v6 default gateway still means
++     * IPv6 is up. Accept a WAN global addr OR a gateway - a stale gateway is
++     * not left behind when v6 goes down, so this adds no false positives. */
++    var a=String((WAN6.IPv6_Address)||'').split('/')[0];
++    var gw=String((WAN6.IPv6_Gateway)||'');
++    return !!(a || gw);
++  }
+   function apply(st, ip){
+     var v4=(st==='2') && !!ip && ip!=='0.0.0.0';
+     var any=v4 || v6Up();
+-- 
+2.25.1
+

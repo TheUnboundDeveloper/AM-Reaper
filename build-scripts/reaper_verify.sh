@@ -1,0 +1,166 @@
+#!/bin/bash
+# ============================================================================
+# reaper_verify.sh  --  deep post-build QA gate for Reaper firmware
+# ----------------------------------------------------------------------------
+# Inspects the STAGED rootfs + the packed image and fails loudly on the classes
+# of defect that shipped undetected in v1.8.6 (Samba flag miss, mispackaged /
+# stale www, missing shared libs, wrong-model identity, MCP/noMCP leakage).
+#
+# Usage:  reaper_verify.sh MODEL VARIANT VERSION [FS_DIR] [IMAGE]
+#   MODEL    e.g. RT-BE86U | RT-BE96U | RT-BE88U | GT-BE98 | GT-BE98_PRO
+#   VARIANT  MCP | noMCP
+#   VERSION  e.g. Reaper_v1.8.6
+#   FS_DIR   staged rootfs (default: targets/96813GW/fs)
+#   IMAGE    packed pkgtb   (default: derived nand main image in target dir)
+#
+# Exit: 0 = all checks PASS (WARN allowed), non-zero = one or more FAIL.
+# Prints one line per check: [PASS]/[FAIL]/[WARN] <check> -- <detail>
+# ============================================================================
+set -u
+MODEL="${1:?MODEL}"; VARIANT="${2:?VARIANT}"; VERSION="${3:?VERSION}"
+R=/home/reaper/asuswrt-be96u
+P=$R/release/src-rt-5.04behnd.4916
+TDIR=$P/targets/96813GW
+FS="${4:-$TDIR/fs}"
+tag=""; [ "$VARIANT" = "noMCP" ] && tag="_noMCP"
+IMAGE="${5:-$TDIR/${MODEL}_3006_102.8_${VERSION}${tag}_nand_squashfs.pkgtb}"
+RCONF="$R/release/src/router/.config"
+
+FAILN=0; WARNN=0; PASSN=0
+pass(){ echo "[PASS] $1 -- $2"; PASSN=$((PASSN+1)); }
+warn(){ echo "[WARN] $1 -- $2"; WARNN=$((WARNN+1)); }
+fail(){ echo "[FAIL] $1 -- $2"; FAILN=$((FAILN+1)); }
+
+echo "================ reaper_verify: $MODEL $VARIANT $VERSION ================"
+echo "fs=$FS"
+echo "image=$IMAGE"
+[ -d "$FS" ] || { fail "staged-fs" "missing dir $FS"; echo "ABORT"; exit 2; }
+
+READELF=$(command -v readelf || echo readelf)
+
+# ---- 1. core binaries present + non-empty + ARM ELF ------------------------
+check_elf(){ # $1 path-in-fs  $2 label  $3 required(1/0)
+  local f="$FS/$1"
+  if [ ! -e "$f" ]; then
+    [ "$3" = 1 ] && fail "bin:$2" "MISSING $1" || warn "bin:$2" "absent $1"
+    return
+  fi
+  [ -s "$f" ] || { fail "bin:$2" "zero-size $1"; return; }
+  local m; m=$($READELF -h "$f" 2>/dev/null | awk -F: '/Machine:/{print $2}' | xargs)
+  case "$m" in
+    *ARM*) pass "bin:$2" "$1 ($(stat -c%s "$f")B, $m)";;
+    "")    warn "bin:$2" "not ELF? $1";;
+    *)     fail "bin:$2" "wrong arch $m for $1";;
+  esac
+}
+check_elf usr/sbin/httpd httpd 1
+check_elf usr/sbin/smbd  smbd  1
+check_elf usr/sbin/nmbd  nmbd  1
+check_elf usr/sbin/wl     wl    0
+
+# ---- 2. httpd shared-lib link closure (every NEEDED .so exists in rootfs) --
+if [ -e "$FS/usr/sbin/httpd" ]; then
+  miss=""
+  for so in $($READELF -d "$FS/usr/sbin/httpd" 2>/dev/null | awk -F'[][]' '/NEEDED/{print $2}'); do
+    found=$(find "$FS"/lib "$FS"/usr/lib -name "$so" 2>/dev/null | head -1)
+    [ -z "$found" ] && miss="$miss $so"
+  done
+  if [ -n "$miss" ]; then fail "httpd-link" "missing NEEDED libs:$miss"
+  else pass "httpd-link" "all NEEDED libs resolve in rootfs"; fi
+fi
+
+# ---- 3. Samba flag <-> staged binaries consistency -------------------------
+CFG_S4=$(grep -c '^RTCONFIG_SAMBA4=y' "$RCONF" 2>/dev/null)
+CFG_S36=$(grep -c '^RTCONFIG_SAMBA36X=y' "$RCONF" 2>/dev/null)
+S4LIBS=$(find "$FS"/usr/lib/samba -name '*-samba4.so' 2>/dev/null | head -1)
+ICONV=$(find "$FS"/usr/lib -name 'libiconv*' 2>/dev/null | head -1)
+if [ "${CFG_S4:-0}" -ge 1 ]; then
+  [ -n "$S4LIBS" ] && pass "samba" "SAMBA4 config + samba4 libs staged" || fail "samba" "SAMBA4 in .config but NO *-samba4.so staged"
+  [ -z "$ICONV" ] && pass "samba-iconv" "no libiconv (correct for SAMBA4)" || warn "samba-iconv" "libiconv present under SAMBA4: $ICONV"
+elif [ "${CFG_S36:-0}" -ge 1 ]; then
+  warn "samba" "built SAMBA36X (old Samba 3.6.x) -- expected SAMBA4 for Reaper parity"
+else
+  warn "samba" "neither SAMBA4 nor SAMBA36X set in .config (check)"
+fi
+
+# ---- 4. MCP / noMCP correctness --------------------------------------------
+RMCPD=$(find "$FS" -name rmcpd 2>/dev/null | head -1)
+ADV=$(find "$FS"/www -name 'Reaper_Advisor.asp' 2>/dev/null | head -1)
+if [ "$VARIANT" = "noMCP" ]; then
+  { [ -z "$RMCPD" ] && [ -z "$ADV" ]; } && pass "mcp" "noMCP: no rmcpd / Reaper_Advisor.asp (clean)" \
+    || fail "mcp" "noMCP but MCP artifacts present: ${RMCPD:-} ${ADV:-}"
+else
+  { [ -n "$RMCPD" ] && [ -n "$ADV" ]; } && pass "mcp" "MCP: rmcpd + Reaper_Advisor.asp present" \
+    || warn "mcp" "MCP but missing rmcpd/Advisor: rmcpd=${RMCPD:-none} adv=${ADV:-none}"
+fi
+
+# ---- 5. www presence + integrity (build transforms www; no source-sha) -----
+# NOTE: the build post-processes .asp during packing (packed != git source),
+# so a source sha-compare gives false positives. Check presence, non-trivial
+# size, and expected content markers (survive the transform) instead.
+critical="index.asp Main_ReaperDash.asp Advanced_VPNStatus.asp Reaper_Warden.asp"
+missp=""; smallp=""
+for w in $critical; do
+  f="$FS/www/$w"
+  [ -e "$f" ] || { missp="$missp $w"; continue; }
+  [ "$(stat -c%s "$f" 2>/dev/null || echo 0)" -lt 200 ] && smallp="$smallp $w"
+done
+[ -z "$missp" ] && pass "www-present" "critical pages present" || fail "www-present" "missing:$missp"
+[ -z "$smallp" ] && pass "www-size" "critical pages non-trivial size" || fail "www-size" "truncated/empty:$smallp"
+if grep -qa "VPN" "$FS/www/Advanced_VPNStatus.asp" 2>/dev/null && grep -qai "warden" "$FS/www/Reaper_Warden.asp" 2>/dev/null; then
+  pass "www-marker" "key pages contain expected content"
+else warn "www-marker" "expected content markers missing (inspect pages)"; fi
+
+# ---- 6. i18n dict lockstep (token counts equal across languages) -----------
+DDIR=""
+for d in "$FS/www/dict" "$FS/www"; do [ -d "$d" ] && ls "$d"/*.dict >/dev/null 2>&1 && { DDIR="$d"; break; }; done
+if [ -n "$DDIR" ]; then
+  counts=$(for f in "$DDIR"/*.dict; do wc -l < "$f" 2>/dev/null; done | sort -un | tr '\n' ' ')
+  n=$(echo "$counts" | wc -w)
+  [ "$n" -le 1 ] && pass "i18n-dict" "all dicts lockstep ($counts lines)" || warn "i18n-dict" "dict LINE counts DIFFER across langs: $counts"
+else
+  warn "i18n-dict" "no *.dict found under www (mechanism may differ)"
+fi
+
+# ---- 7. model identity in the packed image ---------------------------------
+if [ -f "$IMAGE" ]; then
+  # authoritative identity = the FIT description (u-boot image tree), not raw
+  # strings (the shared CLM board-table + model.c enum list every model).
+  fitmodel=$(dumpimage -l "$IMAGE" 2>/dev/null | grep -iE 'FIT description' | head -1 | sed -E 's/.*:[[:space:]]*//' | xargs)
+  if [ -n "$fitmodel" ]; then
+    [ "$fitmodel" = "$MODEL" ] && pass "model-id" "FIT description=$fitmodel matches target" \
+      || fail "model-id" "FIT description=$fitmodel != target $MODEL (WRONG-MODEL BUILD)"
+  else warn "model-id" "could not read FIT description from image"; fi
+else
+  warn "image" "packed image not found: $IMAGE"
+fi
+
+# ---- 8. model-branded header banner (model-UNIQUE filename) matches model ---
+# Post-v1.8.6: each model has its own banner filename (clobber-proof). Verify
+# the right file, right content, and NO stale REAPER1.png / foreign banner.
+case "$MODEL" in
+  RT-BE96U)    want_ban=f2607d4fd490041bebde08fd526d28704083332eef97417e2d67cafd7bd68c7d; ban_file=RT-96U_REAPER_Header.png;;
+  RT-BE86U)    want_ban=643036d89ca249311eec964035d973a6eeaaec38d5c9ec1ecd47f33298c28ece; ban_file=RT-BE86U_REAPER_Header.png;;
+  RT-BE88U)    want_ban=a46320ea1abf53eb4212eb02b1682ed80a91a129f0c7d1ced6a836d832817f27; ban_file=RT-BE88U_REAPER_Header.png;;
+  GT-BE98)     want_ban=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; ban_file=GT-BE98_REAPER_Header.png;;
+  GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
+  *)           want_ban=""; ban_file="";;
+esac
+BAN="$FS/www/images/$ban_file"
+if [ -n "$want_ban" ] && [ -f "$BAN" ]; then
+  got_ban=$(sha256sum "$BAN" 2>/dev/null | cut -d' ' -f1)
+  [ "$got_ban" = "$want_ban" ] && pass "header-banner" "$ban_file = correct $MODEL banner" \
+    || fail "header-banner" "WRONG banner content for $MODEL ($ban_file got ${got_ban:0:12}, want ${want_ban:0:12})"
+elif [ -n "$ban_file" ]; then fail "header-banner" "model banner $ban_file NOT staged"
+else warn "header-banner" "no expected banner registered for $MODEL"; fi
+# guard: no legacy shared-name file, no foreign model banner
+if [ -f "$FS/www/images/REAPER1.png" ]; then fail "banner-stale" "legacy REAPER1.png still staged (rename regression)"; fi
+foreign=$(ls "$FS"/www/images/*_REAPER_Header.png 2>/dev/null | grep -v "/${ban_file}\$")
+if [ -n "$foreign" ]; then fail "banner-foreign" "foreign banner staged: $(echo "$foreign" | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
+
+# ---- summary ---------------------------------------------------------------
+echo "------------------------------------------------------------"
+echo "reaper_verify: $PASSN pass, $WARNN warn, $FAILN FAIL  ($MODEL $VARIANT)"
+[ "$FAILN" -gt 0 ] && { echo "== VERIFY FAILED =="; exit 1; }
+echo "== VERIFY OK =="; exit 0

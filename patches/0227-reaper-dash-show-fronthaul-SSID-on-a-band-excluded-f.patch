@@ -1,0 +1,47 @@
+From d48c013de2110bcc273c1c1e9b656b2aa582b2de Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 25 Jul 2026 13:33:07 -0400
+Subject: [PATCH 227/245] reaper dash: show fronthaul SSID on a band excluded
+ from MLO (2.4G hex fix)
+
+The MAINFH dut_list band mask encodes MLO link membership, not SSID broadcast coverage. Excluding 2.4G from MLO drops its bit from the mask, so the resolver never matched wl0 and fell back to the physical wl0_ssid (internal onboarding hex). When exactly one enabled MAINFH SSID exists, use it for any radio the mask did not match. Confirmed on metal: apm2(MAINFH)=VieNet dut_list <*>58> (5G+6G, no 2.4 bit), mlo_rl=wl1.1,wl2.1.
+---
+ release/src/router/www/Main_ReaperDash.asp | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 113cdd0f00..e3c676b2d8 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1026,7 +1026,7 @@ function renderViewList(){
+     for(var i=0;i<fh.length;i++) names.push('apm'+fh[i]+'_ssid','apm'+fh[i]+'_enable','apm'+fh[i]+'_dut_list');
+     appGetAscii(names, function(a){
+       if(!a){ fallback(); return; }
+-      var done={};
++      var done={}, fhSsids={};
+       for(var i=0;i<fh.length;i++){
+         var idx=fh[i];
+         var en=decodeURIComponent(a['apm'+idx+'_enable']||'');
+@@ -1035,9 +1035,18 @@ function renderViewList(){
+         var mask=0;  /* OR band bits across ALL dut entries (stock sdn.js accumulates); reading only dut[1] dropped bands whose entry was not first */
+         for(var di=0;di<dut.length;di++){ if(dut[di]) mask|=(parseInt(dut[di].split('>')[1]||'0',10)||0); }
+         if(en!=='1' || !ssid) continue;
++        fhSsids[ssid]=1;
+         for(var wi=0; wi<WL.length; wi++){ var w=WL[wi]; if(!done[w.idx] && (mask & bandBits(w.nband))){ done[w.idx]=1; setTile(w, ssid); } }
+       }
+-      for(var j=0;j<WL.length;j++){ if(!done[WL[j].idx]) setTile(WL[j], WL[j].ssid); }
++      /* A band excluded from MLO (e.g. 2.4G) is dropped from the fronthaul
++         dut_list band mask but STILL broadcasts the fronthaul SSID. The mask
++         encodes MLO link membership, not SSID coverage. When there is exactly
++         one enabled MAINFH SSID, use it for any radio the mask did not match,
++         instead of the physical wlX_ssid (internal onboarding hex). Multiple
++         distinct fronthaul SSIDs (Smart Connect off) keep the per-band fallback. */
++      var fhK=[]; for(var k in fhSsids){ if(fhSsids.hasOwnProperty(k)) fhK.push(k); }
++      var soleFh=(fhK.length===1)?fhK[0]:null;
++      for(var j=0;j<WL.length;j++){ if(!done[WL[j].idx]) setTile(WL[j], soleFh || WL[j].ssid); }
+     });
+   });
+ })();
+-- 
+2.25.1
+

@@ -24,6 +24,62 @@ node, not only on the primary router.
 
 ---
 
+## v1.8.6 — Independent review of the audit remediation: clean, plus five hardening tightenings
+- **Two independent adversarial code reviews — one of the v1.8.4/v1.8.5 audit fixes, one a fresh sweep of the Reaper-authored subsystems — found no live bugs, no security holes, and no performance regressions.** That is the sign-off on the whole audit-remediation arc below: the fixes landed cleanly. Each review verified every candidate against the source before reporting it, and the five low-risk, defense-in-depth items that survived are all closed here: a portability guard on the captive-portal cleanup path (so it compiles identically on every model), a belt-and-suspenders guard against a double-free on an out-of-memory error path in the traffic-history reader, a character-set gate on the LAN interface name used in the Gatekeeper teardown script (matching the guard its apply-path twin already carried), hard MAC-address validation before a device address reaches the Gatekeeper page's action buttons, and numeric emission of two Advisor status fields so a blank value can never malform the response. None was exploitable in normal use.
+
+## v1.8.5 — Audit remediation: the low-severity batch
+- **The remaining low-severity findings from the audit — 18 in all — are fixed.** These are the small robustness and hygiene items across the Reaper daemons and pages: an SNMPv3 config now refuses to emit a user with an empty passphrase (which the monitoring stack would silently reject anyway); the ping helper on the connection-diagnostics path now rejects anything but a valid host/IP before it runs; several file handles and buffers that could leak only on rare error paths are cleaned up; the captive-portal service frees all of its working memory on every exit path; the channel-quality monitor now logs its first event even in the first 15 minutes after boot; and a set of dead variables and duplicated render code in the dashboard and Traffic pages was removed. Three findings were deliberately left as-is with the reasons recorded (a duplicate default with no runtime effect, a kernel-accounting write that turned out to be load-bearing, and a no-behavior-change refactor).
+
+## v1.8.4 — Audit remediation: the latent-issue batch
+- **Twelve latent issues found by the audit are fixed** — real defects that the normal configuration doesn't trigger, closed defensively. Among them: the captive-portal config generator no longer treats a Wi-Fi network name as a text-format template; the threat/geo firewall (Warden) now keeps any stored country codes it doesn't recognize instead of dropping them when you save; the dashboard's by-band and history views guard against a malformed data response instead of blanking the page; the WAN firewall's SNMP allowance is narrowed to the single port the service actually uses; and the Advisor daemon's command runner, session-expiry check, and log redaction were tightened. None was reachable in normal use; each is now closed.
+
+## v1.8.3 — Dashboard render fix + audit batches (Warden, redirects, i18n, build integrity)
+- **Dashboard render fix.** A regression introduced with v1.8.2's new IPv6 logic (a scoping mistake) could leave the dashboard partly unrendered; the logic is moved to the correct scope and the dashboard renders fully again. The **IPv6 status icon** now also lights when the router has a working IPv6 gateway, not only a global address.
+- **Warden anti-lockout + fail-safe corrections.** The threat/geo firewall's LAN anti-lockout rule was computing the wrong subnet, and its country-block updater could wipe its cached blocklist if a feed fetch failed mid-refresh. Both fixed — the updater now builds into a temporary set and only swaps it in on success (matching the threat-feed path), so a transient outage can't leave you unprotected, and the anti-lockout scope is corrected.
+- **Login-redirect hardening.** Several standalone "no internet / redirecting" pages could be bounced to the admin login by the Reaper theme injector during a WAN outage — the exact moment those pages exist for. They are now excluded from injection.
+- **Translation + build integrity.** A download-cap help string that gave inverted guidance in German and French was corrected; the new Warden page strings were seeded across all 24 non-English languages; and the Samba build stamp is now keyed to the patch contents, so an incremental rebuild can never ship a stale (unpatched) file server.
+
+## v1.8.2 — Security batch: three high-impact fixes (start of the audit-remediation arc)
+- **A large adversarial audit of the whole codebase drove this release and the four that follow.** An automated multi-agent audit swept every non-closed-source component — the Reaper-authored code, the shared ASUS/Merlin userspace, and the bundled third-party packages — and produced **73 verified findings**, each checked against the actual source, build config, and makefiles before it was called a defect. This release closes the three highest-impact: an IPsec configuration path where a profile name could reach a root shell, a port-forwarding field that could splice an extra rule into the firewall, and a file-read error path that freed the wrong pointer and could crash the web server. None was remotely exploitable in normal use, but each is the class of latent flaw the audit existed to find. A new IPv6 status indicator was also added to the dashboard this release (its scoping bug is fixed in v1.8.3). *(Every finding, verified, is catalogued in [`REAPER-FIXES.md`](REAPER-FIXES.md).)*
+
+## v1.8.1 — Gatekeeper anti-lockout hardening + boot/teardown logging
+- **Gatekeeper re-grandfathers your devices every time you enable it.** The grandfather-in step previously ran once; now every enable re-reads the router's full device knowledge (address table, DHCP leases, named-client list), so a device that happened to be asleep the first time can't be stranded on a later toggle.
+- **More of the boot and shutdown sequence now leaves a log trail.** The LAN bring-up/teardown boundaries and Warden feed-fetch failures now write to the system log, so the several-minute boot-stabilization window and any feed problem are diagnosable from the log instead of invisible.
+
+## v1.8.0a — Reaper Warden threat/geo firewall, a security-hardening pass, and Samba CVE backport
+- **File sharing: Samba updated to 4.15.13a (backported security fix).** The SMB3 file server is
+  built from Samba **4.15.13** — the last release that matches this router's compiler toolchain, and
+  therefore no longer receiving upstream security updates. Rather than leave it untouched, this build
+  **backports the upstream fix for CVE-2025-9640** (an uninitialized-memory disclosure in the
+  `streams_xattr` module that could leak stray router memory into a file's alternate data stream) and
+  marks the result **4.15.13a** (`smbd` reports `4.15.13-Reaper-a`). An audit of every Samba security
+  advisory published since 4.15.13 confirmed the *rest* do not apply to this build — they're either in
+  the Active-Directory/LDAP/Kerberos code that Reaper does not compile in, were introduced in a later
+  Samba than 4.15.13, or depend on file-sharing options this build never enables. This one was
+  backported as defense-in-depth. *(Applies to the **RT-BE96U**, which is the model on Samba 4.)*
+- **New: Reaper Warden — block malicious and by-country IP ranges at the router.** A new
+  **Warden** page adds an optional, **default-OFF** firewall layer built on the kernel's `ipset`
+  engine. It can automatically pull well-known **threat feeds** (known malware/botnet/attacker IP
+  lists — FireHOL, Feodo, Spamhaus DROP, DShield) and refresh them on a schedule, block or allow
+  **whole countries** by CIDR, and take your own **manual block / allow lists**. It has a strict
+  **anti-lockout design** — your LAN, established connections, and an explicit allow-list are always
+  let through *before* any drop rule — so turning it on can't strand you out of the router. Feeds
+  are fetched over the router's own HTTPS and cached to JFFS so protection survives a reboot, and the
+  rules **re-arm automatically** after any firewall restart or a cold boot. Optional drop-logging is
+  available for auditing. *(Off until you enable it; costs nothing when unused.)*
+- **Security-hardening pass (verified audit fixes).** A methodical firmware audit found and closed a
+  set of latent issues in the Reaper-owned and adjacent code — all fixed and re-verified in this
+  build: a format-string flaw in the network-tools handler; shell-injection hardening on the VPN
+  Fusion (NordVPN/HMA) region fields, the WireGuard route path, and the Wi-Fi client-scan path; an
+  out-of-bounds path check in the web server; an open-redirect guard on a login-redirect page; and
+  input-sanitizing of the values spliced into the generated Gatekeeper firewall script. None were
+  remotely exploitable in normal use, but each is now closed. *(Full technical detail in
+  `REAPER-FIXES.md`.)*
+- **Under the hood: cleaner theming and a lighter Traffic page.** The Reaper-native pages
+  (Gatekeeper, Diagnostics, Wireless, Warden) no longer load the stock-page theme stylesheet that
+  slightly fought their own layout, so they render cleaner. The **Traffic** page also stopped making
+  a redundant second data request every refresh cycle — same information, half the polling.
+
 ## v1.7.9 — VPN page buttons restored, speed test made reliable, 2.4 GHz name fix completed
 - **VPN client page: the buttons work again.** On the VPN client list ("VPN Fusion"-style page),
   the per-client controls rendered as solid **red blocks** and could not be used. Cause: a Reaper

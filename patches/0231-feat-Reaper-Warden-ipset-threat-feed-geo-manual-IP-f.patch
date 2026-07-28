@@ -1,0 +1,842 @@
+From 63c989a883bfbb47c65fa9b796dec29283b62fa0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 25 Jul 2026 18:36:18 -0400
+Subject: [PATCH 231/245] feat: Reaper Warden - ipset threat-feed / geo /
+ manual-IP firewall (Batch D)
+
+Native feature modeled on Gatekeeper. rc/rwarden.c generates an idempotent apply script (nvram resolved at run time, cold-boot deferral) building a REAPER_WARDEN chain in INPUT+FORWARD: anti-lockout RETURNs (ESTABLISHED,RELATED / LAN subnet / rw_allow) BEFORE any drop; ban/threat/geo sets hit a RW_DROP (optional LOG) sub-chain. Cron updater fetches curated OSS feeds (FireHOL1, Feodo, Spamhaus DROP, DShield) + ipdeny country CIDRs over HTTPS, atomic-swaps rw_threat, caches sets to /jffs. All nvram->shell values charset-validated; feed URLs whitelist-matched. Default OFF. UI Reaper_Warden.asp (reaper-native, in reaper_skip[]) + menu + dash rail + EN.dict RWDN_00-42. IPv4-only + firewall-hook re-arm are follow-ups. Not metal-tested.
+---
+ release/src/router/httpd/reaper_inject.c      |   1 +
+ release/src/router/rc/Makefile                |   2 +
+ release/src/router/rc/rc.h                    |   3 +
+ release/src/router/rc/rwarden.c               | 286 +++++++++++++++
+ release/src/router/rc/services.c              |  11 +
+ release/src/router/shared/defaults.c          |  10 +
+ release/src/router/www/EN.dict                |  43 +++
+ release/src/router/www/Main_ReaperDash.asp    |   1 +
+ release/src/router/www/Reaper_Warden.asp      | 337 ++++++++++++++++++
+ .../router/www/require/menuTrees/menuTree.js  |   9 +
+ 10 files changed, 703 insertions(+)
+ create mode 100644 release/src/router/rc/rwarden.c
+ create mode 100644 release/src/router/www/Reaper_Warden.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index bceb76c766..43c3e97f97 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -85,6 +85,7 @@ static const char *reaper_skip[] = {
+ 	"Reaper_QoS.asp",
+ 	"Reaper_Traffic.asp",
+ 	"Reaper_Advisor.asp",
++	"Reaper_Warden.asp",
+ 	"Main_Login.asp",
+ 	"Nologin.asp",
+ 	/* First-run GATE pages: on a factory-clean box state.js force-redirects the
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index bb0859f292..ba52f1ee8e 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -437,6 +437,8 @@ endif
+ OBJS += format.o
+ # reaper v1.6.8: Gatekeeper device access control
+ OBJS += gatekeeper.o
++# reaper v1.8.0: Warden ipset threat-feed / geo / manual-IP firewall
++OBJS += rwarden.o
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+ OBJS += fwupg_flashing.o
+ endif
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index ffe4dce11a..059e46816a 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2980,6 +2980,9 @@ extern void start_rchqd(void);
+ extern void stop_gk(void);	/* reaper v1.6.8 Gatekeeper device access control (rc/gatekeeper.c) */
+ extern void start_gk(void);
+ extern void gk_teardown_rules(void);
++extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
++extern void start_rwarden(void);
++extern void rw_teardown_rules(void);
+ #ifdef RTCONFIG_REAPER_MCP
+ extern void stop_rmcp(void);	/* reaper v1.4.0 read-only MCP advisor */
+ extern void start_rmcp(void);	/* NOTE: never called from the boot path */
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+new file mode 100644
+index 0000000000..5058b3ff6f
+--- /dev/null
++++ b/release/src/router/rc/rwarden.c
+@@ -0,0 +1,286 @@
++/*
++ * rc/rwarden.c - Reaper Warden: ipset-backed threat-feed / geo / manual IP
++ * firewall (RT-BE96U "reaper", v1.8.0).
++ *
++ * Model mirrors rc/gatekeeper.c: start_rwarden() writes an idempotent
++ * teardown+build shell script whose interface/subnet values are resolved at
++ * RUN time via `nvram get` (so a cold boot before the bridge is up defers
++ * cleanly and re-arms on the firewall hook), then runs it. A separate cron'd
++ * updater (rwarden_update) fetches feeds over the router's own HTTPS and loads
++ * them into ipset; sets are cached to /jffs so a boot with no internet keeps
++ * the last-good protection. No resident daemon.
++ *
++ * SETS (hash:net, IPv4):  rw_allow (never-block whitelist, checked first),
++ *   rw_ban (manual DROP), rw_threat (feed DROP), rw_geo (country DROP).
++ * CHAIN REAPER_WARDEN (INPUT+FORWARD): ESTABLISHED,RELATED -> RETURN; LAN
++ *   subnet -> RETURN; rw_allow -> RETURN; then rw_ban/rw_threat/rw_geo hit the
++ *   RW_DROP sub-chain (optional LOG then DROP). Anti-lockout is structural: the
++ *   admin's LAN and live conns can never be dropped (the Gatekeeper lesson).
++ *   Default OFF (opt-in) given lockout risk.
++ *
++ * nvram: rwarden_enable rwarden_feeds rwarden_geo rwarden_dir rwarden_ban
++ *        rwarden_allow rwarden_log rwarden_sched rwarden_lastupd
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "rc.h"
++#include <shared.h>
++
++#define RW_DIR    "/tmp/rwarden"
++#define RW_APPLY  "/tmp/rwarden/apply.sh"
++#define RW_UPDATE "/tmp/rwarden/update.sh"
++#define RW_CACHE  "/jffs/rwarden"
++#define RW_SAVE   "/jffs/rwarden/sets.ipset"
++
++/* Curated open IP/CIDR feeds. id must be [a-z0-9]; url is emitted only into a
++ * single-quoted curl arg in the generated updater, and is a fixed literal here
++ * (never user data). Country lists come from ipdeny (CC-BY). */
++struct rw_feed { const char *id; const char *url; };
++static const struct rw_feed rw_feeds[] = {
++	{ "firehol1", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset" },
++	{ "feodo",    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt" },
++	{ "spamhaus", "https://www.spamhaus.org/drop/drop.txt" },
++	{ "dshield",  "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/dshield.netset" },
++	{ NULL, NULL }
++};
++
++/* A single IPv4 address or CIDR, tokens only [0-9./]. Rejects anything that
++ * could break out of the ipset/iptables shell string (the S2/S7 audit lesson).
++ * Structural sanity only; ipset itself does the final parse. */
++static int rw_valid_cidr(const char *s)
++{
++	int dots = 0, slash = 0, ndig = 0;
++	const char *p;
++	if (!s || !*s || strlen(s) > 18) return 0;
++	for (p = s; *p; p++) {
++		if (*p >= '0' && *p <= '9') { ndig++; continue; }
++		if (*p == '.') { dots++; continue; }
++		if (*p == '/') { slash++; continue; }
++		return 0;                 /* any other char -> reject */
++	}
++	return (dots == 3 && slash <= 1 && ndig >= 4);
++}
++
++/* country code: exactly two ascii letters (ipdeny filenames). */
++static int rw_valid_cc(const char *s)
++{
++	return s && strlen(s) == 2 && isalpha((int)s[0]) && isalpha((int)s[1]);
++}
++
++/* cron schedule from nvram flows UNQUOTED into the crontab line via cru, then
++ * to the shell. Charset-gate to the cron field alphabet only ([0-9 */,-]);
++ * cron itself validates field count/ranges. Reject anything else so the sched
++ * cannot inject a second command. */
++static int rw_valid_sched(const char *s)
++{
++	const char *p;
++	if (!s || !*s || strlen(s) > 64) return 0;
++	for (p = s; *p; p++) {
++		if (*p >= '0' && *p <= '9') continue;
++		if (*p == ' ' || *p == '*' || *p == '/' || *p == ',' || *p == '-') continue;
++		return 0;
++	}
++	return 1;
++}
++
++/* feed id from nvram must match a known feed (prevents arbitrary ids). */
++static const char *rw_feed_url(const char *id)
++{
++	int i;
++	for (i = 0; rw_feeds[i].id; i++)
++		if (!strcmp(rw_feeds[i].id, id)) return rw_feeds[i].url;
++	return NULL;
++}
++
++/* emit `ipset add <set> <cidr> -exist` for each valid token in an nvram list
++ * (separators: space, comma, '<', '>'). Invalid tokens are silently skipped. */
++static void rw_emit_cidrs(FILE *f, const char *set, const char *nvkey)
++{
++	char *list = strdup(nvram_safe_get(nvkey)), *tok, *save = NULL;
++	if (!list) return;
++	for (tok = strtok_r(list, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save))
++		if (rw_valid_cidr(tok))
++			fprintf(f, "ipset add %s %s -exist\n", set, tok);
++	free(list);
++}
++
++void rw_teardown_rules(void)
++{
++	/* unhook + drop the dispatch chain first (it references RW_DROP), then the
++	 * RW_DROP sub-chain, else -X fails on a still-referenced chain. */
++	doSystem("iptables -D INPUT -j REAPER_WARDEN 2>/dev/null");
++	doSystem("iptables -D FORWARD -j REAPER_WARDEN 2>/dev/null");
++	doSystem("iptables -F REAPER_WARDEN 2>/dev/null");
++	doSystem("iptables -X REAPER_WARDEN 2>/dev/null");
++	doSystem("iptables -F RW_DROP 2>/dev/null");
++	doSystem("iptables -X RW_DROP 2>/dev/null");
++}
++
++static void rw_gen_apply(void)
++{
++	FILE *f = fopen(RW_APPLY, "w");
++	if (!f) return;
++	fprintf(f,
++	  "#!/bin/sh\n"
++	  "# generated by start_rwarden - do not edit; idempotent (teardown+rebuild)\n"
++	  "LANIF=\"$(nvram get lan_ifname)\"\n"
++	  "LANIP=\"$(nvram get lan_ipaddr)\"\n"
++	  "LANMASK=\"$(nvram get lan_netmask)\"\n"
++	  "if [ -z \"$LANIP\" ]; then logger -t rwarden 'lan not ready - deferred'; exit 1; fi\n");
++	/* Derive LAN CIDR from the netmask (standard class values); /24 fallback. */
++	fprintf(f,
++	  "case \"$LANMASK\" in\n"
++	  "  255.255.255.0) LANNET=\"${LANIP%%.*}.0/24\";;\n"
++	  "  255.255.0.0)   LANNET=\"$(echo $LANIP|cut -d. -f1-2).0.0/16\";;\n"
++	  "  255.255.255.128) LANNET=\"${LANIP%%.*}.0/25\";;\n"
++	  "  *) LANNET=\"${LANIP%%.*}.0/24\";;\n"
++	  "esac\n");
++	/* ---- teardown ---- (dispatch chain before its RW_DROP dependency) */
++	fprintf(f,
++	  "iptables -D INPUT -j REAPER_WARDEN 2>/dev/null\n"
++	  "iptables -D FORWARD -j REAPER_WARDEN 2>/dev/null\n"
++	  "iptables -F REAPER_WARDEN 2>/dev/null; iptables -X REAPER_WARDEN 2>/dev/null\n"
++	  "iptables -F RW_DROP 2>/dev/null; iptables -X RW_DROP 2>/dev/null\n");
++	/* sets (idempotent create) */
++	fprintf(f,
++	  "for s in rw_allow rw_ban rw_threat rw_geo; do ipset create $s hash:net -exist; done\n");
++	/* restore cached feed sets from jffs (boot without internet still protected) */
++	fprintf(f,
++	  "[ -f " RW_SAVE " ] && ipset restore -exist < " RW_SAVE " 2>/dev/null\n");
++	/* manual allow/ban from nvram (validated) */
++	fprintf(f, "ipset flush rw_allow; ipset flush rw_ban\n");
++	rw_emit_cidrs(f, "rw_allow", "rwarden_allow");
++	rw_emit_cidrs(f, "rw_ban",   "rwarden_ban");
++	/* ---- build ---- RW_DROP: optional LOG then terminal DROP. Built before
++	 * REAPER_WARDEN so the -j RW_DROP jumps resolve. */
++	fprintf(f, "iptables -N RW_DROP\n"
++	           "iptables -F RW_DROP\n");
++	if (nvram_match("rwarden_log", "1"))
++		fprintf(f, "iptables -A RW_DROP -j LOG --log-prefix \"REAPER-WARDEN \" --log-level 4\n");
++	fprintf(f, "iptables -A RW_DROP -j DROP\n");
++	/* dispatch chain: anti-lockout RETURNs first, then set-match -> RW_DROP */
++	fprintf(f,
++	  "iptables -N REAPER_WARDEN\n"
++	  "iptables -A REAPER_WARDEN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN\n"
++	  "iptables -A REAPER_WARDEN -s $LANNET -j RETURN\n"
++	  "iptables -A REAPER_WARDEN -m set --match-set rw_allow src -j RETURN\n");
++	/* inbound (src) matches - always on when enabled */
++	fprintf(f,
++	  "iptables -A REAPER_WARDEN -m set --match-set rw_ban src -j RW_DROP\n"
++	  "iptables -A REAPER_WARDEN -m set --match-set rw_threat src -j RW_DROP\n"
++	  "iptables -A REAPER_WARDEN -m set --match-set rw_geo src -j RW_DROP\n");
++	/* outbound (dst) matches when rwarden_dir is out/both */
++	if (nvram_match("rwarden_dir", "out") || nvram_match("rwarden_dir", "both"))
++		fprintf(f,
++		  "iptables -A REAPER_WARDEN -m set --match-set rw_ban dst -j RW_DROP\n"
++		  "iptables -A REAPER_WARDEN -m set --match-set rw_threat dst -j RW_DROP\n"
++		  "iptables -A REAPER_WARDEN -m set --match-set rw_geo dst -j RW_DROP\n");
++	/* hook: INPUT protects the router, FORWARD protects LAN clients */
++	fprintf(f,
++	  "iptables -I INPUT -j REAPER_WARDEN\n"
++	  "iptables -I FORWARD -j REAPER_WARDEN\n");
++	fclose(f);
++}
++
++/* The updater: fetches enabled feeds + country CIDRs over HTTPS into ipset,
++ * then persists all sets to /jffs. Generated fresh so it reflects current
++ * nvram selections; run by cron (rwarden_sched) and by the UI "update now". */
++static void rw_gen_update(void)
++{
++	FILE *f = fopen(RW_UPDATE, "w");
++	char *list, *tok, *save = NULL;
++	const char *url;
++	if (!f) return;
++	fprintf(f,
++	  "#!/bin/sh\n"
++	  "# generated by start_rwarden - fetch feeds -> ipset, cache to jffs\n"
++	  "CURL='curl -fsSL --retry 2 --max-time 40'\n"
++	  "TMP=/tmp/rwarden/feed.$$\n"
++	  "for s in rw_threat rw_geo; do ipset create $s hash:net -exist; done\n"
++	  "NEW=/tmp/rwarden/threat.new; : > $NEW\n");
++	/* enabled threat feeds */
++	list = strdup(nvram_safe_get("rwarden_feeds"));
++	if (list) {
++		for (tok = strtok_r(list, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save)) {
++			url = rw_feed_url(tok);
++			if (!url) continue;
++			fprintf(f,
++			  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
++			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP >> $NEW\n"
++			  "fi\n", url);
++		}
++		free(list);
++	}
++	/* rebuild rw_threat atomically via a swap set */
++	fprintf(f,
++	  "if [ -s $NEW ]; then\n"
++	  "  ipset create rw_threat_tmp hash:net -exist; ipset flush rw_threat_tmp\n"
++	  "  sort -u $NEW | while read n; do ipset add rw_threat_tmp $n -exist; done\n"
++	  "  ipset swap rw_threat_tmp rw_threat; ipset destroy rw_threat_tmp\n"
++	  "fi\n");
++	/* country CIDRs from ipdeny */
++	fprintf(f, "ipset flush rw_geo\n");
++	save = NULL;
++	list = strdup(nvram_safe_get("rwarden_geo"));
++	if (list) {
++		for (tok = strtok_r(list, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save)) {
++			if (!rw_valid_cc(tok)) continue;
++			/* lower-case the cc for the ipdeny path */
++			fprintf(f,
++			  "CC=$(echo '%s' | tr A-Z a-z)\n"
++			  "if $CURL \"https://www.ipdeny.com/ipblocks/data/aggregated/${CC}-aggregated.zone\" -o $TMP 2>/dev/null; then\n"
++			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | while read n; do ipset add rw_geo $n -exist; done\n"
++			  "fi\n", tok);
++		}
++		free(list);
++	}
++	fprintf(f,
++	  "rm -f $TMP $NEW\n"
++	  "mkdir -p " RW_CACHE "\n"
++	  "ipset save rw_allow rw_ban rw_threat rw_geo > " RW_SAVE ".tmp 2>/dev/null && mv " RW_SAVE ".tmp " RW_SAVE "\n"
++	  "nvram set rwarden_lastupd=$(date +%%s); nvram commit\n"
++	  "logger -t rwarden \"feeds updated: threat=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p') geo=$(ipset -t list rw_geo 2>/dev/null | sed -n 's/.*Number of entries: //p')\"\n");
++	fclose(f);
++}
++
++void stop_rwarden(void)
++{
++	rw_teardown_rules();
++	eval("cru", "d", "rwarden");
++	unlink(RW_APPLY);
++	unlink(RW_UPDATE);
++}
++
++void start_rwarden(void)
++{
++	stop_rwarden();
++	if (!is_routing_enabled())
++		return;
++	if (!nvram_match("rwarden_enable", "1"))
++		return;
++	mkdir(RW_DIR, 0700);
++	rw_gen_apply();
++	rw_gen_update();
++	chmod(RW_APPLY, 0700);
++	chmod(RW_UPDATE, 0700);
++	/* apply.sh exits non-zero when the LAN is not up yet (cold boot): expected,
++	 * not an error - the firewall hook re-runs the same script and arms the
++	 * moment the LAN appears (the Gatekeeper cold-boot deferral pattern). */
++	if (system("sh " RW_APPLY) != 0)
++		logmessage("rwarden", "LAN not ready at boot - protection deferred, re-arms on firewall hook");
++	/* schedule feed refresh (default daily 04:30) unless user set rwarden_sched.
++	 * cru convention (rc/wireguard.c): schedule + command are ONE quoted arg. */
++	{
++		const char *sched = nvram_safe_get("rwarden_sched");
++		char line[128];
++		if (!rw_valid_sched(sched))
++			sched = "30 4 * * *";
++		snprintf(line, sizeof(line), "%s sh %s", sched, RW_UPDATE);
++		eval("cru", "a", "rwarden", line);
++	}
++}
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 5706dd3d33..5a3c1dfb36 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7109,6 +7109,7 @@ stop_misc(void)
+ 	stop_rtraf();	/* reaper v1.3.0 */
+ 	stop_rchqd();	/* reaper v1.6.1 */
+ 	stop_gk();	/* reaper v1.6.8 Gatekeeper */
++	stop_rwarden();	/* reaper v1.8.0 Warden */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	stop_rmcp();	/* reaper v1.4.0 - ensure the advisor never survives a service teardown */
+ #endif
+@@ -13413,6 +13414,7 @@ start_services(void)
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
+ 	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
+ 	start_gk();	/* reaper v1.6.8 Gatekeeper (no-op unless gk_enable) */
++	start_rwarden();	/* reaper v1.8.0 Warden (no-op unless rwarden_enable) */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	reaper_mcp_boot_sweep();	/* reaper v1.4.4 - drop stale advisor rule/session from an unclean prior exit; never starts the daemon */
+ #endif
+@@ -21604,6 +21606,15 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_gk();
+ 		if(action & RC_SERVICE_START) start_gk();
+ 	}
++	else if (strcmp(script, "rwarden") == 0)	/* reaper v1.8.0 Warden ipset firewall */
++	{
++		if(action & RC_SERVICE_STOP) stop_rwarden();
++		if(action & RC_SERVICE_START) start_rwarden();
++	}
++	else if (strcmp(script, "rwarden_update") == 0)	/* reaper v1.8.0 Warden feed refresh on demand (UI "Update now") */
++	{
++		if(action & RC_SERVICE_START) doSystem("sh /tmp/rwarden/update.sh");
++	}
+ #ifdef RTCONFIG_REAPER_MCP
+ 	else if (strcmp(script, "rmcp") == 0)
+ 	{
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 202afcbdd1..1bdbf55fc2 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3130,6 +3130,16 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "gk_captive", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* quarantined devices get the "awaiting approval" page (HTTP DNAT) */
+ 	{ "gk_notify", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* syslog + UI alert on first sight of a new device */
+ 	{ "gk_rl", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* device rules: <MAC>state>expiry ... state 0=block 1=full 2=inet-only 3=guest; expiry epoch (0=permanent). custom_clientlist-sized precedent */
++	/* reaper v1.8.0: Warden - ipset threat-feed / geo / manual-IP firewall (rc/rwarden.c). Default OFF (lockout risk). */
++	{ "rwarden_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ipset) */
++	{ "rwarden_feeds", "", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* enabled threat-feed ids (space/comma list): firehol1 feodo spamhaus dshield */
++	{ "rwarden_geo", "", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2-letter country codes to block (ipdeny), space/comma list */
++	{ "rwarden_dir", "in", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* enforcement direction: in | out | both */
++	{ "rwarden_ban", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* manual block list: IPv4 / CIDR, space/comma separated */
++	{ "rwarden_allow", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* never-block whitelist: IPv4 / CIDR, checked first (anti-lockout) */
++	{ "rwarden_log", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = LOG (prefix "REAPER-WARDEN ") before DROP */
++	{ "rwarden_sched", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* cron schedule for feed refresh; empty = default 30 4 * * * */
++	{ "rwarden_lastupd", "", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* epoch of last successful feed update (set by updater) */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* "0: off */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI) && !defined(MAPAC1750) && !defined(RTAC59_CD6R) && !defined(RTAC59_CD6N) && !defined(RTAX56_XD4) && !defined(XD4PRO) && !defined(CTAX56_XD4) &&!defined(RTAX53U) &&!defined(XD4S)  && !defined(XC5) && !defined(EBA63)
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index cd8e75f0f5..cc20317e72 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5781,6 +5781,49 @@ RGK_57=Arming
+ RGK_58=Gatekeeper is enabled but not enforcing yet - it is waiting for the network to come up and will arm automatically.
+ RGK_59=Not enforcing
+ RGK_60=Gatekeeper cannot install its firewall rules - they keep dropping, so devices are NOT being held at the gate. Check the System Log.
++RWDN_00=Warden
++RWDN_01=Threat &amp; geo firewall
++RWDN_02=Warden blocks traffic to and from known-malicious IP ranges (curated threat feeds), whole countries, and IPs you list by hand &mdash; enforced with kernel ipset for near-zero overhead. Your LAN, live connections, and whitelist are <b>always</b> exempt so it can never lock you out.
++RWDN_03=Enforcing
++RWDN_04=Disabled
++RWDN_05=Warden
++RWDN_06=Warden is off. No threat-feed, country, or manual blocking is being applied.
++RWDN_07=Lockout safety: your own LAN subnet, established connections, and the whitelist below always bypass every block rule. Even so, review your block and country lists before enabling &mdash; blocking a country you rely on (VPN exit, CDN) can cut off services. Default is OFF for this reason.
++RWDN_08=Threat feeds
++RWDN_09=Public reputation blocklists, refreshed on a schedule. Fetched over HTTPS and cached to /jffs so a boot with no internet keeps the last-good lists.
++RWDN_10=Country blocking
++RWDN_11=Block all IP ranges assigned to the selected countries (source ipdeny, updated with the feeds). Enter 2-letter ISO codes.
++RWDN_12=Direction
++RWDN_13=Which way to enforce. Inbound protects the router and blocks unsolicited hits; Both also stops LAN devices from reaching flagged IPs.
++RWDN_14=Inbound only
++RWDN_15=Outbound only
++RWDN_16=Both directions
++RWDN_17=Manual block list
++RWDN_18=One IPv4 address or CIDR per line (e.g. 203.0.113.7 or 198.51.100.0/24). Anything but digits, dots, slashes is stripped on save.
++RWDN_19=Whitelist (never block)
++RWDN_20=IPs / CIDRs here always RETURN before any drop &mdash; use it to guarantee access to hosts you must never lose.
++RWDN_21=Log dropped packets
++RWDN_22=Write a syslog line (prefix REAPER-WARDEN) before dropping. Useful for tuning; noisy if left on.
++RWDN_23=Status
++RWDN_24=Last feed update
++RWDN_25=Feeds enabled
++RWDN_26=Countries blocked
++RWDN_27=Update feeds now
++RWDN_28=Save &amp; Apply
++RWDN_29=Never
++RWDN_30=Applying Warden rules&hellip;
++RWDN_31=FireHOL Level 1
++RWDN_32=Feodo Tracker (botnet C2)
++RWDN_33=Spamhaus DROP
++RWDN_34=DShield top attackers
++RWDN_35=e.g. RU, CN, KP
++RWDN_36=203.0.113.7&#10;198.51.100.0/24
++RWDN_37=192.0.2.0/24
++RWDN_38=How Warden works
++RWDN_39=Blocks are enforced with ipset hash:net matched in iptables INPUT and FORWARD &mdash; one set lookup regardless of list size.
++RWDN_40=Feeds and country lists refresh on a schedule and are cached to /jffs; a booted router with no internet still enforces the last download.
++RWDN_41=Your LAN subnet, ESTABLISHED/RELATED connections, and the whitelist are matched first and always exempt.
++RWDN_42=Only public, freely-redistributable feeds are used, fetched directly from source over HTTPS. No traffic is sent anywhere else.
+ Reaper_c_traffic_limiter=Traffic Limiter
+ Reaper_c_nfs_exports=NFS Exports
+ Reaper_c_dns_director=DNS Director
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index e3c676b2d8..20d50056cd 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -294,6 +294,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+       <a href="/reaper_shell.asp#AiMesh.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg></span><span class="nl">AiMesh</span></a>
+       <a href="/reaper_shell.asp#SDN.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl"><#Network#></span></a>
+       <a href="/reaper_shell.asp#Reaper_GK.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M9 11v-1.5a3 3 0 0 1 6 0V11"/><rect x="9" y="11" width="6" height="5" rx="1"/></svg></span><span class="nl"><#RGK_00#></span></a>
++      <a href="/reaper_shell.asp#Reaper_Warden.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg></span><span class="nl"><#RWDN_00#></span></a>
+       <a href="/reaper_shell.asp#ParentalControl.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg></span><span class="nl"><#Parental_Control#></span></a>
+       <a href="/reaper_shell.asp#Reaper_QoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl"><#Menu_TrafficManager#></span></a>
+       <a href="/reaper_shell.asp#Reaper_Traffic.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl"><#Traffic_Analyzer#></span></a>
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+new file mode 100644
+index 0000000000..1df2fecf93
+--- /dev/null
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -0,0 +1,337 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RWDN_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++.mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
++.lede{max-width:78ch;margin:6px 0 16px}
++.lede b{color:var(--bone);font-weight:600}
++.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;flex:0 0 40px}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.tg.on{background:#33333a}
++.tg.on::after{left:21px;background:var(--bone)}
++.offbanner{display:none;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.offbanner b{color:var(--bone)}
++.warnbanner{display:flex;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.warnbanner svg{width:20px;height:20px;flex:0 0 20px;stroke:var(--amber);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
++.warnbanner b{color:var(--amber)}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
++.stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:80ch}
++.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px;max-width:1120px}
++.duo .card{margin:0}
++.feedrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
++.feedrow:last-child{border-bottom:none}
++.feedrow .fl{flex:1;color:var(--bone);font-size:13px}
++label.ck{position:relative;display:inline-flex;align-items:center;cursor:pointer}
++label.ck input{position:absolute;opacity:0;width:0;height:0}
++label.ck .box{width:18px;height:18px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:var(--panel-2);display:inline-block;position:relative}
++label.ck input:checked + .box{border-color:var(--crimson-deep);background:rgba(225,6,0,.18)}
++label.ck input:checked + .box::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--crimson);border-width:0 2px 2px 0;transform:rotate(45deg)}
++.setrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
++.setrow:last-child{border-bottom:none}
++.setrow .sl{flex:1;color:var(--bone);font-size:13px}
++.setrow .sd{font-size:11.5px;color:var(--steel);display:block;margin-top:1px;font-weight:400}
++select,textarea,input.txt{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
++select.setsel{min-width:150px}
++select[multiple]{width:100%;height:170px;padding:4px}
++select[multiple] option{padding:3px 6px;border-radius:4px}
++textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consolas,monospace;line-height:1.5}
++input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
++.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;max-width:1120px}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
++.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:82ch}
++.card li{padding-left:16px;position:relative}
++.card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
++.card li b{color:var(--bone);font-weight:600}
++.applying{display:none;position:fixed;inset:0;background:rgba(4,4,6,.72);z-index:50;align-items:center;justify-content:center}
++.applying.show{display:flex}
++.applying .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 34px;text-align:center;max-width:340px}
++.applying h3{font-size:16px;margin-bottom:6px}
++.applying p{font-size:12px;color:var(--bone-dim)}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <h1><#RWDN_00#></h1>
++  <span class="ver"><#RWDN_01#> &middot; v1.0</span>
++  <span class="statuspill off" id="pill"><#RWDN_04#></span>
++  <span class="mastertg"><#RWDN_05#> <span class="tg" id="tgmaster" onclick="rwToggleMaster()"></span></span>
++</div>
++<p class="lede"><#RWDN_02#></p>
++
++<div class="offbanner" id="offbanner"><b><#RWDN_00#></b> &mdash; <#RWDN_06#></div>
++
++<div class="warnbanner">
++  <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
++  <div><b><#RWDN_00#></b> &mdash; <#RWDN_07#></div>
++</div>
++
++<div class="stats">
++  <div class="stat"><div class="n" id="s_lastupd"><#RWDN_29#></div><div class="l"><#RWDN_24#></div></div>
++  <div class="stat"><div class="n" id="s_feeds">0</div><div class="l"><#RWDN_25#></div></div>
++  <div class="stat"><div class="n" id="s_geo">0</div><div class="l"><#RWDN_26#></div></div>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RWDN_08#></h2>
++    <div class="desc"><#RWDN_09#></div>
++    <div class="feedrow"><span class="fl"><#RWDN_31#></span><label class="ck"><input type="checkbox" id="f_firehol1"><span class="box"></span></label></div>
++    <div class="feedrow"><span class="fl"><#RWDN_32#></span><label class="ck"><input type="checkbox" id="f_feodo"><span class="box"></span></label></div>
++    <div class="feedrow"><span class="fl"><#RWDN_33#></span><label class="ck"><input type="checkbox" id="f_spamhaus"><span class="box"></span></label></div>
++    <div class="feedrow"><span class="fl"><#RWDN_34#></span><label class="ck"><input type="checkbox" id="f_dshield"><span class="box"></span></label></div>
++  </div>
++  <div class="card">
++    <h2><#RWDN_10#></h2>
++    <div class="desc"><#RWDN_11#></div>
++    <select multiple id="geosel"></select>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RWDN_12#></h2>
++  <div class="setrow"><span class="sl"><#RWDN_12#><span class="sd"><#RWDN_13#></span></span>
++    <select class="setsel" id="dir">
++      <option value="in"><#RWDN_14#></option>
++      <option value="out"><#RWDN_15#></option>
++      <option value="both"><#RWDN_16#></option>
++    </select></div>
++  <div class="setrow"><span class="sl"><#RWDN_21#><span class="sd"><#RWDN_22#></span></span>
++    <span class="tg" id="tglog" onclick="rwTg(this)"></span></div>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RWDN_17#></h2>
++    <div class="desc"><#RWDN_18#></div>
++    <textarea id="ban" placeholder="<#RWDN_36#>"></textarea>
++  </div>
++  <div class="card">
++    <h2><#RWDN_19#></h2>
++    <div class="desc"><#RWDN_20#></div>
++    <textarea id="allow" placeholder="<#RWDN_37#>"></textarea>
++  </div>
++</div>
++
++<div class="actions">
++  <button class="btn" onclick="rwSave(false)"><#RWDN_28#></button>
++  <button class="btng" onclick="rwSave(true)"><#RWDN_27#></button>
++</div>
++
++<div class="card">
++  <h2><#RWDN_38#></h2>
++  <ul>
++    <li><#RWDN_39#></li>
++    <li><#RWDN_40#></li>
++    <li><#RWDN_41#></li>
++    <li><#RWDN_42#></li>
++  </ul>
++</div>
++
++<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RWDN_30#></p></div></div>
++
++<iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_Warden.asp">
++  <input type="hidden" name="next_page" value="Reaper_Warden.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="">
++  <input type="hidden" name="action_wait" value="10">
++  <input type="hidden" name="rwarden_enable" value="">
++  <input type="hidden" name="rwarden_feeds" value="">
++  <input type="hidden" name="rwarden_geo" value="">
++  <input type="hidden" name="rwarden_dir" value="">
++  <input type="hidden" name="rwarden_ban" value="">
++  <input type="hidden" name="rwarden_allow" value="">
++  <input type="hidden" name="rwarden_log" value="">
++</form>
++
++<script>
++/* ---------- nvram bootstrap (values are charset-constrained on save) ---------- */
++var NV = {
++  enable: '<% nvram_get("rwarden_enable"); %>',
++  feeds:  '<% nvram_get("rwarden_feeds"); %>',
++  geo:    '<% nvram_get("rwarden_geo"); %>',
++  dir:    '<% nvram_get("rwarden_dir"); %>',
++  ban:    '<% nvram_get("rwarden_ban"); %>',
++  allow:  '<% nvram_get("rwarden_allow"); %>',
++  log:    '<% nvram_get("rwarden_log"); %>',
++  lastupd:'<% nvram_get("rwarden_lastupd"); %>'
++};
++var FEED_IDS = ['firehol1','feodo','spamhaus','dshield'];
++/* ISO 3166-1 alpha-2 subset (common + commonly-blocked). Codes only ever leave
++   here as 2 ascii letters; the backend re-validates each as [A-Za-z]{2}. */
++var COUNTRIES = [
++ ['AF','Afghanistan'],['AL','Albania'],['DZ','Algeria'],['AR','Argentina'],['AU','Australia'],
++ ['AT','Austria'],['AZ','Azerbaijan'],['BD','Bangladesh'],['BY','Belarus'],['BE','Belgium'],
++ ['BR','Brazil'],['BG','Bulgaria'],['KH','Cambodia'],['CA','Canada'],['CL','Chile'],
++ ['CN','China'],['CO','Colombia'],['HR','Croatia'],['CU','Cuba'],['CZ','Czechia'],
++ ['DK','Denmark'],['EG','Egypt'],['EE','Estonia'],['FI','Finland'],['FR','France'],
++ ['GE','Georgia'],['DE','Germany'],['GH','Ghana'],['GR','Greece'],['HK','Hong Kong'],
++ ['HU','Hungary'],['IN','India'],['ID','Indonesia'],['IR','Iran'],['IQ','Iraq'],
++ ['IE','Ireland'],['IL','Israel'],['IT','Italy'],['JP','Japan'],['KZ','Kazakhstan'],
++ ['KE','Kenya'],['KP','Korea, North'],['KR','Korea, South'],['KW','Kuwait'],['LV','Latvia'],
++ ['LB','Lebanon'],['LT','Lithuania'],['LU','Luxembourg'],['MY','Malaysia'],['MX','Mexico'],
++ ['MD','Moldova'],['MA','Morocco'],['NL','Netherlands'],['NZ','New Zealand'],['NG','Nigeria'],
++ ['NO','Norway'],['PK','Pakistan'],['PS','Palestine'],['PA','Panama'],['PE','Peru'],
++ ['PH','Philippines'],['PL','Poland'],['PT','Portugal'],['QA','Qatar'],['RO','Romania'],
++ ['RU','Russia'],['SA','Saudi Arabia'],['RS','Serbia'],['SG','Singapore'],['SK','Slovakia'],
++ ['SI','Slovenia'],['ZA','South Africa'],['ES','Spain'],['LK','Sri Lanka'],['SE','Sweden'],
++ ['CH','Switzerland'],['SY','Syria'],['TW','Taiwan'],['TH','Thailand'],['TR','Turkey'],
++ ['UA','Ukraine'],['AE','United Arab Emirates'],['GB','United Kingdom'],['US','United States'],
++ ['UZ','Uzbekistan'],['VE','Venezuela'],['VN','Vietnam'],['YE','Yemen'],['ZW','Zimbabwe']
++];
++
++function rwEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
++
++/* split an nvram list on any of space, comma, '<', '>' */
++function rwSplit(s){ return String(s||'').split(/[\s,<>]+/).filter(function(x){ return x.length; }); }
++
++function rwBuildGeo(){
++  var sel = document.getElementById('geosel');
++  var picked = {}; rwSplit(NV.geo).forEach(function(c){ picked[c.toUpperCase()] = 1; });
++  var h = '';
++  for (var i=0;i<COUNTRIES.length;i++){
++    var cc = COUNTRIES[i][0];
++    h += '<option value="'+cc+'"'+(picked[cc]?' selected':'')+'>'+rwEsc(cc)+' &middot; '+rwEsc(COUNTRIES[i][1])+'</option>';
++  }
++  sel.innerHTML = h;
++}
++
++function rwPaint(){
++  var on = NV.enable === '1';
++  document.getElementById('tgmaster').className = 'tg' + (on ? ' on' : '');
++  var pill = document.getElementById('pill');
++  pill.className = 'statuspill' + (on ? '' : ' off');
++  pill.textContent = on ? '<#RWDN_03#>' : '<#RWDN_04#>';
++  document.getElementById('offbanner').style.display = on ? 'none' : 'block';
++
++  var feeds = {}; rwSplit(NV.feeds).forEach(function(f){ feeds[f] = 1; });
++  var nf = 0;
++  FEED_IDS.forEach(function(id){ var c = !!feeds[id]; document.getElementById('f_'+id).checked = c; if(c) nf++; });
++  document.getElementById('dir').value = (NV.dir === 'out' || NV.dir === 'both') ? NV.dir : 'in';
++  document.getElementById('tglog').className = 'tg' + (NV.log === '1' ? ' on' : '');
++  document.getElementById('ban').value   = rwSplit(NV.ban).join('\n');
++  document.getElementById('allow').value = rwSplit(NV.allow).join('\n');
++  rwBuildGeo();
++
++  document.getElementById('s_feeds').textContent = String(nf);
++  document.getElementById('s_geo').textContent   = String(rwSplit(NV.geo).length);
++  var lu = parseInt(NV.lastupd, 10);
++  document.getElementById('s_lastupd').textContent = (lu>0) ? rwAgo(lu) : '<#RWDN_29#>';
++}
++
++function rwAgo(ep){
++  var d = Math.max(0, Math.floor(Date.now()/1000) - ep);
++  if(d < 90) return '<#RGK_45#>';
++  if(d < 3600) return Math.floor(d/60) + ' <#RGK_46#>';
++  if(d < 86400) return Math.floor(d/3600) + ' <#RGK_47#>';
++  return Math.floor(d/86400) + ' <#RGK_48#>';
++}
++
++function rwToggleMaster(){
++  var el = document.getElementById('tgmaster');
++  var on = el.className.indexOf('on') >= 0;
++  el.className = 'tg' + (on ? '' : ' on');
++  var pill = document.getElementById('pill');
++  pill.className = 'statuspill' + (on ? ' off' : '');
++  pill.textContent = on ? '<#RWDN_04#>' : '<#RWDN_03#>';
++  document.getElementById('offbanner').style.display = on ? 'block' : 'none';
++}
++function rwTg(el){ var on = el.className.indexOf('on') >= 0; el.className = 'tg' + (on ? '' : ' on'); }
++
++/* keep only IPv4/CIDR-safe chars, one token per line -> space-joined nvram list */
++function rwCleanCidrs(raw){
++  var out = [];
++  String(raw||'').split(/[\s,]+/).forEach(function(t){
++    t = t.replace(/[^0-9.\/]/g, '');
++    if(t.length) out.push(t);
++  });
++  return out.join(' ');
++}
++/* 2-letter codes only */
++function rwCleanCC(list){
++  var out = [];
++  list.forEach(function(c){
++    c = String(c||'').replace(/[^A-Za-z]/g, '').toUpperCase();
++    if(c.length === 2) out.push(c);
++  });
++  return out.join(' ');
++}
++
++function rwSave(updateNow){
++  var f = document.form;
++  var on = document.getElementById('tgmaster').className.indexOf('on') >= 0;
++
++  var feeds = [];
++  FEED_IDS.forEach(function(id){ if(document.getElementById('f_'+id).checked) feeds.push(id); });
++
++  var geo = [];
++  var opts = document.getElementById('geosel').options;
++  for(var i=0;i<opts.length;i++){ if(opts[i].selected) geo.push(opts[i].value); }
++
++  f.rwarden_enable.value = on ? '1' : '0';
++  f.rwarden_feeds.value  = feeds.join(' ');
++  f.rwarden_geo.value    = rwCleanCC(geo);
++  f.rwarden_dir.value    = document.getElementById('dir').value;
++  f.rwarden_ban.value    = rwCleanCidrs(document.getElementById('ban').value);
++  f.rwarden_allow.value  = rwCleanCidrs(document.getElementById('allow').value);
++  f.rwarden_log.value    = (document.getElementById('tglog').className.indexOf('on') >= 0) ? '1' : '0';
++
++  /* Save & Apply restarts the service (regenerates rules + updater). "Update
++     now" also regenerates first (so the fetch reflects current selections) then
++     runs the on-demand feed refresh. */
++  if(updateNow){
++    f.action_script.value = 'restart_rwarden;start_rwarden_update';
++    f.action_wait.value = '45';
++  } else {
++    f.action_script.value = 'restart_rwarden';
++    f.action_wait.value = '10';
++  }
++  document.getElementById('applying').className = 'applying show';
++  f.submit();
++  var wait = (parseInt(f.action_wait.value,10)||10) + 5;
++  setTimeout(function(){ location.reload(); }, wait*1000);
++}
++
++rwPaint();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index a13cd17566..ebf2c5b308 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -70,6 +70,15 @@ define(function(){
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
++			/* reaper v1.8.0: Warden - ipset threat-feed / geo / manual-IP firewall */
++			{
++				menuName: "<#RWDN_00#>",
++				index: "menu_ReaperWarden",
++				tab: [
++					{url: "Reaper_Warden.asp", tabName: "<#RWDN_00#>"},
++					{url: "NULL", tabName: "__INHERIT__"}
++				]
++			},
+ 			{
+ 				menuName: "<#AiProtection_title_Dashboard_title#>",
+ 				index: "menu_NewDashboard",
+-- 
+2.25.1
+

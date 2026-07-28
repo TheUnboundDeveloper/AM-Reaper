@@ -1,0 +1,80 @@
+From cc8d88126a440deac07e42e1d5c66b0fc74c3bc8 Mon Sep 17 00:00:00 2001
+From: reaper <reaper@localhost>
+Date: Sun, 26 Jul 2026 18:27:29 -0400
+Subject: [PATCH 242/245] dash: fix v1.8.2 regression - hoist v6Up() to
+ top-level scope (v1.8.3)
+
+The v1.8.1 IPv6-icon fix replaced the render pass's inline v6-up check with a
+call to v6Up(), but v6Up() was defined only inside the SECOND IIFE (the live
+WAN poll). From the first IIFE (initial render) that symbol is out of scope,
+so the call threw ReferenceError; the render IIFE's try/catch swallowed it and
+every field after the call silently stopped rendering - Gateway, DNS, the whole
+Security Posture panel, Router ID, uptime. The Internet card still showed
+Connected/IPv4 only because the poll IIFE sets those independently, which is
+exactly the broken-dashboard screenshot.
+
+Fix: move v6Up() to top-level scope (after the $id/setTxt/cap helpers, before
+both IIFEs) so the render pass and the poll share one definition. Removed the
+duplicate local copy from the poll IIFE. Keeps the gateway-aware IPv6 logic.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                |  2 +-
+ release/src/router/www/Main_ReaperDash.asp | 22 ++++++++++++----------
+ 2 files changed, 13 insertions(+), 11 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 475d0440f5..5199976b57 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.8.2
++EXTENDNO=Reaper_v1.8.3
+ 
+ RCNO=0
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 6d12171baa..60df479dfc 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -586,6 +586,18 @@ var OPMODE = [<% get_operation_mode(); %>][0];   /* "rt"/"rp"/"ap"/"mb"/"ew2"/"e
+ function $id(id){return document.getElementById(id);}
+ function setTxt(id,v){var el=$id(id); if(el&&v) el.textContent=v;}
+ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
++/* IPv6 up-state: shared by the initial render AND the live poll below, so it
++ * must live at top level - not inside either IIFE (a prior version defined it
++ * only inside the poll IIFE, so the render IIFE's call threw ReferenceError and
++ * silently aborted the rest of the dashboard). v6 is up when the WAN face has a
++ * global address OR a default gateway (native/DHCP-PD put the global on the LAN
++ * side, leaving only a gateway on the WAN face). */
++function v6Up(){
++  if(!(WAN6 && WAN6.status==='1')) return false;
++  var a=String((WAN6.IPv6_Address)||'').split('/')[0];
++  var gw=String((WAN6.IPv6_Gateway)||'');
++  return !!(a || gw);
++}
+ (function(){
+   try{
+     var fwstr = (SSI.firmver||'').replace(/\./g,'') + '.' + (SSI.buildno||'');
+@@ -747,16 +759,6 @@ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
+    Internet card and the header WAN pill; poll fast while down, slow once up. */
+ (function(){
+   var FAST=4000, SLOW=30000;
+-  function v6Up(){
+-    if(!(WAN6 && WAN6.status==='1')) return false;
+-    /* native/DHCP-PD & passthrough leave the WAN face with no global address
+-     * (the delegated prefix lands on LAN); a v6 default gateway still means
+-     * IPv6 is up. Accept a WAN global addr OR a gateway - a stale gateway is
+-     * not left behind when v6 goes down, so this adds no false positives. */
+-    var a=String((WAN6.IPv6_Address)||'').split('/')[0];
+-    var gw=String((WAN6.IPv6_Gateway)||'');
+-    return !!(a || gw);
+-  }
+   function apply(st, ip){
+     var v4=(st==='2') && !!ip && ip!=='0.0.0.0';
+     var any=v4 || v6Up();
+-- 
+2.25.1
+

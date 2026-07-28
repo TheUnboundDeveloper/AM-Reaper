@@ -1,0 +1,405 @@
+From 9654d6000047f8335d6a760c067bf93050a3dda0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 25 Jul 2026 18:50:15 -0400
+Subject: [PATCH 232/245] Batch A: verified audit hardening fixes (S1-S7,
+ P1-P2) + Warden firewall re-arm
+
+Security (all trigger states confirmed reachable per reachability rule):
+ S1 httpd/web.c:9099-9100  format-string: snprintf(...,ver/target) -> "%s"
+ S2 rc/vpnc_fusion.c       NordVPN/HMA region/conntype: charset guard before
+                           system() (single-quote breakout injection)
+ S3 rc/wireguard.c:250     route line -> system(): shell-metachar filter
+                           (twin of rc_ipsec.c)
+ S4 httpd/httpd.c:1583     OOB read: len>=3 guard before file[len-3] compare
+ S5 httpd/web.c:24368      do_page_default open redirect: xss/useful + reject
+                           scheme://, //, backslash -> fall back to index.asp
+ S6 gkd/gkd.c:217          d_name -> popen(): charset guard (rmcpd-strict)
+ S7 rc/gatekeeper.c        generated apply.sh: reject bad lan_ifname/lan_ipaddr
+                           before they splice unquoted into root iptables rules
+
+Perf:
+ P1 httpd/reaper_inject.c  reaper-native pages (GK/Diag/Wireless/Warden) get the
+                           bounce WITHOUT reaper_content.css that fought their own
+                           chrome; 3-valued inject, byte-identical stock block.
+                           Reaper_Warden moved skip[] -> native[] (no self-bounce).
+ P2 www/Reaper_Traffic.asp drop redundant 2nd getJSON('live') per 30s cycle;
+                           renderQuota() extracted, one live fetch/cycle.
+
+rc/firewall.c: re-run /tmp/rwarden/apply.sh after every firewall rebuild
+ (mirrors the gk_enable hook) - survives restart_firewall + arms Warden once
+ the LAN bridge is up on cold boot.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c              |  5 ++
+ release/src/router/httpd/httpd.c          |  2 +-
+ release/src/router/httpd/reaper_inject.c  | 94 ++++++++++++++++-------
+ release/src/router/httpd/web.c            | 12 ++-
+ release/src/router/rc/firewall.c          |  6 ++
+ release/src/router/rc/gatekeeper.c        |  5 ++
+ release/src/router/rc/vpnc_fusion.c       | 22 +++++-
+ release/src/router/rc/wireguard.c         |  8 +-
+ release/src/router/www/Reaper_Traffic.asp | 20 +++--
+ 9 files changed, 136 insertions(+), 38 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index ad8b3e81e5..641eb6a70e 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -211,6 +211,11 @@ static void scan_wl(void)
+ 		    sscanf(e->d_name, "wl%d", &unit) != 1)
+ 			continue;
+ 		if (strchr(e->d_name, ':')) continue;
++		/* hardening (S6): d_name reaches a shell via popen() below; the sscanf
++		 * only prefix-matches "wl%d", so reject any name bearing a char outside
++		 * a safe set (rmcpd anchors ^wl[0-9]+(\.[0-9]+)?$ for the same scan). */
++		if (e->d_name[strspn(e->d_name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")] != '\0')
++			continue;
+ 		snprintf(cmd, sizeof(cmd), "wl -i %s assoclist 2>/dev/null", e->d_name);
+ 		p = popen(cmd, "r");
+ 		if (!p) continue;
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index ff0b3f8ca1..e578a613d3 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1580,7 +1580,7 @@ handle_request(void)
+ 	}
+ 	file = &(path[1]);
+ 	len = strlen( file );
+-	if ( file[0] == '/' || strcmp( file, ".." ) == 0 || strncmp( file, "../", 3 ) == 0 || strstr( file, "/../" ) != (char*) 0 || strcmp( &(file[len-3]), "/.." ) == 0 ) {
++	if ( file[0] == '/' || strcmp( file, ".." ) == 0 || strncmp( file, "../", 3 ) == 0 || strstr( file, "/../" ) != (char*) 0 || (len >= 3 && strcmp( &(file[len-3]), "/.." ) == 0) ) {
+ 		send_error( 400, "Bad Request", (char*) 0, "Illegal filename." );
+ 		return;
+ 	}
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 43c3e97f97..0577e073da 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -46,28 +46,39 @@
+  * bookmark or in-page link can't sneak a superseded page into the shell iframe.
+  * The normal index->dashboard / other->shell bounce still runs for top-level
+  * loads that are not suppressed. */
+-static const char REAPER_BLOCK[] =
++/* Split into two macros so reaper-native pages (which render their OWN chrome/CSS)
++ * can receive the bounce WITHOUT the reaper_content.css <link> that would fight
++ * their styling.
++ *   REAPER_CSS_LINK  - the reaper theme stylesheet (stock pages only).
++ *   REAPER_BOUNCE_JS - anti-flash pre-paint + the bounce/suppression script.
++ * Anti-flash (backlog 2026-07-22): an inline style costs no fetch, so the very
++ * first paint is already matte-black even where a late-applying layer briefly
++ * showed stock ASUS colors; deliberately NOT !important so reaper_content.css
++ * wins once live. */
++#define REAPER_CSS_LINK \
+ 	"<link rel=\"stylesheet\" type=\"text/css\" href=\"/reaper/reaper_content.css\">"
+-	/* Anti-flash pre-paint (backlog 2026-07-22): an inline style costs no fetch,
+-	 * so the very first paint is already matte-black even on any path where a
+-	 * late-applying layer (SPA bundle css, nested frame, slow stylesheet
+-	 * revalidation) briefly showed the stock ASUS colors. Deliberately NOT
+-	 * !important: once reaper_content.css is live its rules take over. */
+-	"<style>html,body{background:#08080a}</style>"
+-	"<script>(function(){var rp=location.pathname.split(\"/\").pop()||\"index.asp\";"
+-	"var SUP={\"main_trafficmonitor_realtime.asp\":\"Reaper_Traffic.asp\","
+-	"\"main_trafficmonitor_last24.asp\":\"Reaper_Traffic.asp\","
+-	"\"main_trafficmonitor_daily.asp\":\"Reaper_Traffic.asp\","
+-	"\"main_trafficmonitor_monthly.asp\":\"Reaper_Traffic.asp\","
+-	"\"main_trafficmonitor_settings.asp\":\"Reaper_Traffic.asp\","
+-	"\"trafficanalyzer_statistic.asp\":\"Reaper_Traffic.asp\","
+-	"\"advanced_qosuserprio_content.asp\":\"Reaper_QoS.asp\","
+-	"\"advanced_qosuserrules_content.asp\":\"Reaper_QoS.asp\","
+-	"\"qos_ezqos.asp\":\"Reaper_QoS.asp\"};"
+-	"var s=SUP[rp.toLowerCase()];"
+-	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}"
+-	"if(self===top){location.replace(rp===\"index.asp\"?\"/Main_ReaperDash.asp\":"
+-	"\"/reaper_shell.asp#\"+rp+location.search);}})();</script>";
++
++#define REAPER_BOUNCE_JS \
++	"<style>html,body{background:#08080a}</style>" \
++	"<script>(function(){var rp=location.pathname.split(\"/\").pop()||\"index.asp\";" \
++	"var SUP={\"main_trafficmonitor_realtime.asp\":\"Reaper_Traffic.asp\"," \
++	"\"main_trafficmonitor_last24.asp\":\"Reaper_Traffic.asp\"," \
++	"\"main_trafficmonitor_daily.asp\":\"Reaper_Traffic.asp\"," \
++	"\"main_trafficmonitor_monthly.asp\":\"Reaper_Traffic.asp\"," \
++	"\"main_trafficmonitor_settings.asp\":\"Reaper_Traffic.asp\"," \
++	"\"trafficanalyzer_statistic.asp\":\"Reaper_Traffic.asp\"," \
++	"\"advanced_qosuserprio_content.asp\":\"Reaper_QoS.asp\"," \
++	"\"advanced_qosuserrules_content.asp\":\"Reaper_QoS.asp\"," \
++	"\"qos_ezqos.asp\":\"Reaper_QoS.asp\"};" \
++	"var s=SUP[rp.toLowerCase()];" \
++	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}" \
++	"if(self===top){location.replace(rp===\"index.asp\"?\"/Main_ReaperDash.asp\":" \
++	"\"/reaper_shell.asp#\"+rp+location.search);}})();</script>"
++
++/* stock pages: theme <link> + bounce */
++static const char REAPER_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS;
++/* reaper-native pages: bounce only, no reaper_content.css <link> (see reaper_native[]) */
++static const char REAPER_NATIVE_BLOCK[] = REAPER_BOUNCE_JS;
+ 
+ #define REAPER_TAG	"</head>"
+ #define REAPER_TAGLEN	7		/* strlen("</head>") */
+@@ -80,12 +91,13 @@ static const char REAPER_BLOCK[] =
+ static const char *reaper_skip[] = {
+ 	"Main_ReaperDash.asp",
+ 	"reaper_shell.asp",
+-	/* reaper-native pages carry their own chrome + a self bounce; injecting
+-	   reaper_content.css (written for stock pages) would fight their CSS */
++	/* reaper-native pages that carry their own chrome AND an in-page self bounce;
++	   injecting reaper_content.css (written for stock pages) would fight their CSS,
++	   and their self-bounce means they need no injected bounce either -> full skip.
++	   (Native pages with NO self-bounce go in reaper_native[] instead.) */
+ 	"Reaper_QoS.asp",
+ 	"Reaper_Traffic.asp",
+ 	"Reaper_Advisor.asp",
+-	"Reaper_Warden.asp",
+ 	"Main_Login.asp",
+ 	"Nologin.asp",
+ 	/* First-run GATE pages: on a factory-clean box state.js force-redirects the
+@@ -119,11 +131,29 @@ static const char *reaper_skip[] = {
+ 	NULL
+ };
+ 
++/*
++ * Reaper-native pages that render their OWN chrome/CSS (so the reaper_content.css
++ * <link> would fight them) but, unlike Reaper_QoS/Traffic/Advisor, carry NO in-page
++ * self-bounce. They must still bounce a direct-URL hit into the shell, so they get
++ * the bounce + anti-flash block WITHOUT the css <link> (REAPER_NATIVE_BLOCK).
++ * Reaper_Warden.asp is modeled on Reaper_GK (no self-bounce), so it belongs here,
++ * not in reaper_skip[]. Matched on basename, case-insensitive.
++ */
++static const char *reaper_native[] = {
++	"Reaper_GK.asp",
++	"Reaper_Diag.asp",
++	"Reaper_Wireless.asp",
++	"Reaper_Warden.asp",
++	NULL
++};
++
+ struct reaper_filt {
+ 	FILE	*dst;			/* the real socket stream (conn_fp) */
+ 	int	 done;			/* block already injected */
+ 	int	 hlen;			/* bytes currently held (a </head> prefix) */
+ 	char	 hold[REAPER_TAGLEN];
++	const char *block;		/* block to inject: stock (REAPER_BLOCK) vs native */
++	size_t	 blocklen;		/* length of block (excludes NUL) */
+ };
+ 
+ /* True when the (query-stripped) basename ends in .asp/.htm/.html. CGI
+@@ -191,6 +221,12 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 	if (strncasecmp(name, "QIS_", 4) == 0)
+ 		return 0;
+ 
++	/* reaper-native pages (own chrome, no in-page self-bounce): inject the bounce
++	   block WITHOUT the reaper_content.css <link>. Signalled by return value 2. */
++	for (i = 0; reaper_native[i]; i++)
++		if (strcasecmp(name, reaper_native[i]) == 0)
++			return 2;
++
+ 	return 1;
+ }
+ 
+@@ -219,7 +255,7 @@ static ssize_t reaper_cookie_write(void *cookie, const char *buf, size_t size)
+ 		if (tolower(c) == (unsigned char)REAPER_TAG[st->hlen]) {
+ 			st->hold[st->hlen++] = (char)c;
+ 			if (st->hlen == REAPER_TAGLEN) {	/* full </head> held */
+-				fwrite(REAPER_BLOCK, 1, sizeof(REAPER_BLOCK) - 1, st->dst);
++				fwrite(st->block, 1, st->blocklen, st->dst);
+ 				fwrite(st->hold, 1, REAPER_TAGLEN, st->dst);
+ 				st->done = 1;
+ 				st->hlen = 0;
+@@ -260,11 +296,13 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 	struct reaper_filt st;
+ 	cookie_io_functions_t io;
+ 	FILE *filt;
++	int mode;
+ 
+ 	if (!handler || !handler->output)
+ 		return;
+ 
+-	if (!reaper_should_inject(handler, file)) {
++	mode = reaper_should_inject(handler, file);
++	if (!mode) {
+ 		handler->output(file, conn_fp);
+ 		return;
+ 	}
+@@ -272,6 +310,10 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 	st.dst  = conn_fp;
+ 	st.done = 0;
+ 	st.hlen = 0;
++	/* mode 2 = reaper-native page: inject the bounce block WITHOUT the
++	 * reaper_content.css <link> (it would fight the page's own chrome). */
++	st.block    = (mode == 2) ? REAPER_NATIVE_BLOCK : REAPER_BLOCK;
++	st.blocklen = (mode == 2) ? sizeof(REAPER_NATIVE_BLOCK) - 1 : sizeof(REAPER_BLOCK) - 1;
+ 
+ 	memset(&io, 0, sizeof(io));
+ 	io.write = reaper_cookie_write;
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 4d83812331..1c22056422 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -9096,8 +9096,8 @@ netool(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg, char_t *url, char_
+ 		return;
+ 	}
+ 	
+-	snprintf(req_t.ver, sizeof(req_t.ver), ver);
+-	snprintf(req_t.target, sizeof(req_t.target), target);
++	snprintf(req_t.ver, sizeof(req_t.ver), "%s", ver);
++	snprintf(req_t.target, sizeof(req_t.target), "%s", target);
+ 	snprintf(req_t.interface, sizeof(req_t.interface), "%s", (!strcmp(interface,"")) ? "" : interface);
+ 	
+ 	if (atoi(type) == REQ_PING_MODE) {
+@@ -24360,6 +24360,14 @@ do_page_default(char *url, FILE *stream)
+ {
+ 	char *page;
+ 	page = websGetVar(wp, "url","");
++	/* hardening (S5): 'url' is caller-supplied; only redirect to a local relative
++	 * page. Reject XSS-blacklisted / non-useful targets and any absolute form
++	 * (scheme "://", protocol-relative "//", or backslash) - else fall back to a
++	 * safe default. Mirrors the check_xss_blacklist()/useful_redirect_page() idiom
++	 * used elsewhere in this file. */
++	if (check_xss_blacklist(page, 1) || !useful_redirect_page(page)
++	    || strstr(page, "://") || !strncmp(page, "//", 2) || page[0] == '\\')
++		page = "index.asp";
+ 	websRedirect(stream, page);
+ }
+ 
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index d9c19c26a1..8648dee8dc 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9390,6 +9390,12 @@ leave:
+ 	if (nvram_match("gk_enable", "1") && f_exists("/tmp/gk/apply.sh"))
+ 		system("sh /tmp/gk/apply.sh");
+ 
++	/* reaper v1.8.0 Warden: same story - a firewall rebuild flushes the
++	 * REAPER_GEO/REAPER_THREAT hooks; re-run the generated apply.sh so the
++	 * ipset drops survive restart_firewall and cold-boot LAN-not-ready deferral. */
++	if (nvram_match("rwarden_enable", "1") && f_exists("/tmp/rwarden/apply.sh"))
++		system("sh /tmp/rwarden/apply.sh");
++
+ 	return 0;
+ }
+ 
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 016801dc02..c2ebc37c6d 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -130,6 +130,11 @@ static void gk_gen_apply(void)
+ 		   "  logger -t gatekeeper 'lan_ifname not ready - enforcement deferred' 2>/dev/null\n"
+ 		   "  exit 1\n"
+ 		   "fi\n"
++		   /* hardening (S7): LANIF/LANIP are run-time `nvram get` values spliced
++		      UNQUOTED into root iptables rules below; a metachar would inject.
++		      Reject anything outside the expected charset before use. */
++		   "case \"$LANIF\" in *[!A-Za-z0-9._-]*) logger -t gatekeeper 'bad lan_ifname' 2>/dev/null; exit 1;; esac\n"
++		   "case \"$LANIP\" in *[!0-9.]*) logger -t gatekeeper 'bad lan_ipaddr' 2>/dev/null; exit 1;; esac\n"
+ 		   "# ---- teardown ----\n"
+ 		   "for T in iptables ip6tables; do\n"
+ 		   "  $T -D FORWARD -i $LANIF -j REAPER_GKF 2>/dev/null\n"
+diff --git a/release/src/router/rc/vpnc_fusion.c b/release/src/router/rc/vpnc_fusion.c
+index 71ffc86d41..092260e4c6 100644
+--- a/release/src/router/rc/vpnc_fusion.c
++++ b/release/src/router/rc/vpnc_fusion.c
+@@ -1650,8 +1650,16 @@ int start_vpnc_by_unit(const int unit)
+ 	else if (VPNC_PROTO_NORDVPN == prof->protocol)
+ 	{
+ 		char cmd[256] = {0};
++		const char *region = prof->config.tpvpn.region;
+ 		_dprintf("[%s]Start to connect NordVPN(%d).\n", __FUNCTION__, prof->config.tpvpn.tpvpn_idx);
+-		snprintf(cmd, sizeof(cmd), "nordvpn setconf '%s' %d %d &", prof->config.tpvpn.region, prof->config.tpvpn.tpvpn_idx, unit);
++		/* hardening (S2): region is a '>'-separated nvram field wrapped only in
++		 * single quotes; an embedded quote breaks out and injects a shell command.
++		 * Reject anything outside a safe charset before it reaches system(). */
++		if (region[strspn(region, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")] != '\0') {
++			_dprintf("[%s]NordVPN: rejecting invalid region\n", __FUNCTION__);
++			return -1;
++		}
++		snprintf(cmd, sizeof(cmd), "nordvpn setconf '%s' %d %d &", region, prof->config.tpvpn.tpvpn_idx, unit);
+ 		system(cmd);
+ 		return 0;
+ 	}
+@@ -1659,8 +1667,18 @@ int start_vpnc_by_unit(const int unit)
+ 	else if (VPNC_PROTO_HMA == prof->protocol)
+ 	{
+ 		char cmd[256] = {0};
++		const char *region = prof->config.tpvpn.region;
++		const char *conntype = prof->config.tpvpn.conntype;
+ 		_dprintf("[%s]Start to connect HMA(%d).\n", __FUNCTION__, prof->config.tpvpn.tpvpn_idx);
+-		snprintf(cmd, sizeof(cmd), "hmavpn setconf '%s' '%s' %d %d &", prof->config.tpvpn.region, prof->config.tpvpn.conntype, prof->config.tpvpn.tpvpn_idx, unit);
++		/* hardening (S2): region & conntype are single-quote-wrapped nvram fields;
++		 * an embedded quote breaks out and injects a shell command. Reject anything
++		 * outside a safe charset before it reaches system(). */
++		if (region[strspn(region, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")] != '\0' ||
++		    conntype[strspn(conntype, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")] != '\0') {
++			_dprintf("[%s]HMA: rejecting invalid region/conntype\n", __FUNCTION__);
++			return -1;
++		}
++		snprintf(cmd, sizeof(cmd), "hmavpn setconf '%s' '%s' %d %d &", region, conntype, prof->config.tpvpn.tpvpn_idx, unit);
+ 		system(cmd);
+ 		return 0;
+ 	}
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index a6e9eed80f..70512482c7 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -243,7 +243,13 @@ static void _wg_config_route(char* prefix, char* ifname, int table)
+ 		{
+ 			while(fgets(buf, sizeof(buf), fp))
+ 			{
+-				snprintf(cmd, sizeof(cmd), "ip route add %s table %d ", trim_r(buf), table);
++				trim_r(buf);
++					/* hardening (S3): the route line is normally just IPs/ifnames,
++					 * but it still reaches a shell via system() - skip any line
++					 * bearing shell metacharacters (twin of rc_ipsec.c). */
++					if (buf[strcspn(buf, ";|&$`\\<>()\n\r\"'")] != '\0')
++						continue;
++					snprintf(cmd, sizeof(cmd), "ip route add %s table %d ", buf, table);
+ 				//_dprintf("[%s]\n", cmd);
+ 				system(cmd);
+ 			}
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 30170f7917..f47ab3fc8c 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -469,6 +469,17 @@ function renderLive(d){
+   else document.getElementById('quotapanel').style.display='none';
+ }
+ 
++/* shared quota-meter render from the live payload's .quota object. History windows
++   call this from histTick's single 'live' fetch, replacing a second identical
++   getJSON('live') that renderHist used to fire just for the quota block. */
++function renderQuota(q){
++  q=q||{};
++  if(q.cap_gb>0){ var used=q.used, cap=q.cap_gb*1e9, pct=Math.min(100,used/cap*100);
++    document.getElementById('quotapanel').style.display=''; var bar=document.getElementById('quotabar'); bar.style.width=pct.toFixed(0)+'%'; bar.className=pct>=80?'hot':'';
++    document.getElementById('quotatxt').innerHTML=fmtBytes(used)+' <#RTRF_73#> '+q.cap_gb+' GB ('+pct.toFixed(0)+'%) <#RTRF_74#>'; }
++  else document.getElementById('quotapanel').style.display='none';
++}
++
+ /* ---- render history window ---- */
+ function renderHist(d){
+   /* defensive: a history payload always has an array wan; never let a bad/
+@@ -507,11 +518,8 @@ function renderHist(d){
+   rows.slice(0,15).forEach(function(r){ tb+='<tr><td>'+devCell(r.ip,r.name)+'<div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'; });
+   document.getElementById('clitbody').innerHTML = tb || '<tr><td colspan="3" style="color:var(--steel)"><#RTRF_69#></td></tr>';
+ 
+-  /* quota */
+-  var q=null; getJSON('live', function(l){ if(l.quota&&l.quota.cap_gb>0){ var used=l.quota.used, cap=l.quota.cap_gb*1e9, pct=Math.min(100,used/cap*100);
+-    document.getElementById('quotapanel').style.display=''; var bar=document.getElementById('quotabar'); bar.style.width=pct.toFixed(0)+'%'; bar.className=pct>=80?'hot':'';
+-    document.getElementById('quotatxt').innerHTML=fmtBytes(used)+' <#RTRF_73#> '+l.quota.cap_gb+' GB ('+pct.toFixed(0)+'%) <#RTRF_74#>'; }
+-    else document.getElementById('quotapanel').style.display='none'; });
++  /* quota: rendered by histTick's single 'live' fetch via renderQuota() - a second
++     identical getJSON('live') here was a redundant CGI round-trip every cycle. */
+ }
+ 
+ /* ---- window switching ---- */
+@@ -538,7 +546,7 @@ function loadWin(){
+   } else {
+     var histTick=function(){
+       getJSON(curWin, function(d,ok){ if(ok) renderHist(d); });
+-      getJSON('live', function(d,ok){ setStalled(!ok); if(ok) renderLive(d); });   /* tiles + top talkers */
++      getJSON('live', function(d,ok){ setStalled(!ok); if(ok){ renderLive(d); renderQuota(d.quota); } });   /* tiles + top talkers + quota (one live fetch/cycle) */
+     };
+     histTick();
+     liveTimer=setInterval(histTick, 30000);   /* history windows refresh too (were one-shot -> went stale) */
+-- 
+2.25.1
+

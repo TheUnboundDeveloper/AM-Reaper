@@ -1,0 +1,105 @@
+From df778652dc07db83bd94981a50b9ef4515407808 Mon Sep 17 00:00:00 2001
+From: reaper <reaper@localhost>
+Date: Sun, 26 Jul 2026 17:38:42 -0400
+Subject: [PATCH 241/245] security (Batch A): harden 3 audit findings + bump
+ v1.8.2
+
+C1 rc/rc_ipsec.c: IPsec profilename was emitted UNQUOTED into a root shell
+command ("ipsec down %s &") without the sanitization its sibling profile
+fields already get. The strip-meta helper keeps ; | & and spaces (safe only
+inside quotes), so reduce profilename to the strict shell-safe [alnum._-:]
+allowlist at parse time (ipsec_strict_token) - safe at every use site.
+
+C2 rc/firewall.c: port-forward srcip skipped the _fw_strip_spaces +
+_fw_field_safe gate applied to port/dstip/lport, letting a crafted value
+graft arguments into the iptables-restore line. Give srcip the same gate.
+
+C3 shared/files.c: _f_read_alloc freed the caller's char** (free(buffer))
+instead of the malloc'd block (free(*buffer)) on the read-error path -
+leaks the buffer and aborts glibc. Fixed and NULL the pointer.
+
+From the 2026-07-26 code audit (all MEDIUM). Ships in v1.8.2 alongside the
+Gatekeeper anti-lockout fix (dac5d7229f).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf       | 2 +-
+ release/src/router/rc/firewall.c  | 9 +++++++++
+ release/src/router/rc/rc_ipsec.c  | 7 +++++++
+ release/src/router/shared/files.c | 3 ++-
+ 4 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 80201c5554..475d0440f5 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.8.1
++EXTENDNO=Reaper_v1.8.2
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 8648dee8dc..ddab86b821 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -1487,6 +1487,15 @@ void write_port_forwarding(FILE *fp, char *config, char *chain, char *lan_ip, ch
+ 			if (!_fw_field_safe(port) || !_fw_field_safe(dstip) || (lport && *lport && !_fw_field_safe(lport)))
+ 				continue;
+ 
++			/* srcip is emitted raw into the iptables-restore line too (the mac and
++			 * iprange branches copy the trailing text verbatim); give it the same
++			 * space-normalise + strict-charset gate as its siblings above. */
++			if (srcip && *srcip) {
++				_fw_strip_spaces(srcip);
++				if (!_fw_field_safe(srcip))
++					continue;
++			}
++
+ 			// Handle source type format
+ 			srcips[0] = '\0';
+ 			if (srcip && *srcip) {
+diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
+index d1ac79cf47..e5ff528242 100644
+--- a/release/src/router/rc/rc_ipsec.c
++++ b/release/src/router/rc/rc_ipsec.c
+@@ -239,6 +239,12 @@ void ipsec_samba_prof_fill(char *p_data)
+     return;
+ }
+ 
++/* forward decl (defined below): reduce a token in place to a shell-safe
++ * [alnum . _ - :] allowlist. profilename is emitted UNQUOTED into a root shell
++ * command ("ipsec down %s &"); the strip-meta helper keeps ; | & and spaces and
++ * is only safe inside quotes, so the profilename sink needs the strict form. */
++static void ipsec_strict_token(char *s);
++
+ void ipsec_prof_fill(int prof_idx, char *p_data, ipsec_prof_type_t prof_type)
+ {
+     int i = 1;
+@@ -252,6 +258,7 @@ void ipsec_prof_fill(int prof_idx, char *p_data, ipsec_prof_type_t prof_type)
+     /*profilename*/    
+     p_tmp = &(prof[prof_type][prof_idx].profilename[0]);
+     ipsec_profile_str_parse(p_end, p_tmp, sizeof(prof[prof_type][prof_idx].profilename), &i);
++    ipsec_strict_token(p_tmp); /* shell-safe: profilename reaches an unquoted root sink (ipsec down %s &) */
+     p_end += i ;
+     /*remote_gateway_method*/
+     p_tmp = &(prof[prof_type][prof_idx].remote_gateway_method[0]);
+diff --git a/release/src/router/shared/files.c b/release/src/router/shared/files.c
+index 0aedabca18..16d7908d70 100644
+--- a/release/src/router/shared/files.c
++++ b/release/src/router/shared/files.c
+@@ -208,7 +208,8 @@ static int _f_read_alloc(const char *path, char **buffer, int max, int z)
+ 					if (z) *(*buffer + max) = 0;
+ 					return max;
+ 				}
+-				free(buffer);
++				free(*buffer);
++				*buffer = NULL;
+ 			}
+ 		}
+ 	}
+-- 
+2.25.1
+

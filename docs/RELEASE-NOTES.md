@@ -1,7 +1,7 @@
 # RT-BE96U "Reaper" — Release Notes
 
-**Release:** v1.7.7 (VPN-page theming fixes + Network-Map AURA scrollbar; the v1.7 line also adds Gatekeeper device access control and a security-remediation batch. Built for all five models, both variants; metal validation owed.)
-**Firmware:** `3006.102.8_Reaper_v1.7.7`
+**Release:** v1.8.0a (Reaper Warden threat/geo firewall + a verified security-hardening pass + Samba 4.15.13a CVE backport. Built for the **RT-BE96U** (MCP variant); noMCP variant and sibling models owed. Metal validation owed. Supersedes the never-released v1.8.0.)
+**Firmware:** `3006.102.8_Reaper_v1.8.0a`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
 **Models:** ASUS **RT-BE96U** (primary, hardware-validated) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** (per-model branches of the same tree). WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
@@ -38,21 +38,41 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BE96U_…_Reaper_v1.7.7_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.7.7_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BE96U_…_Reaper_v1.8.0a_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.8.0a_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v1.7.7_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v1.7.7_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v1.8.0a_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v1.8.0a_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
+
+### Reaper Warden, a security-hardening pass, and a Samba CVE backport (v1.8.0a)
+- **Reaper Warden — optional threat-feed / geo / manual-IP firewall.** A new **Warden** page adds a
+  **default-OFF** blocking layer built on the kernel's `ipset` engine: auto-pull known
+  malware/botnet/attacker IP lists (FireHOL, Feodo, Spamhaus DROP, DShield) on a schedule, block or
+  allow whole countries by CIDR, and take your own manual block/allow lists. It has a strict
+  **anti-lockout** design (your LAN, established connections, and an explicit allow-list always pass
+  before any drop), fetches feeds over the router's own HTTPS with a JFFS cache that survives reboot,
+  and **re-arms automatically** after a firewall restart or cold boot. Optional drop-logging for
+  auditing. Off until you enable it.
+- **Verified security-hardening pass.** A methodical audit found and closed a set of latent issues in
+  the Reaper-owned and adjacent code (format-string, shell-injection guards on VPN Fusion / WireGuard
+  / Wi-Fi-scan paths, an out-of-bounds path check, an open-redirect guard, and input-sanitizing of the
+  generated Gatekeeper firewall script). None were remotely exploitable in normal use; each is now
+  closed. Full technical detail in [`REAPER-FIXES.md`](REAPER-FIXES.md).
+- **Samba 4.15.13a — backported CVE-2025-9640.** The SMB3 server (Samba 4.15.13, pinned to this
+  router's toolchain and no longer receiving upstream updates) gets the **upstream fix for
+  CVE-2025-9640** (uninitialized-memory disclosure in `streams_xattr`) backported as defense-in-depth;
+  `smbd` now reports `4.15.13-Reaper-a`. Every other Samba advisory since 4.15.13 was audited and
+  confirmed not applicable to this file-server-only, AD-DC-free build.
 
 ### VPN-page theming + Network-Map polish (v1.7.6 – v1.7.7)
 - **VPN Client/Server pages render cleanly.** On **VPN &rsaquo; VPN Client** (PPTP/L2TP) and **VPN
@@ -273,6 +293,16 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `make <target>` (`rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`), each
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
+
+**v1.8.0a flashable-image hash (SHA-256)** — current head, **RT-BE96U MCP variant** (the
+noMCP variant and the four sibling models are owed and will be added on fan-out). Full set in
+`SHA256SUMS-v1.8.0a.txt` on the `reaper-firmware/` ladder.
+
+| Image (`3006_102.8_Reaper_v1.8.0a…`) | SHA-256 |
+|---|---|
+| `RT-BE96U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `0f80ed7e941c2b615b339648d5f829c51887769af3932f6699cce0085ce8b804` |
+
+The **v1.7.7** table below remains the last full five-model, both-variant fan-out for reference.
 
 **v1.7.7 flashable-image hashes (SHA-256)** — the `…_nand_squashfs.pkgtb` you flash. The full
 20-file set (both variants + the `…_loader.pkgtb` recovery images) is in `SHA256SUMS-v1.7.7.txt`

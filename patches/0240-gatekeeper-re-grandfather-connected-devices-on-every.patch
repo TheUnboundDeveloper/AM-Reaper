@@ -1,0 +1,95 @@
+From dac5d7229f329288f61adc98954720672fb60e39 Mon Sep 17 00:00:00 2001
+From: reaper <reaper@localhost>
+Date: Sun, 26 Jul 2026 16:53:59 -0400
+Subject: [PATCH 240/245] gatekeeper: re-grandfather connected devices on every
+ enable (anti-lockout)
+
+Field reports of Gatekeeper locking out all connected devices - including
+the admin - on activation. Root cause: gk_baseline_snapshot() only ran
+when gk_rl was empty (web.c enable guard), and disabling Gatekeeper does
+not clear gk_rl. So the first enable grandfathered everyone, but every
+RE-enable enforced the stale list and quarantined anything not already in
+it - new devices, MAC-randomized reconnects, and any admin box that had
+rotated its MAC since the first snapshot.
+
+Fix: run the snapshot on EVERY off->on transition, and make it a UNION -
+seed the buffer with the existing gk_rl (preserving each entry's state and
+guest-pass expiry, and never un-blocking a deliberately blocked device),
+then add any currently-connected/known device not already present. Write
+only when new devices were grandfathered. Result: whoever is connected at
+activation is always authorized, so the admin can never lock themselves
+out by toggling the feature.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 33 +++++++++++++++++++++++----------
+ 1 file changed, 23 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 1c22056422..50505d8191 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22630,14 +22630,25 @@ gk_baseline_snapshot(void)
+ {
+ 	const size_t cap = 16384;
+ 	char line[512];
+-	char *out, *rl;
++	char *out, *rl, *q;
+ 	FILE *f;
+-	int n = 0;
++	int n = 0, before = 0;
+ 
+ 	out = calloc(1, cap);
+ 	if (!out)
+ 		return;
+ 
++	/* reaper v1.8.x: seed with the EXISTING list so a re-enable UNIONS the
++	 * currently-connected devices in rather than only grandfathering on a
++	 * first, empty-list enable. Existing states/guest expiries are preserved
++	 * (gk_seed_add de-dups against whatever is already in `out`), so the admin
++	 * and every live client are re-authorized at every activation. */
++	rl = nvram_safe_get("gk_rl");
++	if (rl[0] && strlen(rl) + 1 < cap)
++		strlcpy(out, rl, cap);
++	for (q = out; (q = strchr(q, '<')) != NULL; q++)
++		before++;
++
+ 	/* 1. live ARP - completed entries on the LAN bridge (currently talking) */
+ 	f = fopen("/proc/net/arp", "r");
+ 	if (f) {
+@@ -22684,14 +22695,13 @@ gk_baseline_snapshot(void)
+ 		}
+ 	}
+ 
+-	{
+-		char *q = out;
+-		while ((q = strchr(q, '<')) != NULL) { n++; q++; }
+-	}
+-	rl = nvram_safe_get("gk_rl");
+-	if (!rl[0] && out[0]) {
++	for (q = out; (q = strchr(q, '<')) != NULL; q++)
++		n++;
++	/* write only when new devices were actually grandfathered (add-only, so an
++	 * existing approval or guest pass is never revoked here). */
++	if (n > before) {
+ 		nvram_set("gk_rl", out);
+-		logmessage("gatekeeper", "enabled - baseline approved %d known device(s) (ARP + DHCP leases + client list)", n);
++		logmessage("gatekeeper", "enable baseline: grandfathered %d new device(s), %d total authorized (ARP + DHCP leases + client list)", n - before, n);
+ 	}
+ 	free(out);
+ }
+@@ -22835,7 +22845,10 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 	if (!strcmp(action, "config")) {
+ 		char *v;
+ 		if ((v = get_cgi("enable")) != NULL && (*v == '0' || *v == '1')) {
+-			if (*v == '1' && !nvram_match("gk_enable", "1") && !nvram_safe_get("gk_rl")[0])
++			/* reaper v1.8.x: re-snapshot on EVERY off->on transition (not only
++			 * when gk_rl is empty) so currently-connected devices - including the
++			 * admin - are always grandfathered and never locked out on re-enable. */
++			if (*v == '1' && !nvram_match("gk_enable", "1"))
+ 				gk_baseline_snapshot();
+ 			nvram_set("gk_enable", *v == '1' ? "1" : "0");
+ 		}
+-- 
+2.25.1
+

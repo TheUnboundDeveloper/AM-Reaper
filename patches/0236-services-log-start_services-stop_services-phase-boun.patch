@@ -1,0 +1,71 @@
+From 45dd9df00589c78f1ed60921a29a70926fa51232 Mon Sep 17 00:00:00 2001
+From: reaper <reaper@localhost>
+Date: Sun, 26 Jul 2026 14:56:01 -0400
+Subject: [PATCH 236/245] services: log start_services/stop_services phase
+ boundaries
+
+Add paired begin/done logmessage markers with elapsed seconds around
+start_services() and stop_services(). These are the top-level boot and
+shutdown orchestrators; until now their hundreds of step prints went to
+the console ring only (_dprintf), so a slow boot/reboot showed nothing
+in /tmp/syslog.log. The phase boundaries make total service-start and
+service-stop cost visible on metal without flooding syslog with per-step
+detail.
+
+Deliberately did NOT add logmessage to rc/interface.c: its output is
+low-level per-route/per-ifconfig primitives that would drown syslog in
+noise. Its console-only logging is correct.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 5a3c1dfb36..62a82fd7ad 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -13265,11 +13265,15 @@ start_aura_rgb_sw(void)
+ int
+ start_services(void)
+ {
++	unsigned long _svc_t0 = (unsigned long)uptime();
++
+ 	if(nvram_match("no_service", "1")) {
+ //		start_telnetd();
+ 		return 0;
+ 	}
+ 
++	logmessage("services", "start_services: begin");
++
+ #if 0
+ #ifdef HND_ROUTER
+ 	start_jitterentropy();
+@@ -13749,12 +13753,16 @@ start_services(void)
+ 
+ 	run_custom_script("services-start", 0, NULL, NULL);
+ 
++	logmessage("services", "start_services: done (%lu s)", (unsigned long)uptime() - _svc_t0);
+ 	return 0;
+ }
+ 
+ void
+ stop_services(void)
+ {
++	unsigned long _svc_t0 = (unsigned long)uptime();
++
++	logmessage("services", "stop_services: begin");
+ 	run_custom_script("services-stop", 0, NULL, NULL);
+ #ifdef RTCONFIG_GTBOOSTER
+ 	stop_ark_engine(1);
+@@ -14105,6 +14113,7 @@ stop_services(void)
+ #else
+ 	stop_haveged();
+ #endif
++	logmessage("services", "stop_services: done (%lu s)", (unsigned long)uptime() - _svc_t0);
+ }
+ 
+ #if 0	// #ifdef_HND_ROUTER
+-- 
+2.25.1
+

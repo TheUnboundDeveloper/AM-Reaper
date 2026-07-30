@@ -18,7 +18,7 @@ Hard constraint (unchanged): the Broadcom closed blobs (wl/dhd/runner fast-path,
 
 ---
 
-## Phase 0 — Done / in place (shipped through v1.7.7)
+## Phase 0 — Done / in place (shipped through v1.9.7)
 
 *Per-version detail in [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).*
 
@@ -30,7 +30,14 @@ Hard constraint (unchanged): the Broadcom closed blobs (wl/dhd/runner fast-path,
 - **De-cloud removals (Phase 1 — EXECUTED, shipped v1.2):** Alexa/Google Assistant, Trend Micro DPI (`bwdpi`), AiCloud/WebDAV, the AiDisk wizard, the AAE/AiHome cloud tunnel, and the first-boot EULA/consent surface (v1.2.7).
 - **Gatekeeper** (v1.7.0, hardened v1.7.3) — opt-in, **default-deny** device access control with its own page: known devices are grandfathered on enable, new devices are held at the gate (approve / block / internet-only / timed guest pass), enforced at the firewall/bridge layer with self-heal. Off by default, fully on-router (no cloud); arms reliably after a cold boot and always leaves the HTTPS admin page reachable so the owner can never be locked out.
 - **Reaper UI** — full rebrand + serve-time theme injection with a runtime kill-switch (v1.0).
-- **Multi-model fleet** — the v1.0 tree was stripped to the RT-BE96U; the sibling BCM4916 models (**RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro**) were reintroduced from per-model branches starting v1.5.0e, and all five ship as of **v1.7.7** in both variants. RT-BE96U remains the primary, hardware-validated build; sibling metal validation is owed.
+- **Reaper Warden** (v1.8.0a; extended through v1.8.8) — opt-in, **default-OFF** threat/geo firewall on the kernel `ipset` engine: scheduled threat feeds (FireHOL, Feodo, Spamhaus DROP, DShield), block/allow whole countries by CIDR, and manual block/allow lists — with a strict **anti-lockout** design (LAN, established connections, and the allow-list always pass before any drop), JFFS-cached feeds, and automatic re-arm after a firewall restart or cold boot. Extended with **IPv6 dual-stack + a Top-blocked-countries stats tile** (v1.8.7) and, after a field lockout incident, **LAN-lockout root-cause fixes + blocklist reboot-persistence** (v1.8.8). Off until enabled; costs nothing when unused. The local-only threat/geo control the project favours over cloud IP-reputation services.
+- **`rwatch` health watchdog** (v1.8.8) — **on by default**; a lightweight probe every 5 minutes checks the WAN first hop (no external hosts), loopback DNS, a Warden anti-lockout "canary" (verifies the router's own LAN IP never matches a block set, re-applying rules if it does), and the **silent accelerator-wedge signature the stock firmware has no watchdog for**. State transitions go to syslog; the first failure dumps bounded diagnostics to JFFS. Fills the gap left by stock's silent dataplane wedges.
+- **Device Identity Manager / "Devices" page** (v1.9.0; extended through v1.9.4) — a per-MAC unified view correlating a device's name, DHCP reservation, Gatekeeper access state, and live presence (leases + address table + Wi-Fi), with inline rename, a pool-aware reservation ("Pin") dialog, an attention card for orphaned/duplicate reservations and pool exhaustion, filter/search, and a 24 h per-device traffic figure. Adds a unified **Storage** tab (RAM / JFFS / USB) that directs where the opt-in history datasets are written (v1.9.1), plus Wi-Fi 7 **MLO row-merge** and **bridge-table wired/wireless-by-band** classification (v1.9.2–v1.9.4).
+- **Encrypted SMB3 file sharing — Samba 4.15.13a** (v1.7.8 SMB3 move; CVE backport v1.8.0a) — the file server moved from Samba 3.6 to **Samba 4** (SMB3 / SMB3.1.1, opt-in AES-GCM/CCM encrypted transfer), with the upstream fix for **CVE-2025-9640** backported (`smbd` reports `4.15.13-Reaper-a`) after an audit confirmed the remaining post-4.15.13 advisories don't apply to this build. (SFTP is the secure default for file transfer and SNMP is SNMPv3-only as of the same v1.7.8 security rung.)
+- **Audit-remediation arc** (v1.8.2–v1.8.6) — a large automated multi-agent audit of every non-closed-source component produced **73 verified findings** (each checked against source/build/makefiles before being called a defect), closed across five releases: 3 high-impact in v1.8.2, then the latent-issue and low-severity batches (v1.8.3–v1.8.5), then a clean **independent adversarial re-review** that found no live bugs plus five defense-in-depth tightenings (v1.8.6). Every finding is catalogued in `REAPER-FIXES.md`.
+- **First-boot credential enforcement on the dashboard landing** (v1.9.5) — once the Reaper dashboard became the post-login landing page, both the server-side post-login redirect and an early dashboard guard now send a still-default (`admin`/`admin`) box to the first-boot setup before anything renders; a configured or upgraded router never sees it.
+- **Traffic Analyzer per-network / Router attribution fix** (v1.9.7) — the collector now attributes each flow from its own LAN-side interface, so the By-Network total reconciles with the live WAN chart and locally-terminated router traffic (speed test, DNS, firmware checks, latency probe) appears under a new **"Router"** row instead of being dropped. (IPv4 path; the per-client IPv6 limitation is unchanged.)
+- **Multi-model fleet** — the v1.0 tree was stripped to the RT-BE96U; the sibling BCM4916 models (**RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro**) were reintroduced from per-model branches starting v1.5.0e, and the full five-model fleet shipped in lockstep in both variants **through v1.8.6c** (2026-07-28). Since then, **v1.8.7 → v1.9.7 have shipped RT-BE96U-only, both variants; the sibling ports are owed** (Warden IPv6, `rwatch`, the Devices/Storage manager, and the later fixes above have not yet been fanned out to the siblings). RT-BE96U remains the primary, hardware-validated build; sibling metal validation is owed.
 
 ---
 
@@ -84,8 +91,8 @@ Strip AI-branded, cloud-coupled, legacy, and superfluous features while keeping 
 
 Still aligned with the lean/safe goal, but **scoped down by Phase 1** — we do not update what we are about to delete:
 
-- **Contained, real-CVE updates:** expat 2.0.1 → 2.6.x, net-snmp 5.7.2 → 5.9.x, pcre1 → pcre2. The lighttpd update becomes largely moot once AiCloud/WebDAV is removed and only the captive-portal use remains — **re-scope after Phase 1.**
-- **Big, staged:** OpenSSL 1.1.1w (EOL) → 3.x (ABI break; stage per-consumer on a branch). Samba currency only matters if local sharing is retained (it is) — update if/when it earns the effort.
+- **Contained, real-CVE updates:** expat 2.0.1 → 2.6.x, ~~net-snmp 5.7.2 → 5.9.x~~ (**done v1.7.8** — modernized to 5.9.4), pcre1 → pcre2. The lighttpd update becomes largely moot once AiCloud/WebDAV is removed and only the captive-portal use remains — **re-scope after Phase 1.**
+- **Big, staged:** OpenSSL 1.1.1w (EOL) → 3.x (ABI break; stage per-consumer on a branch). Samba currency only matters if local sharing is retained (it is) — **done v1.7.8 / v1.8.0a:** moved off Samba 3.6 to **Samba 4.15.13a** (SMB3, with CVE-2025-9640 backported); see Phase 0.
 
 ---
 
@@ -118,10 +125,10 @@ No removal ships if it introduces: boot instability, a broken build or dependenc
 | Package | In tree | Status | Notes |
 |---|---|---|---|
 | **OpenSSL** | 1.1.1w (Sep 2023) | **EOL** | Links ~everything (httpd, openvpn, curl, lighttpd, wpa_supplicant). #1 risk, highest effort; ABI break on → 3.x. |
-| **Samba** | 3.5.x / 3.6.x | **Ancient/EOL** | SMB1-era; only matters if local sharing retained. |
+| **Samba** | ~~3.5.x / 3.6.x~~ → **4.15.13a** | **Done (v1.7.8 / v1.8.0a)** | Moved to SMB3 Samba 4; CVE-2025-9640 backported. RT-BE96U; siblings owed. |
 | **expat** | 2.0.1 (2007) | **Ancient** | Many CVEs; contained update → 2.6.x. |
 | **lighttpd** | 1.4.39 (2016) | Old | AiCloud/WebDAV front — largely moot post-removal. |
-| **net-snmp** | 5.7.2 (2012) | Old | snmpd ships; → 5.9.x. |
+| **net-snmp** | ~~5.7.2 (2012)~~ → **5.9.4** | **Done (v1.7.8)** | snmpd modernized; SNMPv3-only. |
 | **pcre** | 8.31 (2012) | EOL (PCRE1) | → PCRE2. |
 | **zlib** | 1.2.12 | Minor | → 1.3.1 (low urgency). |
 | curl | 8.17.0 | **Current ✓** | |

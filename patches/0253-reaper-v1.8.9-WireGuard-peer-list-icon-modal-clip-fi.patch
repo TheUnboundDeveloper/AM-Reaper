@@ -1,0 +1,125 @@
+From 0eadd965e7c13ff174169af4b7b8433b24990da2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 29 Jul 2026 10:17:21 -0400
+Subject: [PATCH 253/254] reaper v1.8.9: WireGuard peer-list icon + modal-clip
+ field fixes
+
+Field report (2026-07-29, VPN Server > WireGuard tab):
+- Peer-row edit/QR/trash icons rendered as SOLID RED RECTANGLES: the
+  section-22 primary-button recolor included .contorl_btn, but those are
+  vpn_icon_all_collect SPRITE slices (background-image+position), and the
+  background: SHORTHAND erased the sprite. Split them out to longhand
+  background-color so the white glyph slices survive on a crimson tile.
+- Peer-edit popup clipped off-screen when 'More Settings for Site to Site
+  Usage' expands: resize_iframe_height() fires on render events only,
+  never on slide toggles, so the grown popup exceeded the .rwd_iframe
+  height. Slide handlers (vpns_general.js + the vpnc.html twin) now
+  re-fit the parent iframe on slideDown/slideUp completion.
+- Bonus i18n: that accordion title was hardcoded English despite stock's
+  own vpn_wireguard_site2site_more token existing in all 25 dicts -
+  tokenized (backtick string per the sq-token rule).
+
+Metal-only validatable (auth-gated VPN SPA; mock cannot render it).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                            |  2 +-
+ release/src/router/www/reaper/reaper_content.css       | 10 ++++++++--
+ .../router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html   |  8 ++++++--
+ .../www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_general.js    | 10 ++++++++--
+ .../www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_wireguard.js  |  2 +-
+ 5 files changed, 24 insertions(+), 8 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 6e71487d79..12c6a2b34d 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.8.8
++EXTENDNO=Reaper_v1.8.9
+ 
+ RCNO=0
+diff --git a/release/src/router/www/reaper/reaper_content.css b/release/src/router/www/reaper/reaper_content.css
+index b1f92aaa9f..3f9a6a16ea 100644
+--- a/release/src/router/www/reaper/reaper_content.css
++++ b/release/src/router/www/reaper/reaper_content.css
+@@ -749,8 +749,14 @@ body.bg,.container.no_highlights,.content_container{background:transparent!impor
+    AUTH-GATED - validate on device. */
+ /* primary action buttons (stock 0091FF / 0085FF) */
+ .action_container .btn_container,.del_profile .action_btn_container .del,
+-.customize_alert .action_btn_container .ok,
+-.client_content_bg .client_contorl_bg .contorl_btn{background:#E10600!important;color:#fff!important}
++.customize_alert .action_btn_container .ok{background:#E10600!important;color:#fff!important}
++/* v1.8.9 field fix: the peer-row action tiles (edit/QR/trash in the VPN Server
++   WireGuard/PPTP client list) are NOT text buttons - they are vpn_icon_all_collect
++   SPRITE slices (background-image + background-position, white glyph on a stock
++   blue tile). The shorthand background:#E10600 above ERASED the sprite image ->
++   solid red rectangles (2026-07-29 field report). Longhand background-color only,
++   so the glyph slice survives on a crimson tile. */
++.client_content_bg .client_contorl_bg .contorl_btn{background-color:#E10600!important}
+ .btn_item .btn_container{border-color:rgba(225,6,0,.6)!important}
+ /* checked checkbox / selected radio + option card: selection accent */
+ .checkbox.on{background-color:#E10600!important;box-shadow:0 0 0 1.5px rgba(225,6,0,.7)!important}
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html
+index 6b6ae2ebc6..f966f8f396 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html
+@@ -2185,10 +2185,14 @@ function Get_Component_Slide_Title(_parm) {
+ 		e.stopPropagation();
+ 		$(this).toggleClass("arrow_up");
+ 		if(_parm.slide_target != undefined){
++			/* reaper v1.8.9: same slide-refit as the VPNS twin (vpns_general.js) -
++			   an expanded accordion inside a popup grows past the iframe height and
++			   clips; re-fit the parent .rwd_iframe when the animation completes. */
++			var _refit = function(){ if(typeof resize_iframe_height == "function") resize_iframe_height(); };
+ 			if($(this).hasClass("arrow_up"))
+-				$(this).closest(".profile_setting").find("[slide_target='" + _parm.slide_target + "']").slideDown();
++				$(this).closest(".profile_setting").find("[slide_target='" + _parm.slide_target + "']").slideDown(400, _refit);
+ 			else
+-				$(this).closest(".profile_setting").find("[slide_target='" + _parm.slide_target + "']").slideUp();
++				$(this).closest(".profile_setting").find("[slide_target='" + _parm.slide_target + "']").slideUp(400, _refit);
+ 		}
+ 	});
+ 
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_general.js b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_general.js
+index a4235c3293..86728e8595 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_general.js
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_general.js
+@@ -478,10 +478,16 @@ function Get_Component_Slide_Title(_parm) {
+ 		e.stopPropagation();
+ 		$(this).toggleClass("arrow_up");
+ 		if(_parm.slide_target != undefined){
++			/* reaper v1.8.9: re-fit the parent .rwd_iframe when the slide finishes.
++			   Expanding "More Settings for Site to Site Usage" inside the peer-edit
++			   popup grows the popup past the iframe height and the overflow clips
++			   off-screen - resize_iframe_height() only fires on render events, never
++			   on slide toggles (2026-07-29 field report). */
++			var _refit = function(){ if(typeof resize_iframe_height == "function") resize_iframe_height(); };
+ 			if($(this).hasClass("arrow_up"))
+-				$(this).closest(".profile_setting").find("[data-slide_target='" + _parm.slide_target + "']").slideDown();
++				$(this).closest(".profile_setting").find("[data-slide_target='" + _parm.slide_target + "']").slideDown(400, _refit);
+ 			else
+-				$(this).closest(".profile_setting").find("[data-slide_target='" + _parm.slide_target + "']").slideUp();
++				$(this).closest(".profile_setting").find("[data-slide_target='" + _parm.slide_target + "']").slideUp(400, _refit);
+ 		}
+ 	});
+ 
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_wireguard.js b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_wireguard.js
+index 732f12151a..28ccf98442 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_wireguard.js
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/VPN/vpns_wireguard.js
+@@ -246,7 +246,7 @@ function Get_Component_Setup_Client_WGS(_wgsc_unit){
+ 				return validator.isString(this, event);
+ 			});
+ 	}
+-	var more_settings_parm = {"title":"More Settings for Site to Site Usage", "id":"more_settings", "slide_target":"more_settings_item"};/* untranslated */
++	var more_settings_parm = {"title":`<#vpn_wireguard_site2site_more#>`, "id":"more_settings", "slide_target":"more_settings_item"};/* reaper v1.8.9: stock hardcoded this English string although its own dict token exists in all 25 langs; backtick per the sq-token rule */
+ 	Get_Component_Slide_Title(more_settings_parm).appendTo($content_container);
+ 	var $more_settings_cntr = $("<div>").attr({"data-slide_target":"more_settings_item"}).hide().appendTo($content_container);
+ 
+-- 
+2.25.1
+

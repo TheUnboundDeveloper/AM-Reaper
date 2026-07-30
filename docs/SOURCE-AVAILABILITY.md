@@ -87,7 +87,7 @@ GPL-compliant to everyone who receives one.
 - **Model:** one of `RT-BE96U` / `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98 Pro`
 - **Variant:** `Standard` (no AI Advisor) **or** `AI Advisor` (the optional,
   off-by-default MCP build)
-- **Version:** a specific version (e.g. `v1.7.7`) or `latest`
+- **Version:** a specific version (e.g. `v1.9.7`) or `latest`
 
 You receive the flashable `.pkgtb` (plus its recovery `_loader.pkgtb`) and the
 complete corresponding source per §1. Under GPL v2 you may then use, study,

@@ -1,0 +1,3385 @@
+From 07698b06e4868ff14faf3b80bc25d090d1f0bb60 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 29 Jul 2026 12:46:48 -0400
+Subject: [PATCH 254/254] reaper v1.9.0: Device Identity Manager (Rung A - page
+ + CGI + nav)
+
+New Devices page (own left-nav section between USB Application and System
+Info) correlating, per MAC, the five identity stores stock ASUS scatters:
+custom_clientlist (name), dhcp_staticlist (reservation), gk_rl (access),
+and DHCP leases + ARP + wireless assoclists (presence). Every action is a
+read-modify-write that preserves the foreign fields of each tuple, re-reads
+nvram at action time, commits, and re-runs the affected consumer - no sixth
+store is introduced.
+
+httpd do_reaper_dev_cgi (web.c, NOT MCP-gated, reuses the GK static helpers
+gk_json_esc/gk_load_seen/gk_client_name/gk_rl_update): actions status /
+set_name / set_reserve / unpin / set_state / widen_pool. Presence merge is
+always computed from leases+ARP+assoclist (VIF-aware, MULTILAN) with seen.tsv
+as enrichment only, so it works with Gatekeeper OFF. Pool math + store-budget
++ orphan/duplicate/no-lease flags computed server-side; 24h traffic enriched
+CLIENT-side from the existing /reaper_traffic.cgi?f=m5 feed (no JSON parsing
+in C). Registered in mime_handlers before the MCP ifdef; added to
+reaper_inject.c reaper_native[].
+
+Page Reaper_Devices.asp: inline rename (writes custom_clientlist), pool-aware
+Pin modal (in-pool vs out-of-pool, recommendation flips when the pool is
+tight), attention card (orphaned/duplicate reservations, pool exhaustion),
+filter chips + search, Gatekeeper state per row, traffic deep-link. Handlers
+wired by container id (not shared class). RDEV_00..86 seeded English into all
+25 dicts (lockstep 5922; translations owed). Menu: menuTree entry +
+dashboard rail item + shell ICONS glyph. langcheck gate extended to cover it.
+
+Stock DHCP page tolerance verified: its validator checks LAN-subnet only, not
+pool range, so out-of-pool reservations round-trip cleanly. Rung A = live data
+only; Rung B (unified long-term storage tab on System Log) follows.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/reaper_inject.c      |   1 +
+ release/src/router/httpd/web.c                | 519 +++++++++++++++++
+ release/src/router/www/BR.dict                |  79 +++
+ release/src/router/www/CN.dict                |  79 +++
+ release/src/router/www/CZ.dict                |  79 +++
+ release/src/router/www/DA.dict                |  79 +++
+ release/src/router/www/DE.dict                |  79 +++
+ release/src/router/www/EN.dict                |  79 +++
+ release/src/router/www/ES.dict                |  79 +++
+ release/src/router/www/FI.dict                |  79 +++
+ release/src/router/www/FR.dict                |  79 +++
+ release/src/router/www/HU.dict                |  79 +++
+ release/src/router/www/IT.dict                |  79 +++
+ release/src/router/www/JP.dict                |  79 +++
+ release/src/router/www/KR.dict                |  79 +++
+ release/src/router/www/MS.dict                |  79 +++
+ release/src/router/www/Main_ReaperDash.asp    |   1 +
+ release/src/router/www/NL.dict                |  79 +++
+ release/src/router/www/NO.dict                |  79 +++
+ release/src/router/www/PL.dict                |  79 +++
+ release/src/router/www/RO.dict                |  79 +++
+ release/src/router/www/RU.dict                |  79 +++
+ release/src/router/www/Reaper_Devices.asp     | 521 ++++++++++++++++++
+ release/src/router/www/SL.dict                |  79 +++
+ release/src/router/www/SV.dict                |  79 +++
+ release/src/router/www/TH.dict                |  79 +++
+ release/src/router/www/TR.dict                |  79 +++
+ release/src/router/www/TW.dict                |  79 +++
+ release/src/router/www/UK.dict                |  79 +++
+ release/src/router/www/reaper_shell.asp       |   1 +
+ .../router/www/require/menuTrees/menuTree.js  |  11 +-
+ 32 files changed, 3029 insertions(+), 2 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_Devices.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 12c6a2b34d..c25d5fe624 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.8.9
++EXTENDNO=Reaper_v1.9.0
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index d9aa0334b6..e0f9bcd356 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -159,6 +159,7 @@ static const char *reaper_native[] = {
+ 	"Reaper_Diag.asp",
+ 	"Reaper_Wireless.asp",
+ 	"Reaper_Warden.asp",
++	"Reaper_Devices.asp",
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 1f2c341d53..79310aac36 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22909,6 +22909,524 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 			nvram_get_int("rwarden_lastupd"));
+ }
+ 
++/* ===================================================================
++ * reaper v1.9.0: Device Identity Manager (Reaper_Devices.asp).
++ *
++ * Correlates, per MAC, the five identity stores that stock ASUS scatters:
++ * custom_clientlist (name), dhcp_staticlist (reservation), gk_rl (access),
++ * DHCP leases + ARP + wireless assoclists (presence). Reads and WRITES only
++ * those existing stores - no sixth store is introduced - and every write is a
++ * read-modify-write that preserves the foreign fields of each tuple, re-reads
++ * nvram at action time (never trusts stale page state), commits, and re-runs
++ * the affected consumer. Traffic (24h) is enriched CLIENT-side from the
++ * existing /reaper_traffic.cgi?f=m5 feed, so this CGI never parses that JSON.
++ *
++ * NOT MCP-gated - ships in both builds (kept OUTSIDE the RTCONFIG_REAPER_MCP
++ * block below, same as do_reaper_gk_cgi / do_reaper_warden_cgi).
++ * =================================================================== */
++
++#define RDEV_MAX 320
++
++struct rdev {
++	char mac[18];		/* uppercase colon form (the merge key) */
++	char ip[46];
++	char host[64];		/* self-reported (lease/assoc) hostname */
++	char band[8];		/* "2.4" / "5" / "6" or "" (wired/unknown) */
++	int  wired;		/* seen on ethernet (in ARP, not in any assoclist) */
++	int  wifi;		/* seen in a wl assoclist */
++	int  online;
++	long last;
++	int  resv;		/* has a dhcp_staticlist entry */
++	char resv_ip[46];
++	int  gk_state;		/* -1 = not in gk_rl */
++	long gk_expiry;
++};
++
++/* dotted-quad -> host-order u32; 0 on parse failure (0.0.0.0 is never a host) */
++static unsigned int rdev_ip2u(const char *s)
++{
++	struct in_addr a;
++	if (!s || !s[0]) return 0;
++	if (inet_aton(s, &a) == 0) return 0;
++	return ntohl(a.s_addr);
++}
++
++/* find MAC (case-insensitive) in the table, or add it (uppercased). Returns
++ * index, or -1 when full. */
++static int rdev_find(struct rdev *v, int *n, const char *macraw)
++{
++	char mac[18];
++	int i;
++	if (!macraw || strlen(macraw) != 17) return -1;
++	for (i = 0; i < 17; i++) mac[i] = toupper((unsigned char)macraw[i]);
++	mac[17] = 0;
++	if (!gk_valid_mac(mac)) return -1;
++	if (!strcasecmp(mac, "FF:FF:FF:FF:FF:FF") || !strcasecmp(mac, "00:00:00:00:00:00"))
++		return -1;
++	for (i = 0; i < *n; i++)
++		if (!strcasecmp(v[i].mac, mac)) return i;
++	if (*n >= RDEV_MAX) return -1;
++	memset(&v[*n], 0, sizeof(v[0]));
++	snprintf(v[*n].mac, sizeof(v[0].mac), "%s", mac);
++	v[*n].gk_state = -1;
++	return (*n)++;
++}
++
++/* enumerate wireless associations across every radio + its VIFs (MULTILAN:
++ * the user networks - and therefore the stations - live on the VIFs). Mirrors
++ * gkd/reaper_diag: nvram wl{u}_ifname + wl{u}_vifs, wl -i <if> assoclist, with
++ * the S6 charset guard before the name reaches popen. Sets band/wifi/online. */
++static void rdev_scan_wl(struct rdev *v, int *n)
++{
++	int u;
++	for (u = 0; u <= 3; u++) {
++		char key[16], cmd[96], line[128];
++		char ifl[512];
++		const char *band;
++		char *tok, *sp = NULL;
++		int nb;
++
++		snprintf(key, sizeof(key), "wl%d_ifname", u);
++		snprintf(ifl, sizeof(ifl), "%s", nvram_safe_get(key));
++		if (!ifl[0]) continue;
++		snprintf(key, sizeof(key), "wl%d_nband", u);
++		nb = nvram_get_int(key);
++		band = (nb == 2) ? "2.4" : (nb == 1) ? "5" : (nb == 4) ? "6" : "";
++
++		/* base ifname + each VIF, space/comma/&lt;&gt; separated */
++		{
++			char both[576];
++			snprintf(key, sizeof(key), "wl%d_vifs", u);
++			snprintf(both, sizeof(both), "%s %s", ifl, nvram_safe_get(key));
++			for (tok = strtok_r(both, " ,<>", &sp); tok; tok = strtok_r(NULL, " ,<>", &sp)) {
++				FILE *p;
++				/* reject anything that is not a plain iface name before popen */
++				if (tok[strspn(tok, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")] != '\0')
++					continue;
++				snprintf(cmd, sizeof(cmd), "wl -i %s assoclist 2>/dev/null", tok);
++				if ((p = popen(cmd, "r")) == NULL) continue;
++				while (fgets(line, sizeof(line), p)) {
++					char mac[64];
++					int idx;
++					if (sscanf(line, "assoclist %63s", mac) != 1) continue;
++					idx = rdev_find(v, n, mac);
++					if (idx < 0) continue;
++					v[idx].wifi = 1;
++					v[idx].online = 1;
++					if (!v[idx].band[0])
++						snprintf(v[idx].band, sizeof(v[0].band), "%s", band);
++				}
++				pclose(p);
++			}
++		}
++	}
++}
++
++/* the 2nd hex nibble x2 bit => locally-administered (randomized) MAC */
++static int rdev_is_rand(const char *mac)
++{
++	char c = toupper((unsigned char)mac[1]);
++	return (c == '2' || c == '6' || c == 'A' || c == 'E') ? 1 : 0;
++}
++
++static void do_reaper_dev_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++
++	if (!action) action = "status";
++
++	/* CSRF: state-changing actions must carry http_id (same guard as GK) */
++	if (strcmp(action, "status") != 0) {
++		char *hid = get_cgi("http_id");
++		char *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\"}");
++			return;
++		}
++	}
++
++	/* ---------------- STATUS: the merged snapshot ---------------- */
++	if (!strcmp(action, "status")) {
++		static struct rdev dev[RDEV_MAX];
++		static struct gk_seen seen[GK_SEEN_MAX];
++		int n = 0, ns, i, first;
++		char line[512];
++		FILE *f;
++		char *buf, *tok, *sp = NULL;
++		unsigned int lan_ip, lan_mask, lan_net, dstart, dend;
++		int pool_size, gk_on;
++
++		lan_ip   = rdev_ip2u(nvram_safe_get("lan_ipaddr"));
++		lan_mask = rdev_ip2u(nvram_safe_get("lan_netmask"));
++		lan_net  = lan_ip & lan_mask;
++		dstart   = rdev_ip2u(nvram_safe_get("dhcp_start"));
++		dend     = rdev_ip2u(nvram_safe_get("dhcp_end"));
++		pool_size = (dend >= dstart && dstart) ? (int)(dend - dstart + 1) : 0;
++		gk_on    = nvram_match("gk_enable", "1") ? 1 : 0;
++
++		/* 1. DHCP leases: known devices (ip + self-reported host) */
++		f = fopen("/var/lib/misc/dnsmasq.leases", "r");
++		if (f) {
++			while (fgets(line, sizeof(line), f)) {
++				char mac[64], ip[64], host[64];
++				int idx;
++				/* fmt: <expiry> <mac> <ip> <host> <clientid> */
++				if (sscanf(line, "%*s %63s %63s %63s", mac, ip, host) < 2) continue;
++				idx = rdev_find(dev, &n, mac);
++				if (idx < 0) continue;
++				if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
++				if (host[0] && strcmp(host, "*") && !dev[idx].host[0])
++					snprintf(dev[idx].host, sizeof(dev[0].host), "%s", host);
++			}
++			fclose(f);
++		}
++
++		/* 2. ARP: currently-talking devices on the LAN bridge (=> online) */
++		f = fopen("/proc/net/arp", "r");
++		if (f) {
++			char ip[64], hw[64], dif[32];
++			unsigned flags;
++			if (fgets(line, sizeof(line), f)) { /* header */ }
++			while (fgets(line, sizeof(line), f)) {
++				int idx;
++				if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dif) != 4)
++					continue;
++				if (!(flags & 2) || strncmp(dif, "br", 2)) continue;
++				idx = rdev_find(dev, &n, hw);
++				if (idx < 0) continue;
++				dev[idx].online = 1;
++				if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
++			}
++			fclose(f);
++		}
++
++		/* 3. wireless assoclists (band + wifi + online) */
++		rdev_scan_wl(dev, &n);
++		/* online-but-not-wifi => wired */
++		for (i = 0; i < n; i++)
++			if (dev[i].online && !dev[i].wifi) dev[i].wired = 1;
++
++		/* 4. dhcp_staticlist reservations: <MAC>IP>DNS>HOST */
++		buf = strdup(nvram_safe_get("dhcp_staticlist"));
++		if (buf) {
++			for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++				char rmac[64], rip[64];
++				int idx;
++				rip[0] = 0;
++				if (sscanf(tok, "%63[^>]>%63[^>]", rmac, rip) < 1) continue;
++				idx = rdev_find(dev, &n, rmac);
++				if (idx < 0) continue;
++				dev[idx].resv = 1;
++				snprintf(dev[idx].resv_ip, sizeof(dev[0].resv_ip), "%s", rip);
++			}
++			free(buf);
++		}
++
++		/* 5. gk_rl access states (also surfaces offline gk-listed devices) */
++		buf = strdup(nvram_safe_get("gk_rl"));
++		sp = NULL;
++		if (buf) {
++			for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++				char gmac[64];
++				int st = -1, idx; long exp = 0;
++				if (sscanf(tok, "%63[^>]>%d>%ld", gmac, &st, &exp) < 2) continue;
++				if (st < 0 || st > 3) continue;
++				idx = rdev_find(dev, &n, gmac);
++				if (idx < 0) continue;
++				dev[idx].gk_state = st;
++				dev[idx].gk_expiry = exp;
++			}
++			free(buf);
++		}
++
++		/* 6. seen.tsv enrichment (first/last/band/online) when gkd has it fresh */
++		ns = gk_load_seen(seen, GK_SEEN_MAX);
++		for (i = 0; i < ns; i++) {
++			int idx = rdev_find(dev, &n, seen[i].mac);
++			if (idx < 0) continue;
++			if (seen[i].online) dev[idx].online = 1;
++			if (seen[i].last > dev[idx].last) dev[idx].last = seen[i].last;
++			if (!dev[idx].band[0] && seen[i].band[0])
++				snprintf(dev[idx].band, sizeof(dev[0].band), "%s", seen[i].band);
++			if (!dev[idx].host[0] && seen[i].host[0])
++				snprintf(dev[idx].host, sizeof(dev[0].host), "%s", seen[i].host);
++			if (!dev[idx].ip[0] && seen[i].ip[0])
++				snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", seen[i].ip);
++		}
++
++		/* ---- pool / store facts + next free out-of-pool host ---- */
++		{
++			char *sl = nvram_safe_get("dhcp_staticlist");
++			int entries = 0, dyn = 0, resv_in = 0;
++			unsigned int subnet_bcast = lan_net | ~lan_mask;
++			unsigned int cand, chosen = 0;
++			const char *p;
++
++			for (p = sl; *p; p++) if (*p == '<') entries++;
++			for (i = 0; i < n; i++) {
++				unsigned int rip = rdev_ip2u(dev[i].resv_ip);
++				if (dev[i].resv && rip && dstart && rip >= dstart && rip <= dend) resv_in++;
++				else if (dev[i].online && dev[i].ip[0] && !dev[i].resv) dyn++;
++			}
++			/* first free host above dhcp_end, still inside the subnet, not taken */
++			for (cand = dend + 1; cand < subnet_bcast; cand++) {
++				int taken = 0;
++				for (i = 0; i < n; i++) {
++					if (rdev_ip2u(dev[i].ip) == cand || rdev_ip2u(dev[i].resv_ip) == cand) {
++						taken = 1; break;
++					}
++				}
++				if (!taken) { chosen = cand; break; }
++			}
++
++			websWrite(stream, "{\"now\":%ld,\"gk_enable\":%d,", (long)time(NULL), gk_on);
++			websWrite(stream, "\"pool\":{\"subnet\":\"%u.%u.%u\",\"start\":\"%s\",\"end\":\"%s\",\"size\":%d},",
++				(lan_net >> 24) & 0xff, (lan_net >> 16) & 0xff, (lan_net >> 8) & 0xff,
++				nvram_safe_get("dhcp_start"), nvram_safe_get("dhcp_end"), pool_size);
++			websWrite(stream, "\"store\":{\"used\":%d,\"cap\":65535,\"entries\":%d},",
++				(int)strlen(sl), entries);
++			websWrite(stream, "\"next_free_out\":%u,", chosen ? (chosen & 0xff) : 0);
++			(void)dyn; (void)resv_in;	/* pool math is finished in the page */
++		}
++
++		/* ---- devices array ---- */
++		websWrite(stream, "\"devices\":[");
++		first = 1;
++		for (i = 0; i < n; i++) {
++			struct rdev *d = &dev[i];
++			char uname[40];
++			int have_user;
++			unsigned int rip = rdev_ip2u(d->resv_ip);
++			int rin = (d->resv && rip && dstart && rip >= dstart && rip <= dend) ? 1 : 0;
++			int orphan = (d->resv && rip && lan_mask && (rip & lan_mask) != lan_net) ? 1 : 0;
++			int nolease = (d->wifi && !d->ip[0]) ? 1 : 0;
++			int dup = 0, j;
++			const char *src;
++
++			/* duplicate reservation: another device pinned to the same ip */
++			if (d->resv && rip)
++				for (j = 0; j < n; j++)
++					if (j != i && dev[j].resv && rdev_ip2u(dev[j].resv_ip) == rip) { dup = 1; break; }
++
++			gk_client_name(d->mac, uname, sizeof(uname));
++			have_user = uname[0] ? 1 : 0;
++			src = have_user ? "user" : (d->host[0] ? "lease" : "");
++
++			if (!first) websWrite(stream, ",");
++			first = 0;
++			websWrite(stream, "{\"mac\":\"%s\",\"name\":", d->mac);
++			gk_json_esc(stream, have_user ? uname : "");
++			websWrite(stream, ",\"host\":");
++			gk_json_esc(stream, d->host);
++			websWrite(stream, ",\"src\":\"%s\",\"ip\":", src);
++			gk_json_esc(stream, d->ip);
++			websWrite(stream, ",\"band\":\"%s\",\"wired\":%d,\"online\":%d,\"last\":%ld",
++				d->band, d->wired, d->online, d->last);
++			websWrite(stream, ",\"gk\":%d,\"gk_expiry\":%ld,\"resv\":%d,\"resv_in_pool\":%d,",
++				d->gk_state, d->gk_expiry, d->resv ? 1 : 0, rin);
++			websWrite(stream, "\"resv_ip\":");
++			gk_json_esc(stream, d->resv_ip);
++			websWrite(stream, ",\"rand\":%d,\"orphan\":%d,\"dup\":%d,\"nolease\":%d}",
++				rdev_is_rand(d->mac), orphan, dup, nolease);
++		}
++		websWrite(stream, "]}");
++		return;
++	}
++
++	/* ---------------- SET_NAME: custom_clientlist RMW ---------------- */
++	if (!strcmp(action, "set_name")) {
++		char *mac = get_cgi("mac");
++		char *nm  = get_cgi("name");
++		char umac[18], clean[40], *cl, *out, *tok, *sp = NULL;
++		size_t cap;
++		int i, keep = 0;
++
++		if (!gk_valid_mac(mac)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\"}");
++			return;
++		}
++		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++		umac[17] = 0;
++		/* names are stored raw; reject the tuple delimiters and control chars,
++		 * bound to 32 bytes (matches the stock popup's charset + length rule) */
++		clean[0] = 0;
++		if (nm) {
++			int o = 0;
++			for (i = 0; nm[i] && o < (int)sizeof(clean) - 1; i++) {
++				unsigned char c = (unsigned char)nm[i];
++				if (c == '<' || c == '>' || c < 0x20) continue;
++				clean[o++] = c;
++			}
++			clean[o] = 0;
++			while (o > 0 && clean[o - 1] == ' ') clean[--o] = 0;	/* rtrim */
++		}
++		keep = clean[0] ? 1 : 0;	/* empty name = clear the entry */
++
++		cl = nvram_safe_get("custom_clientlist");
++		cap = strlen(cl) + 64;
++		out = calloc(1, cap);
++		{ char *b = strdup(cl); if (!out || !b) { free(out); free(b);
++			websWrite(stream, "{\"ok\":0,\"error\":\"oom\"}"); return; }
++			for (tok = strtok_r(b, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++				/* keep every OTHER device's full tuple byte-identical */
++				char *g = strchr(tok, '>');
++				char tmac[18] = "";
++				if (g) { size_t l = g - tok; if (l < sizeof(tmac)) { memcpy(tmac, tok, l); tmac[l] = 0; } }
++				if (g && !strcasecmp(tmac, umac)) continue;	/* drop old record for this mac */
++				strlcat(out, "<", cap); strlcat(out, tok, cap);
++			}
++			free(b);
++		}
++		if (keep) {
++			/* new record: <name>MAC>0>0>>0  (group 0, type 0, empty callback, keeparp 0) */
++			char add[80];
++			snprintf(add, sizeof(add), "<%s>%s>0>0>>0", clean, umac);
++			if (strlen(out) + strlen(add) + 1 < cap) strlcat(out, add, cap);
++			else { free(out); websWrite(stream, "{\"ok\":0,\"error\":\"name store full\"}"); return; }
++		}
++		nvram_set("custom_clientlist", out);
++		nvram_commit();
++		free(out);
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	/* --------- SET_RESERVE / UNPIN: dhcp_staticlist RMW --------- */
++	if (!strcmp(action, "set_reserve") || !strcmp(action, "unpin")) {
++		char *mac = get_cgi("mac");
++		char *ip  = get_cgi("ip");
++		int pin = !strcmp(action, "set_reserve");
++		char umac[18], *sl, *out, *tok, *sp = NULL, keephost[64] = "";
++		size_t cap;
++		int i;
++		unsigned int lan_net, lan_mask, u;
++
++		if (!gk_valid_mac(mac)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\"}");
++			return;
++		}
++		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++		umac[17] = 0;
++		lan_mask = rdev_ip2u(nvram_safe_get("lan_netmask"));
++		lan_net  = rdev_ip2u(nvram_safe_get("lan_ipaddr")) & lan_mask;
++
++		if (pin) {
++			u = rdev_ip2u(ip);
++			/* must be a real host inside the LAN subnet (stock page's own rule) */
++			if (!u || !lan_mask || (u & lan_mask) != lan_net) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"ip not in LAN subnet\"}");
++				return;
++			}
++			/* refuse a duplicate: same ip pinned to a different mac */
++			sl = strdup(nvram_safe_get("dhcp_staticlist"));
++			if (sl) {
++				for (tok = strtok_r(sl, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++					char em[64], eip[64];
++					eip[0] = 0;
++					if (sscanf(tok, "%63[^>]>%63[^>]", em, eip) < 2) continue;
++					if (rdev_ip2u(eip) == u && strcasecmp(em, umac)) {
++						free(sl);
++						websWrite(stream, "{\"ok\":0,\"error\":\"address already reserved by another device\"}");
++						return;
++					}
++				}
++				free(sl);
++			}
++		}
++
++		sl = nvram_safe_get("dhcp_staticlist");
++		cap = strlen(sl) + 96;
++		out = calloc(1, cap);
++		{ char *b = strdup(sl); if (!out || !b) { free(out); free(b);
++			websWrite(stream, "{\"ok\":0,\"error\":\"oom\"}"); return; }
++			sp = NULL;
++			for (tok = strtok_r(b, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++				char em[18] = ""; char *g = strchr(tok, '>');
++				if (g) { size_t l = g - tok; if (l < sizeof(em)) { memcpy(em, tok, l); em[l] = 0; } }
++				if (g && !strcasecmp(em, umac)) {
++					/* preserve this device's existing DNS+hostname fields */
++					char *f2 = g ? strchr(g + 1, '>') : NULL;	/* after IP */
++					if (f2) snprintf(keephost, sizeof(keephost), "%s", f2);	/* ">DNS>HOST" */
++					continue;	/* drop old record; re-added below if pinning */
++				}
++				strlcat(out, "<", cap); strlcat(out, tok, cap);
++			}
++			free(b);
++		}
++		if (pin) {
++			char add[160];
++			/* <MAC>IP + preserved ">DNS>HOST" (or empty). Bound to nvram cap. */
++			snprintf(add, sizeof(add), "<%s>%s%s", umac, ip, keephost[0] ? keephost : "");
++			if (strlen(out) + strlen(add) + 1 < 65535 && strlen(out) + strlen(add) + 1 < cap)
++				strlcat(out, add, cap);
++			else { free(out); websWrite(stream, "{\"ok\":0,\"error\":\"reservation store full\"}"); return; }
++		}
++		nvram_set("dhcp_staticlist", out);
++		nvram_set("dhcp_static_x", "1");	/* ensure the manual list is honored */
++		nvram_commit();
++		free(out);
++		notify_rc("restart_dnsmasq");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	/* ---------------- SET_STATE: delegate to the GK backend ---------------- */
++	if (!strcmp(action, "set_state")) {
++		char *mac = get_cgi("mac");
++		char *st  = get_cgi("state");
++		char umac[18];
++		int state, i;
++		long expiry = 0;
++		if (!gk_valid_mac(mac) || !st) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac/state\"}");
++			return;
++		}
++		state = atoi(st);
++		if (state < 0 || state > 3) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad state\"}");
++			return;
++		}
++		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++		umac[17] = 0;
++		if (state == 3) {
++			int h = nvram_get_int("gk_guest_hours");
++			if (h < 1 || h > 168) h = 24;
++			expiry = (long)time(NULL) + (long)h * 3600;
++		}
++		gk_rl_update(umac, state, expiry);	/* same format authority as GK */
++		nvram_commit();
++		notify_rc("restart_gk");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	/* ---------------- WIDEN_POOL: edit dhcp_start/end ---------------- */
++	if (!strcmp(action, "widen_pool")) {
++		char *s = get_cgi("start");
++		char *e = get_cgi("end");
++		unsigned int us, ue, lan_net, lan_mask, bcast;
++		if (!s || !e) { websWrite(stream, "{\"ok\":0,\"error\":\"missing range\"}"); return; }
++		us = rdev_ip2u(s); ue = rdev_ip2u(e);
++		lan_mask = rdev_ip2u(nvram_safe_get("lan_netmask"));
++		lan_net  = rdev_ip2u(nvram_safe_get("lan_ipaddr")) & lan_mask;
++		bcast    = lan_net | ~lan_mask;
++		/* both ends inside the subnet, ordered, and not the net/bcast addresses */
++		if (!us || !ue || us > ue || (us & lan_mask) != lan_net || (ue & lan_mask) != lan_net ||
++		    us <= lan_net || ue >= bcast) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"range not valid for this subnet\"}");
++			return;
++		}
++		nvram_set("dhcp_start", s);
++		nvram_set("dhcp_end", e);
++		nvram_commit();
++		notify_rc("restart_dnsmasq");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
++}
++
+ #ifdef RTCONFIG_REAPER_MCP
+ /* reaper v1.4.0: arming control plane for the read-only MCP advisor (rmcpd).
+  *
+@@ -30462,6 +30980,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_diag.cgi*", "text/plain", no_cache_IE7, do_html_post_and_get, do_reaper_diag_cgi, do_auth },
+ 	{ "reaper_gk.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_gk_cgi, do_auth },
+ 	{ "reaper_warden.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
++	{ "reaper_dev.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
+ #ifdef RTCONFIG_REAPER_MCP
+ 	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
+ #endif
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 8de9b278fb..7b072344a5 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Nenhum tráfego bloqueado registrado ainda.
+ RWDN_50=Ao vivo
+ RWDN_51=Dispensar
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index fd2ebb8a30..58ea33f8ac 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=尚未记录到被拦截的流量。
+ RWDN_50=实时
+ RWDN_51=关闭
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 52e761236f..36479557bd 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Zatím nebyl zaznamenán žádný blokovaný provoz.
+ RWDN_50=Živě
+ RWDN_51=Zavřít
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 39a3652513..1d4fe8dc50 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Der er endnu ikke registreret blokeret trafik.
+ RWDN_50=Live
+ RWDN_51=Afvis
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index c3b3d6bf75..b8e5da1c36 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Noch kein blockierter Datenverkehr erfasst.
+ RWDN_50=Live
+ RWDN_51=Schließen
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 8389024c76..5febdfb4fe 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=No blocked traffic recorded yet.
+ RWDN_50=Live
+ RWDN_51=Dismiss
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 1a0a74632e..92951bc459 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Aún no se ha registrado tráfico bloqueado.
+ RWDN_50=En vivo
+ RWDN_51=Descartar
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 700947723b..cd37c85b37 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Estettyä liikennettä ei ole vielä kirjattu.
+ RWDN_50=Live
+ RWDN_51=Sulje
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 0f6f5a04cc..5c4f7cf7e2 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Aucun trafic bloqué enregistré pour l'instant.
+ RWDN_50=En direct
+ RWDN_51=Ignorer
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index cc65393475..253fd9a73b 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Még nincs rögzített blokkolt forgalom.
+ RWDN_50=Élő
+ RWDN_51=Bezárás
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index c090c77682..63cbf8e0e4 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Nessun traffico bloccato registrato finora.
+ RWDN_50=Live
+ RWDN_51=Ignora
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 74bb7ce1f2..ac65670e4b 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=ブロックされた通信はまだ記録されていません。
+ RWDN_50=ライブ
+ RWDN_51=閉じる
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 0d9b6dc18a..602f1627e8 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=아직 기록된 차단 트래픽이 없습니다.
+ RWDN_50=실시간
+ RWDN_51=닫기
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 3b0d9a2844..cc476186e1 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Belum ada trafik disekat direkodkan.
+ RWDN_50=Langsung
+ RWDN_51=Ketepikan
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index c49b1766b0..7ebaf8e2a4 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -300,6 +300,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+       <a href="/reaper_shell.asp#Reaper_Traffic.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl"><#Traffic_Analyzer#></span></a>
+       <a href="/reaper_shell.asp#Reaper_Advisor.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 1 5 5c0 2-1 3-2 4s-1 2-1 3H10c0-1 0-2-1-3S7 10 7 8a5 5 0 0 1 5-5z"/><path d="M10 20h4"/></svg></span><span class="nl"><#Reaper_c_ai_advisor#></span></a>
+       <a href="/reaper_shell.asp#APP_Installation.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg></span><span class="nl"><#Menu_usb_application#></span></a>
++      <a href="/reaper_shell.asp#Reaper_Devices.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></span><span class="nl"><#RDEV_00#></span></a>
+       <a href="/reaper_shell.asp#Tools_Sysinfo.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span class="nl"><#Reaper_c_system_info#></span></a>
+     </nav>
+ 
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 8e1e28f462..cf5b7fcfaf 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Nog geen geblokkeerd verkeer geregistreerd.
+ RWDN_50=Live
+ RWDN_51=Sluiten
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index baf4738b2c..fa34f0f5cd 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Ingen blokkert trafikk registrert ennå.
+ RWDN_50=Live
+ RWDN_51=Avvis
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index aed1d0aeb3..d16dd40aad 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Nie zarejestrowano jeszcze zablokowanego ruchu.
+ RWDN_50=Na żywo
+ RWDN_51=Odrzuć
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index b0eaf05b9c..fad2c94ee0 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Încă nu a fost înregistrat trafic blocat.
+ RWDN_50=În timp real
+ RWDN_51=Închide
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 685fe5e822..e934891104 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Заблокированный трафик ещё не зафиксир
+ RWDN_50=В реальном времени
+ RWDN_51=Закрыть
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+new file mode 100644
+index 0000000000..93e173d6ca
+--- /dev/null
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -0,0 +1,521 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     reaper v1.9.0: Device Identity Manager. Correlates name/reservation/access/
++     presence per MAC (data from reaper_dev.cgi; 24h traffic from reaper_traffic.cgi).
++     Writes only the stock stores (custom_clientlist / dhcp_staticlist / gk_rl). -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RDEV_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.warn{color:var(--amber);border-color:rgba(217,164,65,.35)}
++.statuspill.danger{color:var(--danger);border-color:rgba(255,59,48,.4)}
++.lede{max-width:74ch;margin:6px 0 14px}
++.lede b{color:var(--bone);font-weight:600}
++.gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;margin:0 0 14px;max-width:1120px}
++.gauge{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.gauge h3{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);margin-bottom:8px}
++.gauge h3 b{color:var(--bone);font-variant-numeric:tabular-nums}
++.bar{height:12px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line-soft);overflow:hidden;display:flex}
++.bar i{display:block;height:100%}
++.bar .dyn{background:#4a4f57}
++.bar .resv{background:var(--amber)}
++.bar .used{background:#4a4f57}
++.gauge.warn .bar{border-color:rgba(217,164,65,.5)}
++.gauge.danger .bar{border-color:rgba(255,59,48,.55)}
++.gauge .legend{display:flex;gap:14px;margin-top:7px;font-size:11px;color:var(--steel);flex-wrap:wrap}
++.gauge .legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:baseline}
++.gauge .legend .warntx{color:var(--amber)}
++.gauge .legend .dangertx{color:var(--danger)}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px;cursor:pointer}
++.stat .n{font-family:var(--hdr);font-weight:700;font-size:26px;color:var(--bone);font-variant-numeric:tabular-nums}
++.stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.stat.attn{border-color:var(--line)}
++.stat.attn .n{color:var(--crimson)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card.hot{border-color:rgba(217,164,65,.4)}
++.card.hot>h2{color:var(--amber);border-bottom-color:rgba(217,164,65,.25)}
++.issue{display:flex;align-items:center;gap:14px;padding:10px 4px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
++.issue:last-child{border-bottom:none}
++.issue .itx{flex:1 1 320px;min-width:0}
++.issue .itx b{color:var(--bone)}
++.issue .itx .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--bone-dim)}
++.issue .sev{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;border-radius:4px;padding:2px 7px;flex:0 0 auto}
++.issue .sev.warn{color:var(--amber);border:1px solid rgba(217,164,65,.4)}
++.issue .sev.crit{color:var(--danger);border:1px solid rgba(255,59,48,.45)}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:7px 14px;cursor:pointer}
++.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:7px 14px;cursor:pointer}
++.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
++.btng[disabled]{opacity:.4;cursor:not-allowed}
++.btnsm{font-size:10.5px;padding:4px 10px}
++.tblbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
++.fchip{font-size:11.5px;border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:3px 12px;color:var(--bone-dim);cursor:pointer;user-select:none}
++.fchip.on{border-color:var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10)}
++.search{margin-left:auto;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone-dim);font-family:var(--body);font-size:12.5px;padding:6px 12px;width:200px}
++.tblwrap{overflow-x:auto}
++table{width:100%;border-collapse:collapse;font-size:12.8px}
++th{font-family:var(--hdr);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
++td{padding:9px 10px;border-bottom:1px solid var(--line-soft);white-space:nowrap;vertical-align:middle}
++tr:last-child td{border-bottom:none}
++.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--steel);margin-right:9px;flex:0 0 8px}
++.dot.on{background:var(--jade);box-shadow:0 0 6px rgba(79,178,134,.6)}
++.dcell{display:flex;align-items:center;min-width:200px}
++.dname{color:var(--bone);font-weight:600;cursor:pointer;border-bottom:1px dashed transparent}
++.dname:hover{border-bottom-color:var(--steel)}
++.dname.unnamed{color:var(--steel);font-style:italic;font-weight:400}
++.dname input{background:var(--panel-2);border:1px solid var(--crimson-deep);border-radius:6px;color:var(--bone);font-family:var(--body);font-size:12.8px;padding:2px 8px;width:150px}
++.src{font-size:9.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;border-radius:4px;padding:1px 5px;border:1px solid var(--line-soft);color:var(--steel);margin-left:8px}
++.chip{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border-radius:4px;padding:1px 6px;border:1px solid var(--line-soft);color:var(--steel);margin-left:6px}
++.chip.rand{color:var(--amber);border-color:rgba(217,164,65,.35)}
++.chip.nolease{color:var(--danger);border-color:rgba(255,59,48,.45)}
++.chip.pin{color:var(--jade);border-color:rgba(79,178,134,.4)}
++.chip.pinout{color:var(--jade);border-color:rgba(79,178,134,.4)}
++.chip.pindead{color:var(--danger);border-color:rgba(255,59,48,.45)}
++td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--steel)}
++td.ip{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--bone-dim)}
++.conn{font-size:10.5px;font-weight:600;letter-spacing:.06em;border-radius:5px;padding:2px 8px;border:1px solid var(--line-soft);color:var(--bone-dim)}
++select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;color:var(--bone-dim);font-family:var(--body);font-size:11.5px;padding:4px 8px}
++.tlink{color:var(--bone-dim);text-decoration:none;font-size:11.5px;border:1px solid var(--line-soft);border-radius:6px;padding:3px 9px}
++.tlink:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
++.lastseen{color:var(--steel);font-size:11.5px}
++.foot{font-size:12px;color:var(--steel);max-width:1120px}
++.foot b{color:var(--bone-dim)}
++.rtip{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.ovl{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;align-items:center;justify-content:center}
++.ovl.show{display:flex}
++.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;max-width:480px;width:92%}
++.modal h3{font-size:16px;margin-bottom:8px}
++.modal p{margin-bottom:10px}
++.modal .mono{font-family:ui-monospace,Consolas,monospace;color:var(--bone)}
++.modal .opts{display:flex;flex-direction:column;gap:10px;margin:14px 0}
++.mopt{border:1px solid var(--line-soft);border-radius:10px;padding:12px 14px;cursor:pointer}
++.mopt:hover{border-color:var(--crimson-deep)}
++.mopt b{color:var(--bone);display:block;margin-bottom:2px}
++.mopt .sub{font-size:12px;color:var(--steel)}
++.mopt.rec{border-color:rgba(79,178,134,.4)}
++.mopt.rec b span{color:var(--jade);font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-left:8px}
++.mopt.blocked{opacity:.5;cursor:not-allowed}
++.mclose{display:flex;justify-content:flex-end;gap:10px;margin-top:6px}
++</style>
++</head>
++<body>
++<div class="pagehead">
++  <h1><#RDEV_00#></h1>
++  <span class="statuspill" id="pill">&nbsp;</span>
++</div>
++<p class="lede"><#RDEV_01#></p>
++
++<div class="gauges">
++  <div class="gauge" id="g_pool">
++    <h3><#RDEV_04#> <b id="g_pool_t"></b></h3>
++    <div class="bar" id="g_pool_bar"></div>
++    <div class="legend" id="g_pool_leg"></div>
++  </div>
++  <div class="gauge" id="g_store">
++    <h3><#RDEV_10#> <b id="g_store_t"></b></h3>
++    <div class="bar" id="g_store_bar"></div>
++    <div class="legend" id="g_store_leg"></div>
++  </div>
++</div>
++
++<div class="stats" id="stats"></div>
++
++<div class="card hot" id="attn_card" style="display:none">
++  <h2><#RDEV_44#></h2>
++  <div id="issues"></div>
++</div>
++
++<div class="card">
++  <h2><#RDEV_19#></h2>
++  <div class="tblbar" id="chips"></div>
++  <div class="tblwrap">
++    <table>
++      <thead><tr>
++        <th><#RDEV_23#></th><th>MAC</th><th><#RDEV_24#></th><th><#RDEV_25#></th>
++        <th><#RDEV_26#></th><th><#RDEV_27#></th><th><#RDEV_28#></th><th></th>
++      </tr></thead>
++      <tbody id="rows"></tbody>
++    </table>
++  </div>
++</div>
++
++<p class="foot"><b><#RDEV_60#></b> <#RDEV_61#></p>
++
++<div class="ovl" id="pin_ovl"><div class="modal" id="pin_modal"></div></div>
++
++<script>
++var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* CSRF token */
++var D = null, TRAF = {}, filter = "all", q = "";
++
++function esc(s){ var d=document.createElement('div'); d.textContent=String(s==null?'':s); return d.innerHTML; }
++/* dict strings for JS use: each value is resolved server-side from the dict
++   (backticks per the sq-token rule); plain ASCII so esc() over them is a no-op */
++var L = {
++  RDEV_02:`<#RDEV_02#>`, RDEV_03:`<#RDEV_03#>`, RDEV_05:`<#RDEV_05#>`, RDEV_06:`<#RDEV_06#>`,
++  RDEV_07:`<#RDEV_07#>`, RDEV_08:`<#RDEV_08#>`, RDEV_09:`<#RDEV_09#>`, RDEV_11:`<#RDEV_11#>`,
++  RDEV_12:`<#RDEV_12#>`, RDEV_13:`<#RDEV_13#>`, RDEV_14:`<#RDEV_14#>`, RDEV_15:`<#RDEV_15#>`,
++  RDEV_16:`<#RDEV_16#>`, RDEV_17:`<#RDEV_17#>`, RDEV_18:`<#RDEV_18#>`, RDEV_20:`<#RDEV_20#>`,
++  RDEV_21:`<#RDEV_21#>`, RDEV_22:`<#RDEV_22#>`, RDEV_29:`<#RDEV_29#>`, RDEV_30:`<#RDEV_30#>`,
++  RDEV_31:`<#RDEV_31#>`, RDEV_32:`<#RDEV_32#>`, RDEV_33:`<#RDEV_33#>`, RDEV_34:`<#RDEV_34#>`,
++  RDEV_35:`<#RDEV_35#>`, RDEV_36:`<#RDEV_36#>`, RDEV_37:`<#RDEV_37#>`, RDEV_38:`<#RDEV_38#>`,
++  RDEV_39:`<#RDEV_39#>`, RDEV_40:`<#RDEV_40#>`, RDEV_41:`<#RDEV_41#>`, RDEV_42:`<#RDEV_42#>`,
++  RDEV_43:`<#RDEV_43#>`, RDEV_45:`<#RDEV_45#>`, RDEV_46:`<#RDEV_46#>`, RDEV_47:`<#RDEV_47#>`,
++  RDEV_48:`<#RDEV_48#>`, RDEV_49:`<#RDEV_49#>`, RDEV_50:`<#RDEV_50#>`, RDEV_51:`<#RDEV_51#>`,
++  RDEV_65:`<#RDEV_65#>`, RDEV_66:`<#RDEV_66#>`, RDEV_67:`<#RDEV_67#>`, RDEV_68:`<#RDEV_68#>`,
++  RDEV_69:`<#RDEV_69#>`, RDEV_70:`<#RDEV_70#>`, RDEV_71:`<#RDEV_71#>`, RDEV_72:`<#RDEV_72#>`,
++  RDEV_73:`<#RDEV_73#>`, RDEV_74:`<#RDEV_74#>`, RDEV_75:`<#RDEV_75#>`, RDEV_76:`<#RDEV_76#>`,
++  RDEV_77:`<#RDEV_77#>`, RDEV_78:`<#RDEV_78#>`, RDEV_79:`<#RDEV_79#>`, RDEV_80:`<#RDEV_80#>`,
++  RDEV_81:`<#RDEV_81#>`, RDEV_82:`<#RDEV_82#>`, RDEV_83:`<#RDEV_83#>`, RDEV_84:`<#RDEV_84#>`,
++  RDEV_85:`<#RDEV_85#>`, RDEV_86:`<#RDEV_86#>`, RDEV_62:`<#RDEV_62#>`, RDEV_63:`<#RDEV_63#>`,
++  RDEV_64:`<#RDEV_64#>`
++};
++function T(id){ return L[id] || ''; }
++function ago(sec){
++  if(sec < 90) return `<#RDEV_29#>`;
++  if(sec < 3600) return Math.round(sec/60) + ' ' + `<#RDEV_62#>`;
++  if(sec < 172800) return Math.round(sec/3600) + ' ' + `<#RDEV_63#>`;
++  return Math.round(sec/86400) + ' ' + `<#RDEV_64#>`;
++}
++function fmtBytes(b){
++  if(b >= 1073741824) return (b/1073741824).toFixed(1) + ' GB';
++  if(b >= 1048576) return Math.round(b/1048576) + ' MB';
++  if(b >= 1024) return Math.round(b/1024) + ' KB';
++  return b > 0 ? b + ' B' : '&mdash;';
++}
++function poolMath(){
++  var p = D.pool;
++  var resvIn = D.devices.filter(function(d){ return d.resv && d.resv_in_pool && !d.orphan; }).length;
++  var dyn = D.devices.filter(function(d){ return d.online && d.ip && !d.resv && !d.nolease; }).length;
++  var free = p.size - resvIn - dyn; if(free < 0) free = 0;
++  return {size:p.size, resvIn:resvIn, dyn:dyn, free:free};
++}
++
++function xGet(url, cb){
++  var x = new XMLHttpRequest();
++  x.open('GET', url + '&_=' + Date.now(), true);
++  x.timeout = 12000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    var j = null;
++    if(x.status === 200){ try{ j = JSON.parse(x.responseText); }catch(e){} }
++    cb(j);
++  };
++  x.send();
++}
++function xAct(url, cb){
++  xGet(url + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){ if(cb) cb(j); });
++}
++
++function loadAll(){
++  xGet('/reaper_dev.cgi?action=status', function(j){
++    if(!j){ document.getElementById('rows').innerHTML = '<tr><td colspan="8" style="color:var(--danger)">'+esc(T('RDEV_65'))+'</td></tr>'; return; }
++    D = j;
++    render();
++    /* enrich 24h traffic from the existing rtrafd feed - no C JSON parsing */
++    xGet('/reaper_traffic.cgi?f=m5', function(m){
++      TRAF = {};
++      if(m && m.clients){
++        Object.keys(m.clients).forEach(function(k){
++          if(k.indexOf(':') < 0) return;  /* IP-fallback rows are not MACs */
++          var arr = m.clients[k].d || [], t = 0;
++          for(var i=0;i<arr.length;i++){ t += (arr[i][0]||0) + (arr[i][1]||0); }
++          TRAF[k.toUpperCase()] = t;
++        });
++      }
++      renderRows();
++    });
++  });
++}
++
++function render(){
++  var el, pm = poolMath();
++  var pg = document.getElementById('g_pool');
++  var warn = pm.free <= Math.max(3, Math.round(pm.size*0.1));
++  var crit = pm.free === 0 && pm.size > 0;
++  pg.className = 'gauge' + (crit ? ' danger' : (warn ? ' warn' : ''));
++  document.getElementById('g_pool_t').textContent =
++    D.pool.start + ' - ' + D.pool.end + '  -  ' + pm.free + ' / ' + pm.size + ' ' + T('RDEV_05');
++  document.getElementById('g_pool_bar').innerHTML = pm.size > 0 ?
++    ('<i class="dyn" style="width:' + (pm.dyn/pm.size*100) + '%"></i>' +
++     '<i class="resv" style="width:' + (pm.resvIn/pm.size*100) + '%"></i>') : '';
++  document.getElementById('g_pool_leg').innerHTML =
++    '<span><i style="background:#4a4f57"></i>' + esc(T('RDEV_06')) + ' ' + pm.dyn + '</span>' +
++    '<span><i style="background:var(--amber)"></i>' + esc(T('RDEV_07')) + ' ' + pm.resvIn + '</span>' +
++    '<span><i style="background:var(--panel-2);border:1px solid var(--line-soft)"></i>' + esc(T('RDEV_05')) + ' ' + pm.free + '</span>' +
++    (crit ? '<span class="dangertx">' + esc(T('RDEV_08')) + '</span>'
++     : (warn ? '<span class="warntx">' + esc(T('RDEV_09')) + '</span>' : ''));
++
++  var st = D.store, pct = st.cap ? st.used/st.cap : 0;
++  var sg = document.getElementById('g_store');
++  sg.className = 'gauge' + (pct > .95 ? ' danger' : (pct > .8 ? ' warn' : ''));
++  document.getElementById('g_store_t').textContent = st.used + ' / ' + st.cap + '  -  ' + st.entries + ' ' + T('RDEV_11');
++  document.getElementById('g_store_bar').innerHTML = '<i class="used" style="width:' + (pct*100) + '%"></i>';
++  document.getElementById('g_store_leg').innerHTML = pct > .95
++    ? '<span class="dangertx">' + esc(T('RDEV_13')) + '</span>'
++    : (pct > .8 ? '<span class="warntx">' + esc(T('RDEV_12')) + '</span>' : '<span>nvram dhcp_staticlist</span>');
++
++  /* attention list derived from device flags + pool state */
++  var issues = buildIssues();
++  var pill = document.getElementById('pill');
++  var nIssues = issues.length;
++  if(nIssues){ pill.className = 'statuspill ' + (issues.some(function(i){return i.sev==='crit';}) ? 'danger' : 'warn'); pill.textContent = nIssues + ' ' + T('RDEV_03'); }
++  else { pill.className = 'statuspill'; pill.textContent = T('RDEV_02'); }
++
++  var s = {
++    all: D.devices.length,
++    online: D.devices.filter(function(d){return d.online;}).length,
++    unnamed: D.devices.filter(function(d){return !d.name;}).length,
++    resv: D.devices.filter(function(d){return d.resv;}).length,
++    rand: D.devices.filter(function(d){return d.rand;}).length,
++    attn: issues.length
++  };
++  document.getElementById('stats').innerHTML =
++    '<div class="stat" data-f="all"><div class="n">' + s.all + '</div><div class="l">' + esc(T('RDEV_14')) + '</div></div>' +
++    '<div class="stat" data-f="online"><div class="n">' + s.online + '</div><div class="l">' + esc(T('RDEV_15')) + '</div></div>' +
++    '<div class="stat" data-f="unnamed"><div class="n">' + s.unnamed + '</div><div class="l">' + esc(T('RDEV_16')) + '</div></div>' +
++    '<div class="stat" data-f="resv"><div class="n">' + s.resv + '</div><div class="l">' + esc(T('RDEV_17')) + '</div></div>' +
++    '<div class="stat" data-f="rand"><div class="n">' + s.rand + '</div><div class="l">' + esc(T('RDEV_18')) + '</div></div>' +
++    '<div class="stat' + (s.attn?' attn':'') + '" data-f="attn"><div class="n">' + s.attn + '</div><div class="l">' + esc(T('RDEV_03')) + '</div></div>';
++  Array.prototype.forEach.call(document.querySelectorAll('#stats .stat'), function(nn){
++    nn.onclick = function(){ filter = nn.getAttribute('data-f'); render(); };
++  });
++
++  var ic = document.getElementById('attn_card');
++  if(issues.length){
++    ic.style.display = '';
++    el = '';
++    issues.forEach(function(iss, idx){
++      el += '<div class="issue"><span class="sev ' + iss.sev + '">' + (iss.sev==='crit'?esc(T('RDEV_45')):esc(T('RDEV_46'))) + '</span>' +
++            '<div class="itx">' + iss.html + '</div>' +
++            iss.actions.map(function(a){ return '<button class="btng btnsm" data-ai="' + idx + '" data-aid="' + a.id + '">' + esc(a.label) + '</button>'; }).join('') +
++            '</div>';
++    });
++    document.getElementById('issues').innerHTML = el;
++    Array.prototype.forEach.call(document.querySelectorAll('#issues button'), function(b){
++      b.onclick = function(){ fixIssue(issues[+b.getAttribute('data-ai')], b.getAttribute('data-aid')); };
++    });
++  } else ic.style.display = 'none';
++
++  var chips = [['all','RDEV_66'],['online','RDEV_15'],['offline','RDEV_20'],['unnamed','RDEV_16'],['resv','RDEV_17'],['rand','RDEV_67'],['blocked','RDEV_21'],['attn','RDEV_03']];
++  el = '';
++  chips.forEach(function(c){ el += '<span class="fchip' + (filter===c[0]?' on':'') + '" data-f="' + c[0] + '">' + esc(T(c[1])) + '</span>'; });
++  el += '<input class="search" id="q" placeholder="' + esc(T('RDEV_22')) + '" value="' + esc(q) + '">';
++  document.getElementById('chips').innerHTML = el;
++  Array.prototype.forEach.call(document.querySelectorAll('#chips .fchip'), function(nn){
++    nn.onclick = function(){ filter = nn.getAttribute('data-f'); render(); };
++  });
++  var qi = document.getElementById('q');
++  qi.oninput = function(){ q = qi.value; renderRows(); };
++
++  renderRows();
++}
++
++function buildIssues(){
++  var out = [], pm = poolMath();
++  var orphans = D.devices.filter(function(d){ return d.orphan; });
++  if(orphans.length){
++    out.push({ sev:'crit',
++      html: '<b>' + orphans.length + '</b> ' + esc(T('RDEV_48')),
++      actions: [{id:'unpin_orphans', label:T('RDEV_49')}], macs: orphans.map(function(d){return d.mac;}) });
++  }
++  /* duplicate reservations grouped by ip */
++  var seenDup = {};
++  D.devices.forEach(function(d){
++    if(d.dup && d.resv_ip && !seenDup[d.resv_ip]){
++      seenDup[d.resv_ip] = 1;
++      out.push({ sev:'crit',
++        html: esc(T('RDEV_50')) + ' <span class="mono">' + esc(d.resv_ip) + '</span>',
++        actions: [{id:'unpin_dup', label:T('RDEV_49')}], macs: D.devices.filter(function(x){return x.resv_ip===d.resv_ip;}).map(function(x){return x.mac;}) });
++    }
++  });
++  var noleases = D.devices.filter(function(d){ return d.nolease; });
++  if(noleases.length && pm.free === 0){
++    out.push({ sev:'crit',
++      html: '<b>' + noleases.length + '</b> ' + esc(T('RDEV_51')),
++      actions: [{id:'widen', label:T('RDEV_47')}], macs: noleases.map(function(d){return d.mac;}) });
++  }
++  return out;
++}
++
++function visible(d){
++  if(filter==='online' && !d.online) return false;
++  if(filter==='offline' && d.online) return false;
++  if(filter==='unnamed' && d.name) return false;
++  if(filter==='resv' && !d.resv) return false;
++  if(filter==='rand' && !d.rand) return false;
++  if(filter==='blocked' && d.gk !== 0) return false;
++  if(filter==='attn' && !(d.orphan || d.dup || d.nolease)) return false;
++  if(q){
++    var hay = ((d.name||'') + ' ' + d.mac + ' ' + (d.ip||'') + ' ' + (d.host||'')).toLowerCase();
++    if(hay.indexOf(q.toLowerCase()) < 0) return false;
++  }
++  return true;
++}
++
++function renderRows(){
++  if(!D){ return; }
++  var now = D.now, el = '';
++  D.devices.forEach(function(d, i){
++    if(!visible(d)) return;
++    var nameHtml = d.name
++      ? '<span class="dname rtip" data-i="' + i + '" title="' + esc(T('RDEV_68')) + '">' + esc(d.name) + '</span><span class="src">' + esc(d.src) + '</span>'
++      : '<span class="dname unnamed rtip" data-i="' + i + '" title="' + esc(T('RDEV_69')) + '">' + (d.host ? esc(d.host) : esc(T('RDEV_42'))) + '</span><span class="src">' + (d.host ? 'lease' : '&mdash;') + '</span>';
++    var chipsHtml = (d.rand ? '<span class="chip rand" title="' + esc(T('RDEV_70')) + '">' + esc(T('RDEV_36')) + '</span>' : '') +
++                    (d.nolease ? '<span class="chip nolease" title="' + esc(T('RDEV_71')) + '">' + esc(T('RDEV_37')) + '</span>' : '');
++    var ipHtml = d.nolease ? '<span style="color:var(--danger)">&mdash;</span>'
++               : (d.ip ? esc(d.ip) : '<span style="color:var(--steel)">&mdash;</span>');
++    if(d.resv){
++      if(d.orphan) ipHtml += '<span class="chip pindead" title="' + esc(T('RDEV_72')) + '">' + esc(T('RDEV_40')) + '</span>';
++      else if(d.dup) ipHtml += '<span class="chip pindead" title="' + esc(T('RDEV_73')) + '">' + esc(T('RDEV_41')) + '</span>';
++      else ipHtml += '<span class="chip ' + (d.resv_in_pool ? 'pin' : 'pinout') + '" title="' + esc(d.resv_in_pool ? T('RDEV_74') : T('RDEV_75')) + '">' + esc(d.resv_in_pool ? T('RDEV_38') : T('RDEV_39')) + '</span>';
++    }
++    var conn = d.wired ? T('RDEV_43') : (d.band ? d.band + ' GHz' : '&mdash;');
++    var gksel = D.gk_enable
++      ? '<select class="acc" data-i="' + i + '">' +
++        [[1,T('RDEV_30')],[2,T('RDEV_31')],[3,T('RDEV_32')],[0,T('RDEV_33')]].map(function(o){
++          return '<option value="' + o[0] + '"' + (d.gk===o[0]?' selected':'') + '>' + esc(o[1]) + '</option>';
++        }).join('') + '</select>'
++      : '<span style="color:var(--steel);font-size:11.5px">&mdash;</span>';
++    var traf = TRAF[d.mac] || 0;
++    el += '<tr>' +
++      '<td><div class="dcell"><span class="dot' + (d.online?' on':'') + '"></span><span>' + nameHtml + chipsHtml + '</span></div></td>' +
++      '<td class="mac">' + esc(d.mac) + '</td>' +
++      '<td class="ip">' + ipHtml + '</td>' +
++      '<td><span class="conn">' + esc(conn) + '</span></td>' +
++      '<td>' + gksel + '</td>' +
++      '<td class="lastseen">' + (d.online ? '<span style="color:var(--jade)">' + esc(T('RDEV_29')) + '</span>' : (d.last ? ago(now - d.last) : '&mdash;')) + '</td>' +
++      '<td><a class="tlink" href="#reaper_shell.asp" data-traf="' + esc(d.mac) + '">' + fmtBytes(traf) + '</a></td>' +
++      '<td>' + (d.resv
++          ? '<button class="btng btnsm" data-unpin="' + i + '">' + esc(T('RDEV_35')) + '</button>'
++          : (d.ip ? '<button class="btng btnsm"' + (D.store.used/D.store.cap > .95 ? ' disabled title="' + esc(T('RDEV_13')) + '"' : '') + ' data-pin="' + i + '">' + esc(T('RDEV_34')) + '</button>' : '')) +
++      '</td></tr>';
++  });
++  document.getElementById('rows').innerHTML = el || '<tr><td colspan="8" style="color:var(--steel)">' + esc(T('RDEV_76')) + '</td></tr>';
++  wireRows();
++  if(window.reaperTips) window.reaperTips(document.getElementById('rows'));
++}
++
++function wireRows(){
++  Array.prototype.forEach.call(document.querySelectorAll('#rows .dname'), function(n){
++    n.onclick = function(){ editName(+n.getAttribute('data-i'), n); };
++  });
++  Array.prototype.forEach.call(document.querySelectorAll('#rows select.acc'), function(n){
++    n.onchange = function(){ setGk(+n.getAttribute('data-i'), n.value); };
++  });
++  Array.prototype.forEach.call(document.querySelectorAll('#rows [data-pin]'), function(n){
++    n.onclick = function(){ pinAsk(+n.getAttribute('data-pin')); };
++  });
++  Array.prototype.forEach.call(document.querySelectorAll('#rows [data-unpin]'), function(n){
++    n.onclick = function(){ unpin(+n.getAttribute('data-unpin')); };
++  });
++  Array.prototype.forEach.call(document.querySelectorAll('#rows [data-traf]'), function(n){
++    n.onclick = function(){ return trafGo(n.getAttribute('data-traf')); };
++  });
++}
++
++function editName(i, node){
++  var d = D.devices[i], inp = document.createElement('input');
++  inp.value = d.name || ''; node.replaceWith(inp); inp.focus();
++  var done = false;
++  function commit(){
++    if(done) return; done = true;
++    var v = inp.value.replace(/[<>]/g, '').slice(0, 32).trim();
++    xAct('/reaper_dev.cgi?action=set_name&mac=' + encodeURIComponent(d.mac) + '&name=' + encodeURIComponent(v), function(){ loadAll(); });
++  }
++  inp.onblur = commit;
++  inp.onkeydown = function(e){ if(e.key==='Enter') commit(); if(e.key==='Escape'){ done=true; render(); } };
++}
++function setGk(i, v){
++  xAct('/reaper_dev.cgi?action=set_state&mac=' + encodeURIComponent(D.devices[i].mac) + '&state=' + encodeURIComponent(v), function(){ loadAll(); });
++}
++function trafGo(mac){ top.location.href = '/reaper_shell.asp#Reaper_Traffic.asp'; return false; }
++function unpin(i){
++  xAct('/reaper_dev.cgi?action=unpin&mac=' + encodeURIComponent(D.devices[i].mac), function(){ loadAll(); });
++}
++
++function pinAsk(i){
++  var d = D.devices[i], pm = poolMath();
++  var tight = pm.free <= Math.max(3, Math.round(pm.size*0.1));
++  var m = document.getElementById('pin_modal');
++  var outIp = D.next_free_out ? (D.pool.subnet + '.' + D.next_free_out) : '';
++  var rec = tight ? '<span>' + esc(T('RDEV_77')) + '</span>' : '';
++  var norec = tight ? '' : '<span>' + esc(T('RDEV_78')) + '</span>';
++  m.innerHTML = '<h3>' + esc(T('RDEV_79')) + ' ' + esc(d.name || d.host || d.mac) + '</h3>' +
++    '<p>' + esc(T('RDEV_80')) + ' <span class="mono">' + esc(d.mac) + '</span></p>' +
++    '<div class="opts">' +
++    '<div class="mopt' + (tight ? '' : ' rec') + (pm.free===0 ? ' blocked' : '') + '" data-in="1">' +
++      '<b>' + esc(T('RDEV_81')) + ' <span class="mono">' + esc(d.ip) + '</span>' + norec + '</b>' +
++      '<div class="sub">' + esc(T('RDEV_82')) + (pm.free===0 ? ' <b style="color:var(--danger)">' + esc(T('RDEV_08')) + '</b>' : '') + '</div></div>' +
++    (outIp ? ('<div class="mopt' + (tight ? ' rec' : '') + '" data-in="0">' +
++      '<b>' + esc(T('RDEV_83')) + ' <span class="mono">' + esc(outIp) + '</span>' + rec + '</b>' +
++      '<div class="sub">' + esc(T('RDEV_84')) + '</div></div>') : '') +
++    '</div>' +
++    '<div class="mclose"><button class="btng" id="pin_cancel">' + esc(T('RDEV_85')) + '</button></div>';
++  Array.prototype.forEach.call(m.querySelectorAll('.mopt'), function(o){
++    if(o.className.indexOf('blocked') >= 0) return;
++    o.onclick = function(){ pinDo(i, o.getAttribute('data-in') === '1'); };
++  });
++  document.getElementById('pin_cancel').onclick = pinClose;
++  document.getElementById('pin_ovl').className = 'ovl show';
++}
++function pinDo(i, inPool){
++  var d = D.devices[i];
++  var ip = inPool ? d.ip : (D.pool.subnet + '.' + D.next_free_out);
++  pinClose();
++  xAct('/reaper_dev.cgi?action=set_reserve&mac=' + encodeURIComponent(d.mac) + '&ip=' + encodeURIComponent(ip), function(j){
++    if(j && j.ok === 0 && j.error) alert(j.error);
++    loadAll();
++  });
++}
++function pinClose(){ document.getElementById('pin_ovl').className = 'ovl'; }
++
++function fixIssue(iss, act){
++  if(act === 'widen'){
++    if(!confirm(T('RDEV_86'))) return;
++    /* widen to the whole usable subnet minus .1 (router): start = .2, end = last-1 */
++    var base = D.pool.subnet;
++    xAct('/reaper_dev.cgi?action=widen_pool&start=' + encodeURIComponent(base + '.2') + '&end=' + encodeURIComponent(base + '.254'), function(){ loadAll(); });
++    return;
++  }
++  /* unpin_orphans / unpin_dup: remove each affected reservation */
++  var macs = iss.macs.slice(), done = 0;
++  if(!macs.length){ return; }
++  macs.forEach(function(mac){
++    xAct('/reaper_dev.cgi?action=unpin&mac=' + encodeURIComponent(mac), function(){
++      if(++done === macs.length) loadAll();
++    });
++  });
++}
++
++if(document.readyState !== 'loading') loadAll();
++else document.addEventListener('DOMContentLoaded', loadAll);
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index adb0262798..b2f6a0a65f 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Blokiranega prometa še ni zabeleženega.
+ RWDN_50=V živo
+ RWDN_51=Opusti
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 5c85652a32..634c18e10f 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Ingen blockerad trafik har registrerats ännu.
+ RWDN_50=Live
+ RWDN_51=Avfärda
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index e42e8d36ff..78cd9c9a0a 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=ยังไม่มีการบันทึกทราฟฟิก
+ RWDN_50=สด
+ RWDN_51=ปิด
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 671e321e0c..f0fca41ee1 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Henüz engellenen trafik kaydedilmedi.
+ RWDN_50=Canlı
+ RWDN_51=Kapat
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index dc18977e42..9cb9bdb6ad 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=尚未記錄任何已封鎖的流量。
+ RWDN_50=即時
+ RWDN_51=關閉
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 572a389ac0..bb3b0d8f9c 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5841,3 +5841,82 @@ RWDN_49=Заблокованого трафіку ще не зафіксован
+ RWDN_50=У реальному часі
+ RWDN_51=Закрити
+ RWDN_52=Nothing was saved. These entries are not valid IPv4/IPv6 addresses or CIDRs - fix or remove them and save again:
++RDEV_00=Devices
++RDEV_01=Every device on the network, correlated in one place: identity (name and where it came from), address (lease or reservation), access (Gatekeeper state), and presence (band, last seen, traffic). Actions apply in place and write to the same stores the rest of the firmware reads.
++RDEV_02=Network legible
++RDEV_03=needs attention
++RDEV_04=DHCP pool
++RDEV_05=free
++RDEV_06=Dynamic leases
++RDEV_07=Reservations in pool
++RDEV_08=Pool exhausted - new devices cannot join
++RDEV_09=Running low - pin new reservations outside the pool
++RDEV_10=Reservation store
++RDEV_11=entries
++RDEV_12=Store nearly full (nvram limit)
++RDEV_13=Reservation store full - remove unused entries before pinning more
++RDEV_14=Devices
++RDEV_15=Online
++RDEV_16=Unnamed
++RDEV_17=Reserved
++RDEV_18=Randomized MAC
++RDEV_19=Device list
++RDEV_20=Offline
++RDEV_21=Blocked
++RDEV_22=Search name / MAC / IP
++RDEV_23=Device
++RDEV_24=IP address
++RDEV_25=Connection
++RDEV_26=Access
++RDEV_27=Last seen
++RDEV_28=Traffic 24h
++RDEV_29=online
++RDEV_30=Full access
++RDEV_31=Internet only
++RDEV_32=Guest
++RDEV_33=Blocked
++RDEV_34=Pin IP
++RDEV_35=Unpin
++RDEV_36=Private addr
++RDEV_37=No lease
++RDEV_38=Pinned
++RDEV_39=Pinned - out of pool
++RDEV_40=Pin inactive
++RDEV_41=Pin conflict
++RDEV_42=unnamed device
++RDEV_43=Wired
++RDEV_44=Needs attention
++RDEV_45=Critical
++RDEV_46=Warning
++RDEV_47=Widen pool
++RDEV_48=reservation(s) point outside the current LAN subnet and are ignored - the devices now get random addresses.
++RDEV_49=Remove
++RDEV_50=Duplicate reservation on
++RDEV_51=device(s) are associated to Wi-Fi but cannot get an address - the pool is full.
++RDEV_60=Honest limits:
++RDEV_61=names and reservations key on the MAC address, which is identity, not authentication - a device using a private (randomized) address reappears as a new MAC until that feature is turned off for this network. Access states are enforced by Gatekeeper; this page is the lens, not a second engine.
++RDEV_62=min ago
++RDEV_63=h ago
++RDEV_64=d ago
++RDEV_65=Device data unavailable - try again.
++RDEV_66=All
++RDEV_67=Randomized
++RDEV_68=Click to rename
++RDEV_69=Click to name this device
++RDEV_70=Private (randomized) address: this device may reappear as a new MAC.
++RDEV_71=Associated to Wi-Fi but holds no DHCP lease - the pool has no free address.
++RDEV_72=Reservation is outside the current LAN subnet - dnsmasq ignores it.
++RDEV_73=Two devices reserve this address.
++RDEV_74=Reserved inside the DHCP pool (uses a pool slot).
++RDEV_75=Reserved outside the pool (recommended).
++RDEV_76=No devices match this filter.
++RDEV_77=recommended
++RDEV_78=no disruption
++RDEV_79=Pin
++RDEV_80=Reserve a fixed address for
++RDEV_81=Keep current address
++RDEV_82=Inside the DHCP pool - uses one free pool slot.
++RDEV_83=Move outside the pool to
++RDEV_84=Keeps the pool free for new devices. The device moves to this address at its next lease renewal.
++RDEV_85=Cancel
++RDEV_86=Widen the DHCP pool to cover the usable subnet (.2 to .254)? This changes the DHCP start/end addresses.
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 1cd8584a4d..0d4f24aa14 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -225,6 +225,7 @@ var ICONS = {
+   menu_GameBoost:      '<svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="9" rx="4"/><path d="M8 12v-2M7 12h2M15.5 12h.01M18 13.5h.01"/></svg>',
+   menu_OpenNAT:        '<svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg>',
+   menu_APP:            '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg>',
++  menu_ReaperDevices:  '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>',
+   menu_AiCloud:        '<svg viewBox="0 0 24 24"><path d="M7 17a4 4 0 0 1 .6-8 5 5 0 0 1 9.6 1.4A3.5 3.5 0 0 1 17 17z"/></svg>',
+   menu_Tool:           '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+   menu_Wireless:       '<svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg>',
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index ebf2c5b308..baf986c9df 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -207,7 +207,16 @@ define(function(){
+ 					{url: "cloud_settings.asp", tabName: "<#Settings#>"},
+ 					{url: "cloud_syslog.asp", tabName: "<#Log#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+-				] 
++				]
++			},
++			/* reaper v1.9.0: Device Identity Manager - between USB Application and System Info */
++			{
++				menuName: "<#RDEV_00#>",
++				index: "menu_ReaperDevices",
++				tab: [
++					{url: "Reaper_Devices.asp", tabName: "<#RDEV_00#>"},
++					{url: "NULL", tabName: "__INHERIT__"}
++				]
+ 			},
+ 			{
+ 				menuName: "<#Reaper_c_system_info#>",
+-- 
+2.25.1
+

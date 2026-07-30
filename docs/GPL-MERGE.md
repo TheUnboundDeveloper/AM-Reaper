@@ -306,15 +306,15 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 215 patches, `0215` = v1.7.7;
-it was 211 at v1.7.4, and the 190-patch v1.6.6 run on 2026-07-19 was validated
+**Patch-series regeneration recipe (the series is now at 261 patches, `0261` = v1.9.7;
+it was 215 at v1.7.7, and the 190-patch v1.6.6 run on 2026-07-19 was validated
 `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching
 `release/src/router` tree hash — as were the 181-patch v1.6.0, 178-patch v1.5.9 and
-150-patch v1.5.0a runs. NOTE: the four newest patches (`0212`–`0215`, v1.7.5–v1.7.7)
-were **appended** to the existing series, not produced by a full regeneration, to avoid
+150-patch v1.5.0a runs. NOTE: every patch since `0211` (`0212`–`0261`, v1.7.5–v1.9.7)
+was **appended** per-version to the existing series, not produced by a full regeneration, to avoid
 re-introducing an old absolute build-path reference that a full regen would pull back in
 from an unscrubbed commit message. When you do run a full regeneration, expect gapless
-renumbering to `0215` and re-apply the message scrub below. NOTE the v1.6.0 sync also
+renumbering to `0261` and re-apply the message scrub below. NOTE the v1.6.0 sync also
 cherry-picked the `radio-count` dashboard + the v1.6.0 commit onto `be96u-only` — they
 had been built on the `rt-be86u` branch; always confirm `git branch --show-current` is
 `be96u-only` before an RT-BE96U build/commit.) One extra step since the 2026-07-13

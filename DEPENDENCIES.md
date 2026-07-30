@@ -15,7 +15,7 @@ input's provenance and license status. Companion to
 | Input | Pin | Source | License |
 |---|---|---|---|
 | Upstream base tree | tag `3006.102.8-beta2`, commit `a7ebfa133a` | <https://github.com/RMerl/asuswrt-merlin.ng> | GPL v2 (GPL parts) + proprietary vendor components (see below) |
-| Reaper patch series | `patches/0001`–`0215` (v1.0 → v1.7.7; `0215` = v1.7.7) | this repo | GPL v2 ([`LICENSE.reaper`](LICENSE.reaper)) |
+| Reaper patch series | `patches/0001`–`0261` (v1.0 → v1.9.7; `0261` = v1.9.7) | this repo | GPL v2 ([`LICENSE.reaper`](LICENSE.reaper)) |
 
 Applying the series to the pinned commit with `git am --keep-cr` reproduces the
 Reaper source tree exactly (see [`patches/README.md`](patches/README.md)).

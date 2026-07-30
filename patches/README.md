@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**226 patches, v1.0 → v1.7.8**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**261 patches, v1.0 → v1.9.7**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (226 patches, v1.0 → v1.7.8)
+## What the series contains (261 patches, v1.0 → v1.9.7)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -198,6 +198,101 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
   SMB3-only + required encryption).
 - `0226` — **v1.7.8**: version bump `EXTENDNO` → `Reaper_v1.7.8`.
 
+### v1.7.9 — VPN buttons restored, reliable speed test, 2.4 GHz name fix (`0227`–`0230`)
+- `0227`–`0229` — dashboard 2.4-GHz SSID when the band is excluded from MLO (fronthaul-SSID
+  fallback), device-glyph recolor **scoped** to the Network Map View List (fixes the VPN client
+  page's red-block buttons), and a single silent speed-test auto-retry on a transient cold-start
+  failure.
+- `0230` — version bump `EXTENDNO` → `Reaper_v1.7.9`.
+
+### v1.8.0a — Reaper Warden threat/geo firewall + hardening pass + Samba CVE backport (`0231`–`0234`)
+- `0231` — **Reaper Warden**: an optional, default-OFF `ipset` firewall layer — threat feeds
+  (FireHOL/Feodo/Spamhaus DROP/DShield), country block/allow by CIDR, manual block/allow lists,
+  strict anti-lockout, JFFS-cached and auto-re-arming.
+- `0232`–`0233` — Batch-A verified audit hardening (format-string, VPN-Fusion / WireGuard /
+  Wi-Fi-scan shell-injection, web-server path check, login open-redirect guard, Gatekeeper-script
+  input sanitizing) + an `rwarden.c` build fix.
+- `0234` — **Samba 4.15.13a**: backport CVE-2025-9640 (`streams_xattr` uninitialized-memory
+  disclosure) + version suffix. *(RT-BE96U — the model on Samba 4.)*
+
+### v1.8.1 — Gatekeeper anti-lockout + boot/teardown logging (`0235`–`0240`)
+- `0235`–`0238` — boot efficiency + a syslog trail: skip the phy power-cycle + 10 s wait on
+  reboot, log `start_services`/`stop_services` phase boundaries and the LAN boot/teardown
+  boundaries + Warden feed-fetch failures, and an IPv6 status-icon fix on native DHCPv6.
+- `0239` — version bump `EXTENDNO` → `Reaper_v1.8.1`.
+- `0240` — Gatekeeper **re-grandfathers** all known devices on every enable (not just those
+  talking at that instant), so a sleeping device can't be stranded on a later toggle.
+
+### v1.8.2 → v1.8.3 — audit-remediation arc: high-impact fixes + batches (`0241`–`0243`)
+- `0241` — **v1.8.2**: the three highest-impact findings from the 73-finding adversarial audit
+  (IPsec profile-name → root shell, port-forward field splicing a firewall rule, a file-read
+  error path freeing the wrong pointer) + a new IPv6 dashboard indicator; version bump.
+- `0242`–`0243` — **v1.8.3**: fix the v1.8.2 dashboard-render regression (hoist `v6Up()` to the
+  right scope; IPv6 icon also lights on a working gateway) + audit batches B/C/D/E (Warden
+  anti-lockout subnet + fail-safe blocklist swap, login-redirect exclusions, i18n DE/FR
+  download-cap wording, Samba build-stamp keyed to patch contents).
+
+### v1.8.4 → v1.8.6 — latent + low-severity audit batches, independent-review sign-off (`0244`–`0245`)
+- `0244` — records the shipped **v1.8.4** (12 latent issues), **v1.8.5** (18 low-severity items),
+  and **v1.8.6** (two independent adversarial reviews found no live bugs; five defense-in-depth
+  tightenings closed) audit-remediation rungs.
+- `0245` — BE96U dashboard: 6 GHz made conditional (`HAS_6G`) for cross-model correctness.
+
+### v1.8.6a → v1.8.6d — fan-out fixes: i18n quote-safety, inject buffering, GT-BE98 gate (`0246`–`0250`)
+- `0246`–`0247` — **v1.8.6a/b**: www i18n quote-safety — dict tokens must not sit inside single
+  quotes; BE96U-only follow-up fix.
+- `0248` — `reaper_diag`: replace a field-observed bridge-id example.
+- `0249` — **v1.8.6c**: `httpd`/`reaper_inject` buffer-then-inject (fixes stock-page garble).
+- `0250` — **v1.8.6d**: restore the GT-BE98 sysinfo quad-band gate into shared canon (clobber-proof).
+
+### v1.8.7 — Reaper Warden: IPv6 dual-stack + per-country block stats (`0251`)
+- `0251` — parallel IPv6 threat/geo stack (v6 feeds, chains, CIDR validation, anti-lockout) + a
+  live **Blocked-hits** tile and **Top blocked countries** card; full Warden translation.
+
+### v1.8.8 — Warden LAN-lockout fixes + the `rwatch` health watchdog (`0252`)
+- `0252` — filter reserved/private ranges from every ingested feed, rebuild chain order so
+  anti-lockout rules always precede any drop, per-set non-empty `ipset save` (persistence now
+  actually works), plus the new default-on **`rwatch`** health probe and idempotent HW-QoS re-apply.
+
+### v1.8.9 — WireGuard peer list: usable buttons, unclipped dialog (`0253`)
+- `0253` — restore the VPN-Server WireGuard per-peer edit/QR/trash glyphs (a button-recolor rule
+  had painted them solid red) and refit the peer-edit dialog when a section expands.
+
+### v1.9.0 → v1.9.1 — Device Identity Manager (`0254`–`0255`)
+- `0254` — **v1.9.0** (Rung A): a new **Devices** page correlating name / DHCP reservation /
+  Gatekeeper state / live presence **per MAC** — inline rename, pool-aware Pin dialog, attention
+  card, filter/search, per-device 24 h traffic. No new store; read-modify-write preserves each record.
+- `0255` — **v1.9.1** (Rung B): a **Storage** page to direct the opt-in history datasets to
+  RAM / JFFS / USB (per-dataset toggles); the Traffic Analyzer selector becomes a pointer to it.
+
+### v1.9.2 → v1.9.4 — Devices page: MLO awareness + accurate link classification (`0256`–`0258`)
+- `0256` — **v1.9.2**: label MLO per-link addresses "MLO · <band>" (stop flagging them as
+  unnamed/randomized) + an offline-device Connection-cell escaping fix.
+- `0257` — **v1.9.3**: fold a Wi-Fi 7 MLO client's per-band links into one device row via the
+  driver's link-to-device mapping.
+- `0258` — **v1.9.4**: classify wired vs wireless (and the band) from the LAN bridge forwarding
+  table instead of the Wi-Fi association list, which intermittently omits Wi-Fi 7 / 6 GHz / MLO stations.
+
+### v1.9.5 — First-boot: default credentials can no longer slip through (`0259`)
+- `0259` — a factory-fresh box landing on the Reaper dashboard is now forced through the
+  credential-change step (server-side post-login redirect + an early dashboard guard); fires only
+  while credentials are still default.
+
+### v1.9.6 — Dashboard readability, Warden country picker, status at a glance (`0260`)
+- `0260` — Security Posture card gains Gatekeeper + Warden rows, the Warden country selector
+  becomes a searchable checkbox grid, USB tiles re-poll for ~90 s after boot, brighter client
+  list, and a truthful System-Info Features row.
+
+### v1.9.7 — Traffic Analyzer accuracy (per-network + the router's own traffic) (`0261`)
+- `0261` — attribute each flow from its own LAN-side interface and surface locally-terminated
+  router traffic under a new **"Router"** row, so By-Network + Router + clients reconcile with the
+  WAN chart; the dashboard **View List** button now opens the full Devices page and the client list
+  grows to fill its card.
+
+> **Model scope:** from **v1.8.7** onward the releases above were built + shipped on the
+> **RT-BE96U only** (both MCP / noMCP variants); the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro
+> sibling branches are owed these rungs. (Samba 4 / SMB3 in v1.7.8 and v1.8.0a is likewise RT-BE96U-only.)
+
 ## Notes
 
 - **Documentation commits are intentionally absent** — the docs ship in this repo's [`docs/`](../docs/) instead of as source patches, and doc hunks are stripped from mixed commits. The series is numbered sequentially with no gaps.
@@ -205,3 +300,4 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - Regenerated for **v1.6.6** (2026-07-19) from the full commit stack; author identity normalized to `reaper <theunbounddeveloper@outlook.com>`; verified to reproduce the source tree exactly via `git am --keep-cr` onto a fresh `a7ebfa133a` worktree (matching `release/src/router` tree hash).
 - Extended through **v1.7.7** (2026-07-24): patches `0191`–`0215` (v1.6.7 → v1.7.7) appended from the same commit stack with the same author normalization. Re-run the full `git am --keep-cr` reproduce-check before a public release.
 - Extended through **v1.7.8** (2026-07-25): patches `0216`–`0226` appended from commit `a8d1569017` (the v1.7.7 tip == `0215`) through the v1.7.8 version-bump HEAD, same author normalization and message scrub. Verified `git am --keep-cr` clean onto an `a8d1569017` worktree; the only reproduce-check delta is three vendored `openssh-sftp` documentation files (`README.md`, `SECURITY.md`, `.github/ci-status.md`) intentionally stripped by the `*.md` docs/meta exclusion — no source/code file differs.
+- Extended through **v1.9.7** (2026-07-30): patches `0227`–`0261` (v1.7.9 → v1.9.7) appended from the same commit stack with the same author normalization and message scrub. From **v1.8.7** onward these rungs shipped **RT-BE96U-only** (siblings owed). Re-run the full `git am --keep-cr` reproduce-check before a public release.

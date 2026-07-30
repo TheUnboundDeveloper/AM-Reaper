@@ -1,9 +1,9 @@
 # RT-BE96U "Reaper" — Release Notes
 
-**Release:** v1.8.0a (Reaper Warden threat/geo firewall + a verified security-hardening pass + Samba 4.15.13a CVE backport. Built for the **RT-BE96U** (MCP variant); noMCP variant and sibling models owed. Metal validation owed. Supersedes the never-released v1.8.0.)
-**Firmware:** `3006.102.8_Reaper_v1.8.0a`
+**Release:** v1.9.7 (Traffic Analyzer accuracy — per-network reconciliation + a new "Router" row for the router's own traffic — plus a dashboard client-list link. Latest in the arc since v1.8.0a: the Reaper Warden hardening line, the new **Device Identity Manager / Devices** page + unified storage, and first-boot credential enforcement. See §3 and [`CHANGELOG.md`](CHANGELOG.md). Built for the **RT-BE96U**, both variants; sibling-model ports owed. Metal validation owed.)
+**Firmware:** `3006.102.8_Reaper_v1.9.7`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Models:** ASUS **RT-BE96U** (primary, hardware-validated) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** (per-model branches of the same tree). WiFi 7, Broadcom BCM4916.
+**Models:** ASUS **RT-BE96U** (primary, hardware-validated). The **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree) were current through **v1.8.6c** (2026-07-28); **v1.8.7 → v1.9.7 shipped RT-BE96U only, both variants — the sibling-model ports are owed.** WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -38,21 +38,58 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BE96U_…_Reaper_v1.8.0a_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.8.0a_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BE96U_…_Reaper_v1.9.7_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.9.7_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v1.8.0a_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v1.8.0a_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v1.9.7_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v1.9.7_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
+
+### Since v1.8.0a — audit remediation, Warden hardening, and a Devices manager (v1.8.1 – v1.9.7)
+
+The rungs from v1.8.1 to the current **v1.9.7** shipped **RT-BE96U only, both variants** (the
+sibling-model fan-out through v1.8.6c is done; v1.8.7+ ports are owed). Headlines — per-version
+detail is in [`CHANGELOG.md`](CHANGELOG.md):
+
+- **The audit-remediation arc (v1.8.2 – v1.8.6).** A multi-agent adversarial audit of every
+  non-blob component produced **73 verified findings** (each checked against the actual source
+  before it was called a defect); v1.8.2 closed the three highest-impact (an IPsec profile-name
+  root path, a port-forward firewall-rule splice, a bad-pointer free in the web server), v1.8.3–v1.8.5
+  worked the latent and low-severity batches, and v1.8.6 was the independent clean-review sign-off
+  plus five defense-in-depth tightenings. All catalogued in [`REAPER-FIXES.md`](REAPER-FIXES.md).
+- **Reaper Warden grows up (v1.8.7 – v1.8.8).** IPv6 dual-stack (v6 threat/geo sets, chains,
+  anti-lockout) and a **Top blocked countries** stats card (v1.8.7); then a field LAN-lockout was
+  root-caused and fixed — private/bogon ranges are now filtered out of every ingested feed, the
+  anti-lockout chain order is rebuilt, and blocklist persistence across reboot actually works. v1.8.8
+  also added **`rwatch`**, an on-by-default health watchdog (5-min WAN/DNS/Warden-canary/accelerator-wedge
+  probe with JFFS incident dumps).
+- **WireGuard peer-list fixes (v1.8.9).** The per-peer edit/QR/trash controls render correctly again
+  and the peer-edit dialog no longer runs off-screen.
+- **Device Identity Manager — the new Devices page (v1.9.0 – v1.9.4).** A new **Devices** page (its
+  own left-nav section) correlates every device's identity **per MAC** — custom name, DHCP reservation,
+  Gatekeeper state, and live presence — into one view with inline rename, a pool-aware reservation
+  ("Pin") dialog, an attention card, filter/search, and a 24-hour per-device traffic figure. v1.9.1
+  added a **Storage** tab to choose where opt-in long-term history lives (RAM / JFFS / USB), unifying
+  the writers behind one control. v1.9.2–v1.9.4 fixed Wi-Fi 7 classification: MLO links are folded into
+  one device row, and wired-vs-wireless is now read from the LAN bridge instead of guessed (so 6 GHz /
+  MLO stations are no longer mislabeled "Wired").
+- **First-boot credential enforcement (v1.9.5).** A factory-fresh box can no longer reach the dashboard
+  on default `admin/admin` — both enforcement paths now send it through the forced credential-change step.
+- **Dashboard / Warden / SysInfo polish (v1.9.6).** Security Posture now covers Gatekeeper and Warden,
+  the Warden country picker became a searchable checklist, USB tiles re-poll after boot, and the
+  System Info feature list reflects Reaper's own packages.
+- **Traffic Analyzer accuracy (v1.9.7).** By-Network totals now reconcile with the live WAN chart, and
+  the router's own locally-terminated traffic (speed test, DNS, firmware checks, latency probe) appears
+  under a new **"Router"** row instead of vanishing from every per-device/per-network view.
 
 ### Reaper Warden, a security-hardening pass, and a Samba CVE backport (v1.8.0a)
 - **Reaper Warden — optional threat-feed / geo / manual-IP firewall.** A new **Warden** page adds a
@@ -294,13 +331,17 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v1.8.0a flashable-image hash (SHA-256)** — current head, **RT-BE96U MCP variant** (the
-noMCP variant and the four sibling models are owed and will be added on fan-out). Full set in
-`SHA256SUMS-v1.8.0a.txt` on the `reaper-firmware/` ladder.
+**v1.9.7 flashable-image hashes (SHA-256)** — current head, **RT-BE96U only, both variants**
+(the four sibling models are owed for v1.8.7+ and will be added on fan-out). The full four-file
+set (both variants' `…_nand_squashfs.pkgtb` **and** their `…_loader.pkgtb` recovery images) is in
+`SHA256SUMS-RT-BE96U-Reaper_v1.9.7.txt` on the `reaper-firmware/` ladder.
 
-| Image (`3006_102.8_Reaper_v1.8.0a…`) | SHA-256 |
+| Image (`RT-BE96U_3006_102.8_Reaper_v1.9.7…`) | SHA-256 |
 |---|---|
-| `RT-BE96U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `0f80ed7e941c2b615b339648d5f829c51887769af3932f6699cce0085ce8b804` |
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `b1021875b47e84ada2817bb612e111fb09b27b4597872162f2474b1b269a855b` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `a81facd4174946bdc1a18ef41db5c7bdda557121396ba976856b591a0e190537` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `209137efcecab40245382db1f572dc9b6b4fb441610af9f8db7037d3c4b3a0e5` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `4d1be375db6b49f53a3d21238c8a749792f021e199645b01e1a0c16b34f0be5c` |
 
 The **v1.7.7** table below remains the last full five-model, both-variant fan-out for reference.
 
@@ -332,9 +373,10 @@ Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **AI 
 (arming, LAN-only bind, token auth, secret redaction, USB third-factor, and the
 network-diagnostics tier) is **metal-validated** on the RT-BE96U (v1.4.x–v1.5.0a). In the
 v1.5.x line the newest fully metal-validated build is **v1.5.6**; every rung since —
-through the current **v1.7.7** — is built + shipped and **awaits flashing** (RT-BE96U in
-both variants for each rung; the v1.7.7 release adds the four sibling models, metal owed on
-all five). Per-version metal-test checklists are in [`BACKLOG.md`](BACKLOG.md).
+through the current **v1.9.7** — is built + shipped and **awaits flashing** (RT-BE96U in
+both variants for each rung). The five-model, both-variant fan-out reached **v1.8.6c**
+(2026-07-28); from **v1.8.7** onward the rungs are **RT-BE96U-only** and the sibling-model
+ports are owed. Per-version metal-test checklists are in [`BACKLOG.md`](BACKLOG.md).
 
 ---
 

@@ -1,6 +1,6 @@
 # RT-BE96U "Reaper" — Project Overview
 
-A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. The **RT-BE96U** is the primary, hardware-validated model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** are built from per-model branches of the same tree (metal validation owed on all five). Current version **v1.7.7** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
+A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. The **RT-BE96U** is the primary, hardware-validated model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** are built from per-model branches of the same tree (metal validation owed on all five). Current version **v1.9.7** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
 > This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder.
 
@@ -13,7 +13,7 @@ A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT
 - **Threat-model north star:** only **physical access** should be able to compromise the device. Eliminate remotely/LAN-reachable compromise (command injection, buffer overflows from network/nvram/WAN input, format strings, auth bypass). The hardening is invisible in normal use — its benefit is reduced attack surface.
 - **Also de-cloud:** remove AI-branded and cloud-coupled surface (Alexa/Google Assistant, Trend Micro DPI, AiCloud/WebDAV, the AiDisk wizard, the AAE cloud tunnel, the first-boot consent screens) so the base image stays lean, local-only, and auditable.
 - **And add genuinely-local features:** two Hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, an **optional, read-only, LAN-only AI Advisor** (compiled out of the Standard build entirely; with an opt-in, per-session bounded network-diagnostics mode), **on-router network diagnostics** — ping/traceroute/DNS/netstat via the AI Advisor — a one-click sanitized **Reaper Diagnostics** report, and **Gatekeeper**, an opt-in, default-deny, on-router device access control (v1.7).
-- **Branding:** `reaper`. The build version reads `<MODEL> 3006.102.8_Reaper_v<X>` (e.g. `RT-BE96U …_Reaper_v1.7.7`).
+- **Branding:** `reaper`. The build version reads `<MODEL> 3006.102.8_Reaper_v<X>` (e.g. `RT-BE96U …_Reaper_v1.9.7`).
 
 ## Scope & hard rules
 

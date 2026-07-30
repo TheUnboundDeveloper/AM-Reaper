@@ -1,0 +1,237 @@
+From 2f84abb936b11c5e5e0b30644a97b9651cc943e6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 30 Jul 2026 09:13:55 -0400
+Subject: [PATCH] reaper v1.9.7 - Traffic Analyzer per-network/Router
+ attribution + dashboard client-list
+
+Traffic Analyzer (rtrafd.c): two-pass poll_fcache attribution. Per-network is
+now taken straight from each flow's own LAN-side interface with no upload/download
+correlation, and locally-terminated router traffic (its own speed test, DNS,
+firmware checks, latency probe - flows on the "_local" pseudo-devs) is attributed
+to a new "Router" row instead of being dropped. br0 + Router + clients now
+reconcile with the WAN line, and orphaned client downloads still land in br0.
+Per-device client attribution (nf_conn[0] grouping) is unchanged. Fixes the
+by-network panel never matching the live WAN chart, with accel on.
+
+Dashboard (Main_ReaperDash.asp): the CLIENTS "View List" button now opens the
+Devices page (/reaper_shell.asp#Reaper_Devices.asp) instead of the in-page modal
+(removed); the client list grows to fill its card (flex column, 170px floor).
+
+---
+ release/src-rt/version.conf                |  2 +-
+ release/src/router/rtrafd/rtrafd.c         | 82 ++++++++++++++++++----
+ release/src/router/www/Main_ReaperDash.asp | 41 ++---------
+ 3 files changed, 73 insertions(+), 52 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 625a31d9dd..b6f128d66b 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.9.6
++EXTENDNO=Reaper_v1.9.7
+ 
+ RCNO=0
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 3f293b0c58..812c2c5680 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -61,6 +61,12 @@
+ #define NM		24	/* month slots  (2 y)  */
+ #define NNET		8
+ #define NCLI		64
++#define RT_NETLBL	"Router"	/* per-network + per-device bucket for the router's
++				   OWN (locally-terminated) traffic: its speed test, DNS,
++				   firmware checks, ntp, the latency probe - so br0 + Router
++				   + clients reconcile with the all-inclusive WAN line */
++#define RT_DEVKEY	"router"
++#define RT_DEVLBL	"Router"
+ #define NFLOW		16384	/* conntrack delta table (power of 2) */
+ #define NTOP		20
+ #define FC_MAX		1536	/* flows parsed per fcache poll (bounded work) */
+@@ -568,13 +574,71 @@ static void poll_fcache(void)
+ 	/* age the fc_last table: any slot NOT seen this poll keeps its value, which
+ 	 * is fine (delta stays 0 until it grows or a new flow recycles the slot). */
+ 
++	/* ---- Pass 1: per-network attribution + a "Router" bucket, taken straight
++	 *      from each flow's own direction. This needs NO upload<->download
++	 *      correlation, so the per-network (br0) numbers now reflect real LAN
++	 *      traffic, and locally-terminated traffic - the router's OWN speed
++	 *      test / DNS / firmware checks / probe, whose flows ingress or egress
++	 *      a "*_local" pseudo-dev rather than a LAN bridge - stops being
++	 *      invisible. br0 + Router + clients then reconcile with the WAN line,
++	 *      which counts every byte regardless of who sourced it. ---- */
++	{
++		int rci = -1;		/* "Router" device slot, allocated on first use */
++		for (i = 0; i < nfl; i++) {
++			uint64_t d = fl[i].delta;
++			const char *dev = fl[i].dev;	/* rxdev for upload, txdev for inbound */
++			const char *br;
++			int ns;
++
++			if (!dev[0]) continue;
++			br = dev_bridge(dev);
++			if (fl[i].lan) {			/* LAN client -> WAN: upload */
++				ns = net_slot(br);
++				if (ns >= 0) {
++					ring_add(r_net[ns], 0, d);
++					lv_net_tx[ns] += d * 8 / FCACHE_SECS;
++				}
++			} else if (br[0] == 'b' && br[1] == 'r') {	/* WAN -> a LAN bridge: client download */
++				ns = net_slot(br);
++				if (ns >= 0) {
++					ring_add(r_net[ns], d, 0);
++					lv_net_rx[ns] += d * 8 / FCACHE_SECS;
++				}
++			} else {			/* neither end on a LAN bridge: the router's own traffic */
++				int into_router = (strstr(dev, "local") != NULL);
++				ns = net_slot(RT_NETLBL);
++				if (rci < 0) rci = cli_slot(RT_DEVKEY, RT_DEVLBL);
++				if (into_router) {	/* delivered to the router = a download */
++					ring_add(r_cli[rci], d, 0);
++					lv_cli_rx[rci] += d * 8 / FCACHE_SECS;
++					if (ns >= 0) {
++						ring_add(r_net[ns], d, 0);
++						lv_net_rx[ns] += d * 8 / FCACHE_SECS;
++					}
++				} else {		/* sourced by the router, out the WAN = an upload */
++					ring_add(r_cli[rci], 0, d);
++					lv_cli_tx[rci] += d * 8 / FCACHE_SECS;
++					if (ns >= 0) {
++						ring_add(r_net[ns], 0, d);
++						lv_net_tx[ns] += d * 8 / FCACHE_SECS;
++					}
++				}
++			}
++		}
++	}
++
++	/* ---- Pass 2: per-DEVICE (client) attribution. A client's download is NAT'd
++	 *      (src = internet, dst = WAN IP, no LAN address), so it is matched back
++	 *      to the client by the nf_conn[0] pointer shared by the connection's two
++	 *      flows. Per-network is already done in Pass 1, so this pass only fills
++	 *      the client rings + top-talkers. ---- */
+ 	memset(consumed, 0, nfl);
+ 	for (i = 0; i < nfl; i++) {
+ 		uint64_t nfc, up = 0, dn = 0;
+-		int have_lan = 0, ci, ns;
++		int have_lan = 0, ci;
+ 		uint32_t cli_ip = 0, dst_ip = 0;
+ 		int dport = 0;
+-		char cli_mac[20] = "", cli_dev[16] = "", ips[16], dsts[16];
++		char cli_mac[20] = "", ips[16], dsts[16];
+ 
+ 		if (consumed[i]) continue;
+ 		nfc = fl[i].nfc;
+@@ -592,30 +656,20 @@ static void poll_fcache(void)
+ 					dst_ip = fl[j].dip;
+ 					dport = fl[j].dport;
+ 					strlcpy(cli_mac, fl[j].mac, sizeof(cli_mac));
+-					strlcpy(cli_dev, fl[j].dev, sizeof(cli_dev));
+ 				}
+ 			} else {
+ 				dn += fl[j].delta;
+-				if (!cli_dev[0])
+-					strlcpy(cli_dev, fl[j].dev, sizeof(cli_dev));
+ 			}
+ 		}
+ 		if (!have_lan)
+-			continue;	/* no LAN side = router-originated / unmatched */
++			continue;	/* no LAN side: router-originated or an unmatched download (both handled in Pass 1) */
+ 
+ 		ip2str(cli_ip, ips);
+ 		ci = cli_slot(cli_mac[0] ? cli_mac : ips, ips);
+ 		ring_add(r_cli[ci], dn, up);	/* rx=download, tx=upload */
+-		lv_cli_rx[ci] += dn * 8 / FCACHE_SECS;	/* live per-device rate (bps) */
++		lv_cli_rx[ci] += dn * 8 / FCACHE_SECS;
+ 		lv_cli_tx[ci] += up * 8 / FCACHE_SECS;
+ 
+-		ns = net_slot(dev_bridge(cli_dev));
+-		if (ns >= 0) {
+-			ring_add(r_net[ns], dn, up);
+-			lv_net_rx[ns] += dn * 8 / FCACHE_SECS;	/* live per-network rate */
+-			lv_net_tx[ns] += up * 8 / FCACHE_SECS;
+-		}
+-
+ 		ip2str(dst_ip, dsts);
+ 		top_note(ips, dsts, dport, 0, up, dn);
+ 	}
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index ca6cef73c2..c14d03707c 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -59,7 +59,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .cl-filter:focus{border-color:var(--line)}
+ /* fixed height (not max-height): the card must not grow/shrink with the device
+    count &mdash; the row it shares with Security Posture stays constant; scrollbar handles overflow */
+-.cl-list{margin-top:10px;height:170px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
++.clcard{display:flex;flex-direction:column}
++.cl-list{margin-top:10px;flex:1 1 auto;min-height:170px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
+ .cl-item{border:1px solid var(--line-soft);border-radius:8px;padding:9px 11px;background:rgba(255,255,255,.03)}
+ .cl-item .cn{color:var(--bone);font-size:13.5px;font-weight:600}
+ .cl-item .cd{color:var(--bone-dim);font-size:12px;line-height:1.5;margin-top:3px;word-break:break-all}
+@@ -442,8 +443,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         </section>
+ 
+         <!-- CLIENTS -->
+-        <section class="card col4">
+-          <div class="head"><h3><#Full_Clients#></h3><a class="link" href="#" id="cl_viewlist"><#View_List#></a></div>
++        <section class="card col4 clcard">
++          <div class="head"><h3><#Full_Clients#></h3><a class="link" href="/reaper_shell.asp#Reaper_Devices.asp"><#View_List#></a></div>
+           <div class="cbig"><span class="n mono" id="c_total">&mdash;</span><span class="u"><#RDSH_17#></span></div>
+           <div class="bands">
+             <div class="band" id="brow6"><span class="bl">6 GHz</span><span class="bar"><i id="b6i" style="width:0%"></i></span><span class="bn mono" id="b6n">0</span></div>
+@@ -527,17 +528,6 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+     <div style="margin-top:10px;color:var(--steel);font-size:12px"><#RDSH_27#></div>
+   </div>
+ </div>
+-<!-- v1.6.6b: full client-list modal (VIEW LIST). Reuses LIVE_CLIENTS + .cl-item styling. -->
+-<div id="cl_overlay" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(4,4,5,.92);backdrop-filter:blur(3px)">
+-  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden">
+-    <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--line-soft)">
+-      <h3 style="font-family:var(--hdr);color:var(--bone);font-size:16px;letter-spacing:.1em;text-transform:uppercase;margin:0"><#Full_Clients#> <span class="mono" id="clv_total" style="color:var(--steel);font-size:13px"></span></h3>
+-      <button type="button" id="clv_close" aria-label="<#CTL_close#>" style="background:none;border:0;color:var(--steel);font-size:26px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+-    </div>
+-    <div id="clv_body" style="overflow-y:auto;padding:6px 18px 18px"></div>
+-  </div>
+-</div>
+-
+ <script>
+ /* ---- real values injected server-side via SSI ---- */
+ var SSI = {
+@@ -999,29 +989,6 @@ function pollClients(){
+ (function(){ var sel=$id('cl_filter'); if(sel){ sel.addEventListener('change',renderClients); renderClients(); } })();
+ pollClients(); setInterval(pollClients, 10000);
+ 
+-/* ---- VIEW LIST modal: all clients grouped by band (v1.6.6b) ---- */
+-function renderViewList(){
+-  var groups=[['6','6 GHz'],['5','5 GHz'],['24','2.4 GHz'],['eth',`<#tm_wired#>`]], h='', tot=0;
+-  for(var g=0;g<groups.length;g++){
+-    var list=LIVE_CLIENTS[groups[g][0]]||[];
+-    if(!list.length) continue;
+-    tot+=list.length;
+-    h+='<div class="conngroup" style="margin:14px 0 6px"><span class="cglabel">'+groups[g][1]+'</span><span class="cgline"></span><span class="mono" style="color:var(--steel);margin-left:8px">'+list.length+'</span></div>';
+-    for(var i=0;i<list.length;i++){ h+='<div class="cl-item"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span>'+(list[i].ip6?' &middot; <span class="mono">'+esc(list[i].ip6)+'</span>':'')+' &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div>'; }
+-  }
+-  if(!h) h=`<div class="cd" style="padding:8px"><#RDSH_77#></div>`;
+-  var b=$id('clv_body'); if(b) b.innerHTML=h;
+-  var t=$id('clv_total'); if(t) t.textContent=tot?('- '+tot):'';
+-}
+-(function(){
+-  var open=$id('cl_viewlist'), ov=$id('cl_overlay'), close=$id('clv_close');
+-  function show(e){ if(e) e.preventDefault(); renderViewList(); if(ov) ov.style.display='block'; }
+-  function hide(){ if(ov) ov.style.display='none'; }
+-  if(open) open.addEventListener('click',show);
+-  if(close) close.addEventListener('click',hide);
+-  if(ov) ov.addEventListener('click',function(e){ if(e.target===ov) hide(); });
+-  document.addEventListener('keydown',function(e){ if(e.key==='Escape') hide(); });
+-})();
+ 
+ /* ---- wireless radio tiles ----
+    On this FW (RTCONFIG_MULTILAN_MWL) the broadcast SSID lives in the SDN MAINFH
+-- 
+2.25.1
+

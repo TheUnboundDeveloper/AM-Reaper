@@ -24,6 +24,62 @@ node, not only on the primary router.
 
 ---
 
+## v1.9.7 — Traffic Analyzer accuracy (per-network + the router's own traffic) + dashboard client-list
+- **The By-Network panel now reconciles with the live WAN chart.** With the flow accelerator on, the Traffic Analyzer only credited bytes to a network or a device when it could pair the upload and download halves of a connection — so **traffic the router itself generates** (the built-in speed test, DNS, firmware checks, the latency probe) was counted on the WAN line but dropped from every per-device and per-network view, and the By-Network total (br0) never matched the WAN chart. The collector now attributes each flow straight from its own LAN-side interface, and locally-terminated router traffic appears under a new **"Router"** row — so By-Network + Router + clients add up to the WAN line, and a client's download always lands on its network even when the return path isn't paired. Per-device client accounting is unchanged. *(This is the IPv4 path; the separate per-client IPv6 limitation is unchanged and only affects IPv6-enabled lines.)*
+- **Dashboard "Clients" card.** The **View List** button now takes you to the full **Devices** page instead of a small in-place popup, and the client list grows to fill the lower part of its card instead of leaving an empty gap.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-30.
+
+## v1.9.6 — Dashboard readability, Warden country picker, status at a glance
+- **Security Posture now covers Gatekeeper and Warden.** The dashboard's Security Posture card gained rows for **Gatekeeper** (device access control) and **Reaper Warden** (threat/geo firewall), each showing enabled/off at a glance alongside the existing posture checks.
+- **Warden country blocking is now a searchable checklist.** Choosing which countries to block moved from a fiddly multi-select list box to a **searchable checkbox grid** — type to filter, tick the countries you want, save. Any country codes the firmware doesn't recognize are still preserved on save.
+- **USB storage shows up right after a boot.** The dashboard's USB tiles render once when the page loads, but USB drives don't mount until ~40–50 s into boot — so a freshly rebooted router showed no USB until you reloaded. The dashboard now re-polls USB status for the first ~90 s after load, so the drives and the storage ring fill in on their own.
+- **Client list is easier to read.** The per-client detail text on the dashboard was small and grey; it's now larger and brighter with more card contrast.
+- **System Info "Features" row reflects the real build.** The feature list now advertises Reaper's own packages — Gatekeeper, Warden, the Devices manager, unified storage, and the health watchdog — alongside the ones already listed.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.9.5 — First-boot: default credentials can no longer slip through
+- **A factory-fresh router always forces you to set an admin username and password.** After the Reaper dashboard became the post-login landing page, a factory box could reach the interface on the default `admin`/`admin` without being sent through the forced credential-change step — the dashboard carried neither of the two enforcement paths the stock and Reaper first-boot flows rely on. Both the server-side post-login redirect and an early dashboard guard now send a default-credentials box to the first-boot setup page before anything else renders. The check only fires while the credentials are still default, so a configured or upgraded router never sees it.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.9.4 — Devices page: Wi-Fi clients no longer mislabeled "Wired"
+- **Wired vs wireless is now decided by the bridge, not a guess.** The Devices page had been calling a client "Wired" whenever it wasn't in the Wi-Fi association list — but that list intermittently omits Wi-Fi 7 / 6 GHz / MLO stations, so real Wi-Fi clients were shown as Wired. The page now reads the LAN bridge's forwarding table to see which port (and which radio's band) a device was actually learned on, so wired and wireless — and the band — are classified correctly. It never downgrades a confirmed Wi-Fi client on a stale entry.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.9.3 — Devices page: Wi-Fi 7 multi-link devices shown as one
+- **An MLO client is now a single device, not several.** With Wi-Fi 7 Multi-Link Operation, the driver reports each of a device's per-band links as its own address-randomized, lease-less entry, so a single laptop or phone could appear as several "Private address / No lease" rows. The Devices page now uses the driver's link-to-device mapping to fold those links into one device row showing its combined bands (e.g. "MLO · 5+6 GHz"). No effect when MLO is off.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.9.2 — Devices page: MLO awareness + an offline-device display fix
+- **Multi-Link (Wi-Fi 7) links are labeled, not flagged as problems.** Before the full row-merge (v1.9.3), MLO clients' extra per-link addresses surfaced as alarming "Private address / No lease" rows. The page now detects when MLO is active and labels those links "MLO · <band>" with an explanatory tooltip, and stops counting them as unnamed / randomized / needs-attention.
+- **Offline devices show a clean connection cell.** A never-seen or offline device printed a literal dash artifact in the Connection column (an escaping slip); it now renders correctly.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.9.1 — Device Identity Manager (Rung B): choose where long-term history lives
+- **A Storage tab to pick where opt-in history is kept.** A new **Storage** page (under System Log) lets you select a durable location — **RAM**, **JFFS**, or a **USB** dot-directory — for the opt-in history datasets (devices, traffic, health-watch, channel-quality, syslog mirror), with per-dataset toggles and a health line. No new data store and no new background service are introduced; it simply directs the existing writers. The Traffic Analyzer's own storage selector becomes a read-only pointer to this one page, so there is a single place that controls where data is written.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.9.0 — Device Identity Manager (Rung A): one place for every device
+- **A new "Devices" page that unifies what ASUS scatters.** ASUS keeps a device's identity across several separate places — its custom name, its DHCP reservation, its Gatekeeper access state, and its live presence (DHCP leases + address table + Wi-Fi association). The new **Devices** page (its own left-nav section, between USB Application and System Info) correlates all of them **per MAC** into one rounded view: inline rename, a pool-aware reservation ("Pin") dialog that warns when your DHCP pool is tight, a Gatekeeper state per row, an attention card for orphaned / duplicate reservations and pool exhaustion, filter chips and search, and a 24-hour traffic figure per device with a deep link to the Traffic page. Every change is a careful read-modify-write that preserves the other fields of each record — no sixth store is created — and presence is always computed from leases + address table + Wi-Fi, so it works even with Gatekeeper off. *(New page text is English-seeded across all 25 languages; translations to follow.)*
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.8.9 — WireGuard peer list: usable buttons, unclipped dialog
+- **The peer-row buttons are visible again.** On **VPN Server › WireGuard**, the per-peer edit / QR / trash controls rendered as solid red rectangles — a Reaper button-recolor rule had overwritten the sprite-based icons. They are back to white glyphs on a crimson tile.
+- **The peer-edit dialog no longer runs off-screen.** Expanding "More Settings for Site to Site Usage" grew the popup past its frame with no way to scroll to the rest; the dialog now refits when a section expands or collapses. *(That section's title, previously hard-coded English, is now translated.)* *(Metal-validated on hardware; the VPN pages can't be exercised in the mock.)*
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.8.8 — Warden: LAN-lockout fixes, persistence that actually works, and a new health watchdog
+- **A Warden feed update can no longer lock your LAN off the internet.** A field incident traced to the scheduled threat-feed refresh: one feed (FireHOL level-1) includes private/bogon ranges (192.168/16, 127/8, …), which Warden ingested and then dropped, cutting all new LAN traffic until a power cycle. The updater now filters reserved/private ranges (IPv4 and IPv6) from every list it ingests, and the firewall chain order is rebuilt so the structural anti-lockout rules (loopback, DHCP, established connections, your allow-list, the LAN return path) always come **before** any feed or geo drop.
+- **Warden's blocklist now survives a reboot.** The cache-save step had been calling `ipset save` in a way that silently wrote an empty file, so restoring on boot never actually worked; saves are now per-set and only non-empty caches are kept — so protection persists across reboots as intended. Entry validation was also tightened (bad country codes / CIDRs are rejected and logged instead of silently mangled).
+- **New: `rwatch` health watchdog (on by default).** A lightweight probe runs every 5 minutes — a first-hop WAN ping (no external hosts), a loopback DNS check, a Warden "canary" that verifies your own LAN IP never matches a block set (re-applying the rules and logging a CRITICAL event if it ever does), and a check for the silent accelerator-wedge signature the stock firmware has no watchdog for. State transitions are written to the system log, and the first failure dumps bounded diagnostics to JFFS for later inspection.
+- **Hardware QoS re-apply is now idempotent** — it skips a live-queue rewrite when the configuration hasn't changed, avoiding needless disruption.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
+
+## v1.8.7 — Reaper Warden: IPv6 dual-stack + per-country block stats
+- **Warden now protects IPv6 as well as IPv4.** The threat/geo firewall gained a parallel IPv6 stack — v6 threat-feed and country sets, v6 firewall chains, v6 CIDR validation, Spamhaus DROPv6 and per-country IPv6 ranges, and v6 anti-lockout for link-local / ULA / your delegated prefix. Manual block/allow entries are routed to the right family automatically.
+- **New: Top blocked countries.** Each blocked country now has its own firewall rule and packet counter, so the Warden page shows a live **Blocked-hits** tile and a **Top blocked countries** card (refreshed every 30 s) — you can see which countries are actually hitting your router. The page wording was tightened, with an explicit "not a sole defense" caveat you can dismiss.
+- **Full translation.** The complete Warden string set is now translated across all 24 non-English languages (was English-seeded).
+- Built + shipped on the RT-BE96U, both variants, 2026-07-28.
+
 ## v1.8.6 — Independent review of the audit remediation: clean, plus five hardening tightenings
 - **Two independent adversarial code reviews — one of the v1.8.4/v1.8.5 audit fixes, one a fresh sweep of the Reaper-authored subsystems — found no live bugs, no security holes, and no performance regressions.** That is the sign-off on the whole audit-remediation arc below: the fixes landed cleanly. Each review verified every candidate against the source before reporting it, and the five low-risk, defense-in-depth items that survived are all closed here: a portability guard on the captive-portal cleanup path (so it compiles identically on every model), a belt-and-suspenders guard against a double-free on an out-of-memory error path in the traffic-history reader, a character-set gate on the LAN interface name used in the Gatekeeper teardown script (matching the guard its apply-path twin already carried), hard MAC-address validation before a device address reaches the Gatekeeper page's action buttons, and numeric emission of two Advisor status fields so a blank value can never malform the response. None was exploitable in normal use.
 

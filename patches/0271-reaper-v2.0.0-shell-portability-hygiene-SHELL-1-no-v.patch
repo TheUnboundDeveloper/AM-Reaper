@@ -1,0 +1,72 @@
+From 6c5dcf174ff0b87f74438f0949cab0a51eef91f6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 31 Jul 2026 22:22:28 -0400
+Subject: [PATCH] reaper v2.0.0: shell portability hygiene (SHELL-1) - no
+ version change
+
+From the 2026-07-31 shellcheck/checkbashisms pass (audits/SHELL-LINT-2026-07-31.md).
+Inert on this target (on-router BusyBox is built CONFIG_ASH_BASH_COMPAT=y) - this is
+portability hardening so the on-router scripts don't silently depend on that flag:
+- rc/qos.c: the generated CAKE qos script now uses the POSIX `.` instead of the
+  bash-only `source`.
+- rom/webs_scripts/merlin_webs_update.sh: `[ "x" == "y" ]` -> `[ "x" = "y" ]` (6 tests).
+
+Build-host tooling changed alongside (NOT in this firmware tree): _reaper_build_lib.sh
+gained a `cd "$R" || return` guard, and reaper_build/reaper_shlint.sh (+ _extract.py) is
+a new advisory linter that extracts and checks the C-generated on-router scripts. The
+shellcheck/checkbashisms tools are now installed in the build WSL (closes the A5
+build-validation tooling gap).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c                               | 2 +-
+ release/src/router/rom/webs_scripts/merlin_webs_update.sh | 6 +++---
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 312cb0229e..6efd425c95 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3051,7 +3051,7 @@ int start_cake(void)
+ 	/* Stop/start rules */
+ 	fprintf(f,
+ 		"#!/bin/sh\n"
+-		"source /etc/cake-qos.conf\n\n"
++		". /etc/cake-qos.conf\n\n"	/* reaper: POSIX dot, not the bash-only `source` (don't depend on BusyBox ASH_BASH_COMPAT) */
+ 
+ 		"case \"$1\" in\n"
+ 		"start)\n"
+diff --git a/release/src/router/rom/webs_scripts/merlin_webs_update.sh b/release/src/router/rom/webs_scripts/merlin_webs_update.sh
+index 092942e8de..7be8d3604e 100755
+--- a/release/src/router/rom/webs_scripts/merlin_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/merlin_webs_update.sh
+@@ -29,7 +29,7 @@ forsq=$(nvram get apps_sq)
+ model=$(nvram get productid)
+ model="$model#"
+ 
+-if [ "$forsq" == "1" ]; then
++if [ "$forsq" = "1" ]; then
+ 	echo "---- update sq normal----" > /tmp/webs_upgrade.log
+ 	/usr/sbin/wget $wget_options $fwsite/test/manifest2.txt -O /tmp/wlan_update.txt
+ else
+@@ -61,7 +61,7 @@ echo "---- Stable available ${firmbase}.${firmver}.${buildno}_${extendno}----" >
+ 
+ update_webs_state_info=$(nvram get webs_state_info)
+ last_webs_state_info=$(nvram get webs_last_info)
+-if [ "$firmbase" == "" ] || [ "$firmver" == "" ] || [ "$buildno" == "" ] || [ "$lextendno" == "" ]; then
++if [ "$firmbase" = "" ] || [ "$firmver" = "" ] || [ "$buildno" = "" ] || [ "$lextendno" = "" ]; then
+ 	nvram set webs_state_error=1	# exist no Info
+ else
+ 
+@@ -94,7 +94,7 @@ webs_state_flag=$(nvram get webs_state_flag)
+ if [ "$webs_state_flag" -eq "1" ]; then
+ 	releasenote_file0_US=$(nvram get webs_state_info)_note.txt
+ 	releasenote_path0="/tmp/release_note0.txt"
+-	if [ "$forsq" == "1" ]; then
++	if [ "$forsq" = "1" ]; then
+ 		echo "---- download SQ release note $fwsite/test/$releasenote_file0_US ----" >> /tmp/webs_upgrade.log
+ 		/usr/sbin/wget $wget_options $fwsite/test/$releasenote_file0_US -O $releasenote_path0
+ 		echo "---- $fwsite/test/$releasenote_file0 ----" >> /tmp/webs_upgrade.log
+-- 
+2.25.1
+

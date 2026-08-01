@@ -1,0 +1,673 @@
+From 3e40927fc6e42a55bebc80d888232c0b52ea8607 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 31 Jul 2026 21:35:25 -0400
+Subject: [PATCH] =?UTF-8?q?reaper=20v2.0.0:=20security-hardening=20batch?=
+ =?UTF-8?q?=20(AUDIT-1=20=C2=A72=20+=20AUDIT-2=20follow-ups)=20-=20no=20ve?=
+ =?UTF-8?q?rsion=20change?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Addresses the open hardening items from both audits. Version stays Reaper_v2.0.0 (in-place re-spin).
+
+A2-SEC-001/002 (libcodb/cosql_utils.c): value literals now use sqlite3_snprintf %Q (self-quoting,
+  escapes embedded ') at 24 TEXT/MAC/IP/JSON sinks (gen_match/gen_upsert/insert); 7 identifier
+  sinks now validated with the existing is_valid_sql_identifier (column names, ORDER BY, WHERE
+  column in remove/backup_and_remove). Internal fixed ATTACH path + legit multi-column backup
+  list deliberately left (flagged).
+A1-SEC-002 (httpd/web.c + Reaper_Diag/Warden.asp): the two read CGIs that popen() a subprocess
+  (do_reaper_diag_cgi, do_reaper_warden_cgi) now require the http_id CSRF token; both frontend
+  GETs now send it. Verified these CGIs have no other callers.
+A4-UI-001/002/003 (Reaper_Devices/Storage/Wireless/reaper_shell): esc() unified to encode " and '
+  (attribute-safe); chanspec and menuTree name/url encoded before innerHTML/document.write.
+B6 (inherited www): htmlEncode the DHCP-hostname/nvram name class in the remaining sinks -
+  OpenVPN server CN+username + client desc + WireGuard peer name (Advanced_VPNStatus.asp),
+  AiMesh node/client names (aimesh_topology.html), USB disk name (disk.asp) + folder-tree
+  text/title (disk_functions.js). Model-name/log-key/IP-column paths checked and left (not
+  LAN-client data or already encoded).
+B5-SEC-001 (mssl/mssl.c): the CLIENT TLS path now loads the shipped CA bundle
+  (/rom/etc/ssl/certs/ca-certificates.crt), sets SSL_VERIFY_PEER + hostname verification
+  (SSL_set1_host), and FAILS CLOSED if no CA is available. Server path unchanged (keeps
+  SSL_VERIFY_NONE). The mssl client path currently has NO callers (httpd + rmcpd use mssl as
+  SERVER only; DDNS/feeds use curl), so this is latent-path defense-in-depth with zero
+  field-connectivity impact; rmcpd (MCP) is server-only and unaffected.
+A4-UI-004: no change - the qos.c consumer already re-validates (bandwidth bail/clamp +
+  validate_apply_input_value on qos_bw_rulelist).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                | 22 ++++++
+ release/src/router/libcodb/cosql_utils.c      | 68 +++++++++++--------
+ release/src/router/mssl/mssl.c                | 39 +++++++++--
+ release/src/router/www/Advanced_VPNStatus.asp |  6 +-
+ release/src/router/www/Reaper_Devices.asp     |  2 +-
+ release/src/router/www/Reaper_Diag.asp        |  2 +-
+ release/src/router/www/Reaper_Storage.asp     |  2 +-
+ release/src/router/www/Reaper_Warden.asp      |  2 +-
+ release/src/router/www/Reaper_Wireless.asp    |  2 +-
+ .../router/www/aimesh/aimesh_topology.html    |  6 +-
+ release/src/router/www/device-map/disk.asp    |  2 +-
+ release/src/router/www/disk_functions.js      |  8 +--
+ release/src/router/www/reaper_shell.asp       | 11 +--
+ 13 files changed, 116 insertions(+), 56 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 9243884e78..df7edda396 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21627,6 +21627,17 @@ do_reaper_diag_cgi(char *url, FILE *stream)
+ 	struct stat st;
+ 	const char *lock = "/tmp/.reaper_diag_busy";
+ 
++	/* reaper (A1-SEC-002): this read popen()s the diag collector; require the
++	 * http_id CSRF token (Reaper_Diag.asp now sends it) so a cross-site GET
++	 * cannot trigger a diagnostic run. */
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "ERROR: invalid request token.\n");
++			return;
++		}
++	}
++
+ 	path[0] = '\0';
+ 
+ 	if (stat(lock, &st) == 0 && (time(NULL) - st.st_mtime) < 180) {
+@@ -22971,6 +22982,17 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 
+ 	if (!action) action = "status";
+ 
++	/* reaper (A1-SEC-002): this read popen()s stats.sh; require the http_id
++	 * CSRF token (Reaper_Warden.asp now sends it) so a cross-site GET cannot
++	 * trigger the subprocess. */
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"error\":\"invalid request token\"}");
++			return;
++		}
++	}
++
+ 	if (f_exists("/tmp/rwarden/stats.sh") &&
+ 	    (p = popen("sh /tmp/rwarden/stats.sh 2>/dev/null", "r")) != NULL) {
+ 		while (fgets(buf, sizeof(buf), p) != NULL) {
+diff --git a/release/src/router/libcodb/cosql_utils.c b/release/src/router/libcodb/cosql_utils.c
+index ca86c1ca48..00a1097153 100644
+--- a/release/src/router/libcodb/cosql_utils.c
++++ b/release/src/router/libcodb/cosql_utils.c
+@@ -550,7 +550,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 	sql_column_match_t* org_columns = match_columns;
+ 	for (i=0; i<match_columns_count; i++) {
+ 		char *column_name = match_columns->name;
+-		if (is_valid_text(column_name)==FORMAT_ERROR) {
++		if (is_valid_sql_identifier(column_name)==FORMAT_ERROR) {
+ 			match_columns++;
+ 			continue;
+ 		}
+@@ -582,7 +582,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 				}
+ 
+ 				//- ex. column_name=column_value
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_MAC:
+@@ -597,7 +597,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 				}
+ 
+ 				//- ex. column_name=column_value
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_IP:
+@@ -612,7 +612,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 				}
+ 
+ 				//- ex. column_name=column_value
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_JSON:
+@@ -627,7 +627,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 				}
+ 
+ 				//- ex. column_name=column_value
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 
+@@ -681,7 +681,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 	for (i=0; i<match_columns_count; i++) {
+ 
+ 		char *column_name = match_columns->name;
+-		if (is_valid_text(column_name)==FORMAT_ERROR) {
++		if (is_valid_sql_identifier(column_name)==FORMAT_ERROR) {
+ 			match_columns++;
+ 			continue;
+ 		}
+@@ -712,7 +712,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_MAC:
+@@ -726,7 +726,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_IP:
+@@ -740,7 +740,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_JSON:
+@@ -754,7 +754,7 @@ static char* gen_match_query_string(int match_columns_count, sql_column_match_t*
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_BUF_LEN, "%s%s'%s'", column_name, operation_symbol, match_columns->value.t);
++				sqlite3_snprintf(MAX_BUF_LEN, buff, "%s%s%Q", column_name, operation_symbol, match_columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_INT16:
+@@ -813,7 +813,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 	for (i=0; i<columns_count; i++) {
+ 
+ 		char *column_name = columns->name;
+-		if (is_valid_text(column_name)==FORMAT_ERROR) {
++		if (is_valid_sql_identifier(column_name)==FORMAT_ERROR) {
+ 			columns++;
+ 			continue;
+ 		}
+@@ -839,7 +839,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_MAC:
+@@ -853,7 +853,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_IP:
+@@ -867,7 +867,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_JSON:
+@@ -881,7 +881,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_INT16:
+@@ -934,7 +934,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 	for (i=0; i<columns_count; i++) {
+ 
+ 		char *column_name = columns->name;
+-		if (is_valid_text(column_name)==FORMAT_ERROR) {
++		if (is_valid_sql_identifier(column_name)==FORMAT_ERROR) {
+ 			columns++;
+ 			continue;
+ 		}
+@@ -960,7 +960,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_MAC:
+@@ -974,7 +974,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_IP:
+@@ -988,7 +988,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_JSON:
+@@ -1002,7 +1002,7 @@ static char* gen_upsert_query_string(int columns_count, sql_column_t* columns, c
+ 					continue;
+ 				}
+ 
+-				snprintf(buff, MAX_VALUE_LEN, "%s='%s'", column_name, columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff, "%s=%Q", column_name, columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_INT16:
+@@ -1582,7 +1582,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_MAC:
+@@ -1596,7 +1596,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_IP:
+@@ -1610,7 +1610,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_JSON:
+@@ -1624,7 +1624,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_INT16:
+@@ -1714,7 +1714,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_MAC:
+@@ -1728,7 +1728,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_IP:
+@@ -1742,7 +1742,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_TEXT_JSON:
+@@ -1756,7 +1756,7 @@ int cosql_insert_table(sqlite3* pdb, int columns_count, sql_column_t* columns)
+ 					continue;
+ 				}
+ 
+-				snprintf(buff_insert_value, MAX_VALUE_LEN, "'%s'", columns->value.t);
++				sqlite3_snprintf(MAX_VALUE_LEN, buff_insert_value, "%Q", columns->value.t);
+ 				break;
+ 
+ 			case COLUMN_TYPE_INT16:
+@@ -2036,7 +2036,9 @@ int cosql_get_column_values(sqlite3* pdb,
+ 		strncat(sql_query, sql_between_data_time, sql_query_size - strlen(sql_query) - 1);
+ 	}
+ 
+-	if (order_column_name!=NULL && order_by!=NULL) {
++	if (order_column_name!=NULL && order_by!=NULL &&
++		is_valid_sql_identifier(order_column_name)==FORMAT_OK &&
++		is_valid_sql_identifier(order_by)==FORMAT_OK) {	/* A2-SEC-002: raw ORDER BY; ASC/DESC + valid col pass */
+ 		strncat(sql_query, " ORDER BY ", 10);
+ 		strncat(sql_query, order_column_name, sql_query_size - strlen(sql_query) - 1);
+ 		strncat(sql_query, " ", 1);
+@@ -2674,6 +2676,10 @@ int cosql_remove_data_between_column_value(sqlite3* pdb, const char* column_name
+ 
+ 	int ret = 0;
+ 
++	if (is_valid_sql_identifier(column_name)!=FORMAT_OK) {	/* A2-SEC-002: column_name -> raw WHERE %s; reject injection */
++		return COSQL_ERROR;
++	}
++
+ 	ret = cosql_exec(pdb, "DELETE FROM %s WHERE %s BETWEEN %d AND %d", DATA_TABLE_NAME, column_name, start_value, end_value);
+ 	if( ret != COSQL_OK ) {
+ 		codbg("fail to remove data between time");
+@@ -2839,6 +2845,10 @@ int cosql_backup_and_remove_data_between_column_value(sqlite3* src_pdb, sqlite3*
+ 		return COSQL_ERROR;
+ 	}
+ 
++	if (is_valid_sql_identifier(column_name)!=FORMAT_OK) {	/* A2-SEC-002: column_name -> raw WHERE/INSERT %s; reject injection */
++		return COSQL_ERROR;
++	}
++
+ 	int ret = 0;
+ 	const char *dst_db_path = sqlite3_db_filename(dst_pdb, "main");
+ 
+diff --git a/release/src/router/mssl/mssl.c b/release/src/router/mssl/mssl.c
+index b4e3ea14d1..d19167e790 100644
+--- a/release/src/router/mssl/mssl.c
++++ b/release/src/router/mssl/mssl.c
+@@ -245,6 +245,8 @@ typedef struct {
+ } mssl_cookie_t;
+ 
+ static SSL_CTX* ctx;
++static int mssl_ca_loaded = 0;	/* set when CA bundle is loaded (enables client verify) */
++#define MSSL_CA_BUNDLE "/rom/etc/ssl/certs/ca-certificates.crt"
+ 
+ static inline void mssl_print_err(SSL* ssl)
+ {
+@@ -381,16 +383,34 @@ static FILE *_ssl_fopen(int sd, int client, const char *name)
+ 	SSL_set_mode(kuki->ssl, SSL_MODE_AUTO_RETRY);
+ 
+ 	if (client) {
+-		// Setup SNI
++		/* Fail CLOSED: without a CA bundle we cannot verify the peer, so refuse
++		 * rather than silently accept any certificate (on-path MITM). */
++		if (!mssl_ca_loaded) {
++			syslog(LOG_WARNING, "%s: CA bundle unavailable, refusing client TLS", __FUNCTION__);
++			goto ERROR;
++		}
++		/* Verify the server certificate chain (CLIENT path only; the server
++		 * path keeps the SSL_VERIFY_NONE baseline set above). */
++		SSL_set_verify(kuki->ssl, SSL_VERIFY_PEER, NULL);
++
++		// Setup SNI + hostname verification
+ #if OPENSSL_VERSION_NUMBER >= 0x0090806fL && !defined(OPENSSL_NO_TLSEXT)
+ 		if (name && *name) {
+ 			struct addrinfo *res, hint = { .ai_flags = AI_NUMERICHOST };
+ 			if (getaddrinfo(name, NULL, &hint, &res) == 0)
+-				freeaddrinfo(res);
+-			else if (SSL_set_tlsext_host_name(kuki->ssl, name) != 1) {
+-				_dprintf("%s: SSL_set_tlsext_host_name failed\n", __FUNCTION__);
+-				mssl_print_err(kuki->ssl);
+-				goto ERROR;
++				freeaddrinfo(res);	/* numeric IP: no SNI; chain still verified */
++			else {
++				if (SSL_set_tlsext_host_name(kuki->ssl, name) != 1) {
++					_dprintf("%s: SSL_set_tlsext_host_name failed\n", __FUNCTION__);
++					mssl_print_err(kuki->ssl);
++					goto ERROR;
++				}
++				/* Enforce hostname match against the presented certificate. */
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L
++				SSL_set1_host(kuki->ssl, name);
++#elif OPENSSL_VERSION_NUMBER >= 0x10002000L
++				X509_VERIFY_PARAM_set1_host(SSL_get0_param(kuki->ssl), name, 0);
++#endif
+ 			}
+ 		}
+ #endif
+@@ -566,6 +586,13 @@ int mssl_init_ex(char *cert, char *priv, char *ciphers)
+ 
+ 	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+ 
++	/* Load the system CA bundle so the CLIENT path (see _ssl_fopen) can verify
++	 * peers. A missing bundle is NOT fatal here -- the server must still start --
++	 * but it is recorded so the client path fails closed. */
++	mssl_ca_loaded = (SSL_CTX_load_verify_locations(ctx, MSSL_CA_BUNDLE, NULL) == 1);
++	if (!mssl_ca_loaded)
++		syslog(LOG_WARNING, "mssl: could not load CA bundle %s; client TLS verification unavailable", MSSL_CA_BUNDLE);
++
+ 	_dprintf("%s() success\n", __FUNCTION__);
+ 	return 1;
+ }
+diff --git a/release/src/router/www/Advanced_VPNStatus.asp b/release/src/router/www/Advanced_VPNStatus.asp
+index 9a3a2e5703..e1918096b1 100644
+--- a/release/src/router/www/Advanced_VPNStatus.asp
++++ b/release/src/router/www/Advanced_VPNStatus.asp
+@@ -120,7 +120,7 @@ function display_vpn_data(){
+ 
+ 			client_server = ` (${vpnstate[`${vpnprefix}_addr`].shorter(42)}` +
+ 							` - port ${vpnstate[`${vpnprefix}_port`]}/${vpnstate[`${vpnprefix}_proto`]})`;
+-			client_desc = `<span style="background-color: transparent; color: ${(isSupport("UI4") ? "blue" : "white")};">${vpnstate[`${vpnprefix}_desc`]}</span>`;
++			client_desc = `<span style="background-color: transparent; color: ${(isSupport("UI4") ? "blue" : "white")};">${htmlEnDeCode.htmlEncode(vpnstate[`${vpnprefix}_desc`])}</span>`;
+ 
+ 			switch (vpnstate[`${vpnprefix}_state`]) {
+ 				case "0":
+@@ -323,7 +323,7 @@ function parseOVPNStatus(text, block, ipaddress, ripaddress){
+ 			if (clientTableEntries[i][8] == "UNDEF") {
+ 				clientTableEntries[i][8] = "";
+ 			}
+-			code += '<td style="vertical-align:top; white-space:nowrap; text-align:left;">' + clientTableEntries[i][8] + '<br><span style="color: cyan; background: transparent;">' + clientTableEntries[i][0] +'</span></td>';
++			code += '<td style="vertical-align:top; white-space:nowrap; text-align:left;">' + htmlEnDeCode.htmlEncode(clientTableEntries[i][8]) + '<br><span style="color: cyan; background: transparent;">' + htmlEnDeCode.htmlEncode(clientTableEntries[i][0]) +'</span></td>';
+ 			// Real IP, Virtual IP
+ 			code += '<td style="vertical-align:top; text-align:left;">' + clientTableEntries[i][1] + '<br><span style="color: cyan; background: transparent;">' + clientTableEntries[i][2] +'</span></td>';
+ 			// dl/up amount
+@@ -687,7 +687,7 @@ function parseWGSStatus(_block) {
+ 					if (is_wgsc_connected(fields[1].trim())) {
+ 						active_peer = 1;
+ 						have_peers = 1;
+-						code += "<tr><th colspan='2' style='text-align:left;color:#FFCC00;text-decoration:bold;'>Peer: " + wgs_object[fields[1].trim()] + "</th></tr>";
++						code += "<tr><th colspan='2' style='text-align:left;color:#FFCC00;text-decoration:bold;'>Peer: " + htmlEnDeCode.htmlEncode(wgs_object[fields[1].trim()]) + "</th></tr>";
+ 						code += "<tr><th class='wgsheader' style='text-align:left;'>Public ID</td><td style='text-align:left;'>" + fields[1] + "</td></tr>";
+ 					} else {
+ 						active_peer = 0;
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 9e18397518..6fb1f46e9d 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -175,7 +175,7 @@ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-ra
+ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* CSRF token */
+ var D = null, TRAF = {}, filter = "all", q = "";
+ 
+-function esc(s){ var d=document.createElement('div'); d.textContent=String(s==null?'':s); return d.innerHTML; }
++function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+ /* dict strings for JS use: each value is resolved server-side from the dict
+    (backticks per the sq-token rule); plain ASCII so esc() over them is a no-op */
+ var L = {
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 53f2fe8fa2..e5e20dd8c4 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -161,7 +161,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+     btn.disabled=true; err.style.display='none';
+     overlay(true);
+     var x=new XMLHttpRequest();
+-    x.open('GET','/reaper_diag.cgi?_='+Date.now(), true);
++    x.open('GET','/reaper_diag.cgi?http_id='+encodeURIComponent('<% nvram_get("http_id"); %>')+'&_='+Date.now(), true);
+     x.timeout=180000;
+     x.onreadystatechange=function(){
+       if(x.readyState!==4) return;
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 95df68c611..972bd41f1e 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -105,7 +105,7 @@ var S = null;                 /* store_status snapshot */
+ var loc = 'ram';              /* staged (unsaved) location */
+ var dsOn = {};                /* staged (unsaved) per-dataset enable */
+ 
+-function esc(s){ var d=document.createElement('div'); d.textContent=String(s==null?'':s); return d.innerHTML; }
++function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+ function fmtBytes(b){
+   if(b >= 1073741824) return (b/1073741824).toFixed(1) + ' GB';
+   if(b >= 1048576) return Math.round(b/1048576) + ' MB';
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 669c7b90b6..89b86aaae5 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -414,7 +414,7 @@ function rwSave(updateNow){
+ function rwCCName(cc){ for(var i=0;i<COUNTRIES.length;i++){ if(COUNTRIES[i][0]===cc) return COUNTRIES[i][1]; } return cc; }
+ function rwStats(){
+   var x = new XMLHttpRequest();
+-  x.open('GET','/reaper_warden.cgi?action=status',true);
++  x.open('GET','/reaper_warden.cgi?action=status&http_id='+encodeURIComponent('<% nvram_get("http_id"); %>'),true);
+   x.timeout = 8000;
+   x.onreadystatechange = function(){
+     if(x.readyState !== 4) return;
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 4d8f0de0e3..48784231d3 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -725,7 +725,7 @@ function buildReportHTML(){
+     '<h1>Reaper &mdash; '+bn+' Channel Quality Scan</h1>'+
+     '<div class="sub">Auto Scan of the '+bn+' channels, ranked by cleanliness (lower score = cleaner).</div>'+
+     '<div class="meta"><b>Generated:</b> '+esc(when)+' &nbsp;&middot;&nbsp; <b>Region:</b> '+esc(terr)+
+-      ' &nbsp;&middot;&nbsp; <b>Current channel:</b> '+cur+' &nbsp;&middot;&nbsp; <b>Recommended:</b> '+best+'</div>'+
++      ' &nbsp;&middot;&nbsp; <b>Current channel:</b> '+esc(cur)+' &nbsp;&middot;&nbsp; <b>Recommended:</b> '+esc(best)+'</div>'+
+     buildSpectrumSVG(res, cur, nb)+
+     '<div class="legend"><span><i class="sw" style="background:#1a7f4b"></i>Clean (nopkt &lt;10%)</span>'+
+       '<span><i class="sw" style="background:#d4a017"></i>Moderate (10&ndash;25%)</span>'+
+diff --git a/release/src/router/www/aimesh/aimesh_topology.html b/release/src/router/www/aimesh/aimesh_topology.html
+index 6bb9de05d6..e78f09f227 100644
+--- a/release/src/router/www/aimesh/aimesh_topology.html
++++ b/release/src/router/www/aimesh/aimesh_topology.html
+@@ -654,7 +654,7 @@ function client_gen_client_component(_dataArray, _node_info){
+ 			$client_name.attr("title", client_name);
+ 			$client_name.addClass("client_name");
+ 
+-			$client_name.html(client_name);
++			$client_name.html(htmlEnDeCode.htmlEncode(client_name));
+ 			$client_name.appendTo($clientNameBg);
+ 
+ 			var $clientMACIPBg = $("<div>");
+@@ -832,10 +832,10 @@ function client_reconnect(parm){
+ 				$("#aimesh_hint_msg .hint_text").append($("<div>").addClass("notice_text").html(htmlEnDeCode.htmlEncode(hint)));
+ 			}
+ 			else
+-				$("#aimesh_hint_msg .hint_text").append($("<div>").addClass("notice_text").html("<#Clientlist_OffLine_Hint#> " + client_info.name));
++				$("#aimesh_hint_msg .hint_text").append($("<div>").addClass("notice_text").html("<#Clientlist_OffLine_Hint#> " + htmlEnDeCode.htmlEncode(client_info.name)));
+ 		}
+ 		else
+-			$("#aimesh_hint_msg .hint_text").append($("<div>").addClass("notice_text").html("<#Clientlist_OffLine_Hint#> " + client_info.name));
++			$("#aimesh_hint_msg .hint_text").append($("<div>").addClass("notice_text").html("<#Clientlist_OffLine_Hint#> " + htmlEnDeCode.htmlEncode(client_info.name)));
+ 
+ 		$("#aimesh_hint_msg #action_canacl").hide();
+ 		$("#aimesh_hint_msg #action_ok").unbind("click");
+diff --git a/release/src/router/www/device-map/disk.asp b/release/src/router/www/device-map/disk.asp
+index 29e09307c6..ef80e2abbf 100644
+--- a/release/src/router/www/device-map/disk.asp
++++ b/release/src/router/www/device-map/disk.asp
+@@ -99,7 +99,7 @@ function initial(){
+ 
+ var thisForeignDisksIndex;
+ function showDiskUsage(device){
+-	document.getElementById("disk_model_name").innerHTML = device.deviceName;
++	document.getElementById("disk_model_name").innerHTML = htmlEnDeCode.htmlEncode(device.deviceName);
+ 
+ 	if(device.mountNumber > 0){
+ 		showtext(document.getElementById("disk_total_size"), simpleNum(device.totalSize) + " GB");		
+diff --git a/release/src/router/www/disk_functions.js b/release/src/router/www/disk_functions.js
+index 50c01b26a7..5067855f28 100644
+--- a/release/src/router/www/disk_functions.js
++++ b/release/src/router/www/disk_functions.js
+@@ -351,7 +351,7 @@ function BuildTree(){
+ 		else
+ 			short_ItemText = ItemText;
+ 		
+-		shown_ItemText = showhtmlspace(short_ItemText);
++		shown_ItemText = showhtmlspace(htmlEnDeCode.htmlEncode(short_ItemText));
+ 		
+ 		if(layer == 1)
+ 			ItemIcon = 'disk';
+@@ -392,7 +392,7 @@ function BuildTree(){
+ 	'<td>\n'+
+ 		'<div id="b'+ItemBarCode+'" class="FdText">\n'+		/* style="float:left; width:117px; overflow:hidden;"*/
+ 			'<img id="c'+ItemBarCode+'" onclick=\'document.getElementById("d'+ItemBarCode+'").onclick();\' src="/images/New_ui/advancesetting/'+ItemIcon+'.png">\n'+
+-			'<span id="d'+ItemBarCode+'"'+SubClick+' title="'+ItemText+'">'+shown_ItemText+'</span>\n'+
++			'<span id="d'+ItemBarCode+'"'+SubClick+' title="'+htmlEnDeCode.htmlEncode(ItemText)+'">'+shown_ItemText+'</span>\n'+
+ 		'</div>\n'+
+ 	'</td>\n'+
+ 	
+@@ -411,7 +411,7 @@ function BuildTree(){
+ 			'<img id="c'+ItemBarCode+'" onclick=\'document.getElementById("d'+ItemBarCode+'").onclick();\' src="/images/New_ui/advancesetting/'+ItemIcon+'.png">\n'+
+ 	'</td>\n'+
+ 	'<td class="FdText">\n'+
+-			'<span id="d'+ItemBarCode+'"'+SubClick+' title="'+ItemText+'">'+shown_ItemText+'</span>\n'+
++			'<span id="d'+ItemBarCode+'"'+SubClick+' title="'+htmlEnDeCode.htmlEncode(ItemText)+'">'+shown_ItemText+'</span>\n'+
+ 	'</td>\n';
+ 			
+ 			/*if(PROTOCOL == "cifs")
+@@ -440,7 +440,7 @@ function BuildTree(){
+ 	'<td>\n'+
+ 		'<div id="b'+ItemBarCode+'" class="FdText">\n'+		/* style="float:left; width:117px; overflow:hidden;"*/
+ 			'<img id="c'+ItemBarCode+'" onclick=\'document.getElementById("d'+ItemBarCode+'").onclick();\' src="/images/New_ui/advancesetting/'+ItemIcon+'.png">\n'+
+-			'<span id="d'+ItemBarCode+'"'+SubClick+' title="'+ItemText+'">'+shown_ItemText+'</span>\n'+
++			'<span id="d'+ItemBarCode+'"'+SubClick+' title="'+htmlEnDeCode.htmlEncode(ItemText)+'">'+shown_ItemText+'</span>\n'+
+ 		'</div>\n'+
+ 	'</td>\n'+
+ '</tr>\n';
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 13621bd509..4d17f37afe 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -242,6 +242,7 @@ var ICONS = {
+ 
+ var reaperShell = true;
+ function $id(id){return document.getElementById(id);}
++function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+ function frameUrl(page){
+   /* allow-list (matches REAPER-FIXES.md R4-2): only a bare same-origin page
+      filename, optionally with a query - no leading slash/backslash, no scheme,
+@@ -277,9 +278,9 @@ function renderTabs(page){
+     if(t.tabName==='__HIDE__'||t.tabName==='__INHERIT__') continue;
+     if(EXTABS.indexOf(t.url)!==-1) continue;
+     if(isExternalUrl(t.url))   /* addon help/support link: real target, new tab */
+-      h+='<a class="rtab" href="'+t.url+'" target="_blank" rel="noopener noreferrer">'+t.tabName+'</a>';
++      h+='<a class="rtab" href="'+esc(t.url)+'" target="_blank" rel="noopener noreferrer">'+esc(t.tabName)+'</a>';
+     else
+-      h+='<a class="rtab'+(t.url===page?' on':'')+'" href="/reaper_shell.asp#'+t.url+'" data-page="'+t.url+'">'+t.tabName+'</a>';
++      h+='<a class="rtab'+(t.url===page?' on':'')+'" href="/reaper_shell.asp#'+esc(t.url)+'" data-page="'+esc(t.url)+'">'+esc(t.tabName)+'</a>';
+     count++;
+   }
+   if(count<2){ bar.style.display='none'; bar.innerHTML=''; return; }
+@@ -346,7 +347,7 @@ function buildRail(menuTree){
+     if(!m||!m.index) continue;
+     if(exMenus.indexOf(m.index)!==-1) continue;
+     if(m.index==='menu_QIS') continue;
+-    if(m.index==='menu_Split'){ h+='<div class="grp">'+m.menuName+'</div>'; continue; }
++    if(m.index==='menu_Split'){ h+='<div class="grp">'+esc(m.menuName)+'</div>'; continue; }
+     var first=-1, pages=[];
+     for(var j=0;j<(m.tab||[]).length;j++){
+       var t=m.tab[j];
+@@ -359,9 +360,9 @@ function buildRail(menuTree){
+     var ic=ICONS[m.index]||ICONS._default;
+     var furl=m.tab[first].url;
+     if(isExternalUrl(furl))   /* whole menu points off-origin: new-tab link */
+-      h+='<a class="item" href="'+furl+'" target="_blank" rel="noopener noreferrer">'+ic+'<span class="rtip">'+m.menuName+'</span></a>';
++      h+='<a class="item" href="'+esc(furl)+'" target="_blank" rel="noopener noreferrer">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+     else
+-      h+='<a class="item" href="/reaper_shell.asp#'+furl+'" data-page="'+furl+'" data-pages="'+pages.join('|')+'">'+ic+'<span class="rtip">'+m.menuName+'</span></a>';
++      h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+   }
+   rail.insertAdjacentHTML('beforeend', h);
+   reaperTips(rail);   /* title-tooltip any nav label the language clipped */
+-- 
+2.25.1
+

@@ -1,0 +1,112 @@
+From 393b5615ef22f6b6f30646802a7bd2eca2e27f51 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 31 Jul 2026 18:06:07 -0400
+Subject: [PATCH] reaper v2.0.0: release audit fixes (version bump + Warden
+ accel-flush + JSON-CGI hardening)
+
+Pre-2.0.0 6-agent release audit (audits/v2.0.0-RELEASE-READINESS-AUDIT-2026-07-31.md).
+No Critical/High confirmed. Landing the one blocker + the clean should-fixes:
+
+- version.conf: EXTENDNO Reaper_v1.9.9d -> Reaper_v2.0.0 (release blocker A5-REL-001).
+- rc/rwarden.c: emit `fc flush` after the rule-apply chain hook and after a feed/geo
+  update, mirroring gatekeeper.c. Without it, already-offloaded/established flows to a
+  newly-banned or newly-blocked peer bypass the DROP in the HW accelerator until they
+  age out (A3-NET-001). No-op when acceleration is off.
+- httpd/web.c: gk_json_esc now escapes < > & as \uXXXX (inert as HTML even if a JSON
+  response is mis-typed; JSON.parse restores them), and the seven Reaper JSON CGIs
+  (qos_stats/traffic/wifi/gk/warden/dev/mcp) are served application/json instead of
+  text/html. Closes the stored-XSS-via-mis-sniff surface (A1-SEC-001). reaper_diag
+  stays text/plain.
+
+Deferred (documented): cosql %Q hardening (A2-SEC-001) is a ~30-site inherited-SQL
+refactor and is currently unreached (no attacker-controlled JSON writer in-tree); it
+lands with the device-manager Rung-B storage that makes it reachable.
+
+Build-host: reaper_verify.sh SAMBA36X regression WARN->FAIL (not in this tree).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf     |  2 +-
+ release/src/router/httpd/web.c  | 17 ++++++++++-------
+ release/src/router/rc/rwarden.c |  9 +++++++++
+ 3 files changed, 20 insertions(+), 8 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 1eebefa0ff..16a1fd77e0 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.9.9d
++EXTENDNO=Reaper_v2.0.0
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 7b507b40a6..3e9eb0bed9 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22570,6 +22570,9 @@ gk_json_esc(FILE *stream, const char *s)
+ 		unsigned char c = (unsigned char)*s;
+ 		if (c == '"' || c == '\\') websWrite(stream, "\\%c", c);
+ 		else if (c < 0x20) websWrite(stream, "\\u%04x", c);
++		/* escape <>& as \uXXXX so a stored value can never be sniffed/rendered
++		 * as HTML even if the response is mis-typed; JSON.parse restores them */
++		else if (c == '<' || c == '>' || c == '&') websWrite(stream, "\\u%04x", c);
+ 		else websWrite(stream, "%c", c);
+ 	}
+ 	websWrite(stream, "\"");
+@@ -31399,15 +31402,15 @@ struct mime_handler mime_handlers[] =
+ 	{ "upgrade.cgi*", "text/html", no_cache_IE7, do_upgrade_post, do_upgrade_cgi, do_auth},
+ 	{ "upload.cgi*", "text/html", no_cache_IE7, do_upload_post, do_upload_cgi, do_auth },
+ 	/* reaper v1.2.7: set_ASUS_EULA.cgi endpoint removed (legacy app-only setter; EULA pre-signed in defaults.c) */
+-	{ "reaper_qos_stats.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
+-	{ "reaper_traffic.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
+-	{ "reaper_wifi.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_wifi_cgi, do_auth },
++	{ "reaper_qos_stats.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
++	{ "reaper_traffic.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
++	{ "reaper_wifi.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_wifi_cgi, do_auth },
+ 	{ "reaper_diag.cgi*", "text/plain", no_cache_IE7, do_html_post_and_get, do_reaper_diag_cgi, do_auth },
+-	{ "reaper_gk.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_gk_cgi, do_auth },
+-	{ "reaper_warden.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
+-	{ "reaper_dev.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
++	{ "reaper_gk.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_gk_cgi, do_auth },
++	{ "reaper_warden.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
++	{ "reaper_dev.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
+ #ifdef RTCONFIG_REAPER_MCP
+-	{ "reaper_mcp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
++	{ "reaper_mcp.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
+ #endif
+ 	{ "set_ASUS_NEW_EULA.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_NEW_EULA_cgi, do_auth },
+ 	{ "set_ASUS_privacy_policy.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ASUS_privacy_policy_cgi, do_auth },
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 29c9aa62b4..4d5082ba59 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -381,6 +381,11 @@ static void rw_gen_apply(void)
+ 	fprintf(f,
+ 	  "ip6tables -I INPUT -j REAPER_WARDEN\n"
+ 	  "ip6tables -I FORWARD -j REAPER_WARDEN\n");
++	/* Offloaded/established flows bypass the freshly-hooked chain in the HW
++	 * accelerator, so a peer banned via rw_ban keeps its existing flows until
++	 * they age out. Flush the flow cache so they re-traverse (mirrors the
++	 * gatekeeper.c apply/teardown). Harmless no-op when the accelerator is off. */
++	fprintf(f, "fc flush 2>/dev/null\n");
+ 	fclose(f);
+ }
+ 
+@@ -491,6 +496,10 @@ static void rw_gen_update(void)
+ 	  "else rm -f " RW_SAVE ".tmp; logger -t rwarden \"cache save produced no data - /jffs cache left unchanged\"; fi\n"
+ 	  "nvram set rwarden_lastupd=$(date +%%s); nvram commit\n"
+ 	  "logger -t rwarden \"feeds updated: threat=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p')\"\n");
++	/* Newly-added threat/geo members do not affect already-offloaded flows;
++	 * flush the flow cache so existing flows to a now-blocked peer re-traverse
++	 * the REAPER_WARDEN chain and get dropped (A3-NET-001). No-op if accel off. */
++	fprintf(f, "fc flush 2>/dev/null\n");
+ 	fclose(f);
+ }
+ 
+-- 
+2.25.1
+

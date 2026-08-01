@@ -1,6 +1,6 @@
 # Security Policy
 
-This project exists to harden the RT-BE Series firmware — **RT-BE96U** (primary, hardware-validated)
+This project exists to harden the RT-BE Series firmware — **RT-BEXXU** (primary, hardware-validated)
 plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (all BCM4916 / WiFi 7),
 so security reports are very welcome.
 
@@ -14,7 +14,7 @@ so security reports are very welcome.
 
 Email **theunbounddeveloper@outlook.com** with:
 
-- the affected patch/file or image version (`RT-BE96U_…_reaper_…`),
+- the affected patch/file or image version (`RT-BEXXU_…_reaper_…`),
 - reproduction steps or a PoC,
 - whether the issue is reachable from WAN, LAN, or only with authentication.
 

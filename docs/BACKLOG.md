@@ -15,18 +15,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## UI / UX polish
 
-- **Translation** Do a full pass to make sure all pages are translated.
-- **No-JFFS graceful handling / disclosure.** Warden's feed cache is hardcoded to
-  `/jffs/rwarden/sets.ipset`, but the project deliberately does **not** mandate JFFS. With
-  JFFS off (or read-only) Warden still enforces fine (rules + ipsets are RAM/`/tmp`), but the
-  cache write silently no-ops (`cache save produced no data`) and cross-reboot persistence /
-  "last-good on a no-internet boot" never happens — with no UI indication of why. Detect
-  no-JFFS and surface it (Warden page banner or the future storage tab: "protection is live
-  but not persistent — enable JFFS or USB storage"). Note the cache must stay JFFS-locked in
-  the Rung-B storage design (it has to restore *before* the firewall arms, earlier than any
-  USB mount), so the honest fix is disclosure, not relocating it to USB. Applies to any other
-  feature that assumes a writable `/jffs` (rwatch dumps already fall back; audit the rest).
-- **802.1Q & P** Expose the options on the main WAN pages, BE98, IPTV tab under LAN?. [DONE][Ask USER]
+- **SSID Format** The dashboard SSIDs show all capitals vs. mixed case on the Network page.
+- **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
+  device goes offline - it will   just show the IP address and not the name - and when the 
+  device comes back online - it will update the device name.
 
 ## Known issues (cause identified)
 
@@ -43,7 +35,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 ## Known issues (under investigation)
 
 - **Boot: connection comes up twice before it's ready.** Field-observed on metal
-  (owner, RT-BE96U). During boot the WAN/connection appears to initialize, drop, and
+  (owner, RT-BEXXU). During boot the WAN/connection appears to initialize, drop, and
   re-initialize before settling — clients may see a brief connect/disconnect flap at
   startup. Boot syslog shows the plausible chain: `start_services` runs, then
   `udhcpc_wan → restart_wan_if 0` + `restart_nasapps` + a `stop_ntpd/start_ntpd` and
@@ -64,15 +56,35 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Features to add
 
+- **Staged ("batch") changes — one save, minimal restarts.** Owner request. Today each control
+  applies immediately, so e.g. changing all three Wi-Fi bands = three applies + three
+  `restart_wireless`. Add a staging layer: a control's Apply becomes "Add to changes", writing
+  the intended nvram diff into a cross-page **pending basket** (localStorage, under the Reaper
+  shell) instead of applying; a persistent shell bar shows *"Pending changes (N) — Review /
+  Apply / Discard"*; a review modal lists every staged change (page → setting → old⇒new). On
+  Apply, the engine validates ALL first (all-or-nothing, like the Warden save), writes nvram in
+  one commit, then runs the **de-duplicated, correctly-ordered** action set ONCE — reboot only if
+  a staged change is reboot-class.
+  - *Feasible — backend already supports it:* one apply POST carries many nvram keys + a chained
+    `action_script` (`restart_wireless;restart_qos;…`), and `restart_wireless` cycles all radios
+    at once, so "3 restarts" is a UI artifact, not a firmware limit. The missing piece is the
+    accumulate-then-fire UI.
+  - *Hard parts:* (1) an nvram-key → required-action map + safe ordering (e.g. firewall after
+    wireless); (2) a **reboot-class table** — most changes are service restarts (seconds), but a
+    few need a COLD reboot (MLO enable/disable; some SDN / operation-mode switches) so the engine
+    must not reboot needlessly; (3) staleness/conflict if nvram changed underneath between staging
+    and apply; (4) **scope** — clean for Reaper-authored pages (we own their save handlers), hard
+    for stock ASUS pages (vendor `applyRule`/`showLoading` JS is invasive to intercept).
+  - *Recommended path:* Reaper-native pages first. Quick sub-win for the Wi-Fi case: a single
+    Reaper Wireless page showing all three bands that applies once. The full cross-page
+    transaction system is substantial — its own project, v-next.
+
 - **Remote syslog push/fetch.** The router can already send its log to a remote
   collector (send-only). Add the ability to **push to / be fetched by** analytics
   systems — most SIEM/analytics pipelines are push-based.
 
 - **NIST-grade auditing.** Consider adding audit capabilities aligned to a NIST
   baseline.
-
-- **Change Audting** Add more logging information and details such as when a feature 
-  is turned on, off, or changed setting.
 
 - **Diag: regulatory-mismatch warning.** Make `reaper_diag` (and possibly a Wireless-page
   hint) print an explicit `WARN: territory_code=EU/xx but wlX_country_code=US` style line
@@ -94,7 +106,30 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **`poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal already measured 2–3 % CPU
   at the class-poll cadence; treating this as a non-issue per the prior finding. [shelved]
 
-- **AWSIOT** Phone home tunnel still active and in code on the sibling devices. Remove them.
+- **AWSIOT phone-home — removal plan (analyzed 2026-07-30 on v1.9.8; LINK-SAFE).** ASUS AWS-IoT
+  cloud connector (`/usr/sbin/awsiot` + `/usr/lib/libawsiot_ipc.so`): carries ASUS-app remote
+  (off-LAN) access, ASUS-account binding, and ASUS-cloud push. **Confirmed live on the RT-BEXXU
+  itself, not just the siblings** — owner's v1.9.8 diag shows it running; the 2026-07-08
+  phone-home audit missed it (its "no ASUS-cloud automatic outbound remains" claim is wrong).
+  - *Why it runs despite `config_base` `# RTCONFIG_AWSIOT is not set`:* the behnd platform
+    `Makefile` config-gen **force-re-adds** `RTCONFIG_AWSIOT=y` at `:1570` (`if [ "$(AWSIOT)"="y" ]`)
+    and `:4195` (inside the non-`RP-` block, beside `RTCONFIG_ACCOUNT_BINDING=y`), so the generated
+    `config_rt-BEXXU` carries `RTCONFIG_AWSIOT=y`. Result: `start_awsiot()` (services.c:13346) runs
+    at boot and the **watchdog `awsiot_check()` (watchdog.c:8136) respawns it** — a runtime
+    `killall awsiot` never sticks; it needs a build change.
+  - *Removal IS link-safe (verified):* scanned every staged binary/lib — **nothing DT_NEEDs
+    `libawsiot_ipc.so`** except awsiot, so dropping it does NOT hit the libcreduction/prebuilt-blob
+    trap that blocked the AAE / libasc / conn_diag removals. No shim needed.
+  - *Live vs inert:* AAE/mastiff IPC transport is already gone, but the closed awsiot binary may
+    still open a direct AWS-IoT MQTT/TLS (:8883) session — confirm on metal before/after with
+    `netstat -tnp | grep awsiot` or `conntrack -L | grep 8883`.
+  - *Plan:* comment out the two `echo "RTCONFIG_AWSIOT=y"` lines in the behnd `Makefile` (`:1570`
+    + `:4195`); the `#ifdef RTCONFIG_AWSIOT` gates then compile out start_awsiot + awsiot_check +
+    the install lines. Weigh dropping the paired `RTCONFIG_ACCOUNT_BINDING` (same ASUS-cloud
+    account surface) in the same pass. Edits the shared behnd Makefile → fleet-wide (all 5 models).
+    VERIFY post-build: `config_rt-BEXXU` has no `RTCONFIG_AWSIOT=y`; `fs/usr/sbin/awsiot` absent;
+    libcreduction clean; AiMesh + LAN-side app unaffected. Loses only ASUS-cloud remote/app
+    features; nothing local depends on it. Candidate for v1.9.9. [owed]
 
 ## Documentation
 

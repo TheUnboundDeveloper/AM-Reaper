@@ -21,7 +21,7 @@ GPL-covered portions of any Reaper build is, deterministically:
    - Tag: `3006.102.8-beta2`
    - Commit: **`a7ebfa133a`**
    - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
-     model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro — from
+     model — RT-BEXXU / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro — from
      <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 2. **The Reaper patch series** in [`../patches/`](../patches/) — the full set of
    `git format-patch` files that transform the pinned upstream tree into the
@@ -74,7 +74,7 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 ## 3. Requesting a build
 
 Reaper firmware images are **not publicly hosted.** A flashable build for any
-model in the ASUS RT-BE Series (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+model in the ASUS RT-BE Series (RT-BEXXU / RT-BE86U / RT-BE88U / GT-BE98 /
 GT-BE98 Pro) is available **on request**, and is delivered together with the
 complete corresponding source (§1) under GPL v2 — a §3(a) delivery to each
 recipient. This keeps the images off public, scraped pages while remaining fully
@@ -83,11 +83,11 @@ GPL-compliant to everyone who receives one.
 **Request format.** Email the project address **theunbounddeveloper@outlook.com**
 (or open an issue if you have repository access) with:
 
-- **Subject:** `Reaper build request — <MODEL>` (e.g. `RT-BE96U`)
-- **Model:** one of `RT-BE96U` / `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98 Pro`
+- **Subject:** `Reaper build request — <MODEL>` (e.g. `RT-BEXXU`)
+- **Model:** one of `RT-BEXXU` / `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98 Pro`
 - **Variant:** `Standard` (no AI Advisor) **or** `AI Advisor` (the optional,
   off-by-default MCP build)
-- **Version:** a specific version (e.g. `v1.9.7`) or `latest`
+- **Version:** a specific version (e.g. `v2.0.0`) or `latest`
 
 You receive the flashable `.pkgtb` (plus its recovery `_loader.pkgtb`) and the
 complete corresponding source per §1. Under GPL v2 you may then use, study,

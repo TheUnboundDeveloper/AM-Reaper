@@ -1,0 +1,235 @@
+From f5a9b4ff9d3f55d84570646f67eef367e11dad52 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 31 Jul 2026 19:41:24 -0400
+Subject: [PATCH] reaper v2.0.0: inherited ASUS/Merlin audit fixes (AUDIT-2) -
+ no version change
+
+Carry-patches for reachable, Reaper-fixable findings from the inherited-code audit
+(audits/INHERITED-AUDIT-2026-07-31.md). Version stays Reaper_v2.0.0 (in-place re-spin).
+
+Highs:
+- Stored XSS via LAN-client DHCP hostname (H1): raw on the fromNetworkmapd ingestion
+  path, rendered via innerHTML in the dashboard client table, device-map Clients panel,
+  and the client-picker (~10 admin pages). htmlEncode name/nickName at both ingestion
+  points (client_function.js, dashboard/clientlist.module.js), mirroring the nmpClient
+  path that already encoded.
+- USB volume-label root RCE on hotplug (H2): rc/usb.c mount-label allow-list kept
+  shell-active & ( ) and the label is interpolated into system(app_check_folder.sh %s);
+  dropped &() (the APP_NETINSTALLED sink is compiled on this model).
+- IPSec-profile CGI stack overflow (H3): 5 strlcpy in do_set_ipsec_profile_cgi used
+  sizeof(tmp_str)=128 as the bound into 2/4/12/33-byte stack buffers; use sizeof(dest).
+
+Mediums:
+- do_vpnupload_post set ANY posted nvram name (arbitrary write bypassing validate_apply);
+  restricted to the vpn_ namespace.
+- udhcpc s46_mapcalc: empty FMR -> fmrs[strlen-1] wraps -> 1-byte heap underflow; guarded.
+
+Lows (safe hardening):
+- libpasswd empty-shadow salt+1 over-read guard; libdisk lan_domain workgroup fallback
+  now netbios-validated like st_samba_workgroup; shared/shutils get_process_name_by_pid
+  fread now NUL-terminates; httpd do_upload_cert_key zero-inits upload_fifo (no unlink()
+  of stack garbage if the file_key part is absent).
+
+Deferred (see audits/): B5-SEC-001 mssl client-TLS verify (needs CA-bundle + hostname
+verification; blanket verify would break DDNS/feed HTTPS), plus lower/edge/by-design
+items (IPv6 INPUT policy, timing strcmp, infosvr discovery info-leak, 3-location boundary
+OOB read, storage.c line mismatch, vpnc admin-auth quote, iptables-restore rollback).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                 | 18 +++++++++++-------
+ release/src/router/libdisk/write_smb_conf.c    |  4 ++++
+ release/src/router/libpasswd/passwd.c          |  3 +++
+ release/src/router/rc/udhcpc.c                 |  4 +++-
+ release/src/router/rc/usb.c                    |  6 +++++-
+ release/src/router/shared/shutils.c            |  3 ++-
+ release/src/router/www/client_function.js      |  7 +++++--
+ .../www/dashboard/js/clientlist.module.js      |  5 +++--
+ 8 files changed, 36 insertions(+), 14 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 3e9eb0bed9..9243884e78 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -16789,7 +16789,11 @@ do_vpnupload_post(char *url, FILE *stream, int len, char *boundary)
+ 								{
+ 									*p = '\0';
+ 								}
+-								nvram_set(name, value);
++								/* reaper: OpenVPN-upload endpoint must only set its own vpn_* form
++								 * fields (vpn_upload_type/unit); stock set ANY posted name ->
++								 * arbitrary nvram write bypassing validate_apply. */
++								if (!strncmp(name, "vpn_", 4))
++									nvram_set(name, value);
+ 							}
+ 						}
+ 						//printf("%s=%s\n", name, value);
+@@ -17243,7 +17247,7 @@ err_set_uploaded_cert_as_cacert:
+ static void
+ do_upload_cert_key(char *url, FILE *stream, int len, char *boundary)
+ {
+-	char upload_fifo[32];
++	char upload_fifo[32] = {0};	/* reaper: avoid unlink() of an uninitialized path if the file_key part is absent */
+ 	FILE *fifo = NULL;
+ 	int ret = EINVAL, ch, r;
+ 	char *filename = NULL, *p = NULL;
+@@ -18560,7 +18564,7 @@ do_set_ipsec_profile_cgi(char *url, FILE *stream)
+ 	strlcpy(ipsec_profile_tmp, nvram_safe_get("ipsec_profile_1"), sizeof(ipsec_profile_tmp));
+ 
+ 	if((ipsec_server_enable_ptr = get_cgi_json("ipsec_server_enable", root)) == NULL){
+-		strlcpy(ipsec_server_enable, nvram_safe_get("ipsec_server_enable"), sizeof(tmp_str));
++		strlcpy(ipsec_server_enable, nvram_safe_get("ipsec_server_enable"), sizeof(ipsec_server_enable)); /* reaper: was sizeof(tmp_str)=128 into a 2-byte buf */
+ 	}
+ 	else
+ 		strlcpy(ipsec_server_enable, ipsec_server_enable_ptr, sizeof(ipsec_server_enable));
+@@ -18568,7 +18572,7 @@ do_set_ipsec_profile_cgi(char *url, FILE *stream)
+ 	if((auth_method_key_ptr = get_cgi_json("auth_method_key", root)) == NULL){
+ 		memset(tmp_str, 0, sizeof(tmp_str));
+ 		get_string_in_62(ipsec_profile_tmp, 7, tmp_str, sizeof(tmp_str));
+-		strlcpy(auth_method_key, tmp_str, sizeof(tmp_str));
++		strlcpy(auth_method_key, tmp_str, sizeof(auth_method_key)); /* reaper: dest bound, was sizeof(tmp_str) */
+ 	}
+ 	else
+ 		strlcpy(auth_method_key, auth_method_key_ptr, sizeof(auth_method_key));
+@@ -18576,7 +18580,7 @@ do_set_ipsec_profile_cgi(char *url, FILE *stream)
+ 	if((dead_peer_detection_ptr = get_cgi_json("dead_peer_detection", root)) == NULL){
+ 		memset(tmp_str, 0, sizeof(tmp_str));
+ 		get_string_in_62(ipsec_profile_tmp, 31, tmp_str, sizeof(tmp_str));
+-		strlcpy(dead_peer_detection, tmp_str, sizeof(tmp_str));
++		strlcpy(dead_peer_detection, tmp_str, sizeof(dead_peer_detection)); /* reaper: dest bound, was sizeof(tmp_str) */
+ 	}
+ 	else
+ 		strlcpy(dead_peer_detection, dead_peer_detection_ptr, sizeof(dead_peer_detection));
+@@ -18584,7 +18588,7 @@ do_set_ipsec_profile_cgi(char *url, FILE *stream)
+ 	if((ipsec_dpd_ptr = get_cgi_json("ipsec_dpd", root)) == NULL){
+ 		memset(tmp_str, 0, sizeof(tmp_str));
+ 		get_string_in_62(ipsec_profile_tmp, 30, tmp_str, sizeof(tmp_str));
+-		strlcpy(ipsec_dpd, tmp_str, sizeof(tmp_str));
++		strlcpy(ipsec_dpd, tmp_str, sizeof(ipsec_dpd)); /* reaper: dest bound, was sizeof(tmp_str) */
+ 	}
+ 	else
+ 		strlcpy(ipsec_dpd, ipsec_dpd_ptr, sizeof(ipsec_dpd));
+@@ -18592,7 +18596,7 @@ do_set_ipsec_profile_cgi(char *url, FILE *stream)
+ 	if((virtual_subnet_ptr = get_cgi_json("virtual_subnet", root)) == NULL){
+ 		memset(tmp_str, 0, sizeof(tmp_str));
+ 		get_string_in_62(ipsec_profile_tmp, 14, tmp_str, sizeof(tmp_str));
+-		strlcpy(virtual_subnet, tmp_str, sizeof(tmp_str));
++		strlcpy(virtual_subnet, tmp_str, sizeof(virtual_subnet)); /* reaper: dest bound, was sizeof(tmp_str) */
+ 	}
+ 	else
+ 		strlcpy(virtual_subnet, virtual_subnet_ptr, sizeof(virtual_subnet));
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index 96e266f7c0..107cda39dd 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -332,6 +332,10 @@ int main(int argc, char *argv[])
+ 		strlcpy(p_computer_name, nvram_safe_get("lan_domain"), sizeof(p_computer_name));
+ 		*strchrnul(p_computer_name, '.') = '\0';
+ 		toUpperCase(p_computer_name);
++		/* reaper: give the lan_domain fallback the same netbios validation the
++		 * st_samba_workgroup path gets, so an invalid value never reaches smb.conf */
++		if (!is_valid_netbios_name(p_computer_name))
++			p_computer_name[0] = '\0';
+ 	}
+ 	if (*p_computer_name)
+ #if defined(RTCONFIG_TUXERA_SMBD)
+diff --git a/release/src/router/libpasswd/passwd.c b/release/src/router/libpasswd/passwd.c
+index ec1ad5029e..68f4bd8ac9 100644
+--- a/release/src/router/libpasswd/passwd.c
++++ b/release/src/router/libpasswd/passwd.c
+@@ -117,6 +117,9 @@ int compare_passwd_in_shadow(const char *username, const char *passwd)
+ 	if (salt == NULL) 
+ 		goto ERROR;
+ 	
++	/* reaper: empty shadow hash -> salt+1 over-reads past the buffer */
++	if (salt[0] == '\0')
++		goto ERROR;
+ 	p = strchr(salt + 1, '$');
+ 	if (p == NULL) 
+ 		goto ERROR;
+diff --git a/release/src/router/rc/udhcpc.c b/release/src/router/rc/udhcpc.c
+index 6914a4a364..7a8c51c652 100644
+--- a/release/src/router/rc/udhcpc.c
++++ b/release/src/router/rc/udhcpc.c
+@@ -2150,7 +2150,9 @@ skip:
+ 		}
+ 
+ 		// Delete the last blank character
+-		fmrs[strlen(fmrs)-1] = '\0';
++		// reaper: guard empty fmrs - strlen()-1 wraps to SIZE_MAX -> 1-byte heap underflow
++		if (fmrs[0] != '\0')
++			fmrs[strlen(fmrs)-1] = '\0';
+ 
+ 		s46_changed = nvram_set_check(ipv6_nvname_by_unit("ipv6_s46_peer", wan_unit), peerbuf);
+ 		s46_changed += nvram_set_check(ipv6_nvname_by_unit("ipv6_s46_addr6", wan_unit), addr6buf);
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 1b4794df66..8f67db33e8 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -2237,7 +2237,11 @@ int mount_partition(char *dev_name, int host_num, char *dsc_name, char *pt_name,
+ 
+ 	if (*the_label != 0) {
+ 		for (ptr = the_label; *ptr; ptr++) {
+-			if (!isalnum(*ptr) && !strchr("+-&.@()", *ptr))
++			/* reaper: the mount-point label is a raw (attacker-controlled) USB
++			 * volume label that is later interpolated into system() calls, so the
++			 * allow-list must not keep shell-active chars. Dropped '&' '(' ')'
++			 * (kept '+-.@', which are inert in a shell command). */
++			if (!isalnum(*ptr) && !strchr("+-.@", *ptr))
+ 				*ptr = '_';
+ 		}
+ 		snprintf(mountpoint, sizeof(mountpoint), "%s/%s", POOL_MOUNT_ROOT, the_label);
+diff --git a/release/src/router/shared/shutils.c b/release/src/router/shared/shutils.c
+index 09f8537ef3..52fb19c7ee 100644
+--- a/release/src/router/shared/shutils.c
++++ b/release/src/router/shared/shutils.c
+@@ -2382,7 +2382,8 @@ char *get_process_name_by_pid(const int pid)
+ 	FILE* f = fopen(name,"r");
+ 	if(f){
+ 		size_t size;
+-		size = fread(name, sizeof(char), 1024, f);
++		size = fread(name, sizeof(char), sizeof(name)-1, f);
++		name[size] = '\0';	/* reaper: fread does not NUL-terminate */
+ 		if(size>0){
+ 			if('\n'==name[size-1])
+ 			name[size-1]='\0';
+diff --git a/release/src/router/www/client_function.js b/release/src/router/www/client_function.js
+index e17f8530e4..1e5e9a9ffb 100644
+--- a/release/src/router/www/client_function.js
++++ b/release/src/router/www/client_function.js
+@@ -439,11 +439,14 @@ function genClientList(){
+ 			clientList[thisClientMacAddr].ip6_prefix = typeof thisClient.ip6_prefix === "undefined" ? "" : thisClient.ip6_prefix;
+ 			clientList[thisClientMacAddr].mac = thisClient.mac.toUpperCase();
+ 
+-			clientList[thisClientMacAddr].name = thisClient.name.trim();
++			/* reaper: HTML-encode network-map-sourced name/nickName at ingestion
++			 * (a LAN client controls its DHCP hostname) so it can never render as
++			 * HTML in the client tables/pickers. Mirrors the nmpClient path below. */
++			clientList[thisClientMacAddr].name = htmlEnDeCode.htmlEncode(thisClient.name.trim());
+ 			if(clientList[thisClientMacAddr].name == ""){
+ 				clientList[thisClientMacAddr].name = clientList[thisClientMacAddr].mac;
+ 			}
+-			clientList[thisClientMacAddr].nickName = thisClient.nickName.trim();
++			clientList[thisClientMacAddr].nickName = htmlEnDeCode.htmlEncode(thisClient.nickName.trim());
+ 			clientList[thisClientMacAddr].isGateway = (thisClient.isGateway == "1");
+ 			clientList[thisClientMacAddr].isWebServer = (thisClient.isWebServer == "1");
+ 			clientList[thisClientMacAddr].isPrinter = (thisClient.isPrinter == "1");
+diff --git a/release/src/router/www/dashboard/js/clientlist.module.js b/release/src/router/www/dashboard/js/clientlist.module.js
+index 79200798a9..3604f64e0d 100644
+--- a/release/src/router/www/dashboard/js/clientlist.module.js
++++ b/release/src/router/www/dashboard/js/clientlist.module.js
+@@ -517,8 +517,9 @@ export class ClientList {
+                     ip6: typeof thisClient.ip6 === "undefined" ? "" : thisClient.ip6,
+                     ip6_prefix: typeof thisClient.ip6_prefix === "undefined" ? "" : thisClient.ip6_prefix,
+                     mac: thisClient.mac.toUpperCase(),
+-                    name: (thisClient.name !== "") ? thisClient.name.trim() : thisClient.mac,
+-                    nickName: thisClient.nickName.trim(),
++                    // reaper: HTML-encode network-map-sourced name/nickName (LAN-client-set DHCP hostname) at ingestion, like the nmpClient path below
++                    name: (thisClient.name !== "") ? htmlEnDeCode.htmlEncode(thisClient.name.trim()) : thisClient.mac,
++                    nickName: htmlEnDeCode.htmlEncode(thisClient.nickName.trim()),
+                     ip: thisClient.ip,
+                     from: thisClient.from,
+                     isGateway: (thisClient.isGateway == "1"),
+-- 
+2.25.1
+

@@ -1,0 +1,1042 @@
+From 923f7340a0b21e882082304d8a1f6e0aa43fbc75 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 31 Jul 2026 09:26:45 -0400
+Subject: [PATCH] reaper v1.9.9: Wireless Diagnostics robustness - PID-aware
+ scan/capture token reclaim, band-generic pin dialog, quad-band labels
+
+Field feedback (Wireless > Wireless Diagnostics): Apply Best Channel / Auto Scan
+misbehaving - unresponsive buttons, "error" on scan, silent capture failure,
+"applies to 6 GHz regardless of band". Root causes and fixes:
+
+- #1 PID-aware token reclaim (web.c): a stale /tmp/reaper_wifi/{run,scanrun} left
+  by a worker killed mid-sweep (e.g. a wireless restart) wedged BOTH scan and
+  capture for 400/600s, and the status handler's bare-existence check disabled the
+  Start buttons + forced poll mode ("buttons not responding"). New rwifi_token_live()
+  judges a job by worker-PID liveness (kill(pid,0)); workers stamp their own PID,
+  the parent writes a "0" placeholder.
+- #6 capture worker unlinks its token on both early-exit paths (was stranding it -
+  a concrete instance of #1; the scan worker already cleaned up).
+- #3/#4 capStart() parses the CGI response and surfaces errors via a toast instead
+  of silently polling nothing; scan-busy is attributed correctly (busycap = a
+  capture is running, busy = another scan).
+- #5 band-generic strings: RWIF_42 "Pin 6 GHz to this channel?" -> "Pin the best
+  channel to this radio?" with the real band injected; RWIF_37/38 drop the "6 GHz"
+  hardcode. This mislabel is the likely origin of the "targets 6 GHz" report - the
+  dialog said 6 GHz on every band.
+- #2 own-band abort: scanning the band your browser is on drops you each restart ->
+  heartbeat lapses -> abort+restore = "no change". New RWIF_60 explains it; a
+  user-stop flag distinguishes it from RWIF_39.
+- #7 quad-band: bandLabel() disambiguates the two "5 GHz" selector entries.
+
+i18n: new RWIF_59/60 + reworded RWIF_37/38/42 across all 25 dicts in lockstep
+(machine-translated non-EN - native/langcheck review pending). Metal-only
+validatable (the mock cannot render this page).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                |  2 +-
+ release/src/router/httpd/web.c             | 72 +++++++++++++++++++---
+ release/src/router/www/BR.dict             |  8 ++-
+ release/src/router/www/CN.dict             |  8 ++-
+ release/src/router/www/CZ.dict             |  8 ++-
+ release/src/router/www/DA.dict             |  8 ++-
+ release/src/router/www/DE.dict             |  8 ++-
+ release/src/router/www/EN.dict             |  8 ++-
+ release/src/router/www/ES.dict             |  8 ++-
+ release/src/router/www/FI.dict             |  8 ++-
+ release/src/router/www/FR.dict             |  8 ++-
+ release/src/router/www/HU.dict             |  8 ++-
+ release/src/router/www/IT.dict             |  8 ++-
+ release/src/router/www/JP.dict             |  8 ++-
+ release/src/router/www/KR.dict             |  8 ++-
+ release/src/router/www/MS.dict             |  8 ++-
+ release/src/router/www/NL.dict             |  8 ++-
+ release/src/router/www/NO.dict             |  8 ++-
+ release/src/router/www/PL.dict             |  8 ++-
+ release/src/router/www/RO.dict             |  8 ++-
+ release/src/router/www/RU.dict             |  8 ++-
+ release/src/router/www/Reaper_Wireless.asp | 32 +++++++---
+ release/src/router/www/SL.dict             |  8 ++-
+ release/src/router/www/SV.dict             |  8 ++-
+ release/src/router/www/TH.dict             |  8 ++-
+ release/src/router/www/TR.dict             |  8 ++-
+ release/src/router/www/TW.dict             |  8 ++-
+ release/src/router/www/UK.dict             |  8 ++-
+ 28 files changed, 213 insertions(+), 93 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 08c8ecab3c..b53ae83108 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.9.8
++EXTENDNO=Reaper_v1.9.9
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index de8eff6c01..f1fd8f07e1 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21861,6 +21861,48 @@ static int rwifi_sample(const char *ifname, int sec, FILE *csv)
+ 	return got;
+ }
+ 
++/* A run/scan token is "live" only while the worker PID it names is still
++ * running. A token whose worker died (a crash, or a mid-sweep wireless restart
++ * that took the process with it) is stale: reclaim it instead of wedging every
++ * scan and capture for the full timeout. First field of the token = worker PID;
++ * "0" means "reserved, worker not started yet" - fall back to mtime age for that
++ * brief window. Unlinks a confirmed-dead token as a side effect. */
++static int rwifi_token_live(const char *path, int maxage)
++{
++	struct stat st;
++	FILE *f;
++	int pid = 0;
++
++	if (stat(path, &st) != 0)
++		return 0;
++	if ((f = fopen(path, "r")) != NULL) {
++		if (fscanf(f, "%d", &pid) != 1)
++			pid = 0;
++		fclose(f);
++	}
++	if (pid > 0) {
++		if (kill(pid, 0) == 0 || errno == EPERM)
++			return 1;			/* worker still running */
++		unlink(path);				/* ESRCH: worker gone - reclaim */
++		return 0;
++	}
++	if (time(NULL) - st.st_mtime < maxage)
++		return 1;				/* reserved slot, worker still starting */
++	unlink(path);					/* placeholder went stale - reclaim */
++	return 0;
++}
++
++/* the owning worker stamps its own PID as the token's first field, so a later
++ * scan/capture can tell a live job from a stale leftover via rwifi_token_live */
++static void rwifi_token_own(const char *path, const char *tag)
++{
++	FILE *f = fopen(path, "w");
++	if (f != NULL) {
++		fprintf(f, "%d %s\n", (int)getpid(), tag ? tag : "");
++		fclose(f);
++	}
++}
++
+ static void rwifi_worker(int unit, int secs)
+ {
+ 	char ifname[32];
+@@ -21868,10 +21910,15 @@ static void rwifi_worker(int unit, int secs)
+ 	FILE *csv;
+ 	int t;
+ 
+-	if (!rwifi_ifname(unit, ifname, sizeof(ifname)))
++	if (!rwifi_ifname(unit, ifname, sizeof(ifname))) {
++		unlink(RWIFI_RUN);		/* never strand the token on an early bail */
+ 		_exit(0);
+-	if ((csv = fopen(RWIFI_CSV, "w")) == NULL)
++	}
++	if ((csv = fopen(RWIFI_CSV, "w")) == NULL) {
++		unlink(RWIFI_RUN);
+ 		_exit(0);
++	}
++	rwifi_token_own(RWIFI_RUN, "cap");	/* claim the reserved token with our PID */
+ 	fprintf(csv, "sec,chspec,tx,inbss,obss,nocat,nopkt,doze,txop,goodtx,badtx,glitch,badplcp,knoise,idle,busy\n");
+ 	fflush(csv);
+ 	for (t = 0; t < secs; t++) {
+@@ -22115,6 +22162,7 @@ static void rwifi_scan_worker(int unit)
+ 		unlink(RWIFI_SHB);
+ 		_exit(0);
+ 	}
++	rwifi_token_own(RWIFI_SRUN, "scan");	/* claim the reserved token with our PID */
+ 
+ 	snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
+ 	snprintf(orig_cs, sizeof(orig_cs), "%s", nvram_safe_get(nvk));
+@@ -22224,8 +22272,8 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 		websWrite(stream, "{\"territory\":");
+ 		rwifi_json_str(stream, nvram_safe_get("territory_code"));
+ 		websWrite(stream, ",\"psc6g\":\"%d\",\"cap\":%d,\"scan\":%d,\"chq_on\":%d,\"bands\":[",
+-			nvram_get_int("psc6g"), stat(RWIFI_RUN, &st) == 0 ? 1 : 0,
+-			stat(RWIFI_SRUN, &st) == 0 ? 1 : 0, nvram_get_int("rchq_enable"));
++			nvram_get_int("psc6g"), rwifi_token_live(RWIFI_RUN, 400) ? 1 : 0,
++			rwifi_token_live(RWIFI_SRUN, 600) ? 1 : 0, nvram_get_int("rchq_enable"));
+ 		first = 1;
+ 		for (unit = 0; unit <= RWIFI_MAXUNIT; unit++) {
+ 			if (!rwifi_ifname(unit, ifname, sizeof(ifname)))
+@@ -22277,13 +22325,13 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 		mkdir(RWIFI_DIR, 0700);
+ 		/* a live token younger than the longest duration means a worker is
+ 		 * still sampling; a stale one is leftover from a crash - reclaim it */
+-		if (stat(RWIFI_RUN, &st) == 0 && time(NULL) - st.st_mtime < 400) {
++		if (rwifi_token_live(RWIFI_RUN, 400)) {
+ 			websWrite(stream, "{\"err\":\"busy\"}");
+ 			return;
+ 		}
+ 		unlink(RWIFI_RUN);
+ 		if ((f = fopen(RWIFI_RUN, "w")) != NULL) {
+-			fprintf(f, "%d %d\n", unit, secs);
++			fprintf(f, "0 %d %d\n", unit, secs);	/* PID 0 = reserved; worker stamps its own */
+ 			fclose(f);
+ 		}
+ 		pid = fork();
+@@ -22338,15 +22386,19 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 			return;
+ 		}
+ 		mkdir(RWIFI_DIR, 0700);
+-		/* refuse if a capture or another scan is still live */
+-		if ((stat(RWIFI_RUN, &st) == 0 && time(NULL) - st.st_mtime < 400) ||
+-		    (stat(RWIFI_SRUN, &st) == 0 && time(NULL) - st.st_mtime < 600)) {
++		/* refuse if a capture or another scan is still live - distinct errors
++		 * so the page can name the real blocker instead of always "capture" */
++		if (rwifi_token_live(RWIFI_RUN, 400)) {
++			websWrite(stream, "{\"err\":\"busycap\"}");
++			return;
++		}
++		if (rwifi_token_live(RWIFI_SRUN, 600)) {
+ 			websWrite(stream, "{\"err\":\"busy\"}");
+ 			return;
+ 		}
+ 		unlink(RWIFI_SRUN);
+ 		if ((f = fopen(RWIFI_SRUN, "w")) != NULL) {
+-			fprintf(f, "%d\n", unit);
++			fprintf(f, "0 %d\n", unit);	/* PID 0 = reserved; worker stamps its own */
+ 			fclose(f);
+ 		}
+ 		if ((f = fopen(RWIFI_SHB, "w")) != NULL) {	/* seed the browser heartbeat */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index aa32cc1631..5301a44a62 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=A varredura automática sintoniza o rádio selecionado em cada canal can
+ RWIF_34=cada canal reinicia o rádio
+ RWIF_35=Fixar melhor
+ RWIF_36=pontuação
+-RWIF_37=Nenhuma varredura ainda. Inicie uma varredura automática para classificar os canais de 6 GHz por limpeza.
+-RWIF_38=Nenhum rádio de 6 GHz encontrado neste dispositivo.
++RWIF_37=Nenhuma varredura ainda. Inicie uma Varredura Automática para classificar os canais por limpeza.
++RWIF_38=Nenhum rádio sem fio encontrado neste dispositivo.
+ RWIF_39=Varredura interrompida - canal original restaurado.
+ RWIF_40=Varredura concluída - canal original restaurado. Fixe o melhor canal para mantê-lo.
+ RWIF_41=melhor
+-RWIF_42=Fixar o 6 GHz neste canal?
++RWIF_42=Fixar o melhor canal neste rádio?
+ RWIF_43=Monitor passivo de canal
+ RWIF_44=Um monitor opcional em segundo plano que observa apenas o canal atual e avisa quando ele piora. Ele nunca muda o canal nem reinicia o rádio - quando apontar um problema, execute a varredura automática acima.
+ RWIF_45=Ativar monitor
+@@ -5676,6 +5676,8 @@ RWIF_55=Uma captura está em andamento - pare-a primeiro.
+ RWIF_56=vs atual:
+ RWIF_57=Fixado em
+ RWIF_58=Banda
++RWIF_59=Uma varredura já está em execução.
++RWIF_60=Varredura interrompida (a página parou de atualizar - comum ao varrer a própria banda). Canal original restaurado; execute a partir de um cliente com fio ou de outra banda.
+ RFB_01=Configuração inicial
+ RFB_02=Este roteador acabou de ser redefinido ou configurado pela primeira vez. Defina agora o nome de usuário e a senha de administrador. Em seguida, você definirá a senha do Wi&#8209;Fi. Tudo pode ser alterado depois na interface.
+ RFB_03=Nome de usuário do roteador
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 2af2678ae9..92d2ea3658 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=自动扫描会将所选射频依次调至每个候选信道，每次都
+ RWIF_34=每个信道都会重启射频
+ RWIF_35=固定最佳
+ RWIF_36=评分
+-RWIF_37=尚未扫描。开始自动扫描即可按干净程度对 6 GHz 信道排序。
+-RWIF_38=此设备上未找到 6 GHz 射频。
++RWIF_37=尚未扫描。开始自动扫描以按干净程度对频道进行排名。
++RWIF_38=在此设备上找不到无线电。
+ RWIF_39=扫描已停止——原信道已恢复。
+ RWIF_40=扫描完成——原信道已恢复。固定最佳信道即可保留它。
+ RWIF_41=最佳
+-RWIF_42=将 6 GHz 固定到此信道？
++RWIF_42=将最佳频道固定到此无线电？
+ RWIF_43=被动信道监视
+ RWIF_44=一个可选启用的后台监视器，只观察当前信道并在其恶化时发出提示。它绝不会更改信道或重启射频——当它提示问题时，请运行上方的自动扫描。
+ RWIF_45=启用监视
+@@ -5676,6 +5676,8 @@ RWIF_55=有采集正在运行——请先停止它。
+ RWIF_56=对比当前：
+ RWIF_57=已固定到
+ RWIF_58=频段
++RWIF_59=扫描已在进行中。
++RWIF_60=扫描中断（页面停止更新——扫描您自己所连频段时常见）。已恢复原频道；请从有线客户端或其他频段运行。
+ RFB_01=首次设置
+ RFB_02=此路由器刚被重置或首次设置。请立即设置管理员用户名和密码。接下来将要求您设置 Wi&#8209;Fi 密码。所有内容以后都可以在管理界面中更改。
+ RFB_03=路由器用户名
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index bb0a9372f6..8831331353 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Automatické skenování přelaďuje vybrané rádio postupně na každ
+ RWIF_34=každý kanál restartuje rádio
+ RWIF_35=Připnout nejlepší
+ RWIF_36=skóre
+-RWIF_37=Zatím žádné skenování. Spusťte automatické skenování a seřaďte kanály 6 GHz podle čistoty.
+-RWIF_38=Na tomto zařízení nebylo nalezeno žádné rádio 6 GHz.
++RWIF_37=Zatím žádný sken. Spusťte automatický sken a seřaďte kanály podle čistoty.
++RWIF_38=V tomto zařízení nebylo nalezeno žádné bezdrátové rádio.
+ RWIF_39=Skenování zastaveno - původní kanál obnoven.
+ RWIF_40=Skenování dokončeno - původní kanál obnoven. Připněte nejlepší kanál, aby zůstal zachován.
+ RWIF_41=nejlepší
+-RWIF_42=Připnout 6 GHz na tento kanál?
++RWIF_42=Připnout nejlepší kanál k tomuto rádiu?
+ RWIF_43=Pasivní monitor kanálu
+ RWIF_44=Volitelný monitor na pozadí, který sleduje pouze aktuální kanál a upozorní, když se zhorší. Nikdy nemění kanál ani nerestartuje rádio - když nahlásí problém, spusťte automatické skenování výše.
+ RWIF_45=Zapnout monitor
+@@ -5676,6 +5676,8 @@ RWIF_55=Probíhá záznam - nejprve jej zastavte.
+ RWIF_56=vs aktuální:
+ RWIF_57=Připnuto na
+ RWIF_58=Pásmo
++RWIF_59=Sken již probíhá.
++RWIF_60=Sken přerušen (stránka se přestala aktualizovat – běžné při skenování pásma, ke kterému jste připojeni). Původní kanál obnoven; spusťte z kabelového klienta nebo jiného pásma.
+ RFB_01=První nastavení
+ RFB_02=Tento router byl právě resetován nebo nastaven poprvé. Nyní nastavte uživatelské jméno a heslo správce. Poté budete požádáni o nastavení hesla Wi&#8209;Fi. Vše lze později změnit v rozhraní.
+ RFB_03=Uživatelské jméno routeru
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 52d11a9f32..af9a3b47c0 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Autoscanningen stiller den valgte radio om til hver kandidatkanal efter
+ RWIF_34=hver kanal genstarter radioen
+ RWIF_35=Fastgør bedste
+ RWIF_36=score
+-RWIF_37=Ingen scanning endnu. Start en autoscanning for at rangere 6 GHz-kanalerne efter renhed.
+-RWIF_38=Ingen 6 GHz-radio fundet på denne enhed.
++RWIF_37=Ingen scanning endnu. Start en automatisk scanning for at rangere kanalerne efter renhed.
++RWIF_38=Ingen trådløs radio fundet på denne enhed.
+ RWIF_39=Scanningen stoppet - oprindelig kanal gendannet.
+ RWIF_40=Scanningen fuldført - oprindelig kanal gendannet. Fastgør den bedste kanal for at beholde den.
+ RWIF_41=bedst
+-RWIF_42=Fastgør 6 GHz til denne kanal?
++RWIF_42=Fastgør den bedste kanal til denne radio?
+ RWIF_43=Passiv kanalovervågning
+ RWIF_44=En valgfri baggrundsovervågning, der kun holder øje med den aktuelle kanal og markerer, når den forringes. Den ændrer aldrig kanalen og genstarter aldrig radioen - når den markerer et problem, så kør autoscanningen ovenfor.
+ RWIF_45=Aktivér overvågning
+@@ -5676,6 +5676,8 @@ RWIF_55=En måling kører - stop den først.
+ RWIF_56=mod aktuel:
+ RWIF_57=Fastgjort til
+ RWIF_58=Bånd
++RWIF_59=En scanning kører allerede.
++RWIF_60=Scanning afbrudt (siden holdt op med at opdatere – almindeligt når du scanner dit eget bånd). Oprindelig kanal gendannet; kør fra en kabelforbundet klient eller et andet bånd.
+ RFB_01=Førstegangsopsætning
+ RFB_02=Denne router er netop blevet nulstillet eller sat op for første gang. Angiv administratorbrugernavn og adgangskode nu. Derefter bliver du bedt om at angive din Wi&#8209;Fi-adgangskode. Alt kan ændres senere i brugerfladen.
+ RFB_03=Routerens brugernavn
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 71c061a472..84dad8f3e6 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Der Auto-Scan stellt das gewählte Funkmodul nacheinander auf jeden Kand
+ RWIF_34=jeder Kanal startet das Funkmodul neu
+ RWIF_35=Besten fixieren
+ RWIF_36=Score
+-RWIF_37=Noch kein Scan. Starten Sie einen Auto-Scan, um die 6-GHz-Kanäle nach Sauberkeit einzustufen.
+-RWIF_38=Kein 6-GHz-Funkmodul auf diesem Gerät gefunden.
++RWIF_37=Noch kein Scan. Starten Sie einen Auto-Scan, um die Kanäle nach Sauberkeit einzustufen.
++RWIF_38=Kein Funkmodul auf diesem Gerät gefunden.
+ RWIF_39=Scan gestoppt - ursprünglicher Kanal wiederhergestellt.
+ RWIF_40=Scan abgeschlossen - ursprünglicher Kanal wiederhergestellt. Fixieren Sie den besten Kanal, um ihn zu behalten.
+ RWIF_41=bester
+-RWIF_42=6 GHz auf diesen Kanal fixieren?
++RWIF_42=Besten Kanal auf diesem Funkmodul fixieren?
+ RWIF_43=Passiver Kanalmonitor
+ RWIF_44=Ein optionaler Hintergrundmonitor, der nur den aktuellen Kanal beobachtet und meldet, wenn er sich verschlechtert. Er ändert nie den Kanal und startet das Funkmodul nicht neu - meldet er ein Problem, führen Sie oben den Auto-Scan aus.
+ RWIF_45=Monitor aktivieren
+@@ -5676,6 +5676,8 @@ RWIF_55=Eine Aufzeichnung läuft - stoppen Sie sie zuerst.
+ RWIF_56=ggü. aktuell:
+ RWIF_57=Fixiert auf
+ RWIF_58=Band
++RWIF_59=Ein Scan läuft bereits.
++RWIF_60=Scan unterbrochen (die Seite wurde nicht mehr aktualisiert – häufig, wenn Sie das Band scannen, mit dem Sie verbunden sind). Ursprünglicher Kanal wiederhergestellt; führen Sie ihn von einem kabelgebundenen Client oder einem anderen Band aus.
+ RFB_01=Ersteinrichtung
+ RFB_02=Dieser Router wurde soeben zurückgesetzt oder zum ersten Mal eingerichtet. Legen Sie jetzt den Admin-Benutzernamen und das Passwort fest. Anschließend werden Sie gebeten, Ihr WLAN-Passwort festzulegen. Alles kann später in der Oberfläche geändert werden.
+ RFB_03=Router-Benutzername
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 733ed6b0fb..ea8e38f09e 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Auto Scan retunes the selected radio to each candidate channel in turn,
+ RWIF_34=each channel restarts the radio
+ RWIF_35=Pin best
+ RWIF_36=score
+-RWIF_37=No scan yet. Start an Auto Scan to rank the 6 GHz channels by cleanliness.
+-RWIF_38=No 6 GHz radio found on this device.
++RWIF_37=No scan yet. Start an Auto Scan to rank the channels by cleanliness.
++RWIF_38=No wireless radio found on this device.
+ RWIF_39=Scan stopped - original channel restored.
+ RWIF_40=Scan complete - original channel restored. Pin the best channel to keep it.
+ RWIF_41=best
+-RWIF_42=Pin 6 GHz to this channel?
++RWIF_42=Pin the best channel to this radio?
+ RWIF_43=Passive Channel Monitor
+ RWIF_44=An opt-in background monitor that watches only the current channel and flags when it degrades. It never changes the channel or restarts the radio - when it flags a problem, run Auto Scan above.
+ RWIF_45=Enable monitor
+@@ -5676,6 +5676,8 @@ RWIF_55=A capture is running - stop it first.
+ RWIF_56=vs current:
+ RWIF_57=Pinned to
+ RWIF_58=Band
++RWIF_59=A scan is already running.
++RWIF_60=Scan interrupted (the page stopped updating - common when you scan your own band). Original channel restored; run it from a wired client or another band.
+ RFB_01=First-time setup
+ RFB_02=This router was just reset or set up for the first time. Set an admin username and password now. Next you'll be asked to set your Wi&#8209;Fi password. You can change all of these later in the GUI.
+ RFB_03=Router username
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 1afba60c8d..f57b328324 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=El escaneo automático sintoniza la radio elegida en cada canal candidat
+ RWIF_34=cada canal reinicia la radio
+ RWIF_35=Fijar el mejor
+ RWIF_36=puntuación
+-RWIF_37=Aún no hay escaneo. Inicie un escaneo automático para clasificar los canales de 6 GHz por limpieza.
+-RWIF_38=No se encontró radio de 6 GHz en este dispositivo.
++RWIF_37=Aún no hay escaneo. Inicie un escaneo automático para clasificar los canales por limpieza.
++RWIF_38=No se encontró ninguna radio inalámbrica en este dispositivo.
+ RWIF_39=Escaneo detenido - canal original restaurado.
+ RWIF_40=Escaneo completado - canal original restaurado. Fije el mejor canal para conservarlo.
+ RWIF_41=mejor
+-RWIF_42=¿Fijar 6 GHz en este canal?
++RWIF_42=¿Fijar el mejor canal en esta radio?
+ RWIF_43=Monitor pasivo de canal
+ RWIF_44=Un monitor en segundo plano opcional que vigila solo el canal actual y avisa cuando se degrada. Nunca cambia el canal ni reinicia la radio - cuando avisa de un problema, ejecute el escaneo automático de arriba.
+ RWIF_45=Activar monitor
+@@ -5676,6 +5676,8 @@ RWIF_55=Hay una captura en curso - deténgala primero.
+ RWIF_56=vs actual:
+ RWIF_57=Fijado en
+ RWIF_58=Banda
++RWIF_59=Ya hay un escaneo en curso.
++RWIF_60=Escaneo interrumpido (la página dejó de actualizarse, algo común al escanear la banda a la que está conectado). Canal original restaurado; ejecútelo desde un cliente por cable u otra banda.
+ RFB_01=Configuración inicial
+ RFB_02=Este router se acaba de restablecer o configurar por primera vez. Establezca ahora el nombre de usuario y la contraseña de administrador. Después se le pedirá la contraseña de la red Wi&#8209;Fi. Todo puede cambiarse más tarde en la interfaz.
+ RFB_03=Nombre de usuario del router
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index debb340f08..8810c0e582 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Automaattihaku virittää valitun radion vuorotellen jokaiselle ehdokask
+ RWIF_34=jokainen kanava käynnistää radion uudelleen
+ RWIF_35=Kiinnitä paras
+ RWIF_36=pisteet
+-RWIF_37=Ei vielä hakua. Aloita automaattihaku järjestääksesi 6 GHz:n kanavat puhtauden mukaan.
+-RWIF_38=Tästä laitteesta ei löytynyt 6 GHz:n radiota.
++RWIF_37=Ei vielä skannausta. Aloita automaattinen skannaus järjestääksesi kanavat puhtauden mukaan.
++RWIF_38=Tästä laitteesta ei löytynyt langatonta radiota.
+ RWIF_39=Haku pysäytetty - alkuperäinen kanava palautettu.
+ RWIF_40=Haku valmis - alkuperäinen kanava palautettu. Kiinnitä paras kanava pitääksesi sen.
+ RWIF_41=paras
+-RWIF_42=Kiinnitetäänkö 6 GHz tälle kanavalle?
++RWIF_42=Kiinnitetäänkö paras kanava tähän radioon?
+ RWIF_43=Passiivinen kanavavalvonta
+ RWIF_44=Vapaaehtoinen taustavalvonta, joka seuraa vain nykyistä kanavaa ja ilmoittaa sen heikentyessä. Se ei koskaan vaihda kanavaa eikä käynnistä radiota uudelleen - kun se ilmoittaa ongelmasta, aja yllä oleva automaattihaku.
+ RWIF_45=Ota valvonta käyttöön
+@@ -5676,6 +5676,8 @@ RWIF_55=Mittaus on käynnissä - pysäytä se ensin.
+ RWIF_56=vs. nykyinen:
+ RWIF_57=Kiinnitetty kanavalle
+ RWIF_58=Kaista
++RWIF_59=Skannaus on jo käynnissä.
++RWIF_60=Skannaus keskeytyi (sivu lakkasi päivittymästä – yleistä, kun skannaat omaa kaistaasi). Alkuperäinen kanava palautettu; suorita se langallisesta laitteesta tai toiselta kaistalta.
+ RFB_01=Ensimmäinen käyttöönotto
+ RFB_02=Tämä reititin on juuri nollattu tai otettu käyttöön ensimmäistä kertaa. Aseta järjestelmänvalvojan käyttäjätunnus ja salasana nyt. Seuraavaksi sinua pyydetään asettamaan Wi&#8209;Fi-salasana. Kaikkia voi muuttaa myöhemmin käyttöliittymässä.
+ RFB_03=Reitittimen käyttäjätunnus
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 3a103c8184..92e5e2b21b 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Le scan auto règle la radio choisie sur chaque canal candidat tour à t
+ RWIF_34=chaque canal redémarre la radio
+ RWIF_35=Figer le meilleur
+ RWIF_36=score
+-RWIF_37=Aucun scan pour l’instant. Lancez un scan auto pour classer les canaux 6 GHz par propreté.
+-RWIF_38=Aucune radio 6 GHz trouvée sur cet appareil.
++RWIF_37=Aucun scan pour l’instant. Lancez un scan auto pour classer les canaux par propreté.
++RWIF_38=Aucune radio sans fil trouvée sur cet appareil.
+ RWIF_39=Scan arrêté - canal d’origine restauré.
+ RWIF_40=Scan terminé - canal d’origine restauré. Figez le meilleur canal pour le conserver.
+ RWIF_41=meilleur
+-RWIF_42=Figer le 6 GHz sur ce canal ?
++RWIF_42=Figer le meilleur canal sur cette radio ?
+ RWIF_43=Moniteur passif de canal
+ RWIF_44=Un moniteur d’arrière-plan optionnel qui surveille uniquement le canal actuel et signale quand il se dégrade. Il ne change jamais le canal et ne redémarre pas la radio - quand il signale un problème, lancez le scan auto ci-dessus.
+ RWIF_45=Activer le moniteur
+@@ -5676,6 +5676,8 @@ RWIF_55=Une capture est en cours - arrêtez-la d’abord.
+ RWIF_56=vs actuel :
+ RWIF_57=Figé sur
+ RWIF_58=Bande
++RWIF_59=Un scan est déjà en cours.
++RWIF_60=Scan interrompu (la page a cessé de se mettre à jour – fréquent lorsque vous scannez la bande à laquelle vous êtes connecté). Canal d’origine restauré ; lancez-le depuis un client filaire ou une autre bande.
+ RFB_01=Première configuration
+ RFB_02=Ce routeur vient d'être réinitialisé ou configuré pour la première fois. Définissez maintenant le nom d'utilisateur et le mot de passe administrateur. Vous serez ensuite invité à définir votre mot de passe Wi&#8209;Fi. Tout pourra être modifié plus tard dans l'interface.
+ RFB_03=Nom d'utilisateur du routeur
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index f60675cfc9..5161be53ba 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Az automatikus szkennelés a kiválasztott rádiót sorban minden jelöl
+ RWIF_34=minden csatorna újraindítja a rádiót
+ RWIF_35=Legjobb rögzítése
+ RWIF_36=pontszám
+-RWIF_37=Még nem volt szkennelés. Indítson automatikus szkennelést a 6 GHz-es csatornák tisztaság szerinti rangsorolásához.
+-RWIF_38=Ezen az eszközön nem található 6 GHz-es rádió.
++RWIF_37=Még nincs vizsgálat. Indítson automatikus vizsgálatot a csatornák tisztaság szerinti rangsorolásához.
++RWIF_38=Nem található vezeték nélküli rádió ezen az eszközön.
+ RWIF_39=Szkennelés leállítva — az eredeti csatorna visszaállt.
+ RWIF_40=Szkennelés kész — az eredeti csatorna visszaállt. Rögzítse a legjobb csatornát, hogy megmaradjon.
+ RWIF_41=legjobb
+-RWIF_42=Rögzíti a 6 GHz-et erre a csatornára?
++RWIF_42=A legjobb csatorna rögzítése ehhez a rádióhoz?
+ RWIF_43=Passzív csatornafigyelő
+ RWIF_44=Kérésre bekapcsolható háttérfigyelő, amely csak az aktuális csatornát figyeli, és jelez, ha az romlik. Soha nem vált csatornát és nem indítja újra a rádiót — ha problémát jelez, futtassa a fenti automatikus szkennelést.
+ RWIF_45=Figyelő bekapcsolása
+@@ -5676,6 +5676,8 @@ RWIF_55=Felvétel fut — először állítsa le.
+ RWIF_56=az aktuálishoz képest:
+ RWIF_57=Rögzítve:
+ RWIF_58=Sáv
++RWIF_59=Egy vizsgálat már fut.
++RWIF_60=A vizsgálat megszakadt (az oldal frissítése leállt – gyakori, ha a saját sávját vizsgálja). Eredeti csatorna visszaállítva; futtassa vezetékes kliensről vagy másik sávról.
+ RFB_01=Első beállítás
+ RFB_02=Ezt a routert most állították vissza vagy először állítják be. Adja meg most az adminisztrátori felhasználónevet és jelszót. Ezután a Wi&#8209;Fi jelszó megadását kéri a rendszer. Minden később módosítható a felületen.
+ RFB_03=Router felhasználónév
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 8be8efdc21..f7c74f297b 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=La scansione auto risintonizza la radio selezionata su ciascun canale ca
+ RWIF_34=ogni canale riavvia la radio
+ RWIF_35=Fissa migliore
+ RWIF_36=punteggio
+-RWIF_37=Nessuna scansione finora. Avvia una scansione auto per classificare i canali 6 GHz per pulizia.
+-RWIF_38=Nessuna radio 6 GHz trovata su questo dispositivo.
++RWIF_37=Nessuna scansione ancora. Avvia una scansione automatica per classificare i canali in base alla pulizia.
++RWIF_38=Nessuna radio wireless trovata su questo dispositivo.
+ RWIF_39=Scansione interrotta - canale originale ripristinato.
+ RWIF_40=Scansione completata - canale originale ripristinato. Fissa il canale migliore per mantenerlo.
+ RWIF_41=migliore
+-RWIF_42=Fissare il 6 GHz su questo canale?
++RWIF_42=Fissare il canale migliore su questa radio?
+ RWIF_43=Monitor passivo del canale
+ RWIF_44=Un monitor in background facoltativo che osserva solo il canale attuale e segnala quando peggiora. Non cambia mai il canale né riavvia la radio - quando segnala un problema, esegui la scansione auto qui sopra.
+ RWIF_45=Attiva monitor
+@@ -5676,6 +5676,8 @@ RWIF_55=Un’acquisizione è in corso - prima fermala.
+ RWIF_56=vs attuale:
+ RWIF_57=Fissato su
+ RWIF_58=Banda
++RWIF_59=Una scansione è già in corso.
++RWIF_60=Scansione interrotta (la pagina ha smesso di aggiornarsi, comune quando si esegue la scansione della banda a cui si è connessi). Canale originale ripristinato; eseguila da un client cablato o da un’altra banda.
+ RFB_01=Prima configurazione
+ RFB_02=Questo router è stato appena ripristinato o configurato per la prima volta. Imposta ora nome utente e password amministratore. Poi ti verrà chiesto di impostare la password Wi&#8209;Fi. Tutto potrà essere modificato in seguito nell'interfaccia.
+ RFB_03=Nome utente del router
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index fc4e6dddd2..18ef6a7f42 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=自動スキャンは選択した無線を候補チャンネルへ順番
+ RWIF_34=各チャンネルで無線が再起動します
+ RWIF_35=最良を固定
+ RWIF_36=スコア
+-RWIF_37=まだスキャンがありません。自動スキャンを開始して 6 GHz チャンネルをクリーンさで順位付けしてください。
+-RWIF_38=このデバイスに 6 GHz 無線が見つかりません。
++RWIF_37=まだスキャンがありません。自動スキャンを開始してチャンネルをクリーンさで順位付けしてください。
++RWIF_38=このデバイスに無線が見つかりません。
+ RWIF_39=スキャンを停止しました - 元のチャンネルを復元しました。
+ RWIF_40=スキャン完了 - 元のチャンネルを復元しました。維持するには最良のチャンネルを固定してください。
+ RWIF_41=最良
+-RWIF_42=6 GHz をこのチャンネルに固定しますか？
++RWIF_42=最適なチャンネルをこの無線に固定しますか？
+ RWIF_43=パッシブチャンネルモニター
+ RWIF_44=オプトインのバックグラウンドモニターで、現在のチャンネルのみを監視し、劣化したときに知らせます。チャンネルの変更や無線の再起動は一切行いません - 問題が示されたら、上の自動スキャンを実行してください。
+ RWIF_45=モニターを有効化
+@@ -5676,6 +5676,8 @@ RWIF_55=キャプチャ実行中です - 先に停止してください。
+ RWIF_56=現在との比較:
+ RWIF_57=固定先
+ RWIF_58=バンド
++RWIF_59=スキャンはすでに実行中です。
++RWIF_60=スキャンが中断されました（ページの更新が停止しました。接続中の帯域をスキャンすると発生しやすくなります）。元のチャンネルに復元しました。有線クライアントまたは別の帯域から実行してください。
+ RFB_01=初期セットアップ
+ RFB_02=このルーターはリセット直後、または初めてのセットアップです。管理者のユーザー名とパスワードを今すぐ設定してください。次に Wi&#8209;Fi パスワードの設定を求められます。いずれも後から管理画面で変更できます。
+ RFB_03=ルーターのユーザー名
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index f1f29e83e5..1eef7b4ab9 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=자동 스캔은 선택한 무선을 후보 채널로 차례로 전환
+ RWIF_34=채널마다 무선이 재시작됩니다
+ RWIF_35=최적 채널 고정
+ RWIF_36=점수
+-RWIF_37=아직 스캔이 없습니다. 자동 스캔을 시작해 6 GHz 채널을 깨끗한 순서로 정렬하세요.
+-RWIF_38=이 장치에서 6 GHz 무선을 찾을 수 없습니다.
++RWIF_37=아직 스캔이 없습니다. 자동 스캔을 시작하여 채널을 깨끗한 정도로 정렬하세요.
++RWIF_38=이 장치에서 무선 라디오를 찾을 수 없습니다.
+ RWIF_39=스캔 중지됨 - 원래 채널을 복원했습니다.
+ RWIF_40=스캔 완료 - 원래 채널을 복원했습니다. 유지하려면 최적 채널을 고정하세요.
+ RWIF_41=최적
+-RWIF_42=6 GHz를 이 채널로 고정할까요?
++RWIF_42=최적의 채널을 이 라디오에 고정하시겠습니까?
+ RWIF_43=패시브 채널 모니터
+ RWIF_44=현재 채널만 지켜보다가 품질이 나빠지면 알려 주는 선택형 백그라운드 모니터입니다. 채널을 바꾸거나 무선을 재시작하지 않습니다 - 문제가 표시되면 위의 자동 스캔을 실행하세요.
+ RWIF_45=모니터 켜기
+@@ -5676,6 +5676,8 @@ RWIF_55=캡처가 실행 중입니다 - 먼저 중지하세요.
+ RWIF_56=현재 대비:
+ RWIF_57=고정 채널
+ RWIF_58=대역
++RWIF_59=이미 스캔이 실행 중입니다.
++RWIF_60=스캔이 중단되었습니다(페이지 업데이트가 중지됨 - 연결된 대역을 스캔할 때 흔히 발생). 원래 채널로 복원됨. 유선 클라이언트나 다른 대역에서 실행하세요.
+ RFB_01=최초 설정
+ RFB_02=이 라우터는 방금 초기화되었거나 처음 설정됩니다. 지금 관리자 사용자 이름과 비밀번호를 설정하세요. 다음으로 Wi&#8209;Fi 비밀번호를 설정하라는 안내가 표시됩니다. 모두 나중에 관리 화면에서 변경할 수 있습니다.
+ RFB_03=라우터 사용자 이름
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 1b554a76f6..7b0e3f0000 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Imbasan Auto menala radio yang dipilih ke setiap saluran calon secara be
+ RWIF_34=setiap saluran memulakan semula radio
+ RWIF_35=Tetapkan terbaik
+ RWIF_36=skor
+-RWIF_37=Belum ada imbasan. Mulakan Imbasan Auto untuk menyusun saluran 6 GHz mengikut kebersihan.
+-RWIF_38=Tiada radio 6 GHz ditemui pada peranti ini.
++RWIF_37=Belum ada imbasan. Mulakan Imbasan Auto untuk menyusun saluran mengikut kebersihan.
++RWIF_38=Tiada radio tanpa wayar ditemui pada peranti ini.
+ RWIF_39=Imbasan dihentikan - saluran asal dipulihkan.
+ RWIF_40=Imbasan selesai - saluran asal dipulihkan. Tetapkan saluran terbaik untuk mengekalkannya.
+ RWIF_41=terbaik
+-RWIF_42=Tetapkan 6 GHz ke saluran ini?
++RWIF_42=Sematkan saluran terbaik pada radio ini?
+ RWIF_43=Pemantau Saluran Pasif
+ RWIF_44=Pemantau latar belakang pilihan yang hanya memerhati saluran semasa dan memberi tanda apabila ia merosot. Ia tidak sekali-kali menukar saluran atau memulakan semula radio - apabila ia menandakan masalah, jalankan Imbasan Auto di atas.
+ RWIF_45=Dayakan pemantau
+@@ -5676,6 +5676,8 @@ RWIF_55=Tangkapan sedang berjalan - hentikannya dahulu.
+ RWIF_56=berbanding semasa:
+ RWIF_57=Ditetapkan ke
+ RWIF_58=Jalur
++RWIF_59=Imbasan sedang berjalan.
++RWIF_60=Imbasan terganggu (halaman berhenti dikemas kini - biasa apabila mengimbas jalur yang anda sambung). Saluran asal dipulihkan; jalankan dari klien berwayar atau jalur lain.
+ RFB_01=Persediaan kali pertama
+ RFB_02=Router ini baru sahaja ditetapkan semula atau disediakan buat kali pertama. Tetapkan nama pengguna dan kata laluan pentadbir sekarang. Seterusnya anda akan diminta menetapkan kata laluan Wi&#8209;Fi. Semuanya boleh diubah kemudian dalam antara muka.
+ RFB_03=Nama pengguna router
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 83f87cdd95..ad21134172 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Auto-scan stemt de geselecteerde radio achtereenvolgens op elk kandidaat
+ RWIF_34=elk kanaal herstart de radio
+ RWIF_35=Beste vastpinnen
+ RWIF_36=score
+-RWIF_37=Nog geen scan. Start een auto-scan om de 6 GHz-kanalen op properheid te rangschikken.
+-RWIF_38=Geen 6 GHz-radio gevonden op dit apparaat.
++RWIF_37=Nog geen scan. Start een automatische scan om de kanalen op netheid te rangschikken.
++RWIF_38=Geen draadloze radio gevonden op dit apparaat.
+ RWIF_39=Scan gestopt - oorspronkelijk kanaal hersteld.
+ RWIF_40=Scan voltooid - oorspronkelijk kanaal hersteld. Pin het beste kanaal vast om het te behouden.
+ RWIF_41=beste
+-RWIF_42=6 GHz op dit kanaal vastpinnen?
++RWIF_42=Beste kanaal aan deze radio vastzetten?
+ RWIF_43=Passieve kanaalmonitor
+ RWIF_44=Een optionele achtergrondmonitor die alleen het huidige kanaal in de gaten houdt en waarschuwt wanneer het verslechtert. Hij wijzigt nooit het kanaal en herstart de radio niet - waarschuwt hij voor een probleem, voer dan hierboven een auto-scan uit.
+ RWIF_45=Monitor inschakelen
+@@ -5676,6 +5676,8 @@ RWIF_55=Er loopt een opname - stop die eerst.
+ RWIF_56=vs huidig:
+ RWIF_57=Vastgepind op
+ RWIF_58=Band
++RWIF_59=Er loopt al een scan.
++RWIF_60=Scan onderbroken (de pagina werd niet meer bijgewerkt - gebruikelijk bij het scannen van de band waarmee u verbonden bent). Oorspronkelijk kanaal hersteld; voer het uit vanaf een bekabelde client of een andere band.
+ RFB_01=Eerste installatie
+ RFB_02=Deze router is zojuist gereset of voor het eerst ingesteld. Stel nu de gebruikersnaam en het wachtwoord van de beheerder in. Daarna stelt u het Wi&#8209;Fi-wachtwoord in. Alles is later te wijzigen in de interface.
+ RFB_03=Gebruikersnaam router
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 52101f08b6..0340e412cd 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Autoskanningen stiller den valgte radioen om til hver kandidatkanal ette
+ RWIF_34=hver kanal starter radioen på nytt
+ RWIF_35=Fest beste
+ RWIF_36=poeng
+-RWIF_37=Ingen skanning ennå. Start en autoskanning for å rangere 6 GHz-kanalene etter renhet.
+-RWIF_38=Fant ingen 6 GHz-radio på denne enheten.
++RWIF_37=Ingen skanning ennå. Start en automatisk skanning for å rangere kanalene etter renhet.
++RWIF_38=Ingen trådløs radio funnet på denne enheten.
+ RWIF_39=Skanningen stoppet - opprinnelig kanal gjenopprettet.
+ RWIF_40=Skanningen fullført - opprinnelig kanal gjenopprettet. Fest den beste kanalen for å beholde den.
+ RWIF_41=beste
+-RWIF_42=Feste 6 GHz til denne kanalen?
++RWIF_42=Fest den beste kanalen til denne radioen?
+ RWIF_43=Passiv kanalovervåking
+ RWIF_44=En valgfri bakgrunnsovervåking som bare følger med på gjeldende kanal og varsler når den forringes. Den endrer aldri kanalen og starter aldri radioen på nytt - når den varsler om et problem, kjør autoskanningen ovenfor.
+ RWIF_45=Aktiver overvåking
+@@ -5676,6 +5676,8 @@ RWIF_55=En måling pågår - stopp den først.
+ RWIF_56=mot gjeldende:
+ RWIF_57=Festet til
+ RWIF_58=Bånd
++RWIF_59=En skanning kjører allerede.
++RWIF_60=Skanning avbrutt (siden sluttet å oppdatere – vanlig når du skanner ditt eget bånd). Opprinnelig kanal gjenopprettet; kjør den fra en kablet klient eller et annet bånd.
+ RFB_01=Førstegangsoppsett
+ RFB_02=Denne ruteren ble nettopp tilbakestilt eller satt opp for første gang. Angi administratorbrukernavn og passord nå. Deretter blir du bedt om å angi Wi&#8209;Fi-passordet. Alt kan endres senere i grensesnittet.
+ RFB_03=Ruterens brukernavn
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 5426a7ef44..e4a8b6d918 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Automatyczne skanowanie przestraja wybrane radio kolejno na każdy kandy
+ RWIF_34=każdy kanał restartuje radio
+ RWIF_35=Przypnij najlepszy
+ RWIF_36=wynik
+-RWIF_37=Brak skanu. Uruchom automatyczne skanowanie, aby uszeregować kanały 6 GHz według czystości.
+-RWIF_38=Nie znaleziono radia 6 GHz na tym urządzeniu.
++RWIF_37=Brak skanowania. Uruchom automatyczne skanowanie, aby uszeregować kanały według czystości.
++RWIF_38=Nie znaleziono radia bezprzewodowego w tym urządzeniu.
+ RWIF_39=Skanowanie zatrzymane - przywrócono pierwotny kanał.
+ RWIF_40=Skanowanie zakończone - przywrócono pierwotny kanał. Przypnij najlepszy kanał, aby go zachować.
+ RWIF_41=najlepszy
+-RWIF_42=Przypiąć 6 GHz do tego kanału?
++RWIF_42=Przypiąć najlepszy kanał do tego radia?
+ RWIF_43=Pasywny monitor kanału
+ RWIF_44=Opcjonalny monitor w tle, który obserwuje tylko bieżący kanał i sygnalizuje jego pogorszenie. Nigdy nie zmienia kanału ani nie restartuje radia - gdy zgłosi problem, uruchom automatyczne skanowanie powyżej.
+ RWIF_45=Włącz monitor
+@@ -5676,6 +5676,8 @@ RWIF_55=Trwa pomiar - najpierw go zatrzymaj.
+ RWIF_56=vs bieżący:
+ RWIF_57=Przypięto do
+ RWIF_58=Pasmo
++RWIF_59=Skanowanie jest już w toku.
++RWIF_60=Skanowanie przerwane (strona przestała się odświeżać – częste podczas skanowania pasma, z którym jesteś połączony). Przywrócono pierwotny kanał; uruchom z klienta przewodowego lub innego pasma.
+ RFB_01=Pierwsza konfiguracja
+ RFB_02=Ten router został właśnie zresetowany lub skonfigurowany po raz pierwszy. Ustaw teraz nazwę użytkownika i hasło administratora. Następnie zostaniesz poproszony o ustawienie hasła Wi&#8209;Fi. Wszystko można później zmienić w interfejsie.
+ RFB_03=Nazwa użytkownika routera
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 29123efc12..248c1c721d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Scanarea automată reacordează radioul selectat pe fiecare canal candid
+ RWIF_34=fiecare canal repornește radioul
+ RWIF_35=Fixează cel mai bun
+ RWIF_36=scor
+-RWIF_37=Nicio scanare încă. Porniți o scanare automată pentru a clasifica canalele de 6 GHz după curățenie.
+-RWIF_38=Nu s-a găsit niciun radio de 6 GHz pe acest dispozitiv.
++RWIF_37=Încă nicio scanare. Porniți o scanare automată pentru a clasa canalele după curățenie.
++RWIF_38=Nu s-a găsit nicio radio wireless pe acest dispozitiv.
+ RWIF_39=Scanare oprită — canalul inițial a fost restaurat.
+ RWIF_40=Scanare terminată — canalul inițial a fost restaurat. Fixați cel mai bun canal ca să îl păstrați.
+ RWIF_41=cel mai bun
+-RWIF_42=Fixați 6 GHz pe acest canal?
++RWIF_42=Fixați cel mai bun canal pe această radio?
+ RWIF_43=Monitor pasiv de canal
+ RWIF_44=Un monitor de fundal opțional care urmărește doar canalul curent și semnalează când acesta se degradează. Nu schimbă niciodată canalul și nu repornește radioul — când semnalează o problemă, rulați Scanarea automată de mai sus.
+ RWIF_45=Activează monitorul
+@@ -5676,6 +5676,8 @@ RWIF_55=O captură este în curs — opriți-o mai întâi.
+ RWIF_56=față de curent:
+ RWIF_57=Fixat pe
+ RWIF_58=Bandă
++RWIF_59=O scanare este deja în curs.
++RWIF_60=Scanare întreruptă (pagina nu s-a mai actualizat – frecvent când scanați banda la care sunteți conectat). Canalul original restaurat; rulați-o de la un client cu fir sau de pe altă bandă.
+ RFB_01=Configurare inițială
+ RFB_02=Acest router tocmai a fost resetat sau configurat pentru prima dată. Setați acum numele de utilizator și parola de administrator. Apoi vi se va cere să setați parola Wi&#8209;Fi. Totul poate fi schimbat ulterior în interfață.
+ RFB_03=Nume de utilizator router
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 4fdbc4392a..6072ff003a 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Автосканирование поочерёдно перестраи
+ RWIF_34=каждый канал перезапускает радиомодуль
+ RWIF_35=Закрепить лучший
+ RWIF_36=оценка
+-RWIF_37=Сканирования ещё не было. Запустите автосканирование, чтобы ранжировать каналы 6 GHz по чистоте.
+-RWIF_38=На этом устройстве не найден радиомодуль 6 GHz.
++RWIF_37=Сканирования ещё не было. Запустите автосканирование, чтобы ранжировать каналы по чистоте.
++RWIF_38=На этом устройстве не найден радиомодуль.
+ RWIF_39=Сканирование остановлено - исходный канал восстановлен.
+ RWIF_40=Сканирование завершено - исходный канал восстановлен. Закрепите лучший канал, чтобы сохранить его.
+ RWIF_41=лучший
+-RWIF_42=Закрепить 6 GHz на этом канале?
++RWIF_42=Закрепить лучший канал за этим радиомодулем?
+ RWIF_43=Пассивный монитор канала
+ RWIF_44=Включаемый по желанию фоновый монитор, который следит только за текущим каналом и сигнализирует о его ухудшении. Он никогда не меняет канал и не перезапускает радиомодуль - при сигнале о проблеме запустите автосканирование выше.
+ RWIF_45=Включить монитор
+@@ -5676,6 +5676,8 @@ RWIF_55=Идёт запись - сначала остановите её.
+ RWIF_56=к текущему:
+ RWIF_57=Закреплён на
+ RWIF_58=Диапазон
++RWIF_59=Сканирование уже выполняется.
++RWIF_60=Сканирование прервано (страница перестала обновляться — часто при сканировании диапазона, к которому вы подключены). Исходный канал восстановлен; запустите с проводного клиента или другого диапазона.
+ RFB_01=Первоначальная настройка
+ RFB_02=Этот роутер только что сброшен или настраивается впервые. Задайте имя пользователя и пароль администратора. Затем вам будет предложено задать пароль Wi&#8209;Fi. Всё это можно изменить позже в интерфейсе.
+ RFB_03=Имя пользователя роутера
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index f7107eb62c..dc57991446 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -208,7 +208,7 @@ var W6="0x7202,0x7242,0x7282,0x72c2,0x7302,0x7342,0x7382,0x73c2";
+ 
+ var BANDNAME={2:"2.4 GHz",1:"5 GHz",4:"6 GHz"};
+ var ST=null, CAPPOLL=null, CSV="";
+-var SCANPOLL=null, SCANDATA=null, SCANBEST=null;
++var SCANPOLL=null, SCANDATA=null, SCANBEST=null, SCAN_USERSTOP=false;
+ var CHQPOLL=null;
+ 
+ function esc(s){return String(s).replace(/[&<>"']/g,function(c){return "&#"+c.charCodeAt(0)+";"});}
+@@ -259,6 +259,12 @@ function fetchStatus(cb){
+   x.send();
+ }
+ 
++/* a band name for the selectors; a quad-band device has two 5 GHz radios, so
++ * disambiguate same-band entries with the interface to keep them distinct */
++function bandLabel(b){
++  var i,c=0; for(i=0;ST&&i<ST.bands.length;i++) if(ST.bands[i].nband===b.nband) c++;
++  return (BANDNAME[b.nband]||b.ifname)+(c>1?" ("+b.ifname+")":"");
++}
+ function render(){
+   if(!ST) return;
+   var tb=document.querySelector("#radios tbody"), h="";
+@@ -311,7 +317,7 @@ function render(){
+     for(i=0;i<ST.bands.length;i++){
+       b=ST.bands[i];
+       o=document.createElement("option");
+-      o.value=b.unit; o.text=(BANDNAME[b.nband]||b.ifname);
++      o.value=b.unit; o.text=bandLabel(b);
+       if(b.nband===4) o.selected=true;
+       cu.appendChild(o);
+     }
+@@ -322,7 +328,7 @@ function render(){
+     for(i=0;i<ST.bands.length;i++){
+       b=ST.bands[i];
+       so=document.createElement("option");
+-      so.value=b.unit; so.text=(BANDNAME[b.nband]||b.ifname);
++      so.value=b.unit; so.text=bandLabel(b);
+       if(b.nband===4) so.selected=true;
+       sb.appendChild(so);
+     }
+@@ -370,7 +376,15 @@ function capStart(){
+   var s=document.getElementById("capsecs").value;
+   var x=new XMLHttpRequest();
+   x.open("GET","/reaper_wifi.cgi?action=capstart&unit="+u+"&secs="+s+reaperTok()+"&_="+Date.now(),true);
+-  x.onreadystatechange=function(){if(x.readyState===4){fetchStatus();capPoll();}};
++  x.onreadystatechange=function(){
++    if(x.readyState!==4) return;
++    var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
++    if(!r||!r.ok){
++      showToast((r&&r.err==="busy")?"<#RWIF_55#>":((r&&r.err)?("error: "+r.err):"error"));
++      fetchStatus(); return;
++    }
++    fetchStatus(); capPoll();
++  };
+   x.send();
+ }
+ function capStop(){
+@@ -538,6 +552,7 @@ function scanStart(){
+   var unit=(sel&&sel.value!=="")?parseInt(sel.value,10):-1;
+   if(isNaN(unit)||unit<0){ var six=six_band(); if(!six){alert("<#RWIF_38#>");return;} unit=six.unit; }
+   if(!confirm("<#RWIF_33#>")) return;
++  SCAN_USERSTOP=false;
+   var x=new XMLHttpRequest();
+   x.open("GET","/reaper_wifi.cgi?action=scanstart&unit="+unit+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+@@ -545,7 +560,9 @@ function scanStart(){
+     var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
+     if(!r||!r.ok){
+       document.getElementById("scanprog").textContent =
+-        (r&&r.err==="busy") ? "<#RWIF_55#>" : ((r&&r.err)?("error: "+r.err):"error");
++        (r&&r.err==="busycap") ? "<#RWIF_55#>" :
++        (r&&r.err==="busy") ? "<#RWIF_59#>" :
++        ((r&&r.err)?("error: "+r.err):"error");
+       return;
+     }
+     scanPoll();
+@@ -553,6 +570,7 @@ function scanStart(){
+   x.send();
+ }
+ function scanStop(){
++  SCAN_USERSTOP=true;
+   var x=new XMLHttpRequest();
+   x.open("GET","/reaper_wifi.cgi?action=scanstop"+reaperTok()+"&_="+Date.now(),true);
+   x.send();
+@@ -597,7 +615,7 @@ function renderScan(){
+   } else {
+     fill.style.width="100%"; fill.className="pfill";
+     setTimeout(function(){bar.style.display="none";},1200);
+-    prog.textContent=SCANDATA.aborted?"<#RWIF_39#>":"<#RWIF_40#>";
++    prog.textContent=SCANDATA.aborted?(SCAN_USERSTOP?"<#RWIF_39#>":"<#RWIF_60#>"):"<#RWIF_40#>";
+   }
+   var nb=scanNband(), ck=blockKey(scanRunCs(),nb);
+   document.getElementById("scanempty").style.display=res.length?"none":"";
+@@ -625,7 +643,7 @@ function renderScan(){
+ function scanPin(){
+   if(!SCANBEST||!SCANBEST.chanspec||!SCANDATA) return;
+   var u=SCANDATA.unit, nb=nbandOf(u), pin=pinTarget(SCANBEST.chanspec,nb);
+-  var msg="<#RWIF_42#> "+pin+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
++  var msg="<#RWIF_42#> "+(BANDLBL[nb]||"")+" "+pin+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
+   var res=(SCANDATA.results)||[], ck=blockKey(scanRunCs(),nb), j;
+   for(j=0;j<res.length;j++) if(ck&&blockKey(res[j].chanspec,nb)===ck){
+     msg+="\n<#RWIF_56#> "+res[j].chanspec+" (nopkt "+(+res[j].nopkt).toFixed(0)+"%)"; break;
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index e5cba6099a..126e690d3f 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Samodejno skeniranje izbrani radio po vrsti preklaplja na vsak kandidatn
+ RWIF_34=vsak kanal znova zažene radio
+ RWIF_35=Pripni najboljšega
+ RWIF_36=ocena
+-RWIF_37=Skeniranja še ni bilo. Zaženite samodejno skeniranje, da razvrstite kanale 6 GHz po čistosti.
+-RWIF_38=Na tej napravi ni radia 6 GHz.
++RWIF_37=Še ni pregleda. Zaženite samodejni pregled za razvrstitev kanalov po čistosti.
++RWIF_38=V tej napravi ni bilo najdenega brezžičnega radia.
+ RWIF_39=Skeniranje ustavljeno - prvotni kanal je obnovljen.
+ RWIF_40=Skeniranje končano - prvotni kanal je obnovljen. Pripnite najboljši kanal, da ga obdržite.
+ RWIF_41=najboljši
+-RWIF_42=Pripnem 6 GHz na ta kanal?
++RWIF_42=Pripnem najboljši kanal na ta radio?
+ RWIF_43=Pasivni nadzor kanala
+ RWIF_44=Izbirni nadzornik v ozadju, ki opazuje samo trenutni kanal in opozori, ko se poslabša. Nikoli ne spremeni kanala niti ne zažene radia znova - ko opozori na težavo, zaženite zgornje samodejno skeniranje.
+ RWIF_45=Omogoči nadzor
+@@ -5676,6 +5676,8 @@ RWIF_55=Zajem teče - najprej ga ustavite.
+ RWIF_56=v primerjavi s trenutnim:
+ RWIF_57=Pripeto na
+ RWIF_58=Pas
++RWIF_59=Pregled že poteka.
++RWIF_60=Pregled prekinjen (stran se je nehala posodabljati – pogosto pri pregledovanju pasu, s katerim ste povezani). Prvotni kanal obnovljen; zaženite ga iz žičnega odjemalca ali drugega pasu.
+ RFB_01=Prva nastavitev
+ RFB_02=Ta usmerjevalnik je bil pravkar ponastavljen ali prvič nastavljen. Zdaj nastavite skrbniško uporabniško ime in geslo. Nato boste pozvani k nastavitvi gesla Wi&#8209;Fi. Vse lahko pozneje spremenite v vmesniku.
+ RFB_03=Uporabniško ime usmerjevalnika
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 6b0dba8ef2..9068b707be 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Autoskanningen ställer om den valda radion till varje kandidatkanal i t
+ RWIF_34=varje kanal startar om radion
+ RWIF_35=Fäst bästa
+ RWIF_36=poäng
+-RWIF_37=Ingen skanning ännu. Starta en autoskanning för att rangordna 6 GHz-kanalerna efter renhet.
+-RWIF_38=Ingen 6 GHz-radio hittades på denna enhet.
++RWIF_37=Ingen skanning ännu. Starta en automatisk skanning för att rangordna kanalerna efter renhet.
++RWIF_38=Ingen trådlös radio hittades på den här enheten.
+ RWIF_39=Skanningen stoppad - ursprunglig kanal återställd.
+ RWIF_40=Skanningen klar - ursprunglig kanal återställd. Fäst den bästa kanalen för att behålla den.
+ RWIF_41=bäst
+-RWIF_42=Fästa 6 GHz på denna kanal?
++RWIF_42=Fäst den bästa kanalen på den här radion?
+ RWIF_43=Passiv kanalövervakning
+ RWIF_44=En valfri bakgrundsövervakning som bara bevakar den aktuella kanalen och flaggar när den försämras. Den ändrar aldrig kanalen och startar aldrig om radion - när den flaggar ett problem, kör autoskanningen ovan.
+ RWIF_45=Aktivera övervakning
+@@ -5676,6 +5676,8 @@ RWIF_55=En mätning pågår - stoppa den först.
+ RWIF_56=mot aktuell:
+ RWIF_57=Fäst på
+ RWIF_58=Band
++RWIF_59=En skanning körs redan.
++RWIF_60=Skanning avbruten (sidan slutade uppdateras – vanligt när du skannar bandet du är ansluten till). Ursprunglig kanal återställd; kör den från en trådbunden klient eller ett annat band.
+ RFB_01=Förstagångsinstallation
+ RFB_02=Den här routern har just återställts eller konfigurerats för första gången. Ange administratörens användarnamn och lösenord nu. Därefter ombeds du ange ditt Wi&#8209;Fi-lösenord. Allt kan ändras senare i gränssnittet.
+ RFB_03=Routerns användarnamn
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 59f672923d..f893bdc367 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=สแกนอัตโนมัติจะปรับวิทยุ
+ RWIF_34=แต่ละช่องจะรีสตาร์ตวิทยุ
+ RWIF_35=ตรึงช่องที่ดีที่สุด
+ RWIF_36=คะแนน
+-RWIF_37=ยังไม่มีการสแกน เริ่มสแกนอัตโนมัติเพื่อจัดอันดับช่องสัญญาณ 6 GHz ตามความสะอาด
+-RWIF_38=ไม่พบวิทยุ 6 GHz ในอุปกรณ์นี้
++RWIF_37=ยังไม่มีการสแกน เริ่มการสแกนอัตโนมัติเพื่อจัดอันดับช่องสัญญาณตามความสะอาด
++RWIF_38=ไม่พบวิทยุไร้สายบนอุปกรณ์นี้
+ RWIF_39=หยุดสแกนแล้ว - คืนช่องสัญญาณเดิมแล้ว
+ RWIF_40=สแกนเสร็จสิ้น - คืนช่องสัญญาณเดิมแล้ว ตรึงช่องที่ดีที่สุดเพื่อคงไว้
+ RWIF_41=ดีที่สุด
+-RWIF_42=ตรึง 6 GHz ไว้ที่ช่องนี้หรือไม่
++RWIF_42=ปักหมุดช่องสัญญาณที่ดีที่สุดกับวิทยุนี้หรือไม่?
+ RWIF_43=ตัวเฝ้าดูช่องสัญญาณแบบพาสซีฟ
+ RWIF_44=ตัวเฝ้าดูเบื้องหลังแบบเลือกเปิดเอง คอยดูเฉพาะช่องสัญญาณปัจจุบันและแจ้งเตือนเมื่อคุณภาพแย่ลง จะไม่เปลี่ยนช่องหรือรีสตาร์ตวิทยุเด็ดขาด - เมื่อพบปัญหา ให้เรียกใช้สแกนอัตโนมัติด้านบน
+ RWIF_45=เปิดตัวเฝ้าดู
+@@ -5676,6 +5676,8 @@ RWIF_55=กำลังจับข้อมูลอยู่ - ให้หย
+ RWIF_56=เทียบกับปัจจุบัน:
+ RWIF_57=ตรึงไว้ที่
+ RWIF_58=ย่านความถี่
++RWIF_59=มีการสแกนกำลังทำงานอยู่แล้ว
++RWIF_60=การสแกนถูกขัดจังหวะ (หน้าเว็บหยุดอัปเดต ซึ่งพบได้บ่อยเมื่อสแกนย่านที่คุณเชื่อมต่ออยู่) คืนค่าช่องสัญญาณเดิมแล้ว โปรดเรียกใช้จากไคลเอ็นต์แบบมีสายหรือย่านอื่น
+ RFB_01=การตั้งค่าครั้งแรก
+ RFB_02=เราเตอร์นี้เพิ่งถูกรีเซ็ตหรือถูกตั้งค่าเป็นครั้งแรก โปรดตั้งชื่อผู้ใช้และรหัสผ่านผู้ดูแลระบบตอนนี้ จากนั้นระบบจะให้ตั้งรหัสผ่าน Wi&#8209;Fi ทั้งหมดนี้เปลี่ยนได้ภายหลังในหน้าจัดการ
+ RFB_03=ชื่อผู้ใช้ของเราเตอร์
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 7fc46448c7..a3e33847e8 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Otomatik Tarama, seçilen radyoyu sırayla her aday kanala ayarlar, her
+ RWIF_34=her kanal radyoyu yeniden başlatır
+ RWIF_35=En iyiyi sabitle
+ RWIF_36=puan
+-RWIF_37=Henüz tarama yok. 6 GHz kanallarını temizliğe göre sıralamak için bir Otomatik Tarama başlatın.
+-RWIF_38=Bu cihazda 6 GHz radyo bulunamadı.
++RWIF_37=Henüz tarama yok. Kanalları temizliğe göre sıralamak için Otomatik Tarama başlatın.
++RWIF_38=Bu cihazda kablosuz radyo bulunamadı.
+ RWIF_39=Tarama durduruldu - özgün kanal geri yüklendi.
+ RWIF_40=Tarama tamamlandı - özgün kanal geri yüklendi. Kalması için en iyi kanalı sabitleyin.
+ RWIF_41=en iyi
+-RWIF_42=6 GHz bu kanala sabitlensin mi?
++RWIF_42=En iyi kanal bu radyoya sabitlensin mi?
+ RWIF_43=Pasif Kanal İzleyici
+ RWIF_44=Yalnızca geçerli kanalı izleyen ve bozulduğunda bunu bildiren, isteğe bağlı bir arka plan izleyicisi. Kanalı asla değiştirmez ve radyoyu yeniden başlatmaz - bir sorun bildirdiğinde yukarıdaki Otomatik Taramayı çalıştırın.
+ RWIF_45=İzleyiciyi etkinleştir
+@@ -5676,6 +5676,8 @@ RWIF_55=Bir yakalama çalışıyor - önce onu durdurun.
+ RWIF_56=geçerliye göre:
+ RWIF_57=Sabitlendi:
+ RWIF_58=Bant
++RWIF_59=Zaten bir tarama çalışıyor.
++RWIF_60=Tarama kesildi (sayfa güncellenmeyi durdurdu - bağlı olduğunuz bandı tararken sık görülür). Özgün kanal geri yüklendi; kablolu bir istemciden veya başka bir banttan çalıştırın.
+ RFB_01=İlk kurulum
+ RFB_02=Bu router az önce sıfırlandı veya ilk kez kuruluyor. Şimdi yönetici kullanıcı adını ve parolasını belirleyin. Ardından Wi&#8209;Fi parolanızı belirlemeniz istenecek. Hepsi daha sonra arayüzden değiştirilebilir.
+ RFB_03=Router kullanıcı adı
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 8e91eb81e9..01af8b8978 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=自動掃描會將所選無線電依序調到每個候選頻道，每次
+ RWIF_34=每個頻道都會重新啟動無線電
+ RWIF_35=固定最佳
+ RWIF_36=分數
+-RWIF_37=尚未掃描。開始自動掃描即可依乾淨程度為 6 GHz 頻道排名。
+-RWIF_38=在此裝置上找不到 6 GHz 無線電。
++RWIF_37=尚未掃描。開始自動掃描即可依乾淨程度為頻道排名。
++RWIF_38=在此裝置上找不到無線電。
+ RWIF_39=掃描已停止——原頻道已還原。
+ RWIF_40=掃描完成——原頻道已還原。固定最佳頻道即可保留。
+ RWIF_41=最佳
+-RWIF_42=將 6 GHz 固定到此頻道？
++RWIF_42=將最佳頻道固定到此無線電？
+ RWIF_43=被動頻道監控
+ RWIF_44=一個可選擇啟用的背景監控程式，只觀察目前頻道並在其劣化時提出警示。它絕不會變更頻道或重新啟動無線電——當它警示問題時，請執行上方的自動掃描。
+ RWIF_45=啟用監控
+@@ -5676,6 +5676,8 @@ RWIF_55=有擷取正在執行——請先停止。
+ RWIF_56=對比目前：
+ RWIF_57=已固定到
+ RWIF_58=頻段
++RWIF_59=掃描已在進行中。
++RWIF_60=掃描已中斷（頁面停止更新——掃描您所連線的頻段時常見）。已還原原始頻道；請從有線用戶端或其他頻段執行。
+ RFB_01=首次設定
+ RFB_02=此路由器剛被重設或首次設定。請立即設定管理員使用者名稱與密碼。接著將要求您設定 Wi&#8209;Fi 密碼。所有設定之後皆可在管理介面中變更。
+ RFB_03=路由器使用者名稱
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index a4ad97b19e..3fbd368c83 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5654,12 +5654,12 @@ RWIF_33=Автосканування по черзі перемикає вибр
+ RWIF_34=кожен канал перезапускає радіомодуль
+ RWIF_35=Закріпити найкращий
+ RWIF_36=оцінка
+-RWIF_37=Сканування ще не було. Запустіть автосканування, щоб ранжувати канали 6 GHz за чистотою.
+-RWIF_38=На цьому пристрої не знайдено радіомодуль 6 GHz.
++RWIF_37=Сканування ще не було. Запустіть автосканування, щоб упорядкувати канали за чистотою.
++RWIF_38=На цьому пристрої не знайдено бездротового радіомодуля.
+ RWIF_39=Сканування зупинено — початковий канал відновлено.
+ RWIF_40=Сканування завершено — початковий канал відновлено. Закріпіть найкращий канал, щоб зберегти його.
+ RWIF_41=найкращий
+-RWIF_42=Закріпити 6 GHz на цьому каналі?
++RWIF_42=Закріпити найкращий канал за цим радіомодулем?
+ RWIF_43=Пасивний монітор каналу
+ RWIF_44=Фоновий монітор, що вмикається за бажанням, стежить лише за поточним каналом і сигналізує про його погіршення. Він ніколи не змінює канал і не перезапускає радіомодуль — коли він фіксує проблему, запустіть автосканування вище.
+ RWIF_45=Увімкнути монітор
+@@ -5676,6 +5676,8 @@ RWIF_55=Триває запис — спочатку зупиніть його.
+ RWIF_56=відносно поточного:
+ RWIF_57=Закріплено на
+ RWIF_58=Діапазон
++RWIF_59=Сканування вже виконується.
++RWIF_60=Сканування перервано (сторінка перестала оновлюватися — часто під час сканування діапазону, до якого ви під’єднані). Початковий канал відновлено; запустіть із дротового клієнта або іншого діапазону.
+ RFB_01=Початкове налаштування
+ RFB_02=Цей маршрутизатор щойно скинуто або налаштовується вперше. Задайте ім'я користувача та пароль адміністратора. Далі вам буде запропоновано задати пароль Wi&#8209;Fi. Усе це можна змінити пізніше в інтерфейсі.
+ RFB_03=Ім'я користувача маршрутизатора
+-- 
+2.25.1
+

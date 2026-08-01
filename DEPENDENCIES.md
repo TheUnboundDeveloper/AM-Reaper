@@ -15,7 +15,7 @@ input's provenance and license status. Companion to
 | Input | Pin | Source | License |
 |---|---|---|---|
 | Upstream base tree | tag `3006.102.8-beta2`, commit `a7ebfa133a` | <https://github.com/RMerl/asuswrt-merlin.ng> | GPL v2 (GPL parts) + proprietary vendor components (see below) |
-| Reaper patch series | `patches/0001`–`0261` (v1.0 → v1.9.7; `0261` = v1.9.7) | this repo | GPL v2 ([`LICENSE.reaper`](LICENSE.reaper)) |
+| Reaper patch series | `patches/0001`–`0271` (v1.0 → v2.0.0; `0271` = v2.0.0) | this repo | GPL v2 ([`LICENSE.reaper`](LICENSE.reaper)) |
 
 Applying the series to the pinned commit with `git am --keep-cr` reproduces the
 Reaper source tree exactly (see [`patches/README.md`](patches/README.md)).
@@ -45,10 +45,10 @@ Reaper source tree exactly (see [`patches/README.md`](patches/README.md)).
 
 ```bash
 cd release/src-rt-5.04behnd.4916
-nice make rt-be96u -j1     # -j1 required; fresh tree builds twice
+nice make rt-BEXXU -j1     # -j1 required; fresh tree builds twice
 ```
 
-The target selects the model: `rt-be96u` (primary, hardware-validated) /
+The target selects the model: `rt-BEXXU` (primary, hardware-validated) /
 `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`, each built from its per-model
 branch. The AI Advisor is compiled in or out via the `RTCONFIG_REAPER_MCP` build
 flag, producing the two variants (`+ AI Advisor` / `noMCP` Standard) per model.

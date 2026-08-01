@@ -1,15 +1,15 @@
-# Contributor Dev Setup — RT-BE96U "reaper" hardened build
+# Contributor Dev Setup — RT-BEXXU "reaper" hardened build
 
 This is the **hard-won, known-good** setup for building and modifying this firmware. It exists because getting an Asuswrt-Merlin / Broadcom-HND tree to build is full of non-obvious traps; everything below is something that actually bit us. Follow it and you skip the trial-and-error.
 
-> **Audience:** someone who wants to audit/patch the open-source userspace and produce a flashable RT-BE96U image, the way the `reaper` hardening work was done.
+> **Audience:** someone who wants to audit/patch the open-source userspace and produce a flashable RT-BEXXU image, the way the `reaper` hardening work was done.
 
 ---
 
 ## 0. Ground rules (read first)
 
-- **Primary target is the RT-BE96U.** Built from `release/src-rt-5.04behnd.4916`, model `rt-be96u` (Broadcom BCM4916 / WiFi 7). The RT-BE96U is the hardware-validated model; the same tree also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`). This guide walks the RT-BE96U path; the sibling builds are the same recipe with a different target.
-- **Never push.** All work stays on the local `be96u-only` branch. `origin` points at the upstream/mirror — do **not** `git push`.
+- **Primary target is the RT-BEXXU.** Built from `release/src-rt-5.04behnd.4916`, model `rt-BEXXU` (Broadcom BCM4916 / WiFi 7). The RT-BEXXU is the hardware-validated model; the same tree also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`). This guide walks the RT-BEXXU path; the sibling builds are the same recipe with a different target.
+- **Never push.** All work stays on the local `BEXXU-only` branch. `origin` points at the upstream/mirror — do **not** `git push`.
 - **Don't touch the blobs.** The Broadcom WiFi drivers and prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, `spwenc`, `hostapd`/`wpa_supplicant` Broadcom forks) are closed and driver-coupled. Harden the **open-source userspace** only; treat the blobs as documented residual risk.
 - **Legal:** the proprietary components (ASUS/Broadcom/Trend Micro/Tuxera) are licensed for ASUS hardware only — see [`README.proprietary`](README.proprietary). The GPL parts are GPL — publish changes if you redistribute.
 
@@ -19,13 +19,13 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 
 **This repo does not ship the firmware source or toolchains** — they're large and include proprietary Broadcom/ASUS components licensed for ASUS hardware only. You fetch them from the official sources, then apply the reaper changes from this repo on top.
 
-1. **Upstream Asuswrt-Merlin source @ the matching tag.** This is the full buildable tree (it includes the Broadcom components the BE96U build needs — which is exactly why we don't redistribute them here):
+1. **Upstream Asuswrt-Merlin source @ the matching tag.** This is the full buildable tree (it includes the Broadcom components the BEXXU build needs — which is exactly why we don't redistribute them here):
    ```bash
    git clone https://github.com/RMerl/asuswrt-merlin.ng.git
    cd asuswrt-merlin.ng
    git checkout 3006.102.8-beta2        # the base this fork was built on
    ```
-   (Alternatively, ASUS's GPL release tarball for the RT-BE96U from <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
+   (Alternatively, ASUS's GPL release tarball for the RT-BEXXU from <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 
 2. **Toolchains** — the gcc-10.3 ARM + aarch64 crosstools, from RMerlin's toolchain repo, installed under `/opt/toolchains` (details and the gcc-13.2-phantom explanation in §3):
    ```bash
@@ -42,7 +42,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
    #   (plain `patch -p1` will NOT work: 4 patches carry git binary payloads —
    #    fonts, logo, USB ring sprite — that `patch` cannot apply. Use git am.)
    ```
-   The patches touch only the shared open-source userspace (`release/src/router/{httpd,rc,shared,libovpn,snooper,urlfilterd,lltdc,wsdd2,infosvr,libcodb,…}`), so they apply cleanly to a stock upstream tree. **Making the tree BE96U-only (removing the sibling-model artifacts) is optional and not required to build `rt-be96u`** — see [`../patches/README.md`](../patches/README.md).
+   The patches touch only the shared open-source userspace (`release/src/router/{httpd,rc,shared,libovpn,snooper,urlfilterd,lltdc,wsdd2,infosvr,libcodb,…}`), so they apply cleanly to a stock upstream tree. **Making the tree BEXXU-only (removing the sibling-model artifacts) is optional and not required to build `rt-BEXXU`** — see [`../patches/README.md`](../patches/README.md).
 
 4. Then follow §2–§7 below to set up WSL/toolchains and build.
 
@@ -55,7 +55,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 | | Path | Role |
 |---|---|---|
 | **Windows mirror** | `C:\…\VSC\ASUS\asuswrt-merlin.ng` | Reference/editing mirror. Renders symlinks as text; **does not build.** |
-| **WSL build clone** | `/home/<builduser>/asuswrt-be96u` | The real build tree (Linux, symlinks materialize). Build here. |
+| **WSL build clone** | `/home/<builduser>/asuswrt-BEXXU` | The real build tree (Linux, symlinks materialize). Build here. |
 
 You **edit** through the Windows side (or over the UNC path into WSL) and **build** in WSL. The two stay in sync via git.
 
@@ -70,7 +70,7 @@ You **edit** through the Windows side (or over the UNC path into WSL) and **buil
   !/release/src/router/ipset-7.6/tests/
   !/release/src/router/udev/test/
   ```
-- With `core.symlinks=false` (Windows default), **~138 files perpetually show as "modified"** (symlinks/line-endings in the non-BE96U trees). **Ignore them. Never commit them.** The BE96U sources (`release/src/router/{httpd,rc,shared,…}`) check out clean.
+- With `core.symlinks=false` (Windows default), **~138 files perpetually show as "modified"** (symlinks/line-endings in the non-BEXXU trees). **Ignore them. Never commit them.** The BEXXU sources (`release/src/router/{httpd,rc,shared,…}`) check out clean.
 
 ---
 
@@ -148,16 +148,16 @@ Gotchas:
 
 From the platform tree, as the non-root user:
 ```bash
-cd /home/reaper/asuswrt-be96u/release/src-rt-5.04behnd.4916
-make rt-be96u            # NOTE: -j1 (see below)
+cd /home/reaper/asuswrt-BEXXU/release/src-rt-5.04behnd.4916
+make rt-BEXXU            # NOTE: -j1 (see below)
 ```
 (For the sibling models, build the corresponding target from that model's branch —
 `make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` — same recipe, same caveats.)
 
 The non-obvious parts:
 
-1. **Build TWICE.** The first `make rt-be96u` generates the kernel/busybox/router config (`config_rt-be96u` from the tracked `config_base`) and then **dies at `setprofile`**. The **second** run proceeds. (A fresh clone needs this; a warm tree usually doesn't.)
-2. **Use `-j1`.** `setprofile` (top `Makefile`) and the router clean-build (`rm -rf fs.build`) are **parallel-unsafe** — `-j>1` reliably races and fails. `make rt-be96u` with no `-j` is effectively -j1 and is the safe default.
+1. **Build TWICE.** The first `make rt-BEXXU` generates the kernel/busybox/router config (`config_rt-BEXXU` from the tracked `config_base`) and then **dies at `setprofile`**. The **second** run proceeds. (A fresh clone needs this; a warm tree usually doesn't.)
+2. **Use `-j1`.** `setprofile` (top `Makefile`) and the router clean-build (`rm -rf fs.build`) are **parallel-unsafe** — `-j>1` reliably races and fails. `make rt-BEXXU` with no `-j` is effectively -j1 and is the safe default.
 3. **Restore the router symlink before each run.** During userspace staging the symlink
    `…/bcmdrivers/broadcom/net/wl/bcm96813/main/src/router` (→ `../../../../../../../../src/router`)
    sometimes gets clobbered into a real (empty) dir, after which staging can't find `rtconfig.h`. Restore it:
@@ -168,15 +168,15 @@ The non-obvious parts:
 4. **iptables-1.4.x** needs a few headers this drop omits: create the stub `include/linux/netfilter/xt_ethport.h`, overlay the behnd kernel netfilter headers into the iptables include dir, and disable the true-orphan extensions (`libipt_ROUTE`, `libip6t_ROUTE`, `libipt_geoip`, `libipt_webstr`). (See the helper scripts; this is a one-time tree fix-up.)
 
 **Output** lands in `release/src-rt-5.04behnd.4916/targets/96813GW/`:
-- `RT-BE96U_…_nand_squashfs.pkgtb` — **firmware-only image** (flash this for a normal upgrade)
-- `RT-BE96U_…_nand_squashfs_loader.pkgtb` — firmware **+ bootloader** (recovery/full)
+- `RT-BEXXU_…_nand_squashfs.pkgtb` — **firmware-only image** (flash this for a normal upgrade)
+- `RT-BEXXU_…_nand_squashfs_loader.pkgtb` — firmware **+ bootloader** (recovery/full)
 
 Format is **`.pkgtb`** (modern Broadcom NAND package), not the older `.trx`.
 
 ### Version label (`BUILDREV`)
 `release/src-rt/Makefile` defaults `BUILDREV` to `-reaper`, but it's `export`ed, so recursive sub-makes see it non-empty and flip to `-g<commit>`. Net effect: the image is labeled **`…_beta2-g<hash>`** matching the branch tip (which is great — it pins the exact commit). To force the `-reaper` brand instead, pass it on the command line:
 ```bash
-make rt-be96u BUILDREV=-reaper
+make rt-BEXXU BUILDREV=-reaper
 ```
 > Edit the **real** `release/src-rt/Makefile`, not the per-platform `Makefile` (it's a symlink — editing through the link shows no git diff).
 
@@ -184,7 +184,7 @@ make rt-be96u BUILDREV=-reaper
 
 ## 6. Editing + the tooling gotchas
 
-- **Edit source over UNC:** `\\wsl.localhost\Ubuntu-20.04\home\reaper\asuswrt-be96u\release\src\router\…`. Read/Edit tools work fine against it; just match exact bytes (the tree uses **tabs** in most C files, **spaces** in a few like `lltdc/src/qospktio.c`).
+- **Edit source over UNC:** `\\wsl.localhost\Ubuntu-20.04\home\reaper\asuswrt-BEXXU\release\src\router\…`. Read/Edit tools work fine against it; just match exact bytes (the tree uses **tabs** in most C files, **spaces** in a few like `lltdc/src/qospktio.c`).
 - **PowerShell → WSL strips `$shell` variables.** Inline single-quoted commands containing `$var`/`$()`/`for` loops get mangled (the vars arrive empty). **Always write the shell logic to a `.sh` file** (e.g. under the scratchpad / `/mnt/c/…`) and run:
   ```powershell
   wsl -d Ubuntu-20.04 --user reaper -- bash /mnt/c/…/script.sh
@@ -195,7 +195,7 @@ make rt-be96u BUILDREV=-reaper
 
 ## 7. Verifying a change
 
-Per-file standalone compile is awkward here (the component Makefiles need the platform env: `../common.mak` errors without `platform.mak`). The reliable verification is a **full `make rt-be96u` re-entry**: make recompiles exactly the files you touched (newer mtime), relinks their components in-context, and repackages the image.
+Per-file standalone compile is awkward here (the component Makefiles need the platform env: `../common.mak` errors without `platform.mak`). The reliable verification is a **full `make rt-BEXXU` re-entry**: make recompiles exactly the files you touched (newer mtime), relinks their components in-context, and repackages the image.
 
 What "good" looks like:
 - `make` exits **0** and prints `Done! Image 96813GW has been built`.
@@ -212,7 +212,7 @@ What "good" looks like:
 - **Release notes (per published image):** [`RELEASE-NOTES.md`](RELEASE-NOTES.md)
 - **Roadmap (package updates, enterprise features):** [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md)
 - **The hardening changes:** [`patches/`](../patches/) — applied onto the upstream source (see "Get the inputs" above)
-- **Flashable images:** not in git (build artifacts) — built into `release/src-rt-5.04behnd.4916/targets/96813GW/RT-BE96U_…_nand_squashfs.pkgtb`, and published on the repo's **GitHub Releases** for end users who only want to flash.
+- **Flashable images:** not in git (build artifacts) — built into `release/src-rt-5.04behnd.4916/targets/96813GW/RT-BEXXU_…_nand_squashfs.pkgtb`, and published on the repo's **GitHub Releases** for end users who only want to flash.
 - **Upstream originals (reference/GPL compliance):** [`LICENSE`](../LICENSE) (repo root), plus `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder
 
 ---

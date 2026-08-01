@@ -1,17 +1,17 @@
 # Merging a new ASUS/Merlin GPL drop into the Reaper fork
 
 A step-by-step developer guide for bringing a new upstream Asuswrt-Merlin (or raw
-ASUS GPL) source drop into the RT-BE96U "reaper" fork with the least pain.
+ASUS GPL) source drop into the RT-BEXXU "reaper" fork with the least pain.
 
 It assumes the **mergeability refactor** (2026-07-05) is in place: the Reaper theme
 is applied at serve time from one httpd hook, so the stock pages are pristine and
 fast-forward cleanly. If you are reading this on a fork that still has the theme
 inlined into 165 pages, do that refactor first (see "Appendix B").
 
-- **Branch:** `be96u-only` (local only, **never pushed** upstream)
-- **Build clone (authoritative):** `/home/reaper/asuswrt-be96u` on WSL `Ubuntu-20.04`, user `reaper`
+- **Branch:** `BEXXU-only` (local only, **never pushed** upstream)
+- **Build clone (authoritative):** `/home/reaper/asuswrt-BEXXU` on WSL `Ubuntu-20.04`, user `reaper`
 - **Upstream base of the current stack:** `a7ebfa133a` (the last real Asuswrt-Merlin commit; everything after it is reaper work)
-- **Models:** RT-BE96U (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro (`release/src-rt-5.04behnd.4916`; targets `make rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`)
+- **Models:** RT-BEXXU (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro (`release/src-rt-5.04behnd.4916`; targets `make rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`)
 
 ---
 
@@ -32,7 +32,7 @@ to merge:
 Plus one special commit:
 
 - **Model strip** (`48b0698465`) - a mechanical 5,650-file / ~1M-line deletion of
-  the non-BE96U sibling models. It is currently the **first** commit on top of the
+  the non-BEXXU sibling models. It is currently the **first** commit on top of the
   base. Treat it as **regenerable**, not something to hand-merge (section 6).
 
 The whole point of the refactor: layers 1-2 are conflict-free, so a merge is
@@ -79,7 +79,7 @@ change is a single line (near line 150): `OBJS += reaper_inject.o`.
   user is root, which the build's `prebuild_checks` rejects.
 - Two clones exist (see the repo-topology memory):
   - **Windows mirror** `.../asuswrt-merlin.ng` - `origin` points at upstream RMerl; this is where a new drop is fetched.
-  - **WSL build clone** `/home/reaper/asuswrt-be96u` - its `origin` is the local Windows mirror (`file:///mnt/c/.../asuswrt-merlin.ng/.git`). This is where you rebase and build.
+  - **WSL build clone** `/home/reaper/asuswrt-BEXXU` - its `origin` is the local Windows mirror (`file:///mnt/c/.../asuswrt-merlin.ng/.git`). This is where you rebase and build.
 - **Never push** either full tree (`origin` is upstream). Only the separate lean
   repo (`TheUnboundDeveloper/AM-Reaper`) is pushable.
 - Run multi-step git/build commands from a **scratchpad `.sh` file** invoked as
@@ -95,7 +95,7 @@ change is a single line (near line 150): `OBJS += reaper_inject.o`.
 Before merging, snapshot exactly what you carry so you can verify nothing is lost:
 
 ```sh
-cd /home/reaper/asuswrt-be96u
+cd /home/reaper/asuswrt-BEXXU
 BASE=a7ebfa133a
 # the reaper stack (should be ~75 commits, oldest first)
 git log --oneline --reverse ${BASE}..HEAD
@@ -117,7 +117,7 @@ The drop enters through the Windows mirror, then the WSL clone fetches it:
 #   git -C /mnt/c/Users/.../asuswrt-merlin.ng fetch origin
 #   git -C .../asuswrt-merlin.ng branch import/<ver> <new-upstream-tag-or-sha>
 # Then in the WSL build clone:
-cd /home/reaper/asuswrt-be96u
+cd /home/reaper/asuswrt-BEXXU
 git fetch origin
 git branch import/<ver> origin/import/<ver>     # a pristine, reaper-free base
 ```
@@ -132,11 +132,11 @@ use that as `BASE` everywhere below.
 ## 6. Step 2 - rebase the reaper stack (and drop the model strip in one command)
 
 The model strip (`48b0698465`) is the **first** reaper commit - a mechanical
-5,650-file deletion of the non-BE96U sibling models
+5,650-file deletion of the non-BEXXU sibling models
 (`router-sysdep.{gt-be98_pro,rt-be58_go,rt-be86u,rt-be88u,rt-be92u}` + sibling
 dongle firmware and bootloader configs). It is **fully independent** of the reaper
 work (it touches zero `release/src/router` shared source; nothing later depends on
-it) and it is **not required to build** rt-be96u - the sibling dirs are dead
+it) and it is **not required to build** rt-BEXXU - the sibling dirs are dead
 weight, not build inputs. So never *replay* it: replaying a mass-deletion just
 invites modify/delete conflicts against upstream churn, for no benefit.
 
@@ -145,8 +145,8 @@ the pristine base in a single command - start the rebase from the strip's own sh
 instead of the base:
 
 ```sh
-git checkout be96u-only
-git rebase --onto import/<ver> 48b0698465 be96u-only
+git checkout BEXXU-only
+git rebase --onto import/<ver> 48b0698465 BEXXU-only
 ```
 
 This replays only the hardening + UI + refactor commits (which touch
@@ -165,7 +165,7 @@ you want the lean tree back, re-apply the deletion as a fresh **tip** commit
 # authoritative list of what the original strip removed:
 git show 48b0698465 --diff-filter=D --name-only | grep '^release/' > /tmp/strip.txt
 xargs -a /tmp/strip.txt rm -f 2>/dev/null
-git add -A && git commit -m "strip non-BE96U sibling models (regenerated)"
+git add -A && git commit -m "strip non-BEXXU sibling models (regenerated)"
 ```
 
 If a new drop adds sibling-model files under new paths, extend the deletion to the
@@ -187,7 +187,7 @@ security logic that upstream also edits. For each conflict:
 2. **Cross-check against `REAPER-FIXES.md`** - if upstream already fixed the same
    issue (Merlin back-ports silently), drop the reaper hunk and note it.
 3. **Watch the config-gated files.** `rc/multi_wan.c`, `multi_wan_ipv6.c` and the
-   TR069 opt-125 path are **not compiled** on BE96U (fixed defensively). Conflicts
+   TR069 opt-125 path are **not compiled** on BEXXU (fixed defensively). Conflicts
    there are low-stakes but still resolve them to keep the source consistent.
 4. **Never introduce non-ASCII** into any `www` file - the packaging minifier
    strips non-ASCII bytes. (C files are fine.)
@@ -242,7 +242,7 @@ After the rebase completes, prove the stock surface is still pristine and the on
 hook survived:
 
 ```sh
-cd /home/reaper/asuswrt-be96u
+cd /home/reaper/asuswrt-BEXXU
 NEW=import/<ver>
 # 1) no reaper markers in any stock page (only reaper-owned should match)
 grep -rl 'reaper_content.css\|reaper_shell.asp' release/src/router/www \
@@ -270,12 +270,12 @@ Follow the BUILD SOP (see the build-SOP memory / `docs/DEV-SETUP.md`). Summary:
 # pre-flight (as needed): /bin/sh -> bash; chown any root-owned files back to
 # reaper (UNC edits flip ownership); restore the WL router symlink; add the
 # gcc-10.3 toolchain bins to PATH.
-cd release/src-rt-5.04behnd.4916 && nice make rt-be96u -j1     # ~25-30 min full build
+cd release/src-rt-5.04behnd.4916 && nice make rt-BEXXU -j1     # ~25-30 min full build
 ```
 
 Success criteria (verify all): log has `Done! Image 96813GW has been built`,
 `MAKE_EXIT=0`, `reaper_inject.o` links into httpd, and the fresh
-`RT-BE96U_3006_102.8_Reaper_v<version>_nand_squashfs.pkgtb` mtime is newer than the build
+`RT-BEXXU_3006_102.8_Reaper_v<version>_nand_squashfs.pkgtb` mtime is newer than the build
 start. Then verify the staged rootfs (`targets/96813GW/fs/www` is **minified** -
 grep, do not diff):
 
@@ -306,18 +306,21 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 261 patches, `0261` = v1.9.7;
+**Patch-series regeneration recipe (the series is now at 271 patches, `0271` = v2.0.0;
 it was 215 at v1.7.7, and the 190-patch v1.6.6 run on 2026-07-19 was validated
 `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching
 `release/src/router` tree hash — as were the 181-patch v1.6.0, 178-patch v1.5.9 and
-150-patch v1.5.0a runs. NOTE: every patch since `0211` (`0212`–`0261`, v1.7.5–v1.9.7)
+150-patch v1.5.0a runs. NOTE: every patch since `0211` (`0212`–`0271`, v1.7.5–v2.0.0)
 was **appended** per-version to the existing series, not produced by a full regeneration, to avoid
 re-introducing an old absolute build-path reference that a full regen would pull back in
-from an unscrubbed commit message. When you do run a full regeneration, expect gapless
-renumbering to `0261` and re-apply the message scrub below. NOTE the v1.6.0 sync also
-cherry-picked the `radio-count` dashboard + the v1.6.0 commit onto `be96u-only` — they
+from an unscrubbed commit message. The `0262`–`0271` (v1.9.8–v2.0.0) append was cut from
+`2f84abb9..<v2.0.0-tip>` (v1.9.7 tip → v2.0.0 tip) with `--start-number 262`, author already normalized,
+and validated `git am --keep-cr` clean onto a fresh worktree at the v1.9.7 tip (zero
+`release/src/router` diff vs the v2.0.0 tip). When you do run a full regeneration, expect gapless
+renumbering to `0271` and re-apply the message scrub below. NOTE the v1.6.0 sync also
+cherry-picked the `radio-count` dashboard + the v1.6.0 commit onto `BEXXU-only` — they
 had been built on the `rt-be86u` branch; always confirm `git branch --show-current` is
-`be96u-only` before an RT-BE96U build/commit.) One extra step since the 2026-07-13
+`BEXXU-only` before an RT-BEXXU build/commit.) One extra step since the 2026-07-13
 compliance scrub: after
 regenerating from the (unscrubbed) build clone, re-apply the message-level scrub
 `s|/home/nathan|/home/builder|g; s|ASUS-Merlin-Reaper|AM-Reaper|g` to the patch

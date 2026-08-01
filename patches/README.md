@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**261 patches, v1.0 → v1.9.7**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**271 patches, v1.0 → v2.0.0**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (261 patches, v1.0 → v1.9.7)
+## What the series contains (271 patches, v1.0 → v2.0.0)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -289,6 +289,40 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
   WAN chart; the dashboard **View List** button now opens the full Devices page and the client list
   grows to fill its card.
 
+### v1.9.8 — Add-on menu fix, Warden persistence disclosure, change auditing, full localization (`0262`)
+- `0262` — external add-on menu links (e.g. scMerlin Help & Support) open in a new tab instead of
+  redirecting the frame; a Warden banner when `/jffs` is off/read-only warns that feed-cache
+  persistence (cross-reboot / no-internet-boot protection) is unavailable; structured change-audit
+  syslog for Gatekeeper / Wireless-monitor / Devices-Storage actions; and the final 219 Devices /
+  Storage / Warden strings translated across all 24 languages.
+
+### v1.9.9 → v1.9.9a — Wireless Diagnostics robustness (`0263`–`0264`)
+- `0263` — **v1.9.9**: PID-aware Auto-Scan / Targeted-Capture token reclaim (a stale busy-marker no
+  longer disables Start for minutes), the "Apply Best Channel" confirmation names the real band, and
+  quad-band models label their two 5 GHz radios distinctly.
+- `0264` — **v1.9.9a**: the Unlock button confirms before the ~20 s radio restart, and Auto Scan
+  survives scanning the band your own browser is on instead of stopping after one channel.
+
+### v1.9.9b → v1.9.9d — All-bands Professional wireless page (`0265`–`0267`)
+- `0265` — **v1.9.9b**: a single Professional page laying out 2.4 / 5 / 6 GHz side by side with one
+  **Apply all** (only changed settings written; all radios restart once).
+- `0266` — **v1.9.9c**: drop the radio-level Hide SSID + AP Isolation switches from this page (SDN
+  governs the real SSID; those switches only ever affected an internal interface here).
+- `0267` — **v1.9.9d**: left-justify the layout to fill width with a capped label column.
+
+### v2.0.0 — Security-hardening milestone: two full code audits (`0268`–`0271`)
+- `0268` — release audit fixes: version bump, Warden hardware flow-cache flush on rule-apply so a
+  newly blocked address drops immediately, and JSON-CGI content-type + escaping hardening.
+- `0269` — inherited ASUS/Merlin audit (AUDIT-2) fixes in the stock userspace: stored-XSS
+  neutralization of a device-supplied DHCP hostname across admin views, a USB volume-label root
+  command-injection fix at auto-mount, and an IPsec-profile CGI stack-overflow bound.
+- `0270` — security-hardening batch (AUDIT-1 §2 + AUDIT-2 follow-ups): config-DB value escaping,
+  `http_id`-guarded diag/warden CGIs, VPN-page buffer bounding + config-upload nvram-write
+  restriction, the device-name HTML-encode sweep across the remaining pages, and internal-TLS
+  server-certificate verification.
+- `0271` — shell portability hygiene (POSIX `.` for `source`, `[ = ]` for `[ == ]`) in the generated
+  and shipped on-router scripts.
+
 > **Model scope:** from **v1.8.7** onward the releases above were built + shipped on the
 > **RT-BE96U only** (both MCP / noMCP variants); the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro
 > sibling branches are owed these rungs. (Samba 4 / SMB3 in v1.7.8 and v1.8.0a is likewise RT-BE96U-only.)
@@ -301,3 +335,4 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - Extended through **v1.7.7** (2026-07-24): patches `0191`–`0215` (v1.6.7 → v1.7.7) appended from the same commit stack with the same author normalization. Re-run the full `git am --keep-cr` reproduce-check before a public release.
 - Extended through **v1.7.8** (2026-07-25): patches `0216`–`0226` appended from commit `a8d1569017` (the v1.7.7 tip == `0215`) through the v1.7.8 version-bump HEAD, same author normalization and message scrub. Verified `git am --keep-cr` clean onto an `a8d1569017` worktree; the only reproduce-check delta is three vendored `openssh-sftp` documentation files (`README.md`, `SECURITY.md`, `.github/ci-status.md`) intentionally stripped by the `*.md` docs/meta exclusion — no source/code file differs.
 - Extended through **v1.9.7** (2026-07-30): patches `0227`–`0261` (v1.7.9 → v1.9.7) appended from the same commit stack with the same author normalization and message scrub. From **v1.8.7** onward these rungs shipped **RT-BE96U-only** (siblings owed). Re-run the full `git am --keep-cr` reproduce-check before a public release.
+- Extended through **v2.0.0** (2026-08-01): patches `0262`–`0271` (v1.9.8 → v2.0.0) appended from the v1.9.7 tip (`2f84abb9`) through the v2.0.0 tip, same author normalization and message scrub (none needed — author already normalized, no build-path strings). Verified `git am --keep-cr` clean onto a fresh worktree at the v1.9.7 tip with a zero `release/src/router` diff vs the v2.0.0 tip. Still **RT-BE96U-only** (siblings owed). The v2.0.1 de-cloud work (AWSIOT / ACCOUNT_BINDING removal) is not in this series yet — it appends once built + validated.

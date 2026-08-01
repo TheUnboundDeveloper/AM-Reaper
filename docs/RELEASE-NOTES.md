@@ -1,13 +1,13 @@
-# RT-BE96U "Reaper" — Release Notes
+# "Reaper" — Release Notes
 
-**Release:** v1.9.7 (Traffic Analyzer accuracy — per-network reconciliation + a new "Router" row for the router's own traffic — plus a dashboard client-list link. Latest in the arc since v1.8.0a: the Reaper Warden hardening line, the new **Device Identity Manager / Devices** page + unified storage, and first-boot credential enforcement. See §3 and [`CHANGELOG.md`](CHANGELOG.md). Built for the **RT-BE96U**, both variants; sibling-model ports owed. Metal validation owed.)
-**Firmware:** `3006.102.8_Reaper_v1.9.7`
+**Release:** v2.0.0 (Security-hardening milestone — two full end-to-end code audits, one over all Reaper-authored code and a second over the inherited ASUS/Merlin open source that Reaper ships; every issue surfaced was fixed and no critical or high-severity flaw was left open. The base firmware is unchanged — this release is about correctness and safety, not new features. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). Built for the **RT-BEXXU**, both variants; sibling-model ports owed. Upgrade-path first boot validated on metal; full on-hardware validation owed.)
+**Firmware:** `3006.102.8_Reaper_v2.0.0`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Models:** ASUS **RT-BE96U** (primary, hardware-validated). The **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree) were current through **v1.8.6c** (2026-07-28); **v1.8.7 → v1.9.7 shipped RT-BE96U only, both variants — the sibling-model ports are owed.** WiFi 7, Broadcom BCM4916.
+**Models:** ASUS **RT-BEXXU** (primary, hardware-validated). The **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree) were current through **v1.8.6c** (2026-07-28); **v1.8.7 → v2.0.0 shipped RT-BEXXU only, both variants — the sibling-model ports are owed.** WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
-> RT-BE96U. This document is the release summary; the exhaustive security detail
+> RT-BEXXU. This document is the release summary; the exhaustive security detail
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
@@ -16,7 +16,7 @@
 
 ## 1. What Reaper is
 
-Reaper narrows stock Asuswrt-Merlin to the ASUS RT-BE Series (primary model RT-BE96U,
+Reaper narrows stock Asuswrt-Merlin to the ASUS RT-BE Series (primary model RT-BEXXU,
 plus the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings), **hardens** the
 open-source userspace against remote compromise, **removes** cloud-coupled and
 AI-branded attack surface, **rebrands** the web UI, and adds a few genuinely-local
@@ -38,25 +38,25 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BE96U_…_Reaper_v1.9.7_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BE96U_…_Reaper_v1.9.7_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BEXXU_…_Reaper_v2.0.0_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.0.0_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v1.9.7_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v1.9.7_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v2.0.0_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v2.0.0_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
 
-### Since v1.8.0a — audit remediation, Warden hardening, and a Devices manager (v1.8.1 – v1.9.7)
+### Since v1.8.0a — audit remediation, Warden hardening, a Devices manager, and a full security re-audit (v1.8.1 – v2.0.0)
 
-The rungs from v1.8.1 to the current **v1.9.7** shipped **RT-BE96U only, both variants** (the
+The rungs from v1.8.1 to the current **v2.0.0** shipped **RT-BEXXU only, both variants** (the
 sibling-model fan-out through v1.8.6c is done; v1.8.7+ ports are owed). Headlines — per-version
 detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
@@ -90,6 +90,21 @@ detail is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Traffic Analyzer accuracy (v1.9.7).** By-Network totals now reconcile with the live WAN chart, and
   the router's own locally-terminated traffic (speed test, DNS, firmware checks, latency probe) appears
   under a new **"Router"** row instead of vanishing from every per-device/per-network view.
+- **Security-hardening milestone — two full code audits (v2.0.0).** A comprehensive security review of
+  the whole firmware: two end-to-end audits — one over all Reaper-authored code, a second over the
+  inherited ASUS/Merlin open source Reaper ships — with every surfaced issue fixed and no critical or
+  high-severity flaw left open. The web UI no longer trusts device-supplied names (hostname / Wi-Fi /
+  VPN / USB / mesh names are HTML-encoded at every display point — dashboard and network-map client
+  lists, the shared client picker, OpenVPN/WireGuard status, AiMesh topology, USB storage); a malicious
+  USB volume label can no longer inject a root command at auto-mount; the on-device stats database and
+  the VPN-profile page are hardened against injection and buffer overflow; the Diagnostics and Warden
+  live-status tools now require the interface's anti-forgery token; the internal TLS helper verifies the
+  server certificate against the shipped trust store instead of connecting blindly; and threat-blocking
+  flushes the hardware flow cache so a newly blocked address drops immediately. The base firmware is
+  unchanged — this release is correctness and safety, not features. Known limitations are stated plainly
+  (§6): the bundled Samba is on an EOL branch (no reachable exploit found; a maintained-branch plan is
+  tracked), and the AiMesh config-sync / network-discovery services ship as closed vendor binaries that
+  could not be source-audited. Full finding-by-finding status is in the audit reports.
 
 ### Reaper Warden, a security-hardening pass, and a Samba CVE backport (v1.8.0a)
 - **Reaper Warden — optional threat-feed / geo / manual-IP firewall.** A new **Warden** page adds a
@@ -118,7 +133,7 @@ detail is in [`CHANGELOG.md`](CHANGELOG.md):
   page churned in the background — which some users read as "always loading" — is fixed (v1.7.6).
   The Internet Speed test (Adaptive QoS) now uses a single page scrollbar.
 - **AURA/RGB lighting control.** On the RGB-capable models, the effect-scheme selector on the
-  Network Map router panel no longer shows a stray horizontal scrollbar (v1.7.7). *(The RT-BE96U has
+  Network Map router panel no longer shows a stray horizontal scrollbar (v1.7.7). *(The RT-BEXXU has
   no AURA hardware; this applies to the RGB-capable siblings.)*
 
 ### Gatekeeper — default-deny device access control (v1.7.0, hardened v1.7.3)
@@ -270,6 +285,16 @@ build and catalogued by ID in [`REAPER-FIXES.md`](REAPER-FIXES.md).
   Advisor (`rmcpd`) were built to the same threat model — no new inbound listeners
   except the AI Advisor, which is the one deliberate, LAN-only, off-by-default,
   auth-gated exception (see §3).
+- **v2.0.0 comprehensive re-audit.** Ahead of the 2.0.0 milestone, two fresh
+  end-to-end audits were run — one over all Reaper-authored code and one over the
+  inherited ASUS/Merlin open source Reaper ships — and every finding was fixed with
+  no critical or high left open. Highlights: stored-XSS neutralization of
+  device-supplied names across all admin display points, a USB volume-label root-
+  command-injection fix at auto-mount, injection/overflow hardening of the on-device
+  stats DB and the VPN-profile page, CSRF-token enforcement on the Diagnostics/Warden
+  live tools, certificate verification on the internal TLS helper, and a
+  flow-cache flush so threat blocks take effect immediately. Finding-by-finding status
+  is in the audit reports.
 
 Because most of the hardened userspace is shared with stock ASUS/Merlin firmware
 across Broadcom-HND models, please practice **coordinated disclosure** for
@@ -327,21 +352,21 @@ You can return to stock anytime by flashing an official ASUS image.
 ## 8. Build & image verification
 
 Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
-`make <target>` (`rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`), each
+`make <target>` (`rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`), each
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v1.9.7 flashable-image hashes (SHA-256)** — current head, **RT-BE96U only, both variants**
+**v2.0.0 flashable-image hashes (SHA-256)** — current head, **RT-BEXXU only, both variants**
 (the four sibling models are owed for v1.8.7+ and will be added on fan-out). The full four-file
 set (both variants' `…_nand_squashfs.pkgtb` **and** their `…_loader.pkgtb` recovery images) is in
-`SHA256SUMS-RT-BE96U-Reaper_v1.9.7.txt` on the `reaper-firmware/` ladder.
+`SHA256SUMS-RT-BEXXU-Reaper_v2.0.0.txt` on the `reaper-firmware/` ladder.
 
-| Image (`RT-BE96U_3006_102.8_Reaper_v1.9.7…`) | SHA-256 |
+| Image (`RT-BEXXU_3006_102.8_Reaper_v2.0.0…`) | SHA-256 |
 |---|---|
-| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `b1021875b47e84ada2817bb612e111fb09b27b4597872162f2474b1b269a855b` |
-| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `a81facd4174946bdc1a18ef41db5c7bdda557121396ba976856b591a0e190537` |
-| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `209137efcecab40245382db1f572dc9b6b4fb441610af9f8db7037d3c4b3a0e5` |
-| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `4d1be375db6b49f53a3d21238c8a749792f021e199645b01e1a0c16b34f0be5c` |
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `104e4de9aba27f8f54fc068487f8cd4c31d07217303c0b6dc9885346a69b3007` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `550f2772aa8db3e5e9abe3bc5dd2e5880ecbe471d7052efa89192eadf8193e0f` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `d5e99625d6d70e58b58f6ed24d0eb3bf9719a55bda73aa121ad0889397ab5aaf` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `11af20a245d26d4e10eec20b120f6c30fc989009670e7b98846143442c8aeccd` |
 
 The **v1.7.7** table below remains the last full five-model, both-variant fan-out for reference.
 
@@ -351,8 +376,8 @@ on the `reaper-firmware/` ladder.
 
 | Image (`3006_102.8_Reaper_v1.7.7…`) | SHA-256 |
 |---|---|
-| `RT-BE96U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `eb0391c9da30f82ca03a13ee6fdcc56f888f62fe68824430b65bb8314d61f76e` |
-| `RT-BE96U_…_noMCP_nand_squashfs.pkgtb` (Standard) | `1338b4e1ed1862b895a2f130dc202f842055d7a9881879a146e49b8630e78ef0` |
+| `RT-BEXXU_…_nand_squashfs.pkgtb` (+ AI Advisor) | `eb0391c9da30f82ca03a13ee6fdcc56f888f62fe68824430b65bb8314d61f76e` |
+| `RT-BEXXU_…_noMCP_nand_squashfs.pkgtb` (Standard) | `1338b4e1ed1862b895a2f130dc202f842055d7a9881879a146e49b8630e78ef0` |
 | `RT-BE86U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `12b96e1b1535d9b1d3d9733dc418072a85dbfe3e9400842a112e04dc5b74a9ea` |
 | `RT-BE86U_…_noMCP_nand_squashfs.pkgtb` (Standard) | `c6dc3094a1a4025c7b40839c9f50d45bad9ba3de52c502eb2b6105b70806da5b` |
 | `RT-BE88U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `a5bfeb1621b30da4ae26d8a0910c42dfbac7a0d67ebeb95329df93a2d7df25f0` |
@@ -367,16 +392,19 @@ on the `reaper-firmware/` ladder.
 > `…_loader.pkgtb` recovery images). Metal validation is owed on every model.
 
 **Validation status.** Everything through **v1.3.3** is validated on the physical
-RT-BE96U — security hardening rounds 1–4 + latent T1–T4, the avahi CVE backport, all
+RT-BEXXU — security hardening rounds 1–4 + latent T1–T4, the avahi CVE backport, all
 Hardware QoS engines (v1 global, Classful, v3, v4) end-to-end on metal, the Traffic
 Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **AI Advisor**
 (arming, LAN-only bind, token auth, secret redaction, USB third-factor, and the
-network-diagnostics tier) is **metal-validated** on the RT-BE96U (v1.4.x–v1.5.0a). In the
+network-diagnostics tier) is **metal-validated** on the RT-BEXXU (v1.4.x–v1.5.0a). In the
 v1.5.x line the newest fully metal-validated build is **v1.5.6**; every rung since —
-through the current **v1.9.7** — is built + shipped and **awaits flashing** (RT-BE96U in
-both variants for each rung). The five-model, both-variant fan-out reached **v1.8.6c**
-(2026-07-28); from **v1.8.7** onward the rungs are **RT-BE96U-only** and the sibling-model
-ports are owed. Per-version metal-test checklists are in [`BACKLOG.md`](BACKLOG.md).
+through the current **v2.0.0** — is built + shipped and **awaits full flashing** (RT-BEXXU in
+both variants for each rung). **v2.0.0** additionally had its **upgrade-path first boot verified on
+the physical RT-BEXXU** (clean boot + healthy diagnostics); the remaining on-hardware checks for
+2.0.0 — factory-reset first boot, USB, VPN, and QoS acceleration — are still owed. The five-model,
+both-variant fan-out reached **v1.8.6c** (2026-07-28); from **v1.8.7** onward the rungs are
+**RT-BEXXU-only** and the sibling-model ports are owed. Per-version metal-test checklists are in
+[`BACKLOG.md`](BACKLOG.md).
 
 ---
 

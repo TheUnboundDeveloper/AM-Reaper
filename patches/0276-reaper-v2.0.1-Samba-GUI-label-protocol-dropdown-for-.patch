@@ -1,0 +1,71 @@
+From 0d5e0cfff8cac1c21e5e5db0719e0c59414e924a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 1 Aug 2026 11:25:39 -0400
+Subject: [PATCH] reaper v2.0.1: Samba GUI - label protocol dropdown for
+ SAMBA4, drop SMB1
+
+The Network Place (Samba) page still described the old Samba 3.6 backend: the
+"Samba protocol version" dropdown offered SMBv1 / SMBv2 / SMBv1+SMBv2 / SMBv3,
+but on this SAMBA4 build smbd_protocol maps to 1=SMB2, 2=SMB2+SMB3 (default),
+3=SMB3-only+encrypt -- so the labels misrepresented what the server does (e.g.
+"SMBv3 (encrypted)" forces encryption, which silently breaks guest/anonymous).
+
+- Dropdown relabeled to the SAMBA4 reality: "SMB2 only" (1) /
+  "SMB2 + SMB3 (recommended)" (2) / "SMB3 only (encrypted)" (3). The SMBv1
+  option (value 0) is removed -- Samba 4.15 does not serve SMB1, and value 0
+  already behaved as SMB2+SMB3 anyway.
+- Removed the stale "enable SMBv1 Client" note (smbv1_hint div) and its now-dead
+  SMBv1_FAQ JS -- it steered Windows users toward an insecure, unnecessary and
+  non-functional setting.
+
+Backend behavior unchanged; this is UI-only (Advanced_AiDisk_samba.asp). Labels
+kept as plain ASCII (untokenized, matching the existing page); 24-lang
+tokenization is optional follow-up.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/www/Advanced_AiDisk_samba.asp | 14 +++-----------
+ 1 file changed, 3 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/www/Advanced_AiDisk_samba.asp b/release/src/router/www/Advanced_AiDisk_samba.asp
+index ef20285614..1c251ba911 100644
+--- a/release/src/router/www/Advanced_AiDisk_samba.asp
++++ b/release/src/router/www/Advanced_AiDisk_samba.asp
+@@ -84,12 +84,6 @@ function initial(){
+ 		}
+ 	}
+ 
+-	if($("#smbv1_hint").length > 0){
+-		//complete SMBv1_FAQ link
+-		document.getElementById('SMBv1_FAQ').target="_blank";
+-		document.getElementById('SMBv1_FAQ').style.textDecoration="underline";
+-		document.getElementById("SMBv1_FAQ").href=faq_href0;
+-	}
+ 
+ 	if(is_KR_sku){
+ 		document.getElementById("radio_anonymous_enable_tr").style.display = "none";
+@@ -859,7 +853,6 @@ function switchUserType(flag){
+ 			</div>
+ 			<div id="splitLine" class="splitLine"></div>
+ 			<div class="formfontdesc" style="margin-top: 10px;"><#Samba_desc#></div>
+-			<div id="smbv1_hint" class="formfontdesc"><#ADSL_FW_note#>&nbsp;<#SMBv1_enable_hint#></div>
+ 		  </td>
+ 		</tr>
+ 		<tr>
+@@ -924,10 +917,9 @@ function switchUserType(flag){
+ 					<th>Samba protocol version</th>
+ 					<td>
+ 						<select name="smbd_protocol" class="input_option">
+-							<option class="content_input_fd" value="0" <% nvram_match("smbd_protocol", "0","selected"); %>>SMBv1</option>
+-							<option class="content_input_fd" value="1" <% nvram_match("smbd_protocol", "1","selected"); %>>SMBv2</option>
+-							<option class="content_input_fd" value="2" <% nvram_match("smbd_protocol", "2","selected"); %>>SMBv1 + SMBv2</option>
+-							<option class="content_input_fd" value="3" <% nvram_match("smbd_protocol", "3","selected"); %>>SMBv3 (encrypted)</option>
++							<option class="content_input_fd" value="1" <% nvram_match("smbd_protocol", "1","selected"); %>>SMB2 only</option>
++							<option class="content_input_fd" value="2" <% nvram_match("smbd_protocol", "2","selected"); %>>SMB2 + SMB3 (recommended)</option>
++							<option class="content_input_fd" value="3" <% nvram_match("smbd_protocol", "3","selected"); %>>SMB3 only (encrypted)</option>
+ 						</select>
+ 					</td>
+                                 </tr>
+-- 
+2.25.1
+

@@ -5,8 +5,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 **[shelved]** (deliberately deferred), **[cosmetic]** (polish, non-blocking).
 
 > Applied security fixes are tracked in [`REAPER-FIXES.md`](REAPER-FIXES.md); the
-> per-version history is in [`CHANGELOG.md`](CHANGELOG.md); strategy/roadmap is in
-> [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md). Completed backlog items are
+> per-version history is in [`CHANGELOG.md`](CHANGELOG.md). Completed backlog items are
 > moved to the changelog and removed from this file (housekeeping pass 2026-07-18).
 
 ---
@@ -19,6 +18,34 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
+
+- **Channel Lock confirmation modal.** On the Wireless Diagnostics page
+  (`Reaper_Wireless.asp`), **locking** a channel restarts that radio (~20 s client
+  drop on the band) — exactly like unlocking, but only **Unlock** currently warns
+  first (added v1.9.9a). Add the matching confirmation modal to **Lock**: state that
+  continuing will **restart the Wi-Fi and briefly drop clients on that band**, with
+  Continue / Cancel, before it applies. (Per-frequency restart isn't possible on this
+  platform, so the radio restart is unavoidable — the modal just makes it expected.)
+
+- **Connections page (`Reaper_Conn.asp`) layout + labels.** (1) **Shift the content left** — the
+  Connections page/flow table sits shifted right and runs outside the viewport, unlike every other
+  Reaper page which fits inside it; align it to the viewport like the others. (2) **Rename the "Q"
+  column header to "QoS Class"** (it is the egress QoS queue/class the flow maps to — see the QoS
+  Diagnostics page). (3) **Increase the font size** in the page header and the flow-detail title
+  area (both currently render small).
+
+- **Wireless › Professional tab (`Reaper_WiFiPro.asp`) shifted right.** Same viewport-alignment
+  issue as the Connections page above — the all-bands Professional page sits shifted right instead
+  of fitting inside the viewport like the other Reaper pages; shift it left to match.
+
+- **Traffic Manager › QoS Diagnostics (`Reaper_QoSDiag.asp`) shifted right.** Same viewport-shift
+  again — shift the page left so it fits the viewport like the other Reaper pages.
+
+> **Likely shared root cause:** three of the newest Reaper-native pages — **Connections**
+> (`Reaper_Conn.asp`), **Wireless › Professional** (`Reaper_WiFiPro.asp`), and **Traffic Manager ›
+> QoS Diagnostics** (`Reaper_QoSDiag.asp`) — all sit shifted right / overflow the viewport, while the
+> older Reaper pages fit correctly. They almost certainly share a common container/margin in the
+> newer page template; fix all three together (and re-check any future page built from that template).
 
 ## Known issues (cause identified)
 
@@ -34,25 +61,34 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Known issues (under investigation)
 
-- **Boot: connection comes up twice before it's ready.** Field-observed on metal
-  (owner, RT-BEXXU). During boot the WAN/connection appears to initialize, drop, and
-  re-initialize before settling — clients may see a brief connect/disconnect flap at
-  startup. Boot syslog shows the plausible chain: `start_services` runs, then
-  `udhcpc_wan → restart_wan_if 0` + `restart_nasapps` + a `stop_ntpd/start_ntpd` and
-  `stop_samba/start_samba` cycle, i.e. services start once, get torn down by the WAN
-  bring-up, and start again. Investigate whether this is stock ASUS boot ordering
-  (WAN DHCP landing after first service start) or something Reaper-introduced, and
-  whether the re-init can be deferred until the WAN is actually up (single settle).
-  Cosmetic/UX, not a fault — but worth understanding before the weekend audit.
-  Cross-ref the boot-efficiency recon notes. [owed — investigate]
-
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
 
 - **BE98 Speed Test** Field reports that when QoS is enabled on the BE98 device 
   that the speed test crashes. Doesn't seem to affect everyone as some BE98 users 
   report no issues. Both claim to have the 1.8.6d installed which had the previous 
-  fix for the crashing speed test.
+  fix for the crashing speed test. I have noticed potential soft crashes when I have 
+  class based QoS enabled.
+
+- **MTU PPOE** Merlin had changed firmware to support 1500, so that Baby Jumbo Frames 
+  (supported in UK on full fibre) could be supported. I think that value translate the WAN 
+  to encapsulate 1508 WAN packet size. Its in the RFC4638 standard too so not something that 
+  isn't a standard. RFC 4638 allows the underlying physical Ethernet interface to handle slightly 
+  larger frames (usually 1508 bytes) so that the upper PPPoE layer can maintain a clean 
+  1500-byte MTU/MRU.
+
+- **The router is configured for dual-WAN failover**
+  The active secondary WAN uses the 2.5 Gbps LAN port with DHCP and its own NextDNS profile.
+  The future primary WAN uses the 10 Gbps LAN port with PPPoE, but it is not yet connected. It 
+  has a separate NextDNS profile and DNS server addresses. The router currently fails over to 
+  the active 2.5 Gbps connection. Despite only one WAN being live, both NextDNS profiles are 
+  receiving DNS log entries. The expected behavior was for only the active WAN’s profile to show 
+  traffic.
+
+  There are also two configuration questions:
+  When both WANs are active, which public WAN IP does ASUS Dynamic DNS register?
+  Why does the IPv6 configuration appear to be global rather than configurable separately for each 
+  WAN in both stock ASUS firmware and Asuswrt-Merlin?
 
 ## Features to add
 
@@ -106,30 +142,28 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **`poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal already measured 2–3 % CPU
   at the class-poll cadence; treating this as a non-issue per the prior finding. [shelved]
 
-- **AWSIOT phone-home — removal plan (analyzed 2026-07-30 on v1.9.8; LINK-SAFE).** ASUS AWS-IoT
-  cloud connector (`/usr/sbin/awsiot` + `/usr/lib/libawsiot_ipc.so`): carries ASUS-app remote
-  (off-LAN) access, ASUS-account binding, and ASUS-cloud push. **Confirmed live on the RT-BEXXU
-  itself, not just the siblings** — owner's v1.9.8 diag shows it running; the 2026-07-08
-  phone-home audit missed it (its "no ASUS-cloud automatic outbound remains" claim is wrong).
-  - *Why it runs despite `config_base` `# RTCONFIG_AWSIOT is not set`:* the behnd platform
-    `Makefile` config-gen **force-re-adds** `RTCONFIG_AWSIOT=y` at `:1570` (`if [ "$(AWSIOT)"="y" ]`)
-    and `:4195` (inside the non-`RP-` block, beside `RTCONFIG_ACCOUNT_BINDING=y`), so the generated
-    `config_rt-BEXXU` carries `RTCONFIG_AWSIOT=y`. Result: `start_awsiot()` (services.c:13346) runs
-    at boot and the **watchdog `awsiot_check()` (watchdog.c:8136) respawns it** — a runtime
-    `killall awsiot` never sticks; it needs a build change.
-  - *Removal IS link-safe (verified):* scanned every staged binary/lib — **nothing DT_NEEDs
-    `libawsiot_ipc.so`** except awsiot, so dropping it does NOT hit the libcreduction/prebuilt-blob
-    trap that blocked the AAE / libasc / conn_diag removals. No shim needed.
-  - *Live vs inert:* AAE/mastiff IPC transport is already gone, but the closed awsiot binary may
-    still open a direct AWS-IoT MQTT/TLS (:8883) session — confirm on metal before/after with
-    `netstat -tnp | grep awsiot` or `conntrack -L | grep 8883`.
-  - *Plan:* comment out the two `echo "RTCONFIG_AWSIOT=y"` lines in the behnd `Makefile` (`:1570`
-    + `:4195`); the `#ifdef RTCONFIG_AWSIOT` gates then compile out start_awsiot + awsiot_check +
-    the install lines. Weigh dropping the paired `RTCONFIG_ACCOUNT_BINDING` (same ASUS-cloud
-    account surface) in the same pass. Edits the shared behnd Makefile → fleet-wide (all 5 models).
-    VERIFY post-build: `config_rt-BEXXU` has no `RTCONFIG_AWSIOT=y`; `fs/usr/sbin/awsiot` absent;
-    libcreduction clean; AiMesh + LAN-side app unaffected. Loses only ASUS-cloud remote/app
-    features; nothing local depends on it. Candidate for v1.9.9. [owed]
+**Pre-release code review 2026-08-02 — deferred (six-agent review; no critical/high, and none of
+the below is attacker-reachable today; the confirmed/reachable items were fixed in v2.1.0):**
+- **Tier-3 CGI error strings not localized.** ~37 hardcoded English error messages in the Devices
+  and Advisor CGI handlers (surfaced to the user via `alert(...)`), plus two web pages, bypass the
+  translation dictionary. Localization gap only — no behavior or security impact. [owed]
+- **`rmcpd` secret-redaction is by-convention, not structural.** Only two of the Advisor daemon's
+  tools route their output through the secret scrubber; the others are safe today purely because of
+  the specific sources chosen (MAC/IP/RSSI/firewall rules — no secrets). A future tool added to the
+  same pattern would bypass redaction silently. Make the scrub structural before extending the MCP
+  tool surface. [owed]
+- **`rmcpd` output truncation can emit malformed JSON.** When a tool's combined output hits the size
+  cap the buffer is cut mid-structure; emit a truncation marker / close it cleanly. Affects only the
+  availability of that Advisor payload. [owed]
+- **Three pages lack an escape helper (defense-in-depth).** `Reaper_Conn`, `Reaper_QoSDiag` and one
+  `Reaper_QoS` field render server/system-supplied strings without the `esc()` wrapper their sibling
+  pages use. The data feeding them is kernel/system-formatted or admin-set (not attacker-controlled),
+  so there is no reachable XSS today; add the wrapper for consistency and future-proofing. [owed]
+- **`rwarden` per-entry `ipset add` fork loop.** Large threat/geo feeds are added one fork per CIDR
+  on every refresh; switch to a single `ipset restore` batch. Performance only, opt-in feature. [owed]
+- **GDX pool watchdog field-proving.** The accelerator pool-drain check is now opt-in (`rwatch_gdx`,
+  v2.1.0). Confirm the `/proc/gdx/skb_idx` read is non-destructive under sustained polling on
+  hardware before it can be considered for default-on again. [owed — metal]
 
 ## Documentation
 

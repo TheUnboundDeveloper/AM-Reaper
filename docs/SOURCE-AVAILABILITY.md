@@ -1,8 +1,10 @@
-# Source Availability & Written Offer (GPL v2 §3)
+# Source Availability & Written Offer (GPL v2 & v3)
 
 This document is how **Reaper** satisfies the "complete corresponding source"
-obligation of the GNU General Public License, version 2 (see [`../LICENSE`](../LICENSE)),
-for the GPL-covered portions of the firmware.
+obligation of the GNU General Public License — **version 2** for the base and the
+bulk of the firmware (see [`../LICENSE`](../LICENSE)), and **version 3** for the
+GPLv3 components it bundles (Samba, GNU wget, GNU nano — see § 5) — for every
+GPL-covered portion of the firmware.
 
 Read this together with [`../LICENSE.reaper`](../LICENSE.reaper) (what is and is not
 Reaper's own work) and [`../THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)
@@ -37,7 +39,7 @@ source tree byte-for-byte under `release/src/router` (verified with
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
 source for the GPL portions of the image.
 
-> **Why patches instead of a source dump.** The full buildable tree (~2.6 GB)
+> **Why patches instead of a source dump.** The full buildable tree (~10.6 GB)
 > contains proprietary Broadcom/ASUS/Trend Micro/Tuxera components that are
 > **licensed for use on genuine ASUS hardware only** and that this project has
 > **no right to redistribute** (see [`README.proprietary`](README.proprietary)
@@ -106,10 +108,12 @@ build, please brand it as your own (see [`../LICENSE.reaper`](../LICENSE.reaper)
 
 GPL v2 requires that GPL binaries travel with either the corresponding source
 (**§3(a)**) or a copy of a written offer like §2 above (**§3(b)/§3(c)**), and
-with the GPL license text itself. Concretely, any place that hosts a Reaper
+with the GPL license text itself; GPL v3 imposes the equivalent, plus the
+Installation Information of § 5. Concretely, any place that hosts a Reaper
 `.pkgtb` image **must** also carry, at minimum:
 
-- [ ] the GPL v2 license text ([`../LICENSE`](../LICENSE)),
+- [ ] the applicable license texts — GPL v2 ([`../LICENSE`](../LICENSE)) and, for the
+      bundled GPLv3 / LGPL components, [`../LICENSES/`](../LICENSES/),
 - [ ] either the corresponding source (this repo / the `patches/` series against
       the pinned upstream commit) **or** a verbatim copy of the §2 written offer,
 - [ ] [`../THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
@@ -125,4 +129,39 @@ image-hosting repository offline; do not re-publish images without the above.)
 > components may be redistributed publicly is a question for a qualified
 > attorney — it is **not** resolved by this document, which addresses only the
 > GPL source obligation. See [`../THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)
-> § Proprietary components and [`COMPLIANCE-AUDIT-2026-07-13.md`](COMPLIANCE-AUDIT-2026-07-13.md).
+> § Proprietary components.
+
+---
+
+## 5. GPL v3 & LGPL components — source + Installation Information (GPL v3 § 6)
+
+The firmware bundles components licensed under **GPL v3** — notably **Samba
+4.15.13a** (the SMB3 file server), **GNU wget**, and **GNU nano** — and **LGPL
+v2.1** shared libraries (glib, avahi, libdaemon, …). Their license texts ship in
+[`../LICENSES/`](../LICENSES/): [`GPL-3.0.txt`](../LICENSES/GPL-3.0.txt) and
+[`LGPL-2.1.txt`](../LICENSES/LGPL-2.1.txt), alongside the GPL v2 text at the repo
+root and the per-license map in [`../LICENSES/README.md`](../LICENSES/README.md).
+
+**Complete corresponding source** for these components is provided by the same
+mechanism as § 1: the pinned upstream tree plus the [`../patches/`](../patches/)
+series reconstructs the exact source of every GPL- and LGPL-covered component in
+the image. No additional step is required for the v3 parts.
+
+**Installation Information (GPL v3 § 6 / anti-tivoization).** A Reaper firmware
+image is a "User Product" running on a consumer device, so GPL v3 additionally
+requires the information needed to install a modified version of the GPLv3
+components on that device. Reaper imposes **no lock** of its own:
+
+- the complete **build** procedure is [`DEV-SETUP.md`](DEV-SETUP.md) +
+  [`../build-scripts/`](../build-scripts/) + the pinned inputs in
+  [`../DEPENDENCIES.md`](../DEPENDENCIES.md);
+- the **flash / recovery** procedure is
+  [`INSTALL-AND-ROLLBACK.md`](INSTALL-AND-ROLLBACK.md) (GUI *Administration →
+  Firmware Upgrade*, and ASUS Firmware Restoration for recovery).
+
+Together these are the Installation Information: you can build a modified image
+from this source and flash it to the same class of ASUS RT-BE device by the same
+path Reaper itself is installed. Reaper neither requires nor withholds any signing
+key. (The stock ASUS bootloader's own signature handling is a vendor property of
+the hardware, unchanged by Reaper — Reaper adds no cryptographic restriction on
+user-built firmware.)

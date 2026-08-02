@@ -1,8 +1,8 @@
 # RT-BEXXU "Reaper" — Project Overview
 
-A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. The **RT-BEXXU** is the primary, hardware-validated model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** are built from per-model branches of the same tree (metal validation owed on all five). Current version **v2.0.0** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
+A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. The **RT-BEXXU** is the primary, hardware-validated model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** are built from per-model branches of the same tree (metal validation owed on all five). Current version **v2.1.0** — see [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
-> This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder.
+> This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `ASUS-Merlin_Changelog-3006.txt` in this `docs/` folder.
 
 ---
 
@@ -13,7 +13,7 @@ A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT
 - **Threat-model north star:** only **physical access** should be able to compromise the device. Eliminate remotely/LAN-reachable compromise (command injection, buffer overflows from network/nvram/WAN input, format strings, auth bypass). The hardening is invisible in normal use — its benefit is reduced attack surface.
 - **Also de-cloud:** remove AI-branded and cloud-coupled surface (Alexa/Google Assistant, Trend Micro DPI, AiCloud/WebDAV, the AiDisk wizard, the AAE cloud tunnel, the first-boot consent screens) so the base image stays lean, local-only, and auditable.
 - **And add genuinely-local features:** two Hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, an **optional, read-only, LAN-only AI Advisor** (compiled out of the Standard build entirely; with an opt-in, per-session bounded network-diagnostics mode), **on-router network diagnostics** — ping/traceroute/DNS/netstat via the AI Advisor — a one-click sanitized **Reaper Diagnostics** report, and **Gatekeeper**, an opt-in, default-deny, on-router device access control (v1.7).
-- **Branding:** `reaper`. The build version reads `<MODEL> 3006.102.8_Reaper_v<X>` (e.g. `RT-BEXXU …_Reaper_v2.0.0`).
+- **Branding:** `reaper`. The build version reads `<MODEL> 3006.102.8_Reaper_v<X>` (e.g. `RT-BEXXU …_Reaper_v2.1.0`).
 
 ## Scope & hard rules
 
@@ -30,7 +30,7 @@ Most of the source we patch is **shared across many Broadcom-HND Merlin models**
 
 ## Relevant stock features (already in the build)
 
-Carried over from Asuswrt-Merlin and present in the BEXXU image: user scripts (firewall/services events), cron, customizable service configs, **Entware** add-on support (via `amtm`), `nano`, NTP daemon, SNMP, OpenVPN client/server (hardened here) + WireGuard + IPsec/strongSwan, **VPN Director** policy routing, **DNS Director**, **Cake SQM QoS**, Tor, ipset, USB sharing (Samba/minidlna/vsftpd/AFP), traffic stats. See [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md) for what's in-tree-but-not-yet-enabled and what's worth adding.
+Carried over from Asuswrt-Merlin and present in the BEXXU image: user scripts (firewall/services events), cron, customizable service configs, **Entware** add-on support (via `amtm`), `nano`, NTP daemon, SNMP, OpenVPN client/server (hardened here) + WireGuard + IPsec/strongSwan, **VPN Director** policy routing, **DNS Director**, **Cake SQM QoS**, Tor, ipset, USB sharing (Samba/minidlna/vsftpd/AFP), traffic stats.
 
 **Reaper adds** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md) / [`CHANGELOG.md`](CHANGELOG.md)): Hardware QoS (`qos_type=10` and the `qos_type=11` Classful engine, plus v3/v4 aggregate cap, minimums, DSCP, WRR, L4S) with the flow accelerator left on; a native **Traffic Analyzer** (per-device/network/class history, live view, quota); a **Wireless diagnostics** page with Channel-Quality Auto Scan and an opt-in passive monitor; a one-click sanitized **Reaper Diagnostics** report; **Gatekeeper** (opt-in, default-deny, on-router device access control, v1.7); an **optional AI Advisor** (read-only LAN MCP server, off by default, present only in the `+ AI Advisor` build variant, with an opt-in per-session bounded network-diagnostics tier); and **on-router network diagnostics** — the AI Advisor's opt-in ping/traceroute/DNS/netstat probe tier. **Reaper removes** (de-cloud): Alexa/Google Assistant, the Trend Micro DPI engine (AiProtection / DPI Adaptive QoS / web history), AiCloud/WebDAV, the AiDisk cloud-share wizard, the AAE/AiHome cloud tunnel, and the first-boot EULA/consent surface.
 

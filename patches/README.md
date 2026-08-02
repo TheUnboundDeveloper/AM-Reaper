@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**271 patches, v1.0 → v2.0.0**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**289 patches, v1.0 → v2.1.0**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (271 patches, v1.0 → v2.0.0)
+## What the series contains (289 patches, v1.0 → v2.1.0)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -323,9 +323,49 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - `0271` — shell portability hygiene (POSIX `.` for `source`, `[ = ]` for `[ == ]`) in the generated
   and shipped on-router scripts.
 
-> **Model scope:** from **v1.8.7** onward the releases above were built + shipped on the
-> **RT-BE96U only** (both MCP / noMCP variants); the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro
-> sibling branches are owed these rungs. (Samba 4 / SMB3 in v1.7.8 and v1.8.0a is likewise RT-BE96U-only.)
+### v2.0.1 → v2.0.2 — de-cloud completion + the Samba 4 file server working (`0272`–`0280`)
+- `0272`–`0274` — **v2.0.1**: remove the ASUS **AWS-IoT** phone-home + **ACCOUNT_BINDING** cloud surface
+  (a config-gen had silently re-added it after the earlier phone-home cleanup); keep `is_account_bound`
+  linkable for the kept blobs; gate the benign `blog_get_dstentry_by_id` kernel debug flood at source.
+- `0275`–`0277` — **v2.0.1** Samba 4: fix the file server that never started (private libs off the loader
+  path + missing runtime dirs + guest-map), label the SMB-protocol dropdown for Samba 4 (drop SMB1), and
+  the first `smbpasswd -c /etc/smb.conf` account-enrollment fix.
+- `0278`–`0280` — **v2.0.2**: complete the smbpasswd-path account-enrollment fix + clean share names + a
+  GUI login prompt; skip the 11 s `stop_lan` client-release wait on upgrade reboots too; make the `rchqd`
+  "degraded" threshold nvram-tunable.
+
+### v2.0.3 → v2.0.6 — router-generated WiFiPro, secure defaults, QoS Diagnostics, Connections (`0281`–`0284`)
+- `0281` — **v2.0.3**: the all-bands `Reaper_WiFiPro` page is router-generated (per-radio columns from
+  `wl_nband_info`, dual-band 5 GHz-1/-2 disambiguation, compact centered layout).
+- `0282` — **v2.0.4**: secure factory-reset defaults — **WPS off** (`wps_enable`/`wps_enable_x=0`) + **UPnP
+  master off** (`upnp_enable=0`); audit confirmed everything else unneeded already off or compiled out.
+- `0283` — **v2.0.5**: **Hardware QoS Diagnostics** (`Reaper_QoSDiag.asp`) — live per-queue
+  occupancy/drops/estimated-delay + scheduler from the Runner/XRDP `egress_tm` via bdmf-shell; new
+  auth-gated `do_reaper_qdiag.cgi`.
+- `0284` — **v2.0.6**: **Connections / Flow Explorer** (`Reaper_Conn.asp`) — live per-flow HW-vs-CPU view
+  from `/proc/fcache/nflist` via `do_reaper_conn.cgi`; true connection age via an `rtrafd` first-seen tracker.
+
+### v2.0.7 → v2.1.0 — QoS-Diag reliability, dropdown fix, i18n, pre-release hardening (`0285`–`0289`)
+- `0285` — **v2.0.7**: QoS Diagnostics reliability — `do_reaper_qdiag.cgi` calls `bdmf_shell` directly via
+  the boot-written `/var/bdmf_sh_id` (digit-validated) instead of the untracked `bs` alias; page rate/drop
+  deltas made 32-bit-counter-wrap-aware.
+- `0286`–`0287` — **v2.0.8**: QoS Diagnostics port-selector rebuilt only when the port list changes (was
+  closing the dropdown every poll tick); dictionary text — Wireless tab → **Wireless Quality**, `RDEV_02`
+  "Network legible" → **"Network Ledger"**, and the `RWAC_1..36` string set (dormant; reserved for the
+  shelved Wi-Fi Accelerator page on branch `accel-experiment`).
+- `0288` — **i18n completeness pass**: tokenize the three pages that shipped hardcoded-English
+  (`Reaper_Conn`, `Reaper_QoSDiag`, the WiFiPro option words + Wireless printable report) — 132 new dict
+  tokens translated across all 25 languages; dicts lockstep at 6155. Localization only.
+- `0289` — **v2.1.0**: pre-release code-review hardening batch (six-agent audit; no critical/high) —
+  JSON-escape parity (qdiag / band / `rmcp_client`), single-flighted `/proc/fcache/nflist` read, Wireless
+  status CSRF token, `gk_baseline_snapshot` lock, the GDX/FPM `/proc` probes made opt-in (`rwatch_gdx`),
+  plus dead-code removal and a PII-comment scrub.
+
+> **Model scope:** the v1.8.7 → v2.0.x rungs above were developed + shipped RT-BE96U-first; the
+> RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings have since been brought to **v2.1.0** on their
+> own per-model branches (built + shipped, both variants, all 17/17 on the verify gate). This
+> published series is the RT-BE96U line; the siblings build from the same shared source via
+> `port_sibling_v2` (full-diff shared sync + per-model identity overlay + a dict lockstep sync).
 
 ## Notes
 
@@ -335,4 +375,5 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - Extended through **v1.7.7** (2026-07-24): patches `0191`–`0215` (v1.6.7 → v1.7.7) appended from the same commit stack with the same author normalization. Re-run the full `git am --keep-cr` reproduce-check before a public release.
 - Extended through **v1.7.8** (2026-07-25): patches `0216`–`0226` appended from commit `a8d1569017` (the v1.7.7 tip == `0215`) through the v1.7.8 version-bump HEAD, same author normalization and message scrub. Verified `git am --keep-cr` clean onto an `a8d1569017` worktree; the only reproduce-check delta is three vendored `openssh-sftp` documentation files (`README.md`, `SECURITY.md`, `.github/ci-status.md`) intentionally stripped by the `*.md` docs/meta exclusion — no source/code file differs.
 - Extended through **v1.9.7** (2026-07-30): patches `0227`–`0261` (v1.7.9 → v1.9.7) appended from the same commit stack with the same author normalization and message scrub. From **v1.8.7** onward these rungs shipped **RT-BE96U-only** (siblings owed). Re-run the full `git am --keep-cr` reproduce-check before a public release.
-- Extended through **v2.0.0** (2026-08-01): patches `0262`–`0271` (v1.9.8 → v2.0.0) appended from the v1.9.7 tip (`2f84abb9`) through the v2.0.0 tip, same author normalization and message scrub (none needed — author already normalized, no build-path strings). Verified `git am --keep-cr` clean onto a fresh worktree at the v1.9.7 tip with a zero `release/src/router` diff vs the v2.0.0 tip. Still **RT-BE96U-only** (siblings owed). The v2.0.1 de-cloud work (AWSIOT / ACCOUNT_BINDING removal) is not in this series yet — it appends once built + validated.
+- Extended through **v2.0.0** (2026-08-01): patches `0262`–`0271` (v1.9.8 → v2.0.0) appended from the v1.9.7 tip (`2f84abb9`) through the v2.0.0 tip, same author normalization and message scrub (none needed — author already normalized, no build-path strings). Verified `git am --keep-cr` clean onto a fresh worktree at the v1.9.7 tip with a zero `release/src/router` diff vs the v2.0.0 tip. Still **RT-BE96U-only** (siblings owed).
+- Extended through **v2.1.0** (2026-08-02): patches `0272`–`0289` (v2.0.1 → v2.1.0) appended from the v2.0.0 tip through the v2.1.0 tip (commit `57fed00617`), same author normalization and message scrub, doc hunks excluded. **Reproduce-check status:** the full `git am --keep-cr` byte-for-byte verification is recorded through **v2.0.0** (`0271`); it has **not yet been re-run for `0272`–`0289`**. Before any public release, re-run the full series onto a fresh `a7ebfa133a` worktree and confirm a zero `release/src/router` diff against the v2.1.0 tip. The published series stays the **RT-BE96U** line; the four siblings were then ported to v2.1.0 on their own per-model branches (via `port_sibling_v2` + a dict lockstep sync) and built + shipped, all 17/17 — GT-BE98 Pro converted SAMBA36X→SAMBA4 in the process.

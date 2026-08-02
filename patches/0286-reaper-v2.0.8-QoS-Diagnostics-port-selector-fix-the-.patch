@@ -1,0 +1,57 @@
+From 283dbd72d4c048db6e50d6abc3abf06e8503d895 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 2 Aug 2026 07:11:46 -0400
+Subject: [PATCH 286/288] reaper v2.0.8: QoS Diagnostics port selector fix -
+ the psel <select> was rebuilt via innerHTML on every poll tick, closing an
+ open dropdown before the user could pick a port; now rebuilt only when the
+ port list itself changes and never while focused, with the selected value
+ synced in place otherwise
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf               |  2 +-
+ release/src/router/www/Reaper_QoSDiag.asp | 16 ++++++++++++----
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index daf29d4d72..e65ae4570b 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.0.7
++EXTENDNO=Reaper_v2.0.8
+ 
+ RCNO=0
+diff --git a/release/src/router/www/Reaper_QoSDiag.asp b/release/src/router/www/Reaper_QoSDiag.asp
+index 891413efc5..2cdd1f7c54 100644
+--- a/release/src/router/www/Reaper_QoSDiag.asp
++++ b/release/src/router/www/Reaper_QoSDiag.asp
+@@ -275,10 +275,18 @@ canvas{display:block;width:100%;height:120px}
+       card("WAN Egress Shaper",shaperTxt,(wan?"port "+wan.port+" &middot; up":"no shaper"),wan?"ok":"warn")+
+       card("Aggregate Drops",td.toFixed(1)+" /s",(maxDelay>12?"bufferbloat &middot; "+maxDelay.toFixed(0)+" ms":maxDelay>7?"elevated &middot; "+maxDelay.toFixed(0)+" ms":"healthy"),td>6||maxDelay>12?"crit":maxDelay>7?"warn":"ok");
+ 
+-    // port selector
+-    document.getElementById("pselwrap").innerHTML= state.objs.length?('<select id="psel">'+state.objs.map(function(x){
+-      return '<option value="'+x.index+'"'+(x.index===state.selObj?" selected":"")+'>'+x.port+' &middot; '+(x.dir==="us"?"upload":"download")+(x.shaped?" &middot; shaped":"")+'</option>';}).join("")+'</select>'):"";
+-    var ps=document.getElementById("psel"); if(ps)ps.onchange=function(){state.selObj=+ps.value;state.selQ=null;state.occHist={};state.dropHist=[];fetchOnce();};
++    // port selector - v2.0.8: rebuilding this <select> every poll tick closed an
++    // open dropdown mid-selection. Rebuild only when the port list itself changes
++    // (and never while focused/open); otherwise just sync the selected value.
++    var psig=state.objs.map(function(x){return x.index+":"+x.port+":"+x.dir+":"+(x.shaped?1:0);}).join("|");
++    var ps=document.getElementById("psel");
++    if(state.pselSig!==psig&&(!ps||document.activeElement!==ps)){
++      state.pselSig=psig;
++      document.getElementById("pselwrap").innerHTML= state.objs.length?('<select id="psel">'+state.objs.map(function(x){
++        return '<option value="'+x.index+'"'+(x.index===state.selObj?" selected":"")+'>'+x.port+' &middot; '+(x.dir==="us"?"upload":"download")+(x.shaped?" &middot; shaped":"")+'</option>';}).join("")+'</select>'):"";
++      ps=document.getElementById("psel");
++      if(ps)ps.onchange=function(){state.selObj=+ps.value;state.selQ=null;state.occHist={};state.dropHist=[];fetchOnce();};
++    }else if(ps&&document.activeElement!==ps&&ps.value!==String(state.selObj)){ ps.value=String(state.selObj); }
+     document.getElementById("qtag").innerHTML= o?("egress_tm/index="+o.index+" &middot; "+o.port):"rdpa egress_tm";
+     document.getElementById("stag").textContent= o?modeName(o.mode):"";
+ 
+-- 
+2.25.1
+

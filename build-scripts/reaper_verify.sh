@@ -78,9 +78,25 @@ if [ "${CFG_S4:-0}" -ge 1 ]; then
   [ -n "$S4LIBS" ] && pass "samba" "SAMBA4 config + samba4 libs staged" || fail "samba" "SAMBA4 in .config but NO *-samba4.so staged"
   [ -z "$ICONV" ] && pass "samba-iconv" "no libiconv (correct for SAMBA4)" || warn "samba-iconv" "libiconv present under SAMBA4: $ICONV"
 elif [ "${CFG_S36:-0}" -ge 1 ]; then
-  warn "samba" "built SAMBA36X (old Samba 3.6.x) -- expected SAMBA4 for Reaper parity"
+  fail "samba" "built SAMBA36X (old Samba 3.6.x) -- expected SAMBA4 for Reaper parity"
 else
   warn "samba" "neither SAMBA4 nor SAMBA36X set in .config (check)"
+fi
+
+# ---- 3b. smbd link closure -- catches the v2.0.0 bug: samba4 private libs live
+#          in /usr/lib/samba (non-default path) and smbd carries no RUNPATH, so they
+#          are only reachable because reaper adds /usr/lib/samba to /etc/ld.so.conf.
+#          Verify BOTH that every NEEDED lib is staged AND that the dir is registered.
+if [ -e "$FS/usr/sbin/smbd" ]; then
+  miss=""
+  for so in $($READELF -d "$FS/usr/sbin/smbd" 2>/dev/null | awk -F'[][]' '/NEEDED/{print $2}'); do
+    found=$(find "$FS"/lib "$FS"/usr/lib "$FS"/usr/lib/samba -name "$so" 2>/dev/null | head -1)
+    [ -z "$found" ] && miss="$miss $so"
+  done
+  reg=0; grep -qx '/usr/lib/samba' "$FS"/rom/etc/ld.so.conf 2>/dev/null && reg=1
+  if [ -n "$miss" ]; then fail "smbd-link" "missing NEEDED libs:$miss"
+  elif [ "$reg" != 1 ]; then fail "smbd-link" "libs staged but /usr/lib/samba NOT in ld.so.conf -- smbd cannot load them at runtime (v2.0.0 regression)"
+  else pass "smbd-link" "all NEEDED libs resolve + /usr/lib/samba registered in ld.so.conf"; fi
 fi
 
 # ---- 4. MCP / noMCP correctness --------------------------------------------
@@ -161,6 +177,14 @@ else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
 
 # ---- summary ---------------------------------------------------------------
 echo "------------------------------------------------------------"
+# ---- 16. i18n quote-context safety (reaper-ui rule 29) ---------------------
+if out=$(python3 /home/reaper/reaper_build/reaper_langcheck.py "$FS/www" 2>&1); then
+  pass "i18n-quote" "no language can break a JS string in reaper www ($(echo "$out" | tail -1))"
+else
+  echo "$out" | sed 's/^/    /'
+  fail "i18n-quote" "dict token embedded in a breakable JS string context (see above)"
+fi
+
 echo "reaper_verify: $PASSN pass, $WARNN warn, $FAILN FAIL  ($MODEL $VARIANT)"
 [ "$FAILN" -gt 0 ] && { echo "== VERIFY FAILED =="; exit 1; }
 echo "== VERIFY OK =="; exit 0

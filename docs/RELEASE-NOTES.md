@@ -1,9 +1,9 @@
 # "Reaper" — Release Notes
 
-**Release:** v2.0.0 (Security-hardening milestone — two full end-to-end code audits, one over all Reaper-authored code and a second over the inherited ASUS/Merlin open source that Reaper ships; every issue surfaced was fixed and no critical or high-severity flaw was left open. The base firmware is unchanged — this release is about correctness and safety, not new features. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). Built for the **RT-BEXXU**, both variants; sibling-model ports owed. Upgrade-path first boot validated on metal; full on-hardware validation owed.)
-**Firmware:** `3006.102.8_Reaper_v2.0.0`
+**Release:** v2.1.0 (Pre-release code-review hardening — a six-agent audit of every Reaper-authored component ahead of this build found no critical or high-severity issue; the confirmed items were fixed and the rest recorded in the backlog. Rolls up the v2.0.1 – v2.0.8 line (de-cloud completion, the Samba 4 file server working, secure factory defaults, the QoS Diagnostics + Connections live pages) and a full localization pass. The base firmware is unchanged — this release is correctness, safety, and polish, not major new features. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). Built + shipped on all five models, both variants each (build + 17-check verify gate passed on every one); on-hardware validation owed.)
+**Firmware:** `3006.102.8_Reaper_v2.1.0`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Models:** ASUS **RT-BEXXU** (primary, hardware-validated). The **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree) were current through **v1.8.6c** (2026-07-28); **v1.8.7 → v2.0.0 shipped RT-BEXXU only, both variants — the sibling-model ports are owed.** WiFi 7, Broadcom BCM4916.
+**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.0 is built + shipped on all five models, both variants each — every one passing the 17-check verify gate; on-hardware validation is owed on all.** WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -38,26 +38,54 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BEXXU_…_Reaper_v2.0.0_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.0.0_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BEXXU_…_Reaper_v2.1.0_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.0_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v2.0.0_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v2.0.0_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v2.1.0_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v2.1.0_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
 
+### Since v2.0.0 — de-cloud completion, the Samba 4 file server, secure defaults, live diagnostics, and a pre-release hardening pass (v2.0.1 – v2.1.0)
+
+The rungs from v2.0.1 to the current **v2.1.0** continued **RT-BEXXU only, both variants**. Headlines
+— per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
+
+- **De-cloud completion + the Samba 4 file server working (v2.0.1 – v2.0.2).** The ASUS **AWS-IoT**
+  phone-home and **account-binding** surface — quietly re-added by a config generator after the earlier
+  phone-home cleanup — is now removed from the build entirely. The **Samba 4** SMB3 file server, which
+  shipped in v2.0.0 but never actually started (packaging bugs), now starts on boot and signs you in
+  cleanly from a fresh boot, with tidier share names and a proper login prompt.
+- **Router-generated Professional page + secure factory defaults (v2.0.3 – v2.0.4).** The all-bands
+  Professional page now builds its columns from the router's real radio list (correct on quad-band
+  models). Factory-reset defaults are hardened: **WPS is off** and the **UPnP master switch is off**
+  out of the box (everything else unneeded was already off or compiled out).
+- **Live hardware insight — QoS Diagnostics + a Connections flow explorer (v2.0.5 – v2.0.8).** A new
+  **QoS Diagnostics** page shows the hardware traffic manager live (per-queue occupancy, drops,
+  estimated delay, scheduler); the **Connections** page became a live per-flow explorer drawn from the
+  Runner flow accelerator (hardware-vs-CPU split, DSCP, egress queue, live throughput, true connection
+  age). Reliability and dropdown fixes followed, and the Wireless tab was renamed **Wireless Quality**.
+- **Full localization of the newest pages.** The Connections, QoS Diagnostics, and all-bands
+  Professional pages were tokenized and translated across all 25 languages (localization only).
+- **Pre-release code-review hardening (v2.1.0).** A six-agent pre-release audit of every
+  Reaper-authored component found **no critical or high-severity issue**; the confirmed items were
+  fixed — consistent JSON escaping on several admin-page fields, a single-flighted read of the flow
+  accelerator, an anti-forgery token on the Wireless status endpoint, a lock on the Gatekeeper
+  enable-time snapshot, and the accelerator health probe made opt-in — and the remainder recorded in
+  the backlog. No feature change.
+
 ### Since v1.8.0a — audit remediation, Warden hardening, a Devices manager, and a full security re-audit (v1.8.1 – v2.0.0)
 
-The rungs from v1.8.1 to the current **v2.0.0** shipped **RT-BEXXU only, both variants** (the
-sibling-model fan-out through v1.8.6c is done; v1.8.7+ ports are owed). Headlines — per-version
+The rungs from v1.8.1 to **v2.0.0** shipped **RT-BEXXU only, both variants** (the sibling
+fan-out reached v1.8.6c then; v1.8.7 → v2.1.0 were later fanned out to all five models). Headlines — per-version
 detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
 - **The audit-remediation arc (v1.8.2 – v1.8.6).** A multi-agent adversarial audit of every
@@ -295,6 +323,11 @@ build and catalogued by ID in [`REAPER-FIXES.md`](REAPER-FIXES.md).
   live tools, certificate verification on the internal TLS helper, and a
   flow-cache flush so threat blocks take effect immediately. Finding-by-finding status
   is in the audit reports.
+- **v2.1.0 pre-release code review.** A six-agent audit of every Reaper-authored component ahead of
+  the v2.1.0 build found **no critical or high**; confirmed items were fixed — JSON-escape parity on
+  several admin-page fields, a single-flighted read of the flow accelerator, an anti-forgery token on
+  the Wireless status endpoint, a lock on the Gatekeeper enable-time snapshot, and the accelerator
+  health probe made opt-in — with the remainder tracked in [`BACKLOG.md`](BACKLOG.md).
 
 Because most of the hardened userspace is shared with stock ASUS/Merlin firmware
 across Broadcom-HND models, please practice **coordinated disclosure** for
@@ -310,10 +343,11 @@ fixed** and are tracked in
 
 **Must be worked (active):**
 - **EOL system libraries ship frozen with known unpatched CVEs** — OpenSSL 1.1.1w,
-  Samba 3.6.x, net-snmp 5.7.2, lighttpd 1.4.39, expat 2.0.1, libgcrypt 1.5.1. OpenSSL
-  is in the remote TLS path and is the highest-priority backport. (zlib and curl are
-  current; avahi is patched.) To be addressed by ABI-preserving CVE backports or an
-  ASUS-led version bump.
+  lighttpd 1.4.39, expat 2.0.1, libgcrypt 1.5.1. OpenSSL is in the remote TLS path and
+  is the highest-priority backport. (zlib and curl are current; avahi is patched;
+  **Samba was moved to 4.15.13a** with the CVE-2025-9640 backport, and **net-snmp to
+  5.9.4** — both current or CVE-backported, no longer on the frozen-EOL list.) To be
+  addressed by ABI-preserving CVE backports or an ASUS-led version bump.
 
 **Cannot fix in this tree (monitor ASUS):**
 - The **auth / token / session core** and the web input filter live in closed-source
@@ -356,17 +390,19 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v2.0.0 flashable-image hashes (SHA-256)** — current head, **RT-BEXXU only, both variants**
-(the four sibling models are owed for v1.8.7+ and will be added on fan-out). The full four-file
-set (both variants' `…_nand_squashfs.pkgtb` **and** their `…_loader.pkgtb` recovery images) is in
-`SHA256SUMS-RT-BEXXU-Reaper_v2.0.0.txt` on the `reaper-firmware/` ladder.
+**v2.1.0 flashable-image hashes (SHA-256)** — current head, **all five models, both variants each**
+(the v2.1.0 fleet fan-out is complete). Each model's four-file set (both variants'
+`…_nand_squashfs.pkgtb` **and** their `…_loader.pkgtb` recovery images) has its own
+`SHA256SUMS-<MODEL>-Reaper_v2.1.0.txt` on the `reaper-firmware/` ladder; the **RT-BE96U** set is
+tabulated below as the primary. *(The primary model builds as the **RT-BE96U**; this document refers
+to it generically as "RT-BEXXU" elsewhere.)*
 
-| Image (`RT-BEXXU_3006_102.8_Reaper_v2.0.0…`) | SHA-256 |
+| Image (`RT-BE96U_3006_102.8_Reaper_v2.1.0…`) | SHA-256 |
 |---|---|
-| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `104e4de9aba27f8f54fc068487f8cd4c31d07217303c0b6dc9885346a69b3007` |
-| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `550f2772aa8db3e5e9abe3bc5dd2e5880ecbe471d7052efa89192eadf8193e0f` |
-| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `d5e99625d6d70e58b58f6ed24d0eb3bf9719a55bda73aa121ad0889397ab5aaf` |
-| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `11af20a245d26d4e10eec20b120f6c30fc989009670e7b98846143442c8aeccd` |
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `a87d38538b3e2f907a0023a7f663f042d5e3ef088752336f63e461d22f2ea736` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `37314dfc73515f94e1f5dff8c7778d2d0ce2bbf611efea471016ec4e8f1322ba` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `6b7eee81ca382e38db52307e1cbd1b692c93980c6223572402ad172791d084ea` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `399b841499807952f2d88789d3663e4cb05a221882f6e3f4ef10c501534d62b4` |
 
 The **v1.7.7** table below remains the last full five-model, both-variant fan-out for reference.
 
@@ -398,12 +434,13 @@ Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **AI 
 (arming, LAN-only bind, token auth, secret redaction, USB third-factor, and the
 network-diagnostics tier) is **metal-validated** on the RT-BEXXU (v1.4.x–v1.5.0a). In the
 v1.5.x line the newest fully metal-validated build is **v1.5.6**; every rung since —
-through the current **v2.0.0** — is built + shipped and **awaits full flashing** (RT-BEXXU in
-both variants for each rung). **v2.0.0** additionally had its **upgrade-path first boot verified on
-the physical RT-BEXXU** (clean boot + healthy diagnostics); the remaining on-hardware checks for
-2.0.0 — factory-reset first boot, USB, VPN, and QoS acceleration — are still owed. The five-model,
-both-variant fan-out reached **v1.8.6c** (2026-07-28); from **v1.8.7** onward the rungs are
-**RT-BEXXU-only** and the sibling-model ports are owed. Per-version metal-test checklists are in
+through the current **v2.1.0** — is built + shipped and **awaits full flashing** (RT-BEXXU in
+both variants for each rung). **v2.0.0** had its **upgrade-path first boot verified on the physical
+RT-BEXXU** (clean boot + healthy diagnostics); **v2.1.0** passed the build + 17-check staged-image
+verify gate in both variants, but its on-hardware validation — factory-reset first boot, USB, VPN,
+and QoS acceleration — is still owed. The **v2.1.0 five-model, both-variant fan-out is complete**
+(all five built + shipped, each 17/17 on the verify gate; GT-BE98 Pro was converted to Samba 4 in
+the process); **on-hardware validation is owed on every model.** Per-version metal-test checklists are in
 [`BACKLOG.md`](BACKLOG.md).
 
 ---
@@ -411,8 +448,12 @@ both-variant fan-out reached **v1.8.6c** (2026-07-28); from **v1.8.7** onward th
 ## 9. Distribution & license
 
 Reaper distributes its **GPL userspace modifications** (source + patches in this
-repo) under GPL v2 — see [`../LICENSE`](../LICENSE) and the Reaper-specific notice
-[`../LICENSE.reaper`](../LICENSE.reaper). The proprietary Broadcom/ASUS/Trend Micro
-binary blobs are **not redistributable**, are not published, and are licensed for
+repo) under **GPL v2** — see [`../LICENSE`](../LICENSE) and the Reaper-specific notice
+[`../LICENSE.reaper`](../LICENSE.reaper). The image additionally bundles **GPL v3**
+components (Samba 4, GNU wget / nano) and **LGPL v2.1** libraries; their full license
+texts are in [`../LICENSES/`](../LICENSES/), and the complete corresponding source +
+terms (incl. GPL v3 § 6 Installation Information) are in
+[`SOURCE-AVAILABILITY.md`](SOURCE-AVAILABILITY.md). The proprietary Broadcom/ASUS/Trend
+Micro binary blobs are **not redistributable**, are not published, and are licensed for
 genuine ASUS hardware only (`README.proprietary`). Reaper is provided **as-is, with
 no warranty**; run it understanding the residual risks in §6.

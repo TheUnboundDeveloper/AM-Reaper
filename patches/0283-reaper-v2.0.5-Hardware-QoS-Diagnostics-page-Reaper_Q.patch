@@ -1,0 +1,465 @@
+From e0f95a3fc2d7dc8b1e2b4250095bc55ec7a8c316 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 1 Aug 2026 21:10:44 -0400
+Subject: [PATCH 283/288] reaper v2.0.5: Hardware QoS Diagnostics page
+ (Reaper_QoSDiag.asp) - live per-queue occupancy/drops/estimated-delay +
+ scheduler from the Runner/XRDP egress_tm read via bdmf-shell; new auth-gated
+ do_reaper_qdiag.cgi JSON feed; Traffic Manager menu tab right of QoS;
+ open-only fast polling (250-500ms), adapts to qos_type 10 (single PI2) / 11
+ (classful)
+
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/web.c                |  36 ++
+ release/src/router/www/Reaper_QoSDiag.asp     | 360 ++++++++++++++++++
+ .../router/www/require/menuTrees/menuTree.js  |   1 +
+ 4 files changed, 398 insertions(+), 1 deletion(-)
+ create mode 100755 release/src/router/www/Reaper_QoSDiag.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 016b47ebaf..b2a3f2b013 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.0.4
++EXTENDNO=Reaper_v2.0.5
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index df7edda396..8d19baf7ed 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21720,6 +21720,41 @@ do_reaper_qos_stats_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "}");
+ }
+ 
++/* reaper v2.0.5: Hardware QoS Diagnostics feed for Reaper_QoSDiag.asp. Read-only;
++ * no request input is parsed - the bdmf-shell command is a fixed literal
++ * (injection-safe, same model as do_reaper_traffic_cgi). Streams the live
++ * egress_tm scheduler / queue / occupancy dump (parsed client-side) plus the
++ * qos_* config used to label queues. The dump is emitted as an escaped JSON
++ * string under "tm"; occupancy is a live QM counter read (safe to poll). */
++static void
++do_reaper_qdiag_cgi(char *url, FILE *stream)
++{
++	FILE *p;
++	int c;
++
++	websWrite(stream,
++		"{\"qos_enable\":%d,\"qos_type\":%d,\"qos_obw\":\"%s\",\"qos_orates\":\"%s\","
++		"\"qos_sched\":\"%s\",\"qos_default\":\"%s\",\"qos_l4s\":\"%s\"",
++		nvram_get_int("qos_enable"), nvram_get_int("qos_type"),
++		nvram_safe_get("qos_obw"), nvram_safe_get("qos_orates"),
++		nvram_safe_get("qos_sched"), nvram_safe_get("qos_default"),
++		nvram_safe_get("qos_l4s"));
++
++	websWrite(stream, ",\"tm\":\"");
++	if ((p = popen("bs /Bdmf/e egress_tm max_prints:-1 2>/dev/null", "r")) != NULL) {
++		while ((c = fgetc(p)) != EOF) {
++			if (c == '"' || c == '\\') { fputc('\\', stream); fputc(c, stream); }
++			else if (c == '\n') websWrite(stream, "\\n");
++			else if (c == '\r') { /* drop CR */ }
++			else if (c == '\t') websWrite(stream, "\\t");
++			else if (c < 0x20) websWrite(stream, "\\u%04x", c);
++			else fputc(c, stream);
++		}
++		pclose(p);
++	}
++	websWrite(stream, "\"}");
++}
++
+ /* reaper v1.3.0: stream a collector snapshot for Reaper_Traffic.asp. The only
+  * request input is the window name, matched against a fixed allowlist - the
+  * filesystem path is always one of five literals. */
+@@ -31429,6 +31464,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "upload.cgi*", "text/html", no_cache_IE7, do_upload_post, do_upload_cgi, do_auth },
+ 	/* reaper v1.2.7: set_ASUS_EULA.cgi endpoint removed (legacy app-only setter; EULA pre-signed in defaults.c) */
+ 	{ "reaper_qos_stats.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_qos_stats_cgi, do_auth },
++	{ "reaper_qdiag.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_qdiag_cgi, do_auth },
+ 	{ "reaper_traffic.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_traffic_cgi, do_auth },
+ 	{ "reaper_wifi.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_wifi_cgi, do_auth },
+ 	{ "reaper_diag.cgi*", "text/plain", no_cache_IE7, do_html_post_and_get, do_reaper_diag_cgi, do_auth },
+diff --git a/release/src/router/www/Reaper_QoSDiag.asp b/release/src/router/www/Reaper_QoSDiag.asp
+new file mode 100755
+index 0000000000..3581155dbb
+--- /dev/null
++++ b/release/src/router/www/Reaper_QoSDiag.asp
+@@ -0,0 +1,360 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; QoS Diagnostics</title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{--bg:#08080a;--panel:#0f0f12;--panel2:#141418;--raised:#17171c;
++ --line:rgba(236,231,219,.09);--line2:rgba(236,231,219,.16);
++ --red:#E10600;--red-deep:#B3000C;--red-dim:rgba(225,6,0,.14);
++ --bone:#ECE7DB;--bone-dim:#B7B1A4;--steel:#71767b;--jade:#4FB286;--amber:#E0A93B;--ice:#7EA6C9;
++ --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;--mono:ui-monospace,Consolas,monospace;}
++*{box-sizing:border-box}html,body{margin:0}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++ background-image:radial-gradient(1100px 460px at 16% -8%,rgba(225,6,0,.10),transparent 60%),radial-gradient(100% 100% at 50% 30%,transparent 52%,rgba(0,0,0,.6) 100%);
++ -webkit-font-smoothing:antialiased;font-size:14px;line-height:1.5}
++h1,h2,h3{font-family:var(--hdr);color:var(--bone);margin:0;letter-spacing:.03em}
++code{font-family:var(--mono)}
++.wrap{max-width:1320px;margin:0 auto;padding:0 24px 80px}
++.stickytop{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,#0a0a0c 72%,rgba(10,10,12,.92));backdrop-filter:blur(6px);border-bottom:1px solid var(--line2)}
++.stickytop .inner{max-width:1320px;margin:0 auto;padding:0 24px}
++.appbar{display:flex;align-items:center;gap:18px;padding:15px 0 13px;flex-wrap:wrap}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.24em;font-size:10.5px;color:var(--steel)}
++.appbar h1{font-size:22px;font-weight:700;line-height:1.05}
++.appbar .sub{font-size:12px;color:var(--steel);margin-top:3px}
++.spacer{flex:1}
++.live{display:flex;align-items:center;gap:10px}
++.livebtn{font-family:var(--hdr);font-weight:700;text-transform:uppercase;letter-spacing:.07em;font-size:12px;color:var(--bone);border:1px solid var(--line2);border-radius:999px;padding:7px 14px 7px 12px;cursor:pointer;background:var(--raised);display:flex;align-items:center;gap:8px}
++.livebtn .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 8px var(--jade);animation:pulse 1.6s infinite}
++.livebtn.paused .dot{background:var(--steel);box-shadow:none;animation:none}
++@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
++.rate{display:flex;gap:2px;background:var(--raised);border:1px solid var(--line2);border-radius:999px;padding:3px}
++.rate button{font-family:var(--mono);font-size:11px;color:var(--bone-dim);background:transparent;border:0;border-radius:999px;padding:5px 10px;cursor:pointer}
++.rate button.on{background:var(--red);color:#fff}
++.hint{font-size:10.5px;color:var(--steel);max-width:20ch;line-height:1.3}
++.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:18px}
++.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
++.card .lbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.14em;font-size:9.5px;color:var(--steel)}
++.card .val{font-family:var(--hdr);font-size:20px;color:var(--bone);font-weight:700;margin-top:4px;line-height:1.1;display:flex;align-items:baseline;gap:7px}
++.card .val small{font-size:11px;color:var(--steel);font-weight:400;font-family:var(--body);letter-spacing:0}
++.card .sub2{font-size:11px;color:var(--bone-dim);margin-top:5px;font-family:var(--mono)}
++.hdot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:0 0 auto;vertical-align:middle}
++.ok{background:var(--jade)}.warn{background:var(--amber)}.crit{background:var(--red)}
++.ok-t{color:var(--jade)}.warn-t{color:var(--amber)}.crit-t{color:var(--red)}
++.sec{margin-top:26px}
++.sec-h{font-family:var(--hdr);text-transform:uppercase;font-weight:700;font-size:12.5px;letter-spacing:.16em;color:var(--bone);padding-bottom:8px;margin-bottom:12px;border-bottom:1px solid var(--line2);position:relative;display:flex;align-items:center;gap:10px}
++.sec-h::after{content:"";position:absolute;left:0;bottom:-1px;width:44px;height:2px;background:var(--red)}
++.sec-h .tag{font-family:var(--mono);font-size:10px;letter-spacing:0;color:var(--steel);text-transform:none;font-weight:400}
++.sec-h .psel{margin-left:auto;font-family:var(--body);text-transform:none;letter-spacing:0}
++.psel select{font-family:var(--mono);font-size:11px;color:var(--bone);background:var(--raised);border:1px solid var(--line2);border-radius:7px;padding:5px 9px;cursor:pointer}
++.split{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
++@media(max-width:980px){.split{grid-template-columns:1fr}.grid4{grid-template-columns:repeat(2,1fr)}}
++.qtable{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
++.qhead,.qrow{display:grid;grid-template-columns:34px 1.5fr 96px 1.7fr 70px 66px 58px;gap:10px;align-items:center;padding:9px 14px}
++.qhead{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.1em;font-size:9.5px;color:var(--steel);border-bottom:1px solid var(--line2)}
++.qhead .r,.qrow .r{text-align:right}
++.qrow{border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
++.qrow:last-child{border-bottom:none}.qrow:hover{background:var(--panel2)}
++.qrow.sel{background:linear-gradient(90deg,rgba(225,6,0,.10),transparent 60%);box-shadow:inset 3px 0 0 var(--red)}
++.qrow.idle{opacity:.5}
++.qn{font-family:var(--hdr);font-weight:700;font-size:15px;color:var(--bone)}
++.qcls{font-weight:600;color:var(--bone);font-size:13px}
++.qcls small{display:block;font-weight:400;color:var(--steel);font-size:10.5px;font-family:var(--mono);margin-top:1px}
++.disc{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-family:var(--hdr);letter-spacing:.04em}
++.sp{color:var(--ice)}.wrr{color:var(--amber)}
++.wbar{height:5px;border-radius:3px;background:rgba(224,169,59,.16);overflow:hidden;margin-top:4px;width:60px}
++.wbar>i{display:block;height:100%;background:var(--amber)}
++.occ{position:relative;height:20px;border-radius:5px;background:var(--raised);border:1px solid var(--line2);overflow:hidden}
++.occ>i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;transition:width .18s linear,background .3s}
++.occ>span{position:absolute;right:6px;top:50%;transform:translateY(-50%);font-family:var(--mono);font-size:10.5px;color:var(--bone);z-index:2}
++.num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;color:var(--bone)}
++.num.dim{color:var(--steel)}
++.pri-pill{font-family:var(--hdr);font-size:9px;text-transform:uppercase;letter-spacing:.06em;border:1px solid var(--line2);border-radius:999px;padding:1px 6px;color:var(--bone-dim)}
++.detail{background:var(--panel);border:1px solid var(--line2);border-radius:12px;overflow:hidden;position:sticky;top:96px}
++.detail .dhd{padding:13px 15px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(225,6,0,.08),transparent)}
++.detail .dhd .k{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.12em;font-size:9.5px;color:var(--steel)}
++.detail .dhd .n{font-family:var(--hdr);font-size:18px;font-weight:700;color:var(--bone);margin-top:3px}
++.detail .dhd .n small{font-size:11px;color:var(--steel);font-family:var(--mono);font-weight:400;letter-spacing:0}
++.dbig{padding:15px;display:flex;align-items:center;gap:16px;border-bottom:1px solid var(--line)}
++.ring{width:124px;height:124px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center}
++.ring b{font-family:var(--hdr);font-size:26px;color:var(--bone);font-weight:700;line-height:1;text-align:center}
++.ring b small{display:block;font-size:9.5px;color:var(--steel);letter-spacing:.12em;text-transform:uppercase;white-space:nowrap;margin-top:3px}
++.dbig .dl{flex:1;font-size:12px;min-width:0}
++.dbig .dl .row{display:flex;justify-content:space-between;padding:3px 0;gap:8px}
++.dbig .dl .row span{color:var(--steel)}
++.dbig .dl .row b{color:var(--bone);font-family:var(--mono);font-weight:500}
++.dgrid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
++.dgrid .m{background:var(--panel);padding:11px 14px}
++.dgrid .m .k{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.1em;font-size:9px;color:var(--steel)}
++.dgrid .m .v{font-family:var(--mono);font-size:15px;color:var(--bone);margin-top:3px}
++.dgrid .m .v.big{font-size:17px}
++.chip{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.06em;font-size:9px;font-weight:600;padding:2px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--bone-dim)}
++.gcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
++.gcard h3{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.12em;font-size:10.5px;color:var(--steel);font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between}
++.gcard h3 b{color:var(--bone);font-family:var(--mono);font-size:12px;letter-spacing:0}
++canvas{display:block;width:100%;height:120px}
++.legend{display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:8px;font-size:10.5px;color:var(--bone-dim)}
++.legend span{display:inline-flex;align-items:center;gap:5px}.legend i{width:9px;height:9px;border-radius:2px;flex:0 0 auto}
++.sched{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px}
++.sroot{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
++.snode{border:1px solid var(--line2);border-radius:9px;padding:8px 12px;background:var(--raised);font-family:var(--hdr);font-size:12px;color:var(--bone);text-align:center;white-space:nowrap}
++.snode small{display:block;font-size:9px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
++.sband{flex:1;min-width:220px;display:flex;flex-direction:column;gap:8px}
++.brow{display:flex;align-items:center;gap:8px}
++.brow .bl{font-family:var(--hdr);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);width:64px;flex:0 0 auto}
++.bchips{display:flex;gap:6px;flex-wrap:wrap}
++.bchip{font-family:var(--mono);font-size:10px;border:1px solid var(--line2);border-radius:6px;padding:3px 7px;color:var(--bone-dim);display:flex;gap:6px;align-items:center}
++.bchip b{color:var(--bone)}
++.empty{background:var(--panel);border:1px dashed var(--line2);border-radius:12px;padding:30px;text-align:center;color:var(--steel);font-size:13px}
++.note{margin-top:22px;font-size:12px;color:var(--steel);line-height:1.6;max-width:96ch;border-top:1px solid var(--line);padding-top:14px}
++.note b{color:var(--bone-dim)}
++.badge{display:inline-block;font-family:var(--hdr);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#000;background:var(--amber);border-radius:4px;padding:1px 6px;vertical-align:middle}
++</style>
++</head>
++<body>
++<div class="stickytop"><div class="inner">
++  <div class="appbar">
++    <div>
++      <div class="eyebrow">REAPER &middot; Traffic Manager</div>
++      <h1>Hardware QoS Diagnostics</h1>
++      <div class="sub">Live view of the Runner / XRDP egress traffic manager &mdash; per-queue occupancy, scheduler, drops &amp; estimated delay.</div>
++    </div>
++    <div class="spacer"></div>
++    <div class="live">
++      <div class="hint">Fast polling runs only while this page is open.</div>
++      <div class="rate" id="rate">
++        <button data-ms="250">250 ms</button>
++        <button data-ms="500" class="on">500 ms</button>
++        <button data-ms="4000">4 s</button>
++      </div>
++      <button class="livebtn" id="livebtn"><span class="dot"></span>LIVE</button>
++    </div>
++  </div>
++</div></div>
++
++<div class="wrap">
++  <div class="grid4" id="cards"></div>
++
++  <div class="sec split">
++    <div>
++      <h2 class="sec-h">Scheduler &amp; Queues <span class="tag" id="qtag">rdpa egress_tm</span>
++        <span class="psel" id="pselwrap"></span></h2>
++      <div id="qbody"></div>
++      <h2 class="sec-h" style="margin-top:24px">Scheduler Tree <span class="tag" id="stag"></span></h2>
++      <div class="sched"><div class="sroot" id="sroot"></div></div>
++    </div>
++    <div><div class="detail" id="detail"></div></div>
++  </div>
++
++  <div class="sec">
++    <h2 class="sec-h">Live Trends <span class="tag" id="gtag">window 45 s</span></h2>
++    <div class="split" style="grid-template-columns:1fr 1fr">
++      <div class="gcard"><h3>Per-queue occupancy <b id="occnow">&mdash;</b></h3><canvas id="occcv"></canvas><div class="legend" id="occleg"></div></div>
++      <div class="gcard"><h3>Drops / sec <b id="dropnow">&mdash;</b></h3><canvas id="dropcv"></canvas><div class="legend"><span><i style="background:var(--red)"></i>tail + AQM drops (combined)</span></div></div>
++    </div>
++  </div>
++
++  <div class="note">
++    <b>Estimated Delay</b> is derived (queue backlog &divide; shaper rate) <span class="badge">est</span> &mdash; the hardware TM has no direct latency counter.
++    <b>Occupancy</b> is the live RDPA <code>queue_occupancy</code> read (0 when the link is idle, fills under load); <b>Drops</b> are the combined tail+AQM counter; <b>Size</b>/<b>Shaper</b>/<b>AQM</b> come from the queue config.
++    The view adapts to your QoS mode &mdash; a single shaped queue under Hardware PI2 (type&nbsp;10), the full weighted scheduler under HW Classful (type&nbsp;11).
++  </div>
++</div>
++
++<iframe name="hidden_frame" width="0" height="0" frameborder="0" style="display:none"></iframe>
++<script>
++(function(){
++  "use strict";
++  var ENDPOINT="/reaper_qdiag.cgi";
++  var COLORS=["#4FB286","#7EA6C9","#E0A93B","#E10600","#C77DFF","#5AD1C4","#B7B1A4","#8894a0"];
++  var HIST=45, state={objs:[],selObj:null,selQ:null,qos:{},prev:{},occHist:{},dropHist:[]};
++
++  // ---- parse the bs egress_tm dump (format: [[tm-queue-diag]]) ----
++  function field(s,re){ var m=s.match(re); return m?m[1]:null; }
++  function parseTM(tm){
++    if(!tm) return [];
++    var blocks=tm.split(/(?=Object:\s*egress_tm)/), out=[];
++    blocks.forEach(function(b){
++      if(b.indexOf("egress_tm/index=")<0) return;
++      var idx=field(b,/egress_tm\/index=(\d+)/), port=field(b,/port\/name=(\S+?)[\s.]/)||field(b,/port\/name=(\S+)/);
++      var dir=field(b,/\bdir\s*:\s*(us|ds)/), mode=field(b,/\bmode\s*:\s*(\w+)/), nq=+(field(b,/num_queues\s*:\s*(\d+)/)||0);
++      var q={};
++      var re=/queue_cfg\[(\d+)\]\s*:\s*(\{(?:[^{}]|\{[^{}]*\})*\})/g,m;
++      while((m=re.exec(b))){ var i=+m[1],g=m[2];
++        q[i]=q[i]||{}; q[i].qid=+field(g,/queue_id=(\d+)/); q[i].size=+field(g,/drop_threshold=(\d+)/);
++        q[i].weight=+field(g,/weight=(\d+)/); q[i].aqm=field(g,/drop_alg=(\w+)/);
++        var af=field(g,/rate_limit\/index=\d+\{af=(\d+)/); q[i].af=af?+af:0; }
++      var rs=/queue_stat\[(\d+)\]\s*:\s*(\{(?:[^{}]|\{[^{}]*\})*\})/g;
++      while((m=rs.exec(b))){ var i2=+m[1],g2=m[2]; q[i2]=q[i2]||{};
++        q[i2].txp=+field(g2,/passed=\{packets=(\d+)/); q[i2].txb=+field(g2,/passed=\{packets=\d+,bytes=(\d+)/);
++        q[i2].dp=+field(g2,/discarded=\{packets=(\d+)/); q[i2].db=+field(g2,/discarded=\{packets=\d+,bytes=(\d+)/); }
++      var ro=/queue_occupancy\[(\d+)\]\s*:\s*\{packets=(\d+),bytes=(\d+)\}/g;
++      while((m=ro.exec(b))){ var i3=+m[1]; q[i3]=q[i3]||{}; q[i3].op=+m[2]; q[i3].ob=+m[3]; }
++      var queues=Object.keys(q).map(function(k){var o=q[k];o.i=+k;return o;}).sort(function(a,b){return a.i-b.i;});
++      out.push({index:+idx,port:port,dir:dir,mode:mode,numq:nq,queues:queues,
++        shaped:queues.some(function(x){return x.af>0;})});
++    });
++    return out;
++  }
++
++  function fmtBytes(b){ if(b>=1048576)return(b/1048576).toFixed(1)+" MB"; if(b>=1024)return(b/1024).toFixed(0)+" KB"; return (b||0)+" B"; }
++  function fmtRate(bps){ if(bps>=1e9)return(bps/1e9).toFixed(2)+" Gbps"; if(bps>=1e6)return(bps/1e6).toFixed(0)+" Mbps"; if(bps>=1e3)return(bps/1e3).toFixed(0)+" Kbps"; return Math.round(bps)+" bps"; }
++  function occColor(p){ return p<50?"var(--jade)":p<80?"var(--amber)":"var(--red)"; }
++  function aqmName(a){ return ({dt:"Tail-drop",pi2:"PI2",wred:"WRED",codel:"CoDel",red:"RED",dualq_pi2:"L4S PI2"})[a]||(a||"-").toUpperCase(); }
++  function modeName(m){ return ({sp_wrr:"SP + WRR",sp:"Strict priority",wrr:"WRR",disabled:"Disabled"})[m]||m; }
++  // class label: type 11 = positional classful; else role by shaper/traffic
++  function qLabel(o,q){
++    if(state.qos.qos_type===11){ if(q.qid===0)return{n:"Unclassified",s:"catch-all"}; if(q.qid>=1&&q.qid<=5)return{n:"Class "+q.qid,s:q.qid===1?"highest":""}; if(q.qid===6)return{n:"LAN / Multicast",s:""}; return{n:"Queue "+q.qid,s:""}; }
++    if(q.af>0)return{n:"Default",s:"all traffic &middot; shaped"};
++    return {n:"Queue "+q.qid,s:o.dir==="us"?"upload":"download"};
++  }
++  function shaperBps(o,q){ if(q.af>0)return q.af; if(o.dir==="us"&&state.qos.qos_obw)return (+state.qos.qos_obw)*1000; return 0; }
++
++  function fetchOnce(){
++    var x=new XMLHttpRequest();
++    x.open("GET",ENDPOINT+"?_="+Date.now(),true); x.timeout=6000;
++    x.onreadystatechange=function(){ if(x.readyState!==4)return;
++      var j; try{ j=JSON.parse(x.responseText); }catch(e){ return; }
++      state.qos=j; ingest(parseTM(j.tm)); render();
++    };
++    x.onerror=x.ontimeout=function(){}; x.send();
++  }
++
++  function ingest(objs){
++    state.objs=objs;
++    // pick primary: WAN-upload shaped, else first us, else first
++    if(!state.selObj || !objs.some(function(o){return o.index===state.selObj;})){
++      var pri=objs.filter(function(o){return o.dir==="us"&&o.shaped;})[0]||objs.filter(function(o){return o.dir==="us";})[0]||objs[0];
++      state.selObj=pri?pri.index:null;
++    }
++    var o=cur(); if(!o)return;
++    // choose a default selected queue = the shaped/busiest
++    if(state.selQ==null || !o.queues.some(function(q){return q.qid===state.selQ;})){
++      var busy=o.queues.slice().sort(function(a,b){return (b.af-a.af)||(b.txb-a.txb);})[0];
++      state.selQ=busy?busy.qid:(o.queues[0]?o.queues[0].qid:null);
++    }
++    // deltas for rate/drops + occupancy history (per selected obj)
++    var now=Date.now(), key=o.index;
++    var pv=state.prev[key]||{}, dt=(pv.ts?(now-pv.ts):0)/1000;
++    o.queues.forEach(function(q){
++      var p=pv[q.qid];
++      q.rateBps=(p&&dt>0)?Math.max(0,(q.txb-p.txb)*8/dt):0;
++      q.dropRate=(p&&dt>0)?Math.max(0,(q.dp-p.dp)/dt):0;
++      var sb=shaperBps(o,q); q.pct=q.size>0?Math.min(100,q.ob/q.size*100):0;
++      q.delayMs=sb>0?(q.ob*8/sb*1000):null;
++    });
++    var np={ts:now}; o.queues.forEach(function(q){ np[q.qid]={txb:q.txb,dp:q.dp}; }); state.prev[key]=np;
++    // history
++    o.queues.forEach(function(q){ var h=state.occHist[q.qid]=state.occHist[q.qid]||[]; h.push(q.pct); if(h.length>HIST)h.shift(); });
++    var td=0; o.queues.forEach(function(q){ td+=q.dropRate; }); state.dropHist.push(td); if(state.dropHist.length>HIST)state.dropHist.shift();
++  }
++  function cur(){ var s=state.selObj; return state.objs.filter(function(o){return o.index===s;})[0]||null; }
++  function curQ(){ var o=cur(); return o?o.queues.filter(function(q){return q.qid===state.selQ;})[0]:null; }
++
++  function render(){
++    var o=cur();
++    var wan=state.objs.filter(function(x){return x.dir==="us"&&x.shaped;})[0];
++    var qtype=state.qos.qos_type, qen=state.qos.qos_enable;
++    var modeTxt = qen!==1?"Off":(qtype===11?"HW Classful":(qtype===10?"HW PI2 shaper":"Type "+qtype));
++    var shaperTxt = wan?fmtRate(wan.queues.reduce(function(a,q){return Math.max(a,q.af);},0)|| (state.qos.qos_obw*1000)):"n/a";
++    var td=o?o.queues.reduce(function(a,q){return a+(q.dropRate||0);},0):0;
++    var maxDelay=o?o.queues.reduce(function(a,q){return Math.max(a,q.delayMs||0);},0):0;
++    document.getElementById("cards").innerHTML=
++      card("Accelerator Engine","Runner","XRDP &middot; BCM6813 &middot; flow-cache ON","ok")+
++      card("QoS Mode",modeTxt,(o?modeName(o.mode)+" &middot; "+o.numq+" queues":"&mdash;"),qen===1?"ok":"warn")+
++      card("WAN Egress Shaper",shaperTxt,(wan?"port "+wan.port+" &middot; up":"no shaper"),wan?"ok":"warn")+
++      card("Aggregate Drops",td.toFixed(1)+" /s",(maxDelay>12?"bufferbloat &middot; "+maxDelay.toFixed(0)+" ms":maxDelay>7?"elevated &middot; "+maxDelay.toFixed(0)+" ms":"healthy"),td>6||maxDelay>12?"crit":maxDelay>7?"warn":"ok");
++
++    // port selector
++    document.getElementById("pselwrap").innerHTML= state.objs.length?('<select id="psel">'+state.objs.map(function(x){
++      return '<option value="'+x.index+'"'+(x.index===state.selObj?" selected":"")+'>'+x.port+' &middot; '+(x.dir==="us"?"upload":"download")+(x.shaped?" &middot; shaped":"")+'</option>';}).join("")+'</select>'):"";
++    var ps=document.getElementById("psel"); if(ps)ps.onchange=function(){state.selObj=+ps.value;state.selQ=null;state.occHist={};state.dropHist=[];fetchOnce();};
++    document.getElementById("qtag").innerHTML= o?("egress_tm/index="+o.index+" &middot; "+o.port):"rdpa egress_tm";
++    document.getElementById("stag").textContent= o?modeName(o.mode):"";
++
++    if(!o||!o.queues.length){ document.getElementById("qbody").innerHTML='<div class="empty">No egress traffic-manager data. Is QoS / the accelerator active?</div>';
++      document.getElementById("detail").innerHTML=""; document.getElementById("sroot").innerHTML=""; return; }
++
++    // queue table (by qid asc)
++    var qs=o.queues.slice().sort(function(a,b){return a.qid-b.qid;});
++    var rows=qs.map(function(q){
++      var lab=qLabel(o,q), p=Math.round(q.pct||0), idle=(q.txb===0&&q.ob===0&&q.af===0);
++      var disc=(o.mode==="sp_wrr"||o.mode==="wrr")&&q.weight>0
++        ? '<span class="disc wrr">WRR <b style="color:var(--bone)">w'+q.weight+'</b><div class="wbar"><i style="width:'+Math.min(100,q.weight/10*100)+'%"></i></div></span>'
++        : '<span class="disc sp">SP <b style="color:var(--bone)">P'+q.qid+'</b>'+(q.af>0?' <span class="pri-pill">shaped</span>':'')+'</span>';
++      return '<div class="qrow'+(q.qid===state.selQ?" sel":"")+(idle?" idle":"")+'" data-q="'+q.qid+'">'+
++        '<div class="qn">'+q.qid+'</div>'+
++        '<div><div class="qcls">'+lab.n+'<small>'+aqmName(q.aqm)+' &middot; '+fmtBytes(q.size)+(lab.s?" &middot; "+lab.s:"")+'</small></div></div>'+
++        '<div>'+disc+'</div>'+
++        '<div class="occ"><i style="width:'+p+'%;background:'+occColor(p)+'"></i><span>'+p+'%</span></div>'+
++        '<div class="r num">'+(q.rateBps>=1e6?(q.rateBps/1e6).toFixed(0):"0")+'<span class="num dim"> Mb</span></div>'+
++        '<div class="r num">'+(q.delayMs==null?"&mdash;":q.delayMs.toFixed(1))+'<span class="num dim"> ms</span></div>'+
++        '<div class="r num '+(q.dropRate>2?"crit-t":q.dropRate>0.5?"warn-t":"dim")+'">'+(q.dropRate||0).toFixed(1)+'</div></div>';
++    }).join("");
++    document.getElementById("qbody").innerHTML='<div class="qtable"><div class="qhead"><div>Q</div><div>Class</div><div>Discipline</div><div>Occupancy</div><div class="r">Rate</div><div class="r">Delay</div><div class="r">Drops</div></div>'+rows+'</div>';
++    document.querySelectorAll(".qrow").forEach(function(r){ r.onclick=function(){ state.selQ=+r.getAttribute("data-q"); render(); }; });
++
++    // scheduler tree
++    var sp=qs.filter(function(q){return !(q.weight>0);}), wrr=qs.filter(function(q){return q.weight>0;});
++    document.getElementById("sroot").innerHTML=
++      '<div class="snode">'+(o.dir==="us"?"WAN Egress":o.port+" Egress")+'<small>root &middot; '+modeName(o.mode)+'</small></div>'+
++      '<div class="sband">'+
++        '<div class="brow"><div class="bl">SP band</div><div class="bchips">'+(sp.length?sp.map(function(q){return chip(q,qLabel(o,q).n,"P"+q.qid);}).join(""):'<span class="bchip">none</span>')+'</div></div>'+
++        '<div class="brow"><div class="bl">WRR band</div><div class="bchips">'+(wrr.length?wrr.map(function(q){return chip(q,qLabel(o,q).n,"w"+q.weight);}).join(""):'<span class="bchip">none active</span>')+'</div></div></div>';
++
++    renderDetail(o); drawOcc(qs); drawDrops();
++    document.getElementById("occnow").textContent="peak "+Math.round(qs.reduce(function(a,q){return Math.max(a,q.pct||0);},0))+"%";
++    document.getElementById("dropnow").textContent=td.toFixed(1)+" /s";
++    document.getElementById("occleg").innerHTML=qs.filter(function(q){return q.txb>0||q.af>0;}).map(function(q){return '<span><i style="background:'+COLORS[q.qid%8]+'"></i>Q'+q.qid+' '+qLabel(o,q).n+'</span>';}).join("");
++  }
++  function card(lbl,val,sub,h){ return '<div class="card"><div class="lbl">'+lbl+'</div><div class="val">'+val+' <span class="hdot '+h+'"></span></div><div class="sub2">'+sub+'</div></div>'; }
++  function chip(q,n,tag){ return '<span class="bchip" style="border-color:'+COLORS[q.qid%8]+'55"><span class="hdot" style="background:'+COLORS[q.qid%8]+'"></span>Q'+q.qid+' '+n+' <b>'+tag+'</b></span>'; }
++
++  function renderDetail(o){
++    var q=curQ(); if(!q){ document.getElementById("detail").innerHTML=""; return; }
++    var lab=qLabel(o,q), p=Math.round(q.pct||0), sb=shaperBps(o,q);
++    document.getElementById("detail").innerHTML=
++      '<div class="dhd"><div class="k">Queue '+q.qid+' detail</div><div class="n">'+lab.n+' <small>'+o.port+' '+(o.dir==="us"?"upload":"download")+'</small></div></div>'+
++      '<div class="dbig"><div class="ring" style="background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient('+occColor(p)+' '+p+'%,rgba(236,231,219,.08) 0)"><b>'+p+'%<small>occupancy</small></b></div>'+
++        '<div class="dl">'+
++          drow("Packets",(q.op||0))+drow("Bytes",fmtBytes(q.ob))+drow("Configured size",fmtBytes(q.size))+
++          drow("Est. delay",(q.delayMs==null?"&mdash;":'<b class="'+(q.delayMs>10?"warn-t":"ok-t")+'">'+q.delayMs.toFixed(1)+" ms</b>"))+
++        '</div></div>'+
++      '<div class="dgrid">'+
++        meas("Drops",'<span class="'+(q.dropRate>2?"crit-t":"")+'">'+(q.dropRate||0).toFixed(1)+'</span><span style="font-size:10px;color:var(--steel)"> /s</span>',"big")+
++        meas("Discipline",(q.weight>0?"WRR &middot; w"+q.weight:"SP &middot; P"+q.qid),"")+
++        meas("AQM",'<span class="chip">'+aqmName(q.aqm)+'</span>',"")+
++        meas("Shaper",(sb>0?fmtRate(sb):"line rate"),"")+
++      '</div>';
++  }
++  function drow(k,v){ return '<div class="row"><span>'+k+'</span><b>'+v+'</b></div>'; }
++  function meas(k,v,c){ return '<div class="m"><div class="k">'+k+'</div><div class="v '+c+'">'+v+'</div></div>'; }
++
++  function setupCanvas(cv){ var d=window.devicePixelRatio||1,r=cv.getBoundingClientRect(); cv.width=r.width*d; cv.height=120*d; var x=cv.getContext("2d"); x.setTransform(d,0,0,d,0,0); return{x:x,w:r.width,h:120}; }
++  function grid(x,w,h){ x.clearRect(0,0,w,h); x.strokeStyle="rgba(236,231,219,.06)"; x.lineWidth=1; for(var i=1;i<4;i++){var y=h*i/4;x.beginPath();x.moveTo(0,y);x.lineTo(w,y);x.stroke();} }
++  function drawOcc(qs){ var c=setupCanvas(document.getElementById("occcv")); grid(c.x,c.w,c.h);
++    qs.forEach(function(q){ var H=state.occHist[q.qid]; if(!H||H.length<2)return; c.x.beginPath();
++      H.forEach(function(v,i){ var X=i/(HIST-1)*c.w,Y=c.h-(v/100)*c.h; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y); });
++      c.x.strokeStyle=COLORS[q.qid%8]; c.x.lineWidth=q.qid===state.selQ?2.4:1.2; c.x.globalAlpha=q.qid===state.selQ?1:.6; c.x.stroke(); c.x.globalAlpha=1; }); }
++  function drawDrops(){ var c=setupCanvas(document.getElementById("dropcv")); grid(c.x,c.w,c.h); var a=state.dropHist; if(a.length<2)return;
++    var mx=Math.max(6,Math.max.apply(null,a));
++    c.x.beginPath(); a.forEach(function(v,i){var X=i/(HIST-1)*c.w,Y=c.h-(v/mx)*c.h*.92; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y);}); c.x.lineTo(c.w,c.h); c.x.lineTo(0,c.h); c.x.closePath();
++    var g=c.x.createLinearGradient(0,0,0,c.h); g.addColorStop(0,"rgba(225,6,0,.34)"); g.addColorStop(1,"rgba(225,6,0,0)"); c.x.fillStyle=g; c.x.fill();
++    c.x.beginPath(); a.forEach(function(v,i){var X=i/(HIST-1)*c.w,Y=c.h-(v/mx)*c.h*.92; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y);}); c.x.strokeStyle="#E10600"; c.x.lineWidth=1.6; c.x.stroke(); }
++
++  // ---- controls ----
++  var timer=null, ms=500, live=true;
++  function start(){ stop(); if(live){ fetchOnce(); timer=setInterval(fetchOnce,ms); } document.getElementById("gtag").textContent="window "+Math.round(HIST*ms/1000)+" s"; }
++  function stop(){ if(timer){clearInterval(timer);timer=null;} }
++  document.getElementById("rate").addEventListener("click",function(e){ var b=e.target.closest("button"); if(!b)return; ms=+b.getAttribute("data-ms"); document.querySelectorAll("#rate button").forEach(function(x){x.classList.toggle("on",x===b);}); start(); });
++  var lb=document.getElementById("livebtn");
++  lb.addEventListener("click",function(){ live=!live; lb.classList.toggle("paused",!live); lb.childNodes[1].textContent=live?"LIVE":"PAUSED"; live?start():stop(); });
++  document.addEventListener("visibilitychange",function(){ document.hidden?stop():(live&&start()); });
++  start();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index b2c1941d82..39254ed610 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -123,6 +123,7 @@ define(function(){
+ 					   superseded by Reaper_QoS -> removed here and URL-suppressed in
+ 					   reaper_inject.c (redirect to the reaper page). */
+ 					{url: "Reaper_QoS.asp", tabName: "<#menu5_3_2#>"},
++					{url: "Reaper_QoSDiag.asp", tabName: "QoS Diagnostics"},
+ 					{url: "AdaptiveQoS_ROG.asp", tabName: "<table style='margin-top:-7px;'><tr><td><img src='/images/ROG_Logo.png' style='border:0px;width:32px;'></td><td>ROG First</td></tr></table>"},
+ 					{url: "Main_Spectrum_Content.asp", tabName: "<#Spectrum_title#>"},
+ 					{url: "AdaptiveQoS_InternetSpeed.asp", tabName: "<#InternetSpeed#>"},
+-- 
+2.25.1
+

@@ -1,0 +1,120 @@
+From fb971488a86272224d6ccf78e2dbf1ceea4e439b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 1 Aug 2026 13:59:23 -0400
+Subject: [PATCH] reaper v2.0.2: fix Samba 4 account enrollment (smbpasswd
+ path), clean share names, GUI login prompt
+
+ROOT CAUSE of "account-mode SMB never authenticates" (empty passdb every boot):
+start_samba() enrolls accounts via system("/usr/sbin/smbpasswd ...") but Samba 4
+installs smbpasswd to /usr/bin, not /usr/sbin. Every enrollment returned 127 (not
+found) and wrote nothing, so /etc/samba/smbpasswd was empty on every boot -> all
+account logins failed -> sessions fell to guest -> "Encryption is not supported for
+guest access". Supersedes a25d901712 (that added -c to a path that did not exist).
+
+- rc/usb.c: repath the 3 SAMBA4 smbpasswd calls /usr/sbin -> /usr/bin (nobody, PMS
+  loop, acc_list loop). Only the RTCONFIG_SAMBA4 branches; SAMBA36X/#else untouched.
+- libdisk/write_smb_conf.c: account mode map to guest = Never (was Bad User) so an
+  uncredentialed client gets a login prompt instead of the guest-encryption error.
+  Share/guest mode (st_samba_mode 1/3) unchanged.
+- shared/defaults.c: smbd_simpler_naming default 1 (was 0) -> share names drop the
+  "(at DISK)" suffix when the folder name is unique across disks (collision-safe;
+  GUI toggle still lets users revert).
+- www/Advanced_AiDisk_samba.asp: remove dead inner-if that only called the removed
+  #smbv1_hint element.
+- version.conf: EXTENDNO Reaper_v2.0.1 -> Reaper_v2.0.2
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                      | 2 +-
+ release/src/router/libdisk/write_smb_conf.c      | 2 +-
+ release/src/router/rc/usb.c                      | 6 +++---
+ release/src/router/shared/defaults.c             | 2 +-
+ release/src/router/www/Advanced_AiDisk_samba.asp | 3 ---
+ 5 files changed, 6 insertions(+), 9 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 6e4696c66f..466ebae29e 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.0.1
++EXTENDNO=Reaper_v2.0.2
+ 
+ RCNO=0
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index 0b2941ad25..57b748b79c 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -415,7 +415,7 @@ int main(int argc, char *argv[])
+ 			){
+ 		fprintf(fp, "security = USER\n");
+ 		fprintf(fp, "guest ok = no\n");
+-		fprintf(fp, "map to guest = Bad User\n");
++		fprintf(fp, "map to guest = Never\n");
+ 	}
+ 	// share mode
+ 	else if(st_samba_mode == 1 || st_samba_mode == 3){
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 72b21e3420..6e257cc274 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3574,7 +3574,7 @@ start_samba(void)
+ 	//system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -s -a nobody");
+ 	system("/usr/sbin/smbpasswd nobody \"\"");
+ #elif defined(RTCONFIG_SAMBA4)
+-	system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a nobody");
++	system("echo -e \"\n\n\" |/usr/bin/smbpasswd -c /etc/smb.conf -s -a nobody");
+ #else
+ 	system("smbpasswd nobody \"\"");
+ #endif
+@@ -3611,7 +3611,7 @@ start_samba(void)
+ 		//snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ 		snprintf(cmd, sizeof(cmd), "/usr/sbin/smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #elif defined(RTCONFIG_SAMBA4)
+-		snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
++		snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/bin/smbpasswd -c /etc/smb.conf -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ #else
+ 		snprintf(cmd, sizeof(cmd), "smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #endif
+@@ -3666,7 +3666,7 @@ start_samba(void)
+ 			//snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ 			snprintf(cmd, sizeof(cmd), "/usr/sbin/smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #elif defined(RTCONFIG_SAMBA4)
+-			snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
++			snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/bin/smbpasswd -c /etc/smb.conf -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ #else
+ 			snprintf(cmd, sizeof(cmd), "smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #endif
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 2307b0ce7f..a055eee1b7 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5144,7 +5144,7 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 
+ #ifdef RTCONFIG_USB
+-	{ "smbd_simpler_naming", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "smbd_simpler_naming", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "smbd_protocol", "2", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* SAMBA36X: 0=SMB1,1=SMB2,2=SMB1+SMB2. SAMBA4: 1=SMB2,2=SMB2+SMB3(default),3=SMB3-only+encrypt */
+ #endif
+ 
+diff --git a/release/src/router/www/Advanced_AiDisk_samba.asp b/release/src/router/www/Advanced_AiDisk_samba.asp
+index 1c251ba911..d6687c48eb 100644
+--- a/release/src/router/www/Advanced_AiDisk_samba.asp
++++ b/release/src/router/www/Advanced_AiDisk_samba.asp
+@@ -79,9 +79,6 @@ function initial(){
+ 	var sambainfo = httpApi.hookGet("get_SambaInfo");
+ 	if(sambainfo != undefined && sambainfo != ""){
+ 		var vernums = sambainfo.replace("Version", "").trim().split(".");
+-		if(parseInt(vernums[0]) >= 3 && parseInt(vernums[1]) >= 6){
+-			$("#smbv1_hint").remove();
+-		}
+ 	}
+ 
+ 
+-- 
+2.25.1
+

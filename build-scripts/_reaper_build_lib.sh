@@ -32,7 +32,7 @@ _rb_variant() {   # $1 = MCP|noMCP
   nice make "$TARGET" FORCE=1 -j1 >/dev/null 2>&1; echo "[$label] pass1_exit=$?"
   echo "=== [$label] make $TARGET pass2 $(date) ==="
   nice make "$TARGET" FORCE=1 -j1; echo "[$label] MAKE_EXIT=$?"
-  cd "$R"
+  cd "$R" || return 1
 }
 
 reaper_ship() {   # $1 = VER

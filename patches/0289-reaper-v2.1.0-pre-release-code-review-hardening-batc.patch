@@ -1,0 +1,369 @@
+From 57fed00617d6aaeafb3223c6be4726553942379a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 2 Aug 2026 12:36:07 -0400
+Subject: [PATCH] reaper v2.1.0: pre-release code-review hardening batch
+ (be96u)
+
+Six-agent pre-release audit of reaper-authored code (~13k LOC). No Critical/High.
+Applied the robustness+hardening fix set; owner deferred Tier-3 i18n + LATENT
+defense-in-depth items to backlog. Fixes:
+
+- httpd/web.c do_reaper_qdiag_cgi: 5 nvram QoS values now emitted via gk_json_esc
+  (JSON-string escaping parity with the tm field; added a forward decl of
+  gk_json_esc so qdiag, which precedes its definition, can call it).
+- httpd/web.c do_reaper_conn_cgi: /proc/fcache/nflist read is now single-flighted
+  via flock(/tmp/reaper_conn.lock, LOCK_EX|LOCK_NB) - one in-flight reader across
+  httpd children; a contended tick emits an empty flows[] and retries. Mitigates
+  the accelerator-/proc reader class that wedged the box under concurrent polling.
+  Also dropped the dead 'swb' store (sscanf %llu->%*llu, 7->6 captures).
+- httpd/web.c do_reaper_wifi_cgi: 'status' action moved out of the token-free set
+  (it popen()s wl chanspec per radio; token-free status was CSRF subprocess
+  amplification). Reaper_Wireless.asp: both action=status calls carry reaperTok().
+- httpd/web.c gk_emit_seen + gk status + do_reaper_mcp_cgi status: 'band' (x2) and
+  rmcp_client now emitted via gk_json_esc (were raw %s; a stray quote broke
+  JSON.parse of the whole status response).
+- httpd/web.c gk_baseline_snapshot: gk_rl read-modify-write wrapped in the same
+  /tmp/gk/rl.lock the sibling writer uses.
+- httpd/web.c do_reaper_dev_cgi: removed a dead per-device loop (dyn/resv_in were
+  computed then (void)-discarded).
+- httpd/web.c: PII scrub - a sample station MAC in an rdev_sta_mld comment ->
+  AA:BB:CC:DD:EE:FF (the only PII hit found in the entire reaper surface).
+- rc/rwatch.c: the kernel-facing GDX/FPM /proc probes (skb_idx pool check + the
+  incident-dump gdx/fpm cats) are now OPT-IN via nvram rwatch_gdx (default 0=off);
+  pure-userspace probes (wan-gw ping, loopback DNS, warden canary) stay default-on.
+  skb_idx is not yet field-proven non-destructive under sustained polling.
+
+Version bump Reaper_v2.0.8 -> Reaper_v2.1.0.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                |  2 +-
+ release/src/router/httpd/web.c             | 95 ++++++++++++++--------
+ release/src/router/rc/rwatch.c             | 27 +++---
+ release/src/router/www/Reaper_Wireless.asp |  4 +-
+ 4 files changed, 82 insertions(+), 46 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index e65ae4570b..1f298c41bd 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.0.8
++EXTENDNO=Reaper_v2.1.0
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f6503aaddb..93998188bb 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21730,6 +21730,9 @@ do_reaper_qos_stats_cgi(char *url, FILE *stream)
+  * only worked through an untracked /bin/bs wrapper that a rebuild can drop.
+  * The id is digit-validated before interpolation; the command is otherwise a
+  * fixed literal (injection-safe, same model as do_reaper_traffic_cgi). */
++/* forward decl: gk_json_esc is defined further down, but the qdiag config fields
++ * need the same JSON-string escaping for parity (pre-release audit 2026-08-02). */
++static void gk_json_esc(FILE *stream, const char *s);
+ static void
+ do_reaper_qdiag_cgi(char *url, FILE *stream)
+ {
+@@ -21737,13 +21740,17 @@ do_reaper_qdiag_cgi(char *url, FILE *stream)
+ 	char sid[16], cmd[128], *e;
+ 	int c;
+ 
+-	websWrite(stream,
+-		"{\"qos_enable\":%d,\"qos_type\":%d,\"qos_obw\":\"%s\",\"qos_orates\":\"%s\","
+-		"\"qos_sched\":\"%s\",\"qos_default\":\"%s\",\"qos_l4s\":\"%s\"",
+-		nvram_get_int("qos_enable"), nvram_get_int("qos_type"),
+-		nvram_safe_get("qos_obw"), nvram_safe_get("qos_orates"),
+-		nvram_safe_get("qos_sched"), nvram_safe_get("qos_default"),
+-		nvram_safe_get("qos_l4s"));
++	websWrite(stream, "{\"qos_enable\":%d,\"qos_type\":%d,\"qos_obw\":",
++		nvram_get_int("qos_enable"), nvram_get_int("qos_type"));
++	gk_json_esc(stream, nvram_safe_get("qos_obw"));
++	websWrite(stream, ",\"qos_orates\":");
++	gk_json_esc(stream, nvram_safe_get("qos_orates"));
++	websWrite(stream, ",\"qos_sched\":");
++	gk_json_esc(stream, nvram_safe_get("qos_sched"));
++	websWrite(stream, ",\"qos_default\":");
++	gk_json_esc(stream, nvram_safe_get("qos_default"));
++	websWrite(stream, ",\"qos_l4s\":");
++	gk_json_esc(stream, nvram_safe_get("qos_l4s"));
+ 
+ 	sid[0] = '\0';
+ 	if ((f = fopen("/var/bdmf_sh_id", "r")) != NULL) {
+@@ -21794,7 +21801,7 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 	char line[1024];
+ 	uint32_t lan_net = 0, lan_mask = 0;
+ 	struct in_addr ia;
+-	int first;
++	int first, cf;
+ 
+ 	if (inet_aton(nvram_safe_get("lan_ipaddr"), &ia)) lan_net = ntohl(ia.s_addr);
+ 	if (inet_aton(nvram_safe_get("lan_netmask"), &ia)) lan_mask = ntohl(ia.s_addr);
+@@ -21817,11 +21824,24 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 	}
+ 	websWrite(stream, "},\"flows\":[");
+ 
++	/* single-flight the /proc/fcache/nflist read (pre-release audit 2026-08-02):
++	 * this Runner accelerator surface is the same family as the shelved wifi-accel
++	 * /proc readers that wedged the box under sustained/concurrent CGI polling. A
++	 * non-blocking lock caps it to one in-flight reader across httpd children; a
++	 * contended tick just emits an empty flows[] and retries on the next poll. */
+ 	first = 1;
+-	if ((f = fopen("/proc/fcache/nflist", "r")) != NULL) {
++	cf = open("/tmp/reaper_conn.lock", O_CREAT | O_RDWR, 0600);
++	if (cf >= 0 && flock(cf, LOCK_EX | LOCK_NB) != 0) {
++		close(cf);
++		cf = -1;
++		f = NULL;
++	} else {
++		f = fopen("/proc/fcache/nflist", "r");
++	}
++	if (f != NULL) {
+ 		while (fgets(line, sizeof(line), f)) {
+ 			int flowid = 0, prot = 0, sp = 0, dp = 0, iq = 0, dscp;
+-			unsigned long long tot = 0, tbytes = 0, swb = 0, hw = 0, sw;
++			unsigned long long tot = 0, tbytes = 0, hw = 0, sw;
+ 			char swstr[24], sip[24], dip[24], tos[16] = "00", nfc[40] = "0";
+ 			char *p, *q, *gt, *m1, *m2, *mg;
+ 			uint32_t sipn;
+@@ -21830,8 +21850,8 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 			 * SW_TotalBytes, [HW_tpl Fhw_idx HW_Hits] HW_TotHits, [HW_TotalBytes
+ 			 * L1-Info X] Prot   (verified column offsets) */
+ 			if (sscanf(line,
+-				"%d %*s %*s %*s %*s %*s %llu %llu %23s %llu %*s %*s %*s %llu %*llu %*s %*d %d",
+-				&flowid, &tot, &tbytes, swstr, &swb, &hw, &prot) != 7)
++				"%d %*s %*s %*s %*s %*s %llu %llu %23s %*llu %*s %*s %*s %llu %*llu %*s %*d %d",
++				&flowid, &tot, &tbytes, swstr, &hw, &prot) != 6)
+ 				continue;			/* header / malformed */
+ 			sw = strtoull(swstr, NULL, 10);		/* strips the trailing ':' */
+ 
+@@ -21863,6 +21883,7 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 		}
+ 		fclose(f);
+ 	}
++	if (cf >= 0) { flock(cf, LOCK_UN); close(cf); }
+ 	websWrite(stream, "]}");
+ }
+ 
+@@ -22421,9 +22442,11 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	/* CSRF: state-changing actions must carry http_id (same guard as the gk/mcp
+ 	 * CGIs). Reaper CGIs aren't in the prebuilt mime_referers[] whitelist, so
+ 	 * referer_check never runs and do_auth alone is cross-site rideable. The
+-	 * read-only actions (status/capdata/scandata/chq) stay token-free; every
+-	 * mutating action (capstart/capstop/scanstart/scanstop/chqset) is gated. */
+-	if (strcmp(act, "status") != 0 && strcmp(act, "capdata") != 0 &&
++	 * file-only reads (capdata/scandata/chq) stay token-free; status is gated too
++	 * because it popen()s 'wl chanspec' per radio - a token-free status was CSRF
++	 * subprocess-amplification (pre-release audit 2026-08-02). Every mutating
++	 * action (capstart/capstop/scanstart/scanstop/chqset) is gated. */
++	if (strcmp(act, "capdata") != 0 &&
+ 	    strcmp(act, "scandata") != 0 && strcmp(act, "chq") != 0) {
+ 		char *hid = get_cgi("http_id");
+ 		char *want = nvram_safe_get("http_id");
+@@ -22821,8 +22844,10 @@ gk_emit_seen(FILE *stream, struct gk_seen *d, int rand_flag)
+ 	gk_json_esc(stream, d->ip);
+ 	websWrite(stream, ",\"host\":");
+ 	gk_json_esc(stream, name);
+-	websWrite(stream, ",\"band\":\"%s\",\"wired\":%d,\"online\":%d,\"first\":%ld,\"last\":%ld",
+-		d->band, d->wired, d->online, d->first, d->last);
++	websWrite(stream, ",\"band\":");
++	gk_json_esc(stream, d->band);
++	websWrite(stream, ",\"wired\":%d,\"online\":%d,\"first\":%ld,\"last\":%ld",
++		d->wired, d->online, d->first, d->last);
+ 	if (rand_flag >= 0)
+ 		websWrite(stream, ",\"rand\":%d", rand_flag);
+ 	websWrite(stream, "}");
+@@ -22866,7 +22891,7 @@ gk_baseline_snapshot(void)
+ 	char line[512];
+ 	char *out, *rl, *q;
+ 	FILE *f;
+-	int n = 0, before = 0;
++	int n = 0, before = 0, lf = -1;
+ 
+ 	out = calloc(1, cap);
+ 	if (!out)
+@@ -22877,6 +22902,11 @@ gk_baseline_snapshot(void)
+ 	 * first, empty-list enable. Existing states/guest expiries are preserved
+ 	 * (gk_seed_add de-dups against whatever is already in `out`), so the admin
+ 	 * and every live client are re-authorized at every activation. */
++	/* serialize the gk_rl RMW against gkd/gk_rl_update via the same /tmp/gk/rl.lock
++	 * (pre-release audit 2026-08-02): the fresh read at enable time must happen
++	 * inside the lock. Skipped if /tmp/gk is absent (degrades to pre-lock behaviour). */
++	lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR, 0600);
++	if (lf >= 0) flock(lf, LOCK_EX);
+ 	rl = nvram_safe_get("gk_rl");
+ 	if (rl[0] && strlen(rl) + 1 < cap)
+ 		strlcpy(out, rl, cap);
+@@ -22937,6 +22967,7 @@ gk_baseline_snapshot(void)
+ 		nvram_set("gk_rl", out);
+ 		logmessage("gatekeeper", "enable baseline: grandfathered %d new device(s), %d total authorized (ARP + DHCP leases + client list)", n - before, n);
+ 	}
++	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
+ 	free(out);
+ }
+ 
+@@ -23021,8 +23052,10 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 					else snprintf(name, sizeof(name), "%s", d->host);
+ 					gk_json_esc(stream, name);
+ 				}
+-				websWrite(stream, ",\"band\":\"%s\",\"wired\":%d,\"online\":%d,\"last\":%ld}",
+-					d->band, d->wired, d->online, d->last);
++				websWrite(stream, ",\"band\":");
++				gk_json_esc(stream, d->band);
++				websWrite(stream, ",\"wired\":%d,\"online\":%d,\"last\":%ld}",
++					d->wired, d->online, d->last);
+ 			}
+ 			free(buf);
+ 		}
+@@ -23232,7 +23265,7 @@ static int rdev_is_rand(const char *mac);
+ 
+ /* Read a station's MLD (Multi-Link Device) MAC from wl sta_info if it is an
+  * affiliated Wi-Fi 7 MLO link. The line is:
+- *     MLO: peer mld address : 78:46:5C:3B:8A:27
++ *     MLO: peer mld address : AA:BB:CC:DD:EE:FF
+  * Only MLO_CAP stations carry it. Returns 1 + fills mld (uppercase) on a hit.
+  * ifname is charset-validated by the caller; mac is validated here. */
+ static int rdev_sta_mld(const char *ifname, const char *mac, char *mld, size_t mldlen)
+@@ -23654,17 +23687,12 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		/* ---- pool / store facts + next free out-of-pool host ---- */
+ 		{
+ 			char *sl = nvram_safe_get("dhcp_staticlist");
+-			int entries = 0, dyn = 0, resv_in = 0;
++			int entries = 0;
+ 			unsigned int subnet_bcast = lan_net | ~lan_mask;
+ 			unsigned int cand, chosen = 0;
+ 			const char *p;
+ 
+ 			for (p = sl; *p; p++) if (*p == '<') entries++;
+-			for (i = 0; i < n; i++) {
+-				unsigned int rip = rdev_ip2u(dev[i].resv_ip);
+-				if (dev[i].resv && rip && dstart && rip >= dstart && rip <= dend) resv_in++;
+-				else if (dev[i].online && dev[i].ip[0] && !dev[i].resv) dyn++;
+-			}
+ 			/* first free host above dhcp_end, still inside the subnet, not taken */
+ 			for (cand = dend + 1; cand < subnet_bcast; cand++) {
+ 				int taken = 0;
+@@ -23683,7 +23711,6 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "\"store\":{\"used\":%d,\"cap\":65535,\"entries\":%d},",
+ 				(int)strlen(sl), entries);
+ 			websWrite(stream, "\"next_free_out\":%u,", chosen ? (chosen & 0xff) : 0);
+-			(void)dyn; (void)resv_in;	/* pool math is finished in the page */
+ 		}
+ 
+ 		/* ---- devices array ---- */
+@@ -24214,13 +24241,15 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 				    nvram_safe_get("rmcp_usb_hash")[0] != 0);
+ 		int tls = (f_exists(HTTPD_CERT) && f_exists(HTTPD_KEY)) ? 1 : 0;
+ 		websWrite(stream, "{\"provisioned\":%d,\"armed\":%d,\"expiry\":%ld,"
+-			"\"now\":%ld,\"port\":%d,\"timeout\":%d,\"lan_ip\":\"%s\","
+-			"\"client\":\"%s\","	/* persisted IP pin so the UI can prefill it (retained once set) */
+-			"\"locked\":%d,\"lock_until\":%ld,\"usb_enrolled\":%d,\"tls\":%d}",
++			"\"now\":%ld,\"port\":%d,\"timeout\":%d,\"lan_ip\":\"%s\",\"client\":",
+ 			provisioned, armed ? 1 : 0, expiry, (long)now,
+ 			atoi(nvram_safe_get("rmcp_port")), atoi(nvram_safe_get("rmcp_timeout")),
+-			nvram_safe_get("lan_ipaddr"),
+-			nvram_safe_get("rmcp_client"),
++			nvram_safe_get("lan_ipaddr"));
++		/* persisted IP pin the UI prefills; escaped for JSON parity with every
++		 * other string field (pre-release audit 2026-08-02) - a stray quote here
++		 * used to break JSON.parse of the whole status response. */
++		gk_json_esc(stream, nvram_safe_get("rmcp_client"));
++		websWrite(stream, ",\"locked\":%d,\"lock_until\":%ld,\"usb_enrolled\":%d,\"tls\":%d}",
+ 			(lock_until > now) ? 1 : 0, lock_until, usb_enrolled, tls);
+ 		return;
+ 	}
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 96ddc0d5a8..450292a967 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -11,10 +11,13 @@
+  *      match a Warden block set (defense-in-depth behind the updater's
+  *      reserved-range filter; on a hit it re-runs the idempotent apply.sh so
+  *      the structural anti-lockout chain order is guaranteed current),
+- *   4. the GDX skb_idx pool: host local TCP rides the GDX accelerator (HTOA
+- *      license), whose 8192-entry pool drains silently when the Runner loop
+- *      wedges - the stock stack has NO watchdog or log for this, so a drained
+- *      pool is otherwise invisible until "the internet is frozen".
++ *   4. the GDX skb_idx pool (OPT-IN, rwatch_gdx=1, default off): host local TCP
++ *      rides the GDX accelerator (HTOA license), whose 8192-entry pool drains
++ *      silently when the Runner loop wedges - the stock stack has NO watchdog or
++ *      log for this, so a drained pool is otherwise invisible until "the internet
++ *      is frozen". Gated because it reads a kernel accelerator /proc surface every
++ *      tick and skb_idx is not yet field-proven safe under sustained polling
++ *      (pre-release audit 2026-08-02, per the shelved wifi-accel reboot lesson).
+  *
+  * Results are a state machine in /tmp/rwatch.state: transitions (and every
+  * 3rd consecutive failing tick) go to syslog with tag "rwatch"; the FIRST
+@@ -24,7 +27,8 @@
+  * incident SSH/GUI were unreachable but LOCAL scripts kept running fine, so
+  * the box can always self-document a wedge even when nobody can log in.
+  *
+- * nvram: rwatch_enable (default 1), rwatch_iv (minutes, 1-30, default 5).
++ * nvram: rwatch_enable (default 1), rwatch_iv (minutes, 1-30, default 5),
++ *        rwatch_gdx (opt-in kernel GDX/FPM /proc probes, default 0 = off).
+  *
+  * reaper v1.9.1 (Device Identity Manager Rung B): this same tick also carries
+  * the opt-in long-term history writer (Reaper_Storage.asp). Guarded by nvram
+@@ -84,6 +88,7 @@ static void rwatch_gen(void)
+ 	  "GW=\"$(nvram get wan0_gateway)\"\n"
+ 	  "{ [ -n \"$GW\" ] && [ \"$GW\" != \"0.0.0.0\" ]; } || GW=\"$(nvram get wan_gateway)\"\n"
+ 	  "LANIP=\"$(nvram get lan_ipaddr)\"\n"
++	  "GDX=\"$(nvram get rwatch_gdx)\"\n"
+ 	  "FAIL=\"\"; CRIT=\"\"\n"
+ 	  "\n"
+ 	  "# 1) first-hop reachability (by IP, two tries)\n"
+@@ -105,8 +110,10 @@ static void rwatch_gen(void)
+ 	  "fi\n"
+ 	  "\n"
+ 	  "# 4) GDX host-TCP pool: 0 available = the silent accelerator-wedge\n"
+-	  "#    signature. Parse tolerantly; skip the check if the format is unknown.\n"
+-	  "if [ -r /proc/gdx/skb_idx ]; then\n"
++	  "#    signature. OPT-IN (rwatch_gdx=1): reads a kernel accelerator /proc\n"
++	  "#    surface every tick; default-off until skb_idx is field-proven non-\n"
++	  "#    destructive under sustained polling (pre-release audit 2026-08-02).\n"
++	  "if [ \"$GDX\" = 1 ] && [ -r /proc/gdx/skb_idx ]; then\n"
+ 	  "  AV=$(grep -i avail /proc/gdx/skb_idx 2>/dev/null | head -1 | sed 's/[^0-9]*\\([0-9][0-9]*\\).*/\\1/')\n"
+ 	  "  case \"$AV\" in\n"
+ 	  "    ''|*[!0-9]*) : ;;\n"
+@@ -122,9 +129,9 @@ static void rwatch_gen(void)
+ 	  "  iptables -nvxL > \"$D/iptables.txt\" 2>&1\n"
+ 	  "  ip6tables -nvxL > \"$D/ip6tables.txt\" 2>&1\n"
+ 	  "  ipset list -t > \"$D/ipset-headers.txt\" 2>&1\n"
+-	  "  [ -r /proc/gdx/skb_idx ] && cat /proc/gdx/skb_idx > \"$D/gdx-skb_idx.txt\" 2>&1\n"
+-	  "  [ -r /proc/gdx/stats ] && cat /proc/gdx/stats > \"$D/gdx-stats.txt\" 2>&1\n"
+-	  "  [ -r /proc/driver/fpm/fpm ] && head -80 /proc/driver/fpm/fpm > \"$D/fpm.txt\" 2>&1\n"
++	  "  [ \"$GDX\" = 1 ] && [ -r /proc/gdx/skb_idx ] && cat /proc/gdx/skb_idx > \"$D/gdx-skb_idx.txt\" 2>&1\n"
++	  "  [ \"$GDX\" = 1 ] && [ -r /proc/gdx/stats ] && cat /proc/gdx/stats > \"$D/gdx-stats.txt\" 2>&1\n"
++	  "  [ \"$GDX\" = 1 ] && [ -r /proc/driver/fpm/fpm ] && head -80 /proc/driver/fpm/fpm > \"$D/fpm.txt\" 2>&1\n"
+ 	  "  fcctl status > \"$D/fcache.txt\" 2>&1\n"
+ 	  "  bpmctl status > \"$D/bpm.txt\" 2>&1\n"
+ 	  "  WANIF=\"$(nvram get wan0_ifname)\"\n"
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 1601ca195a..d6ad7129f7 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -249,7 +249,7 @@ function classify(excl){
+ 
+ function fetchStatus(cb){
+   var x=new XMLHttpRequest();
+-  x.open("GET","/reaper_wifi.cgi?action=status&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=status"+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4) return;
+     try{ST=JSON.parse(x.responseText);}catch(e){ST=null;}
+@@ -404,7 +404,7 @@ function capPoll(){
+       CSV=x.responseText||"";
+       renderCap();
+       var y=new XMLHttpRequest();
+-      y.open("GET","/reaper_wifi.cgi?action=status&_="+Date.now(),true);
++      y.open("GET","/reaper_wifi.cgi?action=status"+reaperTok()+"&_="+Date.now(),true);
+       y.onreadystatechange=function(){
+         if(y.readyState!==4) return;
+         try{ST=JSON.parse(y.responseText);}catch(e){}
+-- 
+2.25.1
+

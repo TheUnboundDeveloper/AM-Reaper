@@ -23,15 +23,29 @@ pages. Full license text: [`LICENSES/OFL-1.1.txt`](LICENSES/OFL-1.1.txt).
 > OFL 1.1 §2 requires the license to travel *with* the font files. Satisfied in
 > **both** the source (this repo's [`LICENSES/OFL-1.1.txt`](LICENSES/OFL-1.1.txt))
 > and the **built image** — patch `0152` (v1.5.0c) installs the OFL text as
-> `www/fonts/OFL.txt`, verified present in the staged image. See
-> [`docs/COMPLIANCE-AUDIT-2026-07-13.md`](docs/COMPLIANCE-AUDIT-2026-07-13.md) item **M1**.
+> `www/fonts/OFL.txt`, verified present in the staged image.
 
 ### Other Reaper assets
 - `www/images/REAPER.png`, `www/images/New_ui/rt_reaper.png`, `www/favicon.ico`,
   `www/images/New_ui/networkmap/white_05.gif` — project artwork supplied by the
   maintainer. See [`LICENSE.reaper`](LICENSE.reaper) § 3(c) (name/logo).
 - `www/images/ASUSLogo.png` (patch `0144`) — an **ASUS-branded** asset. Flagged
-  for trademark review; see COMPLIANCE-AUDIT item **M3**.
+  for trademark review.
+
+### Reaper-added / upgraded software packages
+
+Software components that Reaper **introduces or version-upgrades** beyond the
+upstream tree and that ship in the built image, with the license each carries:
+
+| Component | Version (from) | Introduced by | License |
+|---|---|---|---|
+| **Samba** | 4.15.13a (from upstream 3.6.25) | patches `0225`, `0234` (CVE-2025-9640 backport) | **GPL v3** ([`LICENSES/GPL-3.0.txt`](LICENSES/GPL-3.0.txt)) — the SMB3 file server (RT-BE96U). A **GPLv3** component in the image; complete corresponding source + the GPL v3 § 6 "Installation Information" are provided per [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md) § 5 (buildable + flashable source: `patches/` + [`build-scripts/`](build-scripts/)). |
+| **OpenSSH** `sftp-server` | 9.8p1 (sftp-server target only) | patch `0222` | BSD / ISC ([`LICENSES/OpenSSH.txt`](LICENSES/OpenSSH.txt)) |
+| **net-snmp** | 5.9.4 (from upstream 5.7.2) | patch `0223` | Net-SNMP license, BSD-style ([`LICENSES/Net-SNMP.txt`](LICENSES/Net-SNMP.txt)) |
+| **avahi** | 0.8 (CVE-backport into the upstream avahi) | patch `0071` | LGPL v2.1-or-later ([`LICENSES/LGPL-2.1.txt`](LICENSES/LGPL-2.1.txt)) |
+
+Each package's own in-tree license text is present in the reconstructed source
+tree (pinned upstream + `patches/`); see [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md).
 
 ## 2. Upstream-bundled third-party libraries (from Asuswrt-Merlin / ASUS)
 
@@ -44,9 +58,14 @@ with their own license files in-tree.
 | jsTree | `www/js/jstree/` (`LICENSE-MIT`) | MIT | © 2014 Ivan Bozhanov |
 | Roboto / ROG_Fonts / Xolonium fonts | `www/fonts/` | ASUS-supplied (upstream) | ASUS / respective foundries |
 
-The wider upstream tree contains many additional GPL/BSD/LGPL open-source
-packages (busybox, dnsmasq, openssl, hostapd, etc.); those retain their own
-in-tree license notices and are covered by the GPL source availability in
+The wider upstream tree contains many additional open-source packages under a mix
+of licenses: **GPL v2** (busybox, dnsmasq, iptables, hostapd, …), **GPL v3** (GNU
+**wget**, GNU **nano**), **LGPL v2.1** (**glib**, **avahi**, **libdaemon**, …), and
+BSD/MIT (openssl, net-snmp, …). Each retains its own in-tree license notice; the
+full license texts are collected in [`LICENSES/`](LICENSES/) — [`GPL-3.0.txt`](LICENSES/GPL-3.0.txt),
+[`LGPL-2.1.txt`](LICENSES/LGPL-2.1.txt), [`OFL-1.1.txt`](LICENSES/OFL-1.1.txt) (GPL v2
+is the repo-root [`LICENSE`](LICENSE)) — mapped in [`LICENSES/README.md`](LICENSES/README.md),
+and all are covered by the source availability in
 [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md).
 
 ## 3. Proprietary components — NOT redistributed by this repository
@@ -70,6 +89,3 @@ in this repository. Per the upstream `README.proprietary`
 
 **These carry no redistribution grant.** This repository redistributes none of
 them; they are obtained by the builder from the upstream source / ASUS GPL drop.
-Whether compiled *images* that bundle these components may be publicly
-redistributed is an **open legal question for attorney review**, not resolved
-here — see COMPLIANCE-AUDIT items **B2** and § U.S. Legal Risk.

@@ -2,8 +2,6 @@
 
 This is the **hard-won, known-good** setup for building and modifying this firmware. It exists because getting an Asuswrt-Merlin / Broadcom-HND tree to build is full of non-obvious traps; everything below is something that actually bit us. Follow it and you skip the trial-and-error.
 
-> **Audience:** someone who wants to audit/patch the open-source userspace and produce a flashable RT-BEXXU image, the way the `reaper` hardening work was done.
-
 ---
 
 ## 0. Ground rules (read first)
@@ -210,10 +208,9 @@ What "good" looks like:
 
 - **Fix list / what's been hardened:** [`REAPER-FIXES.md`](REAPER-FIXES.md) (this `docs/` folder)
 - **Release notes (per published image):** [`RELEASE-NOTES.md`](RELEASE-NOTES.md)
-- **Roadmap (package updates, enterprise features):** [`ENTERPRISE-ROADMAP.md`](ENTERPRISE-ROADMAP.md)
 - **The hardening changes:** [`patches/`](../patches/) — applied onto the upstream source (see "Get the inputs" above)
 - **Flashable images:** not in git (build artifacts) — built into `release/src-rt-5.04behnd.4916/targets/96813GW/RT-BEXXU_…_nand_squashfs.pkgtb`, and published on the repo's **GitHub Releases** for end users who only want to flash.
-- **Upstream originals (reference/GPL compliance):** [`LICENSE`](../LICENSE) (repo root), plus `README.proprietary` and `Changelog-3006.txt` in this `docs/` folder
+- **Upstream originals (reference/GPL compliance):** [`LICENSE`](../LICENSE) (repo root), plus `README.proprietary` and `ASUS-Merlin_Changelog-3006.txt` in this `docs/` folder
 
 ---
 

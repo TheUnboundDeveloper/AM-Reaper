@@ -1,13 +1,13 @@
 # Reaper Firmware — Installation & Rollback Guide
 
-**Applies to:** Reaper (Asuswrt‑Merlin 3006.102.8 fork), current release **v2.0.0** (`3006.102.8_Reaper_v2.0.0`), for the **ASUS RT‑BEXXU** (Broadcom BCM4916, WiFi 7). This guide is written for the RT‑BEXXU specifically; Reaper also ships for the sibling BCM4916 models **RT‑BE86U**, **RT‑BE88U**, **GT‑BE98**, and **GT‑BE98 Pro**, and the **same flash and rollback procedure below applies to each — using that model's own image**.
+**Applies to:** Reaper (Asuswrt‑Merlin 3006.102.8 fork), current release **v2.1.0** (`3006.102.8_Reaper_v2.1.0`), for the **ASUS RT‑BEXXU** (Broadcom BCM4916, WiFi 7). This guide is written for the RT‑BEXXU specifically; Reaper also ships for the sibling BCM4916 models **RT‑BE86U**, **RT‑BE88U**, **GT‑BE98**, and **GT‑BE98 Pro**, and the **same flash and rollback procedure below applies to each — using that model's own image**.
 **Status:** DRAFT — user‑facing. Items marked **⚠ VERIFY ON UNIT** are based on general ASUS/Merlin behaviour and should be bench‑confirmed on an actual RT‑BEXXU before this ships publicly.
 
 > **Read first — flash only the image built for your exact model.** These instructions cover the RT‑BEXXU; if you have a sibling model (RT‑BE86U / RT‑BE88U / GT‑BE98 / GT‑BE98 Pro) follow the same steps with that model's image. Flashing an image built for a different model/SoC can brick the router. Do **not** cross‑flash between models. Always keep a stock ASUS firmware file **for your exact model** on hand before you begin (your rollback/rescue image).
 
 ---
 
-## 0. What you’re flashing
+## 1. What you’re flashing
 
 Reaper ships two build variants, each with a matching recovery loader:
 
@@ -25,7 +25,7 @@ Reaper ships two build variants, each with a matching recovery loader:
 
 ---
 
-## 1. Pre‑flight checklist (do this every time)
+## 2. Pre‑flight checklist (do this every time)
 
 1. **Back up your current config.** Web UI → *Administration → Restore/Save/Upload Setting* → **Save**. Store the `.cfg` off the router.
 2. **Download a stock ASUS RT‑BEXXU firmware** from ASUS support and keep it with the Reaper image. This is your rollback and your rescue image. ⚠ VERIFY ON UNIT: confirm it’s the exact RT‑BEXXU file.
@@ -36,7 +36,7 @@ Reaper ships two build variants, each with a matching recovery loader:
 
 ---
 
-## 2. Install — normal path (Web UI)
+## 3. Install — normal path (Web UI)
 
 1. Log into the router (default LAN IP is typically `192.168.1.1`; **⚠ VERIFY ON UNIT**).
 2. Go to **Administration → Firmware Upgrade**.
@@ -57,7 +57,7 @@ A cross‑major upgrade can leave stale nvram. To avoid odd behaviour:
 
 ---
 
-## 3. Install — Rescue Mode (CFE / TFTP) path
+## 4. Install — Rescue Mode (CFE / TFTP) path
 
 Use this if the Web‑UI flash fails, or the router won’t boot normally. This is also the **un‑brick** path (§5).
 
@@ -70,7 +70,7 @@ Use this if the Web‑UI flash fails, or the router won’t boot normally. This 
 
 ---
 
-## 4. Rollback to stock ASUS firmware
+## 5. Rollback to stock ASUS firmware
 
 Rolling back is the same operation as installing, using the **stock ASUS RT‑BEXXU** image instead of Reaper:
 
@@ -82,7 +82,7 @@ There is **no cloud/account tie‑in** to undo — Reaper is de‑clouded, so ro
 
 ---
 
-## 5. Recovery / un‑brick — and what actually bricks
+## 6. Recovery / un‑brick — and what actually bricks
 
 **Physical Reset button (factory reset):** with the router on, hold **Reset** ~10 s until the power LED flashes, then release; it reboots to defaults. ⚠ VERIFY ON UNIT: exact hold time / LED behaviour on the BEXXU.
 
@@ -97,7 +97,7 @@ There is **no cloud/account tie‑in** to undo — Reaper is de‑clouded, so ro
 
 ---
 
-## 6. This‑version security notes for installers
+## 7. This‑version security notes for installers
 
 - **MCP / AI Advisor (standard build):** off by default and **never started at boot**. It only runs after you explicitly *arm* it (with an arming code, optionally a USB key), binds to the LAN only, and pins the client. If you don’t want it present at all, install the **noMCP** variant.
 - **MCP diagnostics tier:** even after arming, the active network‑diagnostics tools (ping/traceroute/DNS/netstat) stay **off until you separately opt in per session**. Leave that opt‑in off unless you’re actively using it.

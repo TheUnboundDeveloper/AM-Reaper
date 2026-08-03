@@ -36,13 +36,20 @@ jobs:
             diff <(echo "$expected") <(echo "$actual") || true
             exit 1
           fi
-          bad=$(grep -L '^From: reaper <theunbounddeveloper@outlook.com>$' *.patch || true)
-          if [ -n "$bad" ]; then
-            echo "::error::patches with an unexpected From: identity (must be reaper <theunbounddeveloper@outlook.com>):"
-            echo "$bad"
+          # Identity rule: Reaper-authored patches use reaper <theunbounddeveloper@outlook.com>;
+          # upstream carry-forward patches (Asuswrt-Merlin cherry-picks, e.g. the 3006.102.8
+          # update in v2.1.2) intentionally KEEP their original upstream authorship for honest
+          # GPL provenance. So we don't require a single identity - we hard-block only the two
+          # bad states we've actually hit: the owner's personal gmail, and the reaper@localhost
+          # default that a From:-normalization miss leaves behind.
+          badid=$(grep -m1 -H '^From: ' *.patch | grep -Ei 'e2hoodyhoo|@localhost' || true)
+          if [ -n "$badid" ]; then
+            echo "::error::patches with a disallowed From: identity (owner gmail or @localhost):"
+            echo "$badid"
             exit 1
           fi
-          echo "OK: $count patches, gapless numbering, single author identity"
+          reaper=$(grep -lE '^From: [0-9a-f]+ reaper <theunbounddeveloper@outlook\.com>$|^From: reaper <theunbounddeveloper@outlook\.com>$' *.patch | wc -l)
+          echo "OK: $count patches, gapless numbering; $reaper Reaper-authored, $((count-reaper)) upstream carry-forward"
 
       - name: PII scan
         run: |

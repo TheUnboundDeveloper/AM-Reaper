@@ -177,25 +177,28 @@ foreach ($group in ($plan | Group-Object Model)) {
 }
 
 # --- 3. Update the machine-readable manifest, merging with any existing entry ---
+# NB: local var must NOT be named $models — PowerShell variable names are
+# case-insensitive, so $models would alias the $Models param (which has a
+# ValidateSet) and reassigning it throws a validation error.
 $manifestPath = Join-Path $RepoRoot 'releases\latest.json'
-$models = [ordered]@{}
+$modelMap = [ordered]@{}
 if (Test-Path $manifestPath) {
     try {
         $prev = Get-Content $manifestPath -Raw | ConvertFrom-Json
         if ($prev.version -eq $Version -and $prev.models) {
-            foreach ($p in $prev.models.PSObject.Properties) { $models[$p.Name] = $p.Value }  # keep models not re-staged this run
+            foreach ($p in $prev.models.PSObject.Properties) { $modelMap[$p.Name] = $p.Value }  # keep models not re-staged this run
         }
     } catch { }
 }
 foreach ($group in ($staged | Group-Object Model | Sort-Object Name)) {
-    $models[$group.Name] = @(
+    $modelMap[$group.Name] = @(
         foreach ($s in $group.Group) {
             [ordered]@{ file = $s.File; sha256 = $s.Sha256; size = $s.Size
                         url = "https://github.com/TheUnboundDeveloper/AM-Reaper/releases/download/$Version-$($PrefixMap[$group.Name])/$($s.File)" }
         }
     )
 }
-$manifest = [ordered]@{ version = $Version; date = (Get-Date -Format 'yyyy-MM-dd'); models = $models }
+$manifest = [ordered]@{ version = $Version; date = (Get-Date -Format 'yyyy-MM-dd'); models = $modelMap }
 [System.IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 6) -replace "`r`n", "`n") + "`n")
 Write-Host "wrote releases/latest.json"
 

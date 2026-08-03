@@ -1,0 +1,1456 @@
+From b2d71338965b22df72cf0c060271907b7a210e08 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Thu, 9 Jul 2026 00:00:32 -0400
+Subject: [PATCH] dropbear: updated to 2026.92
+
+(cherry picked from commit 660179e1cab773ebbe6811863bbf9331c71ee8cf)
+---
+ release/src/router/dropbear/CHANGES           |  85 +++++++++++-
+ release/src/router/dropbear/CONTRIBUTING.md   |  28 ++++
+ release/src/router/dropbear/DEVELOPING.md     |  13 +-
+ release/src/router/dropbear/configure         |  14 +-
+ release/src/router/dropbear/configure.ac      |   8 +-
+ release/src/router/dropbear/debian/changelog  |   6 +
+ release/src/router/dropbear/debian/rules      |   2 +-
+ release/src/router/dropbear/src/cli-auth.c    |   2 +-
+ .../router/dropbear/src/cli-authinteract.c    |   6 +-
+ .../src/router/dropbear/src/cli-authpasswd.c  |  17 +--
+ release/src/router/dropbear/src/cli-runopts.c |   4 +-
+ release/src/router/dropbear/src/cli-session.c |  22 ---
+ release/src/router/dropbear/src/cli-tcpfwd.c  |   2 +-
+ .../src/router/dropbear/src/common-channel.c  |   8 +-
+ release/src/router/dropbear/src/common-kex.c  |   2 +-
+ .../src/router/dropbear/src/common-session.c  |  11 +-
+ release/src/router/dropbear/src/dbrandom.c    |   2 +-
+ release/src/router/dropbear/src/dbutil.c      | 128 +++++++++++++++---
+ release/src/router/dropbear/src/dbutil.h      |   3 +
+ .../src/router/dropbear/src/default_options.h |   9 ++
+ release/src/router/dropbear/src/dropbearkey.c |   2 +-
+ release/src/router/dropbear/src/gensignkey.c  |  46 -------
+ release/src/router/dropbear/src/includes.h    |   2 +
+ release/src/router/dropbear/src/keyimport.c   |  52 +++----
+ release/src/router/dropbear/src/listener.c    |   2 +-
+ release/src/router/dropbear/src/netio.c       |   2 +-
+ release/src/router/dropbear/src/packet.c      |  16 ++-
+ .../src/router/dropbear/src/progressmeter.c   |  32 ++++-
+ release/src/router/dropbear/src/scp.c         |   2 +-
+ release/src/router/dropbear/src/session.h     |   2 +-
+ release/src/router/dropbear/src/sntrup761.c   |   6 +-
+ .../src/router/dropbear/src/svr-authpubkey.c  |  24 ++--
+ .../dropbear/src/svr-authpubkeyoptions.c      |   3 +-
+ release/src/router/dropbear/src/svr-kex.c     |   2 +-
+ release/src/router/dropbear/src/svr-main.c    |   6 +-
+ release/src/router/dropbear/src/svr-runopts.c |  15 +-
+ .../src/router/dropbear/src/svr-streamfwd.c   |   4 +-
+ release/src/router/dropbear/src/sysoptions.h  |  18 ++-
+ 38 files changed, 403 insertions(+), 205 deletions(-)
+ create mode 100644 release/src/router/dropbear/CONTRIBUTING.md
+
+diff --git a/release/src/router/dropbear/CHANGES b/release/src/router/dropbear/CHANGES
+index 533253ae78..9582c8f90b 100644
+--- a/release/src/router/dropbear/CHANGES
++++ b/release/src/router/dropbear/CHANGES
+@@ -1,6 +1,85 @@
++2026.92 - 6 July 2026
++
++Note >> for compatibility/configuration changes
++
++- >> server auth plugins have been deprecated, the configure option
++  has been renamed to --enable-plugin-deprecated.
++  Planned to be removed in future.
++
++- >> Two factor auth "-t" has been deprecated, it now requires
++  a configuration option DEPRECATED_TWO_FACTOR.
++  Planned to be removed in future.
++
++- Security: server: Don't allow -B (accept blank password) with
++  -t (two factor auth). If run with -t and -B a user configured with a
++  blank password would be allowed to log in without pubkey auth.
++  https://github.com/mkj/dropbear/commit/23ec78285639edf068d86bb96f91cba755039740
++  Reported by nvidia
++
++- Security: server: Fix parsing of long authorized_keys lines.
++  The remainder of a long line would be handled as the start of a new line.
++  In the case where external programs add semi-trusted public keys to
++  authorized_keys, a crafted key might bypass restrictions such as "command=".
++  https://github.com/mkj/dropbear/commit/8d8e1930b866eb44135ae393a793cbeb03b6b9d6
++  Reported by nvidia
++
++- >> authorized_keys is now limited to 300 lines.
++
++- server: Prevent unbounded memory use that could be triggered by an
++  authenticated peer. This would require waiting for the server to
++  trigger a rekey, so after 8 hours or transferring 1GB data.
++  Noticed while implementing Sunset SSH, also reported by nvidia
++
++- >> all programs and scp: Disallow following symlinks when writing output
++  files. This could prevent symlink attacks. Writing keys to an untrusted
++  directory is not recommended regardless.
++
++- server: "-o gatewayports=no" was treated as yes.
++
++- server: Disallow -t multifactor with plugins.
++  Plugin interactions with -t are not well tested, plugins may
++  not correctly handle multiple successful authentications.
++  Reported by nvidia
++
++- server: ensure that authorized_keys "permitopen" values are valid
++  ports. 0xffffffff (or signed equivalent) would be accepted as "any port".
++
++- server: fix null pointer segfault when rejecting a stream forward.
++  Found by oss-fuzz
++
++- dropbearconvert: Fix out of bounds read. dropbearconvert would exit
++  normally with an error, does not seem exploitable.
++  Reported by Yiyi Wang, Tsinghua University
++
++- dbclient: Fixed a 1 byte out of bounds write in ssh-askpass handling
++  (not compiled by default)
++
++- server: Increase pubkey query count. The limit added in
++  Dropbear 2026.90 was intended to be 15, but it was only 10.
++  Reported by Rui Salvaterra
++
++- scp: escape terminal control codes from filenames printed by
++  progress (SCPPROGRESS=1, disabled by default).
++  Additional fix from Basavaraj S Maneppagol @basavaraj-sm05
++
++- Fix sntrup/mlkem build on old platforms using debian/ directory
++  packaging. Note that this isn't well maintained, it is better
++  to use upstream Debian packaging if possible.
++
++- Fix compile warning on 32 bit platforms in sntrup
++
++- Suggest libcrypt-dev for crypt() in configure script if it's missing.
++
++- Increase MAX_HOSTKEYS to 6, suggested by Darren Tucker.
++
++- Allow DROPBEAR_ECC_256/384/521 to be specified in localoptions.h
++  Patch from Felipe Moura
++
++- Fix typo in missing hostname message, from Robin Neatherway
++
+ 2026.91 - 10 May 2026
+ 
+-- scp: Fix test for disallowing -r with existing target directory. The logic
++- scp: Fix disallowing -r with existing target directory. The logic
+   introduced in 2026.90 was incorrect, could also disallow non-recursive
+   transfers.
+ 
+@@ -44,7 +123,7 @@
+   Patch from OpenSSH, tracked as CVE-2026-35385
+ 
+ - Security: client/server: Fix close() of a file descriptor from an out-of-bounds
+-  read. This seems dificult to exploit but may have unforseen effects.
++  read. This seems difficult to exploit but may have unforeseen effects.
+   https://github.com/mkj/dropbear/commit/067fd3846c425d1998c7c94d3feafe1f26b514eb
+   Reported by Ankit Singh and @j499261162
+ 
+@@ -137,7 +216,7 @@
+   Affects SSH.NET https://github.com/sshnet/SSH.NET/issues/1671
+   Reported by Rob Hague.
+ 
+-- Ignore -g -s when passwords arent enabled. Patch from Norbert Lange.
++- Ignore -g -s when passwords aren't enabled. Patch from Norbert Lange.
+   Ignore -m (disable MOTD), -j/-k (tcp forwarding) when not enabled.
+ 
+ - Report SIGBUS and SIGTRAP signals. Patch from Loïc Mangeonjean.
+diff --git a/release/src/router/dropbear/CONTRIBUTING.md b/release/src/router/dropbear/CONTRIBUTING.md
+new file mode 100644
+index 0000000000..7ae997f133
+--- /dev/null
++++ b/release/src/router/dropbear/CONTRIBUTING.md
+@@ -0,0 +1,28 @@
++Bug fixes and bug reports to Dropbear are welcome.
++
++New features may be accepted, depending on whether they
++fit with the style of the project. Remember that every new feature
++has maintenance burden and future bug surface.
++
++Concise PR messages and Issues are more likely to be read -
++plain text is usually better than formatted markdown (code
++blocks are an exception).
++
++LLM contributions are not wanted. Please do not open Issues or PRs
++written by LLMs.  
++Do not send any LLM generated security reports without first having a
++person understand the content and confirm that it is valid.
++
++High impact security issues should be reported privately via
++email. Low impact issues can be reported as normal bugs.
++Email is fine if you're uncertain of the impact.
++
++Commit messages should be written to match the style of the project.
++Pay attention to describing the change, and also formatting such
++as line wrapping.
++
++"Fixup" commits shouldn't be pushed to PRs - instead squash and
++rebase the PR as you go. Avoid merging main branch back into a PR
++branch, that makes it more work to rebase later.
++
++[DEVELOPING.md](DEVELOPING.md) has some more notes on style.
+diff --git a/release/src/router/dropbear/DEVELOPING.md b/release/src/router/dropbear/DEVELOPING.md
+index 5ab8c73a30..7b07482db4 100644
+--- a/release/src/router/dropbear/DEVELOPING.md
++++ b/release/src/router/dropbear/DEVELOPING.md
+@@ -10,11 +10,9 @@ Debug symbols can be generated by adding `-g` to `CFLAGS` environment variable.
+ export CFLAGS="$CFLAGS -g"
+ ```
+ 
+-#### File dependencies
+-The GitHub [test build script](./.github/workflows/build.yml) requires the [default_options.h](./src/default_options.h) be at the top of the repository tree.
+-The script uses the file to generate `localoptions.h` with various features enabled/disabled.
++#### Generated files
+ 
+-Following are generated files in the format `<target>: <generator>(<source>)`
++The following are generated files in the format `<target>: <generator>(<source>)`
+ ```
+ - configure: autoconf(configure.ac)
+ - src/config.h.in: autoheader(configure.ac)
+@@ -22,8 +20,15 @@ Following are generated files in the format `<target>: <generator>(<source>)`
+ - Makefile: configure(Makefile.in)
+ - default_options_guard.h: make(default_options.h)
+ ```
++
+ Although generated, the first two files are checked in as they change very infrequently.
+ 
++Dropbear's build system is configured mainly by options in
++[default_options.h](./src/default_options.h)
++
++Options in `builddir/localoptions.h` or `src/distrooptions.h` (if they exist) can override
++the default settings.
++
+ #### Debug printing
+ 
+ Set `#define DEBUG_TRACE 1` in [localoptions.h](./localoptions.h) to enable a `-v` verbose option for dropbear and dbclient.
+diff --git a/release/src/router/dropbear/configure b/release/src/router/dropbear/configure
+index 8867f8a3cf..b8e90be060 100755
+--- a/release/src/router/dropbear/configure
++++ b/release/src/router/dropbear/configure
+@@ -1391,7 +1391,8 @@ Optional Features:
+   --disable-openpty       Don't use openpty, use alternative method
+   --disable-syslog        Don't include syslog support
+   --disable-shadow        Don't use shadow passwords (if available)
+-  --enable-plugin         Enable support for External Public Key
++  --enable-plugin-deprecated
++                          Enable support for External Public Key
+                           Authentication plug-in
+   --enable-fuzz           Build fuzzing. Not recommended for deployment.
+   --enable-bundled-libtom Force using bundled libtomcrypt/libtommath even if a
+@@ -5836,6 +5837,7 @@ printf "%s\n" "$as_me: Using shadow passwords if available" >&6;}
+ fi
+ 
+ 
++# Plugin support will be removed soon. Open a github issue if you're using it.
+ # Check whether --enable-plugin was given.
+ if test ${enable_plugin+y}
+ then :
+@@ -10113,15 +10115,17 @@ fi
+ if test "x$ac_cv_func_getpass" != xyes; then
+ { printf "%s\n" "$as_me:${as_lineno-$LINENO}: " >&5
+ printf "%s\n" "$as_me: " >&6;}
+-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: getpass() not available, dbclient will only have public-key authentication" >&5
+-printf "%s\n" "$as_me: getpass() not available, dbclient will only have public-key authentication" >&6;}
++{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: getpass() not available, dbclient will only have public-key authentication" >&5
++printf "%s\n" "$as_me: WARNING: getpass() not available, dbclient will only have public-key authentication" >&2;}
+ fi
+ 
+ if test "t$found_crypt_func" != there; then
+ { printf "%s\n" "$as_me:${as_lineno-$LINENO}: " >&5
+ printf "%s\n" "$as_me: " >&6;}
+-{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: crypt() not available, dropbear server will not have password authentication" >&5
+-printf "%s\n" "$as_me: crypt() not available, dropbear server will not have password authentication" >&6;}
++{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: crypt() is not available, dropbear server will not have password authentication" >&5
++printf "%s\n" "$as_me: WARNING: crypt() is not available, dropbear server will not have password authentication" >&2;}
++{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: Some platforms require libcrypt-dev package or similar" >&5
++printf "%s\n" "$as_me: Some platforms require libcrypt-dev package or similar" >&6;}
+ fi
+ 
+ { printf "%s\n" "$as_me:${as_lineno-$LINENO}: " >&5
+diff --git a/release/src/router/dropbear/configure.ac b/release/src/router/dropbear/configure.ac
+index bd5dc02500..25a13ee78e 100644
+--- a/release/src/router/dropbear/configure.ac
++++ b/release/src/router/dropbear/configure.ac
+@@ -344,8 +344,9 @@ AC_ARG_ENABLE(shadow,
+ 	]
+ )
+ 
++# Plugin support will be removed soon. Open a github issue if you're using it.
+ AC_ARG_ENABLE(plugin,
+-	[AS_HELP_STRING([--enable-plugin], [Enable support for External Public Key Authentication plug-in])],
++	[AS_HELP_STRING([--enable-plugin-deprecated], [Enable support for External Public Key Authentication plug-in])],
+ 	[
+ 		AC_DEFINE(DROPBEAR_PLUGIN, 1, External Public Key Authentication)
+ 		AC_MSG_NOTICE(Enabling support for External Public Key Authentication)
+@@ -942,12 +943,13 @@ fi
+ 
+ if test "x$ac_cv_func_getpass" != xyes; then
+ AC_MSG_NOTICE()
+-AC_MSG_NOTICE([getpass() not available, dbclient will only have public-key authentication])
++AC_MSG_WARN([getpass() not available, dbclient will only have public-key authentication])
+ fi
+ 
+ if test "t$found_crypt_func" != there; then
+ AC_MSG_NOTICE()
+-AC_MSG_NOTICE([crypt() not available, dropbear server will not have password authentication])
++AC_MSG_WARN([crypt() is not available, dropbear server will not have password authentication])
++AC_MSG_NOTICE([Some platforms require libcrypt-dev package or similar])
+ fi
+ 
+ AC_MSG_NOTICE()
+diff --git a/release/src/router/dropbear/debian/changelog b/release/src/router/dropbear/debian/changelog
+index e273b2a7f7..dab4d2d1b8 100644
+--- a/release/src/router/dropbear/debian/changelog
++++ b/release/src/router/dropbear/debian/changelog
+@@ -1,3 +1,9 @@
++dropbear (2026.92-0.1) unstable; urgency=low
++
++  * New upstream release.
++
++ -- Matt Johnston <matt@ucc.asn.au>  Mon, 6 July 2026 22:51:57 +0800
++
+ dropbear (2026.91-0.1) unstable; urgency=low
+ 
+   * New upstream release.
+diff --git a/release/src/router/dropbear/debian/rules b/release/src/router/dropbear/debian/rules
+index 52e0b0c017..c34ac230f9 100755
+--- a/release/src/router/dropbear/debian/rules
++++ b/release/src/router/dropbear/debian/rules
+@@ -39,7 +39,7 @@ config.status: patch-stamp configure
+ 
+ build: deb-checkdir build-stamp
+ build-stamp: config.status
+-	$(MAKE) CC='$(CC)' LD='$(CC)'
++	$(MAKE)
+ 	touch build-stamp
+ 
+ clean: deb-checkdir deb-checkuid
+diff --git a/release/src/router/dropbear/src/cli-auth.c b/release/src/router/dropbear/src/cli-auth.c
+index fc414f3ab6..9efbe9c438 100644
+--- a/release/src/router/dropbear/src/cli-auth.c
++++ b/release/src/router/dropbear/src/cli-auth.c
+@@ -94,7 +94,7 @@ void recv_msg_userauth_banner() {
+ 		TRACE(("recv_msg_userauth_banner: bannerlen too long: %d", bannerlen))
+ 		truncated = 1;
+ 	} else {
+-		cleantext(banner);
++		cleantext(banner, 1);
+ 
+ 		/* Limit to 24 lines */
+ 		linecount = 1;
+diff --git a/release/src/router/dropbear/src/cli-authinteract.c b/release/src/router/dropbear/src/cli-authinteract.c
+index 6d2fad7a11..8ca3e499eb 100644
+--- a/release/src/router/dropbear/src/cli-authinteract.c
++++ b/release/src/router/dropbear/src/cli-authinteract.c
+@@ -102,13 +102,13 @@ void recv_msg_userauth_info_request() {
+ 	buf_putint(ses.writepayload, num_prompts);
+ 
+ 	if (strlen(name) > 0) {
+-		cleantext(name);
++		cleantext(name, 0);
+ 		fprintf(stderr, "%s", name);
+ 	}
+ 	m_free(name);
+ 
+ 	if (strlen(instruction) > 0) {
+-		cleantext(instruction);
++		cleantext(instruction, 0);
+ 		fprintf(stderr, "%s", instruction);
+ 	}
+ 	m_free(instruction);
+@@ -117,7 +117,7 @@ void recv_msg_userauth_info_request() {
+ 		unsigned int response_len = 0;
+ 		cli_ses.is_trivial_auth = 0;
+ 		prompt = buf_getstring(ses.payload, NULL);
+-		cleantext(prompt);
++		cleantext(prompt, 0);
+ 
+ 		echo = buf_getbool(ses.payload);
+ 
+diff --git a/release/src/router/dropbear/src/cli-authpasswd.c b/release/src/router/dropbear/src/cli-authpasswd.c
+index 91790ce09c..3ff4b5dbf0 100644
+--- a/release/src/router/dropbear/src/cli-authpasswd.c
++++ b/release/src/router/dropbear/src/cli-authpasswd.c
+@@ -28,6 +28,7 @@
+ #include "session.h"
+ #include "ssh.h"
+ #include "runopts.h"
++#include "atomicio.h"
+ 
+ #if DROPBEAR_CLI_PASSWORD_AUTH
+ 
+@@ -48,8 +49,9 @@ static int want_askpass()
+ static char *gui_getpass(const char *prompt) {
+ 
+ 	pid_t pid;
+-	int p[2], maxlen, len, status;
++	int p[2], status;
+ 	static char buf[DROPBEAR_MAX_CLI_PASS + 1];
++	size_t len;
+ 	char* helper = NULL;
+ 
+ 	TRACE(("enter gui_getpass"))
+@@ -87,17 +89,7 @@ static char *gui_getpass(const char *prompt) {
+ 	}
+ 
+ 	close(p[1]);
+-	maxlen = sizeof(buf);
+-	while (maxlen > 0) {
+-		len = read(p[0], buf + sizeof(buf) - maxlen, maxlen);
+-		if (len > 0) {
+-			maxlen -= len;
+-		} else {
+-			if (errno != EINTR)
+-				break;
+-		}
+-	}
+-
++	len = atomicio(read, p[0], buf, sizeof(buf)-1);
+ 	close(p[0]);
+ 
+ 	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+@@ -105,7 +97,6 @@ static char *gui_getpass(const char *prompt) {
+ 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+ 		return(NULL);
+ 
+-	len = sizeof(buf) - maxlen;
+ 	buf[len] = '\0';
+ 	if (len > 0 && buf[len - 1] == '\n')
+ 		buf[len - 1] = '\0';
+diff --git a/release/src/router/dropbear/src/cli-runopts.c b/release/src/router/dropbear/src/cli-runopts.c
+index de931f4f39..95d1928f9b 100644
+--- a/release/src/router/dropbear/src/cli-runopts.c
++++ b/release/src/router/dropbear/src/cli-runopts.c
+@@ -423,7 +423,7 @@ void cli_getopts(int argc, char ** argv) {
+ 
+ 	if (host_arg == NULL) { /* missing hostname */
+ 		printhelp();
+-		dropbear_exit("Remote host needs to provided.");
++		dropbear_exit("Remote host needs to be provided.");
+ 	}
+ 	TRACE(("host is: %s", host_arg))
+ 
+@@ -1066,7 +1066,7 @@ static void add_extendedopt(const char* origstr) {
+ 
+ #if DROPBEAR_CLI_LOCALTCPFWD
+ 	if (match_extendedopt(&optstr, "GatewayPorts") == DROPBEAR_SUCCESS) {
+-		opts.listen_fwd_all = 1;
++		opts.listen_fwd_all = parse_flag_value(optstr);
+ 		return;
+ 	}
+ #endif
+diff --git a/release/src/router/dropbear/src/cli-session.c b/release/src/router/dropbear/src/cli-session.c
+index 09b6818e23..df7e8119f8 100644
+--- a/release/src/router/dropbear/src/cli-session.c
++++ b/release/src/router/dropbear/src/cli-session.c
+@@ -394,28 +394,6 @@ static void cli_remoteclosed() {
+ 	dropbear_exit("Remote closed the connection");
+ }
+ 
+-/* Operates in-place turning dirty (untrusted potentially containing control
+- * characters) text into clean text. 
+- * Note: this is safe only with ascii - other charsets could have problems. */
+-void cleantext(char* dirtytext) {
+-
+-	unsigned int i, j;
+-	char c;
+-
+-	j = 0;
+-	for (i = 0; dirtytext[i] != '\0'; i++) {
+-
+-		c = dirtytext[i];
+-		/* We can ignore '\r's */
+-		if ( (c >= ' ' && c <= '~') || c == '\n' || c == '\t') {
+-			dirtytext[j] = c;
+-			j++;
+-		}
+-	}
+-	/* Null terminate */
+-	dirtytext[j] = '\0';
+-}
+-
+ static void recv_msg_global_request_cli(void) {
+ 	unsigned int wantreply = 0;
+ 
+diff --git a/release/src/router/dropbear/src/cli-tcpfwd.c b/release/src/router/dropbear/src/cli-tcpfwd.c
+index b5f4a55211..c7e1aa725a 100644
+--- a/release/src/router/dropbear/src/cli-tcpfwd.c
++++ b/release/src/router/dropbear/src/cli-tcpfwd.c
+@@ -266,7 +266,7 @@ static int newtcpforwarded(struct Channel * channel) {
+ 
+ 	if (iter == NULL || fwd == NULL) {
+ 		/* We didn't request forwarding on that port */
+-		cleantext(origaddr);
++		cleantext(origaddr, 0);
+ 		dropbear_log(LOG_INFO, "Server sent unrequested forward from \"%s:%d\"", 
+                 origaddr, origport);
+ 		goto out;
+diff --git a/release/src/router/dropbear/src/common-channel.c b/release/src/router/dropbear/src/common-channel.c
+index f86da6ee5d..aea20e5b22 100644
+--- a/release/src/router/dropbear/src/common-channel.c
++++ b/release/src/router/dropbear/src/common-channel.c
+@@ -560,22 +560,22 @@ void setchannelfds(fd_set *readfds, fd_set *writefds, int allow_reads) {
+ 		   && ((ses.dataallowed && allow_reads) || channel->read_mangler)) {
+ 
+ 			if (channel->readfd >= 0) {
+-				FD_SET(channel->readfd, readfds);
++				dropbear_fd_set(channel->readfd, readfds);
+ 			}
+ 			
+ 			if (ERRFD_IS_READ(channel) && channel->errfd >= 0) {
+-					FD_SET(channel->errfd, readfds);
++					dropbear_fd_set(channel->errfd, readfds);
+ 			}
+ 		}
+ 
+ 		/* Stuff from the wire */
+ 		if (channel->writefd >= 0 && cbuf_getused(channel->writebuf) > 0) {
+-				FD_SET(channel->writefd, writefds);
++				dropbear_fd_set(channel->writefd, writefds);
+ 		}
+ 
+ 		if (ERRFD_IS_WRITE(channel) && channel->errfd >= 0 
+ 				&& cbuf_getused(channel->extrabuf) > 0) {
+-				FD_SET(channel->errfd, writefds);
++				dropbear_fd_set(channel->errfd, writefds);
+ 		}
+ 
+ 	} /* foreach channel */
+diff --git a/release/src/router/dropbear/src/common-kex.c b/release/src/router/dropbear/src/common-kex.c
+index a4bf45776a..2aae6aa396 100644
+--- a/release/src/router/dropbear/src/common-kex.c
++++ b/release/src/router/dropbear/src/common-kex.c
+@@ -117,7 +117,7 @@ void send_msg_kexinit() {
+ 
+ }
+ 
+-static void switch_keys() {
++static void switch_keys(void) {
+ 	TRACE2(("enter switch_keys"))
+ 	if (!(ses.kexstate.sentkexinit && ses.kexstate.recvkexinit)) {
+ 		dropbear_exit("Unexpected newkeys message");
+diff --git a/release/src/router/dropbear/src/common-session.c b/release/src/router/dropbear/src/common-session.c
+index 5031c38a90..6108aba51d 100644
+--- a/release/src/router/dropbear/src/common-session.c
++++ b/release/src/router/dropbear/src/common-session.c
+@@ -117,6 +117,7 @@ void common_session_init(int sock_in, int sock_out) {
+ 	ses.lastpacket = 0;
+ 	ses.reply_queue_head = NULL;
+ 	ses.reply_queue_tail = NULL;
++	ses.reply_queue_len = 0;
+ 
+ 	/* set all the algos to none */
+ 	ses.keys = (struct key_context*)m_malloc(sizeof(struct key_context));
+@@ -180,7 +181,7 @@ void session_loop(void(*loophandler)(void)) {
+ 		if (!fuzz.fuzzing) 
+ #endif
+ 		{
+-		FD_SET(ses.signal_pipe[0], &readfd);
++		dropbear_fd_set(ses.signal_pipe[0], &readfd);
+ 		}
+ 
+ 		/* set up for channels which can be read/written */
+@@ -198,13 +199,13 @@ void session_loop(void(*loophandler)(void)) {
+ 		if (ses.sock_in != -1 
+ 			&& (ses.remoteident || isempty(&ses.writequeue)) 
+ 			&& writequeue_has_space) {
+-			FD_SET(ses.sock_in, &readfd);
++			dropbear_fd_set(ses.sock_in, &readfd);
+ 		}
+ 
+ 		/* Ordering is important, this test must occur after any other function
+ 		might have queued packets (such as connection handlers) */
+ 		if (ses.sock_out != -1 && !isempty(&ses.writequeue)) {
+-			FD_SET(ses.sock_out, &writefd);
++			dropbear_fd_set(ses.sock_out, &writefd);
+ 		}
+ 
+ 		val = select(ses.maxfd+1, &readfd, &writefd, NULL, &timeout);
+@@ -442,7 +443,7 @@ static int ident_readln(int fd, char* buf, int count) {
+ 	/* leave space to null-terminate */
+ 	while (pos < count-1) {
+ 
+-		FD_SET(fd, &fds);
++		dropbear_fd_set(fd, &fds);
+ 
+ 		timeout.tv_sec = 1;
+ 		timeout.tv_usec = 0;
+@@ -503,7 +504,7 @@ void ignore_recv_response() {
+ 	TRACE(("Ignored msg_request_response"))
+ }
+ 
+-static void send_msg_keepalive() {
++static void send_msg_keepalive(void) {
+ 	time_t old_time_idle = ses.last_packet_time_idle;
+ 	struct Channel *chan = get_any_ready_channel();
+ 
+diff --git a/release/src/router/dropbear/src/dbrandom.c b/release/src/router/dropbear/src/dbrandom.c
+index 4e0a481046..aa72203602 100644
+--- a/release/src/router/dropbear/src/dbrandom.c
++++ b/release/src/router/dropbear/src/dbrandom.c
+@@ -129,7 +129,7 @@ void addrandom(const unsigned char * buf, unsigned int len)
+ 	sha256_done(&hs, hashpool);
+ }
+ 
+-static void write_urandom()
++static void write_urandom(void)
+ {
+ #if DROPBEAR_FUZZ
+ 	if (fuzz.fuzzing) {
+diff --git a/release/src/router/dropbear/src/dbutil.c b/release/src/router/dropbear/src/dbutil.c
+index a70025ea4b..8626f20442 100644
+--- a/release/src/router/dropbear/src/dbutil.c
++++ b/release/src/router/dropbear/src/dbutil.c
+@@ -520,46 +520,96 @@ out:
+ 	return ret;
+ }
+ 
+-/* get a line from the file into buffer in the style expected for an
++/* Get a line from the file into buffer in the style expected for an
+  * authkeys file.
+- * Will return DROPBEAR_SUCCESS if data is read, or DROPBEAR_FAILURE on EOF.*/
+-/* Only used for ~/.ssh/known_hosts and ~/.ssh/authorized_keys */
+-#if DROPBEAR_CLIENT || DROPBEAR_SVR_PUBKEY_AUTH
++ * Will return DROPBEAR_SUCCESS if data is read, or DROPBEAR_FAILURE on EOF/error.*/
++/* Returns failure if lines are longer than DROPBEAR_MAX_LINE_LENGTH.
++ * A line that doesn't fit in the buffer returns DROPBEAR_SUCCESS with an empty buffer */
+ int buf_getline(buffer * line, FILE * authfile) {
+ 
+ 	int c = EOF;
++	unsigned int pos;
++	int truncated = 0;
+ 
+-	buf_setpos(line, 0);
+ 	buf_setlen(line, 0);
+ 
+-	while (line->pos < line->size) {
+-
++	for (pos = 0; pos < DROPBEAR_MAX_LINE_LENGTH; pos++) {
+ 		c = fgetc(authfile); /*getc() is weird with some uClibc systems*/
+ 		if (c == EOF || c == '\n' || c == '\r') {
+-			goto out;
++			break;
+ 		}
+ 
+-		buf_putbyte(line, (unsigned char)c);
++		if (!truncated && line->len < line->size) {
++			buf_putbyte(line, (unsigned char)c);
++		} else {
++			/* buffer is full, read to EOL and return an empty buffer */
++			truncated = 1;
++			buf_setlen(line, 0);
++		}
+ 	}
+ 
+-	TRACE(("leave getauthline: line too long"))
+-	/* We return success, but the line length will be zeroed - ie we just
+-	 * ignore that line */
+-	buf_setlen(line, 0);
+-
+-out:
+-
++	if (pos >= DROPBEAR_MAX_LINE_LENGTH) {
++		/* Didn't reach end of line, the caller shouldn't continue since
++		 * it will still be mid-line */
++		return DROPBEAR_FAILURE;
++	}
+ 
+-	/* if we didn't read anything before EOF or error, exit */
+ 	if (c == EOF && line->pos == 0) {
++		/* Reached EOF, no buffer data */
+ 		return DROPBEAR_FAILURE;
+-	} else {
+-		buf_setpos(line, 0);
+-		return DROPBEAR_SUCCESS;
+ 	}
+ 
++	buf_setpos(line, 0);
++	return DROPBEAR_SUCCESS;
+ }	
+-#endif
++
++/* Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
++int buf_writefile(buffer * buf, const char * filename, int skip_exist) {
++	int ret = DROPBEAR_FAILURE;
++	int fd = -1;
++
++	fd = open(filename, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW,
++		S_IRUSR | S_IWUSR);
++	if (fd < 0) {
++		/* If generating keys on connection (skip_exist) it's OK to get EEXIST
++		- we probably just lost a race with another connection to generate the key */
++		if (skip_exist && errno == EEXIST) {
++			ret = DROPBEAR_SUCCESS;
++		} else {
++			dropbear_log(LOG_ERR, "Couldn't create new file %s: %s",
++				filename, strerror(errno));
++		}
++
++		goto out;
++	}
++
++	/* write the file now */
++	while (buf->pos != buf->len) {
++		int len = write(fd, buf_getptr(buf, buf->len - buf->pos),
++				buf->len - buf->pos);
++		if (len == -1 && errno == EINTR) {
++			continue;
++		}
++		if (len <= 0) {
++			dropbear_log(LOG_ERR, "Failed writing file %s: %s",
++				filename, strerror(errno));
++			goto out;
++		}
++		buf_incrpos(buf, len);
++	}
++
++	ret = DROPBEAR_SUCCESS;
++
++out:
++	if (fd >= 0) {
++		if (fsync(fd) != 0) {
++			dropbear_log(LOG_ERR, "fsync of %s failed: %s", filename, strerror(errno));
++		}
++		m_close(fd);
++	}
++	return ret;
++}
++
+ 
+ /* make sure that the socket closes */
+ void m_close(int fd) {
+@@ -769,7 +819,7 @@ int fd_read_pending(int fd) {
+ 	struct timeval timeout;
+ 
+ 	DROPBEAR_FD_ZERO(&fds);
+-	FD_SET(fd, &fds);
++	dropbear_fd_set(fd, &fds);
+ 	while (1) {
+ 		timeout.tv_sec = 0;
+ 		timeout.tv_usec = 0;
+@@ -783,6 +833,17 @@ int fd_read_pending(int fd) {
+ 	}
+ }
+ 
++/* FD_SET() wrapper with an overflow check */
++void dropbear_fd_set(int fd, fd_set *set) {
++	if (fd < 0) {
++		return;
++	}
++	if (fd >= FD_SETSIZE) {
++		dropbear_exit("fd limit %d", fd);
++	}
++	FD_SET(fd, set);
++}
++
+ int m_snprintf(char *str, size_t size, const char *format, ...) {
+ 	va_list param;
+ 	int ret;
+@@ -795,3 +856,26 @@ int m_snprintf(char *str, size_t size, const char *format, ...) {
+ 	}
+ 	return ret;
+ }
++
++/* Operates in-place turning dirty text (untrusted potentially containing control
++ * characters) into clean text.
++ * Only ascii (7 bit) characters are allowed.
++ * Set allow_whitespace to allow \n and \t. */
++void cleantext(char* dirtytext, int allow_whitespace) {
++
++	unsigned int i, j;
++	unsigned char c;
++
++	j = 0;
++	for (i = 0; dirtytext[i] != '\0'; i++) {
++
++		c = (unsigned char)dirtytext[i];
++		/* We can ignore '\r's */
++		if ((c >= ' ' && c <= '~') || (allow_whitespace && (c == '\n' || c == '\t'))) {
++			dirtytext[j] = c;
++			j++;
++		}
++	}
++	/* Null terminate */
++	dirtytext[j] = '\0';
++}
+diff --git a/release/src/router/dropbear/src/dbutil.h b/release/src/router/dropbear/src/dbutil.h
+index bfbed7306d..14d7df6aae 100644
+--- a/release/src/router/dropbear/src/dbutil.h
++++ b/release/src/router/dropbear/src/dbutil.h
+@@ -69,6 +69,7 @@ int connect_unix(const char* addr);
+ #endif
+ int buf_readfile(buffer* buf, const char* filename);
+ int buf_getline(buffer * line, FILE * authfile);
++int buf_writefile(buffer * buf, const char * filename, int skip_exist);
+ 
+ void m_close(int fd);
+ void setnonblocking(int fd);
+@@ -76,6 +77,7 @@ void disallow_core(void);
+ int m_str_to_uint(const char* str, unsigned int *val);
+ /* The same as snprintf() but exits rather than returning negative */
+ int m_snprintf(char *str, size_t size, const char *format, ...);
++void cleantext(char* dirtytext, int allow_whitespace);
+ 
+ /* Used to force mp_ints to be initialised */
+ #define DEF_MP_INT(X) mp_int X = {0, 0, 0, NULL}
+@@ -98,6 +100,7 @@ char * expand_homedir_path_home(const char *inpath, const char *homedir);
+ void fsync_parent_dir(const char* fn);
+ 
+ int fd_read_pending(int fd);
++void dropbear_fd_set(int fd, fd_set *set);
+ 
+ #if DROPBEAR_MSAN
+ /* FD_ZERO seems to leave some memory uninitialized. clear it to avoid false positives */
+diff --git a/release/src/router/dropbear/src/default_options.h b/release/src/router/dropbear/src/default_options.h
+index e49dc701ae..ffaf062038 100644
+--- a/release/src/router/dropbear/src/default_options.h
++++ b/release/src/router/dropbear/src/default_options.h
+@@ -403,4 +403,13 @@ runtime with -M. 0 disables this feature. */
+ #define DEFAULT_PATH "/usr/bin:/bin"
+ #define DEFAULT_ROOT_PATH "/usr/sbin:/usr/bin:/sbin:/bin"
+ 
++/* Features pending deletion. These will be removed in a future release
++   since they don't seem to be used much. Open a github issue if you
++   want to keep them.
++ */
++/* Server "-t" two factor auth */
++#define DEPRECATED_TWO_FACTOR 0
++
++/* Plugins are set with configure --enable-plugin-deprecated */
++
+ #endif /* DROPBEAR_DEFAULT_OPTIONS_H_ */
+diff --git a/release/src/router/dropbear/src/dropbearkey.c b/release/src/router/dropbear/src/dropbearkey.c
+index 99e631fbe3..4b1294edc4 100644
+--- a/release/src/router/dropbear/src/dropbearkey.c
++++ b/release/src/router/dropbear/src/dropbearkey.c
+@@ -367,7 +367,7 @@ static void printpubkey(sign_key * key, int keytype, const char * comment, int c
+ 
+ 		/* open() to use O_EXCL, then use a FILE* for fprintf().
+ 		 * dprintf() is only posix2008 onwards */
+-		pubkey_fd = open(filename_pub, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
++		pubkey_fd = open(filename_pub, O_RDWR | O_CREAT | O_NOFOLLOW | O_EXCL,S_IRUSR | S_IWUSR);
+ 		if (pubkey_fd >= 0) {
+ 			/* Convert the fd to a FILE*. The underlying FD is closed
+ 			 * by later fclose() */
+diff --git a/release/src/router/dropbear/src/gensignkey.c b/release/src/router/dropbear/src/gensignkey.c
+index 295211db75..ad62b90fc8 100644
+--- a/release/src/router/dropbear/src/gensignkey.c
++++ b/release/src/router/dropbear/src/gensignkey.c
+@@ -8,52 +8,6 @@
+ #include "signkey.h"
+ #include "dbrandom.h"
+ 
+-/* Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
+-static int buf_writefile(buffer * buf, const char * filename, int skip_exist) {
+-	int ret = DROPBEAR_FAILURE;
+-	int fd = -1;
+-
+-	fd = open(filename, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+-	if (fd < 0) {
+-		/* If generating keys on connection (skip_exist) it's OK to get EEXIST
+-		- we probably just lost a race with another connection to generate the key */
+-		if (skip_exist && errno == EEXIST) {
+-			ret = DROPBEAR_SUCCESS;
+-		} else {
+-			dropbear_log(LOG_ERR, "Couldn't create new file %s: %s",
+-				filename, strerror(errno));
+-		}
+-
+-		goto out;
+-	}
+-
+-	/* write the file now */
+-	while (buf->pos != buf->len) {
+-		int len = write(fd, buf_getptr(buf, buf->len - buf->pos),
+-				buf->len - buf->pos);
+-		if (len == -1 && errno == EINTR) {
+-			continue;
+-		}
+-		if (len <= 0) {
+-			dropbear_log(LOG_ERR, "Failed writing file %s: %s",
+-				filename, strerror(errno));
+-			goto out;
+-		}
+-		buf_incrpos(buf, len);
+-	}
+-
+-	ret = DROPBEAR_SUCCESS;
+-
+-out:
+-	if (fd >= 0) {
+-		if (fsync(fd) != 0) {
+-			dropbear_log(LOG_ERR, "fsync of %s failed: %s", filename, strerror(errno));
+-		}
+-		m_close(fd);
+-	}
+-	return ret;
+-}
+-
+ /* returns 0 on failure */
+ static int get_default_bits(enum signkey_type keytype)
+ {
+diff --git a/release/src/router/dropbear/src/includes.h b/release/src/router/dropbear/src/includes.h
+index 154738a2dd..86a6ca7bf0 100644
+--- a/release/src/router/dropbear/src/includes.h
++++ b/release/src/router/dropbear/src/includes.h
+@@ -184,7 +184,9 @@ typedef u_int32_t uint32_t;
+ #include <dlfcn.h>
+ #endif
+ 
++#ifndef environ
+ extern char** environ;
++#endif
+ 
+ #include "fake-rfc2553.h"
+ 
+diff --git a/release/src/router/dropbear/src/keyimport.c b/release/src/router/dropbear/src/keyimport.c
+index e88ef466f5..bc39904536 100644
+--- a/release/src/router/dropbear/src/keyimport.c
++++ b/release/src/router/dropbear/src/keyimport.c
+@@ -163,36 +163,17 @@ error:
+ static int dropbear_write(const char*filename, sign_key * key) {
+ 
+ 	buffer * buf;
+-	FILE*fp;
+-	int len;
+ 	int ret;
+ 
+ 	buf = buf_new(MAX_PRIVKEY_SIZE);
+ 	buf_put_priv_key(buf, key, key->type);
+-
+-	fp = fopen(filename, "w");
+-	if (!fp) {
+-		ret = 0;
+-		goto out;
+-	}
+-
+ 	buf_setpos(buf, 0);
+-	do {
+-		len = fwrite(buf_getptr(buf, buf->len - buf->pos),
+-				1, buf->len - buf->pos, fp);
+-		buf_incrpos(buf, len);
+-	} while (len > 0 && buf->len != buf->pos);
+-
+-	fclose(fp);
+-
+-	if (buf->pos != buf->len) {
+-		ret = 0;
+-	} else {
+-		ret = 1;
+-	}
+-out:
++	ret = buf_writefile(buf, filename, 0);
+ 	buf_free(buf);
+-	return ret;
++	if (ret == DROPBEAR_SUCCESS) {
++		return 1;
++	}
++	return 0;
+ }
+ 
+ 
+@@ -402,10 +383,8 @@ static struct openssh_key *load_openssh_key(const char *filename)
+ 		errmsg = "Unable to open key file";
+ 		goto error;
+ 	}
+-	if (!fgets(buffer, sizeof(buffer), fp) ||
+-		0 != strncmp(buffer, "-----BEGIN ", 11) ||
+-		0 != strcmp(buffer+strlen(buffer)-17, "PRIVATE KEY-----\n")) {
+-		errmsg = "File does not begin with OpenSSH key header";
++	if (!fgets(buffer, sizeof(buffer), fp)) {
++		errmsg = "Short input";
+ 		goto error;
+ 	}
+ 	if (!strcmp(buffer, "-----BEGIN RSA PRIVATE KEY-----\n"))
+@@ -428,9 +407,9 @@ static struct openssh_key *load_openssh_key(const char *filename)
+ 			errmsg = "Unexpected end of file";
+ 			goto error;
+ 		}
+-		if (0 == strncmp(buffer, "-----END ", 9) &&
+-			0 == strcmp(buffer+strlen(buffer)-17, "PRIVATE KEY-----\n"))
++		if (0 == strncmp(buffer, "-----END ", 9)) {
+ 			break;					   /* done */
++		}
+ 		if ((p = strchr(buffer, ':')) != NULL) {
+ 			if (headers_done) {
+ 				errmsg = "Header found in body of key data";
+@@ -834,7 +813,7 @@ ossh_error:
+ 		p += ret;
+ 		/* id==3 for bit string */
+ 		if (ret < 0 || id != 3 || len < 0 ||
+-			key->keyblob+key->keyblob_len-p < len) {
++			key->keyblob+key->keyblob_len-p < len || len == 0) {
+ 			errmsg = "ASN.1 decoding failure";
+ 			goto error;
+ 		}
+@@ -904,7 +883,7 @@ static int openssh_write(const char *filename, sign_key *key,
+ 	int pos = 0, len = 0, i;
+ 	char *header = NULL, *footer = NULL;
+ 	int ret = 0;
+-	FILE *fp;
++	FILE *fp = NULL;
+ 
+ #if DROPBEAR_DSS
+ 	if (key->type == DROPBEAR_SIGNKEY_DSS) {
+@@ -1096,10 +1075,15 @@ static int openssh_write(const char *filename, sign_key *key,
+ 	if (strlen(filename) == 1 && filename[0] == '-') {
+ 		fp = stdout;
+ 	} else {
+-		fp = fopen(filename, "wb");	  /* ensure Unix line endings */
++		fp = NULL;
++		int fd = open(filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
++			S_IRUSR | S_IWUSR);
++		if (fd >= 0) {
++			fp = fdopen(fd, "wb"); /* ensure Unix line endings */
++		}
+ 	}
+ 	if (!fp) {
+-		fprintf(stderr, "Failed opening output file\n");
++		fprintf(stderr, "Failed opening output file: %s\n", strerror(errno));
+ 		goto error;
+ 	}
+ 	fputs(header, fp);
+diff --git a/release/src/router/dropbear/src/listener.c b/release/src/router/dropbear/src/listener.c
+index 396f81adf9..42178a861e 100644
+--- a/release/src/router/dropbear/src/listener.c
++++ b/release/src/router/dropbear/src/listener.c
+@@ -46,7 +46,7 @@ void set_listener_fds(fd_set * readfds) {
+ 		listener = ses.listeners[i];
+ 		if (listener != NULL) {
+ 			for (j = 0; j < listener->nsocks; j++) {
+-				FD_SET(listener->socks[j], readfds);
++				dropbear_fd_set(listener->socks[j], readfds);
+ 			}
+ 		}
+ 	}
+diff --git a/release/src/router/dropbear/src/netio.c b/release/src/router/dropbear/src/netio.c
+index d5aa0c6884..9dad3c4008 100644
+--- a/release/src/router/dropbear/src/netio.c
++++ b/release/src/router/dropbear/src/netio.c
+@@ -307,7 +307,7 @@ void set_connect_fds(fd_set *writefd) {
+ 			connect_try_next(c);
+ 		}
+ 		if (c->sock >= 0) {
+-			FD_SET(c->sock, writefd);
++			dropbear_fd_set(c->sock, writefd);
+ 		} else {
+ 			/* Final failure */
+ 			if (!c->errstring) {
+diff --git a/release/src/router/dropbear/src/packet.c b/release/src/router/dropbear/src/packet.c
+index 1055588541..942b80571c 100644
+--- a/release/src/router/dropbear/src/packet.c
++++ b/release/src/router/dropbear/src/packet.c
+@@ -278,12 +278,12 @@ static int read_packet_init() {
+ 
+ 	TRACE2(("packet size is %u, block %u mac %u", len, blocksize, macsize))
+ 
+-
+-	/* check packet length */
++	/* check packet length. plen max to catch integer wraparound. */
+ 	if ((len > RECV_MAX_PACKET_LEN) ||
++	    (plen > RECV_MAX_PACKET_LEN) ||
+ 		(plen < blocksize) ||
+ 		(plen % blocksize != 0)) {
+-		dropbear_exit("Integrity error (bad packet size %u)", len);
++		dropbear_exit("Integrity error (bad packet size %u)", plen);
+ 	}
+ 
+ 	if (len > ses.readbuf->size) {
+@@ -475,8 +475,14 @@ static int packet_is_okay_kex(unsigned char type) {
+ 	return 1;
+ }
+ 
+-static void enqueue_reply_packet() {
++static void enqueue_reply_packet(void) {
+ 	struct packetlist * new_item = NULL;
++
++	if (ses.reply_queue_len > MAX_DEFER_REPLY_QUEUE) {
++		/* This limit should never be reached by a normal peer. */
++		dropbear_exit("Full reply queue");
++	}
++
+ 	new_item = m_malloc(sizeof(struct packetlist));
+ 	new_item->next = NULL;
+ 	
+@@ -490,6 +496,7 @@ static void enqueue_reply_packet() {
+ 		ses.reply_queue_head = new_item;
+ 	}
+ 	ses.reply_queue_tail = new_item;
++	ses.reply_queue_len++;
+ }
+ 
+ void maybe_flush_reply_queue() {
+@@ -512,6 +519,7 @@ void maybe_flush_reply_queue() {
+ 		encrypt_packet();
+ 	}
+ 	ses.reply_queue_head = ses.reply_queue_tail = NULL;
++	ses.reply_queue_len = 0;
+ }
+ 	
+ /* encrypt the writepayload, putting into writebuf, ready for write_packet()
+diff --git a/release/src/router/dropbear/src/progressmeter.c b/release/src/router/dropbear/src/progressmeter.c
+index 21a335056d..1ae502510a 100644
+--- a/release/src/router/dropbear/src/progressmeter.c
++++ b/release/src/router/dropbear/src/progressmeter.c
+@@ -55,7 +55,7 @@ static void update_progress_meter(int);
+ 
+ static time_t start;		/* start progress */
+ static time_t last_update;	/* last progress update */
+-static char *file;		/* name of the file being transferred */
++static char *file;		/* name of the file being transferred, malloced */
+ static off_t end_pos;		/* ending position of transfer */
+ static off_t cur_pos;		/* transfer position as of last refresh */
+ static volatile off_t *counter;	/* progress counter */
+@@ -236,11 +236,39 @@ update_progress_meter(int ignore)
+ 	errno = save_errno;
+ }
+ 
++/* Operates in-place turning dirty text (untrusted potentially containing control
++ * characters) into clean text.
++ * Only ascii (7 bit) characters are allowed.
++ * Set allow_whitespace to allow \n and \t. */
++static void cleantext(char* dirtytext, int allow_whitespace) {
++
++	unsigned int i, j;
++	unsigned char c;
++
++	j = 0;
++	for (i = 0; dirtytext[i] != '\0'; i++) {
++
++		c = (unsigned char)dirtytext[i];
++		/* We can ignore '\r's */
++		if ((c >= ' ' && c <= '~') || (allow_whitespace && (c == '\n' || c == '\t'))) {
++			dirtytext[j] = c;
++			j++;
++		}
++	}
++	/* Null terminate */
++	dirtytext[j] = '\0';
++}
++
+ void
+ start_progress_meter(char *f, off_t filesize, off_t *ctr)
+ {
+ 	start = last_update = time(NULL);
+-	file = f;
++	if (file) {
++		xfree(file);
++		file = NULL;
++	}
++	file = xstrdup(f);
++	cleantext(file, 0);
+ 	end_pos = filesize;
+ 	cur_pos = 0;
+ 	counter = ctr;
+diff --git a/release/src/router/dropbear/src/scp.c b/release/src/router/dropbear/src/scp.c
+index 4b4990ea59..023e7f6c03 100644
+--- a/release/src/router/dropbear/src/scp.c
++++ b/release/src/router/dropbear/src/scp.c
+@@ -1281,7 +1281,7 @@ sink(int argc, char **argv, const char *src)
+ 		}
+ 		omode = mode;
+ 		mode |= S_IWUSR;
+-		if ((ofd = open(np, O_WRONLY|O_CREAT, mode)) < 0) {
++		if ((ofd = open(np, O_WRONLY|O_CREAT|O_NOFOLLOW, mode)) < 0) {
+ bad:			run_err("%s: %s", np, strerror(errno));
+ 			continue;
+ 		}
+diff --git a/release/src/router/dropbear/src/session.h b/release/src/router/dropbear/src/session.h
+index 0d25e1b405..c2a8144bad 100644
+--- a/release/src/router/dropbear/src/session.h
++++ b/release/src/router/dropbear/src/session.h
+@@ -66,7 +66,6 @@ void cli_session(int sock_in, int sock_out, struct dropbear_progress_connection
+ void cli_connected(int result, int sock, void* userdata, const char *errstring);
+ void cli_dropbear_exit(int exitcode, const char* format, va_list param) ATTRIB_NORETURN;
+ void cli_dropbear_log(int priority, const char* format, va_list param);
+-void cleantext(char* dirtytext);
+ void kill_proxy_command(void);
+ 
+ /* crypto parameters that are stored individually for transmit and receive */
+@@ -206,6 +205,7 @@ struct sshsession {
+ 	/* a list of queued replies that should be sent after a KEX has
+ 	   concluded (ie, while dataallowed was unset)*/
+ 	struct packetlist *reply_queue_head, *reply_queue_tail;
++	size_t reply_queue_len;
+ 
+ 	void(*remoteclosed)(void); /* A callback to handle closure of the
+ 									  remote connection */
+diff --git a/release/src/router/dropbear/src/sntrup761.c b/release/src/router/dropbear/src/sntrup761.c
+index c4cea2263f..9dd83caae5 100644
+--- a/release/src/router/dropbear/src/sntrup761.c
++++ b/release/src/router/dropbear/src/sntrup761.c
+@@ -1640,9 +1640,9 @@ __attribute__((unused))
+ static inline
+ int crypto_int64_ones_num(crypto_int64 crypto_int64_x) {
+   crypto_int64_unsigned crypto_int64_y = crypto_int64_x;
+-  const crypto_int64 C0 = 0x5555555555555555;
+-  const crypto_int64 C1 = 0x3333333333333333;
+-  const crypto_int64 C2 = 0x0f0f0f0f0f0f0f0f;
++  const crypto_int64 C0 = INT64_C(0x5555555555555555);
++  const crypto_int64 C1 = INT64_C(0x3333333333333333);
++  const crypto_int64 C2 = INT64_C(0x0f0f0f0f0f0f0f0f);
+   crypto_int64_y -= ((crypto_int64_y >> 1) & C0);
+   crypto_int64_y = (crypto_int64_y & C1) + ((crypto_int64_y >> 2) & C1);
+   crypto_int64_y = (crypto_int64_y + (crypto_int64_y >> 4)) & C2;
+diff --git a/release/src/router/dropbear/src/svr-authpubkey.c b/release/src/router/dropbear/src/svr-authpubkey.c
+index 6092abc8b7..183e26167d 100644
+--- a/release/src/router/dropbear/src/svr-authpubkey.c
++++ b/release/src/router/dropbear/src/svr-authpubkey.c
+@@ -68,8 +68,12 @@
+ 
+ #if DROPBEAR_SVR_PUBKEY_AUTH
+ 
+-#define MIN_AUTHKEYS_LINE 10 /* "ssh-rsa AB" - short but doesn't matter */
+-#define MAX_AUTHKEYS_LINE 4200 /* max length of a line in authkeys */
++/* "ssh-rsa AB" - short but doesn't matter */
++#define MIN_AUTHKEYS_LINE 10
++/* Max length of a valid key line in authkeys. A 16384 bit RSA key (ridiculous) is
++ * 2786 bytes.
++ * An addition limit DROPBEAR_MAX_LINE_LENGTH (10000) will stop file parsing entirely */
++#define MAX_AUTHKEYS_LINE 3000
+ 
+ static char * authorized_keys_filepath(void);
+ static int checkpubkey(const char* keyalgo, unsigned int keyalgolen,
+@@ -173,9 +177,9 @@ void svr_auth_pubkey(int valid_user) {
+ 		 * Start counting failures (incrfail) only when it's reaching
+ 		 * the limit.
+ 		 */
+-		unsigned int free_query_limit = 0;
+-			MAX(0, (int)svr_opts.maxauthtries - MAX_PUBKEY_QUERIES);
+-		int incrfail = ses.authstate.serv_pubkey_query_count > free_query_limit;
++		unsigned int free_query_limit =
++			MAX(0, MAX_PUBKEY_QUERIES - (int)svr_opts.maxauthtries);
++		int incrfail = ses.authstate.serv_pubkey_query_count >= free_query_limit;
+ 		send_msg_userauth_failure(0, incrfail);
+ 		ses.authstate.serv_pubkey_query_count++;
+ 		goto out;
+@@ -542,25 +546,25 @@ static int checkpubkey(const char* keyalgo, unsigned int keyalgolen,
+ 	TRACE(("checkpubkey: opened authorized_keys OK"))
+ 
+ 	line = buf_new(MAX_AUTHKEYS_LINE);
+-	line_num = 0;
+ 
+ 	/* iterate through the lines */
+-	do {
++	for (line_num = 1; line_num <= MAX_AUTHKEYS_LINE_COUNT; line_num++) {
+ 		if (buf_getline(line, authfile) == DROPBEAR_FAILURE) {
+ 			/* EOF reached */
+ 			TRACE(("checkpubkey: authorized_keys EOF reached"))
+ 			break;
+ 		}
+-		line_num++;
+ 
+ 		ret = checkpubkey_line(line, line_num, filename, keyalgo, keyalgolen,
+ 			keyblob, keybloblen, ret_options);
+ 		if (ret == DROPBEAR_SUCCESS) {
+ 			break;
+ 		}
++	}
+ 
+-		/* We continue to the next line otherwise */
+-	} while (1);
++	if (line_num > MAX_AUTHKEYS_LINE_COUNT) {
++		TRACE(("authorized_keys line limit"))
++	}
+ 
+ out:
+ 	if (authfile) {
+diff --git a/release/src/router/dropbear/src/svr-authpubkeyoptions.c b/release/src/router/dropbear/src/svr-authpubkeyoptions.c
+index 61b5857c25..0b1cf884b7 100644
+--- a/release/src/router/dropbear/src/svr-authpubkeyoptions.c
++++ b/release/src/router/dropbear/src/svr-authpubkeyoptions.c
+@@ -310,7 +310,8 @@ svr_parse_pubkey_options(buffer *options_buf, int line_num, const char* filename
+ 							valid_option = 1;
+ 							entry->port = PUBKEY_OPTIONS_ANY_PORT;
+ 							TRACE(("local port forwarding allowed to host '%s'", entry->host));
+-						} else if (m_str_to_uint(portstring, &entry->port) == DROPBEAR_SUCCESS) {
++						} else if (m_str_to_uint(portstring, &entry->port) == DROPBEAR_SUCCESS
++							&& entry->port <= 65535) {
+ 							valid_option = 1;
+ 							TRACE(("local port forwarding allowed to host '%s' and port '%u'",
+ 									entry->host, entry->port));
+diff --git a/release/src/router/dropbear/src/svr-kex.c b/release/src/router/dropbear/src/svr-kex.c
+index c066dd816c..44939e008a 100644
+--- a/release/src/router/dropbear/src/svr-kex.c
++++ b/release/src/router/dropbear/src/svr-kex.c
+@@ -114,7 +114,7 @@ void recv_msg_kexdh_init() {
+ 
+ #if DROPBEAR_DELAY_HOSTKEY
+ 
+-static void svr_ensure_hostkey() {
++static void svr_ensure_hostkey(void) {
+ 
+ 	const char* fn = NULL;
+ 	char *expand_fn = NULL;
+diff --git a/release/src/router/dropbear/src/svr-main.c b/release/src/router/dropbear/src/svr-main.c
+index 6373e59de0..40969ff1ee 100644
+--- a/release/src/router/dropbear/src/svr-main.c
++++ b/release/src/router/dropbear/src/svr-main.c
+@@ -162,7 +162,7 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
+ 	}
+ 
+ 	for (i = 0; i < listensockcount; i++) {
+-		FD_SET(listensocks[i], &fds);
++		dropbear_fd_set(listensocks[i], &fds);
+ 	}
+ 
+ #if DROPBEAR_DO_REEXEC
+@@ -211,13 +211,13 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
+ 
+ 		/* listening sockets */
+ 		for (i = 0; i < listensockcount; i++) {
+-			FD_SET(listensocks[i], &fds);
++			dropbear_fd_set(listensocks[i], &fds);
+ 		}
+ 
+ 		/* pre-authentication clients */
+ 		for (i = 0; i < MAX_UNAUTH_CLIENTS; i++) {
+ 			if (childpipes[i] >= 0) {
+-				FD_SET(childpipes[i], &fds);
++				dropbear_fd_set(childpipes[i], &fds);
+ 				maxsock = MAX(maxsock, childpipes[i]);
+ 			}
+ 		}
+diff --git a/release/src/router/dropbear/src/svr-runopts.c b/release/src/router/dropbear/src/svr-runopts.c
+index b5fa462ebc..74eb0c4920 100644
+--- a/release/src/router/dropbear/src/svr-runopts.c
++++ b/release/src/router/dropbear/src/svr-runopts.c
+@@ -38,7 +38,7 @@ static void printhelp(const char * progname);
+ static void addportandaddress(const char* spec);
+ static void loadhostkey(const char *keyfile, int fatal_duplicate);
+ static void addhostkey(const char *keyfile);
+-static void load_banner();
++static void load_banner(void);
+ 
+ static void printhelp(const char * progname) {
+ 
+@@ -85,7 +85,9 @@ static void printhelp(const char * progname) {
+ 					"-s		Disable password logins\n"
+ 					"-g		Disable password logins for root\n"
+ 					"-B		Allow blank password logins\n"
++#if DEPRECATED_TWO_FACTOR
+ 					"-t		Enable two-factor authentication (both password and public key required)\n"
++#endif
+ #endif
+ 					"-T		Maximum authentication tries (default %d)\n"
+ #if DROPBEAR_SVR_LOCALANYFWD
+@@ -344,9 +346,11 @@ void svr_getopts(int argc, char ** argv) {
+ 				case 'B':
+ 					svr_opts.allowblankpass = 1;
+ 					break;
++#if DEPRECATED_TWO_FACTOR
+ 				case 't':
+ 					svr_opts.multiauthmethod = 1;
+ 					break;
++#endif
+ #else
+ 				case 's':
+ 				case 'g':
+@@ -493,6 +497,9 @@ void svr_getopts(int argc, char ** argv) {
+ 	if (svr_opts.multiauthmethod && svr_opts.noauthpass) {
+ 		dropbear_exit("-t and -s are incompatible");
+ 	}
++	if (svr_opts.multiauthmethod && svr_opts.allowblankpass) {
++		dropbear_exit("-t and -B are incompatible");
++	}
+ 
+ 	if (strlen(svr_opts.authorized_keys_dir) == 0) {
+ 		dropbear_exit("Bad -D");
+@@ -500,6 +507,10 @@ void svr_getopts(int argc, char ** argv) {
+ 
+ #if DROPBEAR_PLUGIN
+ 	if (pubkey_plugin) {
++		if (svr_opts.multiauthmethod) {
++			dropbear_exit("-t and plugins are incompatible");
++		}
++
+ 		svr_opts.pubkey_plugin = m_strdup(pubkey_plugin);
+ 		char *args = strchr(svr_opts.pubkey_plugin, ',');
+ 		if (args) {
+@@ -759,7 +770,7 @@ void load_all_hostkeys() {
+ 	}
+ }
+ 
+-static void load_banner() {
++static void load_banner(void) {
+ 	struct stat buf;
+ 	if (stat(svr_opts.bannerfile, &buf) != 0) {
+ 		dropbear_log(LOG_WARNING, "Error opening banner file '%s'",
+diff --git a/release/src/router/dropbear/src/svr-streamfwd.c b/release/src/router/dropbear/src/svr-streamfwd.c
+index f2a5350b18..497a2e3e67 100644
+--- a/release/src/router/dropbear/src/svr-streamfwd.c
++++ b/release/src/router/dropbear/src/svr-streamfwd.c
+@@ -250,7 +250,9 @@ out:
+         /* we only free it if a listener wasn't created, since the listener
+          * has to remember it if it's to be cancelled */
+         m_free(request_path);
+-        m_free(tcpinfo->socket_path);
++        if (tcpinfo) {
++            m_free(tcpinfo->socket_path);
++        }
+         m_free(tcpinfo);
+     }
+ 
+diff --git a/release/src/router/dropbear/src/sysoptions.h b/release/src/router/dropbear/src/sysoptions.h
+index f77134e987..4d45b8f33e 100644
+--- a/release/src/router/dropbear/src/sysoptions.h
++++ b/release/src/router/dropbear/src/sysoptions.h
+@@ -4,7 +4,7 @@
+  *******************************************************************/
+ 
+ #ifndef DROPBEAR_VERSION
+-#define DROPBEAR_VERSION "2026.91"
++#define DROPBEAR_VERSION "2026.92"
+ #endif
+ 
+ #ifndef LOCAL_IDENT
+@@ -163,9 +163,15 @@
+ #define LTM_DESC
+ #endif
+ 
++#ifndef DROPBEAR_ECC_256
+ #define DROPBEAR_ECC_256 (DROPBEAR_ECC)
++#endif
++#ifndef DROPBEAR_ECC_384
+ #define DROPBEAR_ECC_384 (DROPBEAR_ECC)
++#endif
++#ifndef DROPBEAR_ECC_521
+ #define DROPBEAR_ECC_521 (DROPBEAR_ECC)
++#endif
+ 
+ /* Only include necessary ECC curves building libtomcrypt */
+ #define LTC_NO_CURVES
+@@ -255,6 +261,10 @@
+ #define MAX_STRING_LEN (MAX(MAX_CMD_LEN, 2400)) /* Sun SSH needs 2400 for algos,
+                                                    MAX_CMD_LEN is usually longer */
+ 
++/* Count of packets to enqueue deferring while a KEX is in progress.
++ * We wouldn't expect to be anywhere near one-per-channel in normal
++ * operation, this is an upper bound. */
++#define MAX_DEFER_REPLY_QUEUE MAX_CHANNELS
+ 
+ /* Key type sizes are ordered large to small, all are
+  determined empirically, and rounded up */
+@@ -285,7 +295,7 @@
+ #define MAX_KEX_PARTS 1000
+ #endif
+ 
+-#define MAX_HOSTKEYS 4
++#define MAX_HOSTKEYS 6
+ 
+ /* The maximum size of the bignum portion of the kexhash buffer */
+ /* K_S + Q_C + Q_S + K */
+@@ -455,6 +465,10 @@
+ #define DROPBEAR_MULTI 0
+ #endif
+ 
++/* To avoid denial of service */
++#define DROPBEAR_MAX_LINE_LENGTH 10000
++#define MAX_AUTHKEYS_LINE_COUNT 300
++
+ #if !DROPBEAR_SVR_MULTIUSER && DROPBEAR_SVR_DROP_PRIVS
+ #error DROPBEAR_SVR_DROP_PRIVS needs DROPBEAR_SVR_MULTIUSER
+ #endif
+-- 
+2.25.1
+

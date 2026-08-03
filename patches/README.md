@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**289 patches, v1.0 → v2.1.0**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**310 patches, v1.0 → v2.1.2**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (289 patches, v1.0 → v2.1.0)
+## What the series contains (310 patches, v1.0 → v2.1.2)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -361,6 +361,33 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
   status CSRF token, `gk_baseline_snapshot` lock, the GDX/FPM `/proc` probes made opt-in (`rwatch_gdx`),
   plus dead-code removal and a PII-comment scrub.
 
+### v2.1.1 — localization, hardening, UI fixes (`0290`)
+- `0290` — **v2.1.1**: Tier-3 CGI error-string localization (RDEVE_/RADVE_ keys → dict), structural
+  `rmcpd` secret-redaction + truncation-to-valid-JSON, `esc()` defense-in-depth on three pages, the
+  `rwarden` feed load switched to a single `ipset restore` batch, three UI viewport fixes + a "QoS
+  Class" column rename, and a Channel-Lock confirmation dialog.
+
+### v2.1.2 — Asuswrt-Merlin 3006.102.8 carry-forward (`0291`–`0310`)
+Upstream fixes cherry-picked from the final Merlin 3006.102.8 / 3006.102.8_2 releases. **These 19
+patches (`0291`–`0309`) retain their original Asuswrt-Merlin authorship** (Eric Sauvageau, dave14305,
+et al.) rather than the Reaper identity — they are upstream work, carried forward honestly.
+- `0291` — OpenVPN updated to **2.7.5** (the 2.7 line; deprecated server options removed).
+- `0292`–`0293` — dropbear → **2026.94**.
+- `0294`–`0296` — miniupnpd → **2.3.10-g91eeeae**; default `upnp_ssdp_interval` 900 s.
+- `0297` — strongswan build-recipe sync (fixes a missing executable).
+- `0298`–`0301` — webui: drop obsolete USB-modem tweak; Traffic Analyzer no longer tied to the DPI
+  engine; client list re-render replaced with an incremental DOM diff; DHCP export works on iOS.
+- `0302`–`0307` — IPv6 prefix handling: clamp delegated prefix to /64 where appropriate, correct the
+  LAN IPv6 prefix-length reporting, rework the user-defined IPv6 WAN prefix.
+- `0308`–`0309` — webui/rc: restart mastiff when toggling the Asusnat tunnel; DDNS sets the IPv6 flag.
+- `0310` — **v2.1.2**: version bump (Reaper-authored).
+
+> **Reproduction is CI-enforced.** [`../.github/workflows/verify-provenance.yml`](../.github/workflows/verify-provenance.yml)
+> applies this series onto a fresh `a7ebfa133a` and asserts, per release, that `git rev-parse
+> HEAD:release/src/router` equals the tree hash in [`../provenance/manifest.json`](../provenance/manifest.json).
+> The `0290`–`0310` checkpoints were validated to reproduce `3ae0d914…` (v2.1.1) and `b2c357fa…`
+> (v2.1.2); see [`../docs/BUILD-PROVENANCE.md`](../docs/BUILD-PROVENANCE.md).
+
 > **Model scope:** the v1.8.7 → v2.0.x rungs above were developed + shipped RT-BE96U-first; the
 > RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings have since been brought to **v2.1.0** on their
 > own per-model branches (built + shipped, both variants, all 17/17 on the verify gate). This
@@ -376,4 +403,5 @@ The filenames carry the summary; the full per-finding security mapping (CVE-clas
 - Extended through **v1.7.8** (2026-07-25): patches `0216`–`0226` appended from commit `a8d1569017` (the v1.7.7 tip == `0215`) through the v1.7.8 version-bump HEAD, same author normalization and message scrub. Verified `git am --keep-cr` clean onto an `a8d1569017` worktree; the only reproduce-check delta is three vendored `openssh-sftp` documentation files (`README.md`, `SECURITY.md`, `.github/ci-status.md`) intentionally stripped by the `*.md` docs/meta exclusion — no source/code file differs.
 - Extended through **v1.9.7** (2026-07-30): patches `0227`–`0261` (v1.7.9 → v1.9.7) appended from the same commit stack with the same author normalization and message scrub. From **v1.8.7** onward these rungs shipped **RT-BE96U-only** (siblings owed). Re-run the full `git am --keep-cr` reproduce-check before a public release.
 - Extended through **v2.0.0** (2026-08-01): patches `0262`–`0271` (v1.9.8 → v2.0.0) appended from the v1.9.7 tip (`2f84abb9`) through the v2.0.0 tip, same author normalization and message scrub (none needed — author already normalized, no build-path strings). Verified `git am --keep-cr` clean onto a fresh worktree at the v1.9.7 tip with a zero `release/src/router` diff vs the v2.0.0 tip. Still **RT-BE96U-only** (siblings owed).
-- Extended through **v2.1.0** (2026-08-02): patches `0272`–`0289` (v2.0.1 → v2.1.0) appended from the v2.0.0 tip through the v2.1.0 tip (commit `57fed00617`), same author normalization and message scrub, doc hunks excluded. **Reproduce-check status:** the full `git am --keep-cr` byte-for-byte verification is recorded through **v2.0.0** (`0271`); it has **not yet been re-run for `0272`–`0289`**. Before any public release, re-run the full series onto a fresh `a7ebfa133a` worktree and confirm a zero `release/src/router` diff against the v2.1.0 tip. The published series stays the **RT-BE96U** line; the four siblings were then ported to v2.1.0 on their own per-model branches (via `port_sibling_v2` + a dict lockstep sync) and built + shipped, all 17/17 — GT-BE98 Pro converted SAMBA36X→SAMBA4 in the process.
+- Extended through **v2.1.0** (2026-08-02): patches `0272`–`0289` (v2.0.1 → v2.1.0) appended from the v2.0.0 tip through the v2.1.0 tip (commit `57fed00617`), same author normalization and message scrub, doc hunks excluded. The published series stays the **RT-BE96U** line; the four siblings were then ported to v2.1.0 on their own per-model branches (via `port_sibling_v2` + a dict lockstep sync) and built + shipped, all 17/17 — GT-BE98 Pro converted SAMBA36X→SAMBA4 in the process.
+- Extended through **v2.1.2** (2026-08-03): patch `0290` (v2.1.1, Reaper-authored) + patches `0291`–`0310` (the Merlin 3006.102.8 carry-forward — **19 upstream commits keep their original authorship**, plus the v2.1.2 version bump). **Reproduce-check: verified.** Applying `0290` onto the v2.1.0 tip yields `release/src/router` == `3ae0d914…` (v2.1.1) and the full `0291`–`0310` yields `b2c357fa…` (v2.1.2), matching [`../provenance/manifest.json`](../provenance/manifest.json). This is now enforced on every CI run by [`../.github/workflows/verify-provenance.yml`](../.github/workflows/verify-provenance.yml), which reproduces each release's tree from `a7ebfa133a`. RT-BE96U line; the v2.1.1/v2.1.2 sibling fan-out is owed.

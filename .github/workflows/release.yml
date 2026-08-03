@@ -1,21 +1,22 @@
 name: Publish release
 
-# Publishing a Reaper release is now: stage the firmware into releases/
-# (build-scripts/stage_release.ps1), push main, then push a v* tag.
-# This workflow picks up the staged images for that version, verifies their
-# checksums, extracts the CHANGELOG section, and creates the GitHub Release
-# with all firmware assets attached.
+# Releases are PER-MODEL. Publishing is: stage the firmware into releases/
+# (build-scripts/stage_release.ps1), push main, then push a per-model tag of the
+# form  v<version>-<MODEL>  e.g.  v2.1.2-RT-BE96U  /  v2.1.2-GT-BE98_PRO.
+# This workflow parses the version and model out of the tag, picks up that
+# model's staged images, verifies their checksums, extracts the CHANGELOG
+# section, and creates the GitHub Release (titled per model) with that model's
+# firmware attached.
 #
-# workflow_dispatch re-publishes/repairs an EXISTING tag (e.g. re-upload
-# assets after a partial failure).
+# workflow_dispatch re-publishes/repairs an EXISTING per-model tag.
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v*-*']
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Existing tag to (re)publish, e.g. v2.1.0'
+      tag:
+        description: 'Existing per-model tag to (re)publish, e.g. v2.1.2-RT-BE96U'
         required: true
       prerelease:
         description: 'Mark as pre-release'
@@ -30,38 +31,57 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Resolve version
+      - name: Resolve tag, version and model
         id: ver
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ inputs.tag }}"
           else
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            TAG="${GITHUB_REF_NAME}"
           fi
+          # tag = v<X.Y.Z[a]>-<MODEL>; model prefixes contain hyphens/underscores
+          # (RT-BE96U, GT-BE98_PRO), so pull the version by pattern and treat the
+          # remainder as the model.
+          VERSION=$(printf '%s' "$TAG" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+[a-z]?')
+          MODEL="${TAG#${VERSION}-}"
+          if [ -z "$VERSION" ] || [ "$MODEL" = "$TAG" ] || [ -z "$MODEL" ]; then
+            echo "::error::tag '$TAG' is not of the form v<version>-<MODEL> (e.g. v2.1.2-RT-BE96U)"
+            exit 1
+          fi
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "model=$MODEL"     >> "$GITHUB_OUTPUT"
+          echo "resolved: tag=$TAG version=$VERSION model=$MODEL"
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.ver.outputs.version }}
+          ref: ${{ steps.ver.outputs.tag }}
 
-      - name: Collect and verify firmware assets
+      - name: Collect and verify this model's firmware assets
         id: assets
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
+          M="${{ steps.ver.outputs.model }}"
           stage="$RUNNER_TEMP/assets"
           mkdir -p "$stage"
-          dirs=$(find releases -maxdepth 2 -type d -name "*-REAPER-$V" | sort)
-          if [ -z "$dirs" ]; then
-            echo "::error::no releases/*/*-REAPER-$V directories found — run build-scripts/stage_release.ps1 and push before tagging"
+          shopt -s nullglob
+          imgs=(releases/*/*-REAPER-"$V"/"$M"_3006_102.8_Reaper_"$V"_*.pkgtb)
+          if [ ${#imgs[@]} -eq 0 ]; then
+            echo "::error::no images for model '$M' version '$V' under releases/*/*-REAPER-$V/ — stage with build-scripts/stage_release.ps1 and push before tagging"
             exit 1
           fi
-          for d in $dirs; do
-            echo "== $d"
-            (cd "$d" && for s in SHA256SUMS-*.txt; do sha256sum -c "$s"; done)
-            cp "$d"/*.pkgtb "$d"/SHA256SUMS-*.txt "$stage"/
-          done
-          (cd "$stage" && sha256sum *.pkgtb > "SHA256SUMS-$V.txt")
+          d=$(dirname "${imgs[0]}")
+          echo "== $d ($M)"
+          sums=$(ls "$d"/SHA256SUMS-"$M"-Reaper_"$V".txt 2>/dev/null | head -1)
+          if [ -z "$sums" ]; then
+            echo "::error::missing SHA256SUMS-$M-Reaper_$V.txt in $d"
+            exit 1
+          fi
+          # verify only this model's files against its checksum list
+          (cd "$d" && grep -E " ${M}_" "$(basename "$sums")" | sha256sum -c -)
+          cp "${imgs[@]}" "$sums" "$stage"/
           ls -la "$stage"
           echo "stage=$stage" >> "$GITHUB_OUTPUT"
 
@@ -69,6 +89,8 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
+          M="${{ steps.ver.outputs.model }}"
+          TAG="${{ steps.ver.outputs.tag }}"
           REPO="${{ github.repository }}"
           notes="$RUNNER_TEMP/notes.md"
 
@@ -79,26 +101,21 @@ jobs:
             on { print }
           ' docs/CHANGELOG.md > "$notes" || true
           if [ ! -s "$notes" ]; then
-            printf '## Reaper %s\n\nSee [docs/CHANGELOG.md](https://github.com/%s/blob/%s/docs/CHANGELOG.md).\n' "$V" "$REPO" "$V" > "$notes"
+            printf '## Reaper %s\n\nSee [docs/CHANGELOG.md](https://github.com/%s/blob/%s/docs/CHANGELOG.md).\n' "$V" "$REPO" "$TAG" > "$notes"
           fi
 
-          # --- 2. Per-model flashable images + SHA-256 -----------------------------
+          # --- 2. This model's flashable images + SHA-256 --------------------------
           {
-            printf '\n---\n\n## Images & checksums\n\n'
-            printf 'Two flashable images per model: **+ AI Advisor** (default) and **Standard** (`noMCP`, all AI components compiled out entirely). Flash the `*_nand_squashfs.pkgtb` for your model via Administration > Firmware Upgrade.\n'
-            for d in $(find releases -maxdepth 2 -type d -name "*-REAPER-$V" | sort); do
-              sums=$(ls "$d"/SHA256SUMS-*.txt 2>/dev/null | head -1)
-              [ -z "$sums" ] && continue
-              prefix=$(ls "$d"/*_nand_squashfs.pkgtb 2>/dev/null | head -1 | xargs -r -n1 basename | sed 's/_3006.*//')
-              [ -z "$prefix" ] && continue
-              printf '\n### %s\n\n| Variant | File | SHA-256 |\n|---|---|---|\n' "$prefix"
-              while read -r sha file; do
-                [ -z "${file:-}" ] && continue
-                case "$file" in *noMCP*) variant="Standard" ;; *) variant="+ AI Advisor" ;; esac
-                printf '| %s | `%s` | `%s` |\n' "$variant" "$file" "$sha"
-              done < "$sums"
-            done
-            printf '\nVerify a download against the per-model `SHA256SUMS-*.txt` (attached) or the combined `SHA256SUMS-%s.txt`.\n' "$V"
+            printf '\n---\n\n## Images & checksums (%s)\n\n' "$M"
+            printf 'Two flashable images: **+ AI Advisor** (default) and **Standard** (`noMCP`, all AI components compiled out entirely). Flash the `*_nand_squashfs.pkgtb` via Administration > Firmware Upgrade.\n\n'
+            printf '| Variant | File | SHA-256 |\n|---|---|---|\n'
+            sums=$(ls releases/*/*-REAPER-"$V"/SHA256SUMS-"$M"-Reaper_"$V".txt 2>/dev/null | head -1)
+            while read -r sha file; do
+              [ -z "${file:-}" ] && continue
+              case "$file" in *noMCP*) variant="Standard" ;; *) variant="+ AI Advisor" ;; esac
+              printf '| %s | `%s` | `%s` |\n' "$variant" "$file" "$sha"
+            done < "$sums"
+            printf '\nVerify a download against the attached `SHA256SUMS-%s-Reaper_%s.txt`.\n' "$M" "$V"
           } >> "$notes"
 
           # --- 3. Corresponding source, tag-pinned, + reproducibility --------------
@@ -108,18 +125,18 @@ jobs:
           pc=$(jq -r --arg v "$V" '(.releases[] | select(.version==$v) | .patch_count) // empty' provenance/manifest.json 2>/dev/null || true)
           {
             printf '\n---\n\n## Corresponding source & reproducibility\n\n'
-            printf 'Built from this repository **at tag `%s`**: the pinned Asuswrt-Merlin base (`3006.102.8-beta2`, `a7ebfa133a`) plus the complete patch series. The tag freezes the exact source that produced these images.\n\n' "$V"
+            printf 'The **%s** image for `%s` is built from this repository **at tag `%s`**: the pinned Asuswrt-Merlin base (`3006.102.8-beta2`, `a7ebfa133a`) plus the complete patch series. The tag freezes the exact source that produced it.\n\n' "$M" "$V" "$TAG"
             if [ -n "$pc" ]; then
-              printf -- '- **Patches:** [`patches/`](https://github.com/%s/tree/%s/patches) (`0001`-`%04d`)\n' "$REPO" "$V" "$pc"
+              printf -- '- **Patches:** [`patches/`](https://github.com/%s/tree/%s/patches) (`0001`-`%04d`)\n' "$REPO" "$TAG" "$pc"
             else
-              printf -- '- **Patches:** [`patches/`](https://github.com/%s/tree/%s/patches)\n' "$REPO" "$V"
+              printf -- '- **Patches:** [`patches/`](https://github.com/%s/tree/%s/patches)\n' "$REPO" "$TAG"
             fi
-            printf -- '- **Provenance record:** [`provenance/manifest.json`](https://github.com/%s/blob/%s/provenance/manifest.json)\n' "$REPO" "$V"
+            printf -- '- **Provenance record:** [`provenance/manifest.json`](https://github.com/%s/blob/%s/provenance/manifest.json)\n' "$REPO" "$TAG"
             if [ -n "$tree" ]; then
               printf -- '- **Source tree hash** (`release/src/router`): `%s` -- reproduce by `git am --keep-cr` of the patches onto the base, then `git rev-parse HEAD:release/src/router`.\n' "$tree"
             fi
-            printf -- '- **How to verify:** [`docs/REPRODUCIBILITY.md`](https://github.com/%s/blob/%s/docs/REPRODUCIBILITY.md) and [`docs/SOURCE-AVAILABILITY.md`](https://github.com/%s/blob/%s/docs/SOURCE-AVAILABILITY.md)\n' "$REPO" "$V" "$REPO" "$V"
-            printf '\nThe auto-attached **Source code (zip/tar.gz)** asset below is this repository at tag `%s` (patches + docs).\n' "$V"
+            printf -- '- **How to verify:** [`docs/REPRODUCIBILITY.md`](https://github.com/%s/blob/%s/docs/REPRODUCIBILITY.md) and [`docs/SOURCE-AVAILABILITY.md`](https://github.com/%s/blob/%s/docs/SOURCE-AVAILABILITY.md)\n' "$REPO" "$TAG" "$REPO" "$TAG"
+            printf '\nThe auto-attached **Source code (zip/tar.gz)** asset below is this repository at tag `%s` (patches + docs).\n' "$TAG"
           } >> "$notes"
 
       - name: Create or update the GitHub release
@@ -127,22 +144,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
           V="${{ steps.ver.outputs.version }}"
+          M="${{ steps.ver.outputs.model }}"
           stage="${{ steps.assets.outputs.stage }}"
           pre=""
           case "$V" in *alpha*|*beta*|*rc*) pre="--prerelease" ;; esac
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.prerelease }}" = "true" ]; then
             pre="--prerelease"
           fi
-          if gh release view "$V" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "release $V exists — updating notes and re-uploading assets"
-            gh release edit "$V" --repo "${{ github.repository }}" --notes-file "$RUNNER_TEMP/notes.md"
-            gh release upload "$V" "$stage"/* --repo "${{ github.repository }}" --clobber
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "release $TAG exists — updating notes and re-uploading assets"
+            gh release edit "$TAG" --repo "${{ github.repository }}" --title "Reaper $V — $M" --notes-file "$RUNNER_TEMP/notes.md"
+            gh release upload "$TAG" "$stage"/* --repo "${{ github.repository }}" --clobber
           else
-            gh release create "$V" $pre --verify-tag \
+            gh release create "$TAG" $pre --verify-tag \
               --repo "${{ github.repository }}" \
-              --title "Reaper $V" \
+              --title "Reaper $V — $M" \
               --notes-file "$RUNNER_TEMP/notes.md" \
               "$stage"/*
           fi
-          echo "published: https://github.com/${{ github.repository }}/releases/tag/$V"
+          echo "published: https://github.com/${{ github.repository }}/releases/tag/$TAG"

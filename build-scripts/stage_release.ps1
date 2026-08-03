@@ -123,5 +123,9 @@ Write-Host ""
 Write-Host "Staged $($staged.Count) images for $Version." -ForegroundColor Green
 Write-Host "Next steps (run when ready to publish):" -ForegroundColor Cyan
 Write-Host "  git -C `"$RepoRoot`" push origin main"
-Write-Host "  git -C `"$RepoRoot`" tag $Version"
-Write-Host "  git -C `"$RepoRoot`" push origin $Version   # <- this triggers the 'Publish release' workflow"
+Write-Host "  # Releases are PER-MODEL: push one tag v<version>-<MODEL> per model." -ForegroundColor DarkGray
+Write-Host "  # Each tag triggers its own 'Publish release' workflow run." -ForegroundColor DarkGray
+foreach ($m in ($staged | Select-Object -ExpandProperty Model -Unique | Sort-Object)) {
+    $tag = "$Version-$($PrefixMap[$m])"
+    Write-Host "  git -C `"$RepoRoot`" tag $tag && git -C `"$RepoRoot`" push origin $tag"
+}

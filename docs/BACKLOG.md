@@ -149,9 +149,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     **internal-vs-external** indicator, protocol, and **TCP state**. Lighter refresh (no
     need for the sub-second cadence). This is the "quick way to check who my devices are
     talking to" the report praised.
-  - **Advanced:** the existing flow explorer unchanged — fast polling (500 ms / 1 s /
-    **2 s [add]** / 4 s), HW-accel Runner-vs-CPU path badge, DSCP/queue, per-flow detail,
-    top-talker sort.
+  - **Advanced:** the existing flow explorer unchanged — retain the current polling
+    options (500 ms / 1 s / 4 s) and only add an explicit **pause** option to the rate
+    control, HW-accel Runner-vs-CPU path badge, DSCP/queue, per-flow detail, top-talker
+    sort.
   - **Folds in the device-name enhancement ("#3"):** both views should resolve **MAC/IP →
     device name** from the same client-list/networkmap source the Devices page uses. Today
     the explorer shows IPs only (`cli:cp → srv:spt`), which is the one capability Merlin's

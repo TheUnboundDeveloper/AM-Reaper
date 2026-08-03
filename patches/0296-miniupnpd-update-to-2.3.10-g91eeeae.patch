@@ -1,0 +1,760 @@
+From 9cb5d563f4d374e11ae3bc98d024c1fe6ed69735 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Thu, 16 Jul 2026 15:32:46 -0400
+Subject: [PATCH] miniupnpd: update to 2.3.10-g91eeeae
+
+(cherry picked from commit 3f2a352dc71ba04319cdf3f8835298e06c75cf18)
+---
+ .../src/router/miniupnpd-igdv2/Changelog.txt  |  5 ++
+ .../src/router/miniupnpd-igdv2/miniupnpd.c    | 16 ++---
+ .../netfilter_nft/nftnlrdr_misc.c             | 40 +++++++-----
+ .../miniupnpd-igdv2/testupnppermissions.sh    |  6 +-
+ release/src/router/miniupnpd-igdv2/upnphttp.c |  9 ++-
+ .../router/miniupnpd-igdv2/upnppermissions.c  | 63 +++++++++++--------
+ release/src/router/miniupnpd/Changelog.txt    |  5 ++
+ release/src/router/miniupnpd/miniupnpd.c      | 16 ++---
+ .../miniupnpd/netfilter_nft/nftnlrdr_misc.c   | 40 +++++++-----
+ .../router/miniupnpd/testupnppermissions.sh   |  6 +-
+ release/src/router/miniupnpd/upnphttp.c       |  9 ++-
+ .../src/router/miniupnpd/upnppermissions.c    | 63 +++++++++++--------
+ 12 files changed, 172 insertions(+), 106 deletions(-)
+
+diff --git a/release/src/router/miniupnpd-igdv2/Changelog.txt b/release/src/router/miniupnpd-igdv2/Changelog.txt
+index 155580d825..3eb086d1d4 100644
+--- a/release/src/router/miniupnpd-igdv2/Changelog.txt
++++ b/release/src/router/miniupnpd-igdv2/Changelog.txt
+@@ -1,5 +1,10 @@
+ $Id: Changelog.txt,v 1.535 2025/04/26 13:07:53 nanard Exp $
+ 
++2026/06/16:
++  nftables: Avoid building too long rule with
++    nftnl_rule_nlmsg_build_payload() by triming description to 256 chars.
++  HTTPS: Do not abort on SSL errors
++
+ 2026/06/10:
+   Fix heap overflow in PinholeVerification()
+ 
+diff --git a/release/src/router/miniupnpd-igdv2/miniupnpd.c b/release/src/router/miniupnpd-igdv2/miniupnpd.c
+index c483854389..e3df1847a8 100644
+--- a/release/src/router/miniupnpd-igdv2/miniupnpd.c
++++ b/release/src/router/miniupnpd-igdv2/miniupnpd.c
+@@ -948,10 +948,10 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 
+ 	memset(lan_addr, 0, sizeof(struct lan_addr_s));
+ 	p = str;
+-	while(*p && *p != '/' && !isspace(*p)) {
++	while(*p && *p != '/' && !isspace((unsigned char)*p)) {
+ 		if (*p == '.')
+ 			dot_count++;
+-		else if (!isdigit(*p))
++		else if (!isdigit((unsigned char)*p))
+ 			only_digits_and_dots = 0;
+ 		p++;
+ 	}
+@@ -1013,12 +1013,12 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 	if(*p == '/')
+ 	{
+ 		const char * q = ++p;
+-		while(*p && isdigit(*p))
++		while(*p && isdigit((unsigned char)*p))
+ 			p++;
+ 		if(*p=='.')
+ 		{
+ 			/* parse mask in /255.255.255.0 format */
+-			while(*p && (*p=='.' || isdigit(*p)))
++			while(*p && (*p=='.' || isdigit((unsigned char)*p)))
+ 				p++;
+ 			n = p - q;
+ 			if(n >= sizeof(tmp))
+@@ -1044,12 +1044,12 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 	}
+ #ifdef MULTIPLE_EXTERNAL_IP
+ 	/* skip spaces */
+-	while(*p && isspace(*p))
++	while(*p && isspace((unsigned char)*p))
+ 		p++;
+ 	if(*p) {
+ 		/* parse the exteral IP address to associate with this subnet */
+ 		n = 0;
+-		while(p[n] && !isspace(*p))
++		while(p[n] && !isspace((unsigned char)*p))
+ 			n++;
+ 		if(n<=15) {
+ 			memcpy(lan_addr->ext_ip_str, p, n);
+@@ -1074,12 +1074,12 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 	/* add associated network interfaces (for bridges) */
+ 	while(*p) {
+ 		/* skip spaces */
+-		while(*p && isspace(*p))
++		while(*p && isspace((unsigned char)*p))
+ 			p++;
+ 		if(*p) {
+ 			unsigned int index;
+ 			n = 0;
+-			while(p[n] && !isspace(p[n]) && n < sizeof(tmp)) {
++			while(p[n] && !isspace((unsigned char)p[n]) && n < sizeof(tmp)) {
+ 				tmp[n] = p[n];
+ 				n++;
+ 			}
+diff --git a/release/src/router/miniupnpd-igdv2/netfilter_nft/nftnlrdr_misc.c b/release/src/router/miniupnpd-igdv2/netfilter_nft/nftnlrdr_misc.c
+index db24be50d1..38f67e0406 100644
+--- a/release/src/router/miniupnpd-igdv2/netfilter_nft/nftnlrdr_misc.c
++++ b/release/src/router/miniupnpd-igdv2/netfilter_nft/nftnlrdr_misc.c
+@@ -4,7 +4,7 @@
+  * http://miniupnp.free.fr/ or https://miniupnp.tuxfamily.org/
+  * (c) 2015 Tomofumi Hayashi
+  * (c) 2019 Paul Chambers
+- * (c) 2019-2025 Thomas Bernard
++ * (c) 2019-2026 Thomas Bernard
+  *
+  * This software is subject to the conditions detailed
+  * in the LICENCE file provided within the distribution.
+@@ -59,6 +59,12 @@
+ #define log_debug(args...)	syslog(LOG_DEBUG, args)
+ #endif
+ 
++#ifndef MIN
++#define MIN(x,y) (((x)<(y))?(x):(y))
++#endif
++
++/* maximum length of USERDATA, used for description */
++#define NFTNL_RULE_USERDATA_MAX_LEN 256
+ 
+ #define RULE_CACHE_INVALID  0
+ #define RULE_CACHE_VALID    1
+@@ -920,8 +926,9 @@ rule_set_snat(uint8_t family, uint8_t proto,
+ 	nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, nft_postrouting_chain);
+ 
+ 	if (descr != NULL && *descr != '\0') {
++		uint32_t len = strlen(descr);
+ 		nftnl_rule_set_data(r, NFTNL_RULE_USERDATA,
+-							descr, strlen(descr));
++							descr, MIN(len, NFTNL_RULE_USERDATA_MAX_LEN));
+ 	}
+ 
+ 	/* Destination IP */
+@@ -996,8 +1003,9 @@ rule_set_dnat(uint8_t family, const char * ifname, uint8_t proto,
+ 	nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, nft_prerouting_chain);
+ 
+ 	if (descr != NULL && *descr != '\0') {
++		uint32_t len = strlen(descr);
+ 		nftnl_rule_set_data(r, NFTNL_RULE_USERDATA,
+-							descr, strlen(descr));
++							descr, MIN(len, NFTNL_RULE_USERDATA_MAX_LEN));
+ 	}
+ 
+ 	if (handle != NULL) {
+@@ -1159,8 +1167,9 @@ rule_set_filter_common(struct nftnl_rule *r, uint8_t family, const char * ifname
+ 	nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, nft_forward_chain);
+ 
+ 	if (descr != NULL && *descr != '\0') {
++		uint32_t len = strlen(descr);
+ 		nftnl_rule_set_data(r, NFTNL_RULE_USERDATA,
+-							descr, strlen(descr));
++							descr, MIN(len, NFTNL_RULE_USERDATA_MAX_LEN));
+ 	}
+ 
+ 	if (handle != NULL) {
+@@ -1400,20 +1409,23 @@ struct mnl_nlmsg_batch *
+ start_batch(char *buf, size_t buf_size)
+ {
+ 	struct mnl_nlmsg_batch *result;
+-	mnl_seq = time(NULL);
+ 
+ 	if (mnl_sock == NULL) {
+ 		log_error("netlink not connected");
+-		result = NULL;
+-	} else {
+-		result = mnl_nlmsg_batch_start(buf, buf_size);
+-		if (result != NULL) {
+-			nft_mnl_batch_put(mnl_nlmsg_batch_current(result),
+-							  NFNL_MSG_BATCH_BEGIN, mnl_seq++);
+-			mnl_nlmsg_batch_next(result);
+-		}
++		return NULL;
++	}
++	mnl_seq = time(NULL);
++	result = mnl_nlmsg_batch_start(buf, buf_size);
++	if (result == NULL) {
++		syslog(LOG_ERR, "%s: mnl_nlmsg_batch_start(%p, %lu) returned NULL",
++		       "start_batch", buf, (unsigned long)buf_size);
++		return NULL;
++	}
++	nft_mnl_batch_put(mnl_nlmsg_batch_current(result),
++					  NFNL_MSG_BATCH_BEGIN, mnl_seq++);
++	if (!mnl_nlmsg_batch_next(result)) {
++		syslog(LOG_ERR, "%s: mnl_nlmsg_batch_next returned false", "start_batch");
+ 	}
+-
+ 	return result;
+ }
+ 
+diff --git a/release/src/router/miniupnpd-igdv2/testupnppermissions.sh b/release/src/router/miniupnpd-igdv2/testupnppermissions.sh
+index 18bf741505..068fcf1a53 100755
+--- a/release/src/router/miniupnpd-igdv2/testupnppermissions.sh
++++ b/release/src/router/miniupnpd-igdv2/testupnppermissions.sh
+@@ -9,10 +9,14 @@ RULEA_2="deny 55-55 15161718/ffff8000 555-559"
+ RULEB_2="deny 55-55 21.22.23.24/255.255.128.0 555-559"
+ RULE_3="allow 1024-65535X0.0.0.0/0 1024-65535 all"
+ RULEA_3="BAD"
++RULE_4="allow 1024-65535 1.2.3/16 1024-65535 all"
++RULEA_4="BAD"
++RULE_5="allow 1024-65535 1.2.3.4/44 1024-65535 all"
++RULEA_5="BAD"
+ 
+ i=1
+ s=1
+-./testupnppermissions "$RULE_1" "$RULE_2" "$RULE_3" | while read l;
++./testupnppermissions "$RULE_1" "$RULE_2" "$RULE_3" "$RULE_4" "$RULE_5" | while read l;
+ do
+ 	if [ -z "$l" ]; then i=$(($i+1)); s=1; else
+ 		#echo "$i $s : checking '$l'"
+diff --git a/release/src/router/miniupnpd-igdv2/upnphttp.c b/release/src/router/miniupnpd-igdv2/upnphttp.c
+index cfcbc968ac..97bc4d8095 100644
+--- a/release/src/router/miniupnpd-igdv2/upnphttp.c
++++ b/release/src/router/miniupnpd-igdv2/upnphttp.c
+@@ -150,12 +150,14 @@ InitSSL_upnphttp(struct upnphttp * h)
+ 	if(h->ssl == NULL) {
+ 		syslog(LOG_ERR, "SSL_new() failed");
+ 		syslogsslerr();
+-		abort();
++		h->state = EToDelete;
++		return;
+ 	}
+ 	if(!SSL_set_fd(h->ssl, h->socket)) {
+ 		syslog(LOG_ERR, "SSL_set_fd() failed");
+ 		syslogsslerr();
+-		abort();
++		h->state = EToDelete;
++		return;
+ 	}
+ 	r = SSL_accept(h->ssl); /* start the handshaking */
+ 	if(r < 0) {
+@@ -165,7 +167,8 @@ InitSSL_upnphttp(struct upnphttp * h)
+ 		if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+ 			syslog(LOG_ERR, "SSL_accept() failed");
+ 			syslogsslerr();
+-			abort();
++			h->state = EToDelete;
++			return;
+ 		}
+ 	}
+ }
+diff --git a/release/src/router/miniupnpd-igdv2/upnppermissions.c b/release/src/router/miniupnpd-igdv2/upnppermissions.c
+index e8a5d114f0..f7ba9eabdb 100644
+--- a/release/src/router/miniupnpd-igdv2/upnppermissions.c
++++ b/release/src/router/miniupnpd-igdv2/upnppermissions.c
+@@ -77,7 +77,7 @@ unescape_char(const char * s, int * seqlen)
+ 		case '?':  c = '?';  break;
+ 		*/
+ 		case 'x':
+-			if(isxdigit(s[1]) && isxdigit(s[2]))
++			if(isxdigit((unsigned char)s[1]) && isxdigit((unsigned char)s[2]))
+ 			{
+ 				c = (hex2chr(s[1]) << 4) + hex2chr(s[2]);
+ 				len = 4;
+@@ -103,11 +103,11 @@ unescape_char(const char * s, int * seqlen)
+ static const char *
+ get_sep(const char * s)
+ {
+-	if(!isspace(*s))
++	if(!isspace((unsigned char)*s))
+ 		return NULL;
+ 	do
+ 		s++;
+-	while(isspace(*s));
++	while(isspace((unsigned char)*s));
+ 	return (char *) s;
+ }
+ 
+@@ -117,7 +117,7 @@ get_ushort(const char * s, u_short * val)
+ 	char * end;
+ 	unsigned long val_ul;
+ 
+-	if(!isdigit(*s))
++	if(!isdigit((unsigned char)*s))
+ 		return NULL;
+ 	val_ul = strtoul(s, &end, 10);
+ 	if(val_ul > 65535)
+@@ -148,29 +148,50 @@ get_range(const char * s, u_short * begin, u_short * end)
+ 	return s;
+ }
+ 
++/*! \brief parse a IPv4 address or mask
++ * it is either 4 numbers separated with 3 dots,
++ * or a number between 0 and 32 for the mask
++ * \param[in] s input string
++ * \param[out] add parsed address/mask
++ * \return the updated string pointer or NULL for errors */
+ static const char *
+-get_addr(const char * s, struct in_addr * addr, unsigned int * dot_cnt)
++get_addr_or_mask(const char * s, struct in_addr * addr)
+ {
+ 	size_t i;
+ 	char buf[64];
++	unsigned int dot_cnt = 0;
+ 
+-	if(!isdigit(*s))
++	if(!isdigit((unsigned char)*s))
+ 		return NULL;
+ 
+-	*dot_cnt = 0;
+-	for(i = 0; isdigit(s[i]) || s[i] == '.';)
++	for(i = 0; isdigit((unsigned char)s[i]) || s[i] == '.';)
+ 	{
+ 		if(s[i] == '.')
+-			(*dot_cnt)++;
++			dot_cnt++;
+ 		buf[i] = s[i];
+ 		i++;
+ 		if (i > sizeof(buf) - 1)
+ 			return NULL;
+ 	}
+-
+ 	buf[i] = '\0';
+-	if(!inet_aton(buf, addr))
++
++	if(dot_cnt == 3)
++	{
++		if(!inet_aton(buf, addr))
++			return NULL;
++	}
++	else if (dot_cnt == 0)
++	{
++		int n_bits = atoi(buf);
++		if (n_bits >= 32 || n_bits < 0)
++			return NULL;
++		addr->s_addr = !n_bits ? 0 : htonl(0xffffffffu << (32 - n_bits));
++	}
++	else
++	{
++		/* neither an IPv4 nor a number of bits */
+ 		return NULL;
++	}
+ 
+ 	return s + i;
+ }
+@@ -193,7 +214,7 @@ get_next_token(const char * s, char ** token, int raw)
+ 	else
+ 		deli = 0;
+ 	/* find the end */
+-	for(len = 0; !iseol(s[len]) && (deli ? s[len] != deli : !isspace(s[len]));
++	for(len = 0; !iseol(s[len]) && (deli ? s[len] != deli : !isspace((unsigned char)s[len]));
+ 	    len++)
+ 		if(s[len] == '\\')
+ 		{
+@@ -268,12 +289,10 @@ int
+ read_permission_line(struct upnpperm * perm,
+                      const char * p)
+ {
+-	unsigned int dot_cnt;
+-
+ 	/* zero memory : see https://github.com/miniupnp/miniupnp/issues/652 */
+ 	memset(perm, 0, sizeof(struct upnpperm));
+ 
+-	while(isspace(*p))
++	while(isspace((unsigned char)*p))
+ 		p++;
+ 
+ 	/* first token: (allow|deny) */
+@@ -306,7 +325,7 @@ read_permission_line(struct upnpperm * perm,
+ 		return -1;
+ 
+ 	/* third token: ip/mask */
+-	p = get_addr(p, &perm->address, &dot_cnt);
++	p = get_addr_or_mask(p, &perm->address);
+ 	if(!p)
+ 		return -1;
+ 
+@@ -315,19 +334,9 @@ read_permission_line(struct upnpperm * perm,
+ 	else
+ 	{
+ 		p++;
+-		p = get_addr(p, &perm->mask, &dot_cnt);
++		p = get_addr_or_mask(p, &perm->mask);
+ 		if(!p)
+ 			return -1;
+-		/* inet_aton(): When only one part is given, the value is stored
+-		 * directly in the network address without any byte
+-		 * rearrangement. */
+-		if(!dot_cnt)
+-		{
+-			unsigned int n_bits = ntohl(perm->mask.s_addr);
+-			if(n_bits > 32)
+-				return -1;
+-			perm->mask.s_addr = !n_bits ? 0 : htonl(0xffffffffu << (32 - n_bits));
+-		}
+ 	}
+ 
+ 	p = get_sep(p);
+diff --git a/release/src/router/miniupnpd/Changelog.txt b/release/src/router/miniupnpd/Changelog.txt
+index 155580d825..3eb086d1d4 100644
+--- a/release/src/router/miniupnpd/Changelog.txt
++++ b/release/src/router/miniupnpd/Changelog.txt
+@@ -1,5 +1,10 @@
+ $Id: Changelog.txt,v 1.535 2025/04/26 13:07:53 nanard Exp $
+ 
++2026/06/16:
++  nftables: Avoid building too long rule with
++    nftnl_rule_nlmsg_build_payload() by triming description to 256 chars.
++  HTTPS: Do not abort on SSL errors
++
+ 2026/06/10:
+   Fix heap overflow in PinholeVerification()
+ 
+diff --git a/release/src/router/miniupnpd/miniupnpd.c b/release/src/router/miniupnpd/miniupnpd.c
+index c483854389..e3df1847a8 100644
+--- a/release/src/router/miniupnpd/miniupnpd.c
++++ b/release/src/router/miniupnpd/miniupnpd.c
+@@ -948,10 +948,10 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 
+ 	memset(lan_addr, 0, sizeof(struct lan_addr_s));
+ 	p = str;
+-	while(*p && *p != '/' && !isspace(*p)) {
++	while(*p && *p != '/' && !isspace((unsigned char)*p)) {
+ 		if (*p == '.')
+ 			dot_count++;
+-		else if (!isdigit(*p))
++		else if (!isdigit((unsigned char)*p))
+ 			only_digits_and_dots = 0;
+ 		p++;
+ 	}
+@@ -1013,12 +1013,12 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 	if(*p == '/')
+ 	{
+ 		const char * q = ++p;
+-		while(*p && isdigit(*p))
++		while(*p && isdigit((unsigned char)*p))
+ 			p++;
+ 		if(*p=='.')
+ 		{
+ 			/* parse mask in /255.255.255.0 format */
+-			while(*p && (*p=='.' || isdigit(*p)))
++			while(*p && (*p=='.' || isdigit((unsigned char)*p)))
+ 				p++;
+ 			n = p - q;
+ 			if(n >= sizeof(tmp))
+@@ -1044,12 +1044,12 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 	}
+ #ifdef MULTIPLE_EXTERNAL_IP
+ 	/* skip spaces */
+-	while(*p && isspace(*p))
++	while(*p && isspace((unsigned char)*p))
+ 		p++;
+ 	if(*p) {
+ 		/* parse the exteral IP address to associate with this subnet */
+ 		n = 0;
+-		while(p[n] && !isspace(*p))
++		while(p[n] && !isspace((unsigned char)*p))
+ 			n++;
+ 		if(n<=15) {
+ 			memcpy(lan_addr->ext_ip_str, p, n);
+@@ -1074,12 +1074,12 @@ parselanaddr(struct lan_addr_s * lan_addr, const char * str, int debug_flag)
+ 	/* add associated network interfaces (for bridges) */
+ 	while(*p) {
+ 		/* skip spaces */
+-		while(*p && isspace(*p))
++		while(*p && isspace((unsigned char)*p))
+ 			p++;
+ 		if(*p) {
+ 			unsigned int index;
+ 			n = 0;
+-			while(p[n] && !isspace(p[n]) && n < sizeof(tmp)) {
++			while(p[n] && !isspace((unsigned char)p[n]) && n < sizeof(tmp)) {
+ 				tmp[n] = p[n];
+ 				n++;
+ 			}
+diff --git a/release/src/router/miniupnpd/netfilter_nft/nftnlrdr_misc.c b/release/src/router/miniupnpd/netfilter_nft/nftnlrdr_misc.c
+index db24be50d1..38f67e0406 100644
+--- a/release/src/router/miniupnpd/netfilter_nft/nftnlrdr_misc.c
++++ b/release/src/router/miniupnpd/netfilter_nft/nftnlrdr_misc.c
+@@ -4,7 +4,7 @@
+  * http://miniupnp.free.fr/ or https://miniupnp.tuxfamily.org/
+  * (c) 2015 Tomofumi Hayashi
+  * (c) 2019 Paul Chambers
+- * (c) 2019-2025 Thomas Bernard
++ * (c) 2019-2026 Thomas Bernard
+  *
+  * This software is subject to the conditions detailed
+  * in the LICENCE file provided within the distribution.
+@@ -59,6 +59,12 @@
+ #define log_debug(args...)	syslog(LOG_DEBUG, args)
+ #endif
+ 
++#ifndef MIN
++#define MIN(x,y) (((x)<(y))?(x):(y))
++#endif
++
++/* maximum length of USERDATA, used for description */
++#define NFTNL_RULE_USERDATA_MAX_LEN 256
+ 
+ #define RULE_CACHE_INVALID  0
+ #define RULE_CACHE_VALID    1
+@@ -920,8 +926,9 @@ rule_set_snat(uint8_t family, uint8_t proto,
+ 	nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, nft_postrouting_chain);
+ 
+ 	if (descr != NULL && *descr != '\0') {
++		uint32_t len = strlen(descr);
+ 		nftnl_rule_set_data(r, NFTNL_RULE_USERDATA,
+-							descr, strlen(descr));
++							descr, MIN(len, NFTNL_RULE_USERDATA_MAX_LEN));
+ 	}
+ 
+ 	/* Destination IP */
+@@ -996,8 +1003,9 @@ rule_set_dnat(uint8_t family, const char * ifname, uint8_t proto,
+ 	nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, nft_prerouting_chain);
+ 
+ 	if (descr != NULL && *descr != '\0') {
++		uint32_t len = strlen(descr);
+ 		nftnl_rule_set_data(r, NFTNL_RULE_USERDATA,
+-							descr, strlen(descr));
++							descr, MIN(len, NFTNL_RULE_USERDATA_MAX_LEN));
+ 	}
+ 
+ 	if (handle != NULL) {
+@@ -1159,8 +1167,9 @@ rule_set_filter_common(struct nftnl_rule *r, uint8_t family, const char * ifname
+ 	nftnl_rule_set_str(r, NFTNL_RULE_CHAIN, nft_forward_chain);
+ 
+ 	if (descr != NULL && *descr != '\0') {
++		uint32_t len = strlen(descr);
+ 		nftnl_rule_set_data(r, NFTNL_RULE_USERDATA,
+-							descr, strlen(descr));
++							descr, MIN(len, NFTNL_RULE_USERDATA_MAX_LEN));
+ 	}
+ 
+ 	if (handle != NULL) {
+@@ -1400,20 +1409,23 @@ struct mnl_nlmsg_batch *
+ start_batch(char *buf, size_t buf_size)
+ {
+ 	struct mnl_nlmsg_batch *result;
+-	mnl_seq = time(NULL);
+ 
+ 	if (mnl_sock == NULL) {
+ 		log_error("netlink not connected");
+-		result = NULL;
+-	} else {
+-		result = mnl_nlmsg_batch_start(buf, buf_size);
+-		if (result != NULL) {
+-			nft_mnl_batch_put(mnl_nlmsg_batch_current(result),
+-							  NFNL_MSG_BATCH_BEGIN, mnl_seq++);
+-			mnl_nlmsg_batch_next(result);
+-		}
++		return NULL;
++	}
++	mnl_seq = time(NULL);
++	result = mnl_nlmsg_batch_start(buf, buf_size);
++	if (result == NULL) {
++		syslog(LOG_ERR, "%s: mnl_nlmsg_batch_start(%p, %lu) returned NULL",
++		       "start_batch", buf, (unsigned long)buf_size);
++		return NULL;
++	}
++	nft_mnl_batch_put(mnl_nlmsg_batch_current(result),
++					  NFNL_MSG_BATCH_BEGIN, mnl_seq++);
++	if (!mnl_nlmsg_batch_next(result)) {
++		syslog(LOG_ERR, "%s: mnl_nlmsg_batch_next returned false", "start_batch");
+ 	}
+-
+ 	return result;
+ }
+ 
+diff --git a/release/src/router/miniupnpd/testupnppermissions.sh b/release/src/router/miniupnpd/testupnppermissions.sh
+index 18bf741505..068fcf1a53 100755
+--- a/release/src/router/miniupnpd/testupnppermissions.sh
++++ b/release/src/router/miniupnpd/testupnppermissions.sh
+@@ -9,10 +9,14 @@ RULEA_2="deny 55-55 15161718/ffff8000 555-559"
+ RULEB_2="deny 55-55 21.22.23.24/255.255.128.0 555-559"
+ RULE_3="allow 1024-65535X0.0.0.0/0 1024-65535 all"
+ RULEA_3="BAD"
++RULE_4="allow 1024-65535 1.2.3/16 1024-65535 all"
++RULEA_4="BAD"
++RULE_5="allow 1024-65535 1.2.3.4/44 1024-65535 all"
++RULEA_5="BAD"
+ 
+ i=1
+ s=1
+-./testupnppermissions "$RULE_1" "$RULE_2" "$RULE_3" | while read l;
++./testupnppermissions "$RULE_1" "$RULE_2" "$RULE_3" "$RULE_4" "$RULE_5" | while read l;
+ do
+ 	if [ -z "$l" ]; then i=$(($i+1)); s=1; else
+ 		#echo "$i $s : checking '$l'"
+diff --git a/release/src/router/miniupnpd/upnphttp.c b/release/src/router/miniupnpd/upnphttp.c
+index cfcbc968ac..97bc4d8095 100644
+--- a/release/src/router/miniupnpd/upnphttp.c
++++ b/release/src/router/miniupnpd/upnphttp.c
+@@ -150,12 +150,14 @@ InitSSL_upnphttp(struct upnphttp * h)
+ 	if(h->ssl == NULL) {
+ 		syslog(LOG_ERR, "SSL_new() failed");
+ 		syslogsslerr();
+-		abort();
++		h->state = EToDelete;
++		return;
+ 	}
+ 	if(!SSL_set_fd(h->ssl, h->socket)) {
+ 		syslog(LOG_ERR, "SSL_set_fd() failed");
+ 		syslogsslerr();
+-		abort();
++		h->state = EToDelete;
++		return;
+ 	}
+ 	r = SSL_accept(h->ssl); /* start the handshaking */
+ 	if(r < 0) {
+@@ -165,7 +167,8 @@ InitSSL_upnphttp(struct upnphttp * h)
+ 		if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+ 			syslog(LOG_ERR, "SSL_accept() failed");
+ 			syslogsslerr();
+-			abort();
++			h->state = EToDelete;
++			return;
+ 		}
+ 	}
+ }
+diff --git a/release/src/router/miniupnpd/upnppermissions.c b/release/src/router/miniupnpd/upnppermissions.c
+index e8a5d114f0..f7ba9eabdb 100644
+--- a/release/src/router/miniupnpd/upnppermissions.c
++++ b/release/src/router/miniupnpd/upnppermissions.c
+@@ -77,7 +77,7 @@ unescape_char(const char * s, int * seqlen)
+ 		case '?':  c = '?';  break;
+ 		*/
+ 		case 'x':
+-			if(isxdigit(s[1]) && isxdigit(s[2]))
++			if(isxdigit((unsigned char)s[1]) && isxdigit((unsigned char)s[2]))
+ 			{
+ 				c = (hex2chr(s[1]) << 4) + hex2chr(s[2]);
+ 				len = 4;
+@@ -103,11 +103,11 @@ unescape_char(const char * s, int * seqlen)
+ static const char *
+ get_sep(const char * s)
+ {
+-	if(!isspace(*s))
++	if(!isspace((unsigned char)*s))
+ 		return NULL;
+ 	do
+ 		s++;
+-	while(isspace(*s));
++	while(isspace((unsigned char)*s));
+ 	return (char *) s;
+ }
+ 
+@@ -117,7 +117,7 @@ get_ushort(const char * s, u_short * val)
+ 	char * end;
+ 	unsigned long val_ul;
+ 
+-	if(!isdigit(*s))
++	if(!isdigit((unsigned char)*s))
+ 		return NULL;
+ 	val_ul = strtoul(s, &end, 10);
+ 	if(val_ul > 65535)
+@@ -148,29 +148,50 @@ get_range(const char * s, u_short * begin, u_short * end)
+ 	return s;
+ }
+ 
++/*! \brief parse a IPv4 address or mask
++ * it is either 4 numbers separated with 3 dots,
++ * or a number between 0 and 32 for the mask
++ * \param[in] s input string
++ * \param[out] add parsed address/mask
++ * \return the updated string pointer or NULL for errors */
+ static const char *
+-get_addr(const char * s, struct in_addr * addr, unsigned int * dot_cnt)
++get_addr_or_mask(const char * s, struct in_addr * addr)
+ {
+ 	size_t i;
+ 	char buf[64];
++	unsigned int dot_cnt = 0;
+ 
+-	if(!isdigit(*s))
++	if(!isdigit((unsigned char)*s))
+ 		return NULL;
+ 
+-	*dot_cnt = 0;
+-	for(i = 0; isdigit(s[i]) || s[i] == '.';)
++	for(i = 0; isdigit((unsigned char)s[i]) || s[i] == '.';)
+ 	{
+ 		if(s[i] == '.')
+-			(*dot_cnt)++;
++			dot_cnt++;
+ 		buf[i] = s[i];
+ 		i++;
+ 		if (i > sizeof(buf) - 1)
+ 			return NULL;
+ 	}
+-
+ 	buf[i] = '\0';
+-	if(!inet_aton(buf, addr))
++
++	if(dot_cnt == 3)
++	{
++		if(!inet_aton(buf, addr))
++			return NULL;
++	}
++	else if (dot_cnt == 0)
++	{
++		int n_bits = atoi(buf);
++		if (n_bits >= 32 || n_bits < 0)
++			return NULL;
++		addr->s_addr = !n_bits ? 0 : htonl(0xffffffffu << (32 - n_bits));
++	}
++	else
++	{
++		/* neither an IPv4 nor a number of bits */
+ 		return NULL;
++	}
+ 
+ 	return s + i;
+ }
+@@ -193,7 +214,7 @@ get_next_token(const char * s, char ** token, int raw)
+ 	else
+ 		deli = 0;
+ 	/* find the end */
+-	for(len = 0; !iseol(s[len]) && (deli ? s[len] != deli : !isspace(s[len]));
++	for(len = 0; !iseol(s[len]) && (deli ? s[len] != deli : !isspace((unsigned char)s[len]));
+ 	    len++)
+ 		if(s[len] == '\\')
+ 		{
+@@ -268,12 +289,10 @@ int
+ read_permission_line(struct upnpperm * perm,
+                      const char * p)
+ {
+-	unsigned int dot_cnt;
+-
+ 	/* zero memory : see https://github.com/miniupnp/miniupnp/issues/652 */
+ 	memset(perm, 0, sizeof(struct upnpperm));
+ 
+-	while(isspace(*p))
++	while(isspace((unsigned char)*p))
+ 		p++;
+ 
+ 	/* first token: (allow|deny) */
+@@ -306,7 +325,7 @@ read_permission_line(struct upnpperm * perm,
+ 		return -1;
+ 
+ 	/* third token: ip/mask */
+-	p = get_addr(p, &perm->address, &dot_cnt);
++	p = get_addr_or_mask(p, &perm->address);
+ 	if(!p)
+ 		return -1;
+ 
+@@ -315,19 +334,9 @@ read_permission_line(struct upnpperm * perm,
+ 	else
+ 	{
+ 		p++;
+-		p = get_addr(p, &perm->mask, &dot_cnt);
++		p = get_addr_or_mask(p, &perm->mask);
+ 		if(!p)
+ 			return -1;
+-		/* inet_aton(): When only one part is given, the value is stored
+-		 * directly in the network address without any byte
+-		 * rearrangement. */
+-		if(!dot_cnt)
+-		{
+-			unsigned int n_bits = ntohl(perm->mask.s_addr);
+-			if(n_bits > 32)
+-				return -1;
+-			perm->mask.s_addr = !n_bits ? 0 : htonl(0xffffffffu << (32 - n_bits));
+-		}
+ 	}
+ 
+ 	p = get_sep(p);
+-- 
+2.25.1
+

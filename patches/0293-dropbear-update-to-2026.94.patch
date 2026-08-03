@@ -1,0 +1,2302 @@
+From d266081dc3637dbad753d673b3dd605fa584b51f Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Fri, 24 Jul 2026 17:43:44 -0400
+Subject: [PATCH] dropbear: update to 2026.94
+
+(cherry picked from commit 291d46531031b75b6e7996543bacd1e6a6761c33)
+---
+ release/src/router/dropbear/CHANGES           |  48 +-
+ release/src/router/dropbear/Makefile.in       |   4 +-
+ release/src/router/dropbear/configure         |  23 +-
+ release/src/router/dropbear/configure.ac      |  15 +-
+ release/src/router/dropbear/debian/changelog  |  12 +
+ .../src/router/dropbear/manpages/dbclient.1   | 564 ++++++++++--------
+ .../src/router/dropbear/manpages/dropbear.8   | 423 ++++++-------
+ .../dropbear/manpages/dropbearconvert.1       | 102 ++--
+ .../router/dropbear/manpages/dropbearkey.1    | 125 ++--
+ release/src/router/dropbear/release.sh        |   2 +-
+ release/src/router/dropbear/src/chansession.h |   1 -
+ release/src/router/dropbear/src/cli-runopts.c |   6 +-
+ release/src/router/dropbear/src/cli-session.c |  11 +-
+ release/src/router/dropbear/src/compat.c      |   2 +-
+ release/src/router/dropbear/src/dbctype.c     |  36 ++
+ release/src/router/dropbear/src/dbctype.h     |  13 +
+ release/src/router/dropbear/src/dbutil.c      |   2 +-
+ release/src/router/dropbear/src/dbutil.h      |   1 -
+ .../src/router/dropbear/src/default_options.h |   2 -
+ release/src/router/dropbear/src/ecdsa.c       |   2 +-
+ release/src/router/dropbear/src/includes.h    |   2 +-
+ release/src/router/dropbear/src/keyimport.c   |   4 +-
+ release/src/router/dropbear/src/loginrec.c    |   6 +-
+ release/src/router/dropbear/src/loginrec.h    |   6 +-
+ release/src/router/dropbear/src/netio.c       |   2 +-
+ release/src/router/dropbear/src/scp.c         |  13 +-
+ release/src/router/dropbear/src/svr-auth.c    |   3 +-
+ release/src/router/dropbear/src/svr-authpam.c |  30 +-
+ .../src/router/dropbear/src/svr-authpubkey.c  |   2 +-
+ .../dropbear/src/svr-authpubkeyoptions.c      |   3 +-
+ release/src/router/dropbear/src/svr-main.c    |  14 +-
+ release/src/router/dropbear/src/svr-runopts.c |   4 -
+ release/src/router/dropbear/src/svr-session.c |   6 +
+ release/src/router/dropbear/src/svr-x11fwd.c  |  18 +-
+ release/src/router/dropbear/src/sysoptions.h  |   2 +-
+ .../src/router/dropbear/test/test_channels.py |   5 +-
+ .../dropbear/test/test_dropbearconvert.py     |   4 +
+ 37 files changed, 893 insertions(+), 625 deletions(-)
+ create mode 100644 release/src/router/dropbear/src/dbctype.c
+ create mode 100644 release/src/router/dropbear/src/dbctype.h
+
+diff --git a/release/src/router/dropbear/CHANGES b/release/src/router/dropbear/CHANGES
+index 9582c8f90b..07899b871c 100644
+--- a/release/src/router/dropbear/CHANGES
++++ b/release/src/router/dropbear/CHANGES
+@@ -1,3 +1,48 @@
++2026.94 - 23 July 2026
++
++- Fix scp build failure regression from 2026.93
++  The new ascii_isdigit() etc wasn't linked.
++
++- Print square brackets around ipv6 addresses with ports, eg
++  [2a00:f10:400:2:1c00:bcff:fe00:1c6]:22
++  Patch from Seo Suchan
++
++- Support longer paths in scp.
++
++- Avoid some build warnings, add increase github action coverage of
++  config options.
++
++2026.93 - 21 July 2026
++
++Note >> for compatibility/configuration changes
++
++- Security: Fix a use-after-free in X11 forwarding that could possibly lead
++  to memory corruption. This is vulnerable to authenticated users if X11
++  forwarding is enabled. By default X11 forwarding is not built.
++  In 2026.89 the server is running as the authenticated user for X11
++  forwarding, in earlier versions it runs as root.
++  This removes X11 "single connection" which has probably never been used.
++  Reported by @peter-pe
++  https://github.com/mkj/dropbear/commit/882f83806d5e133037cd28e954a878984ef7b9c4
++
++- >> "permitlisten" authorized_keys lines will now be ignored if
++  the port is invalid (>65535). From Basavaraj S Maneppagol.
++
++- >> In 2026.92, the configure option --enable-plugin-deprecated
++  wasn't correctly renamed. This is now implemented.
++  Patch from Alexander Dahl
++
++- Two factor auth "-t" is no longer deprecated, it will be kept.
++  The "DEPRECATED_TWO_FACTOR" option is ignored, and no longer required.
++
++- Fix out of bounds read during utmp/wtmp log file handling, reported by
++  Basavaraj S Maneppagol.
++
++- More robust handling of ascii inputs for some platforms.
++  From Basavaraj S Maneppagol
++
++- Convert manpages to mdoc format, from shrub
++
+ 2026.92 - 6 July 2026
+ 
+ Note >> for compatibility/configuration changes
+@@ -8,7 +53,8 @@ Note >> for compatibility/configuration changes
+ 
+ - >> Two factor auth "-t" has been deprecated, it now requires
+   a configuration option DEPRECATED_TWO_FACTOR.
+-  Planned to be removed in future.
++  [Updated 16 July: This is no longer planned to be removed, future releases
++  will ignore DEPRECATED_TWO_FACTOR and always enable it, like previously]
+ 
+ - Security: server: Don't allow -B (accept blank password) with
+   -t (two factor auth). If run with -t and -B a user configured with a
+diff --git a/release/src/router/dropbear/Makefile.in b/release/src/router/dropbear/Makefile.in
+index a26f011278..8f178ee2ad 100644
+--- a/release/src/router/dropbear/Makefile.in
++++ b/release/src/router/dropbear/Makefile.in
+@@ -44,7 +44,7 @@ _COMMONOBJS=dbutil.o buffer.o dbhelpers.o \
+ 		atomicio.o compat.o fake-rfc2553.o \
+ 		ltc_prng.o ecc.o ecdsa.o sk-ecdsa.o crypto_desc.o \
+ 		curve25519.o ed25519.o sk-ed25519.o \
+-		dbmalloc.o \
++		dbmalloc.o dbctype.o \
+ 		gensignkey.o gendss.o genrsa.o gened25519.o
+ COMMONOBJS = $(patsubst %,$(OBJ_DIR)/%,$(_COMMONOBJS))
+ 
+@@ -74,7 +74,7 @@ KEYOBJS = $(patsubst %,$(OBJ_DIR)/%,$(_KEYOBJS))
+ _CONVERTOBJS=dropbearconvert.o keyimport.o signkey_ossh.o
+ CONVERTOBJS = $(patsubst %,$(OBJ_DIR)/%,$(_CONVERTOBJS))
+ 
+-_SCPOBJS=scp.o progressmeter.o atomicio.o scpmisc.o compat.o
++_SCPOBJS=scp.o progressmeter.o atomicio.o scpmisc.o compat.o dbctype.o
+ SCPOBJS = $(patsubst %,$(OBJ_DIR)/%,$(_SCPOBJS))
+ 
+ ifeq (@DROPBEAR_FUZZ@, 1)
+diff --git a/release/src/router/dropbear/configure b/release/src/router/dropbear/configure
+index b8e90be060..9b7b9b56f6 100755
+--- a/release/src/router/dropbear/configure
++++ b/release/src/router/dropbear/configure
+@@ -736,7 +736,7 @@ enable_pam
+ enable_openpty
+ enable_syslog
+ enable_shadow
+-enable_plugin
++enable_plugin_deprecated
+ enable_fuzz
+ enable_bundled_libtom
+ enable_lastlog
+@@ -5838,22 +5838,33 @@ fi
+ 
+ 
+ # Plugin support will be removed soon. Open a github issue if you're using it.
+-# Check whether --enable-plugin was given.
+-if test ${enable_plugin+y}
++# Check whether --enable-plugin-deprecated was given.
++if test ${enable_plugin_deprecated+y}
+ then :
+-  enableval=$enable_plugin;
++  enableval=$enable_plugin_deprecated;
++		if test "x$enableval" = "xyes"; then
+ 
+ printf "%s\n" "#define DROPBEAR_PLUGIN 1" >>confdefs.h
+ 
+-		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: Enabling support for External Public Key Authentication" >&5
++			{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: Enabling support for External Public Key Authentication" >&5
+ printf "%s\n" "$as_me: Enabling support for External Public Key Authentication" >&6;}
+-		DROPBEAR_PLUGIN=1
++			DROPBEAR_PLUGIN=1
++		else
++
++printf "%s\n" "#define DROPBEAR_PLUGIN 0" >>confdefs.h
++
++			{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: Disabling support for External Public Key Authentication" >&5
++printf "%s\n" "$as_me: Disabling support for External Public Key Authentication" >&6;}
++			DROPBEAR_PLUGIN=0
++		fi
+ 
+ else $as_nop
+ 
+ 
+ printf "%s\n" "#define DROPBEAR_PLUGIN 0" >>confdefs.h
+ 
++		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: Disabling support for External Public Key Authentication" >&5
++printf "%s\n" "$as_me: Disabling support for External Public Key Authentication" >&6;}
+ 		DROPBEAR_PLUGIN=0
+ 
+ 
+diff --git a/release/src/router/dropbear/configure.ac b/release/src/router/dropbear/configure.ac
+index 25a13ee78e..6dfeacf1f5 100644
+--- a/release/src/router/dropbear/configure.ac
++++ b/release/src/router/dropbear/configure.ac
+@@ -345,15 +345,22 @@ AC_ARG_ENABLE(shadow,
+ )
+ 
+ # Plugin support will be removed soon. Open a github issue if you're using it.
+-AC_ARG_ENABLE(plugin,
++AC_ARG_ENABLE(plugin-deprecated,
+ 	[AS_HELP_STRING([--enable-plugin-deprecated], [Enable support for External Public Key Authentication plug-in])],
+ 	[
+-		AC_DEFINE(DROPBEAR_PLUGIN, 1, External Public Key Authentication)
+-		AC_MSG_NOTICE(Enabling support for External Public Key Authentication)
+-		DROPBEAR_PLUGIN=1
++		if test "x$enableval" = "xyes"; then
++			AC_DEFINE(DROPBEAR_PLUGIN, 1, External Public Key Authentication)
++			AC_MSG_NOTICE(Enabling support for External Public Key Authentication)
++			DROPBEAR_PLUGIN=1
++		else
++			AC_DEFINE(DROPBEAR_PLUGIN, 0, External Public Key Authentication)
++			AC_MSG_NOTICE(Disabling support for External Public Key Authentication)
++			DROPBEAR_PLUGIN=0
++		fi
+ 	],
+ 	[
+ 		AC_DEFINE(DROPBEAR_PLUGIN, 0, External Public Key Authentication)
++		AC_MSG_NOTICE(Disabling support for External Public Key Authentication)
+ 		DROPBEAR_PLUGIN=0
+ 	]
+ 
+diff --git a/release/src/router/dropbear/debian/changelog b/release/src/router/dropbear/debian/changelog
+index dab4d2d1b8..606151efa0 100644
+--- a/release/src/router/dropbear/debian/changelog
++++ b/release/src/router/dropbear/debian/changelog
+@@ -1,3 +1,15 @@
++dropbear (2026.94-0.1) unstable; urgency=low
++
++  * New upstream release.
++
++ -- Matt Johnston <matt@ucc.asn.au>  Thu, 21 July 2026 22:51:57 +0800
++
++dropbear (2026.93-0.1) unstable; urgency=low
++
++  * New upstream release.
++
++ -- Matt Johnston <matt@ucc.asn.au>  Tue, 21 July 2026 22:51:57 +0800
++
+ dropbear (2026.92-0.1) unstable; urgency=low
+ 
+   * New upstream release.
+diff --git a/release/src/router/dropbear/manpages/dbclient.1 b/release/src/router/dropbear/manpages/dbclient.1
+index a7cc491e81..0814cada36 100644
+--- a/release/src/router/dropbear/manpages/dbclient.1
++++ b/release/src/router/dropbear/manpages/dbclient.1
+@@ -1,335 +1,399 @@
+-.TH dbclient 1 2023-02-01
+-.SH NAME
+-dbclient \- lightweight SSH client
+-.SH SYNOPSIS
+-.B dbclient
+-[\fIflag arguments\fR] [\-p
+-.I port\fR] [\-i
+-.I id\fR] [\-L
+-.I l\fR:\fIh\fR:\fIp\fR] [\-R
+-.I l\fR:\fIh\fR:\fIp\fR] [\-l
+-.IR user ]
+-.I host
+-.RI [ \fImore\ flags\fR ]
+-.RI [ command ]
+-
+-.B dbclient
+-[\fIargs\fR]
+-[\fIuser1\fR]@\fIhost1\fR[^\fIport1\fR],[\fIuser2\fR]@\fIhost2\fR[^\fIport2\fR],...
+-
+-.SH DESCRIPTION
+-.B dbclient
++.Dd February 1, 2023
++.Dt DBCLIENT 1
++.Os
++.Sh NAME
++.Nm dbclient
++.Nd lightweight SSH client
++.Sh SYNOPSIS
++.Nm
++.Op Ar flag arguments
++.Op Fl p Ar port
++.Op Fl i Ar id
++.Op Fl L Ar l:h:p
++.Op Fl R Ar l:h:p
++.Op Fl l Ar user
++.Ar host
++.Op Ar more flags
++.Op Ar command
++.Pp
++.Nm
++.Op Ar args
++.Ar "[user1]@host1[^port1],[user2]@host2[^port2],..."
++.Sh DESCRIPTION
++.Nm dbclient
+ is the client part of Dropbear SSH
+-.SH OPTIONS
+-.TP
+-.B command
++.Sh OPTIONS
++.Bl -tag -width Ds
++.It Ar command
+ A command to run on the remote host. This will normally be run by the remote host
+-using the user's shell. The command begins at the first hyphen argument after the 
++using the user's shell. The command begins at the first hyphen argument after the
+ host argument. If no command is specified an interactive terminal will be opened
+-(see -t and -T).
+-.TP
+-.B \-p \fIport
+-Connect to 
+-.I port
+-on the remote host. Alternatively a port can be specified as hostname^port.
++(see
++.Fl t
++and
++.Fl T ) .
++.It Fl p Ar port
++Connect to
++.Ar port
++on the remote host. Alternatively a port can be specified as
++.Ar hostname Ns ^ Ns Ar port .
+ Default is 22.
+-.TP
+-.B \-i \fIidfile
++.It Fl i Ar idfile
+ Identity file.
+ Read the identity key from file
+-.I idfile
+-(multiple allowed). This file is created with dropbearkey(1) or converted
+-from OpenSSH with dropbearconvert(1). The default path ~/.ssh/id_dropbear is used
+-.TP
+-.B \-L\fR [\fIlistenaddress\fR]:\fIlistenport\fR:\fIhost\fR:\fIport\fR
++.Ar idfile
++(multiple allowed). This file is created with
++.Xr dropbearkey 1
++or converted
++from OpenSSH with
++.Xr dropbearconvert 1 .
++The default path
++.Pa ~/.ssh/id_dropbear
++is used.
++.It Fl L Ar [listenaddress]:listenport:host:port
+ Local port forwarding.
+-Forward 
+-.I listenport
+-on the local host through the SSH connection to 
+-.I port
+-on 
+-.IR host .
+-.TP
+-.B \-R\fR [\fIlistenaddress\fR]:\fIlistenport\fR:\fIhost\fR:\fIport\fR
++Forward
++.Ar listenport
++on the local host through the SSH connection to
++.Ar port
++on
++.Ar host .
++.It Fl R Ar [listenaddress]:listenport:host:port
+ Remote port forwarding.
+-Forward 
+-.I listenport
+-on the remote host through the SSH connection to 
+-.I port
+-on 
+-.IR host .
+-.TP
+-.B \-l \fIuser
++Forward
++.Ar listenport
++on the remote host through the SSH connection to
++.Ar port
++on
++.Ar host .
++.It Fl l Ar user
+ Username.
+ Login as
+-.I user
+-on the remote host. An alternative is to specify user@host.
+-.TP
+-.B \-t
++.Ar user
++on the remote host. An alternative is to specify
++.Ar user Ns @ Ns Ar host .
++.It Fl t
+ Allocate a PTY. This is the default when no command is given, it gives a full
+-interactive remote session. The main effect is that keystrokes are sent remotely 
++interactive remote session. The main effect is that keystrokes are sent remotely
+ immediately as opposed to local line-based editing.
+-.TP
+-.B \-T
+-Don't allocate a PTY. This is the default when a command is given. See -t.
+-.TP
+-.B \-N
++.It Fl T
++Don't allocate a PTY. This is the default when a command is given. See
++.Fl t .
++.It Fl N
+ Don't request a remote shell or run any commands. Any command arguments are ignored.
+-.TP
+-.B \-f
+-Fork into the background after authentication. A command argument (or -N) is required.
++.It Fl f
++Fork into the background after authentication. A command argument (or
++.Fl N )
++is required.
+ This is useful when using password authentication.
+-.TP
+-.B \-g
+-Allow non-local hosts to connect to forwarded ports. Applies to -L and -R
+-forwarded ports, though remote connections to -R forwarded ports may be limited
++.It Fl g
++Allow non-local hosts to connect to forwarded ports. Applies to
++.Fl L
++and
++.Fl R
++forwarded ports, though remote connections to
++.Fl R
++forwarded ports may be limited
+ by the ssh server.
+-.TP
+-.B \-y
++.It Fl y
+ Always accept hostkeys if they are unknown. If a hostkey mismatch occurs the
+ connection will abort as normal. If specified a second time no host key checking
+ is performed at all, this is usually undesirable.
+-.TP
+-.B \-A
++.It Fl A
+ Forward agent connections to the remote host. dbclient will use any
+-OpenSSH-style agent program if available ($SSH_AUTH_SOCK will be set) for
+-public key authentication.  Forwarding is only enabled if \fI-A\fR is specified.
+-
++OpenSSH-style agent program if available
++.Po
++.Ev SSH_AUTH_SOCK
++will be set
++.Pc
++for
++public key authentication.  Forwarding is only enabled if
++.Fl A
++is specified.
++.Pp
+ Beware that a forwarded agent connection will allow the remote server to have
+ the same authentication credentials as you have used locally. A compromised
+-remote server could use that to log in to other servers. 
+-
++remote server could use that to log in to other servers.
++.Pp
+ In many situations Dropbear's multi-hop mode is a better and more secure alternative
+ to agent forwarding, avoiding having to trust the intermediate server.
+-
+-If the SSH agent program is set to prompt when a key is used, the 
+-\fI-o DisableTrivialAuth\fR option can prevent UI confusion.
+-
+-.TP
+-.B \-W \fIwindowsize
+-Specify the per-channel receive window buffer size. Increasing this 
++.Pp
++If the SSH agent program is set to prompt when a key is used, the
++.Fl o Ar DisableTrivialAuth
++option can prevent UI confusion.
++.It Fl W Ar windowsize
++Specify the per-channel receive window buffer size. Increasing this
+ may improve network performance at the expense of memory use. Use -h to see the
+ default buffer size.
+-.TP
+-.B \-K \fItimeout_seconds
++.It Fl K Ar timeout_seconds
+ Ensure that traffic is transmitted at a certain interval in seconds. This is
+ useful for working around firewalls or routers that drop connections after
+ a certain period of inactivity. The trade-off is that a session may be
+ closed if there is a temporary lapse of network connectivity. A setting
+ if 0 disables keepalives. If no response is received for 3 consecutive keepalives the connection will be closed.
+-.TP
+-.B \-I \fIidle_timeout
+-Disconnect the session if no traffic is transmitted or received for \fIidle_timeout\fR seconds.
+-.TP
+-.B \-z
+-By default Dropbear will send network traffic with the \fBAF21\fR setting for QoS, letting network devices give it higher priority. Some devices may have problems with that, \fI-z\fR can be used to disable it.
+-.TP
+-
+-.\" TODO: how to avoid a line break between these two -J arguments?
+-.B \-J \fIproxy_command
+-.TP
+-.B \-J \fI&fd
+-.br
+-Use the standard input/output of the program \fIproxy_command\fR rather than using
++.It Fl I Ar idle_timeout
++Disconnect the session if no traffic is transmitted or received for
++.Ar idle_timeout
++seconds.
++.It Fl z
++By default Dropbear will send network traffic with the
++.Dv AF21
++setting for QoS, letting network devices give it higher priority. Some devices may have problems with that,
++.Fl z
++can be used to disable it.
++.It Xo
++.Fl J Ar proxy_command |
++.Fl J Cm & Ns Ar fd
++.Xc
++Use the standard input/output of the program
++.Ar proxy_command
++rather than using
+ a normal TCP connection. A hostname should be still be provided, as this is used for
+-comparing saved hostkeys. This command will be executed as "exec proxy_command ..." with the
++comparing saved hostkeys. This command will be executed as
++.Ql exec proxy_command ...
++with the
+ default shell.
+-
+-The second form &fd will make dbclient use the numeric file descriptor as a socket. This
++.Pp
++The second form
++.Cm & Ns Ar fd
++will make dbclient use the numeric file descriptor as a socket. This
+ can be used for more complex tunnelling scenarios. Example usage with socat is
+-
++.Bd -literal -offset indent
+ socat EXEC:'dbclient -J &38 ev',fdin=38,fdout=38 TCP4:host.example.com:22
+-
+-.TP
+-.B \-B \fIendhost:endport
+-"Netcat-alike" mode, where Dropbear will connect to the given host, then create a
+-forwarded connection to \fIendhost\fR. This will then be presented as dbclient's
++.Ed
++.It Fl B Ar endhost:endport
++.Dq Netcat-alike
++mode, where Dropbear will connect to the given host, then create a
++forwarded connection to
++.Ar endhost .
++This will then be presented as dbclient's
+ standard input/output.
+-.TP
+-.B \-c \fIcipherlist
+-Specify a comma separated list of ciphers to enable. Use \fI-c help\fR to list possibilities.
+-.TP
+-.B \-m \fIMAClist
+-Specify a comma separated list of authentication MACs to enable. Use \fI-m help\fR to list possibilities.
+-.TP
+-.B \-o \fIoption
++.It Fl c Ar cipherlist
++Specify a comma separated list of ciphers to enable. Use
++.Fl c Cm help
++to list possibilities.
++.It Fl m Ar MAClist
++Specify a comma separated list of authentication MACs to enable. Use
++.Fl m Cm help
++to list possibilities.
++.It Fl o Ar option
+ Can be used to give options in the format used by OpenSSH config file. This is
+ useful for specifying options for which there is no separate command-line flag.
+ For full details of the options listed below, and their possible values, see
+-ssh_config(5). "yes"/"no" arguments also accept y/n.
+-
++.Xr ssh_config 5 .
++.Cm yes Ns / Ns Cm no
++arguments also accept
++.Cm y Ns / Ns Cm n .
++.Pp
+ The following options have currently been implemented:
+-
+-.RS
+-.TP
+-.B BatchMode
+-Disable interactive prompts e.g. password prompts and host key confirmation. The argument must be "yes" or "no" (the default).
+-.TP
+-.B BindAddress
++.Bl -tag -width Ds
++.It Cm BatchMode
++Disable interactive prompts e.g. password prompts and host key confirmation. The argument must be
++.Cm yes
++or
++.Cm no
++(the default).
++.It Cm BindAddress
+ Specify address and port on the local machine as the source address of the connection.
+-.TP
+-.B Compression
+-Can be set to "yes" or "no". Default is no compression (with default
++.It Cm Compression
++Can be set to
++.Cm yes
++or
++.Cm no .
++Default is no compression (with default
+ build options). Enabling compression can be a security weakness in some
+ circumstances, as the size of network traffic may leak information
+ about the encrypted data.
+-
++.Pp
+ Compression will only be used when the server also supports it.
+-.TP
+-.B DisableTrivialAuth
++.It Cm DisableTrivialAuth
+ Disallow a server immediately
+ giving successful authentication (without presenting any password/pubkey prompt).
+ This avoids a UI confusion issue where it may appear that the user is accepting
+ a SSH agent prompt from their local machine, but are actually accepting a prompt
+ sent immediately by the remote server.
+-.TP
+-.B ExitOnForwardFailure
+-Specifies whether dbclient should terminate the connection if it cannot set up all requested local and remote port forwardings. The argument must be "yes" or "no" (the default).
+-.TP
+-.B ForwardAgent
+-Forward the authentication agent to the remote machine. The argument must be "yes" or "no" (the default).
+-.TP
+-.B GatewayPorts
+-Allow to remote host to connect to local forwarded ports. The argument must be "yes" or "no" (the default).
+-.TP
+-.B IdentityFile
++.It Cm ExitOnForwardFailure
++Specifies whether dbclient should terminate the connection if it cannot set up all requested local and remote port forwardings. The argument must be
++.Cm yes
++or
++.Cm no
++(the default).
++.It Cm ForwardAgent
++Forward the authentication agent to the remote machine. The argument must be
++.Cm yes
++or
++.Cm no
++(the default).
++.It Cm GatewayPorts
++Allow to remote host to connect to local forwarded ports. The argument must be
++.Cm yes
++or
++.Cm no
++(the default).
++.It Cm IdentityFile
+ Specify an authentication identity file path.
+-.TP
+-.B PasswordAuthentication
+-Allow to prompt a user for a password. If the DROPBEAR_PASSWORD env is specified then it still will be used. The argument must be "yes" (the default) or "no".
+-.TP
+-.B Port
+-Specify a listening port, like the \fI-p\fR argument.
+-.TP
+-.B ProxyCommand
++.It Cm PasswordAuthentication
++Allow to prompt a user for a password. If the
++.Ev DROPBEAR_PASSWORD
++env is specified then it still will be used. The argument must be
++.Cm yes
++(the default) or
++.Cm no .
++.It Cm Port
++Specify a listening port, like the
++.Fl p
++argument.
++.It Cm ProxyCommand
+ Specify the proxy command to use to connect to the server.
+-.TP
+-.B ServerAliveInterval
++.It Cm ServerAliveInterval
+ Sets a timeout interval in seconds between keep-alive messages through the encrypted channel. The default is 0 e.g. disabled.
+-.TP
+-.B StrictHostKeyChecking
+-Use "yes" to refuse connection to hosts where the host key is not already
+-correct in known_hosts. Entries must be added to known_hosts manually.
+-
+-Use "no" to skip the known_hosts key checking.
+-
+-Use "accept-new" to add new host keys to the known_hosts and
++.It Cm StrictHostKeyChecking
++Use
++.Cm yes
++to refuse connection to hosts where the host key is not already
++correct in
++.Pa known_hosts .
++Entries must be added to
++.Pa known_hosts
++manually.
++.Pp
++Use
++.Cm no
++to skip the
++.Pa known_hosts
++key checking.
++.Pp
++Use
++.Cm accept-new
++to add new host keys to the
++.Pa known_hosts
++and
+ refuse to connect if the host key has changed.
+-
+-"ask" is the default.
+-
+-.TP
+-.B UseSyslog
++.Pp
++.Cm ask
++is the default.
++.It Cm UseSyslog
+ Send dbclient log messages to syslog in addition to stderr.
+-.RE
+-.TP
+-.B \-s 
+-The specified command will be requested as a subsystem, used for sftp. Dropbear doesn't implement sftp itself but the OpenSSH sftp client can be used eg \fIsftp -S dbclient user@host\fR
+-.TP
+-.B \-b \fI[address][:port]
++.El
++.It Fl s
++The specified command will be requested as a subsystem, used for sftp. Dropbear doesn't implement sftp itself but the OpenSSH sftp client can be used eg
++.Dl sftp -S dbclient user@host
++.It Fl b Ar [address][:port]
+ Bind to a specific local address when connecting to the remote host. This can be used to choose from
+ multiple outgoing interfaces. Either address or port (or both) can be given.
+-
+-.TP
+-.B \-Q \fIalgo
+-Query supported algorithms. Options are kex, sig, cipher, mac, compress
+-
+-.TP
+-.B \-V
++.It Fl Q Ar algo
++Query supported algorithms. Options are kex, sig, cipher, mac, compress.
++.It Fl V
+ Print the version
+-
+-.SH MULTI-HOP
++.El
++.Sh MULTI-HOP
+ Dropbear will also allow multiple "hops" to be specified, separated by commas. In
+-this case a connection will be made to the first host, then a TCP forwarded 
++this case a connection will be made to the first host, then a TCP forwarded
+ connection will be made through that to the second host, and so on. Hosts other than
+-the final destination will not see anything other than the encrypted SSH stream. 
+-A port for a host can be specified with a caret (eg matt@martello^44 ).
+-This syntax can also be used with scp or rsync (specifying dbclient as the 
++the final destination will not see anything other than the encrypted SSH stream.
++A port for a host can be specified with a caret (eg
++.Ar matt Ns @ Ns Ar martello Ns ^ Ns Ar 44 ) .
++This syntax can also be used with scp or rsync (specifying dbclient as the
+ ssh/rsh command). A file can be "bounced" through multiple SSH hops, eg
+-
++.Bd -literal -offset indent
+ scp -S dbclient matt@martello,root@wrt,canyons:/tmp/dump .
+-
++.Ed
++.Pp
+ Note that hostnames are resolved by the prior hop (so "canyons" would be resolved by the host "wrt")
+-in the example above, the same way as other -L TCP forwarded hosts are. Host keys are 
++in the example above, the same way as other -L TCP forwarded hosts are. Host keys are
+ checked locally based on the given hostname.
+-
+-.SH ESCAPE CHARACTERS
+-Typing a newline followed by the  key sequence \fI~.\fR (tilde, dot) will terminate a connection.
+-The sequence \fI~^Z\fR (tilde, ctrl-z) will background the connection. This behaviour only
++.Sh ESCAPE CHARACTERS
++Typing a newline followed by the key sequence
++.Ql ~.
++(tilde, dot) will terminate a connection.
++The sequence
++.Ql ~^Z
++(tilde, ctrl-z) will background the connection. This behaviour only
+ applies when a PTY is used.
+-
+-\fI~R\fR will perform a key re-exchange of ephemeral session keys.
+-
+-.SH ENVIRONMENT
+-.TP
+-.B DROPBEAR_PASSWORD
++.Pp
++.Ql ~R
++will perform a key re-exchange of ephemeral session keys.
++.Sh ENVIRONMENT
++.Bl -tag -width Ds
++.It Ev DROPBEAR_PASSWORD
+ A password to use for remote authentication can be specified in the environment
+-variable DROPBEAR_PASSWORD. Care should be taken that the password is not
++variable
++.Ev DROPBEAR_PASSWORD .
++Care should be taken that the password is not
+ exposed to other users on a multi-user system, or stored in accessible files.
+-.TP
+-.B SSH_ASKPASS
++.It Ev SSH_ASKPASS
+ dbclient can use an external program to request a password from a user.
+-SSH_ASKPASS should be set to the path of a program that will return a password
+-on standard output. This program will only be used if either DISPLAY is set and
+-standard input is not a TTY, or the environment variable SSH_ASKPASS_ALWAYS is
++.Ev SSH_ASKPASS
++should be set to the path of a program that will return a password
++on standard output. This program will only be used if either
++.Ev DISPLAY
++is set and
++standard input is not a TTY, or the environment variable
++.Ev SSH_ASKPASS_ALWAYS
++is
+ set.
+-
+-.SH FILES
+-.B ~/.ssh/dropbear_config
+-
++.El
++.Sh FILES
++.Bl -tag -width Ds
++.It Pa ~/.ssh/dropbear_config
+ This is the per user configuration file. A very limited subset of the keywords for
+-ssh_config(5) is supported, and none of the advanced features. The file contains
+-key value pairs on a single line separated with space or '='. Empty lines are ignored.
+-Text starting with '#' is a comment, and also ignored.
+-
++.Xr ssh_config 5
++is supported, and none of the advanced features. The file contains
++key value pairs on a single line separated with space or
++.Ql = .
++Empty lines are ignored.
++Text starting with
++.Ql #
++is a comment, and also ignored.
++.Pp
+ The file is not considered if multi-hop connection is used. Values on the command line
+ override the respective values in the file.
+-
++.Pp
+ The recognized keywords are as follows. Keywords are case insensitive and values are
+ case insensitive.
+-
+-.TP
+-.B Host
++.Bl -tag -width Ds
++.It Cm Host
+ Defines the options that would be applied if this value matches the host specified
+-on the command line. The next Host entry or EOF determine the list of applicable
++on the command line. The next
++.Cm Host
++entry or
++.Dv EOF
++determine the list of applicable
+ options.
+-
+-.TP
+-.B HostName
++.It Cm HostName
+ Specifies the actual host name to connect to. Can be DNS name or IP address.
+-
+-.TP
+-.B Port
++.It Cm Port
+ Specifies the port number to use to connect to the remote host.
+-
+-.TP
+-.B 
+-User
++.It Cm User
+ Specifies the user name to login in as.
+-
+-.TP
+-.B
+-IdentityFile
++.It Cm IdentityFile
+ Specifies the file with the private key used for public key authentication with the remote
+-host. The file must be in the Dropbear format. See dropbearkey(1) to generate one. A '~/' at
++host. The file must be in the Dropbear format. See
++.Xr dropbearkey 1
++to generate one.
++.Pa ~/
++at
+ the start of the path will expanded to the executing user's home directory. A path that
+-does not start with '/' will be treated relative to this configuration file's directory. Otherwise
++does not start with
++.Pa /
++will be treated relative to this configuration file's directory. Otherwise
+ the path will be used as is.
+-
++.El
++.Pp
+ Because this file contains a secret it must have strict permissions to prevent abuse
+ attempts - read/write for the executing user, and no access to anyone else.
+-
+-.SH NOTES
++.El
++.Sh NOTES
+ If compiled with zlib support and if the server supports it, dbclient will
+ always use compression.
+-
+-.SH AUTHOR
+-Matt Johnston (matt@ucc.asn.au).
+-.br
+-Mihnea Stoenescu wrote initial Dropbear client support
+-.br
+-Gerrit Pape (pape@smarden.org) wrote this manual page.
+-.SH SEE ALSO
+-dropbear(8), dropbearkey(1)
+-.P
+-https://matt.ucc.asn.au/dropbear/dropbear.html
++.Sh SEE ALSO
++.Xr dropbearkey 1 ,
++.Xr dropbear 8
++.Pp
++.Lk https://matt.ucc.asn.au/dropbear/dropbear.html
++.Sh AUTHORS
++.An Matt Johnston Aq Mt matt@ucc.asn.au .
++.An Mihnea Stoenescu
++wrote initial Dropbear client support.
++.An Gerrit Pape Aq Mt pape@smarden.org
++wrote this manual page.
+diff --git a/release/src/router/dropbear/manpages/dropbear.8 b/release/src/router/dropbear/manpages/dropbear.8
+index fc44db316e..fdfd27109d 100644
+--- a/release/src/router/dropbear/manpages/dropbear.8
++++ b/release/src/router/dropbear/manpages/dropbear.8
+@@ -1,277 +1,296 @@
+-.TH dropbear 8
+-.SH NAME
+-dropbear \- lightweight SSH server
+-.SH SYNOPSIS
+-.B dropbear
+-[\fIflag arguments\fR] [\-b
+-.I banner\fR] 
+-[\-r
+-.I hostkeyfile\fR] [\-p [\fIaddress\fR:]\fIport\fR]
+-.SH DESCRIPTION
+-.B dropbear
+-is a small SSH server 
+-.SH OPTIONS
+-.TP
+-.B \-b \fIbanner
++.Dd February 1, 2023
++.Dt DROPBEAR 8
++.Os
++.Sh NAME
++.Nm dropbear
++.Nd lightweight SSH server
++.Sh SYNOPSIS
++.Nm
++.Op Ar flag arguments
++.Op Fl b Ar banner
++.Op Fl r Ar hostkeyfile
++.Op Fl p Ar [address:]port
++.Sh DESCRIPTION
++.Nm dropbear
++is a small SSH server
++.Sh OPTIONS
++.Bl -tag -width Ds
++.It Fl b Ar banner
+ bannerfile.
+ Display the contents of the file
+-.I banner
++.Ar banner
+ before user login (default: none).
+-.TP
+-.B \-r \fIhostkey
++.It Fl r Ar hostkey
+ Use the contents of the file
+-.I hostkey
++.Ar hostkey
+ for the SSH hostkey.
+ This file is generated with
+-.BR dropbearkey (1) 
+-or automatically with the '-R' option. See "Host Key Files" below.
+-.TP
+-.B \-R
+-Generate hostkeys automatically. See "Host Key Files" below.
+-.TP
+-.B \-F
++.Xr dropbearkey 1
++or automatically with the
++.Fl R
++option. See
++.Dq Host Key Files
++below.
++.It Fl R
++Generate hostkeys automatically. See
++.Dq Host Key Files
++below.
++.It Fl F
+ Don't fork into background.
+-.TP
+-.B \-E
++.It Fl E
+ Log to standard error rather than syslog.
+-.TP
+-.B \-e
++.It Fl e
+ Pass on the server environment to all child processes. This is required, for example,
+ if Dropbear is launched on the fly from a SLURM workload manager. The environment is not
+-passed by default. Note that this could expose secrets in environment variables from 
++passed by default. Note that this could expose secrets in environment variables from
+ the calling process - use with caution.
+-.TP
+-.B \-m
++.It Fl m
+ Don't display the message of the day on login.
+-.TP
+-.B \-w
++.It Fl w
+ Disallow root logins.
+-.TP
+-.B \-s
++.It Fl s
+ Disable password logins.
+-.TP
+-.B \-g
++.It Fl g
+ Disable password logins for root.
+-.TP
+-.B \-t
++.It Fl t
+ Enable two-factor authentication. Both password login and public key authentication are
+-required. Should not be used with the '-s' option.
+-.TP
+-.B \-j
++required. Should not be used with the
++.Fl s
++option.
++.It Fl j
+ Disable local port forwarding. This includes unix stream forwards.
+-.TP
+-.B \-k
++.It Fl k
+ Disable remote port forwarding.
+-.TP
+-.B \-p\fR [\fIaddress\fR:]\fIport
+-Listen on specified 
+-.I address
++.It Fl p Ar [address:]port
++Listen on specified
++.Ar address
+ and TCP
+-.I port.
++.Ar port .
+ If just a port is given listen
+ on all addresses.
+ Up to 10 can be specified (default 22 if none specified).
+-.TP
+-.B \-l \fIinterface
++.It Fl l Ar interface
+ Listen on the specified
+-.I interface
+-.TP
+-.B \-i
++.Ar interface
++.It Fl i
+ Service program mode.
+ Use this option to run
+-.B dropbear
++.Nm dropbear
+ under TCP/IP servers like inetd, tcpsvd, or tcpserver.
+-In program mode the \-F option is implied, and \-p options are ignored.
+-.TP
+-.B \-P \fIpidfile
+-Specify a pidfile to create when running as a daemon. If not specified, the 
+-default is /var/run/dropbear.pid
+-.TP
+-.B \-a
++In program mode the
++.Fl F
++option is implied, and
++.Fl p
++options are ignored.
++.It Fl P Ar pidfile
++Specify a pidfile to create when running as a daemon. If not specified, the
++default is
++.Pa /var/run/dropbear.pid
++.It Fl a
+ Allow remote hosts to connect to forwarded ports.
+-.TP
+-.B \-W \fIwindowsize
+-Specify the per-channel receive window buffer size. Increasing this 
++.It Fl W Ar windowsize
++Specify the per-channel receive window buffer size. Increasing this
+ may improve network performance at the expense of memory use. Use -h to see the
+ default buffer size.
+-.TP
+-.B \-K \fItimeout_seconds
++.It Fl K Ar timeout_seconds
+ Ensure that traffic is transmitted at a certain interval in seconds. This is
+ useful for working around firewalls or routers that drop connections after
+ a certain period of inactivity. The trade-off is that a session may be
+ closed if there is a temporary lapse of network connectivity. A setting
+ of 0 disables keepalives. If no response is received for 3 consecutive keepalives the connection will be closed.
+-.TP
+-.B \-I \fIidle_timeout
+-Disconnect the session if no traffic is transmitted or received for \fIidle_timeout\fR seconds.
+-.TP
+-.B \-M
++.It Fl I Ar idle_timeout
++Disconnect the session if no traffic is transmitted or received for
++.Ar idle_timeout
++seconds.
++.It Fl M
+ Set maximum session duration in seconds. All sessions will close after this time.
+-If a compile-time setting was set (default is none), then setting \fI-M 0\fR will disable
++If a compile-time setting was set (default is none), then setting
++.Fl M Ar 0
++will disable
+ the session duration timeout.
+-.TP
+-.B \-z
+-By default Dropbear will send network traffic with the \fBAF21\fR setting for QoS, letting network devices give it higher priority. Some devices may have problems with that, \fI-z\fR can be used to disable it.
+-.TP
+-.B \-T \fImax_authentication_attempts
+-Set the number of authentication attempts allowed per connection. If unspecified the default is 10 (MAX_AUTH_TRIES)
+-.TP
+-.B \-c \fIforced_command
+-Disregard the command/shell provided by the user and always run \fIforced_command\fR. This also
+-overrides any authorized_keys command= option. The original command is saved in the 
+-SSH_ORIGINAL_COMMAND environment variable (see below).
+-
++.It Fl z
++By default Dropbear will send network traffic with the
++.Dv AF21
++setting for QoS, letting network devices give it higher priority. Some devices may have problems with that,
++.Fl z
++can be used to disable it.
++.It Fl T Ar max_authentication_attempts
++Set the number of authentication attempts allowed per connection. If unspecified the default is 10
++.Pq Dv MAX_AUTH_TRIES
++.It Fl c Ar forced_command
++Disregard the command/shell provided by the user and always run
++.Ar forced_command .
++This also
++overrides any
++.Pa authorized_keys
++.Cm command=
++option. The original command is saved in the
++.Ev SSH_ORIGINAL_COMMAND
++environment variable (see below).
++.Pp
+ The forced command is started using the user's normal shell, the same as
+ occurs for normal commands.
+-
++.Pp
+ Unix stream forwarding is disabled when a forced command is set, since that
+ may allow a bypass of the forced command. Other SSH features such as TCP forwarding
+-are still allowed by default - it may be desirable to disable those using \fI-j\fR or \fI-k\fR
++are still allowed by default - it may be desirable to disable those using
++.Fl j
++or
++.Fl k
+ options when using forced command.
+-
+-.TP
+-.B \-D \fIauthorized_keys_dir
+-Specify the directory to use for authorized_keys files. The default is ~/.ssh , paths with
+-a leading ~/ will be home directory expanded.
+-
+-.TP
+-.B \-Q \fIalgo
++.It Fl D Ar authorized_keys_dir
++Specify the directory to use for
++.Pa authorized_keys
++files. The default is
++.Pa ~/.ssh ,
++paths with a leading
++.Pa ~/
++will be home directory expanded.
++.It Fl Q Ar algo
+ Query supported algorithms. Options are kex, sig, cipher, mac, compress
+-
+-.TP
+-.B \-V
++.It Fl V
+ Print the version
+-
+-.SH FILES
+-
+-.TP
+-Authorized Keys
+-
+-~/.ssh/authorized_keys can be set up to allow remote login with a
+-Ed25519, RSA, or ECDSA key.
+-The authorized_keys file and its containing ~/.ssh directory must only be
++.El
++.Sh FILES
++.Bl -tag -width Ds
++.It Authorized Keys
++.Pa ~/.ssh/authorized_keys
++can be set up to allow remote login with a
++.Dv Ed25519 ,
++.Dv RSA ,
++or
++.Dv ECDSA
++key.
++The
++.Pa authorized_keys
++file and its containing
++.Pa ~/.ssh
++directory must only be
+ writable by the user, otherwise Dropbear will not allow a login using public
+ key authentication.
+-
+-
++.Pp
+ Each line is of the form
+-.TP
++.Bd -literal -offset indent
+ [restrictions] ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAIgAsp... [comment]
+-
+-and can be extracted from a Dropbear private host key with "dropbearkey -y". This is the same format as used by OpenSSH, though the restrictions are a subset (keys with unknown restrictions are ignored).
++.Ed
++.Pp
++and can be extracted from a Dropbear private host key with
++.Ql dropbearkey -y .
++This is the same format as used by OpenSSH, though the restrictions are a subset (keys with unknown restrictions are ignored).
+ Restrictions are comma separated, with double quotes around spaces in arguments.
+ Available restrictions are:
+-
+-.RS
+-
+-.TP
+-.B no-port-forwarding
++.Bl -tag -width Ds
++.It Cm no-port-forwarding
+ Don't allow port forwarding for this connection, including unix streams.
+-
+-.TP
+-.B no-agent-forwarding
++.It Cm no-agent-forwarding
+ Don't allow agent forwarding for this connection
+-
+-.TP
+-.B no-X11-forwarding
++.It Cm no-X11-forwarding
+ Don't allow X11 forwarding for this connection
+-
+-.TP
+-.B no-pty
++.It Cm no-pty
+ Disable PTY allocation. Note that a user can still obtain most of the
+ same functionality with other means even if no-pty is set.
+-
+-.TP
+-.B restrict
++.It Cm restrict
+ Applies all the no- restrictions listed above.
+-
+-.TP
+-.B permitopen=\fR"\fIhost:port\fR"
++.It Cm permitopen= Ns Qo Ar host:port Qc
+ Restrict local port forwarding so that connection is allowed only to the
+ specified host and port. Multiple permitopen options separated by commas
+-can be set in authorized_keys. Wildcard character ('*') may be used in
++can be set in
++.Pa authorized_keys .
++Wildcard character
++.Pq Ql *
++may be used in
+ port specification for matching any port. Hosts must be literal domain names or
+ IP addresses.
+-
+-.TP
+-.B permitlisten=\fR"\fIport\fR"
++.It Cm permitlisten= Ns Qo Ar port Qc
+ Restrict remote port forwarding listeners to the given port.
+-Multiple permitlisten="port" options separated by commas
+-can be set in authorized_keys.
++Multiple
++.Cm permitlisten= Ns Qo Ar port Qc
++options separated by commas
++can be set in
++.Pa authorized_keys .
+ Port can be 0 to allow the
+ listen port to be dynamically allocated on the server.
+-
+-.TP
+-.B command=\fR"\fIforced_command\fR"
+-Disregard the command provided by the user and always run \fIforced_command\fR.
+-The -c command line option overrides this. See -c documentation for behaviour of
++.It Cm command= Ns Qo Ar forced_command Qc
++Disregard the command provided by the user and always run
++.Ar forced_command .
++The
++.Fl c
++command line option overrides this. See
++.Fl c
++documentation for behaviour of
+ forced commands.
+-
++.Pp
+ When using
+-.B command=
++.Cm command=
+ it is often desirable to also use
+-.B restrict
++.Cm restrict
+ option to avoid other SSH features that may allow additional access.
+-
+-
+-
+-.RE
+-
+-.TP
+-Host Key Files
+-
++.El
++.It Host Key Files
+ Host key files are read at startup from a standard location, by default
+-/etc/dropbear/dropbear_dss_host_key, /etc/dropbear/dropbear_rsa_host_key,
+-/etc/dropbear/dropbear_ecdsa_host_key and /etc/dropbear/dropbear_ed25519_host_key
+-
+-If the -r command line option is specified the default files are not loaded.
+-Host key files are of the form generated by dropbearkey. 
+-The -R option can be used to automatically generate keys
++.Pa /etc/dropbear/dropbear_dss_host_key ,
++.Pa /etc/dropbear/dropbear_rsa_host_key ,
++.Pa /etc/dropbear/dropbear_ecdsa_host_key
++and
++.Pa /etc/dropbear/dropbear_ed25519_host_key
++.Pp
++If the
++.Fl r
++command line option is specified the default files are not loaded.
++Host key files are of the form generated by
++.Xr dropbearkey 1 .
++The
++.Fl R
++option can be used to automatically generate keys
+ in the default location - keys will be generated after startup when the first
+-connection is established. This had the benefit that the system /dev/urandom
++connection is established. This had the benefit that the system
++.Pa /dev/urandom
+ random number source has a better chance of being securely seeded.
+-
+-.TP
+-Message Of The Day
+-
+-By default the file /etc/motd will be printed for any login shell (unless 
++.It Message Of The Day
++By default the file
++.Pa /etc/motd
++will be printed for any login shell (unless
+ disabled at compile-time). This can also be disabled per-user
+-by creating a file ~/.hushlogin .
+-
+-.SH ENVIRONMENT VARIABLES
+-Dropbear sets the standard variables USER, LOGNAME, HOME, SHELL, PATH, and TERM.
+-
+-The variables below are set for sessions as appropriate. 
+-
+-.TP
+-.B SSH_TTY
++by creating a file
++.Pa ~/.hushlogin .
++.El
++.Sh ENVIRONMENT VARIABLES
++Dropbear sets the standard variables
++.Ev USER ,
++.Ev LOGNAME ,
++.Ev HOME ,
++.Ev SHELL ,
++.Ev PATH ,
++and
++.Ev TERM .
++.Pp
++The variables below are set for sessions as appropriate.
++.Bl -tag -width Ds
++.It Ev SSH_TTY
+ This is set to the allocated TTY if a PTY was used.
+-
+-.TP
+-.B SSH_CONNECTION
+-Contains "<remote_ip> <remote_port> <local_ip> <local_port>".
+-
+-.TP
+-.B DISPLAY
++.It Ev SSH_CONNECTION
++Contains
++.Ql <remote_ip> <remote_port> <local_ip> <local_port> .
++.It Ev DISPLAY
+ Set X11 forwarding is used.
+-
+-.TP
+-.B SSH_ORIGINAL_COMMAND
+-If a 'command=' authorized_keys option was used, the original command is specified
++.It Ev SSH_ORIGINAL_COMMAND
++If a
++.Cm command=
++.Pa authorized_keys
++option was used, the original command is specified
+ in this variable. If a shell was requested this is set to an empty value.
+-
+-.TP
+-.B SSH_AUTH_SOCK
++.It Ev SSH_AUTH_SOCK
+ Set to a forwarded ssh-agent connection.
+-
+-.SH NOTES
++.El
++.Sh NOTES
+ Dropbear only supports SSH protocol version 2.
+-
+-.SH AUTHOR
+-Matt Johnston (matt@ucc.asn.au).
+-.br
+-Gerrit Pape (pape@smarden.org) wrote this manual page.
+-.SH SEE ALSO
+-dropbearkey(1), dbclient(1), dropbearconvert(1)
+-.P
+-https://matt.ucc.asn.au/dropbear/dropbear.html
++.Sh SEE ALSO
++.Xr dbclient 1 ,
++.Xr dropbearconvert 1 ,
++.Xr dropbearkey 1
++.Pp
++.Lk https://matt.ucc.asn.au/dropbear/dropbear.html
++.Sh AUTHORS
++.An Matt Johnston Aq Mt matt@ucc.asn.au .
++.An Gerrit Pape Aq Mt pape@smarden.org
++wrote this manual page.
+diff --git a/release/src/router/dropbear/manpages/dropbearconvert.1 b/release/src/router/dropbear/manpages/dropbearconvert.1
+index 42f6c1b63e..f8c6fa49cf 100644
+--- a/release/src/router/dropbear/manpages/dropbearconvert.1
++++ b/release/src/router/dropbear/manpages/dropbearconvert.1
+@@ -1,59 +1,69 @@
+-.TH dropbearconvert 1
+-.SH NAME
+-dropbearconvert \- convert between Dropbear and OpenSSH private key formats
+-.SH SYNOPSIS
+-.B dropbearconvert
+-.I input_type
+-.I output_type
+-.I input_file
+-.I output_file
+-.SH DESCRIPTION
+-.B Dropbear
++.Dd February 1, 2023
++.Dt DROPBEARCONVERT 1
++.Os
++.Sh NAME
++.Nm dropbearconvert
++.Nd convert between Dropbear and OpenSSH private key formats
++.Sh SYNOPSIS
++.Nm
++.Ar input_type
++.Ar output_type
++.Ar input_file
++.Ar output_file
++.Sh DESCRIPTION
++Dropbear
+ and
+-.B OpenSSH
++OpenSSH
+ SSH implementations have different private key formats.
+-.B dropbearconvert
++.Nm dropbearconvert
+ can convert between the two.
+-.P
++.Pp
+ Dropbear uses the same SSH public key format as OpenSSH, it can be extracted
+ from a private key by using
+-.B dropbearkey \-y
+-.P
+-Encrypted private keys are not supported, use ssh-keygen(1) to decrypt them
++.Nm dropbearkey
++.Fl y
++.Pp
++Encrypted private keys are not supported, use
++.Xr ssh-keygen 1
++to decrypt them
+ first.
+-.SH ARGUMENTS
+-.TP
+-.I input_type
++.Sh ARGUMENTS
++.Bl -tag -width Ds
++.It Ar input_type
+ Either
+-.I dropbear
++.Cm dropbear
+ or
+-.I openssh
+-.TP
+-.I output_type
++.Cm openssh
++.It Ar output_type
+ Either
+-.I dropbear
++.Cm dropbear
+ or
+-.I openssh
+-.TP
+-.I input_file
++.Cm openssh
++.It Ar input_file
+ An existing Dropbear or OpenSSH private key file
+-.TP
+-.I output_file
+-The path to write the converted private key file. For client authentication ~/.ssh/id_dropbear is loaded by default
+-.SH SUPPORTED FORMATS
+-.B dropbearconvert
+-can read OpenSSH format files, and older PEM format files (
+-.B ssh-keygen
+-.I -m PEM
+-).
+-.B dropbearconvert
++.It Ar output_file
++The path to write the converted private key file. For client authentication
++.Pa ~/.ssh/id_dropbear
++is loaded by default
++.El
++.Sh SUPPORTED FORMATS
++.Nm dropbearconvert
++can read OpenSSH format files, and older PEM format files
++.Po
++.Nm ssh-keygen
++.Fl m Ar PEM
++.Pc .
++.Nm dropbearconvert
+ will write OpenSSH format files, usable with OpenSSH 6.5 and later.
+ Reading OpenSSH format DSS files or PKCS8 files is not currently supported.
+-.SH EXAMPLE
+- # dropbearconvert openssh dropbear ~/.ssh/id_rsa ~/.ssh/id_dropbear
+-.SH AUTHOR
+-Matt Johnston (matt@ucc.asn.au).
+-.SH SEE ALSO
+- dropbearkey(1), ssh-keygen(1)
+-.P
+-https://matt.ucc.asn.au/dropbear/dropbear.html
++.Sh EXAMPLES
++.Bd -literal -offset indent
++# dropbearconvert openssh dropbear ~/.ssh/id_rsa ~/.ssh/id_dropbear
++.Ed
++.Sh SEE ALSO
++.Xr dropbearkey 1 ,
++.Xr ssh-keygen 1
++.Pp
++.Lk https://matt.ucc.asn.au/dropbear/dropbear.html
++.Sh AUTHORS
++.An Matt Johnston Aq Mt matt@ucc.asn.au .
+diff --git a/release/src/router/dropbear/manpages/dropbearkey.1 b/release/src/router/dropbear/manpages/dropbearkey.1
+index d6860eac01..49ca8e52cf 100644
+--- a/release/src/router/dropbear/manpages/dropbearkey.1
++++ b/release/src/router/dropbear/manpages/dropbearkey.1
+@@ -1,61 +1,84 @@
+-.TH dropbearkey 1
+-.SH NAME
+-dropbearkey \- create private keys for the use with dropbear(8) or dbclient(1)
+-.SH SYNOPSIS
+-.B dropbearkey
+-\-t
+-.I type
+-\-f
+-.I file
+-[\-s
+-.IR bits ]
+-[\-y]
+-.SH DESCRIPTION
+-.B dropbearkey
++.Dd February 1, 2023
++.Dt DROPBEARKEY 1
++.Os
++.Sh NAME
++.Nm dropbearkey
++.Nd create private keys for the use with
++.Xr dropbear 8
++or
++.Xr dbclient 1
++.Sh SYNOPSIS
++.Nm
++.Fl t
++.Ar type
++.Fl f
++.Ar file
++.Op Fl s Ar bits
++.Op Fl y
++.Sh DESCRIPTION
++.Nm dropbearkey
+ generates a
+-\fIRSA\fR, \fIDSS\fR, \fIECDSA\fR, or \fIEd25519\fR
++.Dv RSA , DSS , ECDSA ,
++or
++.Dv Ed25519
+ format SSH private key, and saves it to a file for the use with the
+ Dropbear client or server.
+-Note that 
++Note that
+ some SSH implementations
+-use the term "DSA" rather than "DSS", they mean the same thing.
+-.SH OPTIONS
+-.TP
+-.B \-t \fItype
++use the term
++.Dq DSA
++rather than
++.Dq DSS ,
++they mean the same thing.
++.Sh OPTIONS
++.Bl -tag -width Ds
++.It Fl t Ar type
+ Type of key to generate.
+ Must be one of
+-.I rsa
+-.I ecdsa
+-.I ed25519
++.Cm rsa ,
++.Cm ecdsa ,
++.Cm ed25519 ,
+ or
+-.IR dss .
+-.TP
+-.B \-f \fIfile
++.Cm dss .
++.It Fl f Ar file
+ Write the secret key to the file
+-\fIfile\fR. For client authentication ~/.ssh/id_dropbear is loaded by default
+-.TP
+-.B \-s \fIbits
++.Ar file .
++For client authentication
++.Pa ~/.ssh/id_dropbear
++is loaded by default
++.It Fl s Ar bits
+ Set the key size to
+-.I bits
+-bits, should be multiple of 8 (optional). 
+-.TP
+-.B \-y
+-Just print the publickey and fingerprint for the private key in \fIfile\fR.
+-.SH NOTES
+-The program dropbearconvert(1) can be used to convert between Dropbear and OpenSSH key formats.
+-.P
+-Dropbear does not support encrypted keys. 
+-.SH EXAMPLE
++.Ar bits
++bits, should be multiple of 8 (optional).
++.It Fl y
++Just print the publickey and fingerprint for the private key in
++.Ar file .
++.El
++.Sh NOTES
++The program
++.Xr dropbearconvert 1
++can be used to convert between Dropbear and OpenSSH key formats.
++.Pp
++Dropbear does not support encrypted keys.
++.Sh EXAMPLES
+ generate a host-key:
+- # dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
+-
+-extract a public key suitable for authorized_keys from private key:
+- # dropbearkey -y -f id_rsa | grep "^ssh-rsa " >> authorized_keys
+-.SH AUTHOR
+-Matt Johnston (matt@ucc.asn.au).
+-.br
+-Gerrit Pape (pape@smarden.org) wrote this manual page.
+-.SH SEE ALSO
+-dropbear(8), dbclient(1), dropbearconvert(1)
+-.P
+-https://matt.ucc.asn.au/dropbear/dropbear.html
++.Bd -literal -offset indent
++# dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
++.Ed
++.Pp
++extract a public key suitable for
++.Pa authorized_keys
++from private key:
++.Bd -literal -offset indent
++# dropbearkey -y -f id_rsa | grep "^ssh-rsa " >> authorized_keys
++.Ed
++.Sh SEE ALSO
++.Xr dbclient 1 ,
++.Xr dropbearconvert 1 ,
++.Xr dropbear 8
++.Pp
++.Lk https://matt.ucc.asn.au/dropbear/dropbear.html
++.Sh AUTHORS
++.An Matt Johnston Aq Mt matt@ucc.asn.au .
++.An Gerrit Pape Aq Mt pape@smarden.org
++wrote this manual page.
+diff --git a/release/src/router/dropbear/release.sh b/release/src/router/dropbear/release.sh
+index 37690fb1fb..b6b7a221d6 100755
+--- a/release/src/router/dropbear/release.sh
++++ b/release/src/router/dropbear/release.sh
+@@ -63,7 +63,7 @@ chmod -R a+rX $RELDIR
+ 
+ RELDATE=$(head -n1 CHANGES | cut -d - -f 2)
+ # timezone keeps it consistent, choose a plausible release time
+-RELTIME="22:30:00 +0800"
++RELTIME="19:00:00 +0800"
+ 
+ # from https://reproducible-builds.org/docs/archives/
+ TAROPTS="--sort=name --owner=0 --group=0 --numeric-owner"
+diff --git a/release/src/router/dropbear/src/chansession.h b/release/src/router/dropbear/src/chansession.h
+index cf4fba36e8..306af945cd 100644
+--- a/release/src/router/dropbear/src/chansession.h
++++ b/release/src/router/dropbear/src/chansession.h
+@@ -67,7 +67,6 @@ struct ChanSess {
+ 	char * x11authprot;
+ 	char * x11authcookie;
+ 	unsigned int x11screennum;
+-	unsigned char x11singleconn;
+ #endif
+ 
+ #if DROPBEAR_SVR_AGENTFWD
+diff --git a/release/src/router/dropbear/src/cli-runopts.c b/release/src/router/dropbear/src/cli-runopts.c
+index 95d1928f9b..70918decb0 100644
+--- a/release/src/router/dropbear/src/cli-runopts.c
++++ b/release/src/router/dropbear/src/cli-runopts.c
+@@ -944,7 +944,7 @@ static int match_extendedopt(const char** strptr, const char *optname) {
+ 	int optlen = strlen(optname);
+ 	const char *str = *strptr;
+ 
+-	while (isspace(*str)) {
++	while (ascii_isspace(*str)) {
+ 		++str;
+ 	}
+ 
+@@ -954,7 +954,7 @@ static int match_extendedopt(const char** strptr, const char *optname) {
+ 
+ 	str += optlen;
+ 
+-	while (isspace(*str) || (!seen_eq && *str == '=')) {
++	while (ascii_isspace(*str) || (!seen_eq && *str == '=')) {
+ 		if (*str == '=') {
+ 			seen_eq = 1;
+ 		}
+@@ -1138,7 +1138,7 @@ static void add_extendedopt(const char* origstr) {
+ 
+ #if DROPBEAR_USE_SSH_CONFIG
+ static void apply_config_settings(const char* cli_host_arg) {
+-	char* is_multi_hop_host_target = strchr(cli_host_arg, ',');
++	const char* is_multi_hop_host_target = strchr(cli_host_arg, ',');
+ 	if (!is_multi_hop_host_target) {
+ 		char* config_path = expand_homedir_path(DROPBEAR_DEFAULT_SSH_CONFIG);
+ 		FILE* f;
+diff --git a/release/src/router/dropbear/src/cli-session.c b/release/src/router/dropbear/src/cli-session.c
+index df7e8119f8..90273b248d 100644
+--- a/release/src/router/dropbear/src/cli-session.c
++++ b/release/src/router/dropbear/src/cli-session.c
+@@ -376,8 +376,6 @@ static void cli_finished() {
+ 	TRACE(("cli_finished()"))
+ 
+ 	session_cleanup();
+-	fprintf(stderr, "Connection to %s@%s:%s closed.\n", cli_opts.username,
+-			cli_opts.remotehost, cli_opts.remoteport);
+ 	exit(cli_ses.retval);
+ }
+ 
+@@ -422,10 +420,17 @@ void cli_dropbear_exit(int exitcode, const char* format, va_list param) {
+ 	if (!ses.init_done) {
+ 		snprintf(fullmsg, sizeof(fullmsg), "Exited: %s", exitmsg);
+ 	} else {
+-		snprintf(fullmsg, sizeof(fullmsg), 
++		if (strchr(cli_opts.remotehost, ':') != NULL) {
++			snprintf(fullmsg, sizeof(fullmsg), 
++				"Connection to %s@[%s]:%s exited: %s", 
++				cli_opts.username, cli_opts.remotehost, 
++				cli_opts.remoteport, exitmsg);
++		} else {
++			snprintf(fullmsg, sizeof(fullmsg), 
+ 				"Connection to %s@%s:%s exited: %s", 
+ 				cli_opts.username, cli_opts.remotehost, 
+ 				cli_opts.remoteport, exitmsg);
++		}
+ 	}
+ 
+ 	/* Do the cleanup first, since then the terminal will be reset */
+diff --git a/release/src/router/dropbear/src/compat.c b/release/src/router/dropbear/src/compat.c
+index 4d6f78a0f6..d597d83ac7 100644
+--- a/release/src/router/dropbear/src/compat.c
++++ b/release/src/router/dropbear/src/compat.c
+@@ -269,7 +269,7 @@ static char **initshells() {
+ 		if (*cp == '#' || *cp == '\0')
+ 			continue;
+ 		*sp++ = cp;
+-		while (!isspace(*cp) && *cp != '#' && *cp != '\0')
++		while (!ascii_isspace(*cp) && *cp != '#' && *cp != '\0')
+ 			cp++;
+ 		*cp++ = '\0';
+ 	}
+diff --git a/release/src/router/dropbear/src/dbctype.c b/release/src/router/dropbear/src/dbctype.c
+new file mode 100644
+index 0000000000..a456fd0517
+--- /dev/null
++++ b/release/src/router/dropbear/src/dbctype.c
+@@ -0,0 +1,36 @@
++#include "dbctype.h"
++
++/* Locale-independent replacements for the <ctype.h> character
++   classification functions. The standard ones have undefined behaviour
++   when passed a plain char with a value that doesn't fit in unsigned
++   char, and their results can vary with locale. Dropbear only cares
++   about ASCII ranges, so simple comparisons suffice. Bytes outside
++   0-127 never match. */
++
++int ascii_isdigit(char c) {
++    return c >= '0' && c <= '9';
++}
++
++int ascii_isalpha(char c) {
++    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
++}
++
++int ascii_isalnum(char c) {
++    return ascii_isalpha(c) || ascii_isdigit(c);
++}
++
++int ascii_isspace(char c) {
++    return c == ' ' || c == '\t' || c == '\n'
++        || c == '\v' || c == '\f' || c == '\r';
++}
++
++int ascii_isprint(char c) {
++    return c >= 0x20 && c <= 0x7e;
++}
++
++char ascii_tolower(char c) {
++    if (c >= 'A' && c <= 'Z') {
++        return c + ('a' - 'A');
++    }
++    return c;
++}
+diff --git a/release/src/router/dropbear/src/dbctype.h b/release/src/router/dropbear/src/dbctype.h
+new file mode 100644
+index 0000000000..661a540335
+--- /dev/null
++++ b/release/src/router/dropbear/src/dbctype.h
+@@ -0,0 +1,13 @@
++#ifndef DBCTYPE_H
++#define DBCTYPE_H
++
++/* Sensible ctype alternatives */
++int ascii_isdigit(char c);
++int ascii_isalpha(char c);
++int ascii_isalnum(char c);
++int ascii_isspace(char c);
++int ascii_isprint(char c);
++char ascii_tolower(char c);
++
++#endif
++
+diff --git a/release/src/router/dropbear/src/dbutil.c b/release/src/router/dropbear/src/dbutil.c
+index 8626f20442..a34141318d 100644
+--- a/release/src/router/dropbear/src/dbutil.c
++++ b/release/src/router/dropbear/src/dbutil.c
+@@ -438,7 +438,7 @@ void printhex(const char * label, const unsigned char * buf, int len) {
+ 		fprintf(stderr, "  ");
+ 		for (i = 0; i < linelen; i++) {
+ 			char c = buf[j+i];
+-			if (!isprint(c)) {
++			if (!ascii_isprint(c)) {
+ 				c = '.';
+ 			}
+ 			fputc(c, stderr);
+diff --git a/release/src/router/dropbear/src/dbutil.h b/release/src/router/dropbear/src/dbutil.h
+index 14d7df6aae..008fced1b4 100644
+--- a/release/src/router/dropbear/src/dbutil.h
++++ b/release/src/router/dropbear/src/dbutil.h
+@@ -118,5 +118,4 @@ int scp_main(int argc, char ** argv);
+ 
+ #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+ 
+-
+ #endif /* DROPBEAR_DBUTIL_H_ */
+diff --git a/release/src/router/dropbear/src/default_options.h b/release/src/router/dropbear/src/default_options.h
+index ffaf062038..2a5ebc0d16 100644
+--- a/release/src/router/dropbear/src/default_options.h
++++ b/release/src/router/dropbear/src/default_options.h
+@@ -407,8 +407,6 @@ runtime with -M. 0 disables this feature. */
+    since they don't seem to be used much. Open a github issue if you
+    want to keep them.
+  */
+-/* Server "-t" two factor auth */
+-#define DEPRECATED_TWO_FACTOR 0
+ 
+ /* Plugins are set with configure --enable-plugin-deprecated */
+ 
+diff --git a/release/src/router/dropbear/src/ecdsa.c b/release/src/router/dropbear/src/ecdsa.c
+index 5ac4e7b15f..8e27ae9b43 100644
+--- a/release/src/router/dropbear/src/ecdsa.c
++++ b/release/src/router/dropbear/src/ecdsa.c
+@@ -103,7 +103,7 @@ ecc_key *buf_get_ecdsa_pub_key(buffer* buf) {
+ 	}
+ 
+ 	for (curve = dropbear_ecc_curves; *curve; curve++) {
+-		if (memcmp(identifier, (char*)(*curve)->name, strlen((char*)(*curve)->name)) == 0) {
++		if (strcmp((char*)identifier, (*curve)->name) == 0) {
+ 			break;
+ 		}
+ 	}
+diff --git a/release/src/router/dropbear/src/includes.h b/release/src/router/dropbear/src/includes.h
+index 86a6ca7bf0..0d1cde6bbd 100644
+--- a/release/src/router/dropbear/src/includes.h
++++ b/release/src/router/dropbear/src/includes.h
+@@ -51,7 +51,6 @@
+ #include <unistd.h>
+ #include <syslog.h>
+ #include <netdb.h>
+-#include <ctype.h>
+ #include <stdarg.h>
+ #include <dirent.h>
+ #include <time.h>
+@@ -149,6 +148,7 @@
+ #endif
+ 
+ #include "compat.h"
++#include "dbctype.h"
+ 
+ #ifndef HAVE_U_INT8_T
+ typedef unsigned char u_int8_t;
+diff --git a/release/src/router/dropbear/src/keyimport.c b/release/src/router/dropbear/src/keyimport.c
+index bc39904536..f83d2a6e39 100644
+--- a/release/src/router/dropbear/src/keyimport.c
++++ b/release/src/router/dropbear/src/keyimport.c
+@@ -416,7 +416,7 @@ static struct openssh_key *load_openssh_key(const char *filename)
+ 				goto error;
+ 			}
+ 			*p++ = '\0';
+-			while (*p && isspace((unsigned char)*p)) p++;
++			while (*p && ascii_isspace(*p)) p++;
+ 			if (!strcmp(buffer, "Proc-Type")) {
+ 				if (p[0] != '4' || p[1] != ',') {
+ 					errmsg = "Proc-Type is not 4 (only 4 is supported)";
+@@ -1075,9 +1075,9 @@ static int openssh_write(const char *filename, sign_key *key,
+ 	if (strlen(filename) == 1 && filename[0] == '-') {
+ 		fp = stdout;
+ 	} else {
+-		fp = NULL;
+ 		int fd = open(filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+ 			S_IRUSR | S_IWUSR);
++		fp = NULL;
+ 		if (fd >= 0) {
+ 			fp = fdopen(fd, "wb"); /* ensure Unix line endings */
+ 		}
+diff --git a/release/src/router/dropbear/src/loginrec.c b/release/src/router/dropbear/src/loginrec.c
+index 3118bf6cd9..92efe8035a 100644
+--- a/release/src/router/dropbear/src/loginrec.c
++++ b/release/src/router/dropbear/src/loginrec.c
+@@ -372,7 +372,7 @@ login_utmp_only(struct logininfo *li)
+ /* line_fullname(): add the leading '/dev/' if it doesn't exist make
+  * sure dst has enough space, if not just copy src (ugh) */
+ char *
+-line_fullname(char *dst, const char *src, size_t dstsize)
++line_fullname(char *dst, const char *src, unsigned int dstsize)
+ {
+ 	memset(dst, '\0', dstsize);
+ 	if ((strncmp(src, "/dev/", 5) == 0) || (dstsize < (strlen(src) + 5))) {
+@@ -386,7 +386,7 @@ line_fullname(char *dst, const char *src, size_t dstsize)
+ 
+ /* line_stripname(): strip the leading '/dev' if it exists, return dst */
+ char *
+-line_stripname(char *dst, const char *src, size_t dstsize)
++line_stripname(char *dst, const char *src, int dstsize)
+ {
+ 	memset(dst, '\0', dstsize);
+ 	if (strncmp(src, "/dev/", 5) == 0)
+@@ -403,7 +403,7 @@ line_stripname(char *dst, const char *src, size_t dstsize)
+  * NOTE: use strncpy because we do NOT necessarily want zero
+  * termination */
+ char *
+-line_abbrevname(char *dst, const char *src, size_t dstsize)
++line_abbrevname(char *dst, const char *src, int dstsize)
+ {
+ 	size_t len;
+ 
+diff --git a/release/src/router/dropbear/src/loginrec.h b/release/src/router/dropbear/src/loginrec.h
+index f8c98ba5b3..e220ccc475 100644
+--- a/release/src/router/dropbear/src/loginrec.h
++++ b/release/src/router/dropbear/src/loginrec.h
+@@ -174,8 +174,8 @@ void login_write (struct logininfo *li);
+ int login_log_entry(struct logininfo *li);
+ 
+ /* produce various forms of the line filename */
+-char *line_fullname(char *dst, const char *src, size_t dstsize);
+-char *line_stripname(char *dst, const char *src, size_t dstsize);
+-char *line_abbrevname(char *dst, const char *src, size_t dstsize);
++char *line_fullname(char *dst, const char *src, unsigned int dstsize);
++char *line_stripname(char *dst, const char *src, int dstsize);
++char *line_abbrevname(char *dst, const char *src, int dstsize);
+ 
+ #endif /* DROPBEAR_HAVE_LOGINREC_H_ */
+diff --git a/release/src/router/dropbear/src/netio.c b/release/src/router/dropbear/src/netio.c
+index 9dad3c4008..6249f85692 100644
+--- a/release/src/router/dropbear/src/netio.c
++++ b/release/src/router/dropbear/src/netio.c
+@@ -270,7 +270,7 @@ struct dropbear_progress_connection *connect_streamlocal(const char* localpath,
+ 	/*
+ 	 * Fake up a struct addrinfo for AF_UNIX connections.
+ 	 * remove_connect() must check ai_family
+-	 * and use m_free() not freeaddirinfo() for AF_UNIX.
++	 * and use m_free() not freeaddrinfo() for AF_UNIX.
+ 	 */
+ 	c->res = m_malloc(sizeof(*c->res) + sizeof(*sunaddr));
+ 	c->res->ai_addr = (struct sockaddr *)(c->res + 1);
+diff --git a/release/src/router/dropbear/src/scp.c b/release/src/router/dropbear/src/scp.c
+index 023e7f6c03..d550566e57 100644
+--- a/release/src/router/dropbear/src/scp.c
++++ b/release/src/router/dropbear/src/scp.c
+@@ -943,6 +943,8 @@ next:			if (fd != -1) {
+ #ifdef PROGRESS_METER
+ 		if (showprogress)
+ 			start_progress_meter(curfile, stb.st_size, &statbytes);
++#else
++        (void)statbytes;
+ #endif
+ 		/* Keep writing after an error so that we stay sync'd up. */
+ 		for (haderr = i = 0; i < stb.st_size; i += bp->cnt) {
+@@ -1027,7 +1029,10 @@ rsource(char *name, struct stat *statp)
+ 			run_err("%s/%s: name too long", name, dp->d_name);
+ 			continue;
+ 		}
+-		(void) snprintf(path, sizeof path, "%s/%s", name, dp->d_name);
++		if (snprintf(path, sizeof path, "%s/%s", name, dp->d_name) >= (int)(sizeof path)) {
++			// Unreachable, checked above. This avoids -Wformat-truncation.
++			abort();
++		}
+ 		vect[0] = path;
+ 		source(1, vect);
+ 	}
+@@ -1211,7 +1216,7 @@ sink(int argc, char **argv, const char *src)
+ 		if (*cp++ != ' ')
+ 			SCREWUP("mode not delimited");
+ 
+-		for (size = 0; isdigit(*cp);)
++		for (size = 0; ascii_isdigit(*cp);)
+ 			size = size * 10 + (*cp++ - '0');
+ 		if (*cp++ != ' ')
+ 			SCREWUP("size not delimited");
+@@ -1297,6 +1302,8 @@ bad:			run_err("%s: %s", np, strerror(errno));
+ #ifdef PROGRESS_METER
+ 		if (showprogress)
+ 			start_progress_meter(curfile, size, &statbytes);
++#else
++        (void)statbytes;
+ #endif
+ 		for (count = i = 0; i < size; i += 4096) {
+ 			amt = 4096;
+@@ -1498,7 +1505,7 @@ okname(char *cp0)
+ 		c = (int)*cp;
+ 		if (c & 0200)
+ 			goto bad;
+-		if (!isalpha(c) && !isdigit(c)) {
++		if (!ascii_isalpha(c) && !ascii_isdigit(c)) {
+ 			switch (c) {
+ 			case '\'':
+ 			case '"':
+diff --git a/release/src/router/dropbear/src/svr-auth.c b/release/src/router/dropbear/src/svr-auth.c
+index 4a8e53528a..11e70af58e 100644
+--- a/release/src/router/dropbear/src/svr-auth.c
++++ b/release/src/router/dropbear/src/svr-auth.c
+@@ -532,8 +532,7 @@ void svr_switch_user(void) {
+ 
+ #if DROPBEAR_SVR_DROP_PRIVS
+ 		/* Retain utmp saved group so that wtmp/utmp can be written */
+-		int ret = utmp_gid(&svr_ses.utmp_gid);
+-		if (ret == DROPBEAR_SUCCESS) {
++		if (utmp_gid(&svr_ses.utmp_gid) == DROPBEAR_SUCCESS) {
+ 			/* Set saved gid to utmp so that it can be
+ 			 * restored for login_logout() etc. This saved
+ 			 * group is cleared by the OS on execve() */
+diff --git a/release/src/router/dropbear/src/svr-authpam.c b/release/src/router/dropbear/src/svr-authpam.c
+index 1e1ac2183d..52eafb6354 100644
+--- a/release/src/router/dropbear/src/svr-authpam.c
++++ b/release/src/router/dropbear/src/svr-authpam.c
+@@ -75,7 +75,7 @@ pamConvFunc(int num_msg,
+ 	/* Make the string lowercase. */
+ 	msg_len = strlen(compare_message);
+ 	for (i = 0; i < msg_len; i++) {
+-		compare_message[i] = tolower(compare_message[i]);
++		compare_message[i] = ascii_tolower(compare_message[i]);
+ 	}
+ 
+ 	/* If the string ends with ": ", remove the space. 
+@@ -295,25 +295,25 @@ void svr_auth_pam(int valid_user) {
+ 	}
+ 
+ 	if (svr_opts.multiauthmethod && (ses.authstate.authtypes & ~AUTH_TYPE_PASSWORD)) {
+-			/* successful PAM password authentication, but extra auth required */
+-			dropbear_log(LOG_NOTICE,
+-					"PAM password auth succeeded for '%s' from %s, extra auth required",
+-					ses.authstate.pw_name,
+-					svr_ses.addrstring);
+-			ses.authstate.authtypes &= ~AUTH_TYPE_PASSWORD; /* PAM password auth ok, delete the method flag */
+-			send_msg_userauth_failure(1, 0);  /* Send partial success */
+-		} else {
+-			/* successful authentication */
+-			dropbear_log(LOG_NOTICE, "PAM password auth succeeded for '%s' from %s",
+-				ses.authstate.pw_name,
+-				svr_ses.addrstring);
++		/* successful PAM password authentication, but extra auth required */
++		dropbear_log(LOG_NOTICE,
++				"PAM password auth succeeded for '%s' from %s, extra auth required",
++ 				ses.authstate.pw_name,
++ 				svr_ses.addrstring);
++		ses.authstate.authtypes &= ~AUTH_TYPE_PASSWORD; /* PAM password auth ok, delete the method flag */
++		send_msg_userauth_failure(1, 0);  /* Send partial success */
++	} else {
++		/* successful authentication */
++		dropbear_log(LOG_NOTICE, "PAM password auth succeeded for '%s' from %s",
++			ses.authstate.pw_name,
++			svr_ses.addrstring);
+ #ifdef SECURITY_NOTIFY
+ 			SEND_PTCSRV_EVENT(PROTECTION_SERVICE_SSH,
+ 				RPT_SUCCESS, svr_ses.hoststring,
+ 				"From dropbear , LOGIN SUCCESS(authpam)");
+ #endif
+-			send_msg_userauth_success();
+-		}
++		send_msg_userauth_success();
++	}
+ 	
+ cleanup:
+ 	if (password != NULL) {
+diff --git a/release/src/router/dropbear/src/svr-authpubkey.c b/release/src/router/dropbear/src/svr-authpubkey.c
+index 183e26167d..607737b87f 100644
+--- a/release/src/router/dropbear/src/svr-authpubkey.c
++++ b/release/src/router/dropbear/src/svr-authpubkey.c
+@@ -422,7 +422,7 @@ static int checkpubkey_line(buffer* line, int line_num, const char* filename,
+ 		}
+ 		/* We have an allowlist - authorized_keys lines can't be fully trusted,
+ 		some shell scripts may do unsafe things with env var values */
+-		if (!(isalnum(c) || strchr(".,_-+@", c))) {
++		if (!(ascii_isalnum(c) || strchr(".,_-+@", c))) {
+ 			TRACE(("Not setting SSH_PUBKEYINFO, special characters"))
+ 			infolen = 0;
+ 			break;
+diff --git a/release/src/router/dropbear/src/svr-authpubkeyoptions.c b/release/src/router/dropbear/src/svr-authpubkeyoptions.c
+index 0b1cf884b7..b56cfc8727 100644
+--- a/release/src/router/dropbear/src/svr-authpubkeyoptions.c
++++ b/release/src/router/dropbear/src/svr-authpubkeyoptions.c
+@@ -359,7 +359,8 @@ svr_parse_pubkey_options(buffer *options_buf, int line_num, const char* filename
+ 					 * port="*" isn't supported either, since it only is useful
+ 					 * with a host: part. */
+ 
+-					if (m_str_to_uint(spec, &entry->port) == DROPBEAR_SUCCESS) {
++					if (m_str_to_uint(spec, &entry->port) == DROPBEAR_SUCCESS
++						&& entry->port <= 65535) {
+ 						valid_option = 1;
+ 						TRACE(("remote forwarding allows listening on port %u",
+ 								entry->port));
+diff --git a/release/src/router/dropbear/src/svr-main.c b/release/src/router/dropbear/src/svr-main.c
+index 40969ff1ee..a77343cd9a 100644
+--- a/release/src/router/dropbear/src/svr-main.c
++++ b/release/src/router/dropbear/src/svr-main.c
+@@ -105,7 +105,12 @@ static void main_inetd() {
+ 	if (svr_opts.reexec_childpipe < 0) {
+ 		/* In case our inetd was lax in logging source addresses */
+ 		get_socket_address(0, NULL, NULL, &host, &port, 0);
+-			dropbear_log(LOG_INFO, "Child connection from %s:%s", host, port);
++			if (strchr(host, ':') != NULL) {
++				dropbear_log(LOG_INFO, "Child connection from [%s]:%s", host, port);
++			} else {
++				dropbear_log(LOG_INFO, "Child connection from %s:%s", host, port);
++			}
++
+ 		m_free(host);
+ 		m_free(port);
+ 
+@@ -326,7 +331,12 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
+ 
+ 				/* child */
+ 				getaddrstring(&remoteaddr, NULL, &remote_port, 0);
+-				dropbear_log(LOG_INFO, "Child connection from %s:%s", remote_host, remote_port);
++				if (strchr(remote_host, ':') != NULL) {
++					dropbear_log(LOG_INFO, "Child connection from [%s]:%s", remote_host, remote_port);
++				} else {
++					dropbear_log(LOG_INFO, "Child connection from %s:%s", remote_host, remote_port);
++				}
++
+ 				m_free(remote_host);
+ 				m_free(remote_port);
+ 
+diff --git a/release/src/router/dropbear/src/svr-runopts.c b/release/src/router/dropbear/src/svr-runopts.c
+index 74eb0c4920..2baec6bdef 100644
+--- a/release/src/router/dropbear/src/svr-runopts.c
++++ b/release/src/router/dropbear/src/svr-runopts.c
+@@ -85,9 +85,7 @@ static void printhelp(const char * progname) {
+ 					"-s		Disable password logins\n"
+ 					"-g		Disable password logins for root\n"
+ 					"-B		Allow blank password logins\n"
+-#if DEPRECATED_TWO_FACTOR
+ 					"-t		Enable two-factor authentication (both password and public key required)\n"
+-#endif
+ #endif
+ 					"-T		Maximum authentication tries (default %d)\n"
+ #if DROPBEAR_SVR_LOCALANYFWD
+@@ -346,11 +344,9 @@ void svr_getopts(int argc, char ** argv) {
+ 				case 'B':
+ 					svr_opts.allowblankpass = 1;
+ 					break;
+-#if DEPRECATED_TWO_FACTOR
+ 				case 't':
+ 					svr_opts.multiauthmethod = 1;
+ 					break;
+-#endif
+ #else
+ 				case 's':
+ 				case 'g':
+diff --git a/release/src/router/dropbear/src/svr-session.c b/release/src/router/dropbear/src/svr-session.c
+index 04369d50ce..029358a3e7 100644
+--- a/release/src/router/dropbear/src/svr-session.c
++++ b/release/src/router/dropbear/src/svr-session.c
+@@ -125,6 +125,12 @@ void svr_session(int sock, int childpipe) {
+ 	len = strlen(host) + strlen(port) + 2;
+ 	svr_ses.addrstring = m_malloc(len);
+ 	snprintf(svr_ses.addrstring, len, "%s:%s", host, port);
++	/* bracket is needed if it's IPv6 address */
++	if (strchr(host, ':') != NULL) {
++		snprintf(svr_ses.addrstring, len, "[%s]:%s", host, port);
++	} else {
++		snprintf(svr_ses.addrstring, len, "%s:%s", host, port);
++	}
+ #ifdef SECURITY_NOTIFY
+ 	svr_ses.hoststring = host;
+ #else
+diff --git a/release/src/router/dropbear/src/svr-x11fwd.c b/release/src/router/dropbear/src/svr-x11fwd.c
+index 30c7a3c4a8..03201a015d 100644
+--- a/release/src/router/dropbear/src/svr-x11fwd.c
++++ b/release/src/router/dropbear/src/svr-x11fwd.c
+@@ -50,7 +50,7 @@ xauth_valid_string(const char *s)
+ 	size_t i;
+ 
+ 	for (i = 0; s[i] != '\0'; i++) {
+-		if (!isalnum(s[i]) &&
++		if (!ascii_isalnum(s[i]) &&
+ 		    s[i] != '.' && s[i] != ':' && s[i] != '/' &&
+ 		    s[i] != '-' && s[i] != '_') {
+ 			return DROPBEAR_FAILURE;
+@@ -65,6 +65,7 @@ xauth_valid_string(const char *s)
+ int x11req(struct ChanSess * chansess) {
+ 
+ 	int fd = -1;
++	int x11singleconn;
+ 
+ 	if (!svr_pubkey_allows_x11fwd()) {
+ 		return DROPBEAR_FAILURE;
+@@ -75,11 +76,16 @@ int x11req(struct ChanSess * chansess) {
+ 		return DROPBEAR_FAILURE;
+ 	}
+ 
+-	chansess->x11singleconn = buf_getbool(ses.payload);
++	x11singleconn = buf_getbool(ses.payload);
+ 	chansess->x11authprot = buf_getstring(ses.payload, NULL);
+ 	chansess->x11authcookie = buf_getstring(ses.payload, NULL);
+ 	chansess->x11screennum = buf_getint(ses.payload);
+ 
++	if (x11singleconn) {
++		TRACE(("singleconn not supported"));
++		goto fail;
++	}
++
+ 	if (xauth_valid_string(chansess->x11authprot) == DROPBEAR_FAILURE ||
+ 		xauth_valid_string(chansess->x11authcookie) == DROPBEAR_FAILURE) {
+ 		dropbear_log(LOG_WARNING, "Bad xauth request");
+@@ -127,13 +133,12 @@ fail:
+ 
+ /* accepts a new X11 socket */
+ /* returns DROPBEAR_FAILURE or DROPBEAR_SUCCESS */
+-static void x11accept(const struct Listener* listener, int sock) {
++static void x11accept(const struct Listener* UNUSED(listener), int sock) {
+ 
+ 	int fd;
+ 	struct sockaddr_in addr;
+ 	socklen_t len;
+ 	int ret;
+-	struct ChanSess * chansess = (struct ChanSess *)(listener->typedata);
+ 
+ 	len = sizeof(addr);
+ 
+@@ -142,11 +147,6 @@ static void x11accept(const struct Listener* listener, int sock) {
+ 		return;
+ 	}
+ 
+-	/* if single-connection we close it up */
+-	if (chansess->x11singleconn) {
+-		x11cleanup(chansess);
+-	}
+-
+ 	ret = send_msg_channel_open_x11(fd, &addr);
+ 	if (ret == DROPBEAR_FAILURE) {
+ 		close(fd);
+diff --git a/release/src/router/dropbear/src/sysoptions.h b/release/src/router/dropbear/src/sysoptions.h
+index 4d45b8f33e..4931009656 100644
+--- a/release/src/router/dropbear/src/sysoptions.h
++++ b/release/src/router/dropbear/src/sysoptions.h
+@@ -4,7 +4,7 @@
+  *******************************************************************/
+ 
+ #ifndef DROPBEAR_VERSION
+-#define DROPBEAR_VERSION "2026.92"
++#define DROPBEAR_VERSION "2026.94"
+ #endif
+ 
+ #ifndef LOCAL_IDENT
+diff --git a/release/src/router/dropbear/test/test_channels.py b/release/src/router/dropbear/test/test_channels.py
+index d6feb045e3..867fc209b5 100644
+--- a/release/src/router/dropbear/test/test_channels.py
++++ b/release/src/router/dropbear/test/test_channels.py
+@@ -68,7 +68,10 @@ def test_bg_sleep(request, fd, dropbear):
+ 		assert st.rstrip() == "hello"
+ 
+ 
+-def test_idle(request, dropbear):
++# This test is flakey so disabled.
++# If working on channel close code it can be manually run
++# by renaming to test_idle().
++def flakey_test_idle(request, dropbear):
+ 	# Idle test, -I 1 should make it return before the 5 second timeout
+ 	r = dbclient(request, "-I", "1", "echo zong; sleep 10",
+ 		capture_output=True, timeout=5, text=True)
+diff --git a/release/src/router/dropbear/test/test_dropbearconvert.py b/release/src/router/dropbear/test/test_dropbearconvert.py
+index 5def7dbac6..8cfc61bde6 100644
+--- a/release/src/router/dropbear/test/test_dropbearconvert.py
++++ b/release/src/router/dropbear/test/test_dropbearconvert.py
+@@ -28,6 +28,10 @@ def test_from_openssh(request, tmp_path, keytype, keyformat):
+ 	if kt == 'dss' and keyformat is None:
+ 		pytest.skip("dss doesn't support openssh format")
+ 
++	if kt == 'ed25519' and keyformat == "PEM":
++		# openssh 10.3 PEM fails, earlier is silently ignored
++		pytest.skip("ed25519 doesn't support PEM format")
++
+ 	os_kt = kt
+ 	if os_kt == 'dss':
+ 		# OpenSSH calls it 'dsa', Dropbear calls it 'dss'
+-- 
+2.25.1
+

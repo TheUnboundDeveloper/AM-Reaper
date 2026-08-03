@@ -1,0 +1,32 @@
+From 9da62a663b01674f73e3e15b7b8154a2e63e8934 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Mon, 29 Jun 2026 01:07:39 -0400
+Subject: [PATCH] httpd: show the correct IPv6 prefix length for the LAN/router
+ IP
+
+You might get a /56, but the LAN interface will typically only get
+a /64 assigned to it.  Poll it from the system.
+
+(cherry picked from commit 1663f5e188c54f4d828718831c7b7445174b19ae)
+---
+ release/src/router/httpd/data_arrays.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/httpd/data_arrays.c b/release/src/router/httpd/data_arrays.c
+index e2c057ee07..46248d7759 100644
+--- a/release/src/router/httpd/data_arrays.c
++++ b/release/src/router/httpd/data_arrays.c
+@@ -651,8 +651,8 @@ ej_lan_ipv6_network_array(int eid, webs_t wp, int argc, char_t **argv)
+ 	ret += websWrite(wp, "[\"WAN IPv6 Gateway\",\"%s\"],",
+ 			 ipv6_gateway_address() ? : "");
+ 
+-	ret += websWrite(wp, "[\"LAN IPv6 Address\",\"%s/%d\"],",
+-			 nvram_safe_get("ipv6_rtr_addr"), nvram_get_int("ipv6_prefix_length"));
++	ret += websWrite(wp, "[\"LAN IPv6 Address\",\"%s\"],",
++			 getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, GIF_PREFIXLEN) ? : "");
+ 
+ 	ret += websWrite(wp, "[\"LAN IPv6 Link-Local Address\",\"%s\"],",
+ 			 getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, GIF_LINKLOCAL | GIF_PREFIXLEN) ? : "");
+-- 
+2.25.1
+

@@ -1,0 +1,30 @@
+From c84cebb5e883da7168baa54ee26f0637f7b0ae5e Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Fri, 3 Jul 2026 12:29:00 -0400
+Subject: [PATCH] rc: limit length to /64 when no SDN is present
+
+By default Asus would assign the whole subnet to br0 if there
+are no SDN present.  Always limit it to a /64 similar to our old
+behaviour.
+
+(cherry picked from commit b8c473573a34a9e8843d5570ad357958b3df2726)
+---
+ release/src/router/rc/services.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 55c5521c3a..c6a2b66141 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2842,7 +2842,7 @@ char* _add_ip6_lansdnaddr()
+ 	else {
+ 		p = (char*)ipv6_router_address(NULL);
+ 		if (*p) {
+-			snprintf(ip, sizeof(ip), "%s/%d", p, v6_prefix_length);
++			snprintf(ip, sizeof(ip), "%s/%d", p, (v6_prefix_length > 64 ? v6_prefix_length : 64));
+ 			eval("ip", "-6", "addr", "flush", "dev", lan_ifname, "scope", "global");
+ 			eval("ip", "-6", "addr", "add", ip, "dev", lan_ifname);
+ 			if (!nvram_match(ipv6_nvname("ipv6_rtr_addr"), (char*)p))
+-- 
+2.25.1
+

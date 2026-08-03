@@ -66,17 +66,18 @@ If step 4 matches, the image you hold is the one that was built. CI does steps
 
 | Version | Base | Patches | `release/src/router` tree | Source reproducible in CI |
 |---|---|---|---|---|
-| **v2.1.2** | `a7ebfa133a` | *(0290+ export owed)* | `b2c357fa4a340d51a1cd6ef8777693781db92c56` | pending patch export |
-| **v2.1.1** | `a7ebfa133a` | *(0290+ export owed)* | `3ae0d9144034bfc3a62fb5814d798a45b7db3ac6` | pending patch export |
+| **v2.1.2** | `a7ebfa133a` | `0001`–`0310` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` | ✅ yes |
+| **v2.1.1** | `a7ebfa133a` | `0001`–`0290` | `3ae0d9144034bfc3a62fb5814d798a45b7db3ac6` | ✅ yes |
 | **v2.1.0** | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` | ✅ yes |
 | *(base)* | — | none | `91ac46a9fde7714dbed651d02c04898b4e134be0` | — |
 
-> **Known gap being closed:** the published patch series currently ends at
-> v2.1.0 (`0289`), while v2.1.1 and v2.1.2 images exist. Their source trees are
-> fingerprinted above, but they are not yet reproducible from *published*
-> patches until the `0290+` series is exported. That export is the last step to
-> make every shipped image independently reproducible; the manifest marks these
-> `"verifiable": false` until then, and CI will not claim to have verified them.
+Every shipped RT-BE96U image is now reproducible from the published patches:
+patches `0290`–`0310` (the v2.1.1 changes and the v2.1.2 Merlin 3006.102.8
+carry-forward) were exported and **verified** to reproduce the trees above —
+applying `0001`–`0290` yields `3ae0d914…` (v2.1.1) and `0001`–`0310` yields
+`b2c357fa…` (v2.1.2). The 19 carry-forward patches (`0291`–`0309`) retain their
+original Asuswrt-Merlin authorship; the Reaper-authored patches use the Reaper
+identity. CI reproduces all three trees on every run.
 
 ## Build & verification logs
 

@@ -402,8 +402,16 @@ are at v2.1.0 below and the v2.1.2 fan-out is owed). The four-file set (both var
 `…_nand_squashfs.pkgtb` **and** their `…_loader.pkgtb` recovery images) is on the `reaper-firmware/`
 ladder as `SHA256SUMS-RT-BE96U-Reaper_v2.1.2.txt`.
 
-> _Hashes are filled in once the v2.1.2 build completes and ships; until then, verify against the
-> `SHA256SUMS-RT-BE96U-Reaper_v2.1.2.txt` shipped on the ladder._
+| Image (`RT-BE96U_3006_102.8_Reaper_v2.1.2…`) | SHA-256 |
+|---|---|
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `eab8bdd393cf435ccfae8f71bb631511bd5594cda0d44b54f0d9bebcf0489419` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `1d8a734ca297cc2b8aeed3325410630c6e63888959401c47f53423cdac386876` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `88398251688c78cae7d428ba515ce40bfef3594eaeb9f725b9abf94bb2ba1dc0` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `71fd3c65409c80fff6ed82975182046d374475ed6b6a6526d593c0f86d187397` |
+
+> Source provenance: this image was built from `release/src/router` tree
+> `b2c357fa4a340d51a1cd6ef8777693781db92c56`, reproducible from patches `0001`–`0310`
+> onto base `a7ebfa133a`. See [`BUILD-PROVENANCE.md`](BUILD-PROVENANCE.md).
 
 **v2.1.0 flashable-image hashes (SHA-256)** — the **four siblings** (RT-BE86U / RT-BE88U / GT-BE98 /
 GT-BE98 Pro) remain at v2.1.0, and RT-BE96U's v2.1.0 set is retained below for reference. Each model's

@@ -69,6 +69,20 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   gate `PolicyStatus`) so it no longer runs, consistent with the other phone-home
   removals (see the phone-home surface map). [owed — cosmetic/de-cloud cleanup]
 
+- **Dashboard client list fetches device icons from the ASUS CDN (`nw-dlcdnet.asus.com`).**
+  `www/dashboard/js/clientlist.module.js` (~L185) does
+  `fetch('https://nw-dlcdnet.asus.com/plugin/productIcons/${this.name}.png')` to pull a
+  product-icon image, keyed on the device model name. **Dormant, gated:** only fires when
+  the dashboard client list is viewed AND the client is an ASUS device with the default
+  type icon (`this.isASUS && this.type == this.defaultType && this.name != "ASUS"`), so it
+  is not automatic outbound — but it is a direct browser→ASUS-CDN request that a de-clouded
+  build should not make, and it leaks the presence/model of ASUS devices to ASUS. Pre-existing
+  stock behavior (not introduced by any Reaper rung); surfaced incidentally during the
+  v2.1.1/v2.1.2 security review. **Fix options:** (a) drop the remote fetch and fall back to
+  the local/bundled icon set (Reaper already ships icons), or (b) gate it behind a setting
+  that is off by default. See the phone-home surface map (the user-triggered /
+  dormant tier). [owed — de-cloud cleanup]
+
 - **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
   reset → wizard appears → no page/dashboard reachable until username+password set → forced
   to the wireless page until a WiFi PSK is set → dashboard → values persist → all editable

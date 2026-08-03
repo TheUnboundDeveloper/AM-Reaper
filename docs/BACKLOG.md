@@ -111,6 +111,34 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Features to add
 
+- **Self-host the firmware update check on GitHub (remove Merlin's links/info from the
+  update page).** The stock/Merlin update page shows Asuswrt-Merlin's update links and
+  information, which **confuses Reaper users** about who provides their firmware. Explore
+  pointing the update check at a **Reaper GitHub-hosted manifest** so the update page shows
+  Reaper's own version info and release, with no Merlin references.
+  - *Reference approach (gnuton's `webs_update.sh`):* the update-check script `wget`s a
+    plain-text manifest from a GitHub raw URL
+    (`https://raw.githubusercontent.com/<owner>/<repo>/<branch>/updates/manifest_3006.txt`),
+    greps the line for `productid` (format `MODEL#...#FW<base.firm.build>#EXT<extendno>#`),
+    parses base/firm/buildno/extendno, compares against the running `firmver`/`buildno`/
+    `extendno`, and on a newer version sets the same stock nvram the GUI already reads:
+    `webs_state_info=<base>_<firm>_<build>_<extendno>`, `webs_state_flag=1` (upgrade
+    available), `webs_state_error`, `webs_state_update=1`, plus an optional `_note.txt`
+    release note fetched the same way. The GUI update page renders from those nvram keys —
+    so replacing the *source* + the page's Merlin text is the whole job for a notification.
+  - *Reaper integration:* Reaper already declares `RTCONFIG_MERLINUPDATE` and hosts releases
+    on GitHub (`AM-Reaper`) with `SHA256SUMS-*` and `provenance/manifest.json`. Generate the
+    update manifest from the release process (`stage_release.ps1` / `release.yml`) so it
+    stays in lockstep with what's actually published; per-model + **two-variant (MCP/noMCP)**
+    awareness is required (the update must not offer to cross-flash a user from one variant
+    to the other).
+  - *Scope in phases:* **(1) notification-only** — tell the user a newer Reaper version
+    exists and link to the GitHub release (low risk, removes the Merlin confusion now).
+    **(2) download + flash** — needs a hosted `.pkgtb` URL in `webs_state_url`, the
+    variant/model selection, and the on-request/GPL + image-signing considerations, so it's
+    a larger, later step. Also rewrite the update page's Merlin-referencing text/links
+    regardless of phase. [owed — explore]
+
 - **Staged ("batch") changes — one save, minimal restarts.** Owner request. Today each control
   applies immediately, so e.g. changing all three Wi-Fi bands = three applies + three
   `restart_wireless`. Add a staging layer: a control's Apply becomes "Add to changes", writing

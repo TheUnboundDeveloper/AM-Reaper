@@ -39,6 +39,16 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
 
+- **Warden Live block-count tracker not updating (v2.1.2).** On the Warden page
+  (`Reaper_Warden.asp`), the **live blocked-count tracker does not update the
+  count properly** — the displayed total does not track the actual blocks.
+  Blocking itself appears to still work correctly (the system is functioning);
+  this is a stats/display issue only. Likely in the live stats path
+  (`do_reaper_warden_cgi` → `/tmp/rwarden/stats.sh` reading the live
+  iptables/ip6tables `RW_DROP` packet counters) or its front-end refresh —
+  check whether the counter read, the polling/refresh, or the display
+  accumulation is at fault. Field-observed on v2.1.2. [owed]
+
 - **BE98 Speed Test** Field reports that when QoS is enabled on the BE98 device 
   that the speed test crashes. Doesn't seem to affect everyone as some BE98 users 
   report no issues. Both claim to have the 1.8.6d installed which had the previous 

@@ -22,34 +22,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
 
-- **Channel Lock confirmation modal.** On the Wireless Diagnostics page
-  (`Reaper_Wireless.asp`), **locking** a channel restarts that radio (~20 s client
-  drop on the band) — exactly like unlocking, but only **Unlock** currently warns
-  first (added v1.9.9a). Add the matching confirmation modal to **Lock**: state that
-  continuing will **restart the Wi-Fi and briefly drop clients on that band**, with
-  Continue / Cancel, before it applies. (Per-frequency restart isn't possible on this
-  platform, so the radio restart is unavoidable — the modal just makes it expected.)
-
-- **Connections page (`Reaper_Conn.asp`) layout + labels.** (1) **Shift the content left** — the
-  Connections page/flow table sits shifted right and runs outside the viewport, unlike every other
-  Reaper page which fits inside it; align it to the viewport like the others. (2) **Rename the "Q"
-  column header to "QoS Class"** (it is the egress QoS queue/class the flow maps to — see the QoS
-  Diagnostics page). (3) **Increase the font size** in the page header and the flow-detail title
-  area (both currently render small).
-
-- **Wireless › Professional tab (`Reaper_WiFiPro.asp`) shifted right.** Same viewport-alignment
-  issue as the Connections page above — the all-bands Professional page sits shifted right instead
-  of fitting inside the viewport like the other Reaper pages; shift it left to match.
-
-- **Traffic Manager › QoS Diagnostics (`Reaper_QoSDiag.asp`) shifted right.** Same viewport-shift
-  again — shift the page left so it fits the viewport like the other Reaper pages.
-
-> **Likely shared root cause:** three of the newest Reaper-native pages — **Connections**
-> (`Reaper_Conn.asp`), **Wireless › Professional** (`Reaper_WiFiPro.asp`), and **Traffic Manager ›
-> QoS Diagnostics** (`Reaper_QoSDiag.asp`) — all sit shifted right / overflow the viewport, while the
-> older Reaper pages fit correctly. They almost certainly share a common container/margin in the
-> newer page template; fix all three together (and re-check any future page built from that template).
-
 ## Known issues (cause identified)
 
 - **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
@@ -70,8 +42,8 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **BE98 Speed Test** Field reports that when QoS is enabled on the BE98 device 
   that the speed test crashes. Doesn't seem to affect everyone as some BE98 users 
   report no issues. Both claim to have the 1.8.6d installed which had the previous 
-  fix for the crashing speed test. I have noticed potential soft crashes when I have 
-  class based QoS enabled.
+  fix for the crashing speed test. I have noticed potential soft crashes in speed testing 
+  when I have class based QoS enabled.
 
 - **MTU PPOE** Merlin had changed firmware to support 1500, so that Baby Jumbo Frames 
   (supported in UK on full fibre) could be supported. I think that value translate the WAN 
@@ -145,28 +117,13 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **`poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal already measured 2–3 % CPU
   at the class-poll cadence; treating this as a non-issue per the prior finding. [shelved]
 
-**Pre-release code review 2026-08-02 — deferred (six-agent review; no critical/high, and none of
-the below is attacker-reachable today; the confirmed/reachable items were fixed in v2.1.0):**
-- **Tier-3 CGI error strings not localized.** ~37 hardcoded English error messages in the Devices
-  and Advisor CGI handlers (surfaced to the user via `alert(...)`), plus two web pages, bypass the
-  translation dictionary. Localization gap only — no behavior or security impact. [owed]
-- **`rmcpd` secret-redaction is by-convention, not structural.** Only two of the Advisor daemon's
-  tools route their output through the secret scrubber; the others are safe today purely because of
-  the specific sources chosen (MAC/IP/RSSI/firewall rules — no secrets). A future tool added to the
-  same pattern would bypass redaction silently. Make the scrub structural before extending the MCP
-  tool surface. [owed]
-- **`rmcpd` output truncation can emit malformed JSON.** When a tool's combined output hits the size
-  cap the buffer is cut mid-structure; emit a truncation marker / close it cleanly. Affects only the
-  availability of that Advisor payload. [owed]
-- **Three pages lack an escape helper (defense-in-depth).** `Reaper_Conn`, `Reaper_QoSDiag` and one
-  `Reaper_QoS` field render server/system-supplied strings without the `esc()` wrapper their sibling
-  pages use. The data feeding them is kernel/system-formatted or admin-set (not attacker-controlled),
-  so there is no reachable XSS today; add the wrapper for consistency and future-proofing. [owed]
-- **`rwarden` per-entry `ipset add` fork loop.** Large threat/geo feeds are added one fork per CIDR
-  on every refresh; switch to a single `ipset restore` batch. Performance only, opt-in feature. [owed]
-- **GDX pool watchdog field-proving.** The accelerator pool-drain check is now opt-in (`rwatch_gdx`,
+**Pre-release code review 2026-08-02 — remaining item:**
+- **GDX pool watchdog field-proving.** The accelerator pool-drain check is opt-in (`rwatch_gdx`,
   v2.1.0). Confirm the `/proc/gdx/skb_idx` read is non-destructive under sustained polling on
   hardware before it can be considered for default-on again. [owed — metal]
+  *(The other five items from this review — Tier-3 error-string localization, structural rmcpd
+  redaction, rmcpd truncation-to-valid-JSON, esc() on three pages, and the rwarden ipset-restore
+  batch — shipped in v2.1.1; see the changelog.)*
 
 ## Documentation
 
@@ -179,6 +136,9 @@ the below is attacker-reachable today; the confirmed/reachable items were fixed 
 - **Write a user guide** for other users.
 
 ## Packages
+
+*(OpenVPN 2.7.5 and the other Asuswrt-Merlin 3006.102.8 package updates — dropbear, miniupnpd,
+strongswan — were carried forward in v2.1.2; see the changelog.)*
 
 ## Platform / expansion
 

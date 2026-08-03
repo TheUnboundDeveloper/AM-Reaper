@@ -1,0 +1,130 @@
+name: Verify build provenance
+
+# Reproduces the published source from the published patches and asserts it
+# matches provenance/manifest.json, per release. This is the machine that backs
+# docs/BUILD-PROVENANCE.md: for every release marked "verifiable", it fetches the
+# pinned upstream base, applies that release's first <patch_count> patches with
+# `git am --keep-cr`, and checks that `git rev-parse HEAD:release/src/router`
+# equals the recorded source-tree hash. Any drift between the published patches
+# and the recorded provenance fails the build.
+#
+# Heavy job (multi-GB upstream checkout) - runs on demand and when patches or the
+# manifest change in a PR.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'patches/**'
+      - 'provenance/manifest.json'
+
+permissions:
+  contents: read
+
+jobs:
+  manifest-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifest is valid and well-formed
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+          m = json.load(open("provenance/manifest.json"))
+          assert re.fullmatch(r"[0-9a-f]{40}", m["base"]["commit"]), "base commit must be a full 40-hex sha"
+          hexre = re.compile(r"[0-9a-f]{40}")
+          sha256re = re.compile(r"[0-9a-f]{64}")
+          seen = set()
+          for r in m["releases"]:
+              v = r["version"]; assert v not in seen, f"duplicate {v}"; seen.add(v)
+              for k, h in r["source_tree"].items():
+                  assert hexre.fullmatch(h), f"{v}: bad tree hash for {k}"
+              for img in r.get("images", []):
+                  assert sha256re.fullmatch(img["sha256"]), f"{v}: bad sha256 for {img['file']}"
+              if r.get("verifiable"):
+                  assert isinstance(r.get("patch_count"), int) and r["patch_count"] > 0, \
+                      f"{v}: verifiable release must set a positive patch_count"
+          print(f"manifest OK: base {m['base']['commit'][:12]}, {len(m['releases'])} releases, "
+                f"{sum(1 for r in m['releases'] if r.get('verifiable'))} verifiable")
+          PY
+
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UPSTREAM_REPO: https://github.com/RMerl/asuswrt-merlin.ng.git
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - name: Checkout patches + manifest
+        uses: actions/checkout@v4
+        with:
+          path: reaper
+          sparse-checkout: |
+            patches
+            provenance
+
+      - name: Plan (which releases to reproduce, in patch order)
+        id: plan
+        run: |
+          python3 - <<'PY' > "$RUNNER_TEMP/plan.tsv"
+          import json
+          m = json.load(open("reaper/provenance/manifest.json"))
+          rs = [r for r in m["releases"] if r.get("verifiable") and r.get("patch_count")]
+          rs.sort(key=lambda r: r["patch_count"])
+          for r in rs:
+              print(f'{r["version"]}\t{r["patch_count"]}\t{r["source_tree"]["release/src/router"]}')
+          PY
+          echo "base=$(python3 -c 'import json;print(json.load(open("reaper/provenance/manifest.json"))["base"]["commit"])')" >> "$GITHUB_OUTPUT"
+          echo "--- reproduction plan ---"; cat "$RUNNER_TEMP/plan.tsv"
+          if [ ! -s "$RUNNER_TEMP/plan.tsv" ]; then
+            echo "::warning::no verifiable releases in the manifest yet - nothing to reproduce"
+          fi
+
+      - name: Fetch pinned upstream base
+        if: hashFiles('reaper/provenance/manifest.json') != ''
+        run: |
+          set -euo pipefail
+          mkdir upstream && cd upstream
+          git init -q
+          git remote add origin "$UPSTREAM_REPO"
+          git fetch --depth 1 origin "${{ steps.plan.outputs.base }}"
+          git checkout -q FETCH_HEAD
+          git config user.email provenance@ci.local
+          git config user.name provenance-ci
+          echo "base at $(git rev-parse HEAD)"; df -h /
+
+      - name: Apply patches to each checkpoint and assert the source tree
+        run: |
+          set -euo pipefail
+          cd upstream
+          mapfile -t patches < <(ls ../reaper/patches/[0-9]*.patch | sort)
+          applied=0
+          fail=0
+          while IFS=$'\t' read -r version count expected; do
+            [ -z "$version" ] && continue
+            # apply patches (applied, count]
+            slice=("${patches[@]:applied:count-applied}")
+            echo "== $version : applying patches $((applied+1))..$count (${#slice[@]} files)"
+            if ! git am --keep-cr "${slice[@]}" >/tmp/am.out 2>&1; then
+              echo "::error::$version: git am failed while reaching patch $count"
+              tail -20 /tmp/am.out
+              git am --show-current-patch=raw 2>/dev/null | head -15 || true
+              exit 1
+            fi
+            applied=$count
+            got=$(git rev-parse HEAD:release/src/router)
+            if [ "$got" = "$expected" ]; then
+              echo "  [MATCH] $version  release/src/router = $got"
+            else
+              echo "::error::$version: source tree MISMATCH"
+              echo "    expected $expected"
+              echo "    got      $got"
+              echo "    -> the published patches (0001..$count) do NOT reproduce the recorded source for $version"
+              fail=1
+            fi
+          done < "$RUNNER_TEMP/plan.tsv"
+          exit "$fail"

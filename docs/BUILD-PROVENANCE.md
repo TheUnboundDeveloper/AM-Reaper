@@ -93,6 +93,27 @@ marker, every verify check, and the built image hashes), with the build-host
 path normalized. The full raw logs are large (~10 MB of compiler output) and
 are attached to the corresponding GitHub Release.
 
+## History & coverage
+
+Provenance is recorded for the **RT-BE96U** — the primary development platform.
+The [manifest](../provenance/manifest.json) covers it back to **v1.8.6**:
+
+- **v2.1.0 – v2.1.2** carry the full record and are **reproducible in CI**
+  (`verifiable: true`): source-tree hash, image SHA-256s, and logs, with the
+  published patch series proven to reproduce the tree.
+- **v1.8.6 – v2.0.8** are **historical** entries (`verifiable: false`): the build
+  log + `reaper_verify` summary and the `release/src/router` source-tree
+  fingerprint are recorded, but the firmware images themselves are not retained,
+  so these carry logs + metadata rather than a CI-reproduced image. (The
+  `reaper_verify` gate itself was introduced at **v1.8.6a**; v1.8.6 predates it
+  and records build success via `MAKE_EXIT=0` only. v1.9.8 and v2.0.9 have no
+  entry — the former was never separately logged, the latter was reverted.)
+
+**Anything before v1.8.6 is not available.** The project was in its infancy then
+and was not being developed as an official build for anyone other than the
+developer, so no release-grade build/verification record was kept. Provenance
+begins where the project began shipping as a reproducible, for-others build.
+
 ## Why the full tree isn't re-hosted
 
 Not a size limit — the constraint is that the buildable tree contains

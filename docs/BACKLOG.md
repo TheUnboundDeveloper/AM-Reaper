@@ -136,6 +136,33 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Features to add
 
+- **Connections page — add a "Quick Look" base view with a single slider toggle
+  (current explorer becomes "Advanced").** Field feedback (2026-08-03): users want a
+  fast at-a-glance connection check like Merlin's *System Log → Connections* — **device
+  name, local IP, remote IP, internal-vs-external, and TCP state** in one simple list —
+  as the **default**, with the current live flow explorer available on demand. Build both
+  **inside `Reaper_Conn.asp`** as two render modes switched by a **single slider** in the
+  page header/menu (no second menu entry); persist the choice (localStorage/cookie or
+  nvram) so it stays on the user's preferred mode.
+  - **Quick Look (base, default):** Merlin-style at-a-glance, Reaper-formatted — each row:
+    device name (resolved from MAC/IP), the device's local IP, the remote IP, an
+    **internal-vs-external** indicator, protocol, and **TCP state**. Lighter refresh (no
+    need for the sub-second cadence). This is the "quick way to check who my devices are
+    talking to" the report praised.
+  - **Advanced:** the existing flow explorer unchanged — fast polling (500 ms / 1 s /
+    **2 s [add]** / 4 s), HW-accel Runner-vs-CPU path badge, DSCP/queue, per-flow detail,
+    top-talker sort.
+  - **Folds in the device-name enhancement ("#3"):** both views should resolve **MAC/IP →
+    device name** from the same client-list/networkmap source the Devices page uses. Today
+    the explorer shows IPs only (`cli:cp → srv:spt`), which is the one capability Merlin's
+    view has that Reaper's lacks. Add name resolution (at minimum in Quick Look; ideally in
+    Advanced too).
+  - **Supersedes** the earlier "keep the stock Merlin page as default + an Advanced button"
+    idea — a Reaper-native Quick Look keeps styling consistent and lets the stock
+    `Main_ConnStatus_Content.asp` be retired later rather than maintained.
+  - Note: the router's own WAN-originated flows appear here **by design** (Merlin hid them);
+    Quick Look's internal/external indicator makes that distinction obvious at a glance.
+
 - **Self-host the firmware update check on GitHub (remove Merlin's links/info from the
   update page).** The stock/Merlin update page shows Asuswrt-Merlin's update links and
   information, which **confuses Reaper users** about who provides their firmware. Explore

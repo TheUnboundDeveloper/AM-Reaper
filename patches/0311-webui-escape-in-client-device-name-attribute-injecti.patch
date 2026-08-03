@@ -1,0 +1,38 @@
+From a93d3e8d8e768dc752bc4c4e03617f0a47f02f7e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 3 Aug 2026 15:02:04 -0400
+Subject: [PATCH] webui: escape ' in client device name (attribute-injection
+ XSS + garble)
+
+The client list rendered the device name into single-quoted value='...'
+attributes via htmlEnDeCode.htmlEncode(), which encodes & < > " but NOT the
+single quote. A device whose name/DHCP-hostname contained an apostrophe broke
+out of the attribute: at best the editable name field truncated/garbled, at
+worst a name like  x' onmouseover='...'  injected an attribute into the page an
+authenticated admin views (stored, LAN-reachable). Additionally encode ' as
+&#39; at the single point the name is prepared, closing both the injection sink
+and the long-standing display garble. Safe for the text contexts too, where
+&#39; renders as an apostrophe.
+---
+ release/src/router/www/client_function.js | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/client_function.js b/release/src/router/www/client_function.js
+index 02802c0028..f3cbfe4e22 100644
+--- a/release/src/router/www/client_function.js
++++ b/release/src/router/www/client_function.js
+@@ -3356,7 +3356,10 @@ function _buildClientListRowHtml(profileArray, objID) {
+ 
+ 	const clientIpGroupCode = (p.ip != "0.0.0.0") ? `<div>${p.ip}</div>` : ``;
+ 	const clientIpLinkCode = (p.ip != "0.0.0.0") ? `${p.ip}` : `[${p.ip6}]`;
+-	const clientNameEnCode = htmlEnDeCode.htmlEncode(p.name);
++	// htmlEncode leaves ' unescaped; also encode it so an apostrophe in a device
++	// name can't break out of the single-quoted value='...' attributes below
++	// (also fixes the display garble for names containing an apostrophe).
++	const clientNameEnCode = htmlEnDeCode.htmlEncode(p.name).replace(/'/g, '&#39;');
+ 	const isWebServer = !!(clientList[p.mac] && clientList[p.mac].isWebServer);
+ 	const ipMethod = (clientList[p.mac] && clientList[p.mac].ipMethod) || "";
+ 
+-- 
+2.25.1
+

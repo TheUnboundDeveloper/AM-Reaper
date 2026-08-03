@@ -28,24 +28,35 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
 
+- Add07
+
 ## Known issues (cause identified)
 
-- **Stock/old client list garbles device names containing an apostrophe (`'`).**
+- **[FIXED — patch 0311] Stock/old client list garbled device names containing an
+  apostrophe (`'`) — and it was a reachable stored XSS, not just cosmetic.**
   Field report: a device named with a `'` renders broken on the **old (stock)
   client list** (Network Map client list / device-map popup) — "as if the name
   is treated as a string" — and renaming doesn't help until the `'` is removed.
-  The **Reaper Devices tab shows the same names correctly.** **Cause:** the name
-  is stored (via the Devices `set_name` handler → `custom_clientlist`) with the
-  apostrophe intact — the handler strips `<`, `>` and control chars but not `'` —
-  and the stock client-list JS embeds it in a **single-quoted** string, so the
-  `'` breaks out of the literal (the classic apostrophe-in-`'...'` issue, cf.
-  reaper-ui rule 29, but on a *stock* surface rather than a Reaper page; Reaper's
-  own Devices page escapes via `esc()`, hence it's fine there). **Fix options:**
-  (a) escape the name where the stock client list renders it (best, but that
-  path may be networkmap/closed), or (b) HTML/JS-escape or drop `'` in the
-  Devices `set_name` handler before storing (simplest lever — but verify it
-  doesn't regress the Reaper Devices display, which currently renders the raw
-  name fine). [owed]
+  The **Reaper Devices tab shows the same names correctly.** **Cause:** the stock
+  client-list JS (`www/client_function.js`, the incremental renderer) embedded the
+  name in a **single-quoted** `value='...'` attribute via `htmlEnDeCode.htmlEncode()`,
+  which encodes `& < > "` but **not** `'`. So a device whose name/DHCP-hostname
+  contained an apostrophe broke out of the attribute — at best the editable name
+  field truncated/garbled, at worst a name like `x' onmouseover='…'` injected an
+  attribute into a page the authenticated admin views (**stored, LAN-reachable
+  XSS** — the classic apostrophe-in-`'...'` issue, cf. reaper-ui rule 29, on a
+  *stock* surface). Reaper's own Devices page was already safe via `esc()`.
+  **Fix (v2.1.1-security-review, 2026-08-03):** additionally encode `'` → `&#39;`
+  at the single point the name is prepared in `client_function.js`, closing both
+  `value='...'` sinks and the display garble at once (also safe in the text
+  contexts, where `&#39;` renders as `'`). The dashboard client list
+  (`dashboard/js/clientlist.module.js`) was already safe — it HTML-encodes the
+  name at ingestion and renders it in text context. **Residual (low, optional
+  defense-in-depth, not the reported issue):** `client.vendor` / `deviceTypeName`
+  are still emitted into single-quoted `title='...'` attributes unescaped in both
+  files, but those are vendor/OUI-DB-sourced, not attacker-freeform. Surfaced by
+  the 4-agent v2.1.1/v2.1.2 security review; **not built** (staged on `be96u-only`
+  atop v2.1.2, rides the next rung).
 
 - **Console error: stock ASUS privacy-policy fetch fails on the de-clouded build.**
   The browser console logs `Error fetching ASUS privacy policy: TypeError: Failed
@@ -193,9 +204,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **GDX pool watchdog field-proving.** The accelerator pool-drain check is opt-in (`rwatch_gdx`,
   v2.1.0). Confirm the `/proc/gdx/skb_idx` read is non-destructive under sustained polling on
   hardware before it can be considered for default-on again. [owed — metal]
-  *(The other five items from this review — Tier-3 error-string localization, structural rmcpd
+
+- **NOTE** *(The other five items from this review — Tier-3 error-string localization, structural rmcpd
   redaction, rmcpd truncation-to-valid-JSON, esc() on three pages, and the rwarden ipset-restore
-  batch — shipped in v2.1.1; see the changelog.)*
+  batch — shipped in v2.1.1; see the changelog.)*[DONE]
 
 ## Documentation
 
@@ -210,7 +222,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 ## Packages
 
 *(OpenVPN 2.7.5 and the other Asuswrt-Merlin 3006.102.8 package updates — dropbear, miniupnpd,
-strongswan — were carried forward in v2.1.2; see the changelog.)*
+strongswan — were carried forward in v2.1.2; see the changelog.)* [DONE]
 
 ## Platform / expansion
 

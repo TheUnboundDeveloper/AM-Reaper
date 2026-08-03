@@ -14,6 +14,9 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## UI / UX polish
 
+- **AI Page Wording** "A read-only bridge that lets your own AI assistant read this 
+  router's" is an incomplete sentance and needs to be corrected.
+
 - **SSID Format** The dashboard SSIDs show all capitals vs. mixed case on the Network page.
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 

@@ -9,6 +9,11 @@ The machine-readable record is [`provenance/manifest.json`](../provenance/manife
 the CI workflow [`.github/workflows/verify-provenance.yml`](../.github/workflows/verify-provenance.yml)
 re-checks every reproducible entry on each run.
 
+> **Reviewers:** for the narrative walkthrough — the trust model, why these
+> choices, a step-by-step verification session, and what to do if your
+> reproduction doesn't match — see [`REPRODUCIBILITY.md`](REPRODUCIBILITY.md).
+> This file is the compact reference.
+
 ## The chain
 
 ```

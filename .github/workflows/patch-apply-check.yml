@@ -1,0 +1,65 @@
+name: Patch series applies to upstream
+
+# Proves the GPL "corresponding source" claim mechanically: fetches the pinned
+# upstream Asuswrt-Merlin base (3006.102.8-beta2) and applies the entire
+# patches/ series with `git am --keep-cr` (the CR flag is REQUIRED — several
+# third-party files are CRLF and the series fails without it).
+#
+# Heavy job (multi-GB upstream checkout) — runs on demand and when patches
+# change in a PR, not on every push.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['patches/**']
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: https://github.com/RMerl/asuswrt-merlin.ng.git
+  # Tag 3006.102.8-beta2 — the documented Reaper base (docs/SOURCE-AVAILABILITY.md)
+  UPSTREAM_PIN: a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3
+
+jobs:
+  git-am:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - name: Checkout patch series
+        uses: actions/checkout@v4
+        with:
+          path: reaper
+          sparse-checkout: |
+            patches
+
+      - name: Fetch pinned upstream base
+        run: |
+          set -euo pipefail
+          mkdir upstream && cd upstream
+          git init -q
+          git remote add origin "$UPSTREAM_REPO"
+          git fetch --depth 1 origin "$UPSTREAM_PIN"
+          git checkout -q FETCH_HEAD
+          echo "upstream at: $(git rev-parse HEAD)"
+          df -h /
+
+      - name: Apply full series with git am --keep-cr
+        run: |
+          set -euo pipefail
+          cd upstream
+          git config user.name reaper
+          git config user.email theunbounddeveloper@outlook.com
+          n=$(ls ../reaper/patches/[0-9]*.patch | wc -l)
+          echo "applying $n patches onto $UPSTREAM_PIN"
+          if ! git am --keep-cr ../reaper/patches/[0-9]*.patch; then
+            echo "::error::git am failed — first lines of the failing patch:"
+            git am --show-current-patch=raw | head -25 || true
+            exit 1
+          fi
+          echo "OK: all $n patches applied cleanly"

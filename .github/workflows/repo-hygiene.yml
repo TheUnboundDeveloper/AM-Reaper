@@ -1,0 +1,97 @@
+name: Repo hygiene
+
+# Runs on every push/PR. Validates the things that have bitten this project
+# before: patch-series numbering/identity, PII leakage, GitHub's 100 MB file
+# limit, and release-checksum integrity.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: Patch series, PII, sizes, checksums
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch series is gapless and single-identity
+        run: |
+          set -euo pipefail
+          cd patches
+          mapfile -t nums < <(ls [0-9][0-9][0-9][0-9]-*.patch | cut -c1-4 | sort -n)
+          count=${#nums[@]}
+          [ "$count" -gt 0 ] || { echo "::error::no patches found"; exit 1; }
+          expected=$(seq -f '%04g' 1 "$count")
+          actual=$(printf '%s\n' "${nums[@]}")
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::patch numbering is not gapless 0001..$(printf '%04d' "$count")"
+            diff <(echo "$expected") <(echo "$actual") || true
+            exit 1
+          fi
+          bad=$(grep -L '^From: reaper <theunbounddeveloper@outlook.com>$' *.patch || true)
+          if [ -n "$bad" ]; then
+            echo "::error::patches with an unexpected From: identity (must be reaper <theunbounddeveloper@outlook.com>):"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK: $count patches, gapless numbering, single author identity"
+
+      - name: PII scan
+        run: |
+          set -euo pipefail
+          # Patterns are assembled from fragments so this workflow file never
+          # matches itself. New hits must be added to .github/pii-allowlist.txt
+          # deliberately (only third-party upstream context belongs there).
+          p1='[A-Za-z0-9._%+-]+@gm''ail\.com'
+          p2='/home/na'"than"
+          allow='.github/pii-allowlist.txt'
+          hits=$(git grep -I -l -E "$p1|$p2" -- . || true)
+          new=''
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            grep -qxF "$f" "$allow" || new="$new$f"$'\n'
+          done <<< "$hits"
+          if [ -n "$new" ]; then
+            echo "::error::PII-pattern hits outside the allowlist:"
+            printf '%s' "$new"
+            exit 1
+          fi
+          echo "OK: no PII-pattern hits outside the allowlist"
+
+      - name: No file at GitHub's 100 MB hard limit
+        run: |
+          set -euo pipefail
+          limit=$((100*1024*1024))
+          warn=$((95*1024*1024))
+          fail=0
+          while IFS= read -r line; do
+            sz=${line%% *}
+            f=${line#* }
+            if [ "$sz" -ge "$limit" ]; then
+              echo "::error::$f is $((sz/1024/1024)) MB — at/over GitHub's 100 MB hard limit"
+              fail=1
+            elif [ "$sz" -ge "$warn" ]; then
+              echo "::warning::$f is $((sz/1024/1024)) MB — close to the 100 MB limit"
+            fi
+          done < <(git ls-files -z | xargs -0 stat -c '%s %n')
+          exit "$fail"
+
+      - name: Verify release checksums
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r -d '' sums; do
+            found=1
+            dir=$(dirname "$sums")
+            echo "== $sums"
+            (cd "$dir" && sha256sum -c "$(basename "$sums")")
+          done < <(find releases -name 'SHA256SUMS-*.txt' -print0 | sort -z)
+          [ "$found" -eq 1 ] && echo "OK: all checksum files verified" || echo "no checksum files found (nothing to verify)"

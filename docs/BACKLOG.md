@@ -28,8 +28,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
 
-- Add07
-
 ## Known issues (cause identified)
 
 - **[FIXED — patch 0311] Stock/old client list garbled device names containing an
@@ -92,6 +90,13 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   (currently uses the stock `sdn_rl` signal for stability). Feature record in
   [`CHANGELOG.md`](CHANGELOG.md) v1.5.5; it replaces the stock forced password gate and is
   the concrete mitigation for deferred finding **H15** (see the AA26-194A section below).
+
+- **Watchdog Failure** Under the condition of WAN first hop blocking ICMP an error is 
+  produced by the watchdog system. I need to alter the watchdog to emmit an informative 
+  error in these conditions to prevent users from thinking somthing is wrong. 
+  Issue: The ISP ONT/modem at 192.168.100.1 completely drops ICMP echo requests 
+  (100% packet loss over ppp0), which triggers rwatch to report wan-gw failure even 
+  though the PPPoE connection is fully online and functional.
 
 ## Known issues (under investigation)
 

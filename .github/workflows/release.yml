@@ -65,30 +65,62 @@ jobs:
           ls -la "$stage"
           echo "stage=$stage" >> "$GITHUB_OUTPUT"
 
-      - name: Build release notes from CHANGELOG
+      - name: Build release notes (changelog + per-model images + source provenance)
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
+          REPO="${{ github.repository }}"
           notes="$RUNNER_TEMP/notes.md"
+
+          # --- 1. CHANGELOG section for this version -------------------------------
           awk -v v="$V" '
             $0 ~ "^## "v"([^0-9A-Za-z]|$)" { on=1 }
             on && /^## / && $0 !~ "^## "v { exit }
             on { print }
           ' docs/CHANGELOG.md > "$notes" || true
           if [ ! -s "$notes" ]; then
-            echo "## Reaper $V" > "$notes"
-            echo "" >> "$notes"
-            echo "See [docs/CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$V/docs/CHANGELOG.md)." >> "$notes"
+            printf '## Reaper %s\n\nSee [docs/CHANGELOG.md](https://github.com/%s/blob/%s/docs/CHANGELOG.md).\n' "$V" "$REPO" "$V" > "$notes"
           fi
-          cat >> "$notes" <<EOF
 
-          ---
-          **Flashing:** upload the \`*_nand_squashfs.pkgtb\` for your model via *Administration → Firmware Upgrade*. Images with \`noMCP\` in the name are built with all MCP/AI components compiled out entirely.
+          # --- 2. Per-model flashable images + SHA-256 -----------------------------
+          {
+            printf '\n---\n\n## Images & checksums\n\n'
+            printf 'Two flashable images per model: **+ AI Advisor** (default) and **Standard** (`noMCP`, all AI components compiled out entirely). Flash the `*_nand_squashfs.pkgtb` for your model via Administration > Firmware Upgrade.\n'
+            for d in $(find releases -maxdepth 2 -type d -name "*-REAPER-$V" | sort); do
+              sums=$(ls "$d"/SHA256SUMS-*.txt 2>/dev/null | head -1)
+              [ -z "$sums" ] && continue
+              prefix=$(ls "$d"/*_nand_squashfs.pkgtb 2>/dev/null | head -1 | xargs -r -n1 basename | sed 's/_3006.*//')
+              [ -z "$prefix" ] && continue
+              printf '\n### %s\n\n| Variant | File | SHA-256 |\n|---|---|---|\n' "$prefix"
+              while read -r sha file; do
+                [ -z "${file:-}" ] && continue
+                case "$file" in *noMCP*) variant="Standard" ;; *) variant="+ AI Advisor" ;; esac
+                printf '| %s | `%s` | `%s` |\n' "$variant" "$file" "$sha"
+              done < "$sums"
+            done
+            printf '\nVerify a download against the per-model `SHA256SUMS-*.txt` (attached) or the combined `SHA256SUMS-%s.txt`.\n' "$V"
+          } >> "$notes"
 
-          **Verify your download** against \`SHA256SUMS-$V.txt\` (attached), or the per-model \`SHA256SUMS-*\` files.
-
-          **Corresponding source:** this repository at tag \`$V\` — the pinned upstream base plus the complete \`patches/\` series. See \`docs/SOURCE-AVAILABILITY.md\` and \`docs/DEV-SETUP.md\`.
-          EOF
+          # --- 3. Corresponding source, tag-pinned, + reproducibility --------------
+          # jq is preinstalled on GitHub-hosted runners; pull the recorded source
+          # fingerprints for this version from the provenance manifest.
+          tree=$(jq -r --arg v "$V" '(.releases[] | select(.version==$v) | .source_tree["release/src/router"]) // empty' provenance/manifest.json 2>/dev/null || true)
+          pc=$(jq -r --arg v "$V" '(.releases[] | select(.version==$v) | .patch_count) // empty' provenance/manifest.json 2>/dev/null || true)
+          {
+            printf '\n---\n\n## Corresponding source & reproducibility\n\n'
+            printf 'Built from this repository **at tag `%s`**: the pinned Asuswrt-Merlin base (`3006.102.8-beta2`, `a7ebfa133a`) plus the complete patch series. The tag freezes the exact source that produced these images.\n\n' "$V"
+            if [ -n "$pc" ]; then
+              printf -- '- **Patches:** [`patches/`](https://github.com/%s/tree/%s/patches) (`0001`-`%04d`)\n' "$REPO" "$V" "$pc"
+            else
+              printf -- '- **Patches:** [`patches/`](https://github.com/%s/tree/%s/patches)\n' "$REPO" "$V"
+            fi
+            printf -- '- **Provenance record:** [`provenance/manifest.json`](https://github.com/%s/blob/%s/provenance/manifest.json)\n' "$REPO" "$V"
+            if [ -n "$tree" ]; then
+              printf -- '- **Source tree hash** (`release/src/router`): `%s` -- reproduce by `git am --keep-cr` of the patches onto the base, then `git rev-parse HEAD:release/src/router`.\n' "$tree"
+            fi
+            printf -- '- **How to verify:** [`docs/REPRODUCIBILITY.md`](https://github.com/%s/blob/%s/docs/REPRODUCIBILITY.md) and [`docs/SOURCE-AVAILABILITY.md`](https://github.com/%s/blob/%s/docs/SOURCE-AVAILABILITY.md)\n' "$REPO" "$V" "$REPO" "$V"
+            printf '\nThe auto-attached **Source code (zip/tar.gz)** asset below is this repository at tag `%s` (patches + docs).\n' "$V"
+          } >> "$notes"
 
       - name: Create or update the GitHub release
         env:

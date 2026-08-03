@@ -44,6 +44,17 @@ def scrub(text):
     # keep published logs host-neutral (matches the .mailmap /home/builder rule)
     return text.replace("/home/reaper", "/home/builder")
 
+def commit_from_log(version, target):
+    """Read the build commit from the log's 'head: <commit> ...' line."""
+    src = f"{LOGDIR}/build_{target}_Reaper_{version}.log"
+    if not os.path.exists(src):
+        return None
+    for ln in open(src, encoding="utf-8", errors="replace"):
+        if ln.startswith("head:"):
+            parts = ln.split()
+            return parts[1] if len(parts) > 1 else None
+    return None
+
 def extract_logs(version, target):
     src = f"{LOGDIR}/build_{target}_Reaper_{version}.log"
     if not os.path.exists(src):
@@ -71,9 +82,13 @@ def extract_logs(version, target):
         f"# Build summary for {version} (from build_{target}_Reaper_{version}.log)\n"
         "# Key lines only; build-host path normalized. Full raw log is attached to the release.\n\n"
         + "\n".join(build_keep) + "\n"))
+    verify_body = ("\n".join(verify_keep) if verify_keep else
+                   "(This build predates the reaper_verify packaging gate, which was "
+                   "introduced at v1.8.6a. Build success is recorded in the build "
+                   "summary via MAKE_EXIT=0 and the \"Done! Image\" marker.)")
     open(vpath, "w", encoding="utf-8").write(scrub(
         f"# reaper_verify (17-check packaging gate) for {version}\n\n"
-        + "\n".join(verify_keep) + "\n"))
+        + verify_body + "\n"))
     print(f"  wrote {os.path.relpath(bpath, LEAN)}")
     print(f"  wrote {os.path.relpath(vpath, LEAN)}")
     return (f"provenance/logs/{version}/build-{target}.summary.log",
@@ -95,19 +110,28 @@ def collect_images(version, prefix):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", required=True)
-    ap.add_argument("--commit", required=True)
+    ap.add_argument("--commit", default=None,
+                    help="build commit; if omitted, read from the log's head: line")
     ap.add_argument("--patch-count", type=int, default=None)
     ap.add_argument("--model", default="RT-BE96U")
     ap.add_argument("--target", default="rt-be96u")
+    ap.add_argument("--no-images", action="store_true",
+                    help="record logs + source-tree metadata only (skip image SHAs); "
+                         "used for historical backfill where the images aren't kept")
+    ap.add_argument("--note", default=None, help="set the release note field")
     a = ap.parse_args()
 
-    router = git(a.commit, "release/src/router")
-    srcrt  = git(a.commit, "release/src-rt")
-    print(f"{a.version}  build_commit={a.commit}")
+    commit = a.commit or commit_from_log(a.version, a.target)
+    if not commit:
+        sys.exit(f"FATAL: no --commit given and none found in the {a.version} log")
+
+    router = git(commit, "release/src/router")
+    srcrt  = git(commit, "release/src-rt")
+    print(f"{a.version}  build_commit={commit}")
     print(f"  release/src/router tree = {router}")
     print(f"  release/src-rt tree     = {srcrt}")
 
-    imgs = collect_images(a.version, a.model)
+    imgs = [] if a.no_images else collect_images(a.version, a.model)
     for i in imgs:
         print(f"  image {i['variant']:5} {i['file']}  {i['sha256'][:16]}...")
     blog, vlog = extract_logs(a.version, a.target)
@@ -118,17 +142,20 @@ def main():
     if rel is None:
         rel = {"version": a.version, "firmware": f"3006.102.8_Reaper_{a.version}"}
         m["releases"].insert(0, rel)
-    rel["build_commit"] = a.commit
+    rel["build_commit"] = commit
     rel["source_tree"] = {"release/src/router": router, "release/src-rt": srcrt}
     if imgs:
         rel["images"] = imgs
     if blog:
         rel["logs"] = {"build": blog, "verify": vlog}
+    if a.note is not None:
+        rel["note"] = a.note
     if a.patch_count is not None:
         rel["patch_count"] = a.patch_count
         rel["verifiable"] = True
         rel.pop("pending", None)
     rel.setdefault("verifiable", False)
+    rel.setdefault("models", [a.model])
     with open(mpath, "w", encoding="utf-8") as f:
         json.dump(m, f, indent=2, ensure_ascii=False)
         f.write("\n")

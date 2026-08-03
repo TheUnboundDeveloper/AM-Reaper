@@ -14,6 +14,12 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## UI / UX polish
 
+- **Wireless › Professional (`Reaper_WiFiPro.asp`) — drop the raw nvram field names.**
+  Each setting row shows the underlying nvram variable name next to its friendly
+  label (e.g. **"Enable Radio"** displays **`wlN_radio`**). Remove the variable
+  name so only the friendly label shows (just "Enable Radio"). It's cosmetic —
+  the field name is developer detail that shouldn't be user-facing.
+
 - **AI Page Wording** "A read-only bridge that lets your own AI assistant read this 
   router's" is an incomplete sentance and needs to be corrected.
 

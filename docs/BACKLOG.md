@@ -30,6 +30,17 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Known issues (cause identified)
 
+- **Console error: stock ASUS privacy-policy fetch fails on the de-clouded build.**
+  The browser console logs `Error fetching ASUS privacy policy: TypeError: Failed
+  to fetch` — stock `asus_policy.js` `PolicyStatus()` (fired from `state.js` via a
+  `setTimeout`) calls `httpApi.get(...)` to fetch the ASUS privacy policy and the
+  request fails. **Cause:** Reaper is de-clouded, so that ASUS endpoint is
+  removed/unreachable; the stock policy-status check still runs and throws.
+  **Harmless** — console-only, no functional impact — but it's noise that a clean
+  de-cloud build shouldn't emit. Fix: suppress/stub the stock policy fetch (or
+  gate `PolicyStatus`) so it no longer runs, consistent with the other phone-home
+  removals (see the phone-home surface map). [owed — cosmetic/de-cloud cleanup]
+
 - **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
   reset → wizard appears → no page/dashboard reachable until username+password set → forced
   to the wireless page until a WiFi PSK is set → dashboard → values persist → all editable

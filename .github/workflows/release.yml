@@ -1,0 +1,116 @@
+name: Publish release
+
+# Publishing a Reaper release is now: stage the firmware into releases/
+# (build-scripts/stage_release.ps1), push main, then push a v* tag.
+# This workflow picks up the staged images for that version, verifies their
+# checksums, extracts the CHANGELOG section, and creates the GitHub Release
+# with all firmware assets attached.
+#
+# workflow_dispatch re-publishes/repairs an EXISTING tag (e.g. re-upload
+# assets after a partial failure).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing tag to (re)publish, e.g. v2.1.0'
+        required: true
+      prerelease:
+        description: 'Mark as pre-release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.version }}
+
+      - name: Collect and verify firmware assets
+        id: assets
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          stage="$RUNNER_TEMP/assets"
+          mkdir -p "$stage"
+          dirs=$(find releases -maxdepth 2 -type d -name "*-REAPER-$V" | sort)
+          if [ -z "$dirs" ]; then
+            echo "::error::no releases/*/*-REAPER-$V directories found — run build-scripts/stage_release.ps1 and push before tagging"
+            exit 1
+          fi
+          for d in $dirs; do
+            echo "== $d"
+            (cd "$d" && for s in SHA256SUMS-*.txt; do sha256sum -c "$s"; done)
+            cp "$d"/*.pkgtb "$d"/SHA256SUMS-*.txt "$stage"/
+          done
+          (cd "$stage" && sha256sum *.pkgtb > "SHA256SUMS-$V.txt")
+          ls -la "$stage"
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes from CHANGELOG
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          notes="$RUNNER_TEMP/notes.md"
+          awk -v v="$V" '
+            $0 ~ "^## "v"([^0-9A-Za-z]|$)" { on=1 }
+            on && /^## / && $0 !~ "^## "v { exit }
+            on { print }
+          ' docs/CHANGELOG.md > "$notes" || true
+          if [ ! -s "$notes" ]; then
+            echo "## Reaper $V" > "$notes"
+            echo "" >> "$notes"
+            echo "See [docs/CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$V/docs/CHANGELOG.md)." >> "$notes"
+          fi
+          cat >> "$notes" <<EOF
+
+          ---
+          **Flashing:** upload the \`*_nand_squashfs.pkgtb\` for your model via *Administration → Firmware Upgrade*. Images with \`noMCP\` in the name are built with all MCP/AI components compiled out entirely.
+
+          **Verify your download** against \`SHA256SUMS-$V.txt\` (attached), or the per-model \`SHA256SUMS-*\` files.
+
+          **Corresponding source:** this repository at tag \`$V\` — the pinned upstream base plus the complete \`patches/\` series. See \`docs/SOURCE-AVAILABILITY.md\` and \`docs/DEV-SETUP.md\`.
+          EOF
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          stage="${{ steps.assets.outputs.stage }}"
+          pre=""
+          case "$V" in *alpha*|*beta*|*rc*) pre="--prerelease" ;; esac
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.prerelease }}" = "true" ]; then
+            pre="--prerelease"
+          fi
+          if gh release view "$V" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "release $V exists — updating notes and re-uploading assets"
+            gh release edit "$V" --repo "${{ github.repository }}" --notes-file "$RUNNER_TEMP/notes.md"
+            gh release upload "$V" "$stage"/* --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$V" $pre --verify-tag \
+              --repo "${{ github.repository }}" \
+              --title "Reaper $V" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              "$stage"/*
+          fi
+          echo "published: https://github.com/${{ github.repository }}/releases/tag/$V"

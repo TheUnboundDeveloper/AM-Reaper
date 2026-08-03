@@ -39,6 +39,15 @@ source tree byte-for-byte under `release/src/router` (verified with
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
 source for the GPL portions of the image.
 
+**Per-release verification.** [`BUILD-PROVENANCE.md`](BUILD-PROVENANCE.md) and the
+machine-readable [`../provenance/manifest.json`](../provenance/manifest.json) pin,
+for each published image, the exact **Git tree hash** of `release/src/router` it
+was built from, together with the image SHA-256 and the build/verification logs.
+The [`verify-provenance`](../.github/workflows/verify-provenance.yml) CI workflow
+re-derives that tree hash from the published patches on every run, so anyone can
+confirm — automatically — that the published image corresponds to the published
+source with nothing added or omitted.
+
 > **Why patches instead of a source dump.** The full buildable tree (~10.6 GB)
 > contains proprietary Broadcom/ASUS/Trend Micro/Tuxera components that are
 > **licensed for use on genuine ASUS hardware only** and that this project has

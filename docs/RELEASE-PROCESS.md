@@ -26,11 +26,17 @@ is automated here.
 3. REVIEW + PUSH (owner)  git push origin main
                           → "Repo hygiene" workflow validates the push
 
-4. TAG (owner)            git tag vX.Y.Z && git push origin vX.Y.Z
-                          → "Publish release" workflow verifies checksums,
-                            extracts the CHANGELOG section, and creates the
-                            GitHub Release with all firmware assets attached
+4. TAG (owner)            Releases are PER-MODEL. Push one tag per model:
+                          git tag vX.Y.Z-<MODEL> && git push origin vX.Y.Z-<MODEL>
+                          e.g.  vX.Y.Z-RT-BE96U ,  vX.Y.Z-GT-BE98_PRO
+                          → "Publish release" workflow parses the version + model
+                            from the tag, verifies that model's checksums, and
+                            creates a per-model GitHub Release ("Reaper vX.Y.Z — <MODEL>")
 ```
+
+Each model gets its own tag and release, so models can version independently
+(e.g. RT-BE96U at v2.1.2 while siblings are still at v2.1.0). `stage_release.ps1`
+prints the exact per-model tag commands for whatever it staged.
 
 Update `docs/CHANGELOG.md` (a `## vX.Y.Z — Title` section) **before** tagging —
 the release notes are extracted from it automatically.
@@ -40,7 +46,7 @@ the release notes are extracted from it automatically.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `repo-hygiene.yml` | every push/PR | Patch series gapless + single `From:` identity; PII scan (allowlist: `.github/pii-allowlist.txt`); no file at GitHub's 100 MB hard limit; every `SHA256SUMS-*` in `releases/` verifies |
-| `release.yml` | tag push `v*` (or manual re-run) | Verifies staged checksums, builds combined `SHA256SUMS-<ver>.txt`, extracts CHANGELOG notes, creates/updates the GitHub Release with all `.pkgtb` + sums files |
+| `release.yml` | per-model tag push `v*-*` (or manual re-run) | Parses `v<version>-<MODEL>`, verifies that model's checksums, extracts CHANGELOG notes, and creates/updates a per-model GitHub Release ("Reaper v<version> — <MODEL>") with that model's two variants + SHA256SUMS, a per-model image table, and tag-pinned source/provenance links |
 | `patch-apply-check.yml` | manual, or PR touching `patches/` | Fetches the pinned upstream base (`3006.102.8-beta2`, `a7ebfa133a`) and applies all patches with `git am --keep-cr` — mechanical proof the published corresponding source is complete |
 
 ## Fixing a release

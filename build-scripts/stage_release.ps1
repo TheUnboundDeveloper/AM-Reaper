@@ -1,19 +1,30 @@
 <#
 .SYNOPSIS
-  Stage locally built Reaper firmware into releases/ for a GitHub release.
+  Stage locally built Reaper firmware into releases/ for a per-model GitHub release.
 
 .DESCRIPTION
   Copies the built .pkgtb images for a version from the local firmware ladder
   (asuswrt-merlin.ng\reaper-firmware\) into releases/<Model>/<MODEL>-REAPER-<ver>/,
-  writes per-model SHA256SUMS files, verifies every copy hash-for-hash,
-  refreshes releases/latest.json, and commits the result locally.
+  writes per-model SHA256SUMS files, verifies every copy hash-for-hash, refreshes
+  releases/latest.json, and commits the result locally.
 
-  It NEVER pushes. Publishing is: git push, then push the version tag —
-  .github/workflows/release.yml builds the GitHub Release from what was staged.
+  Hardening (so a staged tree can never fail the publish workflow):
+    * Canonical folder name is <MODEL>-REAPER-<ver> with UPPER-CASE "REAPER". Any
+      pre-existing case variant (e.g. BE88U-Reaper-v2.1.2) is renamed to the
+      canonical case in git — the release workflow globs case-sensitively on Linux,
+      so a mis-cased folder would silently yield "no images".
+    * Before committing, the script replicates the workflow's EXACT collect+verify
+      logic against the git-tracked paths (case-sensitive folder + filename match,
+      SHA256SUMS present, every model hash verified). If any requested model would
+      fail CI, the script aborts WITHOUT committing and prints what's wrong.
+
+  It NEVER pushes. Publishing is: git push origin main, then push a per-model tag
+  v<version>-<MODEL> — .github/workflows/release.yml builds the GitHub Release from
+  what was staged.
 
 .EXAMPLE
-  .\stage_release.ps1 -Version v2.2.0
-  .\stage_release.ps1 -Version v2.2.0 -Models BE96U,BE98 -AllowPartial
+  .\stage_release.ps1 -Version v2.1.2 -Models BE86U,BE88U,BE98
+  .\stage_release.ps1 -Version v2.1.2 -ValidateOnly     # check staging is CI-clean, no changes
 #>
 [CmdletBinding()]
 param(
@@ -31,7 +42,10 @@ param(
     [switch]$AllowPartial,
 
     # Stage + write files but skip the git commit
-    [switch]$NoCommit
+    [switch]$NoCommit,
+
+    # Only run the CI-parity validation against what's already staged; make no changes
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,7 +53,6 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $LadderDir) {
     $LadderDir = Join-Path (Split-Path -Parent $RepoRoot) 'asuswrt-merlin.ng\reaper-firmware'
 }
-if (-not (Test-Path $LadderDir)) { throw "Firmware ladder not found: $LadderDir (pass -LadderDir)" }
 
 $PrefixMap = @{
     BE96U   = 'RT-BE96U'
@@ -49,6 +62,79 @@ $PrefixMap = @{
     BE98Pro = 'GT-BE98_PRO'
 }
 
+# Canonical release folder for a model key, relative to the repo root (forward
+# slashes for git). UPPER-CASE REAPER — the workflow globs *-REAPER-<V> case-sensitively.
+function Get-CanonicalRel { param([string]$m) "releases/$m/$($m.ToUpper())-REAPER-$Version" }
+
+# If a folder differs from the canonical name only by case, rename it to canonical
+# in git (two-step, because Windows/macOS filesystems are case-insensitive).
+function Repair-FolderCase {
+    param([string]$m)
+    $canonRel = Get-CanonicalRel $m
+    $parentRel = "releases/$m"
+    $parentAbs = Join-Path $RepoRoot ($parentRel -replace '/', '\')
+    if (-not (Test-Path $parentAbs)) { return }
+    $canonLeaf = Split-Path $canonRel -Leaf
+    Get-ChildItem -LiteralPath $parentAbs -Directory |
+        Where-Object { $_.Name -ieq $canonLeaf -and $_.Name -cne $canonLeaf } |
+        ForEach-Object {
+            $srcRel = "$parentRel/$($_.Name)"
+            $tmpRel = "$parentRel/__caserepair_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+            if (git -C $RepoRoot ls-files -- $srcRel) {
+                git -C $RepoRoot mv -- $srcRel $tmpRel | Out-Null
+                git -C $RepoRoot mv -- $tmpRel $canonRel | Out-Null
+            } else {
+                Rename-Item -LiteralPath $_.FullName -NewName (Split-Path $tmpRel -Leaf)
+                Rename-Item -LiteralPath (Join-Path $parentAbs (Split-Path $tmpRel -Leaf)) -NewName $canonLeaf
+            }
+            Write-Host "case-normalized folder: $($_.Name) -> $canonLeaf" -ForegroundColor Yellow
+        }
+}
+
+# Replicate the release workflow's collect+verify EXACTLY, against git-tracked paths
+# (that is what the Linux runner checks out). Returns $true if every requested model
+# would pass CI. Case-sensitive on purpose (mimics the runner).
+function Test-CiParity {
+    param([string[]]$CheckModels)
+    $tracked = @(git -C $RepoRoot ls-files -- releases)
+    $vEsc = [regex]::Escape($Version)
+    $allOk = $true
+    foreach ($m in $CheckModels) {
+        $prefix = $PrefixMap[$m]; $pEsc = [regex]::Escape($prefix)
+        $imgRe = "releases/[^/]+/[^/]+-REAPER-$vEsc/${pEsc}_3006_102\.8_Reaper_${vEsc}_.*nand_squashfs\.pkgtb$"
+        $shaRe = "releases/[^/]+/[^/]+-REAPER-$vEsc/SHA256SUMS-${pEsc}-Reaper_$vEsc\.txt$"
+        $imgs = @($tracked | Where-Object { $_ -cmatch $imgRe })
+        $shas = @($tracked | Where-Object { $_ -cmatch $shaRe })
+        if ($imgs.Count -eq 0) { Write-Host "  [CI-FAIL] $m ($prefix): no tracked image in a *-REAPER-$Version/ folder (wrong-case folder, or not staged/committed)" -ForegroundColor Red; $allOk = $false; continue }
+        if ($shas.Count -eq 0) { Write-Host "  [CI-FAIL] $m ($prefix): no tracked SHA256SUMS-$prefix-Reaper_$Version.txt beside the images" -ForegroundColor Red; $allOk = $false; continue }
+        $shaRel = $shas[0]; $dirRel = Split-Path $shaRel -Parent
+        $bad = 0; $checked = 0
+        foreach ($ln in @(git -C $RepoRoot show ":$shaRel" 2>$null)) {
+            if ($ln -cmatch '^([0-9a-fA-F]{64})\s+(\S+)$') {
+                $hash = $matches[1].ToLower(); $file = $matches[2]
+                if ($file -notlike "${prefix}_*") { continue }   # CI verifies only " ${M}_" lines
+                $checked++
+                $abs = Join-Path $RepoRoot (($dirRel + '/' + $file) -replace '/', '\')
+                if (-not (Test-Path -LiteralPath $abs)) { Write-Host "  [CI-FAIL] ${m}: SHA lists missing file $file" -ForegroundColor Red; $bad++; continue }
+                if ((Get-FileHash -LiteralPath $abs -Algorithm SHA256).Hash.ToLower() -ne $hash) { Write-Host "  [CI-FAIL] ${m}: hash mismatch for $file" -ForegroundColor Red; $bad++ }
+            }
+        }
+        if ($checked -eq 0) { Write-Host "  [CI-FAIL] $m ($prefix): SHA256SUMS has no ${prefix}_ lines" -ForegroundColor Red; $allOk = $false }
+        elseif ($bad -gt 0) { $allOk = $false }
+        else { Write-Host "  [CI-OK]   $m ($prefix): $($imgs.Count) image(s), $checked hash(es) verified, folder case OK" -ForegroundColor Green }
+    }
+    return $allOk
+}
+
+# ---------------------------------------------------------------- validate-only --
+if ($ValidateOnly) {
+    Write-Host "CI-parity validation for $Version (models: $($Models -join ', '))" -ForegroundColor Cyan
+    if (Test-CiParity -CheckModels $Models) { Write-Host "`nAll requested models are CI-clean." -ForegroundColor Green; exit 0 }
+    else { Write-Host "`nOne or more models would FAIL the publish workflow — fix before tagging." -ForegroundColor Red; exit 1 }
+}
+
+if (-not (Test-Path $LadderDir)) { throw "Firmware ladder not found: $LadderDir (pass -LadderDir)" }
+
 # --- 1. Plan: confirm every expected image exists before touching anything ---
 $plan = @(); $missing = @()
 foreach ($m in $Models) {
@@ -56,75 +142,82 @@ foreach ($m in $Models) {
     foreach ($variant in @('', '_noMCP')) {
         $file = "${prefix}_3006_102.8_Reaper_${Version}${variant}_nand_squashfs.pkgtb"
         $src = Join-Path $LadderDir $file
-        if (Test-Path $src) {
-            $plan += [pscustomobject]@{ Model = $m; Prefix = $prefix; File = $file; Src = $src }
-        }
+        if (Test-Path $src) { $plan += [pscustomobject]@{ Model = $m; Prefix = $prefix; File = $file; Src = $src } }
         else { $missing += $file }
     }
 }
 if ($missing.Count -gt 0) {
     $missing | ForEach-Object { Write-Host "MISSING: $_" -ForegroundColor Red }
-    if (-not $AllowPartial) {
-        throw "Not all images for $Version are in the ladder. Build them first, narrow -Models, or pass -AllowPartial."
-    }
+    if (-not $AllowPartial) { throw "Not all images for $Version are in the ladder. Build them first, narrow -Models, or pass -AllowPartial." }
     Write-Host "continuing without the missing images (-AllowPartial)" -ForegroundColor Yellow
 }
 if ($plan.Count -eq 0) { throw "Nothing to stage for $Version." }
 
-# --- 2. Copy, hash, verify, write per-model SHA256SUMS ---
+# --- 2. Copy, hash, verify, write per-model SHA256SUMS (canonical folder case) ---
 $staged = @()
 foreach ($group in ($plan | Group-Object Model)) {
-    $m = $group.Name
-    $prefix = $PrefixMap[$m]
-    $destDir = Join-Path $RepoRoot "releases\$m\$($m.ToUpper())-REAPER-$Version"
+    $m = $group.Name; $prefix = $PrefixMap[$m]
+    Repair-FolderCase -m $m                                  # fix any BE88U-Reaper-* style variant first
+    $destDir = Join-Path $RepoRoot ((Get-CanonicalRel $m) -replace '/', '\')
     New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     $sums = @()
     foreach ($item in $group.Group) {
         $dest = Join-Path $destDir $item.File
         Copy-Item $item.Src $dest -Force
         $srcHash = (Get-FileHash $item.Src -Algorithm SHA256).Hash.ToLower()
-        $dstHash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
+        $dstHash = (Get-FileHash $dest    -Algorithm SHA256).Hash.ToLower()
         if ($srcHash -ne $dstHash) { throw "COPY VERIFICATION FAILED for $($item.File) — staged file does not match the built image" }
-        $sums += "$dstHash  $($item.File)"
+        $sums   += "$dstHash  $($item.File)"
         $staged += [pscustomobject]@{ Model = $m; File = $item.File; Sha256 = $dstHash; Size = (Get-Item $dest).Length }
         Write-Host ("staged  {0,-8} {1}" -f $m, $item.File)
     }
-    # LF line endings so sha256sum -c works in CI
+    # LF line endings so `sha256sum -c` works in CI
     $sumsPath = Join-Path $destDir "SHA256SUMS-$prefix-Reaper_$Version.txt"
     [System.IO.File]::WriteAllText($sumsPath, (($sums -join "`n") + "`n"))
 }
 
-# --- 3. Update the machine-readable manifest (future in-firmware update checks) ---
-$manifest = [ordered]@{ version = $Version; date = (Get-Date -Format 'yyyy-MM-dd'); models = [ordered]@{} }
+# --- 3. Update the machine-readable manifest, merging with any existing entry ---
+$manifestPath = Join-Path $RepoRoot 'releases\latest.json'
+$models = [ordered]@{}
+if (Test-Path $manifestPath) {
+    try {
+        $prev = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        if ($prev.version -eq $Version -and $prev.models) {
+            foreach ($p in $prev.models.PSObject.Properties) { $models[$p.Name] = $p.Value }  # keep models not re-staged this run
+        }
+    } catch { }
+}
 foreach ($group in ($staged | Group-Object Model | Sort-Object Name)) {
-    $manifest.models[$group.Name] = @(
+    $models[$group.Name] = @(
         foreach ($s in $group.Group) {
-            [ordered]@{
-                file   = $s.File
-                sha256 = $s.Sha256
-                size   = $s.Size
-                url    = "https://github.com/TheUnboundDeveloper/AM-Reaper/releases/download/$Version/$($s.File)"
-            }
+            [ordered]@{ file = $s.File; sha256 = $s.Sha256; size = $s.Size
+                        url = "https://github.com/TheUnboundDeveloper/AM-Reaper/releases/download/$Version-$($PrefixMap[$group.Name])/$($s.File)" }
         }
     )
 }
-$manifestPath = Join-Path $RepoRoot 'releases\latest.json'
+$manifest = [ordered]@{ version = $Version; date = (Get-Date -Format 'yyyy-MM-dd'); models = $models }
 [System.IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 6) -replace "`r`n", "`n") + "`n")
 Write-Host "wrote releases/latest.json"
 
-# --- 4. Commit locally (never push) ---
+# --- 4. Stage in git, then PROVE it is CI-clean before committing ----------------
+git -C $RepoRoot add -- releases
+Write-Host ""
+Write-Host "CI-parity check (must pass before commit):" -ForegroundColor Cyan
+$check = @($staged | Select-Object -ExpandProperty Model -Unique)
+if (-not (Test-CiParity -CheckModels $check)) {
+    throw "Staging is NOT CI-clean (see [CI-FAIL] above). Left staged (uncommitted) for inspection; nothing was committed."
+}
+
 if (-not $NoCommit) {
-    git -C $RepoRoot add -- releases
     git -C $RepoRoot commit -m "releases: stage firmware $Version"
     if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
 }
 
 Write-Host ""
-Write-Host "Staged $($staged.Count) images for $Version." -ForegroundColor Green
+Write-Host "Staged $($staged.Count) images for $Version — all CI-clean." -ForegroundColor Green
 Write-Host "Next steps (run when ready to publish):" -ForegroundColor Cyan
 Write-Host "  git -C `"$RepoRoot`" push origin main"
 Write-Host "  # Releases are PER-MODEL: push one tag v<version>-<MODEL> per model." -ForegroundColor DarkGray
-Write-Host "  # Each tag triggers its own 'Publish release' workflow run." -ForegroundColor DarkGray
 foreach ($m in ($staged | Select-Object -ExpandProperty Model -Unique | Sort-Object)) {
     $tag = "$Version-$($PrefixMap[$m])"
     Write-Host "  git -C `"$RepoRoot`" tag $tag && git -C `"$RepoRoot`" push origin $tag"

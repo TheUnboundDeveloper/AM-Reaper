@@ -30,6 +30,23 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Known issues (cause identified)
 
+- **Stock/old client list garbles device names containing an apostrophe (`'`).**
+  Field report: a device named with a `'` renders broken on the **old (stock)
+  client list** (Network Map client list / device-map popup) — "as if the name
+  is treated as a string" — and renaming doesn't help until the `'` is removed.
+  The **Reaper Devices tab shows the same names correctly.** **Cause:** the name
+  is stored (via the Devices `set_name` handler → `custom_clientlist`) with the
+  apostrophe intact — the handler strips `<`, `>` and control chars but not `'` —
+  and the stock client-list JS embeds it in a **single-quoted** string, so the
+  `'` breaks out of the literal (the classic apostrophe-in-`'...'` issue, cf.
+  reaper-ui rule 29, but on a *stock* surface rather than a Reaper page; Reaper's
+  own Devices page escapes via `esc()`, hence it's fine there). **Fix options:**
+  (a) escape the name where the stock client list renders it (best, but that
+  path may be networkmap/closed), or (b) HTML/JS-escape or drop `'` in the
+  Devices `set_name` handler before storing (simplest lever — but verify it
+  doesn't regress the Reaper Devices display, which currently renders the raw
+  name fine). [owed]
+
 - **Console error: stock ASUS privacy-policy fetch fails on the de-clouded build.**
   The browser console logs `Error fetching ASUS privacy policy: TypeError: Failed
   to fetch` — stock `asus_policy.js` `PolicyStatus()` (fired from `state.js` via a

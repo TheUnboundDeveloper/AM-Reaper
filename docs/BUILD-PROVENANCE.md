@@ -71,18 +71,27 @@ If step 4 matches, the image you hold is the one that was built. CI does steps
 
 | Version | Base | Patches | `release/src/router` tree | Source reproducible in CI |
 |---|---|---|---|---|
+| **v2.1.4** | `a7ebfa133a` | `0001`–`0318` | `066a89ce574f3bdccbdb1af40d354f6ded822574` | ✅ yes |
+| **v2.1.3** | `a7ebfa133a` | `0001`–`0315` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` | ✅ yes |
 | **v2.1.2** | `a7ebfa133a` | `0001`–`0310` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` | ✅ yes |
 | **v2.1.1** | `a7ebfa133a` | `0001`–`0290` | `3ae0d9144034bfc3a62fb5814d798a45b7db3ac6` | ✅ yes |
 | **v2.1.0** | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` | ✅ yes |
 | *(base)* | — | none | `91ac46a9fde7714dbed651d02c04898b4e134be0` | — |
 
 Every shipped RT-BE96U image is now reproducible from the published patches:
-patches `0290`–`0310` (the v2.1.1 changes and the v2.1.2 Merlin 3006.102.8
-carry-forward) were exported and **verified** to reproduce the trees above —
-applying `0001`–`0290` yields `3ae0d914…` (v2.1.1) and `0001`–`0310` yields
-`b2c357fa…` (v2.1.2). The 19 carry-forward patches (`0291`–`0309`) retain their
-original Asuswrt-Merlin authorship; the Reaper-authored patches use the Reaper
-identity. CI reproduces all three trees on every run.
+patches `0290`–`0318` (the v2.1.1 changes, the v2.1.2 Merlin 3006.102.8
+carry-forward, and the v2.1.3/v2.1.4 feature and field fixes) were exported and
+**verified** to reproduce the trees above — applying `0001`–`0290` yields
+`3ae0d914…` (v2.1.1), `0001`–`0310` yields `b2c357fa…` (v2.1.2), `0001`–`0315`
+yields `6ac67c56…` (v2.1.3), and `0001`–`0318` yields `066a89ce…` (v2.1.4). The
+19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
+authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
+every tree on each run. The RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro images
+that also ship at v2.1.4 are produced by porting the shared code onto each
+per-model branch (banner / target.mak / blob overlay); the patch series is
+RT-BE96U-only, so the tree hash above is the RT-BE96U reference and the siblings
+are not independently patch-reproducible (their image SHAs are in each
+`SHA256SUMS-<MODEL>-Reaper_v2.1.4.txt` on the release ladder).
 
 ## Build & verification logs
 
@@ -98,7 +107,7 @@ are attached to the corresponding GitHub Release.
 Provenance is recorded for the **RT-BE96U** — the primary development platform.
 The [manifest](../provenance/manifest.json) covers it back to **v1.8.6**:
 
-- **v2.1.0 – v2.1.2** carry the full record and are **reproducible in CI**
+- **v2.1.0 – v2.1.4** carry the full record and are **reproducible in CI**
   (`verifiable: true`): source-tree hash, image SHA-256s, and logs, with the
   published patch series proven to reproduce the tree.
 - **v1.8.6 – v2.0.8** are **historical** entries (`verifiable: false`): the build

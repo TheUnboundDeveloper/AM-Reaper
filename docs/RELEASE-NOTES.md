@@ -399,8 +399,31 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v2.1.2 flashable-image hashes (SHA-256)** — **RT-BE96U only** (the current head; the four siblings
-are at v2.1.0 below and the v2.1.2 fan-out is owed). The four-file set (both variants'
+**v2.1.4 flashable-image hashes (SHA-256)** — the current head, **built + shipped on all five models**
+(both variants each). The RT-BE96U four-file set (both variants' `…_nand_squashfs.pkgtb` **and** their
+`…_loader.pkgtb` recovery images) is shown below; each sibling has its own
+`SHA256SUMS-<MODEL>-Reaper_v2.1.4.txt` on the `reaper-firmware/` ladder (RT-BE86U / RT-BE88U / GT-BE98 /
+GT-BE98_PRO).
+
+| Image (`RT-BE96U_3006_102.8_Reaper_v2.1.4…`) | SHA-256 |
+|---|---|
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `910bba678e5d27a43196ea339b0b630a1b1d4c1a05163a17e673aefdfb3cb111` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `e722a78b441b454bf785072c700962614a6582783732c86ca60e462b32194028` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `45cbcd42fd2bd25fed30ecdd00aefa87df7c634313282965227ebd578efd7f70` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `68e591c6beb666b4e92c961dfbe48277fc69b103a2c54541ef73c4cb494642de` |
+
+**v2.1.3 flashable-image hashes (SHA-256)** — **RT-BE96U only** (RT-BE96U-first rung; the siblings
+went straight from v2.1.2 to the v2.1.4 fan-out). `SHA256SUMS-RT-BE96U-Reaper_v2.1.3.txt` on the ladder.
+
+| Image (`RT-BE96U_3006_102.8_Reaper_v2.1.3…`) | SHA-256 |
+|---|---|
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `9f8f16f39f2a7e2704dfb3962b2ae388d201a3776ef546eeabaef0e814b29cf5` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `cd6ccc0d98337c99b493452c816cbe8db546966eaaadf75c70970bf5eb97f303` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `815b8a166114d4d52063102365af5c8581a4079086750867ee6523df17b3661a` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `1432c0a20d0e61b7210ff7c364fa40c3ddd0c212e7524cbc0e59b842edb4d1ae` |
+
+**v2.1.2 flashable-image hashes (SHA-256)** — **RT-BE96U** (the last rung shipped across the full
+five-model fleet before the v2.1.4 fan-out). The four-file set (both variants'
 `…_nand_squashfs.pkgtb` **and** their `…_loader.pkgtb` recovery images) is on the `reaper-firmware/`
 ladder as `SHA256SUMS-RT-BE96U-Reaper_v2.1.2.txt`.
 

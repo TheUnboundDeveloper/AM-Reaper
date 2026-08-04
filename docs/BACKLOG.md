@@ -12,54 +12,39 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / Validation
 
+- **v2.1.4 metal validation (owed).** Factory-reset first boot: confirm a single themed
+  Reaper credential page (no stock ASUS "Change router login password" prompt), credentials
+  apply without the "Could not apply credentials" error and survive a reboot, then the Wi-Fi
+  step, then the dashboard. WireGuard peer list: the three-dots edit toggle is centered and
+  not clipped. OpenVPN page / `openvpn --version` reports 2.7.5. [owed — metal, all models]
+- **v2.1.3 metal validation (owed).** Connections "Quick Look": device-name resolution and
+  the conntrack↔flow-cache 5-tuple match populate TCP state for most flows without adding
+  poll latency (the backend C was first compiled in v2.1.3). Baby-jumbo PPPoE MTU: on a live
+  full-fibre PPPoE line, pppd negotiates MRU/MTU 1500, the parent WAN port accepts a 1508 MTU,
+  and 1500-byte payloads pass end-to-end unfragmented. [owed — metal]
+- **v2.1.4 sibling fan-out.** RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro built + shipped at
+  v2.1.4 (shared code + the WireGuard peer-row and credential fixes ported); confirm each on
+  metal. [owed — metal]
+
 ## UI / UX polish
 
-- **[FIXED — v2.1.3, staged on be96u-only 1f0dbbbdc9] Wireless › Professional (`Reaper_WiFiPro.asp`) — dropped the raw nvram field names.**
-  Each setting row showed the underlying nvram variable name (`wlN_<key>`) under its
-  friendly label; the `<code class="rl-key">` element was removed so only the friendly
-  label shows. Cosmetic; developer detail no longer user-facing. *(Rides the v2.1.3 rung.)*
-
-- **[FIXED — v2.1.3, 1f0dbbbdc9] AI Page Wording** — the truncated Advisor intro
-  ("A read-only bridge that lets your own AI assistant read this router's") is completed
-  to "…read this router's **status and configuration.**" (`EN.dict` RADV_01). *Note: the
-  other 24 language dicts carry the same truncated phrasing (translated) and need an i18n
-  pass to match.*
-
-- **[FIXED — v2.1.3, 1f0dbbbdc9] SSID Format** — dashboard radio tiles no longer show the
-  SSID in all-caps. The shared `.port .ps` style (`text-transform:uppercase`, wanted for
-  wired/USB port-speed labels) was overridden for the wireless tiles via `#wl_ports .ps`, so
-  the SSID renders in its real mixed case, matching the Network page.
+- **i18n residuals (from v2.1.3).** Two English-only strings need a translation pass across
+  the dicts: (a) the AI Advisor intro was completed in `EN.dict` (RADV_01) but the other 24
+  language dicts still carry the older truncated phrasing (translated); (b) the Connections
+  "Quick Look" labels (Device / Scope / State / Internal / External / Quick Look / Advanced /
+  Pause) are English literals pending tokenization across the 25 dicts. [owed — cosmetic/i18n]
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
 
 ## Known issues (cause identified)
 
-- **[FIXED — patch 0311] Stock/old client list garbled device names containing an
-  apostrophe (`'`) — and it was a reachable stored XSS, not just cosmetic.**
-  Field report: a device named with a `'` renders broken on the **old (stock)
-  client list** (Network Map client list / device-map popup) — "as if the name
-  is treated as a string" — and renaming doesn't help until the `'` is removed.
-  The **Reaper Devices tab shows the same names correctly.** **Cause:** the stock
-  client-list JS (`www/client_function.js`, the incremental renderer) embedded the
-  name in a **single-quoted** `value='...'` attribute via `htmlEnDeCode.htmlEncode()`,
-  which encodes `& < > "` but **not** `'`. So a device whose name/DHCP-hostname
-  contained an apostrophe broke out of the attribute — at best the editable name
-  field truncated/garbled, at worst a name like `x' onmouseover='…'` injected an
-  attribute into a page the authenticated admin views (**stored, LAN-reachable
-  XSS** — the classic apostrophe-in-`'...'` issue, cf. reaper-ui rule 29, on a
-  *stock* surface). Reaper's own Devices page was already safe via `esc()`.
-  **Fix (v2.1.1-security-review, 2026-08-03):** additionally encode `'` → `&#39;`
-  at the single point the name is prepared in `client_function.js`, closing both
-  `value='...'` sinks and the display garble at once (also safe in the text
-  contexts, where `&#39;` renders as `'`). The dashboard client list
-  (`dashboard/js/clientlist.module.js`) was already safe — it HTML-encodes the
-  name at ingestion and renders it in text context. **Residual (low, optional
-  defense-in-depth, not the reported issue):** `client.vendor` / `deviceTypeName`
-  are still emitted into single-quoted `title='...'` attributes unescaped in both
-  files, but those are vendor/OUI-DB-sourced, not attacker-freeform. Surfaced by
-  the 4-agent v2.1.1/v2.1.2 security review; **not built** (staged on `be96u-only`
-  atop v2.1.2, rides the next rung).
+- **[residual of the v2.1.3 apostrophe-XSS fix — low, optional] Unescaped `title='...'`
+  attributes on the client lists.** The reported stored-XSS/garble via an apostrophe in a
+  device name was fixed in v2.1.3 (patch 0311; see the changelog). Remaining defense-in-depth
+  only: `client.vendor` / `deviceTypeName` are still emitted into single-quoted `title='...'`
+  attributes unescaped in `client_function.js` and `dashboard/js/clientlist.module.js`, but
+  those are vendor/OUI-DB-sourced, not attacker-freeform. [owed — low, optional]
 
 - **Console error: stock ASUS privacy-policy fetch fails on the de-clouded build.**
   The browser console logs `Error fetching ASUS privacy policy: TypeError: Failed
@@ -127,22 +112,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   HW Classless modes** — points at the classful egress-scheduler path (per-class queue setup /
   the runner reconfiguring queues under load) rather than the PI2 shaper itself.
 
-- **[IMPLEMENTED — v2.1.3, be96u-only de6ac2d2e0; METAL-TEST OWED] MTU PPPoE — RFC 4638
-  baby-jumbo frames (1500-byte PPPoE MTU on full-fibre).** RFC 4638 lets the physical Ethernet
-  carry ~1508-byte frames so the PPPoE layer keeps a clean 1500-byte MTU/MRU (instead of the
-  usual 1492). **Finding:** the rc backend already supports this — `rc/wan.c` (~L2075) raises
-  the parent WAN interface MTU to `wan_pppoe_mtu + 8` (= 1508) whenever `wan_pppoe_mtu`/`mru`
-  exceeds 1492. The only blocker was the WAN GUI (`Advanced_WAN_Content.asp`), which capped
-  `wan_pppoe_mtu`/`mru` at 1492 and `wan_mtu` at 1500, with a `pppoe_mtu ≤ wan_mtu-8` clamp that
-  knocked 1500 back to 1492. **Fix applied:** raised the caps to 1500 (pppoe_mtu/mru) and 1508
-  (wan_mtu) + the field's range hint. Opt-in — the nvram defaults stay 1492/1500, so existing
-  PPPoE users are unaffected; only a user who deliberately enters 1500/1508 gets baby-jumbo.
-  **Owed (metal, live PPPoE full-fibre line):** confirm (a) pppd negotiates MRU/MTU 1500,
-  (b) the parent WAN port actually accepts a 1508 MTU — the switch/PHY may need to allow >1500
-  (watch the `jumbo_frame_enable` interaction on `eth*`, rc/interface.c:320; `SIOCSIFMTU` failure
-  is logged by `start_wan_if`), and (c) 1500-byte payloads pass end-to-end unfragmented. The
-  owner's 10G PPPoE WAN (not yet connected — see the dual-WAN item) is the test bed.
-
 - **The router is configured for dual-WAN failover**
   The active secondary WAN uses the 2.5 Gbps LAN port with DHCP and its own NextDNS profile.
   The future primary WAN uses the 10 Gbps LAN port with PPPoE, but it is not yet connected. It 
@@ -152,45 +121,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   traffic.
 
 ## Features to add
-
-- **[IMPLEMENTED — v2.1.3, be96u-only 9faa847d32; NOT BUILT] Connections page — "Quick Look"
-  base view + single slider toggle (current explorer becomes "Advanced").** Field feedback (2026-08-03): users want a
-  fast at-a-glance connection check like Merlin's *System Log → Connections* — **device
-  name, local IP, remote IP, internal-vs-external, and TCP state** in one simple list —
-  as the **default**, with the current live flow explorer available on demand. Build both
-  **inside `Reaper_Conn.asp`** as two render modes switched by a **single slider** in the
-  page header/menu (no second menu entry); persist the choice (localStorage/cookie or
-  nvram) so it stays on the user's preferred mode.
-  - **Quick Look (base, default):** Merlin-style at-a-glance, Reaper-formatted — each row:
-    device name (resolved from MAC/IP), the device's local IP, the remote IP, an
-    **internal-vs-external** indicator, protocol, and **TCP state**. Lighter refresh (no
-    need for the sub-second cadence). This is the "quick way to check who my devices are
-    talking to" the report praised.
-  - **Advanced:** the existing flow explorer unchanged — retain the current polling
-    options (500 ms / 1 s / 4 s) and only add an explicit **pause** option to the rate
-    control, HW-accel Runner-vs-CPU path badge, DSCP/queue, per-flow detail, top-talker
-    sort.
-  - **Folds in the device-name enhancement ("#3"):** both views should resolve **MAC/IP →
-    device name** from the same client-list/networkmap source the Devices page uses. Today
-    the explorer shows IPs only (`cli:cp → srv:spt`), which is the one capability Merlin's
-    view has that Reaper's lacks. Add name resolution (at minimum in Quick Look; ideally in
-    Advanced too).
-  - **Supersedes** the earlier "keep the stock Merlin page as default + an Advanced button"
-    idea — a Reaper-native Quick Look keeps styling consistent and lets the stock
-    `Main_ConnStatus_Content.asp` be retired later rather than maintained.
-  - Note: the router's own WAN-originated flows appear here **by design** (Merlin hid them);
-    Quick Look's internal/external indicator makes that distinction obvious at a glance.
-  - **BUILT (9faa847d32):** Quick Look is the default (localStorage-persisted); rows show
-    device name (via `/appGet.cgi?hook=get_clientlist()`), local IP, remote IP:port, an
-    Internal/External badge (RFC1918 test on the remote end), protocol, and TCP state.
-    Advanced retained unchanged + gained the **Pause** rate option, and its detail panel now
-    shows the device name + TCP state. **Backend:** `do_reaper_conn_cgi` reads
-    `/proc/net/nf_conntrack` once and matches each flow by 5-tuple (either direction) to emit
-    a new `st` field (UDP/unmatched → empty). **Owed:** (a) the C is **uncompiled** — the
-    v2.1.3 build is its first compile; validate on metal (esp. that conntrack↔fcache 5-tuple
-    matching populates state for most flows, and the conntrack read doesn't add poll latency);
-    (b) the new Quick Look labels (Device/Scope/State/Internal/External/Quick Look/Advanced/
-    Pause) are **English literals** pending an i18n tokenization pass across the 25 dicts.
 
 - **Self-host the firmware update check on GitHub (remove Merlin's links/info from the
   update page).** The stock/Merlin update page shows Asuswrt-Merlin's update links and
@@ -275,10 +205,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   v2.1.0). Confirm the `/proc/gdx/skb_idx` read is non-destructive under sustained polling on
   hardware before it can be considered for default-on again. [owed — metal]
 
-- **NOTE** *(The other five items from this review — Tier-3 error-string localization, structural rmcpd
-  redaction, rmcpd truncation-to-valid-JSON, esc() on three pages, and the rwarden ipset-restore
-  batch — shipped in v2.1.1; see the changelog.)*[DONE]
-
 ## Documentation
 
 - **Note the non-functional retained features.** Document that the firmware
@@ -288,11 +214,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Annotate** the system defaults.
 
 - **Write a user guide** for other users.
-
-## Packages
-
-*(OpenVPN 2.7.5 and the other Asuswrt-Merlin 3006.102.8 package updates — dropbear, miniupnpd,
-strongswan — were carried forward in v2.1.2; see the changelog.)* [DONE]
 
 ## Platform / expansion
 

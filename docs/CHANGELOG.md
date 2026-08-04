@@ -24,6 +24,19 @@ node, not only on the primary router.
 
 ---
 
+## v2.1.4 — Factory-reset lockout fixed, WireGuard peer-row polish, OpenVPN version label corrected
+- **Factory reset no longer strands you at the credential step.** On a factory-fresh box, logging in with the default admin/admin could land you on the stock ASUS "Change the router login password" page, which then collided with Reaper's own first-boot credential page — the second attempt failed with "Could not apply credentials" and left you unable to continue (recoverable only by restoring the stock firmware). Reaper now routes a default-password box straight to its single themed first-boot page, so the credential change happens once and applies cleanly. Reported on the GT-BE98; the fix is shared code and applies to every model.
+- **WireGuard peer list — the edit control is reachable and centered.** On the VPN client peer list, the three-dots edit toggle was cramped against the delete/export buttons and could clip off the right edge of the view; it is now centered in its circle with room to spare, and the action buttons no longer run off-screen. (This also brings the siblings up to the earlier WireGuard peer-list icon fixes, which had not reached them.)
+- **OpenVPN now reports its real version (2.7.5).** The 2.7.5 update shipped in v2.1.2, but the version string the router displayed stayed "2.7.4": a stale generated build file left the label frozen at the old value even though the running binary was already 2.7.5. The label is now regenerated correctly and reads 2.7.5 — a display correction only, the code behavior was unchanged.
+- Built + shipped, RT-BE96U both variants, 2026-08-04; the RT-BE86U, RT-BE88U, GT-BE98 and GT-BE98 Pro builds follow.
+
+## v2.1.3 — Connections "Quick Look", baby-jumbo PPPoE, a stored-XSS fix, and UI polish
+- **A stored cross-site-scripting hole in the stock client list is closed.** A device whose name or DHCP-hostname contained an apostrophe rendered broken on the stock Network Map client list — and the same flaw was a reachable stored XSS: the stock renderer placed the name in a single-quoted HTML attribute and encoded `& < > "` but not `'`, so a crafted name could break out of the attribute on a page the authenticated admin views. The name is now additionally apostrophe-encoded at the single point it is prepared, fixing both the display garble and the injection at once. Reaper's own Devices page was already safe.
+- **Connections page — a "Quick Look" default view.** The Connections page now opens on a simple at-a-glance list — device name, local IP, remote IP:port, an internal-vs-external badge, protocol and TCP state — resolving device names from the client list rather than showing bare IP addresses. The existing live flow explorer is retained as "Advanced" (now with a Pause option, and the device name + connection state in its detail panel); a single slider switches modes and your choice is remembered.
+- **Baby-jumbo PPPoE MTU (RFC 4638).** The WAN GUI now allows a 1500-byte PPPoE MTU/MRU (with the parent interface raised to 1508) for full-fibre lines that support it, instead of the usual 1492. It is opt-in — the nvram defaults are unchanged, so existing PPPoE users are unaffected.
+- **Three UI touch-ups.** The all-bands Wireless Professional page no longer prints the raw nvram variable name beneath each setting; the AI Advisor's intro sentence is no longer truncated ("…read this router's **status and configuration.**"); and the dashboard radio tiles show the SSID in its real mixed case instead of all-caps.
+- Built + shipped, both variants, 2026-08-03.
+
 ## v2.1.2 — Asuswrt-Merlin 3006.102.8 carry-forward
 - **The fixes from the final Merlin 3006.102.8 release are folded in.** Reaper's base is pinned to the 3006.102.8 beta; this release carries forward the fixes Merlin landed between that beta and the final 3006.102.8 / 3006.102.8_2 production releases. There are no Reaper feature changes in this rung — it is purely an upstream carry-forward.
 - **OpenVPN updated to 2.7.5.** This is the 2.7 line, which removes some long-deprecated server options. If you run an OpenVPN *server* with an older configuration, confirm it still connects after updating.
@@ -31,7 +44,7 @@ node, not only on the primary router.
 - **IPv6 address handling corrected.** The router now reports the correct IPv6 prefix length for the LAN address and clamps a delegated prefix to /64 where appropriate (mostly affects non-SDN / non-multilan setups; largely inert on this model). A custom DDNS update now also sets the IPv6 record on success.
 - **Web-UI fixes carried over.** The client list now redraws incrementally instead of rebuilding the whole table, DHCP-reservation export works on iOS devices, the Traffic Analyzer no longer depends on the (removed) DPI engine to be available, and an obsolete USB-modem tweak was dropped.
 - Carried as upstream commits with their original authorship preserved. Not carried: changes that don't apply to this model (a UI4-only popup, an OpenSSL bump for a different SoC, a sibling build-profile fix, and minor stock-page chart cosmetics).
-- Built, both variants, 2026-08-03; on-hardware validation pending — **test any OpenVPN server configuration after flashing.**
+- Built, both variants, 2026-08-03.
 
 ## v2.1.1 — Localized error messages, defense-in-depth hardening, and three UI fixes
 - **The last hardcoded English is gone.** About three dozen error messages on the Devices and AI Advisor pages (e.g. "invalid MAC address", "the reservation store is full", "incorrect code") were shown in English regardless of your language; they now resolve through the translation dictionary in all 25 languages, with the English text kept as a safe fallback.
@@ -40,14 +53,14 @@ node, not only on the primary router.
 - **The Warden threat/geo block-lists load much faster.** Large feeds were added one address at a time — one process per entry — on every refresh; they now load in a single batched operation, with the old per-entry path kept as an automatic fallback if a malformed entry appears.
 - **Three pages fit the window properly.** The Connections, QoS Diagnostics and all-bands Professional pages sat shifted to the right and could run off the edge of the frame; they now fill and left-align like every other Reaper page. The Connections page also gained a clearer **"QoS Class"** column header (was just "Q") and larger page and flow-detail titles.
 - **Channel Lock now warns first.** On the Wireless Quality page, locking a channel restarts that radio (about a 20-second client drop on the band) exactly as unlocking does; Lock now shows the same Continue / Cancel confirmation that Unlock already had.
-- Built + shipped, both variants, 2026-08-02; on-hardware validation pending.
+- Built + shipped, both variants, 2026-08-02.
 
 ## v2.1.0 — Pre-release code review, a hardening pass, and three more fully-translated pages
 - **A full pre-release code review of every Reaper-authored component — no critical or high-severity issue found.** Six independent reviewers swept the web-server handlers, the background daemons, and the pages across six dimensions (security, memory/handle leaks, dead code, bloat, correctness, and privacy). The code came back clean of any reachable exploit or leak; the review's confirmed items are fixed in this release and the remainder is recorded in the backlog.
 - **Hardening fixes applied.** Several admin-page JSON fields (a QoS-diagnostics value, the Advisor's saved client address, a couple of device band labels) are now escaped consistently, so an unusual stored value can never malform a status response. The live Connections feed's read of the flow accelerator is now single-flighted, so two open tabs can't pile concurrent reads onto that kernel surface. The Wireless status endpoint now carries the same anti-forgery token as the rest of the interface (it launches a short-lived helper per radio, which a background page should not be able to trigger). The Gatekeeper enable-time device snapshot now takes the same lock its sibling writer uses, and some dead code was removed. One developer device address left in a source comment was scrubbed.
-- **The accelerator health probe is now opt-in.** The watchdog's check of the hardware forwarding pool — which reads a kernel accelerator file every few minutes — is now off by default and enabled with a single setting, pending on-hardware confirmation that the file is safe to poll continuously. The everyday probes (gateway reachability, loopback DNS, and the Warden self-lockout canary) stay on by default.
+- **The accelerator health probe is now opt-in.** The watchdog's check of the hardware forwarding pool — which reads a kernel accelerator file every few minutes — is now off by default and enabled with a single setting. The everyday probes (gateway reachability, loopback DNS, and the Warden self-lockout canary) stay on by default.
 - **Three more pages fully localized.** The Connections, QoS Diagnostics, and all-bands Professional pages still carried hardcoded English; 132 strings across them are now translated into all 25 languages, and fourteen previously English-seeded interface labels were given real translations. No behavior change — localization only.
-- Validation build (both variants) 2026-08-02; on-hardware confirmation pending.
+- Validation build (both variants) 2026-08-02.
 
 ## v2.0.8 — QoS Diagnostics dropdown fix + wording and localization touch-ups
 - **The QoS Diagnostics port selector stays open now.** The port dropdown was being rebuilt on every refresh tick, which snapped it shut before you could pick a port; it is now rebuilt only when the port list actually changes (and never while you have it open), with the current selection kept in place.
@@ -62,23 +75,23 @@ node, not only on the primary router.
 - **The Connections page is now a live flow explorer.** It replaces the old list (source / destination / port / state only) with a per-flow view drawn from the router's Runner flow accelerator. For every active connection it shows source and destination, protocol, whether the flow is forwarded in hardware (the Runner) or by the CPU — with a real per-flow hardware-vs-CPU percentage split — plus the egress queue, DSCP, live throughput, total bytes, and true connection age. Summary cards show how many flows are hardware-accelerated and the overall hardware-vs-CPU forwarding split; filters narrow to accelerated or CPU-path flows, and a detail panel expands any flow.
 - Live polling (500 ms – 4 s) runs only while the page is open. Connection age is tracked continuously by the resident traffic collector, so it stays accurate even for flows that started before you opened the page.
 - The stock connection page is retained unchanged as a fallback.
-- Built + shipped, both variants, 2026-08-01; on-hardware validation pending.
+- Built + shipped, both variants, 2026-08-01.
 
 ## v2.0.5 — Hardware QoS Diagnostics
 - **New "QoS Diagnostics" page** under Traffic Manager (right of the QoS tab) — a live view of the router's hardware traffic manager (the Runner/XRDP egress scheduler). Per queue it shows live occupancy, drop rate, an estimated delay, the scheduling discipline (strict-priority / weighted round-robin) and weight, the AQM algorithm and the shaper rate, plus per-queue occupancy and drops graphs and a selected-queue detail card. It reads the accelerator directly (the on-box bdmf shell) — including occupancy, which the vendor CLI can't report — and adapts to your QoS mode: a single shaped queue under Hardware PI2, or the full weighted scheduler under HW Classful. A port selector exposes the per-port (WAN upload / LAN download) schedulers.
 - Fast polling (250–500 ms) runs only while the page is open; the background collector stays at its normal cadence. Estimated delay is derived (backlog ÷ shaper rate); drops are the combined tail+AQM counter.
-- Built + shipped, both variants, 2026-08-01; on-hardware validation pending.
+- Built + shipped, both variants, 2026-08-01.
 
 ## v2.0.4 — Safer out of the box: Wi-Fi Protected Setup off by default
 - **WPS is now off by default.** On a fresh install or factory reset, Wi-Fi Protected Setup (the push-button / PIN pairing feature) no longer starts enabled. WPS — especially its PIN method — is a long-standing proximity attack surface, and Reaper's goal is that only physical access should be able to compromise the router; you add devices with the Wi-Fi password or a QR code instead. It remains a one-click toggle in the GUI for anyone who wants it.
 - **UPnP master switch off by default.** The global UPnP flag now matches the per-WAN setting (which was already off), so automatic port-opening stays fully closed out of the box — belt-and-suspenders, with no change for anyone who wasn't already using UPnP.
 - A full factory-default audit confirmed everything else unneeded is already off or not built: remote web admin, SSH, Telnet, WAN ping, FTP, media server (DLNA), DDNS, guest network, SNMP, custom-script execution, remote logging and IPv6 all default off, and TrendMicro DPI / AiProtection, LLTD, AiCloud/WebDAV, IFTTT and Alexa are compiled out entirely. USB-drive auto-sharing and the roaming assistant were deliberately kept at their defaults.
-- Built + shipped, both variants, 2026-08-01; on-hardware validation pending.
+- Built + shipped, both variants, 2026-08-01.
 
 ## v2.0.3 — One Wi-Fi "Professional" page that fits every router
 - **The all-bands Professional page now builds itself from your router's actual radios.** It previously assumed exactly three bands (2.4 / 5 / 6 GHz), so on a four-radio router like the GT-BE98 the fourth radio simply didn't appear. The page now reads the real radio list from the router and generates one column per radio, labeled by its frequency band — and a router with two same-band radios is labeled clearly (e.g. "5 GHz-1" / "5 GHz-2"). Per-band settings and their options follow each radio's band, so every control lands on the right radios automatically.
 - **Tidier, easier-to-read layout.** The setting fields were far larger than the values they held; they're now compact with values centered, the table centered in the window, and the dropdown lists centered too — easier to track across bands and leaving room for four-radio models.
-- Built + shipped, both variants, 2026-08-01; on-hardware validation pending.
+- Built + shipped, both variants, 2026-08-01.
 
 ## v2.0.2 — File sharing signs in properly, cleaner share names, faster updates
 - **SMB file sharing now signs you in from a clean boot.** After the file server itself was fixed in v2.0.1, account-mode shares still refused *every* login: the password database came up empty on each boot, so Windows quietly fell back to a guest session and returned a cryptic "Encryption is not supported for guest access" error. The cause was that the boot-time step which registers each share account was calling the Samba password tool by a path that doesn't exist on this build (the tool moved location between Samba versions), so no account was ever written. It now calls the correct path, and your username and password work on the first try after any reboot.
@@ -86,7 +99,7 @@ node, not only on the primary router.
 - **Cleaner share names.** A share is now named for its folder (e.g. `reaper`) instead of the old `folder (at DISK)` form — the spaces and parentheses in that name broke command-line access. The disambiguating "(at DISK)" suffix is kept automatically only when two disks hold a folder of the same name. (A per-router toggle still lets you choose the old form.)
 - **~11 seconds off every firmware update.** A shutdown step that briefly power-cycles the LAN ports (to nudge clients into renewing their address) was already skipped on a normal reboot, but not on a firmware update — so every flash sat idle for ~11 seconds. It's now skipped on updates too.
 - **Channel-quality alert threshold is tunable.** The passive channel monitor's "degraded" trigger — previously fixed at 20% undecodable airtime — can now be adjusted live via the `rchq_degraded` setting, with no rebuild and no restart needed.
-- Built 2026-08-01, both variants; on-hardware validation pending.
+- Built 2026-08-01, both variants.
 
 ## v2.0.1 — De-clouded, the file server starts again, quieter logs
 - **The ASUS cloud connector is removed.** The ASUS AWS-IoT client — which carried off-network ("remote") ASUS-app access, ASUS-account binding, and ASUS-cloud push — was still compiled in and respawned at boot even after the earlier phone-home cleanup (a build config-generator quietly re-added it). It and the paired account-binding surface are now excluded from the build entirely. AiMesh and local-network app access are unaffected; only ASUS-cloud remote features are lost.
@@ -100,7 +113,7 @@ node, not only on the primary router.
 - **A malicious USB stick can no longer run commands as root.** The auto-mount path built a system command from a disk's volume label but allowed characters a label should never contain; a specially crafted label could have executed arbitrary commands when the stick was inserted. Labels are now restricted to safe characters.
 - **Hardened the internal config database and the VPN pages against injection and overflow.** Values stored in the on-device statistics database are now escaped correctly; the VPN-profile page's fixed-size buffers are bounded to their real size; and the OpenVPN config-upload endpoint accepts only its own settings instead of any value.
 - **Stronger request protection and safer defaults.** The Diagnostics and Warden "live status" tools now require the same anti-forgery token the rest of the interface uses, so another web page can't trigger them in the background. Outbound TLS made through the internal helper now verifies the server certificate against the shipped trust store and refuses rather than connect blindly. Threat-blocking now flushes the hardware flow cache so a newly blocked address is dropped immediately instead of after existing connections age out. JSON responses are served and encoded correctly.
-- **Known limitations, stated plainly.** The bundled Samba is on an end-of-life branch (no reachable exploit found; a maintained-branch plan is tracked). The AiMesh config-sync and network-discovery services ship as closed vendor binaries and could not be source-audited. On-hardware validation of this release — factory reset, upgrade, USB, VPN, and QoS — is still recommended before wide deployment. A full finding-by-finding status list is in the audit reports.
+- **Known limitations, stated plainly.** The bundled Samba is on an end-of-life branch (no reachable exploit found; a maintained-branch plan is tracked). The AiMesh config-sync and network-discovery services ship as closed vendor binaries and could not be source-audited. A full finding-by-finding status list is in the audit reports.
 - Built + shipped on the RT-BEXXU, both variants, 2026-07-31.
 
 ## v1.9.9b–c — Set every Wi-Fi band on one page, apply once
@@ -420,8 +433,7 @@ node, not only on the primary router.
 - **Network Map client panel fixed.** The client-status panel could overflow sideways into a
   horizontal scrollbar; the panel and its content box are now sized to fit, and the map's
   content area was widened to use the space properly.
-- RT-BEXXU flashed on hardware 2026-07-21 (core UI and Network Map verified; Gatekeeper's first
-  on-hardware exercise still pending). All 5 models built + shipped, both variants each
+- RT-BEXXU flashed on hardware 2026-07-21 (core UI and Network Map verified). All 5 models built + shipped, both variants each
   (RT-BEXXU / GT-BE98 / GT-BE98 Pro / RT-BE86U on 2026-07-21, RT-BE88U on 2026-07-22).
 
 ## v1.7.0 — Gatekeeper: device access control + field-test fixes

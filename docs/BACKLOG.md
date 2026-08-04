@@ -125,7 +125,30 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   receiving DNS log entries. The expected behavior was for only the active WAN’s profile to show 
   traffic.
 
+- **B/G Protection** option "b/g Protection" for 2.4ghz, has menu options of AUTO and OFF. 
+  I set Off but it always reverts to AUTO.
+
+- **Data Logs** A few reports on the data being stored in JFFS resetting when resetting the router. 
+  Internal / External?
+
+- **Traffic Analyzer** Traffic Analyser also does not put the device names for every device when 
+  you view say, for the past MONTH.
+
 ## Features to add
+
+- **Warden: explicit IPv6 enable option + broader IPv6 feed coverage.** (owner ask
+  2026-08-04) Add a UI/nvram option (e.g. `rwarden_ipv6`) controlling Warden's IPv6
+  side explicitly. Current state for the implementer: IPv6 enforcement is **already
+  built and always-on** — `REAPER_WARDEN`/`RW_DROP` chains are hooked with `ip6tables`,
+  v6 sets exist (`rw_threat6`, `rw_ban6`/`rw_allow6`, `rw_g6_<cc>` geo) — but v6 *threat*
+  coverage is thin: the only v6 feed ingested is Spamhaus DROPv6 (FireHOL Level 1 is
+  IPv4-only). Scope: (a) a visible on/off toggle for the v6 half (users with broken/absent
+  IPv6 can shed the chains; default = current always-on behavior), surfaced on
+  `Reaper_Warden.asp` with dict tokens (25-dict lockstep); (b) evaluate adding v6-capable
+  feeds (e.g. FireHOL v6-capable sets, abuse.ch v6 where offered) to close the coverage
+  gap; (c) stats page should label v4/v6 hits distinctly if the toggle lands. Ties into
+  the feed-overlap UI note (FireHOL L1 aggregates Spamhaus v4/DShield/Feodo — disclose
+  under the feed checkboxes).
 
 - **Self-host the firmware update check on GitHub (remove Merlin's links/info from the
   update page).** The stock/Merlin update page shows Asuswrt-Merlin's update links and

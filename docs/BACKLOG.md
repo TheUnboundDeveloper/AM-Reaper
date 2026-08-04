@@ -36,6 +36,11 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
+- **Translation Token** The "Administration" menu item displays correctly in all other languages, 
+  but on the Russian UI, it shows up as "Администрирование" with raw HTML soft hyphen tags 
+  "&shy;" visible in the text. Interestingly, right after logging in, it displays properly on 
+  the Home/Main page. However, as soon as you navigate to any other page, the code artifact 
+  pops up in the menu title.
 
 ## Known issues (cause identified)
 

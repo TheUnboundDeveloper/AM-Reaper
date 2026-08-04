@@ -27,8 +27,8 @@ image is built in both **MCP** and **noMCP** variants; NAND-only.
 | `_reaper_env.sh`        | Resolves the Windows-side paths generically (`WINUSER` / `WIN_ASUS_ROOT`) so ship/mockup paths aren't pinned to one developer's username. Sourced by every launcher + the port script. |
 | `_reaper_build_lib.sh`  | Build engine. `reaper_build()` runs both variants (flips `RTCONFIG_REAPER_MCP` off + `_noMCP` EXTENDNO for the 2nd, restores after), passes `FORCE=1` on both make passes, and runs `reaper_verify.sh` after each variant — **blocks ship on gate FAIL**. Sourced by every `build_<model>.sh`. |
 | `build_<model>.sh`      | Thin per-model launcher: sets BRANCH/TARGET/PREFIX/VARIANTS/SHIP_DIR then `source _reaper_build_lib.sh; reaper_build "$@"`. |
-| `port_sibling_v2.sh`    | Guarded overlay port: syncs the full shared diff from `be96u-only`, protects the per-model identity overlay, and aborts on wrong branch / base / banner-sha / BUILD_NAME / band mismatch. `port_sibling_v2.sh <MODEL> [--commit] [--version V]` (default dry-run). |
-| `reaper_verify.sh`      | 15-check post-build QA gate on the staged fs + packaged image (per-model banner sha + no foreign/stale banner, SAMBA4 + no libiconv, httpd NEEDED closure, FIT model-id via `dumpimage`, MCP/noMCP purity, ARM ELF, www presence/markers, i18n dict lockstep). |
+| `port_sibling_v2.sh`    | Guarded overlay port: syncs the full shared diff from `be96u-only`, protects the per-model identity overlay, and aborts on wrong branch / base / banner-sha / BUILD_NAME / band mismatch. `port_sibling_v2.sh <MODEL> [--commit] [--version V]` (default dry-run). **Caveat:** its protect-set includes `/sysdep/` and the `??.dict` files, so *shared* code that happens to live under `sysdep/FUNCTION/` (e.g. the VPN pages `vpns.css` / `vpns_*.js` / `vpnc.html`) and dict text changes are NOT synced — follow the port with a supplemental `git checkout be96u-only -- <those files>` and re-check dict lockstep. |
+| `reaper_verify.sh`      | 17-check post-build QA gate on the staged fs + packaged image (per-model banner sha + no foreign/stale banner, SAMBA4 + no libiconv, httpd NEEDED closure, FIT model-id via `dumpimage`, MCP/noMCP purity, ARM ELF, www presence/markers, i18n dict lockstep). |
 
 ## Invocation rules (do not skip)
 
@@ -85,7 +85,7 @@ carry the traps. Full sequence for a sibling `<MODEL>` at version `<VER>`:
 
 4. **Build**: `build_<model>.sh` (both variants; `FORCE=1` + verify gate baked
    in). Success = **`MAKE_EXIT=0` on BOTH variants** + `Done! Image 96813GW` +
-   both `reaper_verify` **PASS (15/15)**. The bg wrapper can exit 0 even on
+   both `reaper_verify` **PASS (17/17)**. The bg wrapper can exit 0 even on
    failure — grep the log for `MAKE_EXIT` first, always.
 
 5. **Ship** (never overwrite a prior rung): copy the 4 `.pkgtb` (squashfs +

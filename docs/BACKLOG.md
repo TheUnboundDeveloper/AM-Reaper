@@ -12,20 +12,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / Validation
 
-- **v2.1.4 metal validation (owed).** Factory-reset first boot: confirm a single themed
-  Reaper credential page (no stock ASUS "Change router login password" prompt), credentials
-  apply without the "Could not apply credentials" error and survive a reboot, then the Wi-Fi
-  step, then the dashboard. WireGuard peer list: the three-dots edit toggle is centered and
-  not clipped. OpenVPN page / `openvpn --version` reports 2.7.5. [owed — metal, all models]
-- **v2.1.3 metal validation (owed).** Connections "Quick Look": device-name resolution and
-  the conntrack↔flow-cache 5-tuple match populate TCP state for most flows without adding
-  poll latency (the backend C was first compiled in v2.1.3). Baby-jumbo PPPoE MTU: on a live
-  full-fibre PPPoE line, pppd negotiates MRU/MTU 1500, the parent WAN port accepts a 1508 MTU,
-  and 1500-byte payloads pass end-to-end unfragmented. [owed — metal]
-- **v2.1.4 sibling fan-out.** RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro built + shipped at
-  v2.1.4 (shared code + the WireGuard peer-row and credential fixes ported); confirm each on
-  metal. [owed — metal]
-
 ## UI / UX polish
 
 - **i18n residuals (from v2.1.3).** Two English-only strings need a translation pass across
@@ -128,8 +114,19 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **B/G Protection** option "b/g Protection" for 2.4ghz, has menu options of AUTO and OFF. 
   I set Off but it always reverts to AUTO.
 
-- **Data Logs** A few reports on the data being stored in JFFS resetting when resetting the router. 
-  Internal / External?
+- **Data Logs — ROOT-CAUSED + FIXED in v2.1.5 (commit `383f9019a3`), metal owed.** The
+  "JFFS/USB history resets" reports are two distinct rtrafd defects, both confirmed at
+  source: (a) **USB/external lost ALL history on every reboot** — `rtrafd` loaded its db
+  once at startup, but USB mounts via hotplug *after* services start, so the store silently
+  fell back to RAM (never loaded) and the first hourly save then overwrote the old
+  `rtraf.db` with empty rings; (b) **JFFS/internal loses the tail** — saves were hourly and
+  the shutdown save needs a clean SIGTERM, so an unclean reboot (power pull / watchdog)
+  drops up to 1h of recent history, which reads as "not persistent." Fix: late store
+  attach (retry resolve+load at 1 Hz for 15 min, logged), a never-save-over-an-unloaded-db
+  clobber guard (preserves `rtraf.db.prev`), and 15-min save cadence on USB (JFFS stays
+  hourly for NAND wear). Metal: reboot with `rtraf_path=usb` → logread shows "store came
+  up late - attached" and history survives; power-pull loses ≤15 min (USB) / ≤1h (JFFS).
+  [owed — metal only]
 
 - **Traffic Analyzer** Traffic Analyser also does not put the device names for every device when 
   you view say, for the past MONTH.

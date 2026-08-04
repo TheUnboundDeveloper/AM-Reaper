@@ -14,16 +14,21 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## UI / UX polish
 
-- **Wireless › Professional (`Reaper_WiFiPro.asp`) — drop the raw nvram field names.**
-  Each setting row shows the underlying nvram variable name next to its friendly
-  label (e.g. **"Enable Radio"** displays **`wlN_radio`**). Remove the variable
-  name so only the friendly label shows (just "Enable Radio"). It's cosmetic —
-  the field name is developer detail that shouldn't be user-facing.
+- **[FIXED — v2.1.3, staged on be96u-only 1f0dbbbdc9] Wireless › Professional (`Reaper_WiFiPro.asp`) — dropped the raw nvram field names.**
+  Each setting row showed the underlying nvram variable name (`wlN_<key>`) under its
+  friendly label; the `<code class="rl-key">` element was removed so only the friendly
+  label shows. Cosmetic; developer detail no longer user-facing. *(Rides the v2.1.3 rung.)*
 
-- **AI Page Wording** "A read-only bridge that lets your own AI assistant read this 
-  router's" is an incomplete sentance and needs to be corrected.
+- **[FIXED — v2.1.3, 1f0dbbbdc9] AI Page Wording** — the truncated Advisor intro
+  ("A read-only bridge that lets your own AI assistant read this router's") is completed
+  to "…read this router's **status and configuration.**" (`EN.dict` RADV_01). *Note: the
+  other 24 language dicts carry the same truncated phrasing (translated) and need an i18n
+  pass to match.*
 
-- **SSID Format** The dashboard SSIDs show all capitals vs. mixed case on the Network page.
+- **[FIXED — v2.1.3, 1f0dbbbdc9] SSID Format** — dashboard radio tiles no longer show the
+  SSID in all-caps. The shared `.port .ps` style (`text-transform:uppercase`, wanted for
+  wired/USB port-speed labels) was overridden for the wireless tiles via `#wl_ports .ps`, so
+  the SSID renders in its real mixed case, matching the Network page.
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.

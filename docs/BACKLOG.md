@@ -150,6 +150,18 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   the feed-overlap UI note (FireHOL L1 aggregates Spamhaus v4/DShield/Feodo — disclose
   under the feed checkboxes).
 
+- **Warden: notate the feed deduplication function in the UI help.** (owner ask 2026-08-04,
+  from a field report claiming the feeds are "duplicates") For the record and for the help
+  fly-out ("How Warden works", `RWDN_38`–`RWDN_42`): all enabled feeds merge into **one**
+  deduplicated `hash:net` ipset — the updater builds `rw_threat(_6)` via `sort -u` into a
+  batched `ipset restore -!` (per-entry `ipset add -exist` fallback), then an **atomic
+  `ipset swap`** — so overlapping feeds (FireHOL Level 1 already aggregates Spamhaus DROP
+  v4, DShield, and Feodo) can never double-enforce or bloat the match; the only overlap
+  cost is redundant download/parse on the daily refresh. Task: add one help line stating
+  this dedup behavior + the feed-overlap disclosure under the checkboxes (new dict token,
+  25-dict lockstep). Code ref: `rc/rwarden.c` `rw_feeds[]` (~line 64) + the updater's
+  `rw_threat_tmp` build/swap block (~lines 440–465).
+
 - **Self-host the firmware update check on GitHub (remove Merlin's links/info from the
   update page).** The stock/Merlin update page shows Asuswrt-Merlin's update links and
   information, which **confuses Reaper users** about who provides their firmware. Explore

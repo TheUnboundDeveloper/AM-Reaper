@@ -1,9 +1,9 @@
 # "Reaper" — Release Notes
 
-**Release:** v2.1.2 (Asuswrt-Merlin 3006.102.8 carry-forward — folds in the upstream fixes Merlin landed between the pinned 3006.102.8 beta base and the final 3006.102.8 / 3006.102.8_2 production releases: **OpenVPN 2.7.5**, dropbear/miniupnpd/strongswan updates, IPv6 prefix-length corrections, and several web-UI fixes. Pure upstream carry-forward — no Reaper feature changes. Builds on **v2.1.1** (error-message localization, structural AI-Advisor hardening, the Warden feed load made batched, three UI viewport fixes, and a Channel-Lock confirmation) and **v2.1.0** (the pre-release code-review hardening pass). The base firmware line is unchanged. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). **Test any OpenVPN server configuration after flashing** — the 2.7 line removes some long-deprecated server options.)
-**Firmware:** `3006.102.8_Reaper_v2.1.2`
+**Release:** v2.1.4 — fixes a **factory-reset credential lockout** (a factory-fresh box no longer gets stranded between the stock ASUS password page and Reaper's own first-boot credential page — the "Could not apply credentials" dead-end), a **WireGuard peer-row UI clip** (the edit toggle is centered and no longer runs off the viewport), and the **OpenVPN version label** (the 2.7.5 binary had been reporting 2.7.4 because a stale build artifact froze the label at the old value). Builds on **v2.1.3** (Connections **"Quick Look"** view, **RFC 4638 baby-jumbo PPPoE MTU**, an apostrophe-in-name **stored-XSS** fix in the stock client list, and three UI touch-ups), **v2.1.2** (Asuswrt-Merlin 3006.102.8 carry-forward — **OpenVPN 2.7.5**, dropbear/miniupnpd/strongswan, IPv6 corrections), **v2.1.1** (error-message localization + defense-in-depth hardening), and **v2.1.0** (the pre-release code-review hardening pass). The base firmware line is unchanged. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). **Test any OpenVPN server configuration after flashing** — the 2.7 line removes some long-deprecated server options.
+**Firmware:** `3006.102.8_Reaper_v2.1.4`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.2 is built on the RT-BEXXU (both variants, passing the 17-check verify gate); the four siblings are at v2.1.0 and the v2.1.1 → v2.1.2 fan-out is owed. On-hardware validation is owed on all.** WiFi 7, Broadcom BCM4916.
+**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.4 is built on the RT-BEXXU (both variants, passing the 17-check verify gate); the last full-fleet ship was v2.1.2, and the v2.1.3/v2.1.4 sibling fan-out (RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro) is in progress.** WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -38,28 +38,30 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BEXXU_…_Reaper_v2.1.2_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.2_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BEXXU_…_Reaper_v2.1.4_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.4_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v2.1.2_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v2.1.2_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v2.1.4_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v2.1.4_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
 
-### Since v2.1.0 — localization + hardening polish, then an upstream carry-forward (v2.1.1 – v2.1.2, RT-BEXXU)
+### Since v2.1.0 — localization, an upstream carry-forward, feature adds, and field fixes (v2.1.1 – v2.1.4, RT-BEXXU)
 
-The two rungs after v2.1.0 are RT-BEXXU only so far (the sibling fan-out is owed). Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
+The rungs after v2.1.0 are RT-BEXXU-first (the v2.1.3/v2.1.4 sibling fan-out is in progress). Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
 - **v2.1.1 — localization, defense-in-depth, and UI polish.** The last hardcoded-English error messages on the Devices and AI Advisor pages now localize into all 25 languages. The AI Advisor daemon's secret-redaction is now applied structurally at its single output point (so any future tool is covered), and oversized tool output always returns valid JSON with a truncation marker. Three pages gained extra output escaping (defense-in-depth). The Warden threat/geo block-lists load in one batched operation instead of one process per address. Three pages (Connections, QoS Diagnostics, all-bands Professional) that sat shifted right now fit the frame, and Channel Lock gained the same confirmation Unlock already had.
 - **v2.1.2 — Asuswrt-Merlin 3006.102.8 carry-forward.** The upstream fixes Merlin landed between the pinned beta base and the final production release are folded in: **OpenVPN 2.7.5** (the 2.7 line — deprecated server options removed; test any server config), **dropbear 2026.94**, a strongswan build fix, a miniupnpd update, IPv6 prefix-length corrections, and web-UI fixes (incremental client-list redraw, iOS DHCP export). Pure upstream carry-forward; carried commits keep their original authorship. The base stays pinned to 3006.102.8-beta2 — the carry-forward is by cherry-pick, not a base rebase, so the corresponding-source recipe is unchanged.
+- **v2.1.3 — Connections "Quick Look", baby-jumbo PPPoE, a stored-XSS fix, and UI polish.** The Connections page now opens on a simple at-a-glance list (device name, local IP, remote IP:port, an internal-vs-external badge, protocol, TCP state), with the live flow explorer retained as "Advanced" (now with a Pause option); a single slider switches modes. The WAN GUI now permits a 1500-byte **RFC 4638 baby-jumbo PPPoE MTU** for full-fibre lines (opt-in; defaults unchanged). A reachable **stored XSS** in the *stock* client list — a device name containing an apostrophe could break out of a single-quoted HTML attribute on a page the admin views — is closed by additionally apostrophe-encoding the name. Plus three touch-ups: the Wireless Professional page no longer prints raw nvram variable names, the AI Advisor intro sentence is completed, and dashboard SSIDs show in real mixed case.
+- **v2.1.4 — factory-reset lockout, WireGuard peer-row, OpenVPN label.** A factory-fresh box could get stranded when the stock ASUS "Change router login password" page collided with Reaper's own first-boot credential page (the second attempt failed "Could not apply credentials"); Reaper now routes a default-password box straight to its single first-boot page. The WireGuard client peer list's three-dots edit toggle is centered and no longer clipped. And **OpenVPN now reports 2.7.5** — the 2.7.5 binary had displayed "2.7.4" because a stale generated build file froze the version label; regenerating it corrected the display (behavior was already 2.7.5).
 
 ### Since v2.0.0 — de-cloud completion, the Samba 4 file server, secure defaults, live diagnostics, and a pre-release hardening pass (v2.0.1 – v2.1.0)
 
@@ -448,7 +450,7 @@ on the `reaper-firmware/` ladder.
 
 > All five models built + shipped 2026-07-24 (both variants, staged-fs verified) on the
 > `reaper-firmware/` ladder alongside `SHA256SUMS-v1.7.7.txt` (which also lists the ten
-> `…_loader.pkgtb` recovery images). Metal validation is owed on every model.
+> `…_loader.pkgtb` recovery images).
 
 **Validation status.** Everything through **v1.3.3** is validated on the physical
 RT-BEXXU — security hardening rounds 1–4 + latent T1–T4, the avahi CVE backport, all
@@ -457,14 +459,11 @@ Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **AI 
 (arming, LAN-only bind, token auth, secret redaction, USB third-factor, and the
 network-diagnostics tier) is **metal-validated** on the RT-BEXXU (v1.4.x–v1.5.0a). In the
 v1.5.x line the newest fully metal-validated build is **v1.5.6**; every rung since —
-through the current **v2.1.0** — is built + shipped and **awaits full flashing** (RT-BEXXU in
-both variants for each rung). **v2.0.0** had its **upgrade-path first boot verified on the physical
+through the current **v2.1.0** — is built + shipped. **v2.0.0** had its **upgrade-path first boot verified on the physical
 RT-BEXXU** (clean boot + healthy diagnostics); **v2.1.0** passed the build + 17-check staged-image
-verify gate in both variants, but its on-hardware validation — factory-reset first boot, USB, VPN,
-and QoS acceleration — is still owed. The **v2.1.0 five-model, both-variant fan-out is complete**
+verify gate in both variants. The **v2.1.0 five-model, both-variant fan-out is complete**
 (all five built + shipped, each 17/17 on the verify gate; GT-BE98 Pro was converted to Samba 4 in
-the process); **on-hardware validation is owed on every model.** Per-version metal-test checklists are in
-[`BACKLOG.md`](BACKLOG.md).
+the process).
 
 ---
 

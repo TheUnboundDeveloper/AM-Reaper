@@ -306,7 +306,7 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 311 patches, `0311` = the v2.1.2 carry-forward + apostrophe-XSS fix, with 0312+ for v2.1.3/v2.1.4 in progress;
+**Patch-series regeneration recipe (the series is now at 318 patches, `0318` = v2.1.4;
 it was 215 at v1.7.7, and the 190-patch v1.6.6 run on 2026-07-19 was validated
 `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching
 `release/src/router` tree hash — as were the 181-patch v1.6.0, 178-patch v1.5.9 and

@@ -174,6 +174,8 @@ The authoritative, machine-readable list is
 
 | Release | Base | Patches | `release/src/router` tree hash |
 |---|---|---|---|
+| v2.1.4 | `a7ebfa133a` | `0001`–`0318` | `066a89ce574f3bdccbdb1af40d354f6ded822574` |
+| v2.1.3 | `a7ebfa133a` | `0001`–`0315` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` |
 | v2.1.2 | `a7ebfa133a` | `0001`–`0310` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` |
 | v2.1.1 | `a7ebfa133a` | `0001`–`0290` | `3ae0d9144034bfc3a62fb5814d798a45b7db3ac6` |
 | v2.1.0 | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` |

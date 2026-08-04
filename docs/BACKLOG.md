@@ -151,15 +151,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   receiving DNS log entries. The expected behavior was for only the active WAN’s profile to show 
   traffic.
 
-  There are also two configuration questions:
-  When both WANs are active, which public WAN IP does ASUS Dynamic DNS register?
-  Why does the IPv6 configuration appear to be global rather than configurable separately for each 
-  WAN in both stock ASUS firmware and Asuswrt-Merlin?
-
 ## Features to add
 
-- **Connections page — add a "Quick Look" base view with a single slider toggle
-  (current explorer becomes "Advanced").** Field feedback (2026-08-03): users want a
+- **[IMPLEMENTED — v2.1.3, be96u-only 9faa847d32; NOT BUILT] Connections page — "Quick Look"
+  base view + single slider toggle (current explorer becomes "Advanced").** Field feedback (2026-08-03): users want a
   fast at-a-glance connection check like Merlin's *System Log → Connections* — **device
   name, local IP, remote IP, internal-vs-external, and TCP state** in one simple list —
   as the **default**, with the current live flow explorer available on demand. Build both
@@ -185,6 +180,17 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     `Main_ConnStatus_Content.asp` be retired later rather than maintained.
   - Note: the router's own WAN-originated flows appear here **by design** (Merlin hid them);
     Quick Look's internal/external indicator makes that distinction obvious at a glance.
+  - **BUILT (9faa847d32):** Quick Look is the default (localStorage-persisted); rows show
+    device name (via `/appGet.cgi?hook=get_clientlist()`), local IP, remote IP:port, an
+    Internal/External badge (RFC1918 test on the remote end), protocol, and TCP state.
+    Advanced retained unchanged + gained the **Pause** rate option, and its detail panel now
+    shows the device name + TCP state. **Backend:** `do_reaper_conn_cgi` reads
+    `/proc/net/nf_conntrack` once and matches each flow by 5-tuple (either direction) to emit
+    a new `st` field (UDP/unmatched → empty). **Owed:** (a) the C is **uncompiled** — the
+    v2.1.3 build is its first compile; validate on metal (esp. that conntrack↔fcache 5-tuple
+    matching populates state for most flows, and the conntrack read doesn't add poll latency);
+    (b) the new Quick Look labels (Device/Scope/State/Internal/External/Quick Look/Advanced/
+    Pause) are **English literals** pending an i18n tokenization pass across the 25 dicts.
 
 - **Self-host the firmware update check on GitHub (remove Merlin's links/info from the
   update page).** The stock/Merlin update page shows Asuswrt-Merlin's update links and

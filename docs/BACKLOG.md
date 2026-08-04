@@ -122,14 +122,26 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   that the speed test crashes. Doesn't seem to affect everyone as some BE98 users 
   report no issues. Both claim to have the 1.8.6d installed which had the previous 
   fix for the crashing speed test. I have noticed potential soft crashes in speed testing 
-  when I have class based QoS enabled.
+  when I have class based QoS enabled. **Also observed (owner): a momentary freeze on the
+  speed test in HW Classful mode (`qos_type=11`, the 8-queue WRR scheduler), but NOT in the
+  HW Classless modes** — points at the classful egress-scheduler path (per-class queue setup /
+  the runner reconfiguring queues under load) rather than the PI2 shaper itself.
 
-- **MTU PPOE** Merlin had changed firmware to support 1500, so that Baby Jumbo Frames 
-  (supported in UK on full fibre) could be supported. I think that value translate the WAN 
-  to encapsulate 1508 WAN packet size. Its in the RFC4638 standard too so not something that 
-  isn't a standard. RFC 4638 allows the underlying physical Ethernet interface to handle slightly 
-  larger frames (usually 1508 bytes) so that the upper PPPoE layer can maintain a clean 
-  1500-byte MTU/MRU.
+- **[IMPLEMENTED — v2.1.3, be96u-only de6ac2d2e0; METAL-TEST OWED] MTU PPPoE — RFC 4638
+  baby-jumbo frames (1500-byte PPPoE MTU on full-fibre).** RFC 4638 lets the physical Ethernet
+  carry ~1508-byte frames so the PPPoE layer keeps a clean 1500-byte MTU/MRU (instead of the
+  usual 1492). **Finding:** the rc backend already supports this — `rc/wan.c` (~L2075) raises
+  the parent WAN interface MTU to `wan_pppoe_mtu + 8` (= 1508) whenever `wan_pppoe_mtu`/`mru`
+  exceeds 1492. The only blocker was the WAN GUI (`Advanced_WAN_Content.asp`), which capped
+  `wan_pppoe_mtu`/`mru` at 1492 and `wan_mtu` at 1500, with a `pppoe_mtu ≤ wan_mtu-8` clamp that
+  knocked 1500 back to 1492. **Fix applied:** raised the caps to 1500 (pppoe_mtu/mru) and 1508
+  (wan_mtu) + the field's range hint. Opt-in — the nvram defaults stay 1492/1500, so existing
+  PPPoE users are unaffected; only a user who deliberately enters 1500/1508 gets baby-jumbo.
+  **Owed (metal, live PPPoE full-fibre line):** confirm (a) pppd negotiates MRU/MTU 1500,
+  (b) the parent WAN port actually accepts a 1508 MTU — the switch/PHY may need to allow >1500
+  (watch the `jumbo_frame_enable` interaction on `eth*`, rc/interface.c:320; `SIOCSIFMTU` failure
+  is logged by `start_wan_if`), and (c) 1500-byte payloads pass end-to-end unfragmented. The
+  owner's 10G PPPoE WAN (not yet connected — see the dual-WAN item) is the test bed.
 
 - **The router is configured for dual-WAN failover**
   The active secondary WAN uses the 2.5 Gbps LAN port with DHCP and its own NextDNS profile.

@@ -114,6 +114,30 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   speed test in HW Classful mode (`qos_type=11`, the 8-queue WRR scheduler), but NOT in the
   HW Classless modes** — points at the classful egress-scheduler path (per-class queue setup /
   the runner reconfiguring queues under load) rather than the PI2 shaper itself.
+  - **Source trace (2026-08-04, no code change — blob/metal-bound):** the built-in Ookla test
+    is **router-originated** traffic (`ookla_exec`, a libws blob, runs the ookla client on the
+    router). Its WAN egress traverses `QOSO` at `POSTROUTING -o $WANIF` (`rc/qos.c` ~1013), so
+    in type-11 it is CONNMARK'd into the **default class → default egress queue**, and is then
+    subject to that queue's PI2 shaper + the WRR schedule + the **aggregate port shaper**
+    (`setportshaper=qos_obw`). **type-10 has none of these** (qid0 shaper only, no port shaper,
+    no per-class, no WRR) — which is exactly why the freeze is classful-only. So the router's
+    own saturating test flow is scheduled through the full classful egress path; a momentary
+    freeze at test start is the runner engaging the port shaper + WRR + PI2 on a sudden
+    line-rate router-local flow (the owner's "runner reconfiguring queues under load"). Both
+    `ookla_exec` and the rdpa runner are **blobs** — not reproducible or safely fixable from
+    the auditable source; no QoS/accel toggle exists in the auditable ookla path. Per-user
+    variance fits config differences (`qos_obw`/`qos_orates` ceilings/WRR weights).
+  - **NOT shipping a speculative fix** (metal-first / reachability discipline; QoS enforcement
+    path). **Metal diagnostics to split it:** (a) run built-in test on type-11 while capturing
+    `logread`+`dmesg`+`fc status`+`tmctl getqstats` before/during/after; (b) run the SAME test
+    on type-10 (owner: no freeze) as the control; (c) run an **external/LAN-client** speed test
+    (forwarded, not router-local) under type-11 — if it does NOT freeze, the built-in test's
+    router-local path is the confound; (d) set `qos_pshaper=0` (port shaper off) or raise
+    `qos_obw` to line rate → re-run built-in test; freeze gone ⇒ port-shaper interaction;
+    (e) watch `fc status` for an accel flip during the test ⇒ runner reconfig. **Interim
+    workaround for users:** run the built-in test with QoS on a classless mode or off, or use
+    a LAN-client/external speed test; under classful the built-in test measures *shaped*
+    throughput, not the raw line. [owed — metal + blob-bound]
 
 - **The router is configured for dual-WAN failover**
   The active secondary WAN uses the 2.5 Gbps LAN port with DHCP and its own NextDNS profile.

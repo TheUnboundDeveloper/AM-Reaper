@@ -12,6 +12,24 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / Validation
 
+- **v2.1.8 metal checks (fleet built 2026-08-05; respin of the unpublished v2.1.7). [owed]**
+  - *WAN-MTU rollback:* on a DHCP/static WAN the MTU field refuses >1500 (1508 no longer
+    enterable/applyable); owner's BE96U: re-apply 1500 once (a 1508 from the pre-rollback
+    build may persist in nvram/on the interface until re-applied) and confirm the WAN
+    interface runs at exactly 1500 (`ip link`).
+  - *Device-name unification:* rename a device on the Devices page → name appears on Client
+    List / Network clients / Gatekeeper / Traffic Top Talkers / Connections / Wireless Log /
+    DHCP-leases "Device Name" column, and **survives a reboot**; remove an *offline* client →
+    no other custom names are lost; rename in the stock popup with the Devices page open in
+    another tab → neither rename rolls the other back; a device that had duplicate name
+    records shows the most recent name after one reboot.
+  - *Siblings PPPoE-1500:* on a BE88U (or any sibling) v2.1.7, the WAN page accepts PPPoE
+    MTU/MRU 1500 and the WAN interface raises to 1508 (`ip link` / `ifconfig`).
+  - *Traffic flash-persistence:* flash v2.1.7 over v2.1.6 with USB history enabled → history
+    intact after the flash; collector log shows a clean store re-attach.
+  - *Storage USB panel:* disk info/health/format/eject work against a real stick; format
+    refuses the active store without confirmation.
+
 ## UI / UX polish
 
 - **Network (SDN) page: suppress or mask the post-apply SSID+password overlay.** (Owner
@@ -29,6 +47,20 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   (ii) mask the key, keep the SSID hint (low risk); (iii) leave stock. [owed — owner
   to pick a direction]
 
+- **WiFiPro 2.4 GHz: lock the Preamble selector to its "Disable 802.11b" option while
+  802.11b is disabled.** (Owner request 2026-08-05.) On `Reaper_WiFiPro.asp` the 2.4 GHz
+  band has two coupled rows: **"Disable 802.11b"** (`rateset`, ~L211 — options
+  `default`="Allow 802.11b" / `ofdm`="Disable 802.11b") and **Preamble Type** (`plcphdr`,
+  ~L219 — `long` / `short` / `0`="Disable 802.11b"). Preamble is an 802.11b-era concept,
+  so when the Disable-802.11b control is set to *disable* (`rateset=ofdm`) the Preamble
+  select should be **forced to its "Disable 802.11b" option and locked** (greyed, not
+  editable); switching back to "Allow 802.11b" unlocks it and restores the prior/default
+  preamble value. Pure page-side coupling (change-handler on the rateset select + state
+  applied on initial render per band); no backend change; check whether a queued staged
+  change for `plcphdr` needs cancelling when the lock engages (the page batches changes
+  before Apply). Shared page — fans out to all 5 models; add a `verify_markers.txt` line
+  if implemented as a field-critical fix. [owed — UI polish]
+
 - **i18n residuals (from v2.1.3).** Two English-only strings need a translation pass across
   the dicts: (a) the AI Advisor intro was completed in `EN.dict` (RADV_01) but the other 24
   language dicts still carry the older truncated phrasing (translated); (b) the Connections
@@ -37,6 +69,12 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
+  *(2026-08-05 note: NOT closed by the v2.1.7 name unification — the Traffic page resolves
+  names live from the client list, which only carries devices networkmap currently knows.
+  A long-offline device falls out of that list, so its history rows fall back to IP/MAC.
+  Proper fix = have rtrafd persist a MAC→last-known-name sidecar (or resolve against
+  the master `custom_clientlist` directly, which does retain named offline devices) —
+  pairs with the month-view item below.)* [owed]
 - **Translation Token (RU "Administration" `&shy;` artifact) — RESOLVED (be96u-only
   `65d5d4d184`), SHIPPED v2.1.6 all five models, metal owed.** `menu5_6` (RU) carried an HTML soft-hyphen ENTITY
   (`Администри&shy;рование`, added for rail wrap). The Reaper dashboard substitutes the
@@ -218,6 +256,9 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 - **Traffic Analyzer** Traffic Analyser also does not put the device names for every device when 
   you view say, for the past MONTH.
+  *(2026-08-05 note: same root cause as the "Client ID" item above — rtrafd history stores
+  only MAC/IP, names resolve live at page load, so anything not in the current client list
+  shows bare. Fix together with that item.)* [owed]
 
 ## Features to add
 

@@ -159,33 +159,33 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   25-dict lockstep). Code ref: `rc/rwarden.c` `rw_feeds[]` (~line 64) + the updater's
   `rw_threat_tmp` build/swap block (~lines 440–465).
 
-- **Self-host the firmware update check on GitHub (remove Merlin's links/info from the
-  update page).** The stock/Merlin update page shows Asuswrt-Merlin's update links and
-  information, which **confuses Reaper users** about who provides their firmware. Explore
-  pointing the update check at a **Reaper GitHub-hosted manifest** so the update page shows
-  Reaper's own version info and release, with no Merlin references.
-  - *Reference approach (gnuton's `webs_update.sh`):* the update-check script `wget`s a
-    plain-text manifest from a GitHub raw URL
-    (`https://raw.githubusercontent.com/<owner>/<repo>/<branch>/updates/manifest_3006.txt`),
-    greps the line for `productid` (format `MODEL#...#FW<base.firm.build>#EXT<extendno>#`),
-    parses base/firm/buildno/extendno, compares against the running `firmver`/`buildno`/
-    `extendno`, and on a newer version sets the same stock nvram the GUI already reads:
-    `webs_state_info=<base>_<firm>_<build>_<extendno>`, `webs_state_flag=1` (upgrade
-    available), `webs_state_error`, `webs_state_update=1`, plus an optional `_note.txt`
-    release note fetched the same way. The GUI update page renders from those nvram keys —
-    so replacing the *source* + the page's Merlin text is the whole job for a notification.
-  - *Reaper integration:* Reaper already declares `RTCONFIG_MERLINUPDATE` and hosts releases
-    on GitHub (`AM-Reaper`) with `SHA256SUMS-*` and `provenance/manifest.json`. Generate the
-    update manifest from the release process (`stage_release.ps1` / `release.yml`) so it
-    stays in lockstep with what's actually published; per-model + **two-variant (MCP/noMCP)**
-    awareness is required (the update must not offer to cross-flash a user from one variant
-    to the other).
-  - *Scope in phases:* **(1) notification-only** — tell the user a newer Reaper version
-    exists and link to the GitHub release (low risk, removes the Merlin confusion now).
-    **(2) download + flash** — needs a hosted `.pkgtb` URL in `webs_state_url`, the
-    variant/model selection, and the on-request/GPL + image-signing considerations, so it's
-    a larger, later step. Also rewrite the update page's Merlin-referencing text/links
-    regardless of phase. [owed — explore]
+- **Firmware update check on GitHub — PHASE 1 DONE (be96u-only `56a824a5a5`), metal owed.**
+  Replaced Merlin's `fwupdate.asuswrt-merlin.net` check with a Reaper GitHub-hosted manifest:
+  `rom/webs_scripts/reaper_webs_update.sh` (busybox sh) reads `productid` + detects variant
+  (MCP ships `rmcpd`/`Reaper_Advisor.asp`, noMCP neither), greps `PRODUCTID#VARIANT` from
+  `updates/manifest_3006.txt` on the AM-Reaper raw tree, compares Reaper `X.Y.Z`, and sets the
+  stock `webs_state_*` nvram. `stage_release.ps1` now emits that plain-text manifest alongside
+  `latest.json` (lean repo `9d2e30f`). The firmware page is de-Merlined (links → AM-Reaper
+  releases) and **Main_ReaperDash.asp shows a crimson "New firmware available" badge** (server-
+  rendered from `webs_state_flag`, links to the firmware page). **Opt-in preserved:**
+  `firmware_check_enable` default stays `0`; scheduled check runs only when enabled, manual
+  "Check" works on demand. Notify-only — never downloads/flashes. **METAL:** enable check →
+  Check → badge + page show the published version; wrong-variant line never matched; note fetch.
+  Root cause it fixes: every Reaper release shares Merlin base `3006.102.8`, so the stock
+  numeric compare (which zeroed our `Reaper_v…` extendno) could never see a Reaper update.
+- **PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
+  (owner ask 2026-08-04) Replace the whole stock firmware tab with a Reaper-native page (shell/
+  inject-skip, theme tokens, dict lockstep — the `Reaper_QoS`/`Reaper_Traffic` convention). Surface
+  functions the stock page **disables** (`afwupg_support=false`, `betaupg_support=false`): one-click
+  download of the published `.pkgtb` from `webs_state_url` → verify SHA256 (already in the manifest)
+  → flash; show the release note inline; guard model+variant so a noMCP box can't pull an MCP image;
+  optional rollback awareness. Pulls in image-signing / GPL-delivery considerations (was the deferred
+  Phase 2). Depends on Phase 1's manifest + nvram wiring (done). [owed — build]
+- **NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** (owner direction
+  2026-08-04) Over time, migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme,
+  de-clouded, only the functions we want exposed), as already done for Dashboard/QoS/Traffic/Wireless/
+  GK/Warden/Devices/Advisor/Conn/QoSDiag. Firmware tab (Phase 2 above) is the next candidate. Track
+  per-page migrations here as they're scoped. [ongoing]
 
 - **Staged ("batch") changes — one save, minimal restarts.** Owner request. Today each control
   applies immediately, so e.g. changing all three Wi-Fi bands = three applies + three

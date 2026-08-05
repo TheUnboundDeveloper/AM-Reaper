@@ -22,11 +22,16 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
-- **Translation Token** The "Administration" menu item displays correctly in all other languages, 
-  but on the Russian UI, it shows up as "Администрирование" with raw HTML soft hyphen tags 
-  "&shy;" visible in the text. Interestingly, right after logging in, it displays properly on 
-  the Home/Main page. However, as soon as you navigate to any other page, the code artifact 
-  pops up in the menu title.
+- **Translation Token (RU "Administration" `&shy;` artifact) — RESOLVED (be96u-only
+  `65d5d4d184`), metal owed.** `menu5_6` (RU) carried an HTML soft-hyphen ENTITY
+  (`Администри&shy;рование`, added for rail wrap). The Reaper dashboard substitutes the
+  token straight into HTML (entity decodes, invisible) but the **stock left-menu renderer
+  emits `menuName` as text**, so the entity showed literally — hence correct on Home, raw on
+  every stock page. Fixed by making the value entity-free: RU dropped the `&shy;`; the same
+  latent bug in **TR `menu5_2_1`** (`&#39;`) was fixed to U+2019 (renders as an apostrophe in
+  a text context, can't break quoted JS). In-place edits, dicts stay lockstep. **Rule going
+  forward:** menu-label dict tokens must not contain HTML entities — the stock menu renderer
+  shows them raw; use literal Unicode characters.
 
 ## Known issues (cause identified)
 

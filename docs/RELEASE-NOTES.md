@@ -1,9 +1,9 @@
 # "Reaper" — Release Notes
 
-**Release:** v2.1.6 — **the router can now notify you of Reaper updates** (opt-in, notify-only: every Reaper release shares the Merlin base number, so the stock check could never see one; the check now reads a Reaper-published GitHub manifest, is model- **and variant-aware**, and lights a dashboard badge — off by default, talks only to the Reaper GitHub tree, never downloads or flashes by itself), **the dashboard shows your real WAN IPv6** (on native/DHCPv6-PD lines the global address lands on the LAN bridge, and the card was falling back to the `fe80::` gateway/link-local; it now falls back to the bridge global — the same source the stock IPv6 status page uses), **Warden's total-blocked counter survives firewall restarts** (it was read from a rule that routine restarts rebuilt, snapping the total to zero; it is now banked into a running baseline, and the feed checkboxes note that overlapping feeds are merged/de-duplicated), the **health watchdog no longer cries "wan-gw FAILURE" behind an ICMP-filtering first hop** (a failed ping is corroborated against the router's WAN state), the non-functional **"B/G Protection" control is removed** (the stock driver force-resets it to Auto on every wireless restart), and two **menu labels** (RU/TR) no longer show raw HTML entities. Builds on **v2.1.5** (PPPoE-1500 from the GUI, self-recovering first-boot page, Traffic Analyzer reboot persistence), **v2.1.4** (factory-reset credential lockout fix, WireGuard peer-row clip, OpenVPN version label), **v2.1.3** (Connections **"Quick Look"**, **RFC 4638 baby-jumbo PPPoE MTU**, a stored-XSS fix), **v2.1.2** (Merlin 3006.102.8 carry-forward — **OpenVPN 2.7.5**), **v2.1.1** (localization + hardening), and **v2.1.0** (the pre-release code-review pass). The base firmware line is unchanged. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). **Test any OpenVPN server configuration after flashing** — the 2.7 line removes some long-deprecated server options.
-**Firmware:** `3006.102.8_Reaper_v2.1.6`
+**Release:** v2.1.8 — **device names are unified and finally stick.** There is now one master name list (the same store every page already read), and a rename made anywhere shows everywhere: three long-standing defects are fixed — removing an offline client could silently **wipe every custom device name** after a reboot; a rename made on the Devices page appended a duplicate record instead of replacing the old one, so some pages kept resolving the **old** name while others showed the new (the field "rename reverts" reports); and the stock rename popup saved from a stale page-load snapshot, silently rolling back names changed elsewhere. Existing duplicate records self-heal on the first reboot. Two readers are aligned with the rest of the UI: **Gatekeeper now shows your custom name first** (the device's self-reported hostname is only a fallback), and the **DHCP-leases log gains a unified "Device Name" column** beside the raw lease hostname. Also in this rung: **Traffic Analyzer history survives firmware flashes** (a flash could detach the store mid-write; the collector now guards against phantom mounts and re-attaches late), the **Long-Term Storage tab gains a USB disk panel** (disk info, health scan, format, eject — migrated from the stock networkmap side menu), and the **siblings catch up to the PPPoE-1500 GUI fix** (v2.1.5's fix reached only the RT-BEXXU image — a port-process gap kept the sibling images at the 1492 cap; the gap is closed and the port now syncs every shared page regardless of where it lives, so the class can't recur), and the **WAN-MTU field's 1508 allowance is rolled back** (it only renders on automatic/static-IP connections where 1508 is invalid, yet it accepted and applied it; back to 1280–1500 — PPPoE keeps 1500 with the automatic, PPPoE-only +8 on the physical interface, confirmed by code sweep; this rung was first cut as v2.1.7 and respun as v2.1.8 when release validation caught the regression — v2.1.7 was never published). Builds on **v2.1.6** (opt-in update notifications, real WAN IPv6 on the dashboard, Warden/watchdog fixes), **v2.1.5** (PPPoE-1500 from the GUI, self-recovering first-boot page, Traffic Analyzer reboot persistence), **v2.1.4** (factory-reset credential lockout fix), **v2.1.3** (Connections **"Quick Look"**, **RFC 4638 baby-jumbo PPPoE MTU**, a stored-XSS fix), **v2.1.2** (Merlin 3006.102.8 carry-forward — **OpenVPN 2.7.5**), **v2.1.1** (localization + hardening), and **v2.1.0** (the pre-release code-review pass). The base firmware line is unchanged. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). **Test any OpenVPN server configuration after flashing** — the 2.7 line removes some long-deprecated server options.
+**Firmware:** `3006.102.8_Reaper_v2.1.8`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.6 is built + shipped on all five models (both variants each, all passing the 17-check verify gate) by the parallel per-model build fleet.** WiFi 7, Broadcom BCM4916.
+**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.8 is built + shipped on all five models (both variants each, all passing the now-19-check verify gate) by the parallel per-model build fleet.** WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -38,23 +38,23 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BEXXU_…_Reaper_v2.1.6_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.6_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BEXXU_…_Reaper_v2.1.8_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.8_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v2.1.6_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v2.1.6_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v2.1.8_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v2.1.8_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
 
-### Since v2.1.0 — localization, an upstream carry-forward, feature adds, and field fixes (v2.1.1 – v2.1.6)
+### Since v2.1.0 — localization, an upstream carry-forward, feature adds, and field fixes (v2.1.1 – v2.1.8)
 
 The rungs after v2.1.0 are RT-BEXXU-first; since v2.1.4 the fleet ships every rung on all five models in parallel (RT-BEXXU carried v2.1.3 alone, then the siblings were brought straight to v2.1.4). Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
@@ -64,6 +64,7 @@ The rungs after v2.1.0 are RT-BEXXU-first; since v2.1.4 the fleet ships every ru
 - **v2.1.4 — factory-reset lockout, WireGuard peer-row, OpenVPN label.** A factory-fresh box could get stranded when the stock ASUS "Change router login password" page collided with Reaper's own first-boot credential page (the second attempt failed "Could not apply credentials"); Reaper now routes a default-password box straight to its single first-boot page. The WireGuard client peer list's three-dots edit toggle is centered and no longer clipped. And **OpenVPN now reports 2.7.5** — the 2.7.5 binary had displayed "2.7.4" because a stale generated build file froze the version label; regenerating it corrected the display (behavior was already 2.7.5).
 - **v2.1.5 — three field-report fixes.** The **1500-byte PPPoE MTU is settable from the GUI** (the v2.1.3 raise had landed on a WAN page variant that doesn't ship; the shipped page still capped at 1492 and silently clamped a hand-entered 1500). The **first-boot credential page is self-recovering** (a stale or back-navigated copy can no longer reject every input when the password already applied). And **Traffic Analyzer history genuinely survives reboots on both stores** — USB had lost all history every reboot (the collector looked for its database before the stick mounted, then overwrote it); it now waits for the store, restores, never overwrites an unloaded database, and saves every 15 minutes on USB (JFFS stays hourly for flash wear).
 - **v2.1.6 — update notifications, real IPv6 on the dashboard, Warden/watchdog fixes.** The router can now **notify you when a Reaper update exists** — opt-in and notify-only: the stock check compares only the shared Merlin base number so it could never see a Reaper release; the new check reads a Reaper-published GitHub manifest, knows your model *and* variant, and lights a crimson dashboard badge (off by default; talks only to the Reaper GitHub tree; never downloads or flashes by itself). The **dashboard shows your real WAN IPv6** — on native/DHCPv6-PD lines the global lands on the LAN bridge and the card had fallen back to the `fe80::` gateway/link-local; it now uses the bridge global, the same source as the stock IPv6 status page. **Warden's total-blocked counter survives firewall restarts** (banked into a running baseline instead of a rule the restart rebuilds), the **health watchdog** no longer flags a phantom `wan-gw` failure behind an ICMP-filtering first hop, the non-functional **"B/G Protection"** control is removed (stock driver force-resets it to Auto), and two menu labels (RU/TR) no longer show raw HTML entities.
+- **v2.1.8 — unified device naming, flash-proof Traffic Analyzer history, a USB disk panel, the siblings' PPPoE-1500 catch-up, and a WAN-MTU rollback.** Device names now come from **one master list on every page** and renames stick: three defects are fixed (removing an offline client could wipe every custom name after a reboot; a Devices-page rename appended a duplicate record so first-match pages kept the old name; the stock rename popup could roll back names changed elsewhere from its stale snapshot) — existing duplicates self-heal on reboot. **Gatekeeper is name-first** now (self-reported hostname only as fallback) and the **DHCP-leases log gains a unified Device Name column**. **Traffic Analyzer history survives firmware flashes** (phantom-mount guard + late store re-attach), the **Long-Term Storage tab gains a USB disk panel** (info, health scan, format, eject), the **sibling models finally accept PPPoE MTU 1500 in the GUI** (the v2.1.5 fix had shipped only on the RT-BEXXU image due to a port-process gap, now closed permanently), and the **WAN-MTU field's 1508 allowance is rolled back to 1280–1500** (it only renders on automatic/static-IP WANs where 1508 is invalid; PPPoE keeps 1500 with the automatic PPPoE-only +8 on the physical interface). First cut as v2.1.7; respun as v2.1.8 when release validation caught the WAN-MTU regression — v2.1.7 was never published.
 
 ### Since v2.0.0 — de-cloud completion, the Samba 4 file server, secure defaults, live diagnostics, and a pre-release hardening pass (v2.0.1 – v2.1.0)
 
@@ -401,7 +402,20 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v2.1.6 flashable-image hashes (SHA-256)** — the current head, **built + shipped on all five models**
+**v2.1.8 flashable-image hashes (SHA-256)** — the current head, **built + shipped on all five models**
+(both variants each, 19-check verify gate) by the parallel per-model fleet, 2026-08-05. The RT-BE96U
+image hashes are shown below; each sibling has its own `SHA256SUMS-<MODEL>-Reaper_v2.1.8.txt`
+alongside its images under `releases/<Model>/`. (v2.1.7 was built but never published — superseded
+pre-release by the WAN-MTU rollback and respun as v2.1.8.)
+
+| Image (`RT-BE96U_3006_102.8_Reaper_v2.1.8…`) | SHA-256 |
+|---|---|
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `b8d7e697b26bc6dd3e60d7d81261b8940b952f2044086196440ea090e702549b` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `8a305722a1d7f288f8323212a0054f5518b7fd22461a0b6613a9fdd465d92285` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `7b359c7a920ce634fca47afbffd6dc76c817aa69fa81cc0f8f08da2c49260bee` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `1fec4355cc341a742c78b09a56f5a936c1d382efa8afce17975e3cba24409bd1` |
+
+**v2.1.6 flashable-image hashes (SHA-256)** — **built + shipped on all five models**
 (both variants each) by the parallel per-model fleet, 2026-08-05. The RT-BE96U image hashes are shown
 below; each sibling has its own `SHA256SUMS-<MODEL>-Reaper_v2.1.6.txt` alongside its images under
 `releases/<Model>/`.

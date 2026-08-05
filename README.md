@@ -47,7 +47,7 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 - The **upstream firmware source** — clone `RMerl/asuswrt-merlin.ng` at tag `3006.102.8-beta2`.
 - The **proprietary Broadcom/ASUS/Trend Micro/Tuxera components** — licensed for ASUS hardware only; they come with the upstream source / ASUS GPL drop, never redistributed here.
 - The **toolchains** — gcc-10.3 ARM/aarch64 from `RMerl/am-toolchains`.
-- The **flashable `.pkgtb` images** — build artifacts, **not publicly hosted**; available **on request**, delivered with the complete corresponding source (see [docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md) § 3, *Requesting a build*).
+- The **flashable `.pkgtb` images** — build artifacts, are available in this repository, corresponding source tree is avaiable by request only. (see [docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md) § 3, *Requesting a build*).
 
 ## Documentation — read in this order
 
@@ -63,7 +63,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 
 ## Quick start
 
-- **Just want to flash it?** Builds are **available on request** (not publicly hosted) and come with the complete corresponding source — see [docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md) § 3 for the **request format**. There are **two variants** — a **Standard** image and an **AI Advisor** (`…_MCP`) image that adds the optional MCP server (off by default). First non-stock flash needs `nvram set DOWNGRADE_CHECK_PASS=1` (see [docs/PROJECT.md](docs/PROJECT.md) § Installation); flash via *Administration → Firmware Upgrade*.
+- **Just want to flash it?** Flashable builds are **hosted right here on GitHub** — grab the image for your model from the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases) page (also mirrored in-tree under [`releases/`](releases/)), each with a `SHA256SUMS` file to verify the download. Every image ships with its complete corresponding source in this repo (`patches/` + `provenance/`); see [docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md). There are **two variants** — a **Standard** image and an **AI Advisor** (`…_MCP`) image that adds the optional MCP server (off by default). First non-stock flash needs `nvram set DOWNGRADE_CHECK_PASS=1` (see [docs/PROJECT.md](docs/PROJECT.md) § Installation); flash via *Administration → Firmware Upgrade*.
 - **Want to build it yourself / contribute?** Read **[docs/DEV-SETUP.md](docs/DEV-SETUP.md)** — it walks you from fetching the upstream source + toolchains, applying `patches/`, through the build and verification (including every trap we hit). The AI Advisor is compiled in or out via the `RTCONFIG_REAPER_MCP` build flag.
 
 ## Base & status

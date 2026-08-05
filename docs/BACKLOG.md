@@ -141,19 +141,19 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Features to add
 
-- **Warden: explicit IPv6 enable option + broader IPv6 feed coverage.** (owner ask
-  2026-08-04) Add a UI/nvram option (e.g. `rwarden_ipv6`) controlling Warden's IPv6
-  side explicitly. Current state for the implementer: IPv6 enforcement is **already
-  built and always-on** — `REAPER_WARDEN`/`RW_DROP` chains are hooked with `ip6tables`,
-  v6 sets exist (`rw_threat6`, `rw_ban6`/`rw_allow6`, `rw_g6_<cc>` geo) — but v6 *threat*
-  coverage is thin: the only v6 feed ingested is Spamhaus DROPv6 (FireHOL Level 1 is
-  IPv4-only). Scope: (a) a visible on/off toggle for the v6 half (users with broken/absent
-  IPv6 can shed the chains; default = current always-on behavior), surfaced on
-  `Reaper_Warden.asp` with dict tokens (25-dict lockstep); (b) evaluate adding v6-capable
-  feeds (e.g. FireHOL v6-capable sets, abuse.ch v6 where offered) to close the coverage
-  gap; (c) stats page should label v4/v6 hits distinctly if the toggle lands. Ties into
-  the feed-overlap UI note (FireHOL L1 aggregates Spamhaus v4/DShield/Feodo — disclose
-  under the feed checkboxes).
+- **Warden: explicit IPv6 enable option + broader IPv6 feed coverage. [HELD — owner
+  2026-08-04: leave IPv6 always-on for now, revisit later.]** IPv6 enforcement is **already
+  built and always-on** — `REAPER_WARDEN`/`RW_DROP` chains hooked with `ip6tables`, v6 sets
+  (`rw_threat6`, `rw_ban6`/`rw_allow6`, `rw_g6_<cc>` geo). When picked up: (a) `rwarden_ipv6`
+  nvram (default `1` = current behavior) gating just the v6 block in `rw_gen_apply` (the v6
+  teardown already runs unconditionally, so toggling off cleans up), + a UI switch on
+  `Reaper_Warden.asp` + a dict token (25-dict lockstep); **flag the security implication** —
+  off drops ALL v6 Warden enforcement for an IPv6 user. (c) v4/v6 hit-count split in
+  `stats.sh` is a small add; the "IPv4 · IPv6" label already follows the armed v6 chain.
+  (b) **Feed reality (researched 2026-08-04):** the open, freely-redistributable IPv6
+  *threat*-feed space is thin — FireHOL L1 is IPv4-only, Feodo/DShield effectively IPv4,
+  Cymru v6 is bogons not threats. **Spamhaus DROPv6 (already ingested) is about the best
+  available**; no strong additional feed to add. Treat as a watch-item, not a quick win.
 
 - **Warden: feed dedup/overlap disclosure — DONE (be96u-only `d3779f94e4`).** New dict token
   `RWDN_55` (all 25 dicts, 6189→6190 lockstep) shown under the feed checkboxes and as a

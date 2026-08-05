@@ -408,8 +408,10 @@ below; each sibling has its own `SHA256SUMS-<MODEL>-Reaper_v2.1.6.txt` alongside
 
 | Image (`RT-BE96U_3006_102.8_Reaper_v2.1.6…`) | SHA-256 |
 |---|---|
-| `…_nand_squashfs.pkgtb` (+ AI Advisor) | _recorded at ship — see `SHA256SUMS-RT-BE96U-Reaper_v2.1.6.txt`_ |
-| `…_noMCP_nand_squashfs.pkgtb` (Standard) | _recorded at ship — see `SHA256SUMS-RT-BE96U-Reaper_v2.1.6.txt`_ |
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `fd50d77121c70621741048f902ef51075cef127065f7abd0caaa5713a99e316d` |
+| `…_nand_squashfs_loader.pkgtb` (+ AI Advisor, recovery) | `044fea003e48232146621bc82bc51fc0d05341f61f6cb66ffcecbfad1a0b1f6b` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `133cd2448bad23f163e0b2723dfd3c4f4222757cd7ca8ac65459117698e220f7` |
+| `…_noMCP_nand_squashfs_loader.pkgtb` (Standard, recovery) | `69027c1be3f61ce0308736b2423420e74d67ea714ae11dbf37416ec428bb9c88` |
 
 **v2.1.5 flashable-image hashes (SHA-256)** — **built + shipped on all five models** (both variants
 each), the first release produced by the parallel per-model build fleet. Each sibling has its own

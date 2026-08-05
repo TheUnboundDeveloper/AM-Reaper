@@ -84,15 +84,18 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
 
-- **Warden Live block-count tracker not updating (v2.1.2).** On the Warden page
-  (`Reaper_Warden.asp`), the **live blocked-count tracker does not update the
-  count properly** — the displayed total does not track the actual blocks.
-  Blocking itself appears to still work correctly (the system is functioning);
-  this is a stats/display issue only. Likely in the live stats path
-  (`do_reaper_warden_cgi` → `/tmp/rwarden/stats.sh` reading the live
-  iptables/ip6tables `RW_DROP` packet counters) or its front-end refresh —
-  check whether the counter read, the polling/refresh, or the display
-  accumulation is at fault. Field-observed on v2.1.2. [owed]
+- **Warden Live block-count tracker — RESOLVED (be96u-only `d3779f94e4`), metal owed.**
+  Root cause: "total blocked" was read from the live `RW_DROP` DROP-rule packet counter,
+  but `apply.sh` does `iptables -N RW_DROP; -F RW_DROP` on every run and **re-runs on every
+  `restart_firewall`** (`firewall.c:9405` re-execs `apply.sh` directly), so the counter was
+  zeroed on routine firewall restarts and the UI total never accumulated. Fix: `apply.sh`
+  snapshots the counter about to be flushed into a persisted `/tmp` baseline (accumulating)
+  before teardown; `stats.sh` reports baseline + live. Survives `restart_firewall`; resets
+  only on a deliberate Warden reconfigure/disable or reboot (a live "since this Warden
+  session" total). Read-only awk + one `/tmp` write, zero enforcement impact. **Residual
+  (metal-only):** does not recover drops the HW flow-accelerator may offload without
+  incrementing iptables — a separate undercount not fixable from iptables; verify magnitude
+  on metal.
 
 - **BE98 Speed Test** Field reports that when QoS is enabled on the BE98 device 
   that the speed test crashes. Doesn't seem to affect everyone as some BE98 users 
@@ -152,17 +155,12 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   the feed-overlap UI note (FireHOL L1 aggregates Spamhaus v4/DShield/Feodo — disclose
   under the feed checkboxes).
 
-- **Warden: notate the feed deduplication function in the UI help.** (owner ask 2026-08-04,
-  from a field report claiming the feeds are "duplicates") For the record and for the help
-  fly-out ("How Warden works", `RWDN_38`–`RWDN_42`): all enabled feeds merge into **one**
-  deduplicated `hash:net` ipset — the updater builds `rw_threat(_6)` via `sort -u` into a
-  batched `ipset restore -!` (per-entry `ipset add -exist` fallback), then an **atomic
-  `ipset swap`** — so overlapping feeds (FireHOL Level 1 already aggregates Spamhaus DROP
-  v4, DShield, and Feodo) can never double-enforce or bloat the match; the only overlap
-  cost is redundant download/parse on the daily refresh. Task: add one help line stating
-  this dedup behavior + the feed-overlap disclosure under the checkboxes (new dict token,
-  25-dict lockstep). Code ref: `rc/rwarden.c` `rw_feeds[]` (~line 64) + the updater's
-  `rw_threat_tmp` build/swap block (~lines 440–465).
+- **Warden: feed dedup/overlap disclosure — DONE (be96u-only `d3779f94e4`).** New dict token
+  `RWDN_55` (all 25 dicts, 6189→6190 lockstep) shown under the feed checkboxes and as a
+  "How Warden works" bullet: all enabled feeds merge into one de-duplicated `hash:net` set
+  (`sort -u` → `ipset restore` → atomic swap), so overlapping feeds never double-block or
+  bloat matching; FireHOL Level 1 already aggregates Spamhaus DROP / DShield / Feodo
+  (Spamhaus still adds its IPv6 list). Translation pass owed (English seeded in all 25).
 
 - **Firmware update check on GitHub — PHASE 1 DONE (be96u-only `56a824a5a5`), metal owed.**
   Replaced Merlin's `fwupdate.asuswrt-merlin.net` check with a Reaper GitHub-hosted manifest:

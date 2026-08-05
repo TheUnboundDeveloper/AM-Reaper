@@ -14,6 +14,21 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## UI / UX polish
 
+- **Network (SDN) page: suppress or mask the post-apply SSID+password overlay.** (Owner
+  request 2026-08-05; evaluated, no change made yet.) Editing a wireless network's
+  SSID/auth on the Network page pops the stock ASUS card listing every band's SSID and
+  **plaintext network key**. It is `showWlHintContainer()` (`state.js:4887`, key rendered
+  ~5241-5249) — a client-side overlay, shown from `sdn.js` at 13 apply call sites
+  (746-751 et al.) **only when `isWLclient()`** (the admin browser is itself on Wi-Fi;
+  wired admins never see it) as a reconnect hint before `restart_wireless` bounces the
+  admin's own connection. Plain unminified JS; survives packaging. Not a vuln
+  (authenticated-GUI display only). The function is **shared** with `mlo.js`/`mlo.html` +
+  three Advanced_VLAN/Roaming pages — scope any change to the `sdn.js` call sites, do NOT
+  edit the `state.js` function body. Options: (i) skip the card in `sdn.js`, keep
+  `check_isAlive_and_redirect` (med risk: Wi-Fi admin sees a spinner until reload);
+  (ii) mask the key, keep the SSID hint (low risk); (iii) leave stock. [owed — owner
+  to pick a direction]
+
 - **i18n residuals (from v2.1.3).** Two English-only strings need a translation pass across
   the dicts: (a) the AI Advisor intro was completed in `EN.dict` (RADV_01) but the other 24
   language dicts still carry the older truncated phrasing (translated); (b) the Connections
@@ -89,6 +104,36 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   wanduck, so real outages still alarm).
 
 ## Known issues (under investigation)
+
+- **VPN speedtest hang → `sched: RT throttling activated` → wireless-only drop —
+  ROOT-CAUSED at source, DIAGNOSTIC TEST REQUIRED before any fix ships.** (Field
+  2026-08-04 23:02, BE96U: built-in Ookla test over an active VPN, QoS off, 4 Gbps ISP —
+  hung at ~1.1 Gbps; syslog `sched: RT throttling activated`; wireless clients dropped,
+  wired stayed up. Distinct from the v1.7.9 cold-start retry fix and the BE98 classful-QoS
+  freeze above.)
+  - **Cause chain (stock-inherent, not Reaper):** the platform boots with
+    `sched_rt_runtime_us=99000/100000` (`96813GW.RT-BE96U:106-107` via
+    `system-config.sh:235-240`) and `CONFIG_RT_GROUP_SCHED` off, so blowing the 99 ms/100 ms
+    RT budget on a CPU throttles **every** RT task on that core. Broadcom's `rtpolicy`
+    (`rt_settings_kthreads.txt:48-54`) promotes **ksoftirqd to SCHED_RR prio 5** and pins
+    `bcmsw_rx`/`spu_rx`/`pdc_rx` (RR/5) to CPU0. VPN crypto is not runner-accelerated →
+    runs in softirq → RT-promoted ksoftirqd saturates a core at ~1.1 Gbps → throttle fires →
+    the Wi-Fi driver kthreads (RT, per-CPU-bound by wlaffinity, policy set inside the closed
+    `wl.ko`) freeze with it → wireless drops; wired survives because it is runner-offloaded.
+    Reaper daemons request no RT priority (verified); the Ookla blob runs SCHED_OTHER and is
+    only the load generator.
+  - **DIAGNOSTIC TEST (no build, decisive):** on-box, demote ksoftirqd back to normal
+    scheduling — for each thread: `chrt -o -p 0 <pid of ksoftirqd/N>` (or, blunter:
+    `echo -1 > /proc/sys/kernel/sched_rt_runtime_us`) — then rerun the same VPN speedtest.
+    Hang + wireless drop gone ⇒ confirms the chain. Also record **which VPN engine** was
+    active (WireGuard/OpenVPN ⇒ ksoftirqd path; IPSec ⇒ the SPU `spu_rx`/`pdc_rx` RR/5
+    threads on CPU0 instead).
+  - **Candidate bake (after the test confirms):** remove ksoftirqd's RT promotion in
+    `router-sysdep.rt-be96u/rtpolicy/scripts/rt_settings_kthreads.txt` (restores the
+    mainline-Linux default, keeps the RT throttle as a safety valve for the closed wl
+    threads); optionally + affinity separation (crypto RX threads off the wl cores) and RPS
+    spread for tunnel softirq. `sched_rt_runtime_us=-1` rejected as the primary fix
+    (removes the safety valve). [owed — diagnostic test required]
 
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  

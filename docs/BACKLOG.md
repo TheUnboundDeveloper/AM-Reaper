@@ -111,8 +111,13 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   receiving DNS log entries. The expected behavior was for only the active WAN’s profile to show 
   traffic.
 
-- **B/G Protection** option "b/g Protection" for 2.4ghz, has menu options of AUTO and OFF. 
-  I set Off but it always reverts to AUTO.
+- **B/G Protection — RESOLVED (row removed), be96u-only `b955f1f166`, metal owed.** 2.4 GHz
+  "B/G Protection" Off always reverted to Auto. Root cause (stock ASUS/Merlin, not Reaper):
+  `rc/sysdeps/init-broadcom.c` ~L11480 force-resets `wlX_gmode_protection` to `auto` on every
+  `restart_wireless` when the 2.4 GHz Wireless Mode is Auto (`nband==2 && nmode==-1`) — the
+  default. The WiFiPro apply posted `off` correctly; the driver bringup clobbered it. It would
+  stick only with 2.4 GHz pinned to a fixed legacy mode (nobody does on WiFi 7). Removed the
+  non-functional row from `Reaper_WiFiPro.asp` rather than ship a control that ignores the user.
 
 - **Data Logs — ROOT-CAUSED + FIXED in v2.1.5 (commit `383f9019a3`), metal owed.** The
   "JFFS/USB history resets" reports are two distinct rtrafd defects, both confirmed at

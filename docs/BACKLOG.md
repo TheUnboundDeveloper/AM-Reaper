@@ -38,7 +38,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
 - **Translation Token (RU "Administration" `&shy;` artifact) — RESOLVED (be96u-only
-  `65d5d4d184`), metal owed.** `menu5_6` (RU) carried an HTML soft-hyphen ENTITY
+  `65d5d4d184`), SHIPPED v2.1.6 all five models, metal owed.** `menu5_6` (RU) carried an HTML soft-hyphen ENTITY
   (`Администри&shy;рование`, added for rail wrap). The Reaper dashboard substitutes the
   token straight into HTML (entity decodes, invisible) but the **stock left-menu renderer
   emits `menuName` as text**, so the entity showed literally — hence correct on Home, raw on
@@ -93,7 +93,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   the concrete mitigation for deferred finding **H15** (see the AA26-194A section below).
 
 - **Watchdog false wan-gw failure on ICMP-filtering first hop — RESOLVED (be96u-only
-  `fc17fa9406`), metal owed.** rwatch check #1 pinged `wan0_gateway` and flagged `wan-gw`
+  `fc17fa9406`), SHIPPED v2.1.6 all five models, metal owed.** rwatch check #1 pinged `wan0_gateway` and flagged `wan-gw`
   purely on ICMP failure, so a first hop that drops ICMP (ISP ONT/modem at 192.168.100.1 or
   the PPPoE peer, 100% loss over ppp0) produced a phantom "FAILURE detected: wan-gw" every
   tick while the WAN was fully up. Fix: on ping failure, corroborate with ASUS's own WAN
@@ -138,7 +138,8 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
 
-- **Warden Live block-count tracker — RESOLVED (be96u-only `d3779f94e4`), metal owed.**
+- **Warden Live block-count tracker — RESOLVED (be96u-only `d3779f94e4`), SHIPPED v2.1.6
+  all five models, metal owed.**
   Root cause: "total blocked" was read from the live `RW_DROP` DROP-rule packet counter,
   but `apply.sh` does `iptables -N RW_DROP; -F RW_DROP` on every run and **re-runs on every
   `restart_firewall`** (`firewall.c:9405` re-execs `apply.sh` directly), so the counter was
@@ -192,7 +193,8 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   receiving DNS log entries. The expected behavior was for only the active WAN’s profile to show 
   traffic.
 
-- **B/G Protection — RESOLVED (row removed), be96u-only `b955f1f166`, metal owed.** 2.4 GHz
+- **B/G Protection — RESOLVED (row removed), be96u-only `b955f1f166`, SHIPPED v2.1.6 all
+  five models, metal owed.** 2.4 GHz
   "B/G Protection" Off always reverted to Auto. Root cause (stock ASUS/Merlin, not Reaper):
   `rc/sysdeps/init-broadcom.c` ~L11480 force-resets `wlX_gmode_protection` to `auto` on every
   `restart_wireless` when the 2.4 GHz Wireless Mode is Auto (`nband==2 && nmode==-1`) — the
@@ -240,7 +242,8 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   bloat matching; FireHOL Level 1 already aggregates Spamhaus DROP / DShield / Feodo
   (Spamhaus still adds its IPv6 list). Translation pass owed (English seeded in all 25).
 
-- **Firmware update check on GitHub — PHASE 1 DONE (be96u-only `56a824a5a5`), metal owed.**
+- **Firmware update check on GitHub — PHASE 1 DONE (be96u-only `56a824a5a5`), SHIPPED
+  v2.1.6 all five models, metal owed.**
   Replaced Merlin's `fwupdate.asuswrt-merlin.net` check with a Reaper GitHub-hosted manifest:
   `rom/webs_scripts/reaper_webs_update.sh` (busybox sh) reads `productid` + detects variant
   (MCP ships `rmcpd`/`Reaper_Advisor.asp`, noMCP neither), greps `PRODUCTID#VARIANT` from

@@ -1,9 +1,9 @@
 # "Reaper" — Release Notes
 
-**Release:** v2.1.5 — three field-report fixes: the **1500-byte PPPoE MTU is now settable from the GUI** (the v2.1.3 raise had landed on a WAN page variant that doesn't ship; the shipped page still capped at 1492 and silently clamped a hand-entered 1500 — only factory-reset boxes were affected, since flashed-over boxes kept their saved value), the **first-boot credential page is self-recovering** (it can no longer reject every input when the password was already applied — stale/back-navigated copies leave on load, and a rejected submit re-checks live state and continues when the change actually took), and **Traffic Analyzer history now survives reboots on both stores** (USB lost all history every reboot because the collector looked for its database before the stick mounted, then overwrote it; it now waits, restores, never overwrites an unloaded database, and saves every 15 minutes on USB — JFFS stays hourly for flash wear). Builds on **v2.1.4** (factory-reset credential lockout fix, WireGuard peer-row clip, OpenVPN version label), **v2.1.3** (Connections **"Quick Look"** view, **RFC 4638 baby-jumbo PPPoE MTU**, an apostrophe-in-name **stored-XSS** fix in the stock client list, and three UI touch-ups), **v2.1.2** (Asuswrt-Merlin 3006.102.8 carry-forward — **OpenVPN 2.7.5**, dropbear/miniupnpd/strongswan, IPv6 corrections), **v2.1.1** (error-message localization + defense-in-depth hardening), and **v2.1.0** (the pre-release code-review hardening pass). The base firmware line is unchanged. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). **Test any OpenVPN server configuration after flashing** — the 2.7 line removes some long-deprecated server options.
-**Firmware:** `3006.102.8_Reaper_v2.1.5`
+**Release:** v2.1.6 — **the router can now notify you of Reaper updates** (opt-in, notify-only: every Reaper release shares the Merlin base number, so the stock check could never see one; the check now reads a Reaper-published GitHub manifest, is model- **and variant-aware**, and lights a dashboard badge — off by default, talks only to the Reaper GitHub tree, never downloads or flashes by itself), **the dashboard shows your real WAN IPv6** (on native/DHCPv6-PD lines the global address lands on the LAN bridge, and the card was falling back to the `fe80::` gateway/link-local; it now falls back to the bridge global — the same source the stock IPv6 status page uses), **Warden's total-blocked counter survives firewall restarts** (it was read from a rule that routine restarts rebuilt, snapping the total to zero; it is now banked into a running baseline, and the feed checkboxes note that overlapping feeds are merged/de-duplicated), the **health watchdog no longer cries "wan-gw FAILURE" behind an ICMP-filtering first hop** (a failed ping is corroborated against the router's WAN state), the non-functional **"B/G Protection" control is removed** (the stock driver force-resets it to Auto on every wireless restart), and two **menu labels** (RU/TR) no longer show raw HTML entities. Builds on **v2.1.5** (PPPoE-1500 from the GUI, self-recovering first-boot page, Traffic Analyzer reboot persistence), **v2.1.4** (factory-reset credential lockout fix, WireGuard peer-row clip, OpenVPN version label), **v2.1.3** (Connections **"Quick Look"**, **RFC 4638 baby-jumbo PPPoE MTU**, a stored-XSS fix), **v2.1.2** (Merlin 3006.102.8 carry-forward — **OpenVPN 2.7.5**), **v2.1.1** (localization + hardening), and **v2.1.0** (the pre-release code-review pass). The base firmware line is unchanged. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). **Test any OpenVPN server configuration after flashing** — the 2.7 line removes some long-deprecated server options.
+**Firmware:** `3006.102.8_Reaper_v2.1.6`
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.5 is built + shipped on all five models (both variants each, all passing the 17-check verify gate), produced in two parallel waves by the new per-model build fleet.** WiFi 7, Broadcom BCM4916.
+**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.6 is built + shipped on all five models (both variants each, all passing the 17-check verify gate) by the parallel per-model build fleet.** WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -38,30 +38,32 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BEXXU_…_Reaper_v2.1.4_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.4_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BEXXU_…_Reaper_v2.1.6_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.6_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v2.1.4_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v2.1.4_noMCP_…` (**without**). §8 lists these
+> Naming note: the build artifacts are `…_Reaper_v2.1.6_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v2.1.6_noMCP_…` (**without**). §8 lists these
 > exact filenames and their hashes.
 
 ---
 
 ## 3. New since v1.0
 
-### Since v2.1.0 — localization, an upstream carry-forward, feature adds, and field fixes (v2.1.1 – v2.1.4, RT-BEXXU)
+### Since v2.1.0 — localization, an upstream carry-forward, feature adds, and field fixes (v2.1.1 – v2.1.6)
 
-The rungs after v2.1.0 are RT-BEXXU-first; v2.1.4 is now built + shipped on all five models (RT-BEXXU carried v2.1.3, then the siblings were brought straight to v2.1.4). Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
+The rungs after v2.1.0 are RT-BEXXU-first; since v2.1.4 the fleet ships every rung on all five models in parallel (RT-BEXXU carried v2.1.3 alone, then the siblings were brought straight to v2.1.4). Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
 - **v2.1.1 — localization, defense-in-depth, and UI polish.** The last hardcoded-English error messages on the Devices and AI Advisor pages now localize into all 25 languages. The AI Advisor daemon's secret-redaction is now applied structurally at its single output point (so any future tool is covered), and oversized tool output always returns valid JSON with a truncation marker. Three pages gained extra output escaping (defense-in-depth). The Warden threat/geo block-lists load in one batched operation instead of one process per address. Three pages (Connections, QoS Diagnostics, all-bands Professional) that sat shifted right now fit the frame, and Channel Lock gained the same confirmation Unlock already had.
 - **v2.1.2 — Asuswrt-Merlin 3006.102.8 carry-forward.** The upstream fixes Merlin landed between the pinned beta base and the final production release are folded in: **OpenVPN 2.7.5** (the 2.7 line — deprecated server options removed; test any server config), **dropbear 2026.94**, a strongswan build fix, a miniupnpd update, IPv6 prefix-length corrections, and web-UI fixes (incremental client-list redraw, iOS DHCP export). Pure upstream carry-forward; carried commits keep their original authorship. The base stays pinned to 3006.102.8-beta2 — the carry-forward is by cherry-pick, not a base rebase, so the corresponding-source recipe is unchanged.
 - **v2.1.3 — Connections "Quick Look", baby-jumbo PPPoE, a stored-XSS fix, and UI polish.** The Connections page now opens on a simple at-a-glance list (device name, local IP, remote IP:port, an internal-vs-external badge, protocol, TCP state), with the live flow explorer retained as "Advanced" (now with a Pause option); a single slider switches modes. The WAN GUI now permits a 1500-byte **RFC 4638 baby-jumbo PPPoE MTU** for full-fibre lines (opt-in; defaults unchanged). A reachable **stored XSS** in the *stock* client list — a device name containing an apostrophe could break out of a single-quoted HTML attribute on a page the admin views — is closed by additionally apostrophe-encoding the name. Plus three touch-ups: the Wireless Professional page no longer prints raw nvram variable names, the AI Advisor intro sentence is completed, and dashboard SSIDs show in real mixed case.
 - **v2.1.4 — factory-reset lockout, WireGuard peer-row, OpenVPN label.** A factory-fresh box could get stranded when the stock ASUS "Change router login password" page collided with Reaper's own first-boot credential page (the second attempt failed "Could not apply credentials"); Reaper now routes a default-password box straight to its single first-boot page. The WireGuard client peer list's three-dots edit toggle is centered and no longer clipped. And **OpenVPN now reports 2.7.5** — the 2.7.5 binary had displayed "2.7.4" because a stale generated build file froze the version label; regenerating it corrected the display (behavior was already 2.7.5).
+- **v2.1.5 — three field-report fixes.** The **1500-byte PPPoE MTU is settable from the GUI** (the v2.1.3 raise had landed on a WAN page variant that doesn't ship; the shipped page still capped at 1492 and silently clamped a hand-entered 1500). The **first-boot credential page is self-recovering** (a stale or back-navigated copy can no longer reject every input when the password already applied). And **Traffic Analyzer history genuinely survives reboots on both stores** — USB had lost all history every reboot (the collector looked for its database before the stick mounted, then overwrote it); it now waits for the store, restores, never overwrites an unloaded database, and saves every 15 minutes on USB (JFFS stays hourly for flash wear).
+- **v2.1.6 — update notifications, real IPv6 on the dashboard, Warden/watchdog fixes.** The router can now **notify you when a Reaper update exists** — opt-in and notify-only: the stock check compares only the shared Merlin base number so it could never see a Reaper release; the new check reads a Reaper-published GitHub manifest, knows your model *and* variant, and lights a crimson dashboard badge (off by default; talks only to the Reaper GitHub tree; never downloads or flashes by itself). The **dashboard shows your real WAN IPv6** — on native/DHCPv6-PD lines the global lands on the LAN bridge and the card had fallen back to the `fe80::` gateway/link-local; it now uses the bridge global, the same source as the stock IPv6 status page. **Warden's total-blocked counter survives firewall restarts** (banked into a running baseline instead of a rule the restart rebuilds), the **health watchdog** no longer flags a phantom `wan-gw` failure behind an ICMP-filtering first hop, the non-functional **"B/G Protection"** control is removed (stock driver force-resets it to Auto), and two menu labels (RU/TR) no longer show raw HTML entities.
 
 ### Since v2.0.0 — de-cloud completion, the Samba 4 file server, secure defaults, live diagnostics, and a pre-release hardening pass (v2.0.1 – v2.1.0)
 
@@ -399,7 +401,26 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v2.1.4 flashable-image hashes (SHA-256)** — the current head, **built + shipped on all five models**
+**v2.1.6 flashable-image hashes (SHA-256)** — the current head, **built + shipped on all five models**
+(both variants each) by the parallel per-model fleet, 2026-08-05. The RT-BE96U image hashes are shown
+below; each sibling has its own `SHA256SUMS-<MODEL>-Reaper_v2.1.6.txt` alongside its images under
+`releases/<Model>/`.
+
+| Image (`RT-BE96U_3006_102.8_Reaper_v2.1.6…`) | SHA-256 |
+|---|---|
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | _recorded at ship — see `SHA256SUMS-RT-BE96U-Reaper_v2.1.6.txt`_ |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | _recorded at ship — see `SHA256SUMS-RT-BE96U-Reaper_v2.1.6.txt`_ |
+
+**v2.1.5 flashable-image hashes (SHA-256)** — **built + shipped on all five models** (both variants
+each), the first release produced by the parallel per-model build fleet. Each sibling has its own
+`SHA256SUMS-<MODEL>-Reaper_v2.1.5.txt` alongside its images under `releases/<Model>/`.
+
+| Image (`RT-BE96U_3006_102.8_Reaper_v2.1.5…`) | SHA-256 |
+|---|---|
+| `…_nand_squashfs.pkgtb` (+ AI Advisor) | `53f9cf62f05bd1cb041e6f2a96e7d4c445b799f633ba5bb56b5f14118343388e` |
+| `…_noMCP_nand_squashfs.pkgtb` (Standard) | `78d162bcd11fafbf4d2f41a679b424ef19aae1c7d6d9b0401556fb1e72ea31bf` |
+
+**v2.1.4 flashable-image hashes (SHA-256)** — **built + shipped on all five models**
 (both variants each). The RT-BE96U four-file set (both variants' `…_nand_squashfs.pkgtb` **and** their
 `…_loader.pkgtb` recovery images) is shown below; each sibling has its own
 `SHA256SUMS-<MODEL>-Reaper_v2.1.4.txt` on the `reaper-firmware/` ladder (RT-BE86U / RT-BE88U / GT-BE98 /

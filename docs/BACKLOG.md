@@ -77,12 +77,16 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   [`CHANGELOG.md`](CHANGELOG.md) v1.5.5; it replaces the stock forced password gate and is
   the concrete mitigation for deferred finding **H15** (see the AA26-194A section below).
 
-- **Watchdog Failure** Under the condition of WAN first hop blocking ICMP an error is 
-  produced by the watchdog system. I need to alter the watchdog to emmit an informative 
-  error in these conditions to prevent users from thinking somthing is wrong. 
-  Issue: The ISP ONT/modem at 192.168.100.1 completely drops ICMP echo requests 
-  (100% packet loss over ppp0), which triggers rwatch to report wan-gw failure even 
-  though the PPPoE connection is fully online and functional.
+- **Watchdog false wan-gw failure on ICMP-filtering first hop — RESOLVED (be96u-only
+  `fc17fa9406`), metal owed.** rwatch check #1 pinged `wan0_gateway` and flagged `wan-gw`
+  purely on ICMP failure, so a first hop that drops ICMP (ISP ONT/modem at 192.168.100.1 or
+  the PPPoE peer, 100% loss over ppp0) produced a phantom "FAILURE detected: wan-gw" every
+  tick while the WAN was fully up. Fix: on ping failure, corroborate with ASUS's own WAN
+  state (`wan0_state_t`==2 = `WAN_STATE_CONNECTED`); if connected, the first hop is merely
+  ICMP-filtering — log a one-shot informative note (throttled via a `/tmp` marker, re-armed
+  when ICMP returns or the WAN drops) and do **not** flag a failure. `wan-gw` stays a real
+  failure only when the WAN is not connected (a genuine PPPoE drop flips `wan0_state_t` via
+  wanduck, so real outages still alarm).
 
 ## Known issues (under investigation)
 

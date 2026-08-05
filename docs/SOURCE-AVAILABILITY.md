@@ -82,28 +82,38 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 
 ---
 
-## 3. Requesting a build
+## 3. Getting a build
 
-Reaper firmware images are **not publicly hosted.** A flashable build for any
-model in the ASUS RT-BE Series (RT-BEXXU / RT-BE86U / RT-BE88U / GT-BE98 /
-GT-BE98 Pro) is available **on request**, and is delivered together with the
-complete corresponding source (§1) under GPL v2 — a §3(a) delivery to each
-recipient. This keeps the images off public, scraped pages while remaining fully
-GPL-compliant to everyone who receives one.
+Reaper firmware images are **publicly hosted in this GitHub repository.** A
+flashable build for every model in the ASUS RT-BE Series (RT-BEXXU / RT-BE86U /
+RT-BE88U / GT-BE98 / GT-BE98 Pro) is published two ways:
 
-**Request format.** Email the project address **theunbounddeveloper@outlook.com**
-(or open an issue if you have repository access) with:
+- the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)
+  page — one per-model release per version (`v<version>-<MODEL>`), each carrying
+  both variants plus a `SHA256SUMS-<MODEL>-<version>.txt`, and
+- in-tree under [`../releases/`](../releases/)`<MODEL>/<MODEL>-REAPER-<version>/`
+  for direct file-tree browsing, with the same checksums.
 
-- **Subject:** `Reaper build request — <MODEL>` (e.g. `RT-BEXXU`)
-- **Model:** one of `RT-BEXXU` / `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98 Pro`
-- **Variant:** `Standard` (no AI Advisor) **or** `AI Advisor` (the optional,
-  off-by-default MCP build)
-- **Version:** a specific version (e.g. `v2.0.0`) or `latest`
+Each image is published **from the same repository as its complete corresponding
+source** (§1: the `patches/` series against the pinned upstream commit, plus
+`provenance/` tying each published image back to its source tree). Hosting the
+binary and its source together is a GPL v2 **§3(a)** delivery — every downloader
+receives the source alongside the image, with no separate request or written
+offer required.
 
-You receive the flashable `.pkgtb` (plus its recovery `_loader.pkgtb`) and the
-complete corresponding source per §1. Under GPL v2 you may then use, study,
-modify, and redistribute the GPL-covered portions freely; if you ship a modified
-build, please brand it as your own (see [`../LICENSE.reaper`](../LICENSE.reaper) § 3(c)).
+**Which file.** Pick your **model**, then the **variant** — `Standard` (no AI
+Advisor) or the `…_MCP` **AI Advisor** image (the optional, off-by-default MCP
+build). Verify the download against the release's `SHA256SUMS` file before
+flashing. Recovery `_loader.pkgtb` images are not published (see the release
+process notes); they are available on request if you need one.
+
+**Older or unlisted versions.** If you need a specific version that is no longer
+on the Releases page, email **theunbounddeveloper@outlook.com** with the model,
+variant, and version and it will be provided with its corresponding source.
+
+Under GPL v2 you may use, study, modify, and redistribute the GPL-covered
+portions freely; if you ship a modified build, please brand it as your own (see
+[`../LICENSE.reaper`](../LICENSE.reaper) § 3(c)).
 
 > **Note.** A build bundles proprietary Broadcom/ASUS/Trend Micro/Tuxera
 > components licensed for use on genuine ASUS hardware only. They are provided for

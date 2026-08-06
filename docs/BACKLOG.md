@@ -4,47 +4,48 @@ Working list of what's left to accomplish, grouped by area. Status is noted wher
 known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 **[shelved]** (deliberately deferred), **[cosmetic]** (polish, non-blocking).
 
+**Priority** (assigned 2026-08-06, by impact on user-facing functionality):
+**[P1]** core function broken or at risk for users · **[P2]** degraded function,
+meaningful annoyance, or privacy exposure · **[P3]** cosmetic, polish, internal
+quality, or deferred-by-decision.
+
 > Applied security fixes are tracked in [`REAPER-FIXES.md`](REAPER-FIXES.md); the
 > per-version history is in [`CHANGELOG.md`](CHANGELOG.md). Completed backlog items are
-> moved to the changelog and removed from this file (housekeeping pass 2026-07-18).
+> moved to the changelog and removed from this file (housekeeping passes 2026-07-18,
+> 2026-08-06).
 
 ---
 
-## Testing / Validation
+## Testing / Validation — [P1]
+
+On-metal verification owed for shipped fixes. These stay P1 as a block: each
+validates a shipped critical-path change, and an unverified fix is a latent field
+regression.
 
 - **v2.1.9 metal checks (fleet built 2026-08-05; audit-hardened respin of the unpublished
   v2.1.7/v2.1.8). [owed]**
+
   - *WAN-MTU rollback:* on a DHCP/static WAN the MTU field refuses >1500 (1508 no longer
     enterable/applyable); owner's BE96U: re-apply 1500 once (a 1508 from the pre-rollback
     build may persist in nvram/on the interface until re-applied) and confirm the WAN
     interface runs at exactly 1500 (`ip link`).
+
   - *Device-name unification:* rename a device on the Devices page → name appears on Client
     List / Network clients / Gatekeeper / Traffic Top Talkers / Connections / Wireless Log /
     DHCP-leases "Device Name" column, and **survives a reboot**; remove an *offline* client →
     no other custom names are lost; rename in the stock popup with the Devices page open in
     another tab → neither rename rolls the other back; a device that had duplicate name
     records shows the most recent name after one reboot.
+
   - *Siblings PPPoE-1500:* on a BE88U (or any sibling) v2.1.9, the WAN page accepts PPPoE
     MTU/MRU 1500 and the WAN interface raises to 1508 (`ip link` / `ifconfig`).
+
   - *Traffic flash-persistence:* flash v2.1.9 over an earlier build with USB history enabled →
     history intact after the flash; collector log shows a clean store re-attach.
+
   - *Storage USB panel:* disk info/health/format/eject work against a real stick; format
     refuses the active store without confirmation.
-  - *Post-v2.1.9 committed UI work (rides the next build; metal owed):* on the WiFi
-    Professional page, setting 2.4 GHz "Disable 802.11b" locks the Preamble select to its
-    Disable-802.11b state (dimmed); switching back to Allow restores the prior preamble,
-    and a box whose nvram already held `rateset=ofdm` shows **0** pending changes at page
-    load. The new **USB Disks** tab (first tab under USB Application) lists disks and
-    scan/format/eject work against a real stick; the Long-Term Storage page (System Log)
-    keeps only the store selection and still saves it.
-  - *Gatekeeper internet-only DNS carve-out (committed 2026-08-06, `fe3b205604`; rides the
-    next build):* on the owner's LAN (AdGuard at `.98` as DHCP DNS), set the Work_Laptop to
-    internet-only → `nslookup` succeeds and browsing works; `ping 192.168.50.98` and file
-    shares still fail; other LAN hosts unreachable; a blocked device still gets nothing; a
-    quarantined unknown still lands on the captive page. Pre-flight on the router once:
-    `ebtables -h` accepts `--ip-proto` / `--arp-ip-dst` (kernel side is confirmed `=y`).
-    Also confirm disable now leaves no stray `REAPER_GK` chain (`ebtables -L` after turning
-    Gatekeeper off — the teardown-truncation fix).
+
   - *Audit-fix behaviours (v2.1.9):* the three re-classified native pages (Connections, QoS
     Diagnostics, WiFi Professional) render with their own theme intact (no stock CSS bleed);
     the QoS Diagnostics live graph still updates (page now sends the `http_id` token); the QoS
@@ -52,9 +53,76 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     entered with a non-canonical octet (e.g. `…050`) is stored canonicalised and honoured by
     dnsmasq. Full fix list: [`CODE-AUDIT-2026-08-05.md`](CODE-AUDIT-2026-08-05.md).
 
+- **v2.2.0 metal checks (shipped all five models 2026-08-06). [owed]**
+
+  - *First-boot loop fix (`137d96338a`):* factory-reset wizard end-to-end — no reload loop,
+    password survives reboot; whether `do_chpass` (blob) kills the session token (if yes the
+    hidden saveNvram apply dies → password RAM-only until reboot — decide follow-up);
+    upgrade-in-place from a looping v2.1.6 box recovers without reset. Full analysis:
+    [`LOGIN-LOOP-2026-08-06.md`](LOGIN-LOOP-2026-08-06.md).
+
+  - *Gatekeeper internet-only DNS carve-out (`fe3b205604`):* on the owner's LAN (AdGuard at
+    `.98` as DHCP DNS), set the Work_Laptop to internet-only → `nslookup` succeeds and
+    browsing works; `ping 192.168.50.98` and file shares still fail; other LAN hosts
+    unreachable; a blocked device still gets nothing; a quarantined unknown still lands on
+    the captive page. Pre-flight on the router once: `ebtables -h` accepts `--ip-proto` /
+    `--arp-ip-dst` (kernel side is confirmed `=y`). Also confirm disable now leaves no stray
+    `REAPER_GK` chain (`ebtables -L` after turning Gatekeeper off — the teardown-truncation fix).
+
+  - *WiFi Professional preamble lock:* setting 2.4 GHz "Disable 802.11b" locks the Preamble
+    select to its Disable-802.11b state (dimmed); switching back to Allow restores the prior
+    preamble; a box whose nvram already held `rateset=ofdm` shows **0** pending changes at
+    page load.
+
+  - *USB Disks tab:* the new first tab under USB Application lists disks and scan/format/eject
+    work against a real stick; the Long-Term Storage page (System Log) keeps only the store
+    selection and still saves it.
+
+  - *De-cloud console quiet:* no "Error fetching ASUS privacy policy" in the console; the
+    dashboard client list makes no requests to `nw-dlcdnet.asus.com`.
+
+- **v2.2.1 metal checks (shipped all five models 2026-08-06). [owed]**
+
+  - *Warden "total blocked" persistence (`54e2aad21f`):* total holds across a reboot and a
+    reflash; turning Warden Off zeroes it; factory reset zeroes it.
+
+  - *Per-dataset "collecting since" (`2b01195a64`):* on a JFFS/USB store, enable a dataset →
+    its date appears after the first rwatch tick and survives a reboot (a dash means the
+    dataset is off or the store is RAM).
+
+  - *Health-scan result persistence (`40f91ba727`):* superseded by the ext4 scanner fix in
+    Known issues below — verify with that item's metal test.
+
+  - *Firmware page:* the Security Update section is gone; Check triggers the GitHub check and
+    the result/badge reflect the published version; the scheduled toggle persists.
+
+- **Older metal checks still owed.**
+
+  - *v2.1.6 firmware-update check:* enable check → Check → badge + page show the published
+    version; wrong-variant line never matched. *v2.1.6 wan-gw watchdog:* an ICMP-filtering
+    first hop logs one informational note, no phantom FAILURE; a real PPPoE drop still alarms.
+    *v2.1.6 menu labels:* RU "Administration" / TR label render clean on stock pages.
+
+  - *v2.1.5 Traffic history:* reboot with `rtraf_path=usb` → logread shows "store came up
+    late - attached" and history survives; power-pull loses ≤15 min (USB) / ≤1h (JFFS).
+
+- **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test. [owed]** Factory
+  reset → wizard appears → no page/dashboard reachable until username+password set → forced
+  to the wireless page until a WiFi PSK is set → dashboard → values persist → all editable
+  later; also confirm an *upgrade* (no reset) does **not** trigger it. **Known limitation
+  (v1.5.5) [P3]:** the WiFi step releases once WiFi is *configured* (`sdn_rl` changes), so a
+  user could save it **open** and skip a PSK — optional tightening is to require a non-empty
+  PSK (currently uses the stock `sdn_rl` signal for stability). Feature record in
+  [`CHANGELOG.md`](CHANGELOG.md) v1.5.5; it replaces the stock forced password gate and is
+  the concrete mitigation for deferred finding **H15**.
+
 ## UI / UX polish
 
-- **Network (SDN) page: suppress or mask the post-apply SSID+password overlay.** (Owner
+- **[P2] Loading/Restarting** The loading, percent wait, and the rebooting modals need to cover
+  whole screen to prevent navigation or clicking on nav menu or header items. Currently it 
+  only covers the viewport shell. All modals should also be converted to Reaper native designs.
+
+- **[P2] Network (SDN) page: suppress or mask the post-apply SSID+password overlay.** (Owner
   request 2026-08-05; evaluated, no change made yet.) Editing a wireless network's
   SSID/auth on the Network page pops the stock ASUS card listing every band's SSID and
   **plaintext network key**. It is `showWlHintContainer()` (`state.js:4887`, key rendered
@@ -69,12 +137,15 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   (ii) mask the key, keep the SSID hint (low risk); (iii) leave stock. [owed — owner
   to pick a direction]
 
-- **i18n residuals (from v2.1.3).** Two English-only strings need a translation pass across
+- **[P3] i18n residuals.** English-only strings needing a translation pass across
   the dicts: (a) the AI Advisor intro was completed in `EN.dict` (RADV_01) but the other 24
   language dicts still carry the older truncated phrasing (translated); (b) the Connections
   "Quick Look" labels (Device / Scope / State / Internal / External / Quick Look / Advanced /
-  Pause) are English literals pending tokenization across the 25 dicts. [owed — cosmetic/i18n]
-- **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
+  Pause) are English literals pending tokenization across the 25 dicts; (c) the Warden
+  feed-dedup note `RWDN_55` (v2.1.6) is English-seeded in all 25 dicts, translation pass
+  owed. [owed — cosmetic/i18n]
+
+- **[P2] Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
   *(2026-08-05 note: NOT closed by the v2.1.9 name unification — the Traffic page resolves
@@ -82,78 +153,37 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   A long-offline device falls out of that list, so its history rows fall back to IP/MAC.
   Proper fix = have rtrafd persist a MAC→last-known-name sidecar (or resolve against
   the master `custom_clientlist` directly, which does retain named offline devices) —
-  pairs with the month-view item below.)* [owed]
-- **Translation Token (RU "Administration" `&shy;` artifact) — RESOLVED (be96u-only
-  `65d5d4d184`), SHIPPED v2.1.6 all five models, metal owed.** `menu5_6` (RU) carried an HTML soft-hyphen ENTITY
-  (`Администри&shy;рование`, added for rail wrap). The Reaper dashboard substitutes the
-  token straight into HTML (entity decodes, invisible) but the **stock left-menu renderer
-  emits `menuName` as text**, so the entity showed literally — hence correct on Home, raw on
-  every stock page. Fixed by making the value entity-free: RU dropped the `&shy;`; the same
-  latent bug in **TR `menu5_2_1`** (`&#39;`) was fixed to U+2019 (renders as an apostrophe in
-  a text context, can't break quoted JS). In-place edits, dicts stay lockstep. **Rule going
-  forward:** menu-label dict tokens must not contain HTML entities — the stock menu renderer
-  shows them raw; use literal Unicode characters.
+  pairs with the Traffic Analyzer month-view item below.)* [owed]
 
 ## Known issues (cause identified)
 
-- **Warden "total blocked" count does not survive reboot or reflash (owner report
-  2026-08-06). — FIXED 2026-08-06 (`54e2aad21f`), rides the next build, metal
-  owed.** Root cause: v2.1.6 (`d3779f94e4`) fixed the firewall-restart reset by
-  banking `RW_DROP` into a baseline, but that baseline lived at
-  `/tmp/rwarden/blocked_base`, which clears on reboot (the code comment said so) —
-  so reboot/reflash still zeroed the total. Fix: `RW_BASE` now lives on `/jffs`
-  (`/jffs/rwarden/blocked_base`, the dir the ipset cache already persists to), so
-  the total survives reboot **and** reflash; a factory reset wipes /jffs and
-  correctly zeroes it; the disable-Warden reset (`unlink RW_BASE`) is preserved.
-  NAND writes bounded — the baseline is rewritten only when the count actually grew.
-  Verify marker `sbin/rc|/jffs/rwarden/blocked_base`. **Metal:** total holds across
-  a reboot and a reflash; turning Warden Off zeroes it; factory reset zeroes it.
+- **[P2] USB Health Scanner never actually scanned ext4 — result showed the raw XML wrapper
+  (owner report 2026-08-06, v2.2.1). — FIXED 2026-08-06 (`9352c60a1d`), rides the next
+  build, metal owed.** The v2.2.1 keep-result-on-screen fix exposed that the result was
+  never real. Three stacked causes: (1) stock diskmon **skips every ext4 partition**
+  (`rc/usb.c` "there's some problem with fsck.ext4" — a guard predating a usable e2fsck),
+  so the scan ran START→FINISH doing nothing and wrote no log; (2) the `fsck.ext4` symlink
+  was gated on `RTCONFIG_EXT4FS` (hard-set `n`), so `app_fsck.sh ext4` had no binary anyway
+  (e2fsck 1.45.6 **is** on the image); (3) `Reaper_USB.asp` fell back to dumping the raw
+  `disk_fsck.xml` responseText when `<disk1>` came back empty. Fix: ext4 skip removed
+  (on-demand scan path only; the asusware mount-time auto-fsck keeps its skip), `fsck.ext4 →
+  e2fsck` linked under `E2FSPROGS=y`, and the page now renders a verdict line from the
+  `apps_fsck_ret` codes (stock tokens, persisted across panel rebuilds) plus the real log —
+  never raw XML — and grace-polls so a second scan can't report done instantly off the
+  previous run's stale status. **Metal:** scan the ext4 stick → e2fsck output + verdict stay
+  on screen; a repeat scan shows fresh results. Sibling port owed (all three files are
+  shared code).
 
-- **USB Health Scanner results flash for <100 ms then vanish (owner report
-  2026-08-06, v2.2.0 metal). — FIXED 2026-08-06 (`40f91ba727`), rides the next
-  build, metal owed.** Root cause: on the USB Disks tab (`Reaper_USB.asp`),
-  `dkPoll()` populated `#dklog_<port>` then called `dkFresh(renderDisks)`, which
-  rebuilds the panel `innerHTML` and destroyed the just-filled log — the result
-  flashed sub-100 ms. Fix: the scan output is persisted per port (`dkLog{}`) and
-  re-injected after every `renderDisks` rebuild; cleared when a new scan/format
-  starts on that port. Page-only. **Metal:** run the health scanner, the result
-  stays on screen.
+- **[P3] [residual of the v2.1.3 apostrophe-XSS fix — low, optional] Unescaped `title='...'`
+  attributes on the client lists — PARTIALLY DONE.** The reported stored-XSS/garble via an
+  apostrophe in a device name was fixed in v2.1.3 (patch 0311; see the changelog). The three
+  client-popup tooltip fields in `dashboard/js/clientlist.module.js` were encoded in v2.2.0
+  (`0e8b791827`). Remaining defense-in-depth only: `client.vendor` / `deviceTypeName` are
+  still emitted into single-quoted `title='...'` attributes unescaped in
+  `client_function.js`, but those are vendor/OUI-DB-sourced, not attacker-freeform.
+  [owed — low, optional]
 
-- **First-boot credential flow ends in a constant page-refresh loop (v2.1.6 field
-  reports; present through v2.1.9) — ROOT-CAUSED + FIXED 2026-08-06 (commit
-  `137d96338a`), rides v2.2.0, factory-reset METAL TEST OWED.** httpd cached the
-  landing page ONCE at startup (`get_index_page` → `indexpage`); on a factory box
-  that cache was `Reaper_FirstBoot.asp` and the credential flow never restarts
-  httpd — `/` kept serving the wizard, whose v2.1.5 leave-guard bounced back to
-  `/` → infinite reload (re-login re-entered via the same stale global in
-  `login_cgi`). Fix = live recompute at both consumers + FirstBoot leaves to the
-  dashboard explicitly (loop-proof even if a stale cache ever recurs). Field
-  workaround for v2.1.6/2.1.9 boxes: power-cycle, then log in with the new
-  credentials. **Metal owed:** factory-reset wizard end-to-end (no loop, password
-  survives reboot); whether `do_chpass` (blob) kills the session token (if yes the
-  hidden saveNvram apply dies → password RAM-only until reboot — decide follow-up);
-  upgrade-in-place from a looping v2.1.6 box recovers without reset. Full analysis:
-  [`LOGIN-LOOP-2026-08-06.md`](LOGIN-LOOP-2026-08-06.md).
-
-- **[residual of the v2.1.3 apostrophe-XSS fix — low, optional] Unescaped `title='...'`
-  attributes on the client lists.** The reported stored-XSS/garble via an apostrophe in a
-  device name was fixed in v2.1.3 (patch 0311; see the changelog). Remaining defense-in-depth
-  only: `client.vendor` / `deviceTypeName` are still emitted into single-quoted `title='...'`
-  attributes unescaped in `client_function.js` and `dashboard/js/clientlist.module.js`, but
-  those are vendor/OUI-DB-sourced, not attacker-freeform. [owed — low, optional]
-
-- **Console error: stock ASUS privacy-policy fetch fails on the de-clouded build.**
-  The browser console logs `Error fetching ASUS privacy policy: TypeError: Failed
-  to fetch` — stock `asus_policy.js` `PolicyStatus()` (fired from `state.js` via a
-  `setTimeout`) calls `httpApi.get(...)` to fetch the ASUS privacy policy and the
-  request fails. **Cause:** Reaper is de-clouded, so that ASUS endpoint is
-  removed/unreachable; the stock policy-status check still runs and throws.
-  **Harmless** — console-only, no functional impact — but it's noise that a clean
-  de-cloud build shouldn't emit. Fix: suppress/stub the stock policy fetch (or
-  gate `PolicyStatus`) so it no longer runs, consistent with the other phone-home
-  removals (see the phone-home surface map). [owed — cosmetic/de-cloud cleanup]
-
-- **ASUS-CDN device/app icon phone-home — PARTIALLY FIXED in v2.2.0; more sites remain
+- **[P2] ASUS-CDN device/app icon phone-home — PARTIALLY FIXED in v2.2.0; more sites remain
   (owner ask 2026-08-06 to remove the rest). NOT device-side.** Assessment 2026-08-06:
   the icon fetches are **entirely browser-side** — the admin's browser fetches
   `nw-dlcdnet.asus.com` directly; **no router-side C code or daemon fetches icons** (the
@@ -178,36 +208,15 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     the bundled/local asset Reaper already ships (rule 17 asset-swap for icons), or gate off
     by default. See the phone-home surface map. [owed — de-cloud cleanup, extend the v2.2.0 fix]
 
-- **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
-  reset → wizard appears → no page/dashboard reachable until username+password set → forced
-  to the wireless page until a WiFi PSK is set → dashboard → values persist → all editable
-  later; also confirm an *upgrade* (no reset) does **not** trigger it. **Known limitation
-  (v1.5.5):** the WiFi step releases once WiFi is *configured* (`sdn_rl` changes), so a user
-  could save it **open** and skip a PSK — optional tightening is to require a non-empty PSK
-  (currently uses the stock `sdn_rl` signal for stability). Feature record in
-  [`CHANGELOG.md`](CHANGELOG.md) v1.5.5; it replaces the stock forced password gate and is
-  the concrete mitigation for deferred finding **H15** (see the AA26-194A section below).
-
-- **Watchdog false wan-gw failure on ICMP-filtering first hop — RESOLVED (be96u-only
-  `fc17fa9406`), SHIPPED v2.1.6 all five models, metal owed.** rwatch check #1 pinged 
-  `wan0_gateway` and flagged `wan-gw` purely on ICMP failure, so a first hop that drops 
-  ICMP (ISP ONT/modem at 192.168.100.1 or the PPPoE peer, 100% loss over ppp0) produced 
-  a phantom "FAILURE detected: wan-gw" every tick while the WAN was fully up. Fix: on 
-  ping failure, corroborate with ASUS's own WAN state (`wan0_state_t`==2 = 
-  `WAN_STATE_CONNECTED`); if connected, the first hop is merely ICMP-filtering — log a 
-  one-shot informative note (throttled via a `/tmp` marker, re-armed when ICMP returns 
-  or the WAN drops) and do **not** flag a failure. `wan-gw` stays a real failure only 
-  when the WAN is not connected (a genuine PPPoE drop flips `wan0_state_t` via wanduck, 
-  so real outages still alarm).
-
 ## Known issues (under investigation)
 
-- **VPN speedtest hang → `sched: RT throttling activated` → wireless-only drop —
+- **[P1] VPN speedtest hang → `sched: RT throttling activated` → wireless-only drop —
   ROOT-CAUSED at source, DIAGNOSTIC TEST REQUIRED before any fix ships.** (Field
   2026-08-04 23:02, BE96U: built-in Ookla test over an active VPN, QoS off, 4 Gbps ISP —
   hung at ~1.1 Gbps; syslog `sched: RT throttling activated`; wireless clients dropped,
   wired stayed up. Distinct from the v1.7.9 cold-start retry fix and the BE98 classful-QoS
-  freeze above.)
+  freeze below.)
+
   - **Cause chain (stock-inherent, not Reaper):** the platform boots with
     `sched_rt_runtime_us=99000/100000` (`96813GW.RT-BE96U:106-107` via
     `system-config.sh:235-240`) and `CONFIG_RT_GROUP_SCHED` off, so blowing the 99 ms/100 ms
@@ -219,12 +228,14 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     `wl.ko`) freeze with it → wireless drops; wired survives because it is runner-offloaded.
     Reaper daemons request no RT priority (verified); the Ookla blob runs SCHED_OTHER and is
     only the load generator.
+
   - **DIAGNOSTIC TEST (no build, decisive):** on-box, demote ksoftirqd back to normal
     scheduling — for each thread: `chrt -o -p 0 <pid of ksoftirqd/N>` (or, blunter:
     `echo -1 > /proc/sys/kernel/sched_rt_runtime_us`) — then rerun the same VPN speedtest.
     Hang + wireless drop gone ⇒ confirms the chain. Also record **which VPN engine** was
     active (WireGuard/OpenVPN ⇒ ksoftirqd path; IPSec ⇒ the SPU `spu_rx`/`pdc_rx` RR/5
     threads on CPU0 instead).
+
   - **Candidate bake (after the test confirms):** remove ksoftirqd's RT promotion in
     `router-sysdep.rt-be96u/rtpolicy/scripts/rt_settings_kthreads.txt` (restores the
     mainline-Linux default, keeps the RT throttle as a safety valve for the closed wl
@@ -232,40 +243,18 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     spread for tunnel softirq. `sched_rt_runtime_us=-1` rejected as the primary fix
     (removes the safety valve). [owed — diagnostic test required]
 
-- **Long-Term Storage screen: "Collecting since" column shows no dates (owner
-  report 2026-08-06). — INVESTIGATED 2026-08-06: not a regression, working as
-  designed; needs a design decision + likely a small plumbing add.** The since
-  column (`RDST_09`) is filled **only** for the **Devices** dataset and **only**
-  on a durable store: `since = (ds.k==='dev' && durable && S.dev_since) ?
-  fmtDate(S.dev_since) : '&mdash;'`. Verified end-to-end and present since **before
-  v2.1.6** (both the writer and reader exist at the v2.1.6 tag `feadc81214`), so
-  the version is not the cause: `rc/rwatch.c:218` writes `$BASE/dev.since` (epoch
-  hours) on the first durable collection tick **only if the file doesn't already
-  exist**, and `web.c:24090` reads it back as `dev_since`. So the dash appears
-  whenever: (i) the store is **RAM** (never durable → always dash — the default),
-  (ii) the **Devices** dataset was never enabled long enough for rwatch to write
-  the marker, or (iii) the owner expects dates on the **other** datasets
-  (traf/watch/chq/slog), which are dash **by design** — only `dev` was ever
-  wired.
-  **FIXED 2026-08-06 (`2b01195a64`) — per-dataset since implemented, rides the
-  next build, metal owed.** rwatch now stamps a `<ds>.since` marker for each
-  ENABLED dataset (dev/traf/watch/chq/slog) on its first durable tick;
-  `store_status` emits `<ds>_since` for all of them; the page looks up
-  `S[ds.k+'_since']` per row (still durable-store only — RAM is volatile by
-  design). No dict change. **Metal:** on a JFFS/USB store, enable a dataset →
-  its "collecting since" appears after the first rwatch tick and survives a reboot.
-  (If a row still shows a dash, that dataset is off or the store is RAM.)
-
-- **MLO: individual link connections no longer shown per device (owner report
+- **[P3] MLO: individual link connections no longer shown per device (owner report
   2026-08-06). — INVESTIGATED 2026-08-06: name-unification cleared as the cause;
   needs the owner to name the exact screen before a fix can be scoped.** Code
   read of the current tree:
+
   - The **name-unification rung (`d8fe13ba12`) did NOT touch any MLO code** — it
     only changed how `custom_clientlist` is parsed/read (`gk_client_name`, the
     tolerant 6..9-field parser, set_name RMW). MLO row folding is keyed on the
     `mlo_link` flag and `rdev_is_rand(mac)`/`mld`-grouping, **independent of
     naming**, so unification cannot hide or merge a link by resolved identity.
     The v2.1.9 audit commit (`b381e97e89`) likewise touched no MLO path.
+
   - On the **Devices page this is by design**: `do_reaper_dev_cgi` (web.c ~23799)
     folds an affiliated randomized MLO link into its MLD device (`v[idx].mlo=1`,
     one row) and flags stray links `mlo_link:1`; `Reaper_Devices.asp` then
@@ -273,22 +262,24 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     (v1.9.2/v1.9.3 "merge Wi-Fi 7 MLO links into one row"). So "individual MLO
     links not shown" on the Devices page is the intended behavior, not a
     regression.
+
   - **Therefore the regressed screen is almost certainly NOT the Devices page.**
     Before any code change, the owner should identify **which view** used to show
     the per-link rows — candidates: the stock **Wireless Log**
     (`Main_WStatus_Content.asp`, driven by `wl assoclist`/`get_wlclient`), the
     **Connections** page (`Reaper_Conn.asp`, flow-cache), or a stock Network-Map
     client detail — and what it showed pre-unification.
+
   - **Remediation is view-specific and can only be scoped once the screen is
     known.** Likely shape: the target view should *resolve* each link MAC to the
     parent device's unified name (so links read "MyLaptop · 5 GHz link") rather
     than being deduped/folded away — keep unification, add per-link rows that
     share the resolved name. [owed — owner to name the exact screen; then scope]
 
-- **AI Mesh Search** Investigate the operation of search as it was reported 
+- **[P2] AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
 
-- **BE98 Speed Test** Field reports that when QoS is enabled on the BE98 device 
+- **[P1] BE98 Speed Test** Field reports that when QoS is enabled on the BE98 device 
   that the speed test crashes. Doesn't seem to affect everyone as some BE98 users 
   report no issues. Both claim to have the 1.8.6d installed which had the previous 
   fix for the crashing speed test. I have noticed potential soft crashes in speed testing 
@@ -296,6 +287,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   speed test in HW Classful mode (`qos_type=11`, the 8-queue WRR scheduler), but NOT in the
   HW Classless modes** — points at the classful egress-scheduler path (per-class queue setup /
   the runner reconfiguring queues under load) rather than the PI2 shaper itself.
+
   - **Source trace (2026-08-04, no code change — blob/metal-bound):** the built-in Ookla test
     is **router-originated** traffic (`ookla_exec`, a libws blob, runs the ookla client on the
     router). Its WAN egress traverses `QOSO` at `POSTROUTING -o $WANIF` (`rc/qos.c` ~1013), so
@@ -309,6 +301,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     `ookla_exec` and the rdpa runner are **blobs** — not reproducible or safely fixable from
     the auditable source; no QoS/accel toggle exists in the auditable ookla path. Per-user
     variance fits config differences (`qos_obw`/`qos_orates` ceilings/WRR weights).
+
   - **NOT shipping a speculative fix** (metal-first / reachability discipline; QoS enforcement
     path). **Metal diagnostics to split it:** (a) run built-in test on type-11 while capturing
     `logread`+`dmesg`+`fc status`+`tmctl getqstats` before/during/after; (b) run the SAME test
@@ -321,7 +314,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     a LAN-client/external speed test; under classful the built-in test measures *shaped*
     throughput, not the raw line. [owed — metal + blob-bound]
 
-- **The router is configured for dual-WAN failover**
+- **[P2] The router is configured for dual-WAN failover**
   The active secondary WAN uses the 2.5 Gbps LAN port with DHCP and its own NextDNS profile.
   The future primary WAN uses the 10 Gbps LAN port with PPPoE, but it is not yet connected. It 
   has a separate NextDNS profile and DNS server addresses. The router currently fails over to 
@@ -329,21 +322,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   receiving DNS log entries. The expected behavior was for only the active WAN’s profile to show 
   traffic.
 
-- **Data Logs — ROOT-CAUSED + FIXED in v2.1.5 (commit `383f9019a3`), metal owed.** The
-  "JFFS/USB history resets" reports are two distinct rtrafd defects, both confirmed at
-  source: (a) **USB/external lost ALL history on every reboot** — `rtrafd` loaded its db
-  once at startup, but USB mounts via hotplug *after* services start, so the store silently
-  fell back to RAM (never loaded) and the first hourly save then overwrote the old
-  `rtraf.db` with empty rings; (b) **JFFS/internal loses the tail** — saves were hourly and
-  the shutdown save needs a clean SIGTERM, so an unclean reboot (power pull / watchdog)
-  drops up to 1h of recent history, which reads as "not persistent." Fix: late store
-  attach (retry resolve+load at 1 Hz for 15 min, logged), a never-save-over-an-unloaded-db
-  clobber guard (preserves `rtraf.db.prev`), and 15-min save cadence on USB (JFFS stays
-  hourly for NAND wear). Metal: reboot with `rtraf_path=usb` → logread shows "store came
-  up late - attached" and history survives; power-pull loses ≤15 min (USB) / ≤1h (JFFS).
-  [owed — metal only]
-
-- **Traffic Analyzer** Traffic Analyser also does not put the device names for every device when 
+- **[P2] Traffic Analyzer** Traffic Analyser also does not put the device names for every device when 
   you view say, for the past MONTH.
   *(2026-08-05 note: same root cause as the "Client ID" item above — rtrafd history stores
   only MAC/IP, names resolve live at page load, so anything not in the current client list
@@ -351,7 +330,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Features to add
 
-- **Warden: explicit IPv6 enable option + broader IPv6 feed coverage. [HELD — owner
+- **[P3] Warden: explicit IPv6 enable option + broader IPv6 feed coverage. [HELD — owner
   2026-08-04: leave IPv6 always-on for now, revisit later.]** IPv6 enforcement is **already
   built and always-on** — `REAPER_WARDEN`/`RW_DROP` chains hooked with `ip6tables`, v6 sets
   (`rw_threat6`, `rw_ban6`/`rw_allow6`, `rw_g6_<cc>` geo). When picked up: (a) `rwarden_ipv6`
@@ -365,87 +344,22 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   Cymru v6 is bogons not threats. **Spamhaus DROPv6 (already ingested) is about the best
   available**; no strong additional feed to add. Treat as a watch-item, not a quick win.
 
-- **Warden: feed dedup/overlap disclosure — DONE (be96u-only `d3779f94e4`).** New dict token
-  `RWDN_55` (all 25 dicts, 6189→6190 lockstep) shown under the feed checkboxes and as a
-  "How Warden works" bullet: all enabled feeds merge into one de-duplicated `hash:net` set
-  (`sort -u` → `ipset restore` → atomic swap), so overlapping feeds never double-block or
-  bloat matching; FireHOL Level 1 already aggregates Spamhaus DROP / DShield / Feodo
-  (Spamhaus still adds its IPv6 list). Translation pass owed (English seeded in all 25).
-
-- **Firmware update check on GitHub — PHASE 1 DONE (be96u-only `56a824a5a5`), SHIPPED
-  v2.1.6 all five models, metal owed.**
-  Replaced Merlin's `fwupdate.asuswrt-merlin.net` check with a Reaper GitHub-hosted manifest:
-  `rom/webs_scripts/reaper_webs_update.sh` (busybox sh) reads `productid` + detects variant
-  (MCP ships `rmcpd`/`Reaper_Advisor.asp`, noMCP neither), greps `PRODUCTID#VARIANT` from
-  `updates/manifest_3006.txt` on the AM-Reaper raw tree, compares Reaper `X.Y.Z`, and sets the
-  stock `webs_state_*` nvram. `stage_release.ps1` now emits that plain-text manifest alongside
-  `latest.json` (lean repo `9d2e30f`). The firmware page is de-Merlined (links → AM-Reaper
-  releases) and **Main_ReaperDash.asp shows a crimson "New firmware available" badge** (server-
-  rendered from `webs_state_flag`, links to the firmware page). **Opt-in preserved:**
-  `firmware_check_enable` default stays `0`; scheduled check runs only when enabled, manual
-  "Check" works on demand. Notify-only — never downloads/flashes. **METAL:** enable check →
-  Check → badge + page show the published version; wrong-variant line never matched; note fetch.
-  Root cause it fixes: every Reaper release shares Merlin base `3006.102.8`, so the stock
-  numeric compare (which zeroed our `Reaper_v…` extendno) could never see a Reaper update.
-- **Firmware-upgrade page cleanup (owner request 2026-08-06). — INVESTIGATED
-  2026-08-06: (c) is already correct; (a) and (b) confirmed still owed.** Findings
-  against the current tree (`Advanced_FirmwareUpgrade_Content.asp` is the shipped
-  page):
-  - **(c) Scheduled Yes/No — ALREADY WIRED TO REAPER, no work needed.** The
-    radio pair at lines ~2149-2150 is `name="firmware_check_enable"`, and
-    `watchdog.c:12363/12381` gates the scheduled run on `firmware_check_enable`;
-    the installed `/usr/sbin/webs_update.sh` **is** `reaper_webs_update.sh`
-    (`rom/Makefile:180` copies it over the Merlin one), which checks the AM-Reaper
-    manifest and never downloads/flashes. Default stays `0` (opt-in). Just
-    **metal-verify** the toggle persists and a scheduled tick sets `webs_state_*`.
-  - **(a) Security Update section — STILL PRESENT, remove it.** Lines ~2064-2092
-    render `#switch_security_update_enable` bound to `httpApi.securityUpdate`
-    (httpApi.js:1143) — stock TrendMicro signature-update cloud machinery, dead on
-    the de-clouded build. Delete the section (and the now-unused httpApi shim if
-    nothing else references it).
-  - **(b) Check button + the STALE STOCK SCHEDULER — STILL STOCK, rework.** The
-    page ALSO still carries the Merlin auto-firmware scheduler UI:
-    `webs_update_enable` / `webs_update_time` / `check_beta` wiring
-    (lines ~179-346) is separate from the reaper `firmware_check_enable` toggle,
-    so the page has **two** update-scheduling surfaces — confusing and half-dead.
-    Confirm what the manual **Check** button submits (stock `webs_update_enable`
-    apply vs a reaper check trigger) and that the result panel reads the
-    Reaper-set `webs_state_*` nvram; remove/replace the leftover
-    `webs_update_enable`/`webs_update_time`/`check_beta` stock scheduler so only
-    the reaper `firmware_check_enable` control remains.
-  **PARTLY FIXED 2026-08-06 (`8f9cd55a86`) — (a) done; (b)/(c) found already
-  correct. Rides the next build, metal owed.**
-  - **(a) DONE:** the `secur_stab_setting` (Security Update / TrendMicro) table is
-    removed. Verify marker `www/Advanced_FirmwareUpgrade_Content.asp|!secur_stab_setting`.
-  - **(b) NO CHANGE NEEDED — the Check button already drives the Reaper check.**
-    `detect_update()` fires `start_webs_update` → the installed
-    `/usr/sbin/webs_update.sh`, which **is** `reaper_webs_update.sh` (rom/Makefile),
-    i.e. the AM-Reaper GitHub manifest check; the result panel reads the
-    `webs_state_*` nvram the Reaper script sets. The stock auto-firmware **upgrade**
-    scheduler table (`auto_upgrade_setting`, webs_update_enable/time) is already
-    stripped at page load (`$("table").remove` when `afwupg_support=false`), so it
-    never renders — no leftover surface to excise.
-  - **(c) NO CHANGE NEEDED:** the scheduled Yes/No is `firmware_check_enable`
-    (`toggle_fw_check`), gated in `watchdog.c` against the Reaper script; default 0.
-  No sysdep variant for this page (Makefile checked, standing rule 33). **Metal:**
-  the Security Update section is gone; Check triggers the GitHub check and the
-  result/badge reflect the published version; the scheduled toggle persists.
-
-- **PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
+- **[P2] PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
   (owner ask 2026-08-04) Replace the whole stock firmware tab with a Reaper-native page (shell/
   inject-skip, theme tokens, dict lockstep — the `Reaper_QoS`/`Reaper_Traffic` convention). Surface
   functions the stock page **disables** (`afwupg_support=false`, `betaupg_support=false`): one-click
   download of the published `.pkgtb` from `webs_state_url` → verify SHA256 (already in the manifest)
   → flash; show the release note inline; guard model+variant so a noMCP box can't pull an MCP image;
   optional rollback awareness. Pulls in image-signing / GPL-delivery considerations (was the deferred
-  Phase 2). Depends on Phase 1's manifest + nvram wiring (done). [owed — build]
-- **NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** (owner direction
+  Phase 2). Depends on Phase 1's manifest + nvram wiring (shipped v2.1.6). [owed — build]
+
+- **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** (owner direction
   2026-08-04) Over time, migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme,
   de-clouded, only the functions we want exposed), as already done for Dashboard/QoS/Traffic/Wireless/
   GK/Warden/Devices/Advisor/Conn/QoSDiag. Firmware tab (Phase 2 above) is the next candidate. Track
   per-page migrations here as they're scoped. [ongoing]
 
-- **Staged ("batch") changes — one save, minimal restarts.** Owner request. Today each control
+- **[P3] Staged ("batch") changes — one save, minimal restarts.** Owner request. Today each control
   applies immediately, so e.g. changing all three Wi-Fi bands = three applies + three
   `restart_wireless`. Add a staging layer: a control's Apply becomes "Add to changes", writing
   the intended nvram diff into a cross-page **pending basket** (localStorage, under the Reaper
@@ -454,28 +368,32 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   Apply, the engine validates ALL first (all-or-nothing, like the Warden save), writes nvram in
   one commit, then runs the **de-duplicated, correctly-ordered** action set ONCE — reboot only if
   a staged change is reboot-class.
+
   - *Feasible — backend already supports it:* one apply POST carries many nvram keys + a chained
     `action_script` (`restart_wireless;restart_qos;…`), and `restart_wireless` cycles all radios
     at once, so "3 restarts" is a UI artifact, not a firmware limit. The missing piece is the
     accumulate-then-fire UI.
+
   - *Hard parts:* (1) an nvram-key → required-action map + safe ordering (e.g. firewall after
     wireless); (2) a **reboot-class table** — most changes are service restarts (seconds), but a
     few need a COLD reboot (MLO enable/disable; some SDN / operation-mode switches) so the engine
     must not reboot needlessly; (3) staleness/conflict if nvram changed underneath between staging
     and apply; (4) **scope** — clean for Reaper-authored pages (we own their save handlers), hard
     for stock ASUS pages (vendor `applyRule`/`showLoading` JS is invasive to intercept).
+
   - *Recommended path:* Reaper-native pages first. Quick sub-win for the Wi-Fi case: a single
     Reaper Wireless page showing all three bands that applies once. The full cross-page
     transaction system is substantial — its own project, v-next.
 
-- **Remote syslog push/fetch.** The router can already send its log to a remote
+- **[P3] Remote syslog push/fetch.** The router can already send its log to a remote
   collector (send-only). Add the ability to **push to / be fetched by** analytics
   systems — most SIEM/analytics pipelines are push-based.
 
-- **Traffic Analyzer → Splunk: per-device connection-health export (owner ask
+- **[P3] Traffic Analyzer → Splunk: per-device connection-health export (owner ask
   2026-08-06).** Goal: feed per-device data into Splunk and derive *connection
   health* with timestamps. **Investigation 2026-08-06 — what exists vs. what's
   missing:**
+
   - *Collected today (`rtrafd`):* per device = **identity (MAC, IP) + bytes
     down/up** only, as a live rate (`live.json`) and as time-bucketed byte totals
     (5-min×288 / hour×336 / day×366 / month×24 rings). Everything is timestamped
@@ -486,9 +404,11 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     off by default) — **no per-device latency/loss/jitter, no packet counts, no
     retransmits, no TCP state, no per-device flow counts**. So today you can derive
     per-device *volume/throughput* health, not *connection-quality* health.
+
   - *Delivery today:* **pull-only** via the auth-gated `reaper_traffic.cgi?f={live|
     m5|hour|day|month}` JSON. The remote-syslog push path carries **only** the
     quota 80/100% warnings.
+
   - **Two additions needed:** (1) **per-device health metrics** — cheapest sources:
     conntrack TCP state + per-flow retransmit/age (caveat: offloaded flows freeze
     their conntrack counters under the accelerator — same reason bytes moved to
@@ -497,10 +417,12 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     slow cadence (NOT fork-per-ping — see overhead below); (2) a **push exporter**
     (Splunk HEC over HTTPS, or structured syslog) that serializes one record per
     device at each bucket close.
+
   - **Hard prerequisite for 100-150 clients: `NCLI` is 64** (`rtrafd.c:63`) — the
     per-device array caps at 64 devices today, so ~150 clients needs `NCLI`≈160+
     (each client ring is ~16 KB → client rings grow ~1 MB→~2.5 MB; trivial on the
     1 GB box).
+
   - **Overhead / scaling (see the response 2026-08-06):** the data plane for
     150 clients at multi-Gbps runs on the **BCM4916 hardware accelerator**, which
     `rtrafd` only *reads* — it never touches packet forwarding, and it runs
@@ -516,10 +438,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     posts. [owed — collector enhancement + push exporter; pairs with the Remote
     syslog push item above]
 
-- **NIST-grade auditing.** Consider adding audit capabilities aligned to a NIST
+- **[P3] NIST-grade auditing.** Consider adding audit capabilities aligned to a NIST
   baseline.
 
-- **Diag: regulatory-mismatch warning.** Make `reaper_diag` (and possibly a Wireless-page
+- **[P3] Diag: regulatory-mismatch warning.** Make `reaper_diag` (and possibly a Wireless-page
   hint) print an explicit `WARN: territory_code=EU/xx but wlX_country_code=US` style line
   when the factory territory and the per-radio country codes disagree — self-documents
   gray-market / region-switched units in field reports. Field-observed 2026-07-28 on two
@@ -531,16 +453,16 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 ## Code-scan findings 
 
 **Deliberately deferred (with reason), still open:**
-- **`poll_fcache` O(n²)→hash pairing** (`rtrafd.c`). Bounded to ≤1536 flows every 5 s and
+- **[P3] `poll_fcache` O(n²)→hash pairing** (`rtrafd.c`). Bounded to ≤1536 flows every 5 s and
   it sits in the metal-validated per-client accounting path — a rewrite of a millisecond-
   scale loop isn't worth the regression risk. Revisit only if a flow-heavy box shows real
   cost. [shelved]
 
-- **`poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal already measured 2–3 % CPU
+- **[P3] `poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal already measured 2–3 % CPU
   at the class-poll cadence; treating this as a non-issue per the prior finding. [shelved]
 
 **Pre-release code review 2026-08-02 — remaining item:**
-- **GDX pool watchdog field-proving.** The accelerator pool-drain check is opt-in (`rwatch_gdx`,
+- **[P3] GDX pool watchdog field-proving.** The accelerator pool-drain check is opt-in (`rwatch_gdx`,
   v2.1.0). Confirm the `/proc/gdx/skb_idx` read is non-destructive under sustained polling on
   hardware before it can be considered for default-on again. [owed — metal]
 
@@ -549,36 +471,41 @@ The confirmed audit findings were fixed in v2.1.9; five items were deliberately 
 *(Re-reviewed later the same day: all five confirmed still open by design — D1/D3/D4 are
 cross-page refactors to do WITH the native-page migration and its on-device verification,
 not piecemeal on a just-shipped fleet; L1/L3 remain shelved on their recorded rationale.)*
-- **D1 — shared device-name resolver JS (5→1).** The `get_clientlist`+`nickName||name` resolver is
+
+- **[P3] D1 — shared device-name resolver JS (5→1).** The `get_clientlist`+`nickName||name` resolver is
   reimplemented in five pages (DHCP/Conn/Traffic/QoS/Dashboard) with different keying. Extract one
   `reaper_names.js`. Best done in the **native-page migration** (cross-file refactor + on-device
   verification). [owed — migration]
-- **D3 — unify byte/rate formatters across pages** (SI vs binary drift). "Fixing" changes displayed
+
+- **[P3] D3 — unify byte/rate formatters across pages** (SI vs binary drift). "Fixing" changes displayed
   values on some pages, so pair it with the migration rather than change output piecemeal. [owed — migration]
-- **D4 — consolidate the per-page `:root` theme tokens/components** (two token vocabularies for the
+
+- **[P3] D4 — consolidate the per-page `:root` theme tokens/components** (two token vocabularies for the
   same hexes across 13 pages). Visual-regression risk; do it with metal verification in the
   migration. [owed — migration]
-- **L1 — spurious leading `<` in the set_name/set_reserve RMW output.** Cosmetic, verified-harmless;
+
+- **[P3] L1 — spurious leading `<` in the set_name/set_reserve RMW output.** Cosmetic, verified-harmless;
   not worth re-touching the just-stabilised `custom_clientlist` RMW. [shelved]
-- **L3 — function-local `static` snapshot arrays in `do_reaper_dev_cgi` aren't re-entrant.** Latent
+  
+- **[P3] L3 — function-local `static` snapshot arrays in `do_reaper_dev_cgi` aren't re-entrant.** Latent
   only (httpd serialises these requests); a malloc refactor of the multi-return CGI would add leak
   risk to fix a can't-happen case. [shelved]
 
 ## Documentation
 
-- **Note the non-functional retained features.** Document that the firmware
+- **[P3] Note the non-functional retained features.** Document that the firmware
   update-check and the (removed) security-check UI do nothing on Reaper and are
   retained only for potential future use.
 
-- **Annotate** the system defaults.
+- **[P3] Annotate** the system defaults.
 
-- **Write a user guide** for other users.
+- **[P3] Write a user guide** for other users.
 
 ## Platform / expansion
 
 ## Known issues (Cannot Remediate)
 
-- **Unused BSS/BSSID generated when disabled → RADIUS log spam.** An onboarding/backhaul
+- **[P3] Unused BSS/BSSID generated when disabled → RADIUS log spam.** An onboarding/backhaul
   BSS is still created even when every feature that would use it is disabled, spamming
   the log with RADIUS codes for an unused radio. Traced to a **closed-source Broadcom
   blob**; a boot-time script to suppress it based on device settings did not work and

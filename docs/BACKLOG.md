@@ -96,6 +96,18 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Known issues (cause identified)
 
+- **First-boot credential flow ends in a constant page-refresh loop (v2.1.6 field
+  reports; still present in v2.1.9) — ROOT-CAUSED 2026-08-06, FIX NOT YET APPLIED
+  (investigation-only per owner instruction; slated for v2.2.0).** httpd caches the
+  landing page ONCE at startup (`get_index_page` → `indexpage`, httpd.c:2881); on a
+  factory box that cache is `Reaper_FirstBoot.asp`, and the credential flow never
+  restarts httpd — so after the password is set, `/` still serves the FirstBoot page,
+  whose (correct) v2.1.5 leave-guard bounces back to `/` → infinite reload. The
+  post-login redirect (web.c:25376) uses the same stale global, so re-login re-enters
+  the loop. Field workaround: power-cycle (httpd recomputes at start). Full analysis,
+  remediation plan, and metal test plan: [`LOGIN-LOOP-2026-08-06.md`](LOGIN-LOOP-2026-08-06.md).
+  [owed — fix in v2.2.0]
+
 - **[residual of the v2.1.3 apostrophe-XSS fix — low, optional] Unescaped `title='...'`
   attributes on the client lists.** The reported stored-XSS/garble via an apostrophe in a
   device name was fixed in v2.1.3 (patch 0311; see the changelog). Remaining defense-in-depth

@@ -1,8 +1,12 @@
 # First-Boot Login Refresh-Loop — Investigation Report (2026-08-06)
 
-**Status: ROOT-CAUSED at source. No fix applied yet (investigation only, per owner
-instruction). NOT fixed in v2.1.7–v2.1.9 — the affected files are byte-identical to
-v2.1.6, so v2.2.0 must carry the remediation below.**
+**Status: ROOT-CAUSED and FIXED — commit `137d96338a` on `be96u-only`
+(2026-08-06), rides v2.2.0; NOT in any shipped build yet, factory-reset metal
+test owed.** Remediation items 1 and 2 below are implemented (live index
+recompute in httpd.c + web.c; FirstBoot leaves to the dashboard explicitly);
+item 3 (does `do_chpass` kill the session token?) remains a metal probe; item 4
+(verify markers) is in place. httpd compiled/linked clean via the tree sub-make;
+the page is JS-parse-checked and mock-verified to land on the dashboard.
 
 ## Field report (v2.1.6, factory-fresh install)
 

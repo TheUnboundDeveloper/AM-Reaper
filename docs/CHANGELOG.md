@@ -25,6 +25,18 @@ node, not only on the primary router.
 ---
 
 ## Unreleased — committed on the tree 2026-08-05/06, rides the next release (not yet built)
+- **The first-boot setup no longer ends in an endlessly reloading login window.** (Field
+  reports on v2.1.6; the flaw was present in every build with the first-boot wizard and was
+  still in v2.1.9.) On a factory-fresh or factory-reset box, the web server decided its
+  landing page once at startup — while the password was still the default — and never
+  reconsidered. After you set your custom credentials, the address `/` therefore kept
+  serving the (already-completed) credential wizard, which correctly noticed it was done
+  and went back to `/` — an infinite reload loop that made the interface unusable and drove
+  users to reflash stock firmware. The landing decision is now made fresh on every request,
+  and the wizard's exit goes straight to the dashboard, which is immune to the loop by
+  construction. Existing affected boxes can escape the loop today by simply power-cycling
+  the router and logging in with the new credentials — no reflash needed. Upgrading to this
+  release also recovers a looping box on its own.
 - **Gatekeeper "Internet only" now works on networks with a LAN-hosted DNS server.** (Owner
   field report 2026-08-06: a work laptop set to internet-only had no usable internet while
   every other device was fine.) Root cause: internet-only seals the device off from the whole

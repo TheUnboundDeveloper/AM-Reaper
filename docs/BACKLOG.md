@@ -198,6 +198,22 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     spread for tunnel softirq. `sched_rt_runtime_us=-1` rejected as the primary fix
     (removes the safety valve). [owed — diagnostic test required]
 
+- **MLO: individual link connections no longer shown per device (owner report
+  2026-08-06).** MLO traffic/connections aggregate correctly against the source
+  MAC/device, but the *individual MLO link* entries are not showing again.
+  Suspect: the v2.1.9 device-name unification (`d8fe13ba12` — `custom_clientlist`
+  as master + MAC-keyed row-merge) may be collapsing the per-link records into the
+  single device row everywhere, not just where intended. Investigation notes:
+  (a) the Devices page merge of Wi-Fi 7 MLO links into one row is *deliberate*
+  (v1.9.2/v1.9.3 — MLO link awareness + row-merge), so first establish which view
+  regressed (Devices expanded/link detail? Wireless Log? Connections?) and what it
+  showed before the unification rung; (b) the goal is to KEEP the unified naming
+  while restoring per-link visibility — likely means the resolver keys names by
+  device but the view must not dedup rows by resolved identity (per-link rows
+  should share the device name, not be swallowed by it); (c) check whether the
+  strict-parser/dedup fixes in the unification rung drop the extra MLO link
+  records (they carry same-device distinct MACs). [owed — investigate]
+
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
 

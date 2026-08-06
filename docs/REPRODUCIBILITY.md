@@ -72,7 +72,7 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 310 patches for v2.1.2.
+#   fails without it. This applies all 322 patches for v2.1.5.
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
@@ -146,7 +146,7 @@ enforces that the patch series is gapless and carries no leaked personal data.
 Each release's logs are summarized under
 [`../provenance/logs/<version>/`](../provenance/logs) — the configured build
 profile, the `MAKE_EXIT=0` markers, the "Done! Image" confirmation, the built
-image hashes, and every line of the 17-check `reaper_verify` packaging gate
+image hashes, and every line of the 19-check `reaper_verify` packaging gate
 (which confirms, among other things, that the "no-AI" variant contains no trace
 of the AI Advisor, that the dictionaries are language-consistent, and that the
 web server's shared-library closure resolves). Build-host paths are normalized;
@@ -174,6 +174,7 @@ The authoritative, machine-readable list is
 
 | Release | Base | Patches | `release/src/router` tree hash |
 |---|---|---|---|
+| v2.1.5 | `a7ebfa133a` | `0001`–`0322` | `9c98f7483f8eb3f8c0d1b5250b8bf3d38803f63c` |
 | v2.1.4 | `a7ebfa133a` | `0001`–`0318` | `066a89ce574f3bdccbdb1af40d354f6ded822574` |
 | v2.1.3 | `a7ebfa133a` | `0001`–`0315` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` |
 | v2.1.2 | `a7ebfa133a` | `0001`–`0310` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` |
@@ -181,4 +182,6 @@ The authoritative, machine-readable list is
 | v2.1.0 | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` |
 
 The image SHA-256s for each release are in the manifest and in the release's
-`SHA256SUMS-*.txt`.
+`SHA256SUMS-*.txt`. (The built fleet has advanced to **v2.1.9**; those rungs are
+shipped but not yet exported to patches — the series and this table are extended
+for them at publish time.)

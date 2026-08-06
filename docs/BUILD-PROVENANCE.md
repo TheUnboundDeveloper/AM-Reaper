@@ -71,6 +71,7 @@ If step 4 matches, the image you hold is the one that was built. CI does steps
 
 | Version | Base | Patches | `release/src/router` tree | Source reproducible in CI |
 |---|---|---|---|---|
+| **v2.1.5** | `a7ebfa133a` | `0001`–`0322` | `9c98f7483f8eb3f8c0d1b5250b8bf3d38803f63c` | ✅ yes |
 | **v2.1.4** | `a7ebfa133a` | `0001`–`0318` | `066a89ce574f3bdccbdb1af40d354f6ded822574` | ✅ yes |
 | **v2.1.3** | `a7ebfa133a` | `0001`–`0315` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` | ✅ yes |
 | **v2.1.2** | `a7ebfa133a` | `0001`–`0310` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` | ✅ yes |
@@ -78,24 +79,28 @@ If step 4 matches, the image you hold is the one that was built. CI does steps
 | **v2.1.0** | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` | ✅ yes |
 | *(base)* | — | none | `91ac46a9fde7714dbed651d02c04898b4e134be0` | — |
 
-Every shipped RT-BE96U image is now reproducible from the published patches:
-patches `0290`–`0318` (the v2.1.1 changes, the v2.1.2 Merlin 3006.102.8
-carry-forward, and the v2.1.3/v2.1.4 feature and field fixes) were exported and
-**verified** to reproduce the trees above — applying `0001`–`0290` yields
-`3ae0d914…` (v2.1.1), `0001`–`0310` yields `b2c357fa…` (v2.1.2), `0001`–`0315`
-yields `6ac67c56…` (v2.1.3), and `0001`–`0318` yields `066a89ce…` (v2.1.4). The
+Every shipped RT-BE96U image through v2.1.5 is reproducible from the published
+patches: patches `0290`–`0322` (the v2.1.1 changes, the v2.1.2 Merlin 3006.102.8
+carry-forward, the v2.1.3/v2.1.4 feature and field fixes, and the v2.1.5 field
+fixes) were exported and **verified** to reproduce the trees above — applying
+`0001`–`0290` yields `3ae0d914…` (v2.1.1), `0001`–`0310` yields `b2c357fa…`
+(v2.1.2), `0001`–`0315` yields `6ac67c56…` (v2.1.3), `0001`–`0318` yields
+`066a89ce…` (v2.1.4), and `0001`–`0322` yields `9c98f748…` (v2.1.5). The
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
-every tree on each run. The RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro images
-that also ship at v2.1.4 are produced by porting the shared code onto each
-per-model branch (banner / target.mak / blob overlay); the patch series is
-RT-BE96U-only, so the tree hash above is the RT-BE96U reference and the siblings
-are not independently patch-reproducible (their image SHAs are in each
-`SHA256SUMS-<MODEL>-Reaper_v2.1.4.txt` on the release ladder).
+every tree on each run. **The built fleet is ahead of the exported series:** the
+v2.1.6 → v2.1.9 rungs are built + shipped on all five models but not yet exported
+to patches (the series is regenerated for those rungs at publish). The RT-BE86U /
+RT-BE88U / GT-BE98 / GT-BE98 Pro images (current at v2.1.9) are produced by
+porting the shared code onto each per-model branch (banner / target.mak / blob
+overlay); the patch series is RT-BE96U-only, so the tree hash above is the
+RT-BE96U reference and the siblings are not independently patch-reproducible
+(their image SHAs are in each `SHA256SUMS-<MODEL>-Reaper_<version>.txt` on the
+release ladder).
 
 ## Build & verification logs
 
-Each release's build and `reaper_verify` (17-check packaging gate) logs are
+Each release's build and `reaper_verify` (19-check packaging gate) logs are
 summarized under [`provenance/logs/<version>/`](../provenance/logs) — the
 meaningful lines (configured build profile, `MAKE_EXIT=0`, the "Done! Image"
 marker, every verify check, and the built image hashes), with the build-host
@@ -107,9 +112,11 @@ are attached to the corresponding GitHub Release.
 Provenance is recorded for the **RT-BE96U** — the primary development platform.
 The [manifest](../provenance/manifest.json) covers it back to **v1.8.6**:
 
-- **v2.1.0 – v2.1.4** carry the full record and are **reproducible in CI**
+- **v2.1.0 – v2.1.5** carry the full record and are **reproducible in CI**
   (`verifiable: true`): source-tree hash, image SHA-256s, and logs, with the
-  published patch series proven to reproduce the tree.
+  published patch series proven to reproduce the tree. (The built fleet has since
+  advanced to **v2.1.9**; those rungs are shipped but not yet exported to patches —
+  the series and provenance are regenerated for them at publish time.)
 - **v1.8.6 – v2.0.8** are **historical** entries (`verifiable: false`): the build
   log + `reaper_verify` summary and the `release/src/router` source-tree
   fingerprint are recorded, but the firmware images themselves are not retained,

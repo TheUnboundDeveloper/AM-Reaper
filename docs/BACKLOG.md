@@ -30,6 +30,13 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     history intact after the flash; collector log shows a clean store re-attach.
   - *Storage USB panel:* disk info/health/format/eject work against a real stick; format
     refuses the active store without confirmation.
+  - *Post-v2.1.9 committed UI work (rides the next build; metal owed):* on the WiFi
+    Professional page, setting 2.4 GHz "Disable 802.11b" locks the Preamble select to its
+    Disable-802.11b state (dimmed); switching back to Allow restores the prior preamble,
+    and a box whose nvram already held `rateset=ofdm` shows **0** pending changes at page
+    load. The new **USB Disks** tab (first tab under USB Application) lists disks and
+    scan/format/eject work against a real stick; the Long-Term Storage page (System Log)
+    keeps only the store selection and still saves it.
   - *Audit-fix behaviours (v2.1.9):* the three re-classified native pages (Connections, QoS
     Diagnostics, WiFi Professional) render with their own theme intact (no stock CSS bleed);
     the QoS Diagnostics live graph still updates (page now sends the `http_id` token); the QoS
@@ -53,20 +60,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   `check_isAlive_and_redirect` (med risk: Wi-Fi admin sees a spinner until reload);
   (ii) mask the key, keep the SSID hint (low risk); (iii) leave stock. [owed — owner
   to pick a direction]
-
-- **WiFiPro 2.4 GHz: lock the Preamble selector to its "Disable 802.11b" option while
-  802.11b is disabled.** (Owner request 2026-08-05.) On `Reaper_WiFiPro.asp` the 2.4 GHz
-  band has two coupled rows: **"Disable 802.11b"** (`rateset`, ~L211 — options
-  `default`="Allow 802.11b" / `ofdm`="Disable 802.11b") and **Preamble Type** (`plcphdr`,
-  ~L219 — `long` / `short` / `0`="Disable 802.11b"). Preamble is an 802.11b-era concept,
-  so when the Disable-802.11b control is set to *disable* (`rateset=ofdm`) the Preamble
-  select should be **forced to its "Disable 802.11b" option and locked** (greyed, not
-  editable); switching back to "Allow 802.11b" unlocks it and restores the prior/default
-  preamble value. Pure page-side coupling (change-handler on the rateset select + state
-  applied on initial render per band); no backend change; check whether a queued staged
-  change for `plcphdr` needs cancelling when the lock engages (the page batches changes
-  before Apply). Shared page — fans out to all 5 models; add a `verify_markers.txt` line
-  if implemented as a field-critical fix. [owed — UI polish]
 
 - **i18n residuals (from v2.1.3).** Two English-only strings need a translation pass across
   the dicts: (a) the AI Advisor intro was completed in `EN.dict` (RADV_01) but the other 24
@@ -247,10 +240,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Features to add
 
-- **USB Menu** Move USB functions to a tab in the USB Applications panel. The functions 
-  are located in that menu to be relevent to the menu topic since I moved this out of the 
-  Network Map.
-
 - **Warden: explicit IPv6 enable option + broader IPv6 feed coverage. [HELD — owner
   2026-08-04: leave IPv6 always-on for now, revisit later.]** IPv6 enforcement is **already
   built and always-on** — `REAPER_WARDEN`/`RW_DROP` chains hooked with `ip6tables`, v6 sets
@@ -357,7 +346,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   hardware before it can be considered for default-on again. [owed — metal]
 
 **Full code audit 2026-08-05 — deferred items (see [`CODE-AUDIT-2026-08-05.md`](CODE-AUDIT-2026-08-05.md)):**
-The confirmed audit findings were fixed in v2.1.9; five items were deliberately deferred:
+The confirmed audit findings were fixed in v2.1.9; five items were deliberately deferred.
+*(Re-reviewed later the same day: all five confirmed still open by design — D1/D3/D4 are
+cross-page refactors to do WITH the native-page migration and its on-device verification,
+not piecemeal on a just-shipped fleet; L1/L3 remain shelved on their recorded rationale.)*
 - **D1 — shared device-name resolver JS (5→1).** The `get_clientlist`+`nickName||name` resolver is
   reimplemented in five pages (DHCP/Conn/Traffic/QoS/Dashboard) with different keying. Extract one
   `reaper_names.js`. Best done in the **native-page migration** (cross-file refactor + on-device

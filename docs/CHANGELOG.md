@@ -24,7 +24,21 @@ node, not only on the primary router.
 
 ---
 
-## Unreleased — committed on the tree 2026-08-05, rides the next release (not yet built)
+## Unreleased — committed on the tree 2026-08-05/06, rides the next release (not yet built)
+- **Gatekeeper "Internet only" now works on networks with a LAN-hosted DNS server.** (Owner
+  field report 2026-08-06: a work laptop set to internet-only had no usable internet while
+  every other device was fine.) Root cause: internet-only seals the device off from the whole
+  LAN — including, on AdGuard/Pi-hole-style networks, the very DNS server the router's DHCP
+  told it to use; with no resolver, "internet only" was internet in name only. The firewall
+  rules now carve out exactly port-53 (and ARP) from restricted devices to the DHCP-advertised
+  DNS server, and only when that server actually lives on the LAN — router-provided or public
+  DNS setups already worked and are untouched, so the change is a structural no-op there.
+  Everything else on the LAN stays sealed; blocked and quarantined devices are unaffected.
+  One prerequisite worth knowing: the DNS server device itself must be an approved (full)
+  device in Gatekeeper. Also fixed while in there: the teardown command buffer was 44 bytes
+  too small, silently skipping the final chain cleanup and accelerator flush on every
+  disable — found by compile-checking the rule generator, now sized with headroom. A build
+  gate marker (`gk_same_net`) proves the fix is compiled into every shipped image.
 - **The 2.4 GHz Preamble control now follows "Disable 802.11b."** Preamble is an 802.11b-era
   concept, so on the all-bands WiFi Professional page the Disable-802.11b control is now the
   master: setting it to *disable* forces the Preamble selector to its "Disable 802.11b" state

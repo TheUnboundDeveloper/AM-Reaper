@@ -37,6 +37,14 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     load. The new **USB Disks** tab (first tab under USB Application) lists disks and
     scan/format/eject work against a real stick; the Long-Term Storage page (System Log)
     keeps only the store selection and still saves it.
+  - *Gatekeeper internet-only DNS carve-out (committed 2026-08-06, `fe3b205604`; rides the
+    next build):* on the owner's LAN (AdGuard at `.98` as DHCP DNS), set the Work_Laptop to
+    internet-only → `nslookup` succeeds and browsing works; `ping 192.168.50.98` and file
+    shares still fail; other LAN hosts unreachable; a blocked device still gets nothing; a
+    quarantined unknown still lands on the captive page. Pre-flight on the router once:
+    `ebtables -h` accepts `--ip-proto` / `--arp-ip-dst` (kernel side is confirmed `=y`).
+    Also confirm disable now leaves no stray `REAPER_GK` chain (`ebtables -L` after turning
+    Gatekeeper off — the teardown-truncation fix).
   - *Audit-fix behaviours (v2.1.9):* the three re-classified native pages (Connections, QoS
     Diagnostics, WiFi Professional) render with their own theme intact (no stock CSS bleed);
     the QoS Diagnostics live graph still updates (page now sends the `http_id` token); the QoS

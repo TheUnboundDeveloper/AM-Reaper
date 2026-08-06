@@ -329,6 +329,21 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   Check → badge + page show the published version; wrong-variant line never matched; note fetch.
   Root cause it fixes: every Reaper release shares Merlin base `3006.102.8`, so the stock
   numeric compare (which zeroed our `Reaper_v…` extendno) could never see a Reaper update.
+- **Firmware-upgrade page cleanup (owner request 2026-08-06; can ride sooner than
+  Phase 2 or fold into it):**
+  (a) **Remove the "Security Update" section** from the firmware upgrade page —
+  it is stock ASUS cloud machinery that does nothing on the de-clouded build
+  (see also the Documentation item on non-functional retained features).
+  (b) **Rework the "Check" button** so the manual check drives the Reaper GitHub
+  check (`reaper_webs_update.sh` / the `webs_state_*` nvram it sets), not the
+  stock ASUS/Merlin flow — verify what the button currently fires and that its
+  result rendering reads the Reaper-set nvram.
+  (c) **Verify the "Scheduled check for updates" Yes/No control** maps to
+  `firmware_check_enable` and that the scheduled path invokes the Reaper script
+  against the AM-Reaper repo (default stays OFF = opt-in de-cloud posture);
+  confirm no stock scheduled checker remains reachable from that toggle.
+  [owed — build + metal check via the manifest]
+
 - **PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
   (owner ask 2026-08-04) Replace the whole stock firmware tab with a Reaper-native page (shell/
   inject-skip, theme tokens, dict lockstep — the `Reaper_QoS`/`Reaper_Traffic` convention). Surface

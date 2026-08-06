@@ -24,6 +24,13 @@ node, not only on the primary router.
 
 ---
 
+## v2.2.1 — Warden's block count survives reboots, "collecting since" fills in for every dataset, the USB health-scan result stays on screen, and a dead Security-Update panel is gone
+- **Warden's "total blocked" count now survives a reboot and a firmware flash.** v2.1.6 stopped the count resetting on every routine firewall restart, but it still started over at zero after a reboot or a re-flash — the running baseline was kept in temporary storage that clears on boot. It now lives alongside Warden's block-list cache in persistent storage, so the total carries across reboots and firmware updates. Turning Warden off still resets it to zero (as does a factory reset). Writes are kept minimal — the stored total is only updated when the count has actually grown.
+- **The Long-Term Storage "Collecting since" column shows a date for every enabled dataset, not just Devices.** Each dataset now stamps its own start date the first time it writes to durable storage, and the page shows it per row. (Datasets stored in RAM stay blank — RAM history is volatile by design; a row only shows a date once it's collecting to JFFS or USB.)
+- **The USB Health Scanner result stays on screen.** After a scan finished, the disk panel refreshed itself and wiped the just-shown scan output almost instantly (it flashed for a fraction of a second). The result is now preserved across that refresh and remains visible until you run another scan or format the disk.
+- **The stock "Security Update" panel is removed from the firmware page.** It was ASUS-cloud TrendMicro signature-update machinery that does nothing on the de-clouded build. Reaper's own update check is unchanged and already correct: the "Scheduled check" toggle and the "Check" button both drive the Reaper GitHub release check, never an ASUS/Merlin endpoint.
+- Built + shipped on all five models (RT-BE96U + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro), both variants each, all passing the 19-check verify gate (two new patch markers prove the Warden-persistence and Security-Update-removal fixes are inside every image), 2026-08-06.
+
 ## v2.2.0 — First-boot loop fixed for good, Gatekeeper internet-only works with a LAN DNS, USB tools find their home, and a de-cloud console cleanup
 - **A quieter, cleaner console — three de-cloud leftovers removed.** The stock ASUS
   privacy-policy check no longer runs at all (it logged "Error fetching ASUS privacy policy"

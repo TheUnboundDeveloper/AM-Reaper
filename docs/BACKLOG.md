@@ -153,19 +153,30 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   gate `PolicyStatus`) so it no longer runs, consistent with the other phone-home
   removals (see the phone-home surface map). [owed — cosmetic/de-cloud cleanup]
 
-- **Dashboard client list fetches device icons from the ASUS CDN (`nw-dlcdnet.asus.com`).**
-  `www/dashboard/js/clientlist.module.js` (~L185) does
-  `fetch('https://nw-dlcdnet.asus.com/plugin/productIcons/${this.name}.png')` to pull a
-  product-icon image, keyed on the device model name. **Dormant, gated:** only fires when
-  the dashboard client list is viewed AND the client is an ASUS device with the default
-  type icon (`this.isASUS && this.type == this.defaultType && this.name != "ASUS"`), so it
-  is not automatic outbound — but it is a direct browser→ASUS-CDN request that a de-clouded
-  build should not make, and it leaks the presence/model of ASUS devices to ASUS. Pre-existing
-  stock behavior (not introduced by any Reaper rung); surfaced incidentally during the
-  v2.1.1/v2.1.2 security review. **Fix options:** (a) drop the remote fetch and fall back to
-  the local/bundled icon set (Reaper already ships icons), or (b) gate it behind a setting
-  that is off by default. See the phone-home surface map (the user-triggered /
-  dormant tier). [owed — de-cloud cleanup]
+- **ASUS-CDN device/app icon phone-home — PARTIALLY FIXED in v2.2.0; more sites remain
+  (owner ask 2026-08-06 to remove the rest). NOT device-side.** Assessment 2026-08-06:
+  the icon fetches are **entirely browser-side** — the admin's browser fetches
+  `nw-dlcdnet.asus.com` directly; **no router-side C code or daemon fetches icons** (the
+  only firmware-side `asus.com` strings are the FRS firmware-update URLs in the closed
+  `frs_service.o`/`private.o` blobs — a separate phone-home surface, not icons). Each fetch
+  leaks the presence/model of ASUS devices (and, on the QoS monitor, the app set) to ASUS.
+  - **DONE (v2.2.0, `0e8b791827`):** the two fetches in `dashboard/js/clientlist.module.js`
+    (per-device `productIcons/<name>.png` + the `extend_custom_svg_icon.json` catalog).
+  - **STILL LIVE — remove these too:**
+    - `index.asp:~1643` — stock client-list/networkmap device detail fetches
+      `productIcons/${clientObj.name}.png` (same gate: ASUS device w/ default type icon).
+    - `js/httpApi.js:~1383` — `checkCloudModelIcon()` helper fetches `productIcons/<model>.png`
+      (used for AiMesh node/model icons); shared helper, find + neuter callers.
+    - `AdaptiveQoS_Bandwidth_Monitor.asp:~785` — `app_icons/<...>.png` per-app icon fetch.
+  - **WIDER same-class surface (cloud DATA, not icons — decide scope):** many `getJSON`/`fetch`
+    to `nw-dlcdnet.asus.com/plugin/js/*` — `gameList`, `DNS_List`, `tz_db`, `pppIspList_V2`,
+    `ui-model-name`, `opennat_pf`, `iptv_profile`, `collected_FAQ`, `gameProfile` — plus
+    hardcoded ASUS-CDN game-image URLs in `css/gameprofile.css`. Note the `www/Makefile`
+    (L30-39) also `wget`s several of these at **build time** into `ajax/` (that's a
+    build-host fetch baked into the image, not a runtime phone-home — lower priority, but
+    worth a bundled-copy policy). **Fix pattern (all):** drop the remote fetch, fall back to
+    the bundled/local asset Reaper already ships (rule 17 asset-swap for icons), or gate off
+    by default. See the phone-home surface map. [owed — de-cloud cleanup, extend the v2.2.0 fix]
 
 - **First-boot credentials wizard (shipped v1.5.5) — factory-reset metal test.** Factory
   reset → wizard appears → no page/dashboard reachable until username+password set → forced
@@ -460,6 +471,50 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Remote syslog push/fetch.** The router can already send its log to a remote
   collector (send-only). Add the ability to **push to / be fetched by** analytics
   systems — most SIEM/analytics pipelines are push-based.
+
+- **Traffic Analyzer → Splunk: per-device connection-health export (owner ask
+  2026-08-06).** Goal: feed per-device data into Splunk and derive *connection
+  health* with timestamps. **Investigation 2026-08-06 — what exists vs. what's
+  missing:**
+  - *Collected today (`rtrafd`):* per device = **identity (MAC, IP) + bytes
+    down/up** only, as a live rate (`live.json`) and as time-bucketed byte totals
+    (5-min×288 / hour×336 / day×366 / month×24 rings). Everything is timestamped
+    (`live.json` `t`; history `now`+`step`). Also per-network, per-QoS-class
+    (q0-6, HW-classful only), WAN throughput, monthly quota, and Top Talkers
+    (src/dst/**dport**/proto/rate/up/dn + LAN MAC — port-level, no DPI). The only
+    health probe is a **single WAN-target** `ping -c1` (aggregate RTT/loss overlay,
+    off by default) — **no per-device latency/loss/jitter, no packet counts, no
+    retransmits, no TCP state, no per-device flow counts**. So today you can derive
+    per-device *volume/throughput* health, not *connection-quality* health.
+  - *Delivery today:* **pull-only** via the auth-gated `reaper_traffic.cgi?f={live|
+    m5|hour|day|month}` JSON. The remote-syslog push path carries **only** the
+    quota 80/100% warnings.
+  - **Two additions needed:** (1) **per-device health metrics** — cheapest sources:
+    conntrack TCP state + per-flow retransmit/age (caveat: offloaded flows freeze
+    their conntrack counters under the accelerator — same reason bytes moved to
+    fcache in v1.3.1 — so this may undercount; fcache exposes HW-hit ratio but not
+    RTT/retransmits), and/or an **in-process ICMP batch probe** to each client on a
+    slow cadence (NOT fork-per-ping — see overhead below); (2) a **push exporter**
+    (Splunk HEC over HTTPS, or structured syslog) that serializes one record per
+    device at each bucket close.
+  - **Hard prerequisite for 100-150 clients: `NCLI` is 64** (`rtrafd.c:63`) — the
+    per-device array caps at 64 devices today, so ~150 clients needs `NCLI`≈160+
+    (each client ring is ~16 KB → client rings grow ~1 MB→~2.5 MB; trivial on the
+    1 GB box).
+  - **Overhead / scaling (see the response 2026-08-06):** the data plane for
+    150 clients at multi-Gbps runs on the **BCM4916 hardware accelerator**, which
+    `rtrafd` only *reads* — it never touches packet forwarding, and it runs
+    **SCHED_OTHER (no RT priority, verified)**, so monitoring **cannot** starve the
+    RT wireless/data-plane threads or reduce throughput. Current collector = 2-3%
+    CPU (5% peak), dominated by the 5-s fcache parse which is **bounded by flow
+    count (FC_MAX=1536), not client count**. The added health sampling is the new
+    cost: budget ~+2-5% CPU at 150 clients **if** done right — batch/in-process
+    probe on a 30-60 s cadence, health metrics not per-second, and **push to Splunk
+    at bucket close (1-5 min), never streamed per-second**. Design pitfalls that
+    would blow the budget: fork-per-ping across 150 clients, parsing full
+    `/proc/net/nf_conntrack` every second at high flow counts, or per-second HEC
+    posts. [owed — collector enhancement + push exporter; pairs with the Remote
+    syslog push item above]
 
 - **NIST-grade auditing.** Consider adding audit capabilities aligned to a NIST
   baseline.

@@ -24,6 +24,23 @@ node, not only on the primary router.
 
 ---
 
+## Unreleased — committed on the tree 2026-08-05, rides the next release (not yet built)
+- **The 2.4 GHz Preamble control now follows "Disable 802.11b."** Preamble is an 802.11b-era
+  concept, so on the all-bands WiFi Professional page the Disable-802.11b control is now the
+  master: setting it to *disable* forces the Preamble selector to its "Disable 802.11b" state
+  and locks it (dimmed, not editable) — the same consistent pair the stock page always wrote —
+  and switching back to *allow* unlocks it and restores your previous preamble choice (a queued
+  preamble change is parked while locked, not lost). A box whose stored settings already held
+  the disabled state with a leftover preamble value no longer shows a phantom pending change
+  when the page opens. (Owner request 2026-08-05.)
+- **USB disk tools get their own tab under USB Application.** The disk panel (drive info and
+  usage, health scan, format, safely remove, and the badge marking which partition holds the
+  long-term store) moved from the Long-Term Storage page to a new **USB Disks** tab — the first
+  tab of the USB Application menu, next to the other USB services where it belongs. It had only
+  landed on the storage page in v2.1.7 as the interim home when the Network-Map side menu was
+  retired. The Long-Term Storage page (System Log) keeps just the store selection. Same proven
+  backends; no translation changes needed. (Owner request 2026-08-05.)
+
 ## v2.1.9 — Device names unified (renames finally stick everywhere), flash-proof Traffic history, a USB disk panel, the siblings' PPPoE-1500 catch-up, a WAN-MTU rollback, and a code-audit hardening pass
 
 > Version note: this rung went through two unpublished pre-release iterations

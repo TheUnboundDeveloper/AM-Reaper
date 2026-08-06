@@ -24,7 +24,16 @@ node, not only on the primary router.
 
 ---
 
-## Unreleased — committed on the tree 2026-08-05/06, rides the next release (not yet built)
+## v2.2.0 — First-boot loop fixed for good, Gatekeeper internet-only works with a LAN DNS, USB tools find their home, and a de-cloud console cleanup
+- **A quieter, cleaner console — three de-cloud leftovers removed.** The stock ASUS
+  privacy-policy check no longer runs at all (it logged "Error fetching ASUS privacy policy"
+  on every page — the policy is pre-signed and its endpoints are part of the removed cloud
+  surface); the dashboard client list no longer makes *any* requests to the ASUS icon CDN
+  (neither the per-device product-icon fetch, which leaked the presence and model of ASUS
+  devices on your LAN, nor the icon-catalog refresh — the bundled icons are used, as for
+  every other vendor); and three client-popup tooltip fields gained full HTML encoding
+  including apostrophes (defense-in-depth from the August audit; the values involved come
+  from the vendor database, not from attacker-controlled input).
 - **The first-boot setup no longer ends in an endlessly reloading login window.** (Field
   reports on v2.1.6; the flaw was present in every build with the first-boot wizard and was
   still in v2.1.9.) On a factory-fresh or factory-reset box, the web server decided its
@@ -66,6 +75,9 @@ node, not only on the primary router.
   landed on the storage page in v2.1.7 as the interim home when the Network-Map side menu was
   retired. The Long-Term Storage page (System Log) keeps just the store selection. Same proven
   backends; no translation changes needed. (Owner request 2026-08-05.)
+- Built + shipped on all five models (RT-BE96U + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro),
+  both variants each, all passing the 19-check verify gate — including new patch markers
+  proving the first-boot and Gatekeeper fixes are inside every image — 2026-08-06.
 
 ## v2.1.9 — Device names unified (renames finally stick everywhere), flash-proof Traffic history, a USB disk panel, the siblings' PPPoE-1500 catch-up, a WAN-MTU rollback, and a code-audit hardening pass
 

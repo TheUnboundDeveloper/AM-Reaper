@@ -96,6 +96,46 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Known issues (cause identified)
 
+- **Warden "total blocked" count does not survive reboot or reflash (owner report
+  2026-08-06). — INVESTIGATED 2026-08-06: BY DESIGN in the current code, NOT a
+  regression; v2.1.6 only fixed the firewall-restart reset, not reboot.** The
+  v2.1.6 fix (`d3779f94e4`) banks the live `RW_DROP` packet count into a baseline
+  so a routine `restart_firewall` no longer zeroes the UI total — but that baseline
+  lives at `RW_BASE = /tmp/rwarden/blocked_base` (rwarden.c:57), and the code
+  comment says so explicitly: *"/tmp clears on reboot, so this is a live/session
+  total, not cross-reboot."* stats.sh reports `baseline + live`, both volatile. So
+  a reboot or reflash starts the count at zero — exactly the report.
+  **Remediation (small, self-contained):** move the baseline to the JFFS cache dir
+  that Warden **already uses and already survives reboot/reflash** —
+  `RW_CACHE = /jffs/rwarden` (rwarden.c:58, where `sets.ipset` is persisted). Point
+  `RW_BASE` at `/jffs/rwarden/blocked_base`, keep the accumulate-on-re-arm write
+  (rwarden.c:294-296) and the **disable-resets-it** semantics (`unlink(RW_BASE)` at
+  :586 — turning Warden off should still zero the total). Guard the write for the
+  no-JFFS case (the page already surfaces a `jffs` flag). A **factory reset** wipes
+  /jffs, which correctly resets the count. Note the small NAND-write cadence
+  (baseline rewrites on each re-arm/stats tick — batch or throttle if it proves
+  chatty). [owed — build + metal (reboot + reflash keep the total; disable zeroes it)]
+
+- **USB Health Scanner results flash for <100 ms then vanish (owner report
+  2026-08-06, v2.2.0 metal). — INVESTIGATED 2026-08-06: root cause found.** On the
+  new USB Disks tab (`Reaper_USB.asp`; same code previously on `Reaper_Storage.asp`),
+  `dkPoll()`'s scan-complete branch populates the results log (`dklog_<port>`
+  `textContent` + `display:block`) and then immediately calls
+  `dkFresh(renderDisks)`. `renderDisks()` rebuilds the whole disk panel via
+  `box.innerHTML = out`, which **destroys and recreates the `dklog` element** — so
+  the just-shown scan output is wiped a moment after it appears. That is the
+  sub-100 ms flash.
+  **Remediation:** don't clobber the log on the post-scan refresh. Options:
+  (i) after `dkFresh`, re-inject the captured scan text back into the rebuilt
+  `dklog_<port>` (keep the fsck output in a JS var keyed by port and restore it in
+  `renderDisks`); or (ii) skip the `renderDisks` rebuild on scan-complete (the
+  inventory hasn't changed after a *scan* — only after a *format*), refreshing only
+  the status line; or (iii) render the scan results into a element that
+  `renderDisks` does not overwrite (a detail area outside the per-disk card
+  innerHTML). Option (ii)+(iii) is cleanest: scan never needs the full rebuild.
+  Page-only JS, no backend change; shared page → fans to all 5 models.
+  [owed — build + metal]
+
 - **First-boot credential flow ends in a constant page-refresh loop (v2.1.6 field
   reports; present through v2.1.9) — ROOT-CAUSED + FIXED 2026-08-06 (commit
   `137d96338a`), rides v2.2.0, factory-reset METAL TEST OWED.** httpd cached the
@@ -199,33 +239,62 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     (removes the safety valve). [owed — diagnostic test required]
 
 - **Long-Term Storage screen: "Collecting since" column shows no dates (owner
-  report 2026-08-06).** The dataset table on `Reaper_Storage.asp` has a since
-  column (header `RDST_09`) that stays em-dash. Code notes for the investigation:
-  the page only ever fills it for the **Devices** dataset — `since = (ds.k==='dev'
-  && durable && S.dev_since) ? fmtDate(S.dev_since) : '&mdash;'` — so every other
-  dataset is dash **by design** as shipped; check (a) whether
-  `reaper_dev.cgi?action=store_status` actually returns `dev_since` on a durable
-  store (JFFS/USB) or the field never got wired server-side, and (b) whether the
-  intent is per-dataset since-dates for all of them (traf/watch/chq/slog), which
-  would need the store writer to stamp + report first-write times per dataset.
-  Decide design (all datasets vs dev-only) then fix the missing plumbing.
-  [owed — investigate]
+  report 2026-08-06). — INVESTIGATED 2026-08-06: not a regression, working as
+  designed; needs a design decision + likely a small plumbing add.** The since
+  column (`RDST_09`) is filled **only** for the **Devices** dataset and **only**
+  on a durable store: `since = (ds.k==='dev' && durable && S.dev_since) ?
+  fmtDate(S.dev_since) : '&mdash;'`. Verified end-to-end and present since **before
+  v2.1.6** (both the writer and reader exist at the v2.1.6 tag `feadc81214`), so
+  the version is not the cause: `rc/rwatch.c:218` writes `$BASE/dev.since` (epoch
+  hours) on the first durable collection tick **only if the file doesn't already
+  exist**, and `web.c:24090` reads it back as `dev_since`. So the dash appears
+  whenever: (i) the store is **RAM** (never durable → always dash — the default),
+  (ii) the **Devices** dataset was never enabled long enough for rwatch to write
+  the marker, or (iii) the owner expects dates on the **other** datasets
+  (traf/watch/chq/slog), which are dash **by design** — only `dev` was ever
+  wired.
+  **Remediation (pick one):**
+  1. *Minimal / clarify:* if the owner only cares about the Devices row, confirm
+     on metal that their store is JFFS/USB and the Devices dataset is on, then
+     verify `dev.since` exists (`ls $store/dev.since`); if missing, the first-tick
+     write never fired — add a one-line rwatch log when it stamps, and consider
+     writing it the first time ANY durable dataset collects, not just dev.
+  2. *Full / per-dataset (recommended if the column is meant to be general):* have
+     the store writers stamp a `<ds>.since` marker per dataset (traf/watch/chq/
+     slog) the first time each writes durably, extend `store_status` to emit
+     `traf_since`/`watch_since`/… beside `dev_since`, and change the page's `since`
+     expression to look up `S[ds.k+'_since']` for every non-locked dataset. Small,
+     contained (rwatch writer + one CGI block + one JS line); no dict change.
+  [owed — owner picks dev-only vs per-dataset; then implement + metal-verify]
 
 - **MLO: individual link connections no longer shown per device (owner report
-  2026-08-06).** MLO traffic/connections aggregate correctly against the source
-  MAC/device, but the *individual MLO link* entries are not showing again.
-  Suspect: the v2.1.9 device-name unification (`d8fe13ba12` — `custom_clientlist`
-  as master + MAC-keyed row-merge) may be collapsing the per-link records into the
-  single device row everywhere, not just where intended. Investigation notes:
-  (a) the Devices page merge of Wi-Fi 7 MLO links into one row is *deliberate*
-  (v1.9.2/v1.9.3 — MLO link awareness + row-merge), so first establish which view
-  regressed (Devices expanded/link detail? Wireless Log? Connections?) and what it
-  showed before the unification rung; (b) the goal is to KEEP the unified naming
-  while restoring per-link visibility — likely means the resolver keys names by
-  device but the view must not dedup rows by resolved identity (per-link rows
-  should share the device name, not be swallowed by it); (c) check whether the
-  strict-parser/dedup fixes in the unification rung drop the extra MLO link
-  records (they carry same-device distinct MACs). [owed — investigate]
+  2026-08-06). — INVESTIGATED 2026-08-06: name-unification cleared as the cause;
+  needs the owner to name the exact screen before a fix can be scoped.** Code
+  read of the current tree:
+  - The **name-unification rung (`d8fe13ba12`) did NOT touch any MLO code** — it
+    only changed how `custom_clientlist` is parsed/read (`gk_client_name`, the
+    tolerant 6..9-field parser, set_name RMW). MLO row folding is keyed on the
+    `mlo_link` flag and `rdev_is_rand(mac)`/`mld`-grouping, **independent of
+    naming**, so unification cannot hide or merge a link by resolved identity.
+    The v2.1.9 audit commit (`b381e97e89`) likewise touched no MLO path.
+  - On the **Devices page this is by design**: `do_reaper_dev_cgi` (web.c ~23799)
+    folds an affiliated randomized MLO link into its MLD device (`v[idx].mlo=1`,
+    one row) and flags stray links `mlo_link:1`; `Reaper_Devices.asp` then
+    **hides `mlo_link` rows** from the unnamed/rand/attn filters on purpose
+    (v1.9.2/v1.9.3 "merge Wi-Fi 7 MLO links into one row"). So "individual MLO
+    links not shown" on the Devices page is the intended behavior, not a
+    regression.
+  - **Therefore the regressed screen is almost certainly NOT the Devices page.**
+    Before any code change, the owner should identify **which view** used to show
+    the per-link rows — candidates: the stock **Wireless Log**
+    (`Main_WStatus_Content.asp`, driven by `wl assoclist`/`get_wlclient`), the
+    **Connections** page (`Reaper_Conn.asp`, flow-cache), or a stock Network-Map
+    client detail — and what it showed pre-unification.
+  - **Remediation is view-specific and can only be scoped once the screen is
+    known.** Likely shape: the target view should *resolve* each link MAC to the
+    parent device's unified name (so links read "MyLaptop · 5 GHz link") rather
+    than being deduped/folded away — keep unification, add per-link rows that
+    share the resolved name. [owed — owner to name the exact screen; then scope]
 
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
@@ -329,20 +398,38 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   Check → badge + page show the published version; wrong-variant line never matched; note fetch.
   Root cause it fixes: every Reaper release shares Merlin base `3006.102.8`, so the stock
   numeric compare (which zeroed our `Reaper_v…` extendno) could never see a Reaper update.
-- **Firmware-upgrade page cleanup (owner request 2026-08-06; can ride sooner than
-  Phase 2 or fold into it):**
-  (a) **Remove the "Security Update" section** from the firmware upgrade page —
-  it is stock ASUS cloud machinery that does nothing on the de-clouded build
-  (see also the Documentation item on non-functional retained features).
-  (b) **Rework the "Check" button** so the manual check drives the Reaper GitHub
-  check (`reaper_webs_update.sh` / the `webs_state_*` nvram it sets), not the
-  stock ASUS/Merlin flow — verify what the button currently fires and that its
-  result rendering reads the Reaper-set nvram.
-  (c) **Verify the "Scheduled check for updates" Yes/No control** maps to
-  `firmware_check_enable` and that the scheduled path invokes the Reaper script
-  against the AM-Reaper repo (default stays OFF = opt-in de-cloud posture);
-  confirm no stock scheduled checker remains reachable from that toggle.
-  [owed — build + metal check via the manifest]
+- **Firmware-upgrade page cleanup (owner request 2026-08-06). — INVESTIGATED
+  2026-08-06: (c) is already correct; (a) and (b) confirmed still owed.** Findings
+  against the current tree (`Advanced_FirmwareUpgrade_Content.asp` is the shipped
+  page):
+  - **(c) Scheduled Yes/No — ALREADY WIRED TO REAPER, no work needed.** The
+    radio pair at lines ~2149-2150 is `name="firmware_check_enable"`, and
+    `watchdog.c:12363/12381` gates the scheduled run on `firmware_check_enable`;
+    the installed `/usr/sbin/webs_update.sh` **is** `reaper_webs_update.sh`
+    (`rom/Makefile:180` copies it over the Merlin one), which checks the AM-Reaper
+    manifest and never downloads/flashes. Default stays `0` (opt-in). Just
+    **metal-verify** the toggle persists and a scheduled tick sets `webs_state_*`.
+  - **(a) Security Update section — STILL PRESENT, remove it.** Lines ~2064-2092
+    render `#switch_security_update_enable` bound to `httpApi.securityUpdate`
+    (httpApi.js:1143) — stock TrendMicro signature-update cloud machinery, dead on
+    the de-clouded build. Delete the section (and the now-unused httpApi shim if
+    nothing else references it).
+  - **(b) Check button + the STALE STOCK SCHEDULER — STILL STOCK, rework.** The
+    page ALSO still carries the Merlin auto-firmware scheduler UI:
+    `webs_update_enable` / `webs_update_time` / `check_beta` wiring
+    (lines ~179-346) is separate from the reaper `firmware_check_enable` toggle,
+    so the page has **two** update-scheduling surfaces — confusing and half-dead.
+    Confirm what the manual **Check** button submits (stock `webs_update_enable`
+    apply vs a reaper check trigger) and that the result panel reads the
+    Reaper-set `webs_state_*` nvram; remove/replace the leftover
+    `webs_update_enable`/`webs_update_time`/`check_beta` stock scheduler so only
+    the reaper `firmware_check_enable` control remains.
+  **Remediation:** delete the Security Update block (a); excise the stock
+  `webs_update_*`/`check_beta` scheduler + point the Check button at the reaper
+  flow (b); leave the `firmware_check_enable` toggle as-is (c). Page-only edit to
+  a stock ASP that ships as-is (no sysdep variant for this page — verify with the
+  www Makefile per standing rule 33). Fold into Phase 2 (native `Reaper_Firmware.asp`)
+  if that lands first. [owed — build + metal]
 
 - **PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
   (owner ask 2026-08-04) Replace the whole stock firmware tab with a Reaper-native page (shell/

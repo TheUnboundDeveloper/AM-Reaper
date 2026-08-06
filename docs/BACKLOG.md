@@ -198,6 +198,19 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     spread for tunnel softirq. `sched_rt_runtime_us=-1` rejected as the primary fix
     (removes the safety valve). [owed — diagnostic test required]
 
+- **Long-Term Storage screen: "Collecting since" column shows no dates (owner
+  report 2026-08-06).** The dataset table on `Reaper_Storage.asp` has a since
+  column (header `RDST_09`) that stays em-dash. Code notes for the investigation:
+  the page only ever fills it for the **Devices** dataset — `since = (ds.k==='dev'
+  && durable && S.dev_since) ? fmtDate(S.dev_since) : '&mdash;'` — so every other
+  dataset is dash **by design** as shipped; check (a) whether
+  `reaper_dev.cgi?action=store_status` actually returns `dev_since` on a durable
+  store (JFFS/USB) or the field never got wired server-side, and (b) whether the
+  intent is per-dataset since-dates for all of them (traf/watch/chq/slog), which
+  would need the store writer to stamp + report first-write times per dataset.
+  Decide design (all datasets vs dev-only) then fix the missing plumbing.
+  [owed — investigate]
+
 - **MLO: individual link connections no longer shown per device (owner report
   2026-08-06).** MLO traffic/connections aggregate correctly against the source
   MAC/device, but the *individual MLO link* entries are not showing again.

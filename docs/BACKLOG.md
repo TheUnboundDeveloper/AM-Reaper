@@ -97,44 +97,27 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 ## Known issues (cause identified)
 
 - **Warden "total blocked" count does not survive reboot or reflash (owner report
-  2026-08-06). — INVESTIGATED 2026-08-06: BY DESIGN in the current code, NOT a
-  regression; v2.1.6 only fixed the firewall-restart reset, not reboot.** The
-  v2.1.6 fix (`d3779f94e4`) banks the live `RW_DROP` packet count into a baseline
-  so a routine `restart_firewall` no longer zeroes the UI total — but that baseline
-  lives at `RW_BASE = /tmp/rwarden/blocked_base` (rwarden.c:57), and the code
-  comment says so explicitly: *"/tmp clears on reboot, so this is a live/session
-  total, not cross-reboot."* stats.sh reports `baseline + live`, both volatile. So
-  a reboot or reflash starts the count at zero — exactly the report.
-  **Remediation (small, self-contained):** move the baseline to the JFFS cache dir
-  that Warden **already uses and already survives reboot/reflash** —
-  `RW_CACHE = /jffs/rwarden` (rwarden.c:58, where `sets.ipset` is persisted). Point
-  `RW_BASE` at `/jffs/rwarden/blocked_base`, keep the accumulate-on-re-arm write
-  (rwarden.c:294-296) and the **disable-resets-it** semantics (`unlink(RW_BASE)` at
-  :586 — turning Warden off should still zero the total). Guard the write for the
-  no-JFFS case (the page already surfaces a `jffs` flag). A **factory reset** wipes
-  /jffs, which correctly resets the count. Note the small NAND-write cadence
-  (baseline rewrites on each re-arm/stats tick — batch or throttle if it proves
-  chatty). [owed — build + metal (reboot + reflash keep the total; disable zeroes it)]
+  2026-08-06). — FIXED 2026-08-06 (`54e2aad21f`), rides the next build, metal
+  owed.** Root cause: v2.1.6 (`d3779f94e4`) fixed the firewall-restart reset by
+  banking `RW_DROP` into a baseline, but that baseline lived at
+  `/tmp/rwarden/blocked_base`, which clears on reboot (the code comment said so) —
+  so reboot/reflash still zeroed the total. Fix: `RW_BASE` now lives on `/jffs`
+  (`/jffs/rwarden/blocked_base`, the dir the ipset cache already persists to), so
+  the total survives reboot **and** reflash; a factory reset wipes /jffs and
+  correctly zeroes it; the disable-Warden reset (`unlink RW_BASE`) is preserved.
+  NAND writes bounded — the baseline is rewritten only when the count actually grew.
+  Verify marker `sbin/rc|/jffs/rwarden/blocked_base`. **Metal:** total holds across
+  a reboot and a reflash; turning Warden Off zeroes it; factory reset zeroes it.
 
 - **USB Health Scanner results flash for <100 ms then vanish (owner report
-  2026-08-06, v2.2.0 metal). — INVESTIGATED 2026-08-06: root cause found.** On the
-  new USB Disks tab (`Reaper_USB.asp`; same code previously on `Reaper_Storage.asp`),
-  `dkPoll()`'s scan-complete branch populates the results log (`dklog_<port>`
-  `textContent` + `display:block`) and then immediately calls
-  `dkFresh(renderDisks)`. `renderDisks()` rebuilds the whole disk panel via
-  `box.innerHTML = out`, which **destroys and recreates the `dklog` element** — so
-  the just-shown scan output is wiped a moment after it appears. That is the
-  sub-100 ms flash.
-  **Remediation:** don't clobber the log on the post-scan refresh. Options:
-  (i) after `dkFresh`, re-inject the captured scan text back into the rebuilt
-  `dklog_<port>` (keep the fsck output in a JS var keyed by port and restore it in
-  `renderDisks`); or (ii) skip the `renderDisks` rebuild on scan-complete (the
-  inventory hasn't changed after a *scan* — only after a *format*), refreshing only
-  the status line; or (iii) render the scan results into a element that
-  `renderDisks` does not overwrite (a detail area outside the per-disk card
-  innerHTML). Option (ii)+(iii) is cleanest: scan never needs the full rebuild.
-  Page-only JS, no backend change; shared page → fans to all 5 models.
-  [owed — build + metal]
+  2026-08-06, v2.2.0 metal). — FIXED 2026-08-06 (`40f91ba727`), rides the next
+  build, metal owed.** Root cause: on the USB Disks tab (`Reaper_USB.asp`),
+  `dkPoll()` populated `#dklog_<port>` then called `dkFresh(renderDisks)`, which
+  rebuilds the panel `innerHTML` and destroyed the just-filled log — the result
+  flashed sub-100 ms. Fix: the scan output is persisted per port (`dkLog{}`) and
+  re-injected after every `renderDisks` rebuild; cleared when a new scan/format
+  starts on that port. Page-only. **Metal:** run the health scanner, the result
+  stays on screen.
 
 - **First-boot credential flow ends in a constant page-refresh loop (v2.1.6 field
   reports; present through v2.1.9) — ROOT-CAUSED + FIXED 2026-08-06 (commit
@@ -253,19 +236,14 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   the marker, or (iii) the owner expects dates on the **other** datasets
   (traf/watch/chq/slog), which are dash **by design** — only `dev` was ever
   wired.
-  **Remediation (pick one):**
-  1. *Minimal / clarify:* if the owner only cares about the Devices row, confirm
-     on metal that their store is JFFS/USB and the Devices dataset is on, then
-     verify `dev.since` exists (`ls $store/dev.since`); if missing, the first-tick
-     write never fired — add a one-line rwatch log when it stamps, and consider
-     writing it the first time ANY durable dataset collects, not just dev.
-  2. *Full / per-dataset (recommended if the column is meant to be general):* have
-     the store writers stamp a `<ds>.since` marker per dataset (traf/watch/chq/
-     slog) the first time each writes durably, extend `store_status` to emit
-     `traf_since`/`watch_since`/… beside `dev_since`, and change the page's `since`
-     expression to look up `S[ds.k+'_since']` for every non-locked dataset. Small,
-     contained (rwatch writer + one CGI block + one JS line); no dict change.
-  [owed — owner picks dev-only vs per-dataset; then implement + metal-verify]
+  **FIXED 2026-08-06 (`2b01195a64`) — per-dataset since implemented, rides the
+  next build, metal owed.** rwatch now stamps a `<ds>.since` marker for each
+  ENABLED dataset (dev/traf/watch/chq/slog) on its first durable tick;
+  `store_status` emits `<ds>_since` for all of them; the page looks up
+  `S[ds.k+'_since']` per row (still durable-store only — RAM is volatile by
+  design). No dict change. **Metal:** on a JFFS/USB store, enable a dataset →
+  its "collecting since" appears after the first rwatch tick and survives a reboot.
+  (If a row still shows a dash, that dataset is off or the store is RAM.)
 
 - **MLO: individual link connections no longer shown per device (owner report
   2026-08-06). — INVESTIGATED 2026-08-06: name-unification cleared as the cause;
@@ -424,12 +402,23 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     Reaper-set `webs_state_*` nvram; remove/replace the leftover
     `webs_update_enable`/`webs_update_time`/`check_beta` stock scheduler so only
     the reaper `firmware_check_enable` control remains.
-  **Remediation:** delete the Security Update block (a); excise the stock
-  `webs_update_*`/`check_beta` scheduler + point the Check button at the reaper
-  flow (b); leave the `firmware_check_enable` toggle as-is (c). Page-only edit to
-  a stock ASP that ships as-is (no sysdep variant for this page — verify with the
-  www Makefile per standing rule 33). Fold into Phase 2 (native `Reaper_Firmware.asp`)
-  if that lands first. [owed — build + metal]
+  **PARTLY FIXED 2026-08-06 (`8f9cd55a86`) — (a) done; (b)/(c) found already
+  correct. Rides the next build, metal owed.**
+  - **(a) DONE:** the `secur_stab_setting` (Security Update / TrendMicro) table is
+    removed. Verify marker `www/Advanced_FirmwareUpgrade_Content.asp|!secur_stab_setting`.
+  - **(b) NO CHANGE NEEDED — the Check button already drives the Reaper check.**
+    `detect_update()` fires `start_webs_update` → the installed
+    `/usr/sbin/webs_update.sh`, which **is** `reaper_webs_update.sh` (rom/Makefile),
+    i.e. the AM-Reaper GitHub manifest check; the result panel reads the
+    `webs_state_*` nvram the Reaper script sets. The stock auto-firmware **upgrade**
+    scheduler table (`auto_upgrade_setting`, webs_update_enable/time) is already
+    stripped at page load (`$("table").remove` when `afwupg_support=false`), so it
+    never renders — no leftover surface to excise.
+  - **(c) NO CHANGE NEEDED:** the scheduled Yes/No is `firmware_check_enable`
+    (`toggle_fw_check`), gated in `watchdog.c` against the Reaper script; default 0.
+  No sysdep variant for this page (Makefile checked, standing rule 33). **Metal:**
+  the Security Update section is gone; Check triggers the GitHub check and the
+  result/badge reflect the published version; the scheduled toggle persists.
 
 - **PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
   (owner ask 2026-08-04) Replace the whole stock firmware tab with a Reaper-native page (shell/

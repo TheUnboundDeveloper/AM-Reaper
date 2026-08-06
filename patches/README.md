@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**310 patches, v1.0 → v2.1.2**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**322 patches, v1.0 → v2.1.5**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,7 +20,7 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (310 patches, v1.0 → v2.1.2)
+## What the series contains (322 patches, v1.0 → v2.1.5)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -389,8 +389,8 @@ et al.) rather than the Reaper identity — they are upstream work, carried forw
 > (v2.1.2); see [`../docs/BUILD-PROVENANCE.md`](../docs/BUILD-PROVENANCE.md).
 
 > **Model scope:** the v1.8.7 → v2.0.x rungs above were developed + shipped RT-BE96U-first; the
-> RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings have since been brought to **v2.1.0** on their
-> own per-model branches (built + shipped, both variants, all 17/17 on the verify gate). This
+> RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings have since been brought to the current **v2.1.9** on their
+> own per-model branches (built + shipped, both variants, all passing the verify gate — 19 checks since v2.1.7). This
 > published series is the RT-BE96U line; the siblings build from the same shared source via
 > `port_sibling_v2` (full-diff shared sync + per-model identity overlay + a dict lockstep sync).
 
@@ -405,3 +405,4 @@ et al.) rather than the Reaper identity — they are upstream work, carried forw
 - Extended through **v2.0.0** (2026-08-01): patches `0262`–`0271` (v1.9.8 → v2.0.0) appended from the v1.9.7 tip (`2f84abb9`) through the v2.0.0 tip, same author normalization and message scrub (none needed — author already normalized, no build-path strings). Verified `git am --keep-cr` clean onto a fresh worktree at the v1.9.7 tip with a zero `release/src/router` diff vs the v2.0.0 tip. Still **RT-BE96U-only** (siblings owed).
 - Extended through **v2.1.0** (2026-08-02): patches `0272`–`0289` (v2.0.1 → v2.1.0) appended from the v2.0.0 tip through the v2.1.0 tip (commit `57fed00617`), same author normalization and message scrub, doc hunks excluded. The published series stays the **RT-BE96U** line; the four siblings were then ported to v2.1.0 on their own per-model branches (via `port_sibling_v2` + a dict lockstep sync) and built + shipped, all 17/17 — GT-BE98 Pro converted SAMBA36X→SAMBA4 in the process.
 - Extended through **v2.1.2** (2026-08-03): patch `0290` (v2.1.1, Reaper-authored) + patches `0291`–`0310` (the Merlin 3006.102.8 carry-forward — **19 upstream commits keep their original authorship**, plus the v2.1.2 version bump). **Reproduce-check: verified.** Applying `0290` onto the v2.1.0 tip yields `release/src/router` == `3ae0d914…` (v2.1.1) and the full `0291`–`0310` yields `b2c357fa…` (v2.1.2), matching [`../provenance/manifest.json`](../provenance/manifest.json). This is now enforced on every CI run by [`../.github/workflows/verify-provenance.yml`](../.github/workflows/verify-provenance.yml), which reproduces each release's tree from `a7ebfa133a`. RT-BE96U line; the v2.1.1/v2.1.2 sibling fan-out is owed.
+- Extended through **v2.1.5** (2026-08-04): patch `0311` (apostrophe-XSS hardening) + `0312`–`0318` (v2.1.3 → v2.1.4) + `0319`–`0322` (v2.1.5) appended with the same author normalization and doc-hunk exclusion; the provenance manifest was updated and CI-verified at **322 patches**. **The built fleet is ahead of the exported series:** the v2.1.6 → v2.1.9 rungs (update-check notifications, the device-name unification, the WAN-MTU rollback, and the 2026-08-05 code-audit hardening) are built + shipped on all five models but **not yet exported to patches** — the series is regenerated for those rungs at publish time. Siblings are current at v2.1.9 via `port_sibling_v2`.

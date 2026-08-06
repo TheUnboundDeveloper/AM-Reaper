@@ -12,7 +12,8 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 ## Testing / Validation
 
-- **v2.1.8 metal checks (fleet built 2026-08-05; respin of the unpublished v2.1.7). [owed]**
+- **v2.1.9 metal checks (fleet built 2026-08-05; audit-hardened respin of the unpublished
+  v2.1.7/v2.1.8). [owed]**
   - *WAN-MTU rollback:* on a DHCP/static WAN the MTU field refuses >1500 (1508 no longer
     enterable/applyable); owner's BE96U: re-apply 1500 once (a 1508 from the pre-rollback
     build may persist in nvram/on the interface until re-applied) and confirm the WAN
@@ -23,12 +24,18 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
     no other custom names are lost; rename in the stock popup with the Devices page open in
     another tab → neither rename rolls the other back; a device that had duplicate name
     records shows the most recent name after one reboot.
-  - *Siblings PPPoE-1500:* on a BE88U (or any sibling) v2.1.7, the WAN page accepts PPPoE
+  - *Siblings PPPoE-1500:* on a BE88U (or any sibling) v2.1.9, the WAN page accepts PPPoE
     MTU/MRU 1500 and the WAN interface raises to 1508 (`ip link` / `ifconfig`).
-  - *Traffic flash-persistence:* flash v2.1.7 over v2.1.6 with USB history enabled → history
-    intact after the flash; collector log shows a clean store re-attach.
+  - *Traffic flash-persistence:* flash v2.1.9 over an earlier build with USB history enabled →
+    history intact after the flash; collector log shows a clean store re-attach.
   - *Storage USB panel:* disk info/health/format/eject work against a real stick; format
     refuses the active store without confirmation.
+  - *Audit-fix behaviours (v2.1.9):* the three re-classified native pages (Connections, QoS
+    Diagnostics, WiFi Professional) render with their own theme intact (no stock CSS bleed);
+    the QoS Diagnostics live graph still updates (page now sends the `http_id` token); the QoS
+    stats table stops updating in a backgrounded tab and resumes on return; a DHCP reservation
+    entered with a non-canonical octet (e.g. `…050`) is stored canonicalised and honoured by
+    dnsmasq. Full fix list: [`CODE-AUDIT-2026-08-05.md`](CODE-AUDIT-2026-08-05.md).
 
 ## UI / UX polish
 
@@ -69,7 +76,7 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **Client ID** The traffic Analyser part, if checking the last 24 hours for example, if a 
   device goes offline - it will   just show the IP address and not the name - and when the 
   device comes back online - it will update the device name.
-  *(2026-08-05 note: NOT closed by the v2.1.7 name unification — the Traffic page resolves
+  *(2026-08-05 note: NOT closed by the v2.1.9 name unification — the Traffic page resolves
   names live from the client list, which only carries devices networkmap currently knows.
   A long-offline device falls out of that list, so its history rows fall back to IP/MAC.
   Proper fix = have rtrafd persist a MAC→last-known-name sidecar (or resolve against
@@ -131,15 +138,16 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   the concrete mitigation for deferred finding **H15** (see the AA26-194A section below).
 
 - **Watchdog false wan-gw failure on ICMP-filtering first hop — RESOLVED (be96u-only
-  `fc17fa9406`), SHIPPED v2.1.6 all five models, metal owed.** rwatch check #1 pinged `wan0_gateway` and flagged `wan-gw`
-  purely on ICMP failure, so a first hop that drops ICMP (ISP ONT/modem at 192.168.100.1 or
-  the PPPoE peer, 100% loss over ppp0) produced a phantom "FAILURE detected: wan-gw" every
-  tick while the WAN was fully up. Fix: on ping failure, corroborate with ASUS's own WAN
-  state (`wan0_state_t`==2 = `WAN_STATE_CONNECTED`); if connected, the first hop is merely
-  ICMP-filtering — log a one-shot informative note (throttled via a `/tmp` marker, re-armed
-  when ICMP returns or the WAN drops) and do **not** flag a failure. `wan-gw` stays a real
-  failure only when the WAN is not connected (a genuine PPPoE drop flips `wan0_state_t` via
-  wanduck, so real outages still alarm).
+  `fc17fa9406`), SHIPPED v2.1.6 all five models, metal owed.** rwatch check #1 pinged 
+  `wan0_gateway` and flagged `wan-gw` purely on ICMP failure, so a first hop that drops 
+  ICMP (ISP ONT/modem at 192.168.100.1 or the PPPoE peer, 100% loss over ppp0) produced 
+  a phantom "FAILURE detected: wan-gw" every tick while the WAN was fully up. Fix: on 
+  ping failure, corroborate with ASUS's own WAN state (`wan0_state_t`==2 = 
+  `WAN_STATE_CONNECTED`); if connected, the first hop is merely ICMP-filtering — log a 
+  one-shot informative note (throttled via a `/tmp` marker, re-armed when ICMP returns 
+  or the WAN drops) and do **not** flag a failure. `wan-gw` stays a real failure only 
+  when the WAN is not connected (a genuine PPPoE drop flips `wan0_state_t` via wanduck, 
+  so real outages still alarm).
 
 ## Known issues (under investigation)
 
@@ -175,20 +183,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 
 - **AI Mesh Search** Investigate the operation of search as it was reported 
   non-functional awhile back.  
-
-- **Warden Live block-count tracker — RESOLVED (be96u-only `d3779f94e4`), SHIPPED v2.1.6
-  all five models, metal owed.**
-  Root cause: "total blocked" was read from the live `RW_DROP` DROP-rule packet counter,
-  but `apply.sh` does `iptables -N RW_DROP; -F RW_DROP` on every run and **re-runs on every
-  `restart_firewall`** (`firewall.c:9405` re-execs `apply.sh` directly), so the counter was
-  zeroed on routine firewall restarts and the UI total never accumulated. Fix: `apply.sh`
-  snapshots the counter about to be flushed into a persisted `/tmp` baseline (accumulating)
-  before teardown; `stats.sh` reports baseline + live. Survives `restart_firewall`; resets
-  only on a deliberate Warden reconfigure/disable or reboot (a live "since this Warden
-  session" total). Read-only awk + one `/tmp` write, zero enforcement impact. **Residual
-  (metal-only):** does not recover drops the HW flow-accelerator may offload without
-  incrementing iptables — a separate undercount not fixable from iptables; verify magnitude
-  on metal.
 
 - **BE98 Speed Test** Field reports that when QoS is enabled on the BE98 device 
   that the speed test crashes. Doesn't seem to affect everyone as some BE98 users 
@@ -231,15 +225,6 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   receiving DNS log entries. The expected behavior was for only the active WAN’s profile to show 
   traffic.
 
-- **B/G Protection — RESOLVED (row removed), be96u-only `b955f1f166`, SHIPPED v2.1.6 all
-  five models, metal owed.** 2.4 GHz
-  "B/G Protection" Off always reverted to Auto. Root cause (stock ASUS/Merlin, not Reaper):
-  `rc/sysdeps/init-broadcom.c` ~L11480 force-resets `wlX_gmode_protection` to `auto` on every
-  `restart_wireless` when the 2.4 GHz Wireless Mode is Auto (`nband==2 && nmode==-1`) — the
-  default. The WiFiPro apply posted `off` correctly; the driver bringup clobbered it. It would
-  stick only with 2.4 GHz pinned to a fixed legacy mode (nobody does on WiFi 7). Removed the
-  non-functional row from `Reaper_WiFiPro.asp` rather than ship a control that ignores the user.
-
 - **Data Logs — ROOT-CAUSED + FIXED in v2.1.5 (commit `383f9019a3`), metal owed.** The
   "JFFS/USB history resets" reports are two distinct rtrafd defects, both confirmed at
   source: (a) **USB/external lost ALL history on every reboot** — `rtrafd` loaded its db
@@ -261,6 +246,10 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
   shows bare. Fix together with that item.)* [owed]
 
 ## Features to add
+
+- **USB Menu** Move USB functions to a tab in the USB Applications panel. The functions 
+  are located in that menu to be relevent to the menu topic since I moved this out of the 
+  Network Map.
 
 - **Warden: explicit IPv6 enable option + broader IPv6 feed coverage. [HELD — owner
   2026-08-04: leave IPv6 always-on for now, revisit later.]** IPv6 enforcement is **already
@@ -366,6 +355,23 @@ known: **[owed]** (must be done/verified), **[blocked]** (external cause),
 - **GDX pool watchdog field-proving.** The accelerator pool-drain check is opt-in (`rwatch_gdx`,
   v2.1.0). Confirm the `/proc/gdx/skb_idx` read is non-destructive under sustained polling on
   hardware before it can be considered for default-on again. [owed — metal]
+
+**Full code audit 2026-08-05 — deferred items (see [`CODE-AUDIT-2026-08-05.md`](CODE-AUDIT-2026-08-05.md)):**
+The confirmed audit findings were fixed in v2.1.9; five items were deliberately deferred:
+- **D1 — shared device-name resolver JS (5→1).** The `get_clientlist`+`nickName||name` resolver is
+  reimplemented in five pages (DHCP/Conn/Traffic/QoS/Dashboard) with different keying. Extract one
+  `reaper_names.js`. Best done in the **native-page migration** (cross-file refactor + on-device
+  verification). [owed — migration]
+- **D3 — unify byte/rate formatters across pages** (SI vs binary drift). "Fixing" changes displayed
+  values on some pages, so pair it with the migration rather than change output piecemeal. [owed — migration]
+- **D4 — consolidate the per-page `:root` theme tokens/components** (two token vocabularies for the
+  same hexes across 13 pages). Visual-regression risk; do it with metal verification in the
+  migration. [owed — migration]
+- **L1 — spurious leading `<` in the set_name/set_reserve RMW output.** Cosmetic, verified-harmless;
+  not worth re-touching the just-stabilised `custom_clientlist` RMW. [shelved]
+- **L3 — function-local `static` snapshot arrays in `do_reaper_dev_cgi` aren't re-entrant.** Latent
+  only (httpd serialises these requests); a malloc refactor of the multi-return CGI would add leak
+  risk to fix a can't-happen case. [shelved]
 
 ## Documentation
 

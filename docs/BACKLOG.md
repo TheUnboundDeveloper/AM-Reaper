@@ -389,10 +389,19 @@ regression.
   collector (send-only). Add the ability to **push to / be fetched by** analytics
   systems — most SIEM/analytics pipelines are push-based.
 
-- **[P3] Traffic Analyzer → Splunk: per-device connection-health export (owner ask
-  2026-08-06).** Goal: feed per-device data into Splunk and derive *connection
-  health* with timestamps. **Investigation 2026-08-06 — what exists vs. what's
-  missing:**
+- **Traffic Analyzer → analytics-engine export (Splunk/Datadog/Dynatrace/Elastic/
+  Prometheus/OTLP/syslog) — IMPLEMENTED v2.2.2 (`f2eed0a655`); BE96U MCP built +
+  compile-verified. Owed: noMCP build, 5-model fan-out, on-device validation.**
+  Shipped as: per-device latency/jitter/loss (batched in-process ICMP) + TCP
+  conn/state (offload-safe) + throughput/online in `rtrafd` (`rtraf_hprobe`,
+  NCLI→192), `health.json` + OpenMetrics `metrics.prom`; a new `rc/rexport.c`
+  cru-pusher (curl, TLS-verify default-on, token out of ps via `-K`); a new
+  **Administration → Data Export** page (`Reaper_Analytics.asp`) with engine
+  presets + Test + Preview; a `reaper_metrics.cgi` token-gated Prometheus scrape
+  endpoint; and the Off/Store+Export/Export-only mode card on Long-Term Storage.
+  Deliberately excluded: wireless RSSI/PHY (later) and TCP retransmits (can't be
+  sourced cleanly). The original investigation notes are retained below for the
+  on-device tuning that remains (NCLI/CPU budget, health-metric fidelity):**
 
   - *Collected today (`rtrafd`):* per device = **identity (MAC, IP) + bytes
     down/up** only, as a live rate (`live.json`) and as time-bucketed byte totals

@@ -1,0 +1,74 @@
+From 40f91ba727dd9b30f3b0062297b5e2302eabd12c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 6 Aug 2026 11:33:45 -0400
+Subject: [PATCH] usb: keep the health-scan result on screen (was flashing
+ <100ms) (field report 2026-08-06)
+
+On the USB Disks tab the scan result populated #dklog_<port> and then called
+dkFresh(renderDisks), which rebuilds the panel innerHTML and destroyed the
+just-filled log element - the result flashed for under 100ms and vanished.
+Persist the scan output per port (dkLog{}) and re-inject it after every
+renderDisks rebuild; clear it when a new scan or a format starts on that port.
+Page-only; mock-safe (no data-gating). Metal owed: run the health scanner, the
+result stays visible.
+---
+ release/src/router/www/Reaper_USB.asp | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Reaper_USB.asp b/release/src/router/www/Reaper_USB.asp
+index 1d5d907966..2609c12c60 100644
+--- a/release/src/router/www/Reaper_USB.asp
++++ b/release/src/router/www/Reaper_USB.asp
+@@ -82,6 +82,11 @@ var FS_NTFS = '<% nvram_get("usb_ntfs_mod"); %>';
+ var FS_HFS  = '<% nvram_get("usb_hfs_mod"); %>';
+ var S = null;            /* store_status snapshot (marks the long-term-store disk) */
+ var dkBusy = 0;          /* a scan/format is in flight (buttons lock globally) */
++/* persisted per-port scan output (2026-08-06 field: the health-scan result
++   flashed for <100ms then vanished - renderDisks() rebuilds the panel innerHTML
++   after a scan, which destroyed the just-filled #dklog_<port>. Keep the text here
++   and re-inject it in renderDisks so a rebuild can't wipe it.) */
++var dkLog = {};
+ 
+ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+ function fmtBytes(b){
+@@ -177,7 +182,8 @@ function dkPoll(port, mode, tries){   /* wait for the diskmon run to finish */
+             if(ns[i].childNodes.length && ns[i].firstChild.nodeValue && /disk/i.test(ns[i].nodeName))
+               t += ns[i].firstChild.nodeValue + '\n';
+         }
+-        if(log){ log.textContent = t || x.responseText || ''; log.style.display = 'block'; }
++        dkLog[port] = t || x.responseText || '';   /* survive the renderDisks rebuild */
++        if(log){ log.textContent = dkLog[port]; log.style.display = 'block'; }
+         dkFresh(renderDisks);
+       };
+       x.send();
+@@ -188,6 +194,7 @@ function dkPoll(port, mode, tries){   /* wait for the diskmon run to finish */
+ function dkScan(port){
+   if(dkBusy) return;
+   dkBusy = 1;
++  delete dkLog[port];   /* fresh scan: drop the previous result */
+   dkSetStat(port, esc(`<#Scan#>`) + '&hellip;');
+   dkPost({ action_script: 'start_diskscan', diskmon_usbport: port });
+   setTimeout(function(){ dkPoll(port, 'scan', 0); }, 3000);
+@@ -199,6 +206,7 @@ function dkFormat(port){
+   if(!fsSel) return;
+   if(!confirm(`<#RDST_46#>`)) return;
+   dkBusy = 1;
++  delete dkLog[port];   /* the disk is changing: any prior scan result is stale */
+   dkSetStat(port, esc(`<#format_formatting#>`) + '&hellip;');
+   dkPost({ action_script: 'start_diskformat',
+            diskmon_usbport: port,
+@@ -272,6 +280,11 @@ function renderDisks(){
+   });
+   if(n === 0) out = '<p class="note">' + esc(`<#RDST_44#>`) + '</p>';
+   box.innerHTML = out;
++  /* re-inject any persisted scan result the rebuild just recreated empty */
++  Object.keys(dkLog).forEach(function(port){
++    var log = document.getElementById('dklog_' + port);
++    if(log && dkLog[port]){ log.textContent = dkLog[port]; log.style.display = 'block'; }
++  });
+ }
+ 
+ function dkFmtRow(port){
+-- 
+2.25.1
+

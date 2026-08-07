@@ -1,0 +1,48 @@
+From b955f1f166c1645cef14228ae3eb21cd1b365c68 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 4 Aug 2026 21:11:20 -0400
+Subject: [PATCH] WiFiPro: remove non-functional B/G Protection row (driver
+ force-resets it to auto)
+
+Field report: 2.4 GHz 'B/G Protection' set to Off always reverts to Auto.
+
+Root cause (stock ASUS/Merlin, not a Reaper bug): rc/sysdeps/init-broadcom.c
+~L11480, on the wireless bringup path that restart_wireless runs -
+  if (nband==2 && nmode==-1) nvram_set(prefix gmode_protection, "auto");
+- unconditionally forces wlX_gmode_protection back to "auto" whenever the 2.4 GHz
+radio's Wireless Mode is Auto (nmode==-1), which is the default and what every
+WiFi-7 deployment runs. The WiFiPro apply posted wl0_gmode_protection=off
+correctly; restart_wireless then clobbered it -> the control silently reverted.
+
+It would persist ONLY with 2.4 GHz pinned to a fixed legacy mode (nmode!=-1), an
+edge nobody runs. Rather than ship a control that ignores the user in the common
+case, drop the row from the Professional page. The unused wlN_gmode_protection
+keys in the page's NV state map are left (harmless, unreferenced).
+
+NOT BUILT - rides a future rung.
+---
+ release/src/router/www/Reaper_WiFiPro.asp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Reaper_WiFiPro.asp b/release/src/router/www/Reaper_WiFiPro.asp
+index 2fa11621f9..ee5009f5d8 100644
+--- a/release/src/router/www/Reaper_WiFiPro.asp
++++ b/release/src/router/www/Reaper_WiFiPro.asp
+@@ -209,7 +209,13 @@ code{font-family:ui-monospace,Consolas,monospace}
+      {name:`<#WLANConfig11b_x_RTS_itemname#>`,key:"rts",type:"num",bands:["5","6"],min:0,max:2347},
+      {name:`<#WLANConfig11b_x_Frag_itemname#>`,key:"frag",type:"num",min:256,max:2346,chip:{c:"legacy",t:`<#RWFP_35#>`}},
+      {name:`<#RWFP_13#>`,key:"rateset",type:"sel",bands:["2.4"],chip:{c:"band",t:"2.4 GHz"},options:[["default",`<#RWFP_25#>`],["ofdm",`<#RWFP_13#>`]]},
+-     {name:`<#WLANConfig11b_x_Mode_protectbg#>`,key:"gmode_protection",type:"sel",bands:["2.4"],chip:{c:"band",t:"2.4 GHz"},options:[["auto",`<#Auto#>`],["off",`<#Outdoor_mode_off#>`]]},
++     /* reaper: B/G Protection (gmode_protection) row REMOVED - it cannot persist in the
++        common config. rc/sysdeps/init-broadcom.c (~L11480) force-resets it to "auto" on
++        every restart_wireless whenever the 2.4 GHz radio's Wireless Mode is Auto
++        (nband==2 && nmode==-1), which is the default. The apply wrote "off" correctly; the
++        driver bringup then clobbered it back to auto -> the control silently reverted. It
++        would stick only with 2.4 GHz forced to a fixed legacy mode, an edge nobody runs on
++        WiFi 7. Dropped rather than ship a control that ignores the user. (field report 2026-08-04) */
+      {name:`<#WLANConfig11n_PremblesType_itemname#>`,key:"plcphdr",type:"sel",bands:["2.4"],chip:{c:"band",t:"2.4 GHz"},options:[["long",`<#WLANConfig11n_PremblesType_long#>`],["short",`<#WLANConfig11n_PremblesType_short#>`],["0",`<#RWFP_13#>`]]}
+    ]},
+    {sec:`<#RWFP_5#>`,rows:[
+-- 
+2.25.1
+

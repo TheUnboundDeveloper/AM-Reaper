@@ -1,0 +1,173 @@
+From 9352c60a1daffe1a613395e4147feaaee93f3269 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 6 Aug 2026 18:00:53 -0400
+Subject: [PATCH] usb: make the health scanner actually scan ext4 and report
+ real results (field report 2026-08-06)
+
+The v2.2.1 keep-result-on-screen fix exposed that the result was never
+real: stock diskmon SKIPS every ext4 partition (rc/usb.c "there's some
+problem with fsck.ext4", a guard predating a usable e2fsck), so a scan
+of the owner's ext4 stick ran START->FINISH doing nothing, wrote no log,
+and the page fell back to dumping the raw disk_fsck.xml wrapper.
+
+- rc/usb.c: drop the ext4 skip in the on-demand diskmon scan path; the
+  image ships e2fsprogs 1.45.6 (ext4-capable). The asusware mount-time
+  auto-fsck keeps its skip (no hotplug behavior change).
+- router/Makefile: install the fsck.ext4 -> e2fsck symlink under
+  RTCONFIG_E2FSPROGS=y; it was gated on RTCONFIG_EXT4FS which is
+  hard-set n, so app_fsck.sh ext4 had no binary even without the skip.
+- Reaper_USB.asp: never fall back to raw responseText for the log box;
+  render a verdict line from apps_fsck_ret codes (stock tokens
+  diskUtility_crash_found / diskUtility_problem_found, no dict change),
+  persist it across renderDisks rebuilds like dkLog; grace-poll before
+  declaring a run done (diskmon_status keeps the LAST run's 5=done until
+  the new run flips it - a second scan otherwise reported done instantly
+  with stale results).
+
+Page mock-safe; ASCII 0, JS parse clean, tokens backticked (rule 29).
+Metal owed: scan the ext4 stick -> e2fsck output + verdict stay on
+screen.
+---
+ release/src/router/Makefile           |  4 +--
+ release/src/router/rc/usb.c           |  6 ++--
+ release/src/router/www/Reaper_USB.asp | 46 +++++++++++++++++++++++----
+ 3 files changed, 45 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 21e5f8b7a4..1604f5cafa 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -5145,9 +5145,9 @@ ifeq ($(RTCONFIG_E2FSPROGS),y)
+ 	install -D e2fsprogs/e2fsck/e2fsck $(INSTALLDIR)/e2fsprogs/usr/sbin/e2fsck
+ 	ln -sf e2fsck $(INSTALLDIR)/e2fsprogs/usr/sbin/fsck.ext2
+ 	ln -sf e2fsck $(INSTALLDIR)/e2fsprogs/usr/sbin/fsck.ext3
+-ifeq ($(RTCONFIG_EXT4FS),y)
++# reaper: fsck.ext4 was gated on RTCONFIG_EXT4FS (hard-set n above), leaving
++# app_fsck.sh with no binary for ext4; e2fsck 1.45.6 handles ext4, link it too.
+ 	ln -sf e2fsck $(INSTALLDIR)/e2fsprogs/usr/sbin/fsck.ext4
+-endif
+ ifneq ($(NO_MKTOOLS),y)
+ 	install -D e2fsprogs/misc/tune2fs $(INSTALLDIR)/e2fsprogs/usr/sbin/tune2fs
+ 	install -D e2fsprogs/misc/mke2fs $(INSTALLDIR)/e2fsprogs/usr/sbin/mke2fs
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 6e257cc274..78e0f13ec5 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -4904,9 +4904,9 @@ static void start_diskscan(char *port_path)
+ 			if(!strcmp(policy, "part") && strcmp(monpart, partition_info->device))
+ 				continue;
+ 
+-			// there's some problem with fsck.ext4.
+-			if(!strcmp(partition_info->file_system, "ext4"))
+-				continue;
++			/* reaper: stock skipped ext4 here ("there's some problem with
++			 * fsck.ext4") from before a real e2fsck shipped; this image carries
++			 * e2fsprogs 1.45.6 with an fsck.ext4 link, so ext4 is scannable. */
+ 
+ 			if(stop_diskscan())
+ 				goto stop_scan;
+diff --git a/release/src/router/www/Reaper_USB.asp b/release/src/router/www/Reaper_USB.asp
+index 2609c12c60..3bc72d0a23 100644
+--- a/release/src/router/www/Reaper_USB.asp
++++ b/release/src/router/www/Reaper_USB.asp
+@@ -87,6 +87,7 @@ var dkBusy = 0;          /* a scan/format is in flight (buttons lock globally) *
+    after a scan, which destroyed the just-filled #dklog_<port>. Keep the text here
+    and re-inject it in renderDisks so a rebuild can't wipe it.) */
+ var dkLog = {};
++var dkVerdict = {};      /* persisted per-port scan verdict {txt, cls} - same rebuild survival */
+ 
+ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+ function fmtBytes(b){
+@@ -157,20 +158,46 @@ function dkSetStat(port, txt, cls){
+   if(n){ n.className = 'dkstat' + (cls ? ' ' + cls : ''); n.innerHTML = txt; }
+ }
+ 
+-function dkPoll(port, mode, tries){   /* wait for the diskmon run to finish */
++function dkPoll(port, mode, tries, seen){   /* wait for the diskmon run to finish */
+   if(tries > 900){ dkBusy = 0; renderDisks(); return; }   /* 30 min cap */
+   dkStatus(function(v){
+     if(v >= 1 && v !== 5 && v !== 6){  /* running (start/umount/scan/remount/format) */
+       dkSetStat(port, esc(mode === 'fmt' ? `<#format_formatting#>` : `<#Scan#>`) + '&hellip;');
+-      setTimeout(function(){ dkPoll(port, mode, tries + 1); }, 2000);
++      setTimeout(function(){ dkPoll(port, mode, tries + 1, 1); }, 2000);
++      return;
++    }
++    /* diskmon_status keeps the LAST run's value (5=done) until the new run
++       flips it, so until we've seen it running once, idle/done means
++       "not started yet", not "finished" - grace-poll instead of reading a
++       stale result (a second scan otherwise reports done instantly). */
++    if(!seen && tries < 8){
++      setTimeout(function(){ dkPoll(port, mode, tries + 1, seen); }, 2000);
+       return;
+     }
+     dkBusy = 0;
+     if(mode === 'fmt'){
+-      dkSetStat(port, esc(`<#format_complete#>`), 'ok');
++      dkVerdict[port] = { txt: esc(`<#format_complete#>`), cls: 'ok' };
++      dkSetStat(port, dkVerdict[port].txt, dkVerdict[port].cls);
+       dkFresh(renderDisks);
+     } else {
+-      dkSetStat(port, esc(`<#diskUtility_detailInfo#>`) + ':', 'ok');
++      /* verdict from the fsck return codes (same codes stock maps: 1 = errors) */
++      var xr = new XMLHttpRequest();
++      xr.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('apps_fsck_ret()') + '&_=' + Date.now(), true);
++      xr.onreadystatechange = function(){
++        if(xr.readyState !== 4) return;
++        var bad = false;
++        if(xr.status === 200){
++          try{
++            var j = JSON.parse(xr.responseText), k, a = null;
++            for(k in j){ a = j[k]; break; }
++            (a || []).forEach(function(p){ if(parseInt(p[1], 10) === 1) bad = true; });
++          }catch(e){}
++        }
++        dkVerdict[port] = { txt: esc(bad ? `<#diskUtility_crash_found#>` : `<#diskUtility_problem_found#>`),
++                            cls: bad ? 'err' : 'ok' };
++        dkSetStat(port, dkVerdict[port].txt, dkVerdict[port].cls);
++      };
++      xr.send();
+       var x = new XMLHttpRequest();
+       x.open('GET', '/disk_fsck.xml?diskmon_usbport=' + encodeURIComponent(port) + '&_=' + Date.now(), true);
+       x.onreadystatechange = function(){
+@@ -182,8 +209,10 @@ function dkPoll(port, mode, tries){   /* wait for the diskmon run to finish */
+             if(ns[i].childNodes.length && ns[i].firstChild.nodeValue && /disk/i.test(ns[i].nodeName))
+               t += ns[i].firstChild.nodeValue + '\n';
+         }
+-        dkLog[port] = t || x.responseText || '';   /* survive the renderDisks rebuild */
+-        if(log){ log.textContent = dkLog[port]; log.style.display = 'block'; }
++        /* only real log text persists; an empty <disk1/> must NOT fall back to
++           the raw XML wrapper (the 2026-08-06 "malformed result" field report) */
++        if(t){ dkLog[port] = t; if(log){ log.textContent = t; log.style.display = 'block'; } }
++        else { delete dkLog[port]; if(log){ log.textContent = ''; log.style.display = 'none'; } }
+         dkFresh(renderDisks);
+       };
+       x.send();
+@@ -195,6 +224,7 @@ function dkScan(port){
+   if(dkBusy) return;
+   dkBusy = 1;
+   delete dkLog[port];   /* fresh scan: drop the previous result */
++  delete dkVerdict[port];
+   dkSetStat(port, esc(`<#Scan#>`) + '&hellip;');
+   dkPost({ action_script: 'start_diskscan', diskmon_usbport: port });
+   setTimeout(function(){ dkPoll(port, 'scan', 0); }, 3000);
+@@ -207,6 +237,7 @@ function dkFormat(port){
+   if(!confirm(`<#RDST_46#>`)) return;
+   dkBusy = 1;
+   delete dkLog[port];   /* the disk is changing: any prior scan result is stale */
++  delete dkVerdict[port];
+   dkSetStat(port, esc(`<#format_formatting#>`) + '&hellip;');
+   dkPost({ action_script: 'start_diskformat',
+            diskmon_usbport: port,
+@@ -285,6 +316,9 @@ function renderDisks(){
+     var log = document.getElementById('dklog_' + port);
+     if(log && dkLog[port]){ log.textContent = dkLog[port]; log.style.display = 'block'; }
+   });
++  Object.keys(dkVerdict).forEach(function(port){
++    if(dkVerdict[port]) dkSetStat(port, dkVerdict[port].txt, dkVerdict[port].cls);
++  });
+ }
+ 
+ function dkFmtRow(port){
+-- 
+2.25.1
+

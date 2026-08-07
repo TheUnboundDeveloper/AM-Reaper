@@ -1,0 +1,417 @@
+From d8fe13ba12e46efbef1bc96f2ee9e1100f32c900 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 5 Aug 2026 16:56:24 -0400
+Subject: [PATCH] identity: unify device naming - fix the custom_clientlist
+ revert/clobber defects + one name priority everywhere
+
+Master store stays custom_clientlist (no new store). Four write-path defects
+fixed and two readers unified so a rename made anywhere shows everywhere:
+
+1. MASS REVERT: the boot normaliser pads every tuple to 9 fields, but
+   del_custom_clientlist (deleteOfflineClient.cgi), the api.asp register
+   add/del/list paths parsed with a strict 6-field vstrsep and silently
+   DROPPED every padded entry on rewrite - removing one offline client wiped
+   all custom names. Now tolerant (6..9) and non-target tuples are kept
+   byte-identical.
+2. RENAME APPENDED DUPLICATES: reaper set_name compared the tuple's NAME
+   field against the MAC (tuple is name>MAC>...), so the old record was never
+   removed; first-match readers (gk_client_name -> Devices/GK pages) kept
+   showing the OLD name while last-key-wins JSON readers showed the new one =
+   the field "rename doesn't propagate / reverts" reports. Now matches the
+   real MAC field, drops ALL old records for the mac, and preserves the old
+   record's trailing fields (group/type/icon). Boot normaliser additionally
+   drops older duplicates (last wins) so existing field devices self-heal.
+3. STALE-SNAPSHOT CLOBBER: the stock rename popup rebuilt the whole
+   custom_clientlist from a page-load snapshot, erasing any rename made
+   elsewhere since. It now re-reads the live nvram at save time (falls back
+   to the snapshot on fetch error) and clears duplicate records on splice.
+4. delete_client_in_group_list iterated a 4KB stack copy of a 64KB-class
+   list - deletes silently no-op'd past 4KB. Now iterates a heap copy.
+
+Readers unified: Gatekeeper (devices + pending) now resolves
+custom_clientlist first with the self-reported hostname as fallback
+(was inverted); DHCP Leases gains a unified Device Name column (same
+get_clientlist chain as every other page) beside the raw lease hostname.
+
+Verified: make shared + make httpd both exit 0 (no new warnings in edited
+regions); client_function.js + DHCP page inline JS parse clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                | 126 +++++++++++-------
+ release/src/router/shared/misc.c              |  12 ++
+ .../router/www/Main_DHCPStatus_Content.asp    |  45 ++++++-
+ release/src/router/www/client_function.js     |   7 +
+ 4 files changed, 133 insertions(+), 57 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index de94362c65..37837f6e79 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -5336,7 +5336,8 @@ static int ej_set_variables(int eid, webs_t wp, int argc, char_t **argv) {
+ 	_dprintf("[httpd] api.asp: apiname->%s, apiAction->%s\n", apiName, apiAction);
+ 
+ 	if(!strcmp(apiName, "register")){
+-		char *name, *mac, *group, *type, *callback, *keeparp;
++		char *name, *mac, *group, *type, *callback, *keeparp, *groupname, *age, *groupid;
++		char fields[512];
+ 
+ 		if(!strcmp(apiAction, "add")){
+ 			webVar_1 = websGetVar(wp, "name", "");
+@@ -5375,7 +5376,8 @@ static int ej_set_variables(int eid, webs_t wp, int argc, char_t **argv) {
+ 
+ 					iCurrentListNum++;
+ 
+-					if((vstrsep(p, ">", &name, &mac, &group, &type, &callback, &keeparp)) != 6) continue;
++					/* tolerate 6..9 fields (boot normaliser pads to 9) */
++					if((vstrsep(p, ">", &name, &mac, &group, &type, &callback, &keeparp, &groupname, &age, &groupid)) < 6) continue;
+ 
+ 					if(!strcmp(webVar_2, mac)){
+ 						retStatus = 1;
+@@ -5419,7 +5421,11 @@ static int ej_set_variables(int eid, webs_t wp, int argc, char_t **argv) {
+ 				g = buf = strdup(nvram_safe_get("custom_clientlist"));
+ 				while (buf) {
+ 					if ((p = strsep(&g, "<")) == NULL) break;
+-					if((vstrsep(p, ">", &name, &mac, &group, &type, &callback, &keeparp)) != 6) continue;
++					if (*p == '\0') continue;
++					/* parse a COPY, accept 6..9 fields, keep non-target
++					 * tuples byte-identical (see del_custom_clientlist) */
++					strlcpy(fields, p, sizeof(fields));
++					if((vstrsep(fields, ">", &name, &mac, &group, &type, &callback, &keeparp, &groupname, &age, &groupid)) < 6) continue;
+ 
+ 					if(!strcmp(webVar_1, mac)){
+ 						retStatus = 0;
+@@ -5427,17 +5433,7 @@ static int ej_set_variables(int eid, webs_t wp, int argc, char_t **argv) {
+ 					}
+ 					else{
+ 						strlcat(nvramTmp, "<", sizeof(nvramTmp));
+-						strlcat(nvramTmp, name, sizeof(nvramTmp));
+-						strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-						strlcat(nvramTmp, mac, sizeof(nvramTmp));
+-						strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-						strlcat(nvramTmp, group, sizeof(nvramTmp));
+-						strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-						strlcat(nvramTmp, type, sizeof(nvramTmp));
+-						strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-						strlcat(nvramTmp, callback, sizeof(nvramTmp));
+-						strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-						strlcat(nvramTmp, keeparp, sizeof(nvramTmp));
++						strlcat(nvramTmp, p, sizeof(nvramTmp));
+ 					}
+ 				}
+ 				free(buf);
+@@ -5453,7 +5449,8 @@ static int ej_set_variables(int eid, webs_t wp, int argc, char_t **argv) {
+ 			strlcat(retList, "<list>\n", sizeof(retList));
+ 			while (buf) {
+ 				if ((p = strsep(&g, "<")) == NULL) break;
+-				if((vstrsep(p, ">", &name, &mac, &group, &type, &callback, &keeparp)) != 6) continue;
++				/* tolerate 6..9 fields (boot normaliser pads to 9) */
++				if((vstrsep(p, ">", &name, &mac, &group, &type, &callback, &keeparp, &groupname, &age, &groupid)) < 6) continue;
+ 
+ 				strlcat(retList, "<device>\n", sizeof(retList));
+ 				snprintf(strTmp, sizeof(strTmp), "<name>%s</name>\n", name);
+@@ -19448,8 +19445,9 @@ del_custom_clientlist(char *delete_mac)
+ {
+ 	int retStatus = -1;
+ 	char nvramTmp[65536]={0};
++	char fields[512];
+ 	char *buf, *g, *p;
+-	char *name, *mac, *group, *type, *callback, *keeparp;
++	char *name, *mac, *group, *type, *callback, *keeparp, *groupname, *age, *groupid;
+ 
+ 	if(!strcmp(delete_mac, "")) {
+ 		retStatus = 3;
+@@ -19458,25 +19456,22 @@ del_custom_clientlist(char *delete_mac)
+ 		g = buf = strdup(nvram_safe_get("custom_clientlist"));
+ 		while (buf) {
+ 			if ((p = strsep(&g, "<")) == NULL) break;
+-			if((vstrsep(p, ">", &name, &mac, &group, &type, &callback, &keeparp)) != 6) continue;
++			if (*p == '\0') continue;
++			/* parse a COPY and accept 6..9 fields: the boot normaliser
++			 * (gen_custom_clientlist_groupid) pads every entry to 9 fields,
++			 * so the old strict-6 parse dropped EVERY padded entry from the
++			 * rewrite - deleting one offline client wiped all custom names */
++			strlcpy(fields, p, sizeof(fields));
++			if((vstrsep(fields, ">", &name, &mac, &group, &type, &callback, &keeparp, &groupname, &age, &groupid)) < 6) continue;
+ 
+ 			if(!strcmp(delete_mac, mac)){
+ 				retStatus = 0;
+ 				continue;
+ 			}
+ 			else{
++				/* keep the tuple byte-identical, whatever its field count */
+ 				strlcat(nvramTmp, "<", sizeof(nvramTmp));
+-				strlcat(nvramTmp, name, sizeof(nvramTmp));
+-				strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-				strlcat(nvramTmp, mac, sizeof(nvramTmp));
+-				strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-				strlcat(nvramTmp, group, sizeof(nvramTmp));
+-				strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-				strlcat(nvramTmp, type, sizeof(nvramTmp));
+-				strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-				strlcat(nvramTmp, callback, sizeof(nvramTmp));
+-				strlcat(nvramTmp, ">", sizeof(nvramTmp));
+-				strlcat(nvramTmp, keeparp, sizeof(nvramTmp));
++				strlcat(nvramTmp, p, sizeof(nvramTmp));
+ 			}
+ 		}
+ 		free(buf);
+@@ -22895,8 +22890,10 @@ static void
+ gk_emit_seen(FILE *stream, struct gk_seen *d, int rand_flag)
+ {
+ 	char name[40];
+-	if (!d->host[0]) gk_client_name(d->mac, name, sizeof(name));
+-	else snprintf(name, sizeof(name), "%s", d->host);
++	/* unified naming: the user-assigned name (custom_clientlist) wins on every
++	 * page; the device's self-reported DHCP hostname is only a fallback */
++	gk_client_name(d->mac, name, sizeof(name));
++	if (!name[0] && d->host[0]) snprintf(name, sizeof(name), "%s", d->host);
+ 	websWrite(stream, "{\"mac\":\"%s\",\"ip\":", d->mac);
+ 	gk_json_esc(stream, d->ip);
+ 	websWrite(stream, ",\"host\":");
+@@ -23105,8 +23102,10 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 				websWrite(stream, ",\"host\":");
+ 				{
+ 					char name[40];
+-					if (!d->host[0]) gk_client_name(d->mac, name, sizeof(name));
+-					else snprintf(name, sizeof(name), "%s", d->host);
++					/* unified naming: custom_clientlist first, self-reported
++					 * hostname as fallback (matches every other page) */
++					gk_client_name(d->mac, name, sizeof(name));
++					if (!name[0] && d->host[0]) snprintf(name, sizeof(name), "%s", d->host);
+ 					gk_json_esc(stream, name);
+ 				}
+ 				websWrite(stream, ",\"band\":");
+@@ -23854,26 +23853,45 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		keep = clean[0] ? 1 : 0;	/* empty name = clear the entry */
+ 
+ 		cl = nvram_safe_get("custom_clientlist");
+-		cap = strlen(cl) + 64;
++		cap = strlen(cl) + 320;
+ 		out = calloc(1, cap);
+-		{ char *b = strdup(cl); if (!out || !b) { free(out); free(b);
++		{ char oldtail[224]; char *b = strdup(cl); oldtail[0] = 0;
++		  if (!out || !b) { free(out); free(b);
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"oom\",\"ek\":\"RDEVE_3\"}"); return; }
+ 			for (tok = strtok_r(b, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+-				/* keep every OTHER device's full tuple byte-identical */
+-				char *g = strchr(tok, '>');
++				/* tuple = name>MAC>group>type>... - the MAC is field 1, AFTER
++				 * the name (the original code compared the NAME against the
++				 * mac, so old records were never dropped and every rename
++				 * APPENDED a duplicate; first-match readers like
++				 * gk_client_name then kept resolving the OLD name = the
++				 * field "rename reverts" reports). Keep every OTHER
++				 * device's full tuple byte-identical. */
++				char *f1 = strchr(tok, '>');
+ 				char tmac[18] = "";
+-				if (g) { size_t l = g - tok; if (l < sizeof(tmac)) { memcpy(tmac, tok, l); tmac[l] = 0; } }
+-				if (g && !strcasecmp(tmac, umac)) continue;	/* drop old record for this mac */
++				if (f1) {
++					char *m = f1 + 1, *f2 = strchr(m, '>');
++					size_t l = f2 ? (size_t)(f2 - m) : strlen(m);
++					if (l < sizeof(tmac)) { memcpy(tmac, m, l); tmac[l] = 0; }
++					if (!strcasecmp(tmac, umac)) {
++						/* drop ALL old records for this mac (heals duplicates
++						 * left by the pre-fix append); remember the first
++						 * record's trailing fields so group/type/icon data
++						 * survives the rename */
++						if (f2 && !oldtail[0]) strlcpy(oldtail, f2 + 1, sizeof(oldtail));
++						continue;
++					}
++				}
+ 				strlcat(out, "<", cap); strlcat(out, tok, cap);
+ 			}
+ 			free(b);
+-		}
+-		if (keep) {
+-			/* new record: <name>MAC>0>0>>0  (group 0, type 0, empty callback, keeparp 0) */
+-			char add[80];
+-			snprintf(add, sizeof(add), "<%s>%s>0>0>>0", clean, umac);
+-			if (strlen(out) + strlen(add) + 1 < cap) strlcat(out, add, cap);
+-			else { free(out); websWrite(stream, "{\"ok\":0,\"error\":\"name store full\",\"ek\":\"RDEVE_4\"}"); return; }
++			if (keep) {
++				/* re-add: preserved tail, or stock defaults for a new record */
++				char add[288];
++				snprintf(add, sizeof(add), "<%s>%s>%s", clean, umac,
++					oldtail[0] ? oldtail : "0>0>>0");
++				if (strlen(out) + strlen(add) + 1 < cap) strlcat(out, add, cap);
++				else { free(out); websWrite(stream, "{\"ok\":0,\"error\":\"name store full\",\"ek\":\"RDEVE_4\"}"); return; }
++			}
+ 		}
+ 		nvram_set("custom_clientlist", out);
+ 		nvram_commit();
+@@ -27713,13 +27731,20 @@ wollist: del_idx=1
+ int
+ delete_client_in_group_list(char *del_maclist, int del_idx, char *in_group_list, char *out_group_list, int out_len){
+ 	int ret=0;
+-	char tmp_buf[4096] = {0}, group_word[1024]={0};
++	char *tmp_buf = NULL;
++	char group_word[1024]={0};
+ 	char word[1024]={0}, *word_next=NULL;
+ 
+-    if(in_group_list){
+-        strlcpy(tmp_buf, in_group_list, sizeof(tmp_buf));
+-        strlcpy(out_group_list, in_group_list, out_len);
+-    }
++	if(!in_group_list)
++		return 0;
++
++	/* iterate a HEAP copy: custom_clientlist is a CKN_STR_MAX (64KB) list and
++	 * the old 4KB stack copy silently stopped matching past 4KB, so deletes
++	 * quietly no-op'd on large lists */
++	tmp_buf = strdup(in_group_list);
++	if(!tmp_buf)
++		return 0;
++	strlcpy(out_group_list, in_group_list, out_len);
+ 
+ 	foreach_60(word, tmp_buf, word_next){
+         get_string_in_62(word, del_idx, group_word, sizeof(group_word));
+@@ -27729,6 +27754,7 @@ delete_client_in_group_list(char *del_maclist, int del_idx, char *in_group_list,
+         }
+ 	}
+ 
++	free(tmp_buf);
+ 	return ret;
+ }
+ 
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 1c97865913..6b91d1e57c 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -6723,6 +6723,18 @@ void gen_custom_clientlist_groupid(void) {
+ 					continue;
+ 			}
+ 
++			/* reaper: drop this tuple when a NEWER tuple for the same mac
++			 * follows (a pre-fix rename path appended instead of replacing;
++			 * last-wins matches what the clientlist JSON consumers showed).
++			 * The mac field always sits between '>'s, so ">MAC>" cannot
++			 * false-match a tuple's leading name field. */
++			if (g && mac && *mac) {
++				char macpat[24];
++				snprintf(macpat, sizeof(macpat), ">%s>", mac);
++				if (strcasestr(g, macpat))
++					continue;
++			}
++
+ 			if(*groupname != '\0' && *groupid == '\0'){
+ 				memset(client_buf, 0, sizeof(client_buf));
+ 				memset(gen_groupid, 0, sizeof(gen_groupid));
+diff --git a/release/src/router/www/Main_DHCPStatus_Content.asp b/release/src/router/www/Main_DHCPStatus_Content.asp
+index 22081f36fb..703ad36381 100644
+--- a/release/src/router/www/Main_DHCPStatus_Content.asp
++++ b/release/src/router/www/Main_DHCPStatus_Content.asp
+@@ -47,7 +47,30 @@ if (isSupport("UI4")) {
+ 
+ function initial() {
+ 	show_menu();
+-	show_leases();
++	fetchDeviceNames(show_leases);
++}
++
++/* reaper: unified device-name overlay - same source/priority every other page
++ * uses (custom_clientlist nickName, else networkmap auto-name), keyed by MAC */
++var devNameByMac = {};
++function fetchDeviceNames(cb) {
++	$.getJSON("/appGet.cgi?hook=get_clientlist()&_=" + Date.now(), function(data){
++		try {
++			var cl = (data && data.get_clientlist) ? data.get_clientlist : (data || {});
++			var ml = cl.maclist || [];
++			for (var i = 0; i < ml.length; i++) {
++				var mac = String(ml[i]), c = cl[mac];
++				if (!c) continue;
++				var nm = (c.nickName && String(c.nickName).length) ? String(c.nickName)
++					: ((c.name && String(c.name).length) ? String(c.name) : "");
++				if (nm) devNameByMac[mac.toUpperCase()] = nm;
++			}
++		} catch(e) {}
++		if (cb) cb();
++	}).fail(function(){ if (cb) cb(); });
++}
++function escDevName(s) {
++	return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+ }
+ 
+ function pad(num, size) {
+@@ -77,22 +100,30 @@ function show_leases() {
+ 			else
+ 				var popupHandler = `onclick="oui_query_full_vendor('${line[1].toUpperCase()}');overlib_str_tmp='${overlib_str}';return overlib('${overlib_str}');" onmouseout="nd();"`;
+ 
+-			leasearray[i][1] = `<span ${popupHandler} style="cursor:pointer; text-decoration:underline; ${macFieldStyle}">${line[1].toUpperCase()}</span>`;
++			var leaseMac = line[1].toUpperCase();
++			var devNameHtml = devNameByMac[leaseMac] ? escDevName(devNameByMac[leaseMac]) : "&mdash;";
++			leasearray[i][1] = `<span ${popupHandler} style="cursor:pointer; text-decoration:underline; ${macFieldStyle}">${leaseMac}</span>`;
++			leasearray[i].splice(2, 0, devNameHtml);	// unified Device Name column after MAC
+ 		}
+ 
+ 		var headerarray = [{
+ 		                        "title" : "Time Left",
+-		                        "width" : "20%",
++		                        "width" : "16%",
+ 		                        "sort" : "str"
+ 		                    },
+ 		                    {
+ 		                        "title" : "MAC Address",
+-		                        "width" : "20%",
++		                        "width" : "18%",
++		                        "sort" : "str"
++		                    },
++		                    {
++		                        "title" : "Device Name",
++		                        "width" : "21%",
+ 		                        "sort" : "str"
+ 		                    },
+ 		                    {
+ 		                        "title" : "IP Address",
+-		                        "width" : "20%",
++		                        "width" : "16%",
+ 		                        "sort" : "ip",
+ 		                        "defaultSort" : "increase"
+ 		                    }];
+@@ -100,7 +131,7 @@ function show_leases() {
+ 		if (isSupport("mtlancfg")) {
+ 			headerarray.push({
+ 			                    "title" : "Hostname",
+-			                    "width" : "35%",
++			                    "width" : "24%",
+ 			                    "sort" : "str"
+ 			                },
+ 			                {
+@@ -111,7 +142,7 @@ function show_leases() {
+ 		} else {
+ 			headerarray.push({
+ 			                    "title" : "Hostname",
+-			                    "width" : "40%",
++			                    "width" : "29%",
+ 			                    "sort" : "str"
+ 			                });
+ 		}
+diff --git a/release/src/router/www/client_function.js b/release/src/router/www/client_function.js
+index f3cbfe4e22..2d3edd8da1 100644
+--- a/release/src/router/www/client_function.js
++++ b/release/src/router/www/client_function.js
+@@ -1586,6 +1586,12 @@ function card_confirm(event) {
+ 
+ 		var clientName = document.getElementById("card_client_name").value.trim();
+ 		var clientMac = document.getElementById('card_client_macaddr_field').value.toUpperCase();
++		/* reaper: re-read the LIVE list at save time. The page-load snapshot goes
++		 * stale the moment another page/tab (Devices page, app) renames a device,
++		 * and rebuilding from the snapshot silently rolled those renames back. */
++		var freshCustomList = httpApi.nvramCharToAscii(["custom_clientlist"], true);
++		if(!freshCustomList.isError && freshCustomList.custom_clientlist != undefined)
++			card_client_variable.custom_clientlist = decodeURIComponent(freshCustomList.custom_clientlist).replace(/&#62/g, ">").replace(/&#60/g, "<");
+ 		originalCustomListArray = card_client_variable.custom_clientlist.split('<');
+ 		onEditClient[0] = clientName;
+ 		onEditClient[1] = clientMac;
+@@ -1606,6 +1612,7 @@ function card_confirm(event) {
+ 					var app_groupid_tag = originalCustomListArray[i].split('>')[8]; // for app groupid tag
+ 					if(typeof app_groupid_tag != "undefined")	onEditClient[8] = app_groupid_tag;
+ 					originalCustomListArray.splice(i, 1); // remove the selected client from original list
++					i--; // reaper: re-check this index so duplicate records for the mac are all removed
+ 				}
+ 			}
+ 		}
+-- 
+2.25.1
+

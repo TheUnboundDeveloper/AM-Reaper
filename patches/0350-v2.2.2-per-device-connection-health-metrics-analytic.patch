@@ -1,0 +1,2989 @@
+From f2eed0a655d52908275307389230c61987c1a557 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 6 Aug 2026 20:53:21 -0400
+Subject: [PATCH] v2.2.2: per-device connection-health metrics + analytics
+ export (Splunk/Prometheus/Datadog/etc.)
+
+Adds a robust per-device connection-health signal and the ability to stream it
+to an analytics engine, plus a retain/send-mode control on Long-Term Storage.
+Implements the backlogged "Traffic Analyzer -> Splunk connection-health export".
+
+Collector (rtrafd):
+- NCLI 64 -> 192 (100-150 client LANs); DB_VER 1 -> 2 (dbhdr_t layout changed;
+  a v1 rtraf.db is safely parked as .prev).
+- New opt-in health probe (nvram rtraf_hprobe): per-device latency/jitter/loss
+  via a BATCHED in-process ICMP echo (one non-blocking raw socket, replies
+  drained across ticks over a 2s window - never fork-per-ping) + per-device TCP
+  connection count/established-state from conntrack (state survives HW offload;
+  retransmits deliberately NOT collected - cannot be sourced cleanly). Publishes
+  /tmp/rtraf/health.json + /tmp/rtraf/metrics.prom (OpenMetrics) each cycle, and
+  appends a rotated healthhist.log to the durable store (unless export-only).
+  GOTCHA: <netinet/ip_icmp.h> #defines BSD macros icmp_id/icmp_cksum that collide
+  with C identifiers - health-probe ids renamed hp_*.
+
+Exporter (rc/rexport.c, NEW; wired via rc.h/Makefile/services.c/init.c):
+- cru-scheduled pusher (mirrors rwatch/rwarden). Shapes health.json per engine
+  preset - Splunk HEC / Datadog / Dynatrace / Elastic / Generic / OTLP push, or
+  RFC5424-over-TLS syslog - and POSTs with curl. TLS verify ON unless
+  reaper_export_tlsverify=0; token kept out of ps/logs via a 0600 curl -K config;
+  optional MAC hashing. Prometheus is pull, so the pusher no-ops for it.
+
+httpd (web.c):
+- do_reaper_export_cgi (status/save/test; token returned masked) + reaper_export
+  store integration (store_set/store_status gain the retain/send mode).
+- do_reaper_metrics_cgi: public (NULL auth) OpenMetrics endpoint, ?token= gated
+  on reaper_export_scrape_token, for Prometheus scrape.
+- reaper_traffic.cgi f= allowlist gains "health" (payload preview).
+
+UI: new Reaper_Analytics.asp (Administration -> Data Export, self-themed native
+page; registered in reaper_inject.c reaper_native[] + menuTrees/menuTree.js) with
+engine presets, endpoint/token, TLS toggle, metric selection, interval, preview,
+and Test Connection. Reaper_Storage.asp gains the Off/Store+Export/Export-only
+mode card. 25 dicts gain RANL_00-45 + RDST_50-59 in lockstep (6249 each).
+
+New nvram (all "unset = safe default", no defaults.c): rtraf_hprobe, rtraf_hint,
+reaper_export_mode (off|both|exportonly), reaper_export_{engine,url,token,
+tlsverify,interval,metrics,index,source,scrape_token,maskmac}. Export OFF by
+default.
+
+Validated: BE96U MCP build MAKE_EXIT=0, no errors in any changed file; host-gcc
+ICMP check; generated rexport.sh sh -n clean; both pages ASCII-0 + JS-parse
+clean; dicts lockstep. Metal + noMCP build + 5-model fan-out owed.
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/reaper_inject.c      |   1 +
+ release/src/router/httpd/web.c                | 174 ++++++++-
+ release/src/router/rc/Makefile                |   2 +
+ release/src/router/rc/init.c                  |   1 +
+ release/src/router/rc/rc.h                    |   2 +
+ release/src/router/rc/rexport.c               | 166 ++++++++
+ release/src/router/rc/services.c              |   7 +
+ release/src/router/rtrafd/rtrafd.c            | 322 +++++++++++++++-
+ release/src/router/www/BR.dict                |  54 +++
+ release/src/router/www/CN.dict                |  54 +++
+ release/src/router/www/CZ.dict                |  54 +++
+ release/src/router/www/DA.dict                |  54 +++
+ release/src/router/www/DE.dict                |  54 +++
+ release/src/router/www/EN.dict                |  54 +++
+ release/src/router/www/ES.dict                |  54 +++
+ release/src/router/www/FI.dict                |  54 +++
+ release/src/router/www/FR.dict                |  54 +++
+ release/src/router/www/HU.dict                |  54 +++
+ release/src/router/www/IT.dict                |  54 +++
+ release/src/router/www/JP.dict                |  54 +++
+ release/src/router/www/KR.dict                |  54 +++
+ release/src/router/www/MS.dict                |  54 +++
+ release/src/router/www/NL.dict                |  54 +++
+ release/src/router/www/NO.dict                |  54 +++
+ release/src/router/www/PL.dict                |  54 +++
+ release/src/router/www/RO.dict                |  54 +++
+ release/src/router/www/RU.dict                |  54 +++
+ release/src/router/www/Reaper_Analytics.asp   | 359 ++++++++++++++++++
+ release/src/router/www/Reaper_Storage.asp     |  33 +-
+ release/src/router/www/SL.dict                |  54 +++
+ release/src/router/www/SV.dict                |  54 +++
+ release/src/router/www/TH.dict                |  54 +++
+ release/src/router/www/TR.dict                |  54 +++
+ release/src/router/www/TW.dict                |  54 +++
+ release/src/router/www/UK.dict                |  54 +++
+ .../router/www/require/menuTrees/menuTree.js  |   1 +
+ 37 files changed, 2412 insertions(+), 8 deletions(-)
+ create mode 100644 release/src/router/rc/rexport.c
+ create mode 100644 release/src/router/www/Reaper_Analytics.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index daea3fd58b..47ef544a09 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.2.1
++EXTENDNO=Reaper_v2.2.2
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 4885449a92..63cefdcbbb 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -169,6 +169,7 @@ static const char *reaper_native[] = {
+ 	"Reaper_QoSDiag.asp",
+ 	"Reaper_WiFiPro.asp",
+ 	"Reaper_USB.asp",	/* 2026-08-05: USB disk utilities (USB Application tab) */
++	"Reaper_Analytics.asp",	/* v2.2.2: Data Export (Administration group) */
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index dfec3d87df..cc1814761b 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21958,7 +21958,7 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ static void
+ do_reaper_traffic_cgi(char *url, FILE *stream)
+ {
+-	static const char *wins[] = { "live", "m5", "hour", "day", "month", NULL };
++	static const char *wins[] = { "live", "m5", "hour", "day", "month", "health", NULL };
+ 	char path[48], buf[4096];
+ 	const char *want = "live";
+ 	char *fp;
+@@ -24110,10 +24110,18 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		websWrite(stream, "\"slog_bytes\":%lld,", (stat(path, &st) == 0) ? (long long)st.st_size : 0LL);
+ 		snprintf(path, sizeof(path), "%s/chqhist.log", base);
+ 		websWrite(stream, "\"chq_bytes\":%lld,", (stat(path, &st) == 0) ? (long long)st.st_size : 0LL);
+-		websWrite(stream, "\"rchq_enable\":%d,\"gk_enable\":%d,\"rtraf_enable\":%d}",
++		websWrite(stream, "\"rchq_enable\":%d,\"gk_enable\":%d,\"rtraf_enable\":%d,",
+ 			nvram_match("rchq_enable", "1") ? 1 : 0,
+ 			nvram_match("gk_enable", "1") ? 1 : 0,
+ 			nvram_match("rtraf_enable", "1") ? 1 : 0);
++		/* v2.2.2: the export mode + engine so the Storage page's retain/send card
++		 * can render (the full export config lives on Reaper_Analytics.asp). */
++		{
++			const char *xm = nvram_safe_get("reaper_export_mode");
++			websWrite(stream, "\"export_mode\":\"%s\",\"export_engine\":", xm[0] ? xm : "off");
++			gk_json_esc(stream, nvram_safe_get("reaper_export_engine"));
++			websWrite(stream, "}");
++		}
+ 		return;
+ 	}
+ 
+@@ -24150,9 +24158,19 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		/* traffic fold-in: rtrafd already reads rtraf_path ("" ram | jffs | usb).
+ 		 * Derive it from the selector so this tab is the single writable UI. */
+ 		nvram_set("rtraf_path", (traf_on && strcmp(loc, "ram")) ? loc : "");
++		/* v2.2.2: retain/send mode for the health stream (off|both|exportonly).
++		 * Anything other than off needs the per-device health probe running. */
++		{
++			char *xm = get_cgi("xmode");
++			if (xm && (!strcmp(xm, "off") || !strcmp(xm, "both") || !strcmp(xm, "exportonly"))) {
++				nvram_set("reaper_export_mode", xm);
++				if (strcmp(xm, "off")) nvram_set("rtraf_hprobe", "1");
++			}
++		}
+ 		nvram_commit();
+ 		notify_rc("restart_rtraf");	/* apply the store change to rtrafd */
+ 		notify_rc("restart_rwatch");	/* regenerate the tick script (loc/ds/DUMPROOT) */
++		notify_rc("restart_rexport");	/* apply the export mode change */
+ 		rdev_audit("store_set", "-", loc);
+ 		websWrite(stream, "{\"ok\":1}");
+ 		return;
+@@ -24161,6 +24179,155 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\",\"ek\":\"RDEVE_13\"}");
+ }
+ 
++/* ===================================================================
++ * reaper v2.2.2: analytics export configuration (Reaper_Analytics.asp) +
++ * Prometheus scrape endpoint. The per-device health snapshot is produced by
++ * rtrafd (/tmp/rtraf/health.json); rc/rexport.c pushes it; this pair configures
++ * the exporter and serves the pull-model metrics.
++ * =================================================================== */
++
++/* random bearer token for the Prometheus scrape endpoint */
++static void gen_scrape_token(char *out, size_t n)
++{
++	static const char hex[] = "0123456789abcdef";
++	unsigned char r[16];
++	FILE *f;
++	size_t i;
++	strlcpy(out, "rpx_", n);
++	if ((f = fopen("/dev/urandom", "r")) != NULL) {
++		if (fread(r, 1, sizeof(r), f) == sizeof(r)) {
++			for (i = 0; i < sizeof(r) && (4 + i * 2 + 1) < n; i++) {
++				out[4 + i * 2]     = hex[r[i] >> 4];
++				out[4 + i * 2 + 1] = hex[r[i] & 0xf];
++			}
++			out[4 + sizeof(r) * 2] = '\0';
++		}
++		fclose(f);
++	}
++}
++
++static void
++do_reaper_export_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++	if (!action) action = "status";
++
++	/* CSRF guard on every state-changing / subprocess action (status is read-only) */
++	if (strcmp(action, "status") != 0) {
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\"}");
++			return;
++		}
++	}
++
++	if (!strcmp(action, "status")) {
++		const char *tok = nvram_safe_get("reaper_export_token");
++		const char *scr = nvram_safe_get("reaper_export_scrape_token");
++		const char *xm  = nvram_safe_get("reaper_export_mode");
++		int tlen = strlen(tok), iv = nvram_get_int("reaper_export_interval");
++		char last[8] = "", sbuf[160] = "";
++		FILE *sf;
++		if (tlen >= 4) strlcpy(last, tok + tlen - 4, sizeof(last));
++		if ((sf = fopen("/tmp/rexport.status", "r")) != NULL) {
++			if (fgets(sbuf, sizeof(sbuf), sf)) { char *nl = strchr(sbuf, '\n'); if (nl) *nl = '\0'; }
++			fclose(sf);
++		}
++		websWrite(stream, "{\"mode\":\"%s\",\"engine\":", xm[0] ? xm : "off");
++		gk_json_esc(stream, nvram_safe_get("reaper_export_engine"));
++		websWrite(stream, ",\"url\":");
++		gk_json_esc(stream, nvram_safe_get("reaper_export_url"));
++		websWrite(stream, ",\"token_set\":%d,\"token_last4\":\"%s\"", tlen > 0 ? 1 : 0, last);
++		websWrite(stream, ",\"tlsverify\":%d", nvram_match("reaper_export_tlsverify", "0") ? 0 : 1);
++		websWrite(stream, ",\"interval\":%d", iv > 0 ? iv : 60);
++		websWrite(stream, ",\"metrics\":");
++		gk_json_esc(stream, nvram_safe_get("reaper_export_metrics"));
++		websWrite(stream, ",\"index\":");
++		gk_json_esc(stream, nvram_safe_get("reaper_export_index"));
++		websWrite(stream, ",\"source\":");
++		gk_json_esc(stream, nvram_safe_get("reaper_export_source"));
++		websWrite(stream, ",\"maskmac\":%d,\"scrape_set\":%d,\"scrape_token\":",
++			nvram_match("reaper_export_maskmac", "1") ? 1 : 0, scr[0] ? 1 : 0);
++		gk_json_esc(stream, scr);	/* shown to the admin for their prometheus.yml */
++		websWrite(stream, ",\"last\":");
++		gk_json_esc(stream, sbuf);
++		websWrite(stream, "}");
++		return;
++	}
++
++	if (!strcmp(action, "save")) {
++		char *v;
++		if ((v = get_cgi("mode")) && (!strcmp(v, "off") || !strcmp(v, "both") || !strcmp(v, "exportonly")))
++			nvram_set("reaper_export_mode", v);
++		if ((v = get_cgi("engine")))   nvram_set("reaper_export_engine", v);
++		if ((v = get_cgi("url")))      nvram_set("reaper_export_url", v);
++		if ((v = get_cgi("token")) && v[0]) nvram_set("reaper_export_token", v);	/* blank = keep existing */
++		if ((v = get_cgi("cleartoken")) && !strcmp(v, "1")) nvram_set("reaper_export_token", "");
++		if ((v = get_cgi("tlsv")))     nvram_set("reaper_export_tlsverify", strcmp(v, "0") ? "1" : "0");
++		if ((v = get_cgi("interval"))) {
++			int n = atoi(v); char b[12];
++			if (n < 10) n = 10; if (n > 3600) n = 3600;
++			snprintf(b, sizeof(b), "%d", n); nvram_set("reaper_export_interval", b);
++		}
++		if ((v = get_cgi("metrics")))  nvram_set("reaper_export_metrics", v);
++		if ((v = get_cgi("index")))    nvram_set("reaper_export_index", v);
++		if ((v = get_cgi("source")))   nvram_set("reaper_export_source", v);
++		if ((v = get_cgi("maskmac")))  nvram_set("reaper_export_maskmac", strcmp(v, "1") ? "0" : "1");
++		if ((v = get_cgi("regen_scrape")) && !strcmp(v, "1")) {
++			char t[40]; gen_scrape_token(t, sizeof(t)); nvram_set("reaper_export_scrape_token", t);
++		}
++		/* export requires the per-device health probe to have data to send */
++		if (!nvram_match("reaper_export_mode", "off")) nvram_set("rtraf_hprobe", "1");
++		nvram_commit();
++		notify_rc("restart_rtraf");
++		notify_rc("restart_rexport");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (!strcmp(action, "test")) {
++		char sbuf[160] = "";
++		FILE *sf;
++		if (!f_exists("/tmp/rexport.sh")) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"save the configuration first\"}");
++			return;
++		}
++		doSystem("sh /tmp/rexport.sh test");
++		if ((sf = fopen("/tmp/rexport.status", "r")) != NULL) {
++			if (fgets(sbuf, sizeof(sbuf), sf)) { char *nl = strchr(sbuf, '\n'); if (nl) *nl = '\0'; }
++			fclose(sf);
++		}
++		websWrite(stream, "{\"ok\":1,\"result\":");
++		gk_json_esc(stream, sbuf);
++		websWrite(stream, "}");
++		return;
++	}
++
++	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
++}
++
++/* Prometheus scrape endpoint. Public (no session) but bearer-token gated via
++ * ?token=<reaper_export_scrape_token> so Prometheus can authenticate the scrape;
++ * serves the OpenMetrics text rtrafd renders at /tmp/rtraf/metrics.prom. */
++static void
++do_reaper_metrics_cgi(char *url, FILE *stream)
++{
++	char *tok = get_cgi("token");
++	const char *want = nvram_safe_get("reaper_export_scrape_token");
++	FILE *f;
++	char line[512];
++	if (!want[0] || !tok || strcmp(tok, want) != 0) {
++		websWrite(stream, "# unauthorized: a valid ?token= is required\n");
++		return;
++	}
++	if ((f = fopen("/tmp/rtraf/metrics.prom", "r")) == NULL) {
++		websWrite(stream, "# no metrics available (enable the connection-health probe)\n");
++		return;
++	}
++	while (fgets(line, sizeof(line), f)) websWrite(stream, "%s", line);
++	fclose(f);
++}
++
+ #ifdef RTCONFIG_REAPER_MCP
+ /* reaper v1.4.0: arming control plane for the read-only MCP advisor (rmcpd).
+  *
+@@ -31751,6 +31918,9 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_gk.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_gk_cgi, do_auth },
+ 	{ "reaper_warden.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
+ 	{ "reaper_dev.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
++	{ "reaper_export.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_export_cgi, do_auth },
++	/* Prometheus scrape: public (no session) but ?token= gated inside the handler */
++	{ "reaper_metrics.cgi*", "text/plain; version=0.0.4", no_cache_IE7, do_html_post_and_get, do_reaper_metrics_cgi, NULL },
+ #ifdef RTCONFIG_REAPER_MCP
+ 	{ "reaper_mcp.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_mcp_cgi, do_auth },
+ #endif
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index b3bdbc66cf..b8548ba932 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -441,6 +441,8 @@ OBJS += gatekeeper.o
+ OBJS += rwarden.o
+ # reaper v1.8.8: watchdog - WAN/DNS/Warden/accelerator health probe -> syslog
+ OBJS += rwatch.o
++# reaper v2.2.2: analytics exporter - push per-device health to Splunk/Datadog/etc.
++OBJS += rexport.o
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+ OBJS += fwupg_flashing.o
+ endif
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 0b83f800b8..80b06526dd 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -24016,6 +24016,7 @@ NO_USB_CAP:
+ 	add_rc_support("reaper_devices");	/* Device Identity Manager page + CGI (v1.9.0) */
+ 	add_rc_support("reaper_storage");	/* unified long-term storage (v1.9.1) */
+ 	add_rc_support("rwatch");		/* WAN/DNS/Warden/accelerator watchdog (v1.8.8) */
++	add_rc_support("analytics");		/* per-device health metrics + analytics export (v2.2.2) */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	add_rc_support("reaper_mcp");
+ #endif
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 8c18a02eda..68f69749c7 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2986,6 +2986,8 @@ extern void start_rwarden(void);
+ extern void rw_teardown_rules(void);
+ extern void stop_rwatch(void);	/* reaper v1.8.8 watchdog: WAN/DNS/Warden/accelerator health probe (rc/rwatch.c) */
+ extern void start_rwatch(void);
++extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
++extern void start_rexport(void);
+ #ifdef RTCONFIG_REAPER_MCP
+ extern void stop_rmcp(void);	/* reaper v1.4.0 read-only MCP advisor */
+ extern void start_rmcp(void);	/* NOTE: never called from the boot path */
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+new file mode 100644
+index 0000000000..20a10525f9
+--- /dev/null
++++ b/release/src/router/rc/rexport.c
+@@ -0,0 +1,166 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * rc/rexport.c - Reaper analytics exporter (v2.2.2).
++ *
++ * A cron'd pusher - no resident daemon (mirrors rwatch/rwarden). Every
++ * reaper_export_interval seconds (rounded up to whole cron minutes) it reads
++ * the per-device connection-health snapshot rtrafd publishes at
++ * /tmp/rtraf/health.json, shapes it for the selected analytics engine, and
++ * POSTs it over HTTPS with curl. The engines split into two delivery models:
++ *   - PUSH  (Splunk HEC / Datadog / Dynatrace / Elastic / Generic / OTLP /
++ *            Syslog-TLS) - handled here.
++ *   - PULL  (Prometheus) - the router instead EXPOSES OpenMetrics at
++ *            reaper_metrics.cgi and Prometheus scrapes it; this pusher is a
++ *            no-op for that engine.
++ *
++ * Security posture (hardened build): egress is OFF by default
++ * (reaper_export_mode=off). TLS certificate verification is ON unless the user
++ * explicitly sets reaper_export_tlsverify=0 (self-signed collector opt-out).
++ * The API token is written into a 0600 curl config file passed with -K so it
++ * never appears in argv/ps or any log line. On failure only the engine name +
++ * HTTP status are logged, never the URL or token.
++ *
++ * nvram: reaper_export_mode (off|both|exportonly), reaper_export_engine,
++ *        reaper_export_url, reaper_export_token, reaper_export_tlsverify
++ *        (default on; "0" = off), reaper_export_interval (s, default 60),
++ *        reaper_export_index / reaper_export_source (Splunk), reaper_export_maskmac.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "rc.h"
++#include <shared.h>
++
++#define REXPORT_SH	"/tmp/rexport.sh"
++
++/* The script is constant (it reads nvram itself at run time), so emit it with
++ * fputs - no printf-format escaping hazards. */
++static void rexport_gen(void)
++{
++	FILE *f = fopen(REXPORT_SH, "w");
++	if (!f)
++		return;
++	fputs(
++	  "#!/bin/sh\n"
++	  "# generated by start_rexport - do not edit\n"
++	  "H=/tmp/rtraf/health.json\n"
++	  "[ -r \"$H\" ] || exit 0\n"
++	  "if [ \"$1\" != test ]; then\n"		/* 'test' bypasses the mode gate (Test Connection) */
++	  "  case \"$(nvram get reaper_export_mode)\" in both|exportonly) ;; *) exit 0 ;; esac\n"
++	  "fi\n"
++	  "ENGINE=\"$(nvram get reaper_export_engine)\"\n"
++	  "[ \"$ENGINE\" = prometheus ] && exit 0\n"      /* pull model: nothing to push */
++	  "URL=\"$(nvram get reaper_export_url)\"\n"
++	  "[ -n \"$URL\" ] || exit 0\n"
++	  "TOKEN=\"$(nvram get reaper_export_token)\"\n"
++	  "TLSV=\"$(nvram get reaper_export_tlsverify)\"\n"
++	  "IDX=\"$(nvram get reaper_export_index)\"\n"
++	  "SRC=\"$(nvram get reaper_export_source)\"\n"
++	  "MASK=\"$(nvram get reaper_export_maskmac)\"\n"
++	  "NOW=$(date +%s)\n"
++	  "HOST=\"$(nvram get productid)\"\n"
++	  "STAT=/tmp/rexport.status\n"
++	  "SRCF=\"$H\"\n"
++	  "\n"
++	  "# optional MAC-hash for privacy: replace each MAC with a short salted digest\n"
++	  "if [ \"$MASK\" = 1 ]; then\n"
++	  "  cp \"$H\" /tmp/rexport.src 2>/dev/null || exit 0\n"
++	  "  for m in $(grep -o '\"mac\":\"[^\"]*\"' /tmp/rexport.src | sed 's/\"mac\":\"//;s/\"$//' | sort -u); do\n"
++	  "    [ -n \"$m\" ] || continue\n"
++	  "    hh=$(printf 'reaper:%s' \"$m\" | md5sum | cut -c1-12)\n"
++	  "    sed -i \"s/$m/$hh/g\" /tmp/rexport.src 2>/dev/null\n"
++	  "  done\n"
++	  "  SRCF=/tmp/rexport.src\n"
++	  "fi\n"
++	  "\n"
++	  "# ---- Syslog over TLS (RFC5424): no curl, best-effort openssl pipe ----\n"
++	  "if [ \"$ENGINE\" = syslog ]; then\n"
++	  "  HOSTP=\"${URL#*://}\"; SH=\"${HOSTP%%:*}\"; SP=\"${HOSTP##*:}\"\n"
++	  "  [ \"$SP\" = \"$SH\" ] && SP=6514\n"
++	  "  MSG=\"<134>1 $(date -u +%Y-%m-%dT%H:%M:%SZ) $HOST reaper - - - $(cat \"$SRCF\")\"\n"
++	  "  if printf '%s\\n' \"$MSG\" | openssl s_client -quiet -connect \"$SH:$SP\" >/dev/null 2>&1; then\n"
++	  "    echo \"$NOW syslog ok\" > \"$STAT\"\n"
++	  "  else\n"
++	  "    echo \"$NOW syslog fail\" > \"$STAT\"; logger -t rexport \"syslog-tls export failed\"\n"
++	  "  fi\n"
++	  "  exit 0\n"
++	  "fi\n"
++	  "\n"
++	  "# ---- HTTP push engines (curl) ----\n"
++	  "BODY=/tmp/rexport.body\n"
++	  "CFG=/tmp/rexport.cfg\n"
++	  "CT='Content-Type: application/json'\n"
++	  "case \"$ENGINE\" in\n"
++	  "  splunk)\n"
++	  "    AH=\"Authorization: Splunk $TOKEN\"\n"
++	  "    { printf '{\"time\":%s,\"host\":\"%s\",\"sourcetype\":\"%s\",\"index\":\"%s\",\"event\":' \"$NOW\" \"$HOST\" \"${SRC:-reaper:client_health}\" \"$IDX\"; cat \"$SRCF\"; printf '}'; } > \"$BODY\" ;;\n"
++	  "  datadog)\n"
++	  "    AH=\"DD-API-KEY: $TOKEN\"\n"
++	  "    { printf '[{\"ddsource\":\"reaper\",\"service\":\"router\",\"host\":\"%s\",\"message\":' \"$HOST\"; cat \"$SRCF\"; printf '}]'; } > \"$BODY\" ;;\n"
++	  "  elastic)\n"
++	  "    AH=\"Authorization: ApiKey $TOKEN\"; CT='Content-Type: application/x-ndjson'\n"
++	  "    { printf '{\"index\":{}}\\n'; cat \"$SRCF\"; printf '\\n'; } > \"$BODY\" ;;\n"
++	  "  dynatrace)\n"
++	  "    AH=\"Authorization: Api-Token $TOKEN\"\n"
++	  "    cat \"$SRCF\" > \"$BODY\" ;;\n"
++	  "  *)\n"          /* generic / otlp */
++	  "    AH=\"Authorization: Bearer $TOKEN\"\n"
++	  "    cat \"$SRCF\" > \"$BODY\" ;;\n"
++	  "esac\n"
++	  "\n"
++	  "umask 077\n"
++	  "{\n"
++	  "  echo \"url = \\\"$URL\\\"\"\n"
++	  "  echo \"header = \\\"$CT\\\"\"\n"
++	  "  [ -n \"$TOKEN\" ] && echo \"header = \\\"$AH\\\"\"\n"
++	  "  [ \"$TLSV\" = 0 ] && echo insecure\n"
++	  "  echo 'max-time = 25'\n"
++	  "  echo 'connect-timeout = 10'\n"
++	  "  echo 'retry = 1'\n"
++	  "  echo silent\n"
++	  "} > \"$CFG\"\n"
++	  "\n"
++	  "RESP=$(curl -K \"$CFG\" --data-binary @\"$BODY\" -o /dev/null -w '%{http_code}' 2>/dev/null)\n"
++	  "rm -f \"$CFG\" \"$BODY\"\n"
++	  "[ \"$SRCF\" = /tmp/rexport.src ] && rm -f /tmp/rexport.src\n"
++	  "echo \"$NOW $ENGINE $RESP\" > \"$STAT\"\n"
++	  "case \"$RESP\" in 2*) : ;; *) logger -t rexport \"export to $ENGINE failed (HTTP ${RESP:-none})\" ;; esac\n", f);
++	fclose(f);
++	chmod(REXPORT_SH, 0700);
++}
++
++void stop_rexport(void)
++{
++	eval("cru", "d", "rexport");
++	unlink(REXPORT_SH);
++}
++
++void start_rexport(void)
++{
++	const char *mode = nvram_safe_get("reaper_export_mode");
++	int iv, mins;
++	char line[80];
++
++	stop_rexport();
++	rexport_gen();		/* always present so "Test Connection" works even while off */
++	if (strcmp(mode, "both") != 0 && strcmp(mode, "exportonly") != 0)
++		return;					/* export off: not scheduled */
++	if (nvram_match("reaper_export_engine", "prometheus"))
++		return;					/* pull model: no scheduled pusher */
++
++	iv = nvram_get_int("reaper_export_interval");
++	if (iv <= 0) iv = 60;
++	mins = (iv + 59) / 60;				/* cron granularity is 1 minute */
++	if (mins < 1) mins = 1;
++	if (mins > 60) mins = 60;
++	snprintf(line, sizeof(line), "*/%d * * * * sh %s", mins, REXPORT_SH);
++	eval("cru", "a", "rexport", line);
++	/* engine name only - never the URL or token */
++	logmessage("rexport", "analytics export armed (%s, every %d min)",
++		   nvram_safe_get("reaper_export_engine"), mins);
++}
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 10e2baeeac..92b3f8fe91 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7113,6 +7113,7 @@ stop_misc(void)
+ 	stop_gk();	/* reaper v1.6.8 Gatekeeper */
+ 	stop_rwarden();	/* reaper v1.8.0 Warden */
+ 	stop_rwatch();	/* reaper v1.8.8 watchdog */
++	stop_rexport();	/* reaper v2.2.2 analytics exporter */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	stop_rmcp();	/* reaper v1.4.0 - ensure the advisor never survives a service teardown */
+ #endif
+@@ -13425,6 +13426,7 @@ start_services(void)
+ 	start_gk();	/* reaper v1.6.8 Gatekeeper (no-op unless gk_enable) */
+ 	start_rwarden();	/* reaper v1.8.0 Warden (no-op unless rwarden_enable) */
+ 	start_rwatch();	/* reaper v1.8.8 watchdog (default on; no-op if rwatch_enable=0) */
++	start_rexport();	/* reaper v2.2.2 analytics exporter (no-op unless reaper_export_mode!=off) */
+ #ifdef RTCONFIG_REAPER_MCP
+ 	reaper_mcp_boot_sweep();	/* reaper v1.4.4 - drop stale advisor rule/session from an unclean prior exit; never starts the daemon */
+ #endif
+@@ -21635,6 +21637,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rwatch();
+ 		if(action & RC_SERVICE_START) start_rwatch();
+ 	}
++	else if (strcmp(script, "rexport") == 0)	/* reaper v2.2.2 analytics exporter */
++	{
++		if(action & RC_SERVICE_STOP) stop_rexport();
++		if(action & RC_SERVICE_START) start_rexport();
++	}
+ #ifdef RTCONFIG_REAPER_MCP
+ 	else if (strcmp(script, "rmcp") == 0)
+ 	{
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index ddf4fb0be3..b60c9556a6 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -9,6 +9,9 @@
+  *   - /proc/net/nf_conntrack   per-client byte deltas (LAN-attributed) + top talkers
+  *   - tmctl getqstats          per-QoS-class tx/drops (only while HW classful runs)
+  *   - optional ping probe      WAN latency/loss (opt-in, user-set target)
++ *   - optional health probe    per-device latency/jitter/loss (batched in-process
++ *                              ICMP) + TCP conn/state (opt-in, nvram rtraf_hprobe);
++ *                              publishes /tmp/rtraf/health.json for the exporter
+  *
+  * Keeps four ring granularities per series (5min x 288 = 24h, hour x 336 = 14d,
+  * day x 366, month x 24) and publishes JSON snapshots under /tmp/rtraf/ for the
+@@ -36,6 +39,10 @@
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <arpa/inet.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <netinet/ip_icmp.h>
+ 
+ #include <bcmnvram.h>
+ #include <shutils.h>
+@@ -60,7 +67,7 @@
+ #define ND		366	/* day slots    (~1 y) */
+ #define NM		24	/* month slots  (2 y)  */
+ #define NNET		8
+-#define NCLI		64
++#define NCLI		192	/* per-device cap (v2.2.2: 64 -> 192 for 100-150 client LANs) */
+ #define RT_NETLBL	"Router"	/* per-network + per-device bucket for the router's
+ 				   OWN (locally-terminated) traffic: its speed test, DNS,
+ 				   firmware checks, ntp, the latency probe - so br0 + Router
+@@ -80,7 +87,15 @@
+ 				 * and the saved history is worth far more than the
+ 				 * since-boot RAM rings. Past this, RAM data wins. */
+ #define DB_MAGIC	0x52545246	/* "RTRF" */
+-#define DB_VER		1
++#define DB_VER		2	/* v2.2.2: NCLI 64->192 changed dbhdr_t layout; a v1
++				 * file no longer matches and is safely parked as .prev */
++
++/* per-device connection-health probe (v2.2.2, opt-in nvram rtraf_hprobe) */
++#define HWAIT_MS	2000	/* collect ICMP echo replies for up to 2 s after a batch */
++#define H_MIN_IV	10	/* health cycle interval clamp (s) */
++#define H_MAX_IV	600
++#define HLOG_MAX	(8 * 1024 * 1024)	/* healthhist.log rotate threshold */
++enum { EXP_OFF = 0, EXP_BOTH = 1, EXP_ONLY = 2 };	/* reaper_export_mode */
+ 
+ typedef struct { uint64_t rx, tx; } cnt_t;	/* class rings: rx=txbytes, tx=dropped pkts */
+ 						/* probe ring:  rx=avg rtt us, tx=loss %   */
+@@ -144,11 +159,23 @@ static int warned80 = 0, warned100 = 0, warn_month = -1;
+  * refresh_cfg() reloads them once at startup and then only in the 1 Hz branch. */
+ static uint64_t cfg_cap_gb = 0;
+ static int cfg_qos_on = 0;
++static int cfg_hprobe = 0;		/* rtraf_hprobe: run the per-device health probe */
++static int cfg_hint = 30;		/* rtraf_hint: seconds between health cycles */
++static int cfg_export_mode = EXP_OFF;	/* reaper_export_mode (gates local health retention) */
+ 
+ static void refresh_cfg(void)
+ {
++	const char *m;
+ 	cfg_cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
+ 	cfg_qos_on = (nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11);
++	cfg_hprobe = (nvram_get_int("rtraf_hprobe") == 1);
++	cfg_hint = nvram_get_int("rtraf_hint");
++	if (cfg_hint <= 0) cfg_hint = 30;
++	if (cfg_hint < H_MIN_IV) cfg_hint = H_MIN_IV;
++	if (cfg_hint > H_MAX_IV) cfg_hint = H_MAX_IV;
++	m = nvram_safe_get("reaper_export_mode");
++	cfg_export_mode = (strcmp(m, "exportonly") == 0) ? EXP_ONLY
++			: (strcmp(m, "both") == 0)       ? EXP_BOTH : EXP_OFF;
+ }
+ 
+ /* live snapshot holders (bits/sec), refreshed at each source's own cadence and
+@@ -1022,6 +1049,274 @@ static void write_live(const char *store)
+ 	rename("/tmp/rtraf/.live.json", "/tmp/rtraf/live.json");
+ }
+ 
++/* ---------- per-device connection health (v2.2.2, opt-in rtraf_hprobe) ----------
++ * Adds per-client latency / jitter / loss via a BATCHED in-process ICMP echo
++ * (one non-blocking raw socket - never fork-per-ping, which would not scale to
++ * ~150 clients) plus per-client TCP connection count + established-state read
++ * from conntrack. conntrack keeps an entry's STATE even for hardware-offloaded
++ * flows (only its byte counters freeze), so conn-count/state is reliable; we do
++ * NOT try to derive retransmits (they cannot be sourced cleanly and would
++ * undercount on every accelerated flow). Publishes /tmp/rtraf/health.json each
++ * cycle for the exporter + a future health UI, and appends a rotated JSONL
++ * history to the durable store (unless export-only). */
++typedef struct {
++	float rtt_ms, jit_ms, loss;	/* EWMA gauges */
++	int tcp_total, tcp_estab;	/* last conntrack pass */
++	struct timespec tsend;		/* echo send instant for the open cycle */
++	int pending;			/* awaiting a reply this cycle */
++	int probed;			/* has ever been probed (gauges valid) */
++} chealth_t;
++static chealth_t chealth[NCLI];
++static int hp_fd = -1;
++static int hp_disabled = 0;
++static uint16_t hp_id = 0;
++static char g_store_dir[160];		/* durable store dir (healthhist.log); "" = RAM */
++
++static void set_store_dir(const char *dbpath)
++{
++	char *s;
++	g_store_dir[0] = '\0';
++	if (!dbpath || !dbpath[0]) return;
++	strlcpy(g_store_dir, dbpath, sizeof(g_store_dir));
++	if ((s = strrchr(g_store_dir, '/')) != NULL) *s = '\0';
++	else g_store_dir[0] = '\0';
++}
++
++static uint16_t hp_cksum(void *b, int len)
++{
++	uint32_t sum = 0;
++	uint16_t *w = b;
++	for (; len > 1; len -= 2) sum += *w++;
++	if (len == 1) sum += *(uint8_t *)w;
++	sum = (sum >> 16) + (sum & 0xffff);
++	sum += (sum >> 16);
++	return (uint16_t)~sum;
++}
++
++static int hp_open(void)
++{
++	int fl;
++	if (hp_fd >= 0) return 1;
++	if (hp_disabled) return 0;
++	if ((hp_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)) < 0) {
++		syslog(LOG_WARNING, "rtrafd: health latency disabled (raw ICMP socket: %s)", strerror(errno));
++		hp_disabled = 1;
++		return 0;
++	}
++	fl = fcntl(hp_fd, F_GETFL, 0);
++	fcntl(hp_fd, F_SETFL, fl | O_NONBLOCK);
++	fcntl(hp_fd, F_SETFD, FD_CLOEXEC);
++	hp_id = (uint16_t)(getpid() & 0xffff);
++	return 1;
++}
++
++/* send one echo to every active LAN client (skips the Router pseudo-device) */
++static void health_send_batch(void)
++{
++	int i;
++	struct icmphdr pkt;
++	struct sockaddr_in to;
++	struct timespec now;
++	if (!hp_open()) return;
++	clock_gettime(CLOCK_MONOTONIC, &now);
++	memset(&to, 0, sizeof(to));
++	to.sin_family = AF_INET;
++	for (i = 0; i < NCLI; i++) {
++		chealth[i].pending = 0;
++		if (!cli[i].used || strcmp(cli[i].key, RT_DEVKEY) == 0) continue;
++		if (!cli[i].ip[0] || inet_aton(cli[i].ip, &to.sin_addr) == 0) continue;
++		memset(&pkt, 0, sizeof(pkt));
++		pkt.type = ICMP_ECHO;
++		pkt.un.echo.id = htons(hp_id);
++		pkt.un.echo.sequence = htons((uint16_t)i);
++		pkt.checksum = 0;
++		pkt.checksum = hp_cksum(&pkt, sizeof(pkt));
++		chealth[i].pending = 1;
++		chealth[i].probed = 1;
++		chealth[i].tsend = now;
++		sendto(hp_fd, &pkt, sizeof(pkt), 0, (struct sockaddr *)&to, sizeof(to));
++	}
++}
++
++/* non-blocking drain of any echo replies that have arrived (called each tick
++ * while a cycle is open); updates rtt/jitter EWMA and clears pending */
++static void health_drain(void)
++{
++	unsigned char buf[256];
++	struct sockaddr_in from;
++	socklen_t fl;
++	struct timespec now;
++	ssize_t n;
++	if (hp_fd < 0) return;
++	clock_gettime(CLOCK_MONOTONIC, &now);
++	for (;;) {
++		struct iphdr *ip;
++		struct icmphdr *ic;
++		int hlen, slot;
++		fl = sizeof(from);
++		n = recvfrom(hp_fd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
++		if (n <= 0) break;
++		if (n < (ssize_t)sizeof(struct iphdr)) continue;
++		ip = (struct iphdr *)buf;
++		hlen = ip->ihl * 4;
++		if (hlen < (int)sizeof(struct iphdr) || n < hlen + (int)sizeof(struct icmphdr)) continue;
++		ic = (struct icmphdr *)(buf + hlen);
++		if (ic->type != ICMP_ECHOREPLY || ntohs(ic->un.echo.id) != hp_id) continue;
++		slot = ntohs(ic->un.echo.sequence);
++		if (slot < 0 || slot >= NCLI || !chealth[slot].pending) continue;
++		{
++			float ms = (now.tv_sec - chealth[slot].tsend.tv_sec) * 1000.0f
++				 + (now.tv_nsec - chealth[slot].tsend.tv_nsec) / 1000000.0f;
++			if (ms < 0) ms = 0;
++			if (chealth[slot].rtt_ms <= 0) {
++				chealth[slot].rtt_ms = ms;
++			} else {
++				float d = ms - chealth[slot].rtt_ms;
++				if (d < 0) d = -d;
++				chealth[slot].jit_ms = chealth[slot].jit_ms * 0.75f + d * 0.25f;
++				chealth[slot].rtt_ms = chealth[slot].rtt_ms * 0.7f + ms * 0.3f;
++			}
++			chealth[slot].pending = 0;	/* received */
++		}
++	}
++}
++
++/* per-client TCP connection count + established-state, independent of the byte
++ * fallback so it runs whether or not the accelerator is on */
++static void health_conn_scan(void)
++{
++	FILE *f = fopen("/proc/net/nf_conntrack", "r");
++	char line[768];
++	int i;
++	if (!f) return;
++	for (i = 0; i < NCLI; i++) { chealth[i].tcp_total = 0; chealth[i].tcp_estab = 0; }
++	while (fgets(line, sizeof(line), f)) {
++		char proto[16] = "", src[64] = "";
++		struct in_addr a;
++		char *p;
++		int pnum = 0, slot = -1;
++		if (strncmp(line, "ipv4", 4) != 0) continue;
++		if (sscanf(line, "%*s %*d %15s %d", proto, &pnum) != 2) continue;
++		if (strcmp(proto, "tcp") != 0) continue;
++		if ((p = strstr(line, "src=")) == NULL) continue;
++		sscanf(p, "src=%63s", src);
++		if (inet_aton(src, &a) == 0) continue;
++		if ((ntohl(a.s_addr) & lan_mask) != lan_net) continue;
++		for (i = 0; i < NCLI; i++)
++			if (cli[i].used && strcmp(cli[i].ip, src) == 0) { slot = i; break; }
++		if (slot < 0) continue;
++		chealth[slot].tcp_total++;
++		if (strstr(line, "ESTABLISHED")) chealth[slot].tcp_estab++;
++	}
++	fclose(f);
++}
++
++static void write_health(void)
++{
++	FILE *o = fopen("/tmp/rtraf/.health.json", "w");
++	char eb[80], eb2[80];
++	int i, first = 1;
++	time_t now = time(NULL);
++	if (!o) return;
++	fprintf(o, "{\"now\":%lld,\"iv\":%d,\"devices\":[", (long long)now, cfg_hint);
++	for (i = 0; i < NCLI; i++) {
++		if (!cli[i].used || strcmp(cli[i].key, RT_DEVKEY) == 0) continue;
++		fprintf(o, "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"rtt_ms\":%.1f,\"jitter_ms\":%.1f,"
++			   "\"loss_pct\":%.1f,\"tcp_estab\":%d,\"tcp_total\":%d,"
++			   "\"dn_bps\":%llu,\"up_bps\":%llu,\"online\":%d}",
++			first ? "" : ",",
++			jesc(cli[i].key, eb, sizeof(eb)), jesc(cli[i].ip, eb2, sizeof(eb2)),
++			chealth[i].probed ? chealth[i].rtt_ms : 0.0f,
++			chealth[i].probed ? chealth[i].jit_ms : 0.0f,
++			chealth[i].probed ? chealth[i].loss : 0.0f,
++			chealth[i].tcp_estab, chealth[i].tcp_total,
++			(unsigned long long)lv_cli_rx[i], (unsigned long long)lv_cli_tx[i],
++			((now - cli[i].last) < 120) ? 1 : 0);
++		first = 0;
++	}
++	fprintf(o, "]}");
++	fclose(o);
++	rename("/tmp/rtraf/.health.json", "/tmp/rtraf/health.json");
++
++	/* OpenMetrics text for the Prometheus scrape endpoint (reaper_metrics.cgi).
++	 * Grouped per metric family (HELP/TYPE then all series) as Prometheus prefers.
++	 * mac/ip label values are constrained charsets (hex/colon/dot) - no escaping. */
++	{
++		FILE *m = fopen("/tmp/rtraf/.metrics.prom", "w");
++		if (m) {
++			static const struct { const char *name, *help; } fam[6] = {
++				{ "reaper_client_rtt_ms", "Per-device ICMP round-trip time (ms)" },
++				{ "reaper_client_jitter_ms", "Per-device RTT jitter (ms)" },
++				{ "reaper_client_loss_ratio", "Per-device ICMP loss ratio (0-1)" },
++				{ "reaper_client_tcp_established", "Per-device established TCP connections" },
++				{ "reaper_client_tcp_total", "Per-device tracked TCP connections" },
++				{ "reaper_client_online", "Per-device online (1) / offline (0)" },
++			};
++			int k;
++			for (k = 0; k < 6; k++) {
++				fprintf(m, "# HELP %s %s\n# TYPE %s gauge\n", fam[k].name, fam[k].help, fam[k].name);
++				for (i = 0; i < NCLI; i++) {
++					if (!cli[i].used || strcmp(cli[i].key, RT_DEVKEY) == 0) continue;
++					fprintf(m, "%s{mac=\"%s\",ip=\"%s\"} ", fam[k].name, cli[i].key, cli[i].ip);
++					switch (k) {
++					case 0: fprintf(m, "%.1f\n", chealth[i].probed ? chealth[i].rtt_ms : 0.0f); break;
++					case 1: fprintf(m, "%.1f\n", chealth[i].probed ? chealth[i].jit_ms : 0.0f); break;
++					case 2: fprintf(m, "%.3f\n", chealth[i].probed ? chealth[i].loss / 100.0f : 0.0f); break;
++					case 3: fprintf(m, "%d\n", chealth[i].tcp_estab); break;
++					case 4: fprintf(m, "%d\n", chealth[i].tcp_total); break;
++					default: fprintf(m, "%d\n", ((now - cli[i].last) < 120) ? 1 : 0); break;
++					}
++				}
++			}
++			fclose(m);
++			rename("/tmp/rtraf/.metrics.prom", "/tmp/rtraf/metrics.prom");
++		}
++	}
++
++	/* durable retention: append a compact JSONL row (rotated at HLOG_MAX) unless
++	 * the user chose export-only (send without keeping a local copy) */
++	if (g_store_dir[0] && cfg_export_mode != EXP_ONLY) {
++		char lp[176];
++		struct stat st;
++		FILE *h;
++		snprintf(lp, sizeof(lp), "%s/healthhist.log", g_store_dir);
++		if (stat(lp, &st) == 0 && st.st_size > HLOG_MAX) {
++			char pv[192];
++			snprintf(pv, sizeof(pv), "%s.1", lp);
++			rename(lp, pv);
++		}
++		if ((h = fopen(lp, "a")) != NULL) {
++			first = 1;
++			fprintf(h, "{\"t\":%lld,\"dev\":[", (long long)now);
++			for (i = 0; i < NCLI; i++) {
++				if (!cli[i].used || strcmp(cli[i].key, RT_DEVKEY) == 0) continue;
++				if (!chealth[i].probed && chealth[i].tcp_total == 0) continue;
++				fprintf(h, "%s{\"m\":\"%s\",\"r\":%.1f,\"j\":%.1f,\"l\":%.1f,\"te\":%d,\"tt\":%d}",
++					first ? "" : ",", jesc(cli[i].key, eb, sizeof(eb)),
++					chealth[i].rtt_ms, chealth[i].jit_ms, chealth[i].loss,
++					chealth[i].tcp_estab, chealth[i].tcp_total);
++				first = 0;
++			}
++			fprintf(h, "]}\n");
++			fclose(h);
++		}
++	}
++}
++
++/* close the open cycle: any client that never replied counts as loss, then
++ * publish the snapshot */
++static void health_close(void)
++{
++	int i;
++	for (i = 0; i < NCLI; i++) {
++		if (!cli[i].used || !chealth[i].probed) continue;
++		if (chealth[i].pending) chealth[i].loss = chealth[i].loss * 0.8f + 100.0f * 0.2f;
++		else                    chealth[i].loss = chealth[i].loss * 0.8f;
++		chealth[i].pending = 0;
++	}
++	write_health();
++}
++
+ /* ---------- persistence (RAM / jffs / usb) ---------- */
+ 
+ /* The store dir must be a REAL directory, not a symlink an attacker planted on
+@@ -1231,6 +1526,7 @@ int main(int argc, char **argv)
+ 	 * until then keep retrying from the main loop for STORE_RETRY_SECS, and NEVER
+ 	 * save over a file we did not load (see the clobber guard at the save site). */
+ 	store = resolve_store(dbpath, sizeof(dbpath));
++	set_store_dir(dbpath);
+ 	if (dbpath[0]) {
+ 		if (db_load(dbpath) < 0)
+ 			db_park_prev(dbpath);	/* unreadable/foreign file: never save over it */
+@@ -1254,6 +1550,8 @@ int main(int argc, char **argv)
+ 	int have_tsamp = 0;
+ 	struct timespec tcls_prev = { 0, 0 };	/* previous per-class sample instant */
+ 	int have_tcls = 0;
++	unsigned long h_deadline = 0;		/* tick at which the open health cycle closes */
++	int h_open = 0;				/* a health batch is out, collecting replies */
+ 	while (running) {
+ 		time_t now = time(NULL);
+ 		int n5, nh, nd, nm;
+@@ -1339,6 +1637,24 @@ int main(int argc, char **argv)
+ 			poll_fcache();
+ 		if (tick % PROBE_EVERY == 0)
+ 			poll_probe();
++
++		/* per-device connection health (opt-in). Start a batch on the interval
++		 * boundary, then drain replies over the next HWAIT_MS without blocking
++		 * the 10 Hz WAN sampling; close the cycle when the window elapses. */
++		if (cfg_hprobe) {
++			unsigned long hticks = (unsigned long)cfg_hint * TPS;
++			if (hticks < 1) hticks = TPS;
++			if (!h_open && (tick % hticks) == 0) {
++				health_conn_scan();
++				health_send_batch();
++				h_open = 1;
++				h_deadline = tick + (HWAIT_MS / TICK_MS);
++			}
++			if (h_open) {
++				health_drain();
++				if (tick >= h_deadline) { health_close(); h_open = 0; }
++			}
++		}
+ 		if (tick % TPS == 0) {
+ 			refresh_cfg();	/* reload cached nvram config at 1 Hz, not per tick */
+ 			check_quota();	/* monthly cap: once a second is plenty */
+@@ -1349,6 +1665,7 @@ int main(int argc, char **argv)
+ 			if (!db_attached && !db_gave_up && nvram_safe_get("rtraf_path")[0]) {
+ 				if (now - boot_t <= STORE_RETRY_SECS) {
+ 					store = resolve_store(dbpath, sizeof(dbpath));
++					set_store_dir(dbpath);
+ 					if (dbpath[0]) {
+ 						if (db_load(dbpath) < 0)
+ 							db_park_prev(dbpath);
+@@ -1368,6 +1685,7 @@ int main(int argc, char **argv)
+ 
+ 		if (now - last_save >= (strcmp(store, "usb") == 0 ? SAVE_EVERY_USB : SAVE_EVERY)) {
+ 			store = resolve_store(dbpath, sizeof(dbpath));
++			set_store_dir(dbpath);
+ 			/* The medium appeared only after the retry window (db_gave_up) -
+ 			 * this is the first time we can see the file, and we never loaded
+ 			 * it. v2.1.7: if we are still early in this boot, RESTORE it (a
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index c27d415adf..9530ab8f71 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 072141e37f..6cf41a6ceb 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index f3dd83a6e2..c1be76826f 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 4f4c6c7398..36df1e65be 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 61659f841b..129cfaad2f 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 85c47fbe76..b77d9f6773 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 529bcf709d..4db6c62126 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index bb97e7b883..66a978e179 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 2f2a36f494..5f1cb386c4 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 4e60811078..d749a07e19 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 36b49b5879..88bc23f4f0 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index ff11c3dd54..a371c1dc04 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 255f837637..8b089bf741 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 246d58e5f8..069c84e817 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index d2bf99fe84..f838b68fee 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index aa54b74a15..a39ddda4a3 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 24dae3c600..8db30778e4 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 2604275fb0..d2bd05c8b5 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 6add7371fa..24916fba45 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/Reaper_Analytics.asp b/release/src/router/www/Reaper_Analytics.asp
+new file mode 100644
+index 0000000000..b9f1cfd6d4
+--- /dev/null
++++ b/release/src/router/www/Reaper_Analytics.asp
+@@ -0,0 +1,359 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     reaper v2.2.2: Data Export - configure per-device connection-health export to
++     an analytics engine (Splunk/Datadog/Dynatrace/Elastic/Generic/OTLP/Syslog push,
++     or a Prometheus scrape endpoint). Reads/writes via reaper_export.cgi; the health
++     snapshot is produced by rtrafd and pushed by rc/rexport.c. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RANL_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418; --panel-3:#191920;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06); --line-mid:rgba(255,255,255,.12);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 60px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++.lede{max-width:76ch;margin:6px 0 18px}
++.lede b{color:var(--bone);font-weight:600}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:13px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--line-soft);color:var(--bone);display:flex;align-items:center;gap:10px}
++.card>h2 .hint{font-family:var(--body);font-weight:400;letter-spacing:0;text-transform:none;font-size:11.5px;color:var(--steel);margin-left:auto}
++.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:9px 0}
++.row .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);min-width:120px}
++.grid2{display:grid;grid-template-columns:130px 1fr;gap:11px 14px;align-items:center}
++.grid2 .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.fchip{font-size:11.5px;border:1px solid var(--line-mid);border-radius:16px;padding:4px 13px;color:var(--bone-dim);cursor:pointer;user-select:none}
++.fchip.on{border-color:var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10)}
++.pchip{font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.03em;border:1px solid var(--line-mid);border-radius:7px;padding:7px 13px;color:var(--bone-dim);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:7px}
++.pchip .g{width:6px;height:6px;border-radius:50%;background:var(--steel)}
++.pchip.on{border-color:var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.09)}
++.pchip.on .g{background:var(--crimson)}
++.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid var(--line-mid);cursor:pointer;display:inline-block;vertical-align:middle;flex:none}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.tg.on{background:#33333a}
++.tg.on::after{left:21px;background:var(--bone)}
++input.fld,select.fld{width:100%;max-width:520px;background:var(--panel-3);border:1px solid var(--line-mid);border-radius:7px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 11px}
++input.fld:focus,select.fld:focus{outline:2px solid rgba(225,6,0,.4);outline-offset:1px;border-color:var(--crimson-deep)}
++.fld.mono{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;letter-spacing:.02em}
++.suffix{font-size:12px;color:var(--steel)}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border:1px solid transparent;border-radius:8px;padding:9px 18px;cursor:pointer}
++.btn.ghost{background:transparent;border:1px solid var(--line-mid);color:var(--bone-dim)}
++.btn.ghost:hover{border-color:var(--crimson-deep);color:var(--bone)}
++.btn[disabled]{opacity:.4;cursor:not-allowed}
++.note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:6px}
++.warnnote{font-size:12px;color:var(--amber);margin-top:6px;display:none}
++.saved{font-size:12px;color:var(--jade)}
++.saved.err{color:var(--danger)}
++.readout{display:flex;gap:26px;flex-wrap:wrap}
++.readout .kv{display:flex;flex-direction:column;gap:2px}
++.readout .k{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--steel)}
++.readout .v{font-family:var(--hdr);font-weight:600;font-size:19px;color:var(--bone)}
++.readout .v.ok{color:var(--jade)}
++pre.payload{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:8px;padding:12px 14px;overflow-x:auto;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--bone-dim);line-height:1.5;margin-top:10px;max-width:1120px;white-space:pre-wrap;word-break:break-word}
++.hidden{display:none}
++</style>
++</head>
++<body>
++<div class="pagehead">
++  <h1><#RANL_00#></h1>
++  <span class="statuspill off" id="pill">&nbsp;</span>
++</div>
++<p class="lede"><#RANL_01#></p>
++
++<div class="card">
++  <h2><#RANL_02#></h2>
++  <div class="row" style="margin-top:0">
++    <span class="lbl"><#RANL_38#></span>
++    <span class="tg" id="enTg"></span>
++    <span class="suffix" id="enTxt">&nbsp;</span>
++  </div>
++  <div class="readout" style="margin-top:12px">
++    <div class="kv"><span class="k"><#RANL_06#></span><span class="v" id="ro_dest">&mdash;</span></div>
++    <div class="kv"><span class="k"><#RANL_07#></span><span class="v" id="ro_last">&mdash;</span></div>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RANL_08#></h2>
++  <div class="row" id="presets" style="margin-top:0">
++    <span class="pchip" data-e="splunk"><span class="g"></span>Splunk HEC</span>
++    <span class="pchip" data-e="datadog"><span class="g"></span>Datadog</span>
++    <span class="pchip" data-e="dynatrace"><span class="g"></span>Dynatrace</span>
++    <span class="pchip" data-e="elastic"><span class="g"></span>Elastic / Kibana</span>
++    <span class="pchip" data-e="prometheus"><span class="g"></span>Prometheus</span>
++    <span class="pchip" data-e="otlp"><span class="g"></span>OpenTelemetry</span>
++    <span class="pchip" data-e="syslog"><span class="g"></span>Syslog (TLS)</span>
++    <span class="pchip" data-e="generic"><span class="g"></span>Generic HTTP</span>
++  </div>
++  <p class="note" id="engNote">&nbsp;</p>
++</div>
++
++<div class="card" id="pushCard">
++  <h2><#RANL_09#></h2>
++  <div class="grid2">
++    <span class="lbl"><#RANL_10#></span>
++    <input class="fld mono" id="urlFld" placeholder="https://collector.example:8088/services/collector">
++    <span class="lbl"><#RANL_11#></span>
++    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
++      <input class="fld mono" id="tokFld" style="max-width:340px">
++      <button class="btn ghost" id="tokBtn" onclick="editTok()"><#RANL_12#></button>
++    </div>
++    <span class="lbl splunkonly"><#RANL_17#></span>
++    <input class="fld splunkonly" id="idxFld" style="max-width:260px" placeholder="network">
++    <span class="lbl splunkonly"><#RANL_18#></span>
++    <input class="fld splunkonly" id="srcFld" style="max-width:280px" placeholder="reaper:client_health">
++    <span class="lbl"><#RANL_13#></span>
++    <div style="display:flex;align-items:center;gap:11px">
++      <span class="tg on" id="tlsTg" onclick="tlsToggle()"></span>
++      <span class="suffix" id="tlsTxt"><#RANL_14#></span>
++    </div>
++  </div>
++  <p class="warnnote" id="tlsWarn"><#RANL_16#></p>
++</div>
++
++<div class="card hidden" id="pullCard">
++  <h2><#RANL_19#> <span class="hint">Prometheus</span></h2>
++  <p class="note" style="margin-top:0"><#RANL_20#></p>
++  <div class="grid2" style="margin-top:12px">
++    <span class="lbl"><#RANL_21#></span>
++    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
++      <input class="fld mono" id="scrapeUrl" style="max-width:440px" readonly>
++      <button class="btn ghost" onclick="copyFld('scrapeUrl',this)"><#RANL_23#></button>
++    </div>
++    <span class="lbl"><#RANL_22#></span>
++    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
++      <input class="fld mono" id="scrapeTok" style="max-width:340px" readonly>
++      <button class="btn ghost" onclick="copyFld('scrapeTok',this)"><#RANL_23#></button>
++      <button class="btn ghost" onclick="regenScrape(this)"><#RANL_24#></button>
++    </div>
++  </div>
++  <pre class="payload" id="promYml">&nbsp;</pre>
++</div>
++
++<div class="card">
++  <h2><#RANL_25#></h2>
++  <div class="row"><span class="lbl"><#RANL_25#></span>
++    <span class="fchip mchip" data-m="lat"><#RANL_26#></span>
++    <span class="fchip mchip" data-m="tcp"><#RANL_27#></span>
++    <span class="fchip mchip" data-m="thru"><#RANL_28#></span>
++  </div>
++  <div class="row"><span class="lbl"><#RANL_29#></span>
++    <input class="fld" id="ivFld" style="max-width:90px" value="60"><span class="suffix"><#RANL_30#></span>
++  </div>
++  <div class="row"><span class="lbl">&nbsp;</span>
++    <span class="tg" id="maskTg" onclick="this.classList.toggle('on')"></span>
++    <span class="suffix"><#RANL_31#></span>
++  </div>
++  <div class="row" style="margin-top:4px">
++    <button class="btn ghost" onclick="preview(this)"><#RANL_32#></button>
++    <span class="note" style="margin:0"><#RANL_33#></span>
++  </div>
++  <pre class="payload hidden" id="previewBox">&nbsp;</pre>
++</div>
++
++<div class="card">
++  <h2><#RANL_34#></h2>
++  <div class="row" style="margin:0">
++    <button class="btn ghost" id="testBtn" onclick="runTest(this)"><#RANL_35#></button>
++    <span class="saved" id="testMsg" style="display:none">&nbsp;</span>
++  </div>
++</div>
++
++<div style="max-width:1120px;display:flex;align-items:center;gap:14px">
++  <button class="btn" id="saveBtn" onclick="save()"><#RANL_36#></button>
++  <span class="saved" id="saved" style="display:none">&nbsp;</span>
++</div>
++
++<script>
++var REAPER_HTTPID = '<% nvram_get("http_id"); %>';
++var C = null;             /* last loaded config */
++var engine = 'splunk';
++var tokenDirty = false;
++var mets = { lat:1, tcp:1, thru:1 };
++
++function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
++function $(id){ return document.getElementById(id); }
++
++var ENGNOTE = {
++  splunk:`<#RANL_39#>`, datadog:`<#RANL_39#>`, dynatrace:`<#RANL_39#>`,
++  elastic:`<#RANL_39#>`, generic:`<#RANL_39#>`, otlp:`<#RANL_39#>`,
++  syslog:`<#RANL_39#>`, prometheus:`<#RANL_40#>`
++};
++
++function xhr(method, url, cb){
++  var x = new XMLHttpRequest();
++  x.open(method, url + (url.indexOf('?')<0?'?':'&') + '_=' + Date.now(), true);
++  x.timeout = 30000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    var j = null;
++    if(x.status === 200){ try{ j = JSON.parse(x.responseText); }catch(e){ j = { _raw:x.responseText }; } }
++    cb(j);
++  };
++  x.send();
++}
++
++function setEngine(e){
++  engine = e;
++  Array.prototype.forEach.call(document.querySelectorAll('#presets .pchip'), function(c){
++    c.className = 'pchip' + (c.getAttribute('data-e') === e ? ' on' : '');
++  });
++  $('engNote').innerHTML = (ENGNOTE[e] || '');
++  var pull = (e === 'prometheus');
++  $('pushCard').className = 'card' + (pull ? ' hidden' : '');
++  $('pullCard').className = 'card' + (pull ? '' : ' hidden');
++  Array.prototype.forEach.call(document.querySelectorAll('.splunkonly'), function(n){ n.style.display = (e === 'splunk') ? '' : 'none'; });
++  if(pull) renderScrape();
++}
++
++function renderScrape(){
++  var origin = window.location.origin;
++  var tok = (C && C.scrape_token) ? C.scrape_token : '';
++  $('scrapeUrl').value = origin + '/reaper_metrics.cgi';
++  $('scrapeTok').value = tok || '(none - Regenerate)';
++  var yml = "scrape_configs:\n  - job_name: 'reaper'\n    scheme: https\n    metrics_path: /reaper_metrics.cgi\n    params: { token: ['" + (tok || 'YOUR_TOKEN') + "'] }\n    static_configs: [{ targets: ['" + window.location.host + "'] }]";
++  $('promYml').textContent = yml;
++}
++
++function tlsToggle(){
++  var t = $('tlsTg'); t.classList.toggle('on');
++  var on = t.classList.contains('on');
++  $('tlsTxt').innerHTML = on ? `<#RANL_14#>` : `<#RANL_15#>`;
++  $('tlsWarn').style.display = on ? 'none' : 'block';
++}
++function editTok(){ var f = $('tokFld'); f.readOnly = false; f.value = ''; tokenDirty = true; f.focus(); }
++
++function render(){
++  setEngine(C.engine || 'splunk');
++  $('urlFld').value = C.url || '';
++  if(C.token_set){ $('tokFld').value = '****' + (C.token_last4 || ''); $('tokFld').readOnly = true; tokenDirty = false; }
++  else { $('tokFld').value = ''; $('tokFld').readOnly = false; tokenDirty = true; }
++  $('idxFld').value = C.index || '';
++  $('srcFld').value = C.source || '';
++  $('tlsTg').className = 'tg' + (C.tlsverify ? ' on' : '');
++  $('tlsTxt').innerHTML = C.tlsverify ? `<#RANL_14#>` : `<#RANL_15#>`;
++  $('tlsWarn').style.display = C.tlsverify ? 'none' : 'block';
++  $('ivFld').value = C.interval || 60;
++  $('maskTg').className = 'tg' + (C.maskmac ? ' on' : '');
++  mets = { lat:0, tcp:0, thru:0 };
++  (C.metrics || 'lat,tcp,thru').split(',').forEach(function(m){ m = m.trim(); if(m) mets[m] = 1; });
++  Array.prototype.forEach.call(document.querySelectorAll('.mchip'), function(c){
++    var k = c.getAttribute('data-m');
++    c.className = 'fchip mchip' + (mets[k] ? ' on' : '');
++    c.onclick = function(){ mets[k] = mets[k] ? 0 : 1; c.className = 'fchip mchip' + (mets[k] ? ' on' : ''); };
++  });
++  var on = (C.mode === 'both' || C.mode === 'exportonly');
++  $('enTg').className = 'tg' + (on ? ' on' : '');
++  $('enTxt').textContent = on ? `<#RANL_04#>` : `<#RANL_05#>`;
++  var pill = $('pill');
++  pill.className = 'statuspill' + (on ? '' : ' off');
++  pill.textContent = on ? `<#RANL_04#>` : `<#RANL_05#>`;
++  $('ro_dest').textContent = C.engine ? C.engine : '-';
++  $('ro_last').textContent = (C.last && C.last.length) ? C.last : `<#RANL_41#>`;
++}
++
++$('enTg').onclick = function(){ this.classList.toggle('on');
++  var on = this.classList.contains('on');
++  $('enTxt').textContent = on ? `<#RANL_04#>` : `<#RANL_05#>`; };
++
++Array.prototype.forEach.call(document.querySelectorAll('#presets .pchip'), function(c){
++  c.onclick = function(){ setEngine(c.getAttribute('data-e')); };
++});
++
++function copyFld(id, b){ var f = $(id); f.select();
++  try{ document.execCommand('copy'); }catch(e){}
++  var o = b.textContent; b.textContent = `<#RANL_42#>`; setTimeout(function(){ b.textContent = o; }, 1000); }
++
++function regenScrape(b){
++  b.disabled = true;
++  xhr('GET', '/reaper_export.cgi?action=save&regen_scrape=1&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
++    b.disabled = false; load();
++  });
++}
++
++function preview(b){
++  var box = $('previewBox');
++  if(!box.classList.contains('hidden')){ box.classList.add('hidden'); return; }
++  xhr('GET', '/reaper_traffic.cgi?f=health', function(j){
++    var txt;
++    try{ txt = JSON.stringify(j, null, 2); }catch(e){ txt = (j && j._raw) || '{}'; }
++    box.textContent = txt;
++    box.classList.remove('hidden');
++  });
++}
++
++function runTest(b){
++  b.disabled = true; b.textContent = `<#RANL_43#>`;
++  var m = $('testMsg'); m.style.display = 'none';
++  xhr('GET', '/reaper_export.cgi?action=test&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
++    b.disabled = false; b.textContent = `<#RANL_35#>`;
++    m.className = 'saved' + (j && j.ok ? '' : ' err');
++    m.textContent = (j && j.result) ? j.result : (j && j.error) ? j.error : 'error';
++    m.style.display = '';
++  });
++}
++
++function metricList(){ var a = []; ['lat','tcp','thru'].forEach(function(k){ if(mets[k]) a.push(k); }); return a.join(','); }
++
++function save(){
++  var b = $('saveBtn'); b.disabled = true;
++  var mode = $('enTg').classList.contains('on')
++    ? ((C && C.mode === 'exportonly') ? 'exportonly' : 'both') : 'off';
++  var tlsv = $('tlsTg').classList.contains('on') ? '1' : '0';
++  var maskmac = $('maskTg').classList.contains('on') ? '1' : '0';
++  var q = '/reaper_export.cgi?action=save'
++    + '&mode=' + encodeURIComponent(mode)
++    + '&engine=' + encodeURIComponent(engine)
++    + '&url=' + encodeURIComponent($('urlFld').value)
++    + '&tlsv=' + tlsv
++    + '&interval=' + encodeURIComponent($('ivFld').value)
++    + '&metrics=' + encodeURIComponent(metricList())
++    + '&index=' + encodeURIComponent($('idxFld').value)
++    + '&source=' + encodeURIComponent($('srcFld').value)
++    + '&maskmac=' + maskmac
++    + '&http_id=' + encodeURIComponent(REAPER_HTTPID);
++  if(tokenDirty && $('tokFld').value) q += '&token=' + encodeURIComponent($('tokFld').value);
++  xhr('GET', q, function(j){
++    b.disabled = false;
++    var s = $('saved');
++    if(j && j.ok){ s.className = 'saved'; s.textContent = `<#RANL_37#>`; }
++    else { s.className = 'saved err'; s.textContent = (j && j.error) ? j.error : 'error'; }
++    s.style.display = '';
++    setTimeout(function(){ s.style.display = 'none'; }, 4000);
++    load();
++  });
++}
++
++function load(){
++  xhr('GET', '/reaper_export.cgi?action=status', function(j){
++    if(!j){ $('engNote').textContent = `<#RANL_45#>`; return; }
++    C = j; render();
++  });
++}
++function boot(){ load(); }
++if(document.readyState !== 'loading') boot();
++else document.addEventListener('DOMContentLoaded', boot);
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 90833079fb..915a1caf9d 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -93,10 +93,23 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+     <tbody id="ds_rows"></tbody>
+   </table></div>
+   <p class="note" id="timeline_note" style="margin-top:12px"><#RDST_36#></p>
+-  <div style="margin-top:14px">
+-    <button class="btn" id="saveBtn"><#RDST_31#></button>
+-    <span class="saved" id="saved" style="display:none">&nbsp;</span>
++</div>
++
++<div class="card">
++  <h2><#RDST_50#></h2>
++  <p class="note" style="margin-top:0"><#RDST_54#></p>
++  <div class="tblbar" style="margin-top:10px">
++    <span class="lbl"><#RDST_55#></span>
++    <span class="fchip xstg" data-x="off"><#RDST_51#></span>
++    <span class="fchip xstg" data-x="both"><#RDST_52#></span>
++    <span class="fchip xstg" data-x="exportonly"><#RDST_53#></span>
+   </div>
++  <p class="note" id="xnote">&nbsp;</p>
++</div>
++
++<div style="max-width:1120px;margin-top:2px">
++  <button class="btn" id="saveBtn"><#RDST_31#></button>
++  <span class="saved" id="saved" style="display:none">&nbsp;</span>
+ </div>
+ 
+ <script>
+@@ -110,6 +123,7 @@ var SERR = { RDEVE_1:`<#RDEVE_1#>`, RDEVE_12:`<#RDEVE_12#>`, RDEVE_13:`<#RDEVE_1
+ var S = null;                 /* store_status snapshot */
+ var loc = 'ram';              /* staged (unsaved) location */
+ var dsOn = {};                /* staged (unsaved) per-dataset enable */
++var xMode = 'off';            /* staged (unsaved) export mode: off|both|exportonly */
+ 
+ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+ function fmtBytes(b){
+@@ -156,6 +170,7 @@ function loadStatus(){
+     loc = (j.loc === 'jffs' || j.loc === 'usb') ? j.loc : 'ram';
+     dsOn = {};
+     (j.ds || '').split(',').forEach(function(t){ t = t.trim(); if(t) dsOn[t] = 1; });
++    xMode = (j.export_mode === 'both' || j.export_mode === 'exportonly') ? j.export_mode : 'off';
+     render();
+   });
+ }
+@@ -219,6 +234,17 @@ function render(){
+   Array.prototype.forEach.call(document.querySelectorAll('#ds_rows .tg'), function(n){
+     n.onclick = function(){ var k = n.getAttribute('data-k'); dsOn[k] = dsOn[k] ? 0 : 1; render(); };
+   });
++
++  /* export mode chips */
++  Array.prototype.forEach.call(document.querySelectorAll('.xstg'), function(n){
++    n.className = 'fchip xstg' + (n.getAttribute('data-x') === xMode ? ' on' : '');
++    n.onclick = function(){ xMode = n.getAttribute('data-x'); render(); };
++  });
++  var cfg = ' <a href="Reaper_Analytics.asp" target="_top" style="color:var(--bone);border-bottom:1px solid var(--crimson-deep)">' + esc(`<#RDST_59#>`) + '</a>';
++  var xn = document.getElementById('xnote');
++  xn.innerHTML = (xMode === 'off') ? esc(`<#RDST_56#>`)
++    : (xMode === 'both') ? (esc(`<#RDST_57#>`) + cfg)
++    : (esc(`<#RDST_58#>`) + cfg);
+ }
+ 
+ function save(){
+@@ -227,6 +253,7 @@ function save(){
+   var btn = document.getElementById('saveBtn'); btn.disabled = true;
+   xGet('/reaper_dev.cgi?action=store_set&loc=' + encodeURIComponent(loc) +
+        '&ds=' + encodeURIComponent(list) +
++       '&xmode=' + encodeURIComponent(xMode) +
+        '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
+     btn.disabled = false;
+     var s = document.getElementById('saved');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 8ca333351d..2f01d0cd97 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 3c0e496481..43f46b08dd 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 86794c502c..299d8970fc 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 10589edef6..eba185c4f4 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 554b07384a..6fb02b7706 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 07b57f83d4..30d31ff04f 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6193,3 +6193,57 @@ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+ RDST_46=Formatting permanently erases ALL data on this disk. Continue?
+ RDST_47=Volume label
++RANL_00=Data Export
++RANL_01=Send per-device connection-health metrics - latency, loss, jitter, TCP state and throughput - to an analytics engine. Nothing leaves the router until you enable it here.
++RANL_02=Status
++RANL_04=Active
++RANL_05=Disabled
++RANL_06=Destination
++RANL_07=Last result
++RANL_08=Analytics engine
++RANL_09=Endpoint
++RANL_10=URL
++RANL_11=API token
++RANL_12=Change
++RANL_13=Verify TLS certificate
++RANL_14=On - certificate checked against the system CA bundle
++RANL_15=Off - endpoint not verified
++RANL_16=TLS verification is off - metrics will be sent to an unverified endpoint. Use only for a self-signed collector on a trusted network.
++RANL_17=Index
++RANL_18=Sourcetype
++RANL_19=Scrape endpoint
++RANL_20=Add this target to your Prometheus configuration. The router exposes metrics in OpenMetrics format; the token authenticates the scrape.
++RANL_21=Metrics URL
++RANL_22=Scrape token
++RANL_23=Copy
++RANL_24=Regenerate
++RANL_25=What gets sent
++RANL_26=Latency / loss / jitter
++RANL_27=TCP connections &amp; state
++RANL_28=Throughput / online
++RANL_29=Push interval
++RANL_30=seconds
++RANL_31=Hash device MAC addresses before sending
++RANL_32=Preview payload
++RANL_33=See exactly what will leave the router.
++RANL_34=Test connection
++RANL_35=Send a test event
++RANL_36=Save &amp; Apply
++RANL_37=Saved.
++RANL_38=Enable export
++RANL_39=Push model - the router POSTs events to this endpoint.
++RANL_40=Pull model - Prometheus scrapes an OpenMetrics endpoint the router exposes.
++RANL_41=Never
++RANL_42=Copied
++RANL_43=Sending...
++RANL_45=Could not load the current settings.
++RDST_50=Data export
++RDST_51=Off
++RDST_52=Store + Export
++RDST_53=Export only
++RDST_54=Send per-device connection-health metrics to an analytics engine.
++RDST_55=Mode
++RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_57=Store + Export - keep history here and stream a copy live.
++RDST_58=Export only - stream metrics out without keeping a local copy.
++RDST_59=Configure destination
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index cb5cf9b8e8..f7a69210bd 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -367,6 +367,7 @@ define(function(){
+ 					{url: "Advanced_MultiFuncBtn.asp", tabName: "Multi-Function Button"},
+ 					{url: "Tools_OtherSettings.asp", tabName: "<#Reaper_c_tweaks#>"},
+ 					{url: "Reaper_Diag.asp", tabName: "<#RDIAG_00#>"},
++					{url: "Reaper_Analytics.asp", tabName: "<#RANL_00#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
+-- 
+2.25.1
+

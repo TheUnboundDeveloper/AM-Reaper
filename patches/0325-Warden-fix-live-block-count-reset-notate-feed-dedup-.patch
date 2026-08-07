@@ -1,0 +1,360 @@
+From d3779f94e4a6e4021aff2044fe5edcefeff6a408 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 4 Aug 2026 21:25:31 -0400
+Subject: [PATCH] Warden: fix live block-count reset + notate feed
+ dedup/overlap (items 1 & 3)
+
+ITEM 1 - 'block count doesn't track actual blocks' (field v2.1.2). Root cause:
+'total blocked' is read from the live RW_DROP DROP-rule packet counter, but
+apply.sh does 'iptables -N RW_DROP; -F RW_DROP' on every run AND re-runs on every
+restart_firewall (firewall.c:9405 re-execs apply.sh directly) -> the counter was
+zeroed on routine firewall restarts, so the UI total never accumulated. Fix:
+apply.sh now snapshots the counter about to be flushed into a persisted /tmp
+baseline (RW_BASE, accumulating) BEFORE teardown; stats.sh reports baseline +
+live. Survives restart_firewall (which re-execs apply.sh, not start_rwarden);
+resets only on a deliberate Warden reconfigure/disable (stop_rwarden unlinks
+RW_BASE) or reboot (/tmp clears) - a live 'since this Warden session' total.
+Read-only awk + one /tmp write before teardown: ZERO enforcement impact.
+KNOWN RESIDUAL (metal-only, flagged in-code): does not recover drops the HW
+flow-accelerator may offload without touching iptables.
+
+ITEM 3 - feed dedup/overlap disclosure. New dict token RWDN_55 (all 25 dicts,
+6189->6190 lockstep) under the feed checkboxes AND as a 'How Warden works'
+bullet: all enabled feeds merge into ONE de-duplicated hash:net set (sort -u ->
+ipset restore -> atomic swap), so overlapping feeds never double-block or bloat
+matching; FireHOL Level 1 already aggregates Spamhaus DROP / DShield / Feodo
+(Spamhaus still adds its IPv6 list). Addresses the 'feeds are duplicates' report.
+
+NOT BUILT - rides a future rung; METAL OWED.
+---
+ release/src/router/rc/rwarden.c          | 21 ++++++++++++++++++++-
+ release/src/router/www/BR.dict           |  1 +
+ release/src/router/www/CN.dict           |  1 +
+ release/src/router/www/CZ.dict           |  1 +
+ release/src/router/www/DA.dict           |  1 +
+ release/src/router/www/DE.dict           |  1 +
+ release/src/router/www/EN.dict           |  1 +
+ release/src/router/www/ES.dict           |  1 +
+ release/src/router/www/FI.dict           |  1 +
+ release/src/router/www/FR.dict           |  1 +
+ release/src/router/www/HU.dict           |  1 +
+ release/src/router/www/IT.dict           |  1 +
+ release/src/router/www/JP.dict           |  1 +
+ release/src/router/www/KR.dict           |  1 +
+ release/src/router/www/MS.dict           |  1 +
+ release/src/router/www/NL.dict           |  1 +
+ release/src/router/www/NO.dict           |  1 +
+ release/src/router/www/PL.dict           |  1 +
+ release/src/router/www/RO.dict           |  1 +
+ release/src/router/www/RU.dict           |  1 +
+ release/src/router/www/Reaper_Warden.asp |  2 ++
+ release/src/router/www/SL.dict           |  1 +
+ release/src/router/www/SV.dict           |  1 +
+ release/src/router/www/TH.dict           |  1 +
+ release/src/router/www/TR.dict           |  1 +
+ release/src/router/www/TW.dict           |  1 +
+ release/src/router/www/UK.dict           |  1 +
+ 27 files changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 810623c819..34e41c9905 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -54,6 +54,7 @@
+ #define RW_APPLY  "/tmp/rwarden/apply.sh"
+ #define RW_UPDATE "/tmp/rwarden/update.sh"
+ #define RW_STATS  "/tmp/rwarden/stats.sh"
++#define RW_BASE   "/tmp/rwarden/blocked_base"	/* cumulative block count across re-arms */
+ #define RW_CACHE  "/jffs/rwarden"
+ #define RW_SAVE   "/jffs/rwarden/sets.ipset"
+ 
+@@ -280,6 +281,19 @@ static void rw_gen_apply(void)
+ 	  "V6PFX=\"$(nvram get ipv6_prefix)\"\n"
+ 	  "V6LEN=\"$(nvram get ipv6_prefix_length)\"\n"
+ 	  "[ -n \"$V6PFX\" ] && [ -n \"$V6LEN\" ] && V6LAN=\"${V6PFX}/${V6LEN}\" || V6LAN=\"\"\n");
++	/* reaper (v2.1.x, field: "block count doesn't track actual blocks"): the
++	 * live RW_DROP packet counter is the ONLY source of "total blocked", but the
++	 * teardown below flushes RW_DROP - and apply.sh re-runs on every
++	 * restart_firewall - so the counter kept zeroing and the UI total never
++	 * accumulated. Snapshot the counter about to be discarded into a /tmp
++	 * baseline (accumulating); stats.sh then reports baseline + live. /tmp clears
++	 * on reboot, so this is a live/session total, not cross-reboot. NOTE: it does
++	 * NOT recover drops the HW flow-accelerator may offload without incrementing
++	 * iptables - that potential undercount is a separate, metal-only question. */
++	fprintf(f,
++	  "_rwb=$(cat " RW_BASE " 2>/dev/null); [ -n \"$_rwb\" ] || _rwb=0\n"
++	  "_rwc=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null; } | awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  "echo $((_rwb+_rwc)) > " RW_BASE "\n");
+ 	/* ---- teardown ---- both stacks (dispatch chain before its RW_DROP dep) */
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+@@ -546,8 +560,12 @@ static void rw_gen_stats(void)
+ 	  "TN=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN\" ] || TN=0\n"
+ 	  "TN6=$(ipset -t list rw_threat6 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN6\" ] || TN6=0\n"
+ 	  "GN=$(ipset list -n 2>/dev/null | grep -c '^rw_g_')\n"
+-	  "TOTAL=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null; } "
++	  "# total blocked = persisted baseline (carried across firewall re-arms that\n"
++	  "# flush RW_DROP) + the live RW_DROP packet counter\n"
++	  "RWBASE=$(cat " RW_BASE " 2>/dev/null); [ -n \"$RWBASE\" ] || RWBASE=0\n"
++	  "LIVE=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null; } "
+ 	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  "TOTAL=$((RWBASE+LIVE))\n"
+ 	  "# per-country pkt sums across both stacks\n"
+ 	  "TOP=$( { iptables -nvxL REAPER_WARDEN 2>/dev/null; ip6tables -nvxL REAPER_WARDEN 2>/dev/null; } | awk '\n"
+ 	  "  { for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
+@@ -565,6 +583,7 @@ void stop_rwarden(void)
+ 	unlink(RW_APPLY);
+ 	unlink(RW_UPDATE);
+ 	unlink(RW_STATS);
++	unlink(RW_BASE);	/* disabling Warden resets the cumulative block count */
+ }
+ 
+ void start_rwarden(void)
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index df7f5a4cd1..2d0e80983e 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Não é possível gravar o arquivo de sessão.
+ RADVE_19=Ação desconhecida.
+ RCON_35=Classe QoS
+ RWIF_81=Bloquear fixa este rádio no canal atual e reinicia a rede sem fio - todos os dispositivos neste rádio ficarão desconectados por cerca de 20 segundos enquanto ele volta. Continuar?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index b2a09f2c8c..b082b19efe 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=无法写入会话文件。
+ RADVE_19=未知操作。
+ RCON_35=QoS 类别
+ RWIF_81=锁定会将此无线电固定到当前信道并重启无线 - 在其恢复期间，此无线电上的所有设备都会断开约 20 秒。是否继续？
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 55207c33c4..d9d8466b7e 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Soubor relace nelze zapsat.
+ RADVE_19=Neznámá akce.
+ RCON_35=Třída QoS
+ RWIF_81=Uzamčení připne toto rádio na aktuální kanál a restartuje bezdrátovou síť - všechna zařízení na tomto rádiu se přibližně na 20 sekund odpojí, než se obnoví. Pokračovat?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 4968ecf062..d4676fec6a 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Kan ikke skrive sessionsfilen.
+ RADVE_19=Ukendt handling.
+ RCON_35=QoS-klasse
+ RWIF_81=Låsning fastlåser denne radio til den aktuelle kanal og genstarter det trådløse - alle enheder på denne radio afbrydes i cirka 20 sekunder, mens den kommer op igen. Fortsæt?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 73a535b578..ca09a7ecb4 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Sitzungsdatei kann nicht geschrieben werden.
+ RADVE_19=Unbekannte Aktion.
+ RCON_35=QoS-Klasse
+ RWIF_81=Das Sperren fixiert dieses Funkmodul auf den aktuellen Kanal und startet das WLAN neu - alle Geräte an diesem Funkmodul werden für etwa 20 Sekunden getrennt, während es wieder hochfährt. Fortfahren?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index dd528655ea..138dc43d15 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Cannot write the session file.
+ RADVE_19=Unknown action.
+ RCON_35=QoS Class
+ RWIF_81=Locking pins this radio to its current channel and restarts the wireless - every device on this radio will drop for about 20 seconds while it comes back. Continue?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 61d81a6c2c..46089c379c 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=No se puede escribir el archivo de sesión.
+ RADVE_19=Acción desconocida.
+ RCON_35=Clase QoS
+ RWIF_81=Bloquear fija esta radio en el canal actual y reinicia la conexión inalámbrica - todos los dispositivos en esta radio se desconectarán durante unos 20 segundos mientras se restablece. ¿Continuar?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 6421d867ad..74093739b5 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Istuntotiedostoa ei voi kirjoittaa.
+ RADVE_19=Tuntematon toiminto.
+ RCON_35=QoS-luokka
+ RWIF_81=Lukitseminen kiinnittää tämän radion nykyiseen kanavaan ja käynnistää langattoman uudelleen - kaikki tämän radion laitteet katkeavat noin 20 sekunniksi, kunnes se palautuu. Jatketaanko?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e0bf3cf4d3..8731fcf4bc 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Impossible d'écrire le fichier de session.
+ RADVE_19=Action inconnue.
+ RCON_35=Classe QoS
+ RWIF_81=Le verrouillage fixe cette radio sur le canal actuel et redémarre le Wi-Fi - tous les appareils sur cette radio seront déconnectés pendant environ 20 secondes le temps qu'elle redémarre. Continuer ?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 35d38f92f2..907444bd15 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=A munkamenetfájl nem írható.
+ RADVE_19=Ismeretlen művelet.
+ RCON_35=QoS-osztály
+ RWIF_81=A zárolás a jelenlegi csatornához rögzíti ezt a rádiót, és újraindítja a vezeték nélküli hálózatot - a rádióhoz csatlakozó összes eszköz körülbelül 20 másodpercre lecsatlakozik, amíg helyreáll. Folytatja?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 7304414310..1b719e6644 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Impossibile scrivere il file di sessione.
+ RADVE_19=Azione sconosciuta.
+ RCON_35=Classe QoS
+ RWIF_81=Il blocco fissa questa radio sul canale corrente e riavvia il wireless - tutti i dispositivi su questa radio si disconnetteranno per circa 20 secondi mentre si ripristina. Continuare?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 8da5db159e..46dff428c1 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=セッションファイルを書き込めません。
+ RADVE_19=不明な操作です。
+ RCON_35=QoSクラス
+ RWIF_81=ロックするとこの無線が現在のチャンネルに固定され、無線を再起動します。復帰するまでの約 20 秒間、この無線上のすべてのデバイスが切断されます。続行しますか？
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 8ebb7d939c..7849a64c1a 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=세션 파일을 쓸 수 없습니다.
+ RADVE_19=알 수 없는 동작입니다.
+ RCON_35=QoS 클래스
+ RWIF_81=잠그면 이 라디오가 현재 채널에 고정되고 무선이 다시 시작됩니다. 복구되는 동안 이 라디오의 모든 기기가 약 20초간 연결이 끊깁니다. 계속하시겠습니까?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 7529427a44..45cff70962 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Tidak dapat menulis fail sesi.
+ RADVE_19=Tindakan tidak diketahui.
+ RCON_35=Kelas QoS
+ RWIF_81=Mengunci menetapkan radio ini pada saluran semasa dan memulakan semula wayarles - semua peranti pada radio ini akan terputus selama kira-kira 20 saat sementara ia pulih. Teruskan?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 2998269d9f..ff24ebe758 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Kan het sessiebestand niet schrijven.
+ RADVE_19=Onbekende actie.
+ RCON_35=QoS-klasse
+ RWIF_81=Vergrendelen zet deze radio vast op het huidige kanaal en herstart de draadloze verbinding - alle apparaten op deze radio worden ongeveer 20 seconden losgekoppeld terwijl deze terugkomt. Doorgaan?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index af876133c9..0930583157 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Kan ikke skrive øktfilen.
+ RADVE_19=Ukjent handling.
+ RCON_35=QoS-klasse
+ RWIF_81=Låsing fester denne radioen til gjeldende kanal og starter det trådløse på nytt - alle enheter på denne radioen kobles fra i omtrent 20 sekunder mens den kommer tilbake. Fortsette?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 87daa3f326..ccaca05cf5 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Nie można zapisać pliku sesji.
+ RADVE_19=Nieznana akcja.
+ RCON_35=Klasa QoS
+ RWIF_81=Zablokowanie przypina to radio do bieżącego kanału i ponownie uruchamia sieć bezprzewodową - wszystkie urządzenia na tym radiu zostaną rozłączone na około 20 sekund, zanim wróci. Kontynuować?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 4eb9281318..fb21768209 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Nu se poate scrie fișierul de sesiune.
+ RADVE_19=Acțiune necunoscută.
+ RCON_35=Clasă QoS
+ RWIF_81=Blocarea fixează această radio pe canalul curent și repornește rețeaua wireless - toate dispozitivele de pe această radio se vor deconecta timp de aproximativ 20 de secunde până își revine. Continuați?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 073c972f05..3c79a7659e 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Не удаётся записать файл сеанса.
+ RADVE_19=Неизвестное действие.
+ RCON_35=Класс QoS
+ RWIF_81=Блокировка закрепляет этот радиомодуль на текущем канале и перезапускает беспроводную сеть - все устройства на этом радиомодуле отключатся примерно на 20 секунд, пока он восстанавливается. Продолжить?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 89b86aaae5..490d439c86 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -156,6 +156,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+     <div class="feedrow"><span class="fl"><#RWDN_32#></span><label class="ck"><input type="checkbox" id="f_feodo"><span class="box"></span></label></div>
+     <div class="feedrow"><span class="fl"><#RWDN_33#></span><label class="ck"><input type="checkbox" id="f_spamhaus"><span class="box"></span></label></div>
+     <div class="feedrow"><span class="fl"><#RWDN_34#></span><label class="ck"><input type="checkbox" id="f_dshield"><span class="box"></span></label></div>
++    <div class="desc" style="margin-top:10px"><#RWDN_55#></div>
+   </div>
+   <div class="card">
+     <h2><#RWDN_10#></h2>
+@@ -202,6 +203,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+     <li><#RWDN_40#></li>
+     <li><#RWDN_41#></li>
+     <li><#RWDN_42#></li>
++    <li><#RWDN_55#></li>
+   </ul>
+ </div>
+ 
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index e5db6b8d5d..e8b4939aee 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Datoteke seje ni mogoče zapisati.
+ RADVE_19=Neznano dejanje.
+ RCON_35=Razred QoS
+ RWIF_81=Zaklepanje pripne ta radio na trenutni kanal in znova zažene brezžično omrežje - vse naprave na tem radiu bodo za približno 20 sekund prekinjene, dokler se ne obnovi. Nadaljujem?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 35b9200b5f..a0f7f16045 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Det går inte att skriva sessionsfilen.
+ RADVE_19=Okänd åtgärd.
+ RCON_35=QoS-klass
+ RWIF_81=Låsning låser den här radion till den aktuella kanalen och startar om det trådlösa - alla enheter på den här radion kopplas från i cirka 20 sekunder medan den kommer tillbaka. Fortsätta?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index d8d0abe163..120e9ae4d4 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=ไม่สามารถเขียนไฟล์เซสชั
+ RADVE_19=การดำเนินการที่ไม่รู้จัก
+ RCON_35=คลาส QoS
+ RWIF_81=การล็อกจะตรึงวิทยุนี้ไว้ที่ช่องปัจจุบันและรีสตาร์ตระบบไร้สาย - อุปกรณ์ทั้งหมดบนวิทยุนี้จะหลุดการเชื่อมต่อประมาณ 20 วินาทีระหว่างที่ระบบกลับมา ต้องการดำเนินการต่อหรือไม่?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index bba87412c4..12977a9d0c 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Oturum dosyası yazılamıyor.
+ RADVE_19=Bilinmeyen işlem.
+ RCON_35=QoS Sınıfı
+ RWIF_81=Kilitlemek bu radyoyu geçerli kanala sabitler ve kablosuzu yeniden başlatır - bu radyodaki tüm cihazlar geri gelene kadar yaklaşık 20 saniye bağlantısını kaybeder. Devam edilsin mi?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index c6f1c9702d..7a286a4830 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=無法寫入工作階段檔案。
+ RADVE_19=未知的動作。
+ RCON_35=QoS 類別
+ RWIF_81=鎖定會將此無線電固定到目前頻道並重新啟動無線 - 在其恢復期間，此無線電上的所有裝置都會中斷約 20 秒。要繼續嗎？
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 7293178676..fe61784982 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6187,3 +6187,4 @@ RADVE_18=Не вдається записати файл сеансу.
+ RADVE_19=Невідома дія.
+ RCON_35=Клас QoS
+ RWIF_81=Блокування закріплює цей радіомодуль на поточному каналі та перезапускає бездротову мережу - усі пристрої на цьому радіомодулі відключаться приблизно на 20 секунд, поки він відновлюється. Продовжити?
++RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+-- 
+2.25.1
+

@@ -1,0 +1,515 @@
+From 8ae6724c30587b2c18c0998069117b71759d6df2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 8 Aug 2026 12:03:40 -0400
+Subject: [PATCH 365/369] analytics: standalone health-probe toggle
+ (independent of export) + preview empty-state
+
+Adds a master "Health probe" switch on Reaper_Analytics.asp that drives
+rtraf_hprobe directly, decoupled from export. The per-device collection
+already exists in rtrafd; this exposes an on/off control so the probe can
+run for the live view + payload preview WITHOUT arming any export mode
+(previously the probe only came on as a side effect of enabling export, so
+turning export off left nothing to preview - the source of the bare "{}").
+
+  - web.c do_reaper_export_cgi: new action=probe&on=0|1 (CSRF-guarded; sets
+    rtraf_hprobe, notify_rc restart_rtraf); status now returns "hprobe".
+  - Reaper_Analytics.asp: live Health-probe toggle row; Preview now shows a
+    helpful empty-state ("enable the probe" / "on, no samples yet") instead
+    of a bare {} when there is nothing to show.
+  - www/*.dict (25, lockstep): RANL_46..49.
+
+Rolled in at v2.3.0 with the header fix (owner: do not burn versions).
+---
+ release/src/router/httpd/web.c              | 14 +++++++++++
+ release/src/router/www/BR.dict              |  4 ++++
+ release/src/router/www/CN.dict              |  4 ++++
+ release/src/router/www/CZ.dict              |  4 ++++
+ release/src/router/www/DA.dict              |  4 ++++
+ release/src/router/www/DE.dict              |  4 ++++
+ release/src/router/www/EN.dict              |  4 ++++
+ release/src/router/www/ES.dict              |  4 ++++
+ release/src/router/www/FI.dict              |  4 ++++
+ release/src/router/www/FR.dict              |  4 ++++
+ release/src/router/www/HU.dict              |  4 ++++
+ release/src/router/www/IT.dict              |  4 ++++
+ release/src/router/www/JP.dict              |  4 ++++
+ release/src/router/www/KR.dict              |  4 ++++
+ release/src/router/www/MS.dict              |  4 ++++
+ release/src/router/www/NL.dict              |  4 ++++
+ release/src/router/www/NO.dict              |  4 ++++
+ release/src/router/www/PL.dict              |  4 ++++
+ release/src/router/www/RO.dict              |  4 ++++
+ release/src/router/www/RU.dict              |  4 ++++
+ release/src/router/www/Reaper_Analytics.asp | 26 ++++++++++++++++++++-
+ release/src/router/www/SL.dict              |  4 ++++
+ release/src/router/www/SV.dict              |  4 ++++
+ release/src/router/www/TH.dict              |  4 ++++
+ release/src/router/www/TR.dict              |  4 ++++
+ release/src/router/www/TW.dict              |  4 ++++
+ release/src/router/www/UK.dict              |  4 ++++
+ 27 files changed, 139 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index cc1814761b..a06ff0ed11 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24251,6 +24251,7 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 		gk_json_esc(stream, scr);	/* shown to the admin for their prometheus.yml */
+ 		websWrite(stream, ",\"last\":");
+ 		gk_json_esc(stream, sbuf);
++		websWrite(stream, ",\"hprobe\":%d", nvram_match("rtraf_hprobe", "1") ? 1 : 0);
+ 		websWrite(stream, "}");
+ 		return;
+ 	}
+@@ -24303,6 +24304,19 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	if (!strcmp(action, "probe")) {
++		/* v2.3.0: standalone master collect switch. Sets rtraf_hprobe directly,
++		 * INDEPENDENT of export - so the per-device health probe can run for the
++		 * live view + payload preview with export off. CSRF-guarded above
++		 * (action != status). Does not touch reaper_export_mode. */
++		char *on = get_cgi("on");
++		nvram_set("rtraf_hprobe", (on && !strcmp(on, "1")) ? "1" : "0");
++		nvram_commit();
++		notify_rc("restart_rtraf");
++		websWrite(stream, "{\"ok\":1,\"hprobe\":%d}", nvram_match("rtraf_hprobe", "1") ? 1 : 0);
++		return;
++	}
++
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
+ }
+ 
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 158ccc1e53..1e5b50a2e8 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 1707e8c7c6..df0a5409f7 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 97c60f95d7..b7dcb3e156 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 9c9ae45a10..a44974ba17 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index a912b02f2b..abd00150a2 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 15187b156c..dc548ef94b 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 53ebb624f2..5ebc1e14ca 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index ffba2c41cd..4013cbeb99 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d766beb851..e7e2d0d66c 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index fbd8f0b036..308219e22f 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 8eff3d8a7a..e3a6c5a15b 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 033c2f4fdf..2b47366a73 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 65bc5b9af5..1075fc940b 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 1b73a4b9da..f5f7d85924 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 2508e57d5d..c937d6b73d 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 313e0c4eff..dc9a2de414 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index f82172caec..891148b1ae 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 6dace16012..bb8aae0bd9 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 06e4bc5578..c3dbc6645e 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/Reaper_Analytics.asp b/release/src/router/www/Reaper_Analytics.asp
+index d9c20d2e30..2d149542d1 100644
+--- a/release/src/router/www/Reaper_Analytics.asp
++++ b/release/src/router/www/Reaper_Analytics.asp
+@@ -83,6 +83,12 @@ pre.payload{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:8
+ 
+ <div class="card">
+   <h2><#RANL_02#></h2>
++  <div class="row" style="margin-top:0">
++    <span class="lbl"><#RANL_46#></span>
++    <span class="tg" id="probeTg"></span>
++    <span class="suffix" id="probeTxt">&nbsp;</span>
++  </div>
++  <p class="note" style="margin:2px 0 12px"><#RANL_47#></p>
+   <div class="row" style="margin-top:0">
+     <span class="lbl"><#RANL_38#></span>
+     <span class="tg" id="enTg"></span>
+@@ -271,7 +277,23 @@ function render(){
+   pill.textContent = on ? `<#RANL_04#>` : `<#RANL_05#>`;
+   $('ro_dest').textContent = C.engine ? C.engine : '-';
+   $('ro_last').textContent = (C.last && C.last.length) ? C.last : `<#RANL_41#>`;
++  renderProbe();
++}
++
++function renderProbe(){
++  var on = !!(C && C.hprobe);
++  $('probeTg').className = 'tg' + (on ? ' on' : '');
++  $('probeTxt').textContent = on ? `<#RANL_04#>` : `<#RANL_05#>`;
+ }
++$('probeTg').onclick = function(){
++  var want = this.classList.contains('on') ? 0 : 1, self = this;
++  self.style.pointerEvents = 'none';
++  xhr('GET', '/reaper_export.cgi?action=probe&on=' + want + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
++    self.style.pointerEvents = '';
++    if(j && j.ok){ if(!C) C = {}; C.hprobe = j.hprobe; }
++    renderProbe();
++  });
++};
+ 
+ $('enTg').onclick = function(){ this.classList.toggle('on');
+   var on = this.classList.contains('on');
+@@ -295,9 +317,11 @@ function regenScrape(b){
+ function preview(b){
+   var box = $('previewBox');
+   if(!box.classList.contains('hidden')){ box.classList.add('hidden'); return; }
++  if(!(C && C.hprobe)){ box.textContent = `<#RANL_48#>`; box.classList.remove('hidden'); return; }
+   xhr('GET', '/reaper_traffic.cgi?f=health', function(j){
+     var txt;
+-    try{ txt = JSON.stringify(j, null, 2); }catch(e){ txt = (j && j._raw) || '{}'; }
++    if(j && j.devices && j.devices.length){ try{ txt = JSON.stringify(j, null, 2); }catch(e){ txt = (j && j._raw) || '{}'; } }
++    else { txt = `<#RANL_49#>`; }
+     box.textContent = txt;
+     box.classList.remove('hidden');
+   });
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index bd76211493..d4ddcab140 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 0b46b17480..9ea2339312 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 04fc1ca363..ccb1f26223 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 906cf02690..5585164aa8 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 7551e1f210..3585639298 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 8a8a97b2bd..6e5fe1df8c 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6242,6 +6242,10 @@ RANL_41=Never
+ RANL_42=Copied
+ RANL_43=Sending...
+ RANL_45=Could not load the current settings.
++RANL_46=Health probe
++RANL_47=Collects per-device latency, loss and TCP state for the live view and the payload preview below. Independent of export - the probe can run with export off.
++RANL_48=The health probe is off. Enable it above, then wait one interval - the collected per-device metrics will appear here.
++RANL_49=Health probe is on, but no per-device samples have landed in the current window yet. Give it a moment.
+ RDST_50=Data export
+ RDST_51=Off
+ RDST_52=Store + Export
+-- 
+2.25.1
+

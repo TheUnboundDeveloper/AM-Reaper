@@ -24,14 +24,26 @@ R=/home/reaper/asuswrt-be96u
 P=$R/release/src-rt-5.04behnd.4916
 TDIR=$P/targets/96813GW
 
+# REAPER_JOBS: top-level make parallelism. DEFAULT 1 - PROVEN REQUIRED.
+# 2026-08-04: a -j8 attempt (owner ask, first run) failed deterministically:
+# the vendor top-level targets have NO dependency ordering (clean-build's
+# `rm -rf fs.build` raced component installs -> "Directory not empty";
+# fsbuild raced the fs.install skeleton -> "cannot create directory ...
+# Not a directory"; make rt-be96u Error 2, reaper_verify 2 FAIL, ship
+# blocked). They are sequenced ONLY by serial execution - top level MUST
+# stay -j1. Parallelism comes from (a) sub-makes that force their own -jN
+# internally (libxml2/json-c force -j14) and (b) running two DISTROS at
+# once. Do not raise this default again without fixing the vendor Makefile
+# ordering.
+: "${REAPER_JOBS:=1}"
 _rb_variant() {   # $1 = MCP|noMCP
   local label="$1"
   cd "$P" || return 9
   rm -f .config "config_${TARGET}" "$R"/release/src/router/zlib/stamp-h1
-  echo "=== [$label] make $TARGET pass1 (regen; may die at setprofile) $(date) ==="
-  nice make "$TARGET" FORCE=1 -j1 >/dev/null 2>&1; echo "[$label] pass1_exit=$?"
-  echo "=== [$label] make $TARGET pass2 $(date) ==="
-  nice make "$TARGET" FORCE=1 -j1; echo "[$label] MAKE_EXIT=$?"
+  echo "=== [$label] make $TARGET pass1 (regen; may die at setprofile, -j${REAPER_JOBS}) $(date) ==="
+  nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}" >/dev/null 2>&1; echo "[$label] pass1_exit=$?"
+  echo "=== [$label] make $TARGET pass2 (-j${REAPER_JOBS}) $(date) ==="
+  nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}"; echo "[$label] MAKE_EXIT=$?"
   cd "$R" || return 1
 }
 
@@ -85,6 +97,27 @@ reaper_build() {
   find "$R"/release/src/router -name 'aclocal.m4' -exec touch -t 200001020000 {} + 2>/dev/null
   find "$R"/release/src/router \( -name 'configure' -o -name 'Makefile.in' -o -name 'config.h.in' \) -exec touch -t 200001030000 {} + 2>/dev/null
   echo "normalize done"
+
+  # --- openvpn autotools version-drift guard -------------------------------
+  # openvpn's build rule (release/src/router/Makefile) only runs ./autogen.sh
+  # when openvpn/Makefile is ABSENT, and the mtime-normalize above freezes the
+  # generated ./configure as "newer than version.m4" so autotools never
+  # regenerates it. Net effect: a version.m4 bump (e.g. 2.7.4 -> 2.7.5, carried
+  # from upstream Merlin) never reaches the generated config.h, so the compiled
+  # binary keeps reporting the OLD version even though the .c source is new
+  # (field-observed: v2.1.2 shipped 2.7.5 code still reporting "OpenVPN 2.7.4").
+  # If the committed version.m4 disagrees with the generated config.h, wipe the
+  # openvpn generated files so the next build regenerates them at the real
+  # version. Cheap: fires only on an actual version bump.
+  local _ov="$R"/release/src/router/openvpn _ovv _ovc
+  if [ -f "$_ov/version.m4" ]; then
+    _ovv=$(grep -oE 'PRODUCT_VERSION_RESOURCE\], \[[0-9]+,[0-9]+,[0-9]+' "$_ov/version.m4" | grep -oE '[0-9]+,[0-9]+,[0-9]+' | tr ',' '.')
+    if [ -n "$_ovv" ] && [ -f "$_ov/config.h" ] && ! grep -q "OpenVPN ${_ovv}\"" "$_ov/config.h"; then
+      _ovc=$(grep -oE 'OpenVPN [0-9.]+' "$_ov/config.h" | head -1)
+      echo "openvpn version drift: version.m4=$_ovv but config.h=[$_ovc] -> wiping openvpn generated files to force autogen regen"
+      rm -f "$_ov/Makefile" "$_ov/config.h" "$_ov/config.status" "$_ov/configure"
+    fi
+  fi
 
   for v in $VARIANTS; do
     if [ "$v" = "noMCP" ]; then

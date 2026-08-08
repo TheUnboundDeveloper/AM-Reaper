@@ -1,0 +1,1129 @@
+From 7bd0ff543d3b199d8b1acbb3735bac27a7df885d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 7 Aug 2026 12:18:28 -0400
+Subject: [PATCH] v2.2.5: privacy + polish batch (5 backlog items) - mask Wi-Fi
+ key, de-cloud icons, full-screen loader, offline device names, i18n residuals
+
+- SDN reconnect card: mask the plaintext Wi-Fi key. state.js showWlHintContainer()
+  renders "<#Network_key#>: <b>KEY</b>" per band as a reconnect hint to a Wi-Fi admin;
+  a new sdn.js-local reaperMaskWlHintKey() replaces the rendered key with dots at all 12
+  apply call sites. The shared state.js body (also used by mlo/Advanced_VLAN/Roaming) is
+  untouched. (backlog option ii)
+
+- De-cloud the 3 remaining ASUS-CDN icon fetches (extends the v2.2.0 fix): httpApi.js
+  checkCloudModelIcon() now returns the no-icon callback; index.asp client-detail uses the
+  bundled type icon; AdaptiveQoS_Bandwidth_Monitor.asp keeps the bundled per-app icon. No
+  browser fetch to nw-dlcdnet.asus.com for device/model/app icons remains.
+
+- Loading/percent/reboot overlay now covers the whole screen: raised the UI4 shadow loader
+  (popup.js .popup_bg, was z 2000, below the shell menu) and the legacy #Loading overlay
+  (UI4 index_style.css .popup_bg, was z 9999) above all shell chrome so the nav/header are
+  not clickable during an apply/reboot.
+
+- Traffic Analyzer history: resolve OFFLINE device names. Reaper_Traffic.asp now seeds its
+  name map from custom_clientlist (the persistent master, which retains named offline
+  devices) so 24h/week/month rows show the name instead of a bare IP/MAC; the live
+  networkmap list still overrides for online devices. (closes Client ID + month-view items)
+
+- i18n residuals: tokenize the Connections Quick Look labels in Reaper_Conn.asp (reuse
+  Clientlist_device / IPConnection_VSList_Internal|External; new RCON_36-40 for
+  State/Scope/Quick Look/Advanced/Pause) and complete RADV_01 (was truncated) + translate
+  RWDN_55 (was English-seeded) across all 24 non-EN dicts. 25 real dicts lockstep at 6254.
+
+BE96U MCP built (MAKE_EXIT=0), dicts regenerated + validated, shipped for owner testing.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ .../www/AdaptiveQoS_Bandwidth_Monitor.asp     | 19 ++------
+ release/src/router/www/BR.dict                |  9 +++-
+ release/src/router/www/CN.dict                |  9 +++-
+ release/src/router/www/CZ.dict                |  9 +++-
+ release/src/router/www/DA.dict                |  9 +++-
+ release/src/router/www/DE.dict                |  9 +++-
+ release/src/router/www/EN.dict                |  5 +++
+ release/src/router/www/ES.dict                |  9 +++-
+ release/src/router/www/FI.dict                |  9 +++-
+ release/src/router/www/FR.dict                |  9 +++-
+ release/src/router/www/HU.dict                |  9 +++-
+ release/src/router/www/IT.dict                |  9 +++-
+ release/src/router/www/JP.dict                |  9 +++-
+ release/src/router/www/KR.dict                |  9 +++-
+ release/src/router/www/MS.dict                |  9 +++-
+ release/src/router/www/NL.dict                |  9 +++-
+ release/src/router/www/NO.dict                |  9 +++-
+ release/src/router/www/PL.dict                |  9 +++-
+ release/src/router/www/RO.dict                |  9 +++-
+ release/src/router/www/RU.dict                |  9 +++-
+ release/src/router/www/Reaper_Conn.asp        | 10 ++---
+ release/src/router/www/Reaper_Traffic.asp     | 16 +++++++
+ release/src/router/www/SL.dict                |  9 +++-
+ release/src/router/www/SV.dict                |  9 +++-
+ release/src/router/www/TH.dict                |  9 +++-
+ release/src/router/www/TR.dict                |  9 +++-
+ release/src/router/www/TW.dict                |  9 +++-
+ release/src/router/www/UK.dict                |  9 +++-
+ release/src/router/www/index.asp              | 28 +++---------
+ release/src/router/www/js/httpApi.js          | 27 +++--------
+ release/src/router/www/popup.js               |  6 ++-
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js | 45 ++++++++++++++-----
+ .../www/sysdep/FUNCTION/UI4/index_style.css   |  7 ++-
+ 34 files changed, 253 insertions(+), 128 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 7d45c7db9d..8ac1c57dd2 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.2.4
++EXTENDNO=Reaper_v2.2.5
+ 
+ RCNO=0
+diff --git a/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp b/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp
+index cfeea63025..20962eacc4 100644
+--- a/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp
++++ b/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp
+@@ -782,21 +782,10 @@ function render_app_icon(apps_array){
+         const icon = document.querySelector('.appIcons[data-type="'+apps_array[i][3]+'-'+apps_array[i][4]+'"]');
+         if(icon){
+             if(!icon.classList.contains('cloudIcon') && !icon.classList.contains('noCloudIcon')){
+-                fetch('https://nw-dlcdnet.asus.com/plugin/app_icons/'+ apps_array[i][3] +'-'+ apps_array[i][4] +'-0.png')
+-                    .then(response => {
+-                        if (!response.ok) {
+-                            throw new Error('Network response was not ok');
+-                        }
+-                        return response.blob();
+-                    })
+-                    .then(blob => {
+-                        const imageUrl = URL.createObjectURL(blob)
+-                        icon.style.backgroundImage = `url(${imageUrl})`;
+-                        icon.classList.add('cloudIcon');
+-                    })
+-                    .catch(error => {
+-                        //
+-                    })
++                /* reaper de-cloud: do not fetch per-app icons from nw-dlcdnet.asus.com -
++                   that request leaks the user's app set to ASUS. Keep the bundled default
++                   icon and mark the slot done so it isn't retried. */
++                icon.classList.add('noCloudIcon');
+             }
+         }
+     }
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 9530ab8f71..158ccc1e53 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Consultor de IA
+ Reaper_c_system_info=Informações do Sistema
+ Reaper_c_language=Idioma
+ RSHL_reboot_note=A interface recarregará quando o roteador voltar.
+-RADV_01=Uma ponte <b>somente leitura</b> que permite ao <b>seu próprio</b> assistente de IA ler os dados deste roteador
++RADV_01=Uma ponte <b>somente leitura</b> que permite que <b>seu próprio</b> assistente de IA leia o status e a configuração deste roteador.
+ RADV_02=<b>Desligado por padrão.</b> Nada escuta até você ativá-lo abaixo, e ele nunca sobrevive a uma reinicialização.
+ RADV_03=<b>Somente LAN.</b> Ele vincula o endereço LAN deste roteador e nunca é acessível pela internet.
+ RADV_04=<b>Somente leitura.</b> Não pode alterar nenhuma configuração. Quando você permite, ele também pode executar diagnósticos de rede limitados e somente leitura (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=A chave USB cadastrada não foi encontrada. Insira sua chave para ativa
+ RADVE_18=Não é possível gravar o arquivo de sessão.
+ RADVE_19=Ação desconhecida.
+ RCON_35=Classe QoS
++RCON_36=Estado
++RCON_37=Escopo
++RCON_38=Visão Rápida
++RCON_39=Avançado
++RCON_40=Pausar
+ RWIF_81=Bloquear fixa este rádio no canal atual e reinicia a rede sem fio - todos os dispositivos neste rádio ficarão desconectados por cerca de 20 segundos enquanto ele volta. Continuar?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Todas as listas ativadas são combinadas em um único conjunto sem duplicatas, para que listas sobrepostas nunca bloqueiem duas vezes nem tornem a correspondência mais lenta. O FireHOL Level 1 já inclui Spamhaus DROP, DShield e Feodo &mdash; ativá-las junto com ele é redundante (o Spamhaus ainda adiciona sua lista IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 6cf41a6ceb..1707e8c7c6 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI 顾问
+ Reaper_c_system_info=系统信息
+ Reaper_c_language=语言
+ RSHL_reboot_note=路由器恢复后界面将重新加载。
+-RADV_01=一个<b>只读</b>桥接，让<b>你自己的</b>AI 助手读取本路由器的
++RADV_01=一个<b>只读</b>桥接，让<b>您自己的</b>AI 助手读取本路由器的状态和配置。
+ RADV_02=<b>默认关闭。</b>在你于下方启用前不会有任何监听，且重启后绝不保留。
+ RADV_03=<b>仅限 LAN。</b>它绑定本路由器的 LAN 地址，从互联网绝不可达。
+ RADV_04=<b>只读。</b>它无法更改任何设置。当你允许时，它还可运行受限的只读网络诊断（ping / traceroute / DNS / netstat）。
+@@ -6186,8 +6186,13 @@ RADVE_17=未找到已登记的 USB 密钥。请插入密钥以激活。
+ RADVE_18=无法写入会话文件。
+ RADVE_19=未知操作。
+ RCON_35=QoS 类别
++RCON_36=状态
++RCON_37=范围
++RCON_38=快速查看
++RCON_39=高级
++RCON_40=暂停
+ RWIF_81=锁定会将此无线电固定到当前信道并重启无线 - 在其恢复期间，此无线电上的所有设备都会断开约 20 秒。是否继续？
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=所有启用的订阅源会合并为一个去重后的集合，因此重叠的列表不会重复拦截或拖慢匹配速度。FireHOL Level 1 已包含 Spamhaus DROP、DShield 和 Feodo &mdash; 再同时启用这些是多余的（Spamhaus 仍会添加其 IPv6 列表）。
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index c1be76826f..97c60f95d7 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI poradce
+ Reaper_c_system_info=Informace o systému
+ Reaper_c_language=Jazyk
+ RSHL_reboot_note=Rozhraní se znovu načte, až bude router opět dostupný.
+-RADV_01=<b>Read-only</b> most, který umožní <b>vašemu vlastnímu</b> AI asistentovi číst z tohoto routeru
++RADV_01=Most <b>pouze pro čtení</b>, který umožňuje <b>vašemu vlastnímu</b> AI asistentovi číst stav a konfiguraci tohoto routeru.
+ RADV_02=<b>Ve výchozím stavu vypnuto.</b> Nic neposlouchá, dokud to níže neaktivujete, a nikdy nepřežije restart.
+ RADV_03=<b>Pouze LAN.</b> Naváže se na LAN adresu tohoto routeru a nikdy není dostupný z internetu.
+ RADV_04=<b>Pouze pro čtení.</b> Nemůže změnit žádné nastavení. Když to povolíte, může také spouštět omezené síťové diagnostiky pouze pro čtení (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Zaregistrovaný USB klíč nebyl nalezen. Pro aktivaci vložte klíč.
+ RADVE_18=Soubor relace nelze zapsat.
+ RADVE_19=Neznámá akce.
+ RCON_35=Třída QoS
++RCON_36=Stav
++RCON_37=Rozsah
++RCON_38=Rychlý náhled
++RCON_39=Pokročilé
++RCON_40=Pozastavit
+ RWIF_81=Uzamčení připne toto rádio na aktuální kanál a restartuje bezdrátovou síť - všechna zařízení na tomto rádiu se přibližně na 20 sekund odpojí, než se obnoví. Pokračovat?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Všechny povolené zdroje se sloučí do jedné sady bez duplicit, takže překrývající se seznamy nikdy neblokují dvakrát ani nezpomalují porovnávání. FireHOL Level 1 již obsahuje Spamhaus DROP, DShield a Feodo &mdash; jejich povolení vedle něj je nadbytečné (Spamhaus stále přidává svůj seznam IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 36df1e65be..9c9ae45a10 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI-rådgiver
+ Reaper_c_system_info=Systemoplysninger
+ Reaper_c_language=Sprog
+ RSHL_reboot_note=Brugerfladen genindlæses, når routeren er tilbage.
+-RADV_01=En <b>skrivebeskyttet</b> bro, der lader <b>din egen</b> AI-assistent læse denne routers
++RADV_01=En <b>skrivebeskyttet</b> bro, der lader <b>din egen</b> AI-assistent læse denne routers status og konfiguration.
+ RADV_02=<b>Slået fra som standard.</b> Intet lytter, før du aktiverer det nedenfor, og det overlever aldrig en genstart.
+ RADV_03=<b>Kun LAN.</b> Den binder til denne routers LAN-adresse og er aldrig tilgængelig fra internettet.
+ RADV_04=<b>Kun læsning.</b> Den kan ikke ændre en indstilling. Når du tillader det, kan den også køre afgrænsede, skrivebeskyttede netværksdiagnoser (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Den registrerede USB-nøgle blev ikke fundet. Indsæt din nøgle for at
+ RADVE_18=Kan ikke skrive sessionsfilen.
+ RADVE_19=Ukendt handling.
+ RCON_35=QoS-klasse
++RCON_36=Tilstand
++RCON_37=Omfang
++RCON_38=Hurtigt overblik
++RCON_39=Avanceret
++RCON_40=Pause
+ RWIF_81=Låsning fastlåser denne radio til den aktuelle kanal og genstarter det trådløse - alle enheder på denne radio afbrydes i cirka 20 sekunder, mens den kommer op igen. Fortsæt?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Alle aktiverede feeds flettes til ét sæt uden dubletter, så overlappende lister aldrig blokerer to gange eller sinker matchningen. FireHOL Level 1 indeholder allerede Spamhaus DROP, DShield og Feodo &mdash; at aktivere disse ved siden af er overflødigt (Spamhaus tilføjer stadig sin IPv6-liste).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 129cfaad2f..a912b02f2b 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=KI-Berater
+ Reaper_c_system_info=Systeminfo
+ Reaper_c_language=Sprache
+ RSHL_reboot_note=Die Oberfläche wird neu geladen, sobald der Router wieder verfügbar ist.
+-RADV_01=Eine <b>schreibgeschützte</b> Brücke, über die <b>Ihr eigener</b> KI-Assistent diesen Router lesen kann
++RADV_01=Eine <b>schreibgeschützte</b> Brücke, über die <b>Ihr eigener</b> KI-Assistent den Status und die Konfiguration dieses Routers lesen kann.
+ RADV_02=<b>Standardmäßig aus.</b> Nichts lauscht, bis Sie es unten scharfschalten, und es überdauert keinen Neustart.
+ RADV_03=<b>Nur LAN.</b> Es bindet die LAN-Adresse dieses Routers und ist niemals aus dem Internet erreichbar.
+ RADV_04=<b>Nur Lesen.</b> Es kann keine Einstellung ändern. Wenn Sie es erlauben, kann es zudem begrenzte, schreibgeschützte Netzwerkdiagnosen ausführen (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Der registrierte USB-Schlüssel wurde nicht gefunden. Schlüssel zum Ak
+ RADVE_18=Sitzungsdatei kann nicht geschrieben werden.
+ RADVE_19=Unbekannte Aktion.
+ RCON_35=QoS-Klasse
++RCON_36=Status
++RCON_37=Bereich
++RCON_38=Schnellansicht
++RCON_39=Erweitert
++RCON_40=Pause
+ RWIF_81=Das Sperren fixiert dieses Funkmodul auf den aktuellen Kanal und startet das WLAN neu - alle Geräte an diesem Funkmodul werden für etwa 20 Sekunden getrennt, während es wieder hochfährt. Fortfahren?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Alle aktivierten Feeds werden zu einem deduplizierten Satz zusammengeführt, sodass sich überschneidende Listen niemals doppelt blockieren oder den Abgleich verlangsamen. FireHOL Level 1 enthält bereits Spamhaus DROP, DShield und Feodo &mdash; diese zusätzlich zu aktivieren ist überflüssig (Spamhaus fügt dennoch seine IPv6-Liste hinzu).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index b77d9f6773..15187b156c 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6186,6 +6186,11 @@ RADVE_17=The enrolled USB key was not found. Insert your key to arm.
+ RADVE_18=Cannot write the session file.
+ RADVE_19=Unknown action.
+ RCON_35=QoS Class
++RCON_36=State
++RCON_37=Scope
++RCON_38=Quick Look
++RCON_39=Advanced
++RCON_40=Pause
+ RWIF_81=Locking pins this radio to its current channel and restarts the wireless - every device on this radio will drop for about 20 seconds while it comes back. Continue?
+ RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
+ RDST_43=USB Disks
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 4db6c62126..53ebb624f2 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Asesor de IA
+ Reaper_c_system_info=Información del sistema
+ Reaper_c_language=Idioma
+ RSHL_reboot_note=La interfaz se recargará cuando el router vuelva a estar disponible.
+-RADV_01=Un puente de <b>solo lectura</b> que permite a <b>tu propio</b> asistente de IA leer los datos de este router
++RADV_01=Un puente de <b>solo lectura</b> que permite que <b>su propio</b> asistente de IA lea el estado y la configuración de este router.
+ RADV_02=<b>Desactivado por defecto.</b> Nada escucha hasta que lo actives más abajo, y nunca sobrevive a un reinicio.
+ RADV_03=<b>Solo LAN.</b> Se enlaza a la dirección LAN de este router y nunca es accesible desde internet.
+ RADV_04=<b>Solo lectura.</b> No puede cambiar ninguna configuración. Cuando lo permitas, también puede ejecutar diagnósticos de red acotados y de solo lectura (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=No se encontró la llave USB registrada. Inserte su llave para armar.
+ RADVE_18=No se puede escribir el archivo de sesión.
+ RADVE_19=Acción desconocida.
+ RCON_35=Clase QoS
++RCON_36=Estado
++RCON_37=Ámbito
++RCON_38=Vista rápida
++RCON_39=Avanzado
++RCON_40=Pausar
+ RWIF_81=Bloquear fija esta radio en el canal actual y reinicia la conexión inalámbrica - todos los dispositivos en esta radio se desconectarán durante unos 20 segundos mientras se restablece. ¿Continuar?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Todas las fuentes habilitadas se combinan en un único conjunto sin duplicados, de modo que las listas superpuestas nunca bloquean dos veces ni ralentizan la coincidencia. FireHOL Level 1 ya incluye Spamhaus DROP, DShield y Feodo &mdash; habilitarlas junto a él es redundante (Spamhaus aún añade su lista IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 66a978e179..ffba2c41cd 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Tekoälyneuvoja
+ Reaper_c_system_info=Järjestelmätiedot
+ Reaper_c_language=Kieli
+ RSHL_reboot_note=Käyttöliittymä latautuu uudelleen, kun reititin on taas käytettävissä.
+-RADV_01=<b>Vain luku</b> -silta, jonka avulla <b>oma</b> tekoälyavustajasi voi lukea tämän reitittimen
++RADV_01=<b>Vain luku</b> -silta, jonka avulla <b>oma</b> tekoälyavustajasi voi lukea tämän reitittimen tilan ja asetukset.
+ RADV_02=<b>Oletuksena pois päältä.</b> Mikään ei kuuntele, ennen kuin aktivoit sen alta, eikä se säily uudelleenkäynnistyksen yli.
+ RADV_03=<b>Vain LAN.</b> Se sitoo tämän reitittimen LAN-osoitteen eikä ole koskaan tavoitettavissa internetistä.
+ RADV_04=<b>Vain luku.</b> Se ei voi muuttaa asetuksia. Kun sallit sen, se voi myös ajaa rajattuja, vain lukevia verkkodiagnostiikkoja (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Rekisteröityä USB-avainta ei löytynyt. Aseta avain aktivoidaksesi.
+ RADVE_18=Istuntotiedostoa ei voi kirjoittaa.
+ RADVE_19=Tuntematon toiminto.
+ RCON_35=QoS-luokka
++RCON_36=Tila
++RCON_37=Alue
++RCON_38=Pikakatsaus
++RCON_39=Lisäasetukset
++RCON_40=Keskeytä
+ RWIF_81=Lukitseminen kiinnittää tämän radion nykyiseen kanavaan ja käynnistää langattoman uudelleen - kaikki tämän radion laitteet katkeavat noin 20 sekunniksi, kunnes se palautuu. Jatketaanko?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Kaikki käytössä olevat syötteet yhdistetään yhdeksi kaksoiskappaleista puhdistetuksi joukoksi, joten päällekkäiset luettelot eivät koskaan estä kahdesti tai hidasta täsmäytystä. FireHOL Level 1 sisältää jo Spamhaus DROP-, DShield- ja Feodo-luettelot &mdash; niiden ottaminen käyttöön sen rinnalla on turhaa (Spamhaus lisää silti IPv6-luettelonsa).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 5f1cb386c4..d766beb851 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Conseiller IA
+ Reaper_c_system_info=Infos système
+ Reaper_c_language=Langue
+ RSHL_reboot_note=L’interface se rechargera au retour du routeur.
+-RADV_01=Un pont en <b>lecture seule</b> qui permet à <b>votre propre</b> assistant IA de lire l'état de ce routeur
++RADV_01=Un pont <b>en lecture seule</b> qui permet à <b>votre propre</b> assistant IA de lire l'état et la configuration de ce routeur.
+ RADV_02=<b>Désactivé par défaut.</b> Rien n'écoute tant que vous ne l'armez pas ci-dessous, et cela ne survit jamais à un redémarrage.
+ RADV_03=<b>LAN uniquement.</b> Il se lie à l'adresse LAN de ce routeur et n'est jamais accessible depuis Internet.
+ RADV_04=<b>Lecture seule.</b> Il ne peut modifier aucun réglage. Si vous l'autorisez, il peut aussi exécuter des diagnostics réseau bornés, en lecture seule (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Clé USB enregistrée introuvable. Insérez votre clé pour armer.
+ RADVE_18=Impossible d'écrire le fichier de session.
+ RADVE_19=Action inconnue.
+ RCON_35=Classe QoS
++RCON_36=État
++RCON_37=Portée
++RCON_38=Aperçu rapide
++RCON_39=Avancé
++RCON_40=Pause
+ RWIF_81=Le verrouillage fixe cette radio sur le canal actuel et redémarre le Wi-Fi - tous les appareils sur cette radio seront déconnectés pendant environ 20 secondes le temps qu'elle redémarre. Continuer ?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Tous les flux activés sont fusionnés en un seul ensemble dédupliqué, afin que les listes qui se chevauchent ne bloquent jamais deux fois ni ne ralentissent la correspondance. FireHOL Level 1 inclut déjà Spamhaus DROP, DShield et Feodo &mdash; les activer en plus est redondant (Spamhaus ajoute tout de même sa liste IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index d749a07e19..fbd8f0b036 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI tanácsadó
+ Reaper_c_system_info=Rendszerinformáció
+ Reaper_c_language=Nyelv
+ RSHL_reboot_note=A felület újratöltődik, amint a router elérhető.
+-RADV_01=Egy <b>csak olvasható</b> híd, amely lehetővé teszi <b>saját</b> AI asszisztensének, hogy olvassa e router
++RADV_01=Egy <b>csak olvasható</b> híd, amely lehetővé teszi, hogy <b>saját</b> MI-asszisztense olvassa a router állapotát és konfigurációját.
+ RADV_02=<b>Alapból kikapcsolva.</b> Semmi sem figyel, amíg lent nem élesíti, és sosem éli túl az újraindítást.
+ RADV_03=<b>Csak LAN.</b> E router LAN-címéhez kötődik, és sosem érhető el az internetről.
+ RADV_04=<b>Csak olvasható.</b> Nem tud beállítást módosítani. Ha engedélyezi, korlátozott, csak olvasható hálózati diagnosztikát is futtathat (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=A regisztrált USB-kulcs nem található. Helyezze be a kulcsot az akti
+ RADVE_18=A munkamenetfájl nem írható.
+ RADVE_19=Ismeretlen művelet.
+ RCON_35=QoS-osztály
++RCON_36=Állapot
++RCON_37=Hatókör
++RCON_38=Gyors áttekintés
++RCON_39=Speciális
++RCON_40=Szünet
+ RWIF_81=A zárolás a jelenlegi csatornához rögzíti ezt a rádiót, és újraindítja a vezeték nélküli hálózatot - a rádióhoz csatlakozó összes eszköz körülbelül 20 másodpercre lecsatlakozik, amíg helyreáll. Folytatja?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Az összes engedélyezett forrás egyetlen, duplikátumoktól mentes halmazba egyesül, így az átfedő listák soha nem blokkolnak kétszer, és nem lassítják az egyeztetést. A FireHOL Level 1 már tartalmazza a Spamhaus DROP, a DShield és a Feodo listákat &mdash; ezek egyidejű engedélyezése felesleges (a Spamhaus továbbra is hozzáadja az IPv6-listáját).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 88bc23f4f0..8eff3d8a7a 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Consulente AI
+ Reaper_c_system_info=Info sistema
+ Reaper_c_language=Lingua
+ RSHL_reboot_note=L’interfaccia si ricaricherà quando il router sarà di nuovo online.
+-RADV_01=Un ponte in <b>sola lettura</b> che consente al <b>tuo</b> assistente AI di leggere di questo router i
++RADV_01=Un ponte di <b>sola lettura</b> che consente al <b>tuo</b> assistente IA di leggere lo stato e la configurazione di questo router.
+ RADV_02=<b>Disattivo per impostazione predefinita.</b> Nulla è in ascolto finché non lo attivi qui sotto, e non sopravvive mai a un riavvio.
+ RADV_03=<b>Solo LAN.</b> Si lega all'indirizzo LAN di questo router e non è mai raggiungibile da internet.
+ RADV_04=<b>Sola lettura.</b> Non può modificare alcuna impostazione. Se lo consenti, può anche eseguire diagnostiche di rete limitate e in sola lettura (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Chiave USB registrata non trovata. Inserire la chiave per attivare.
+ RADVE_18=Impossibile scrivere il file di sessione.
+ RADVE_19=Azione sconosciuta.
+ RCON_35=Classe QoS
++RCON_36=Stato
++RCON_37=Ambito
++RCON_38=Vista rapida
++RCON_39=Avanzate
++RCON_40=Pausa
+ RWIF_81=Il blocco fissa questa radio sul canale corrente e riavvia il wireless - tutti i dispositivi su questa radio si disconnetteranno per circa 20 secondi mentre si ripristina. Continuare?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Tutti i feed abilitati vengono uniti in un unico set deduplicato, così le liste sovrapposte non bloccano mai due volte né rallentano la corrispondenza. FireHOL Level 1 include già Spamhaus DROP, DShield e Feodo &mdash; abilitarli insieme è ridondante (Spamhaus aggiunge comunque la sua lista IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index a371c1dc04..033c2f4fdf 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AIアドバイザー
+ Reaper_c_system_info=システム情報
+ Reaper_c_language=言語
+ RSHL_reboot_note=ルーターが復帰するとUIが再読み込みされます。
+-RADV_01=<b>あなた自身の</b>AIアシスタントがこのルーターを読み取れる<b>読み取り専用</b>ブリッジ
++RADV_01=<b>読み取り専用</b>のブリッジで、<b>お客様自身の</b>AI アシスタントがこのルーターのステータスと構成を読み取れるようにします。
+ RADV_02=<b>既定でオフ。</b> 下で有効化するまで何も待ち受けず、再起動後も維持されません。
+ RADV_03=<b>LANのみ。</b> このルーターのLANアドレスにバインドされ、インターネットからは到達できません。
+ RADV_04=<b>読み取り専用。</b> 設定を変更できません。許可すると、範囲を限定した読み取り専用のネットワーク診断（ping / traceroute / DNS / netstat）も実行できます。
+@@ -6186,8 +6186,13 @@ RADVE_17=登録済みのUSBキーが見つかりません。有効化するに
+ RADVE_18=セッションファイルを書き込めません。
+ RADVE_19=不明な操作です。
+ RCON_35=QoSクラス
++RCON_36=状態
++RCON_37=範囲
++RCON_38=クイックビュー
++RCON_39=詳細
++RCON_40=一時停止
+ RWIF_81=ロックするとこの無線が現在のチャンネルに固定され、無線を再起動します。復帰するまでの約 20 秒間、この無線上のすべてのデバイスが切断されます。続行しますか？
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=有効なフィードはすべて重複を排除した 1 つのセットに統合されるため、重複するリストが二重にブロックしたりマッチングを遅くしたりすることはありません。FireHOL Level 1 にはすでに Spamhaus DROP、DShield、Feodo が含まれています &mdash; これらを併せて有効にするのは冗長です（Spamhaus は IPv6 リストを追加します）。
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 8b089bf741..65bc5b9af5 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI 어드바이저
+ Reaper_c_system_info=시스템 정보
+ Reaper_c_language=언어
+ RSHL_reboot_note=라우터가 복귀하면 UI가 다시 로드됩니다.
+-RADV_01=<b>읽기 전용</b> 브리지로, <b>본인</b>의 AI 어시스턴트가 이 라우터를 읽을 수 있게 합니다
++RADV_01=<b>읽기 전용</b> 브리지로, <b>사용자 자신의</b> AI 어시스턴트가 이 라우터의 상태와 구성을 읽을 수 있게 합니다.
+ RADV_02=<b>기본값은 꺼짐.</b> 아래에서 활성화하기 전까지 아무것도 수신 대기하지 않으며, 재부팅 후에도 유지되지 않습니다.
+ RADV_03=<b>LAN 전용.</b> 이 라우터의 LAN 주소에 바인딩되며 인터넷에서는 절대 접근할 수 없습니다.
+ RADV_04=<b>읽기 전용.</b> 설정을 변경할 수 없습니다. 허용하면 제한된 읽기 전용 네트워크 진단(ping / traceroute / DNS / netstat)도 실행할 수 있습니다.
+@@ -6186,8 +6186,13 @@ RADVE_17=등록된 USB 키를 찾을 수 없습니다. 활성화하려면 키를
+ RADVE_18=세션 파일을 쓸 수 없습니다.
+ RADVE_19=알 수 없는 동작입니다.
+ RCON_35=QoS 클래스
++RCON_36=상태
++RCON_37=범위
++RCON_38=빠른 보기
++RCON_39=고급
++RCON_40=일시 중지
+ RWIF_81=잠그면 이 라디오가 현재 채널에 고정되고 무선이 다시 시작됩니다. 복구되는 동안 이 라디오의 모든 기기가 약 20초간 연결이 끊깁니다. 계속하시겠습니까?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=활성화된 모든 피드는 중복이 제거된 하나의 집합으로 병합되므로 겹치는 목록이 두 번 차단하거나 매칭을 늦추는 일이 없습니다. FireHOL Level 1에는 이미 Spamhaus DROP, DShield, Feodo가 포함되어 있습니다 &mdash; 이와 함께 활성화하는 것은 중복입니다(Spamhaus는 여전히 IPv6 목록을 추가합니다).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 069c84e817..1b73a4b9da 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Penasihat AI
+ Reaper_c_system_info=Maklumat Sistem
+ Reaper_c_language=Bahasa
+ RSHL_reboot_note=UI akan dimuat semula apabila penghala kembali.
+-RADV_01=Jambatan <b>baca-sahaja</b> yang membenarkan pembantu AI <b>anda sendiri</b> membaca penghala ini
++RADV_01=Jambatan <b>baca sahaja</b> yang membenarkan pembantu AI <b>anda sendiri</b> membaca status dan konfigurasi penghala ini.
+ RADV_02=<b>Mati secara lalai.</b> Tiada apa yang mendengar sehingga anda mengaktifkannya di bawah, dan ia tidak kekal selepas but semula.
+ RADV_03=<b>LAN sahaja.</b> Ia mengikat alamat LAN penghala ini dan tidak boleh dicapai dari internet.
+ RADV_04=<b>Baca sahaja.</b> Ia tidak boleh mengubah tetapan. Apabila anda membenarkannya, ia juga boleh menjalankan diagnostik rangkaian baca-sahaja yang terhad (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Kunci USB berdaftar tidak dijumpai. Masukkan kunci anda untuk mengaktif
+ RADVE_18=Tidak dapat menulis fail sesi.
+ RADVE_19=Tindakan tidak diketahui.
+ RCON_35=Kelas QoS
++RCON_36=Keadaan
++RCON_37=Skop
++RCON_38=Pandangan Pantas
++RCON_39=Lanjutan
++RCON_40=Jeda
+ RWIF_81=Mengunci menetapkan radio ini pada saluran semasa dan memulakan semula wayarles - semua peranti pada radio ini akan terputus selama kira-kira 20 saat sementara ia pulih. Teruskan?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Semua suapan yang didayakan digabungkan menjadi satu set tanpa pendua, jadi senarai yang bertindih tidak pernah menyekat dua kali atau melambatkan pemadanan. FireHOL Level 1 sudah termasuk Spamhaus DROP, DShield dan Feodo &mdash; mendayakannya bersama-sama adalah berlebihan (Spamhaus masih menambah senarai IPv6-nya).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index f838b68fee..2508e57d5d 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI-adviseur
+ Reaper_c_system_info=Systeeminfo
+ Reaper_c_language=Taal
+ RSHL_reboot_note=De UI wordt opnieuw geladen zodra de router terug is.
+-RADV_01=Een <b>alleen-lezen</b> brug waarmee <b>uw eigen</b> AI-assistent deze router kan uitlezen
++RADV_01=Een <b>alleen-lezen</b> brug waarmee <b>uw eigen</b> AI-assistent de status en configuratie van deze router kan lezen.
+ RADV_02=<b>Standaard uit.</b> Er luistert niets totdat u het hieronder inschakelt, en het overleeft nooit een herstart.
+ RADV_03=<b>Alleen LAN.</b> Het bindt aan het LAN-adres van deze router en is nooit bereikbaar vanaf internet.
+ RADV_04=<b>Alleen-lezen.</b> Het kan geen instelling wijzigen. Als u het toestaat, kan het ook begrensde, alleen-lezen netwerkdiagnostiek uitvoeren (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=De geregistreerde USB-sleutel is niet gevonden. Plaats uw sleutel om te
+ RADVE_18=Kan het sessiebestand niet schrijven.
+ RADVE_19=Onbekende actie.
+ RCON_35=QoS-klasse
++RCON_36=Status
++RCON_37=Bereik
++RCON_38=Snel overzicht
++RCON_39=Geavanceerd
++RCON_40=Pauze
+ RWIF_81=Vergrendelen zet deze radio vast op het huidige kanaal en herstart de draadloze verbinding - alle apparaten op deze radio worden ongeveer 20 seconden losgekoppeld terwijl deze terugkomt. Doorgaan?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Alle ingeschakelde feeds worden samengevoegd tot één ontdubbelde set, zodat overlappende lijsten nooit twee keer blokkeren of het matchen vertragen. FireHOL Level 1 bevat al Spamhaus DROP, DShield en Feodo &mdash; deze daarnaast inschakelen is overbodig (Spamhaus voegt nog steeds zijn IPv6-lijst toe).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index a39ddda4a3..313e0c4eff 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI-rådgiver
+ Reaper_c_system_info=Systeminfo
+ Reaper_c_language=Språk
+ RSHL_reboot_note=Grensesnittet lastes inn på nytt når ruteren er tilbake.
+-RADV_01=En <b>skrivebeskyttet</b> bro som lar <b>din egen</b> AI-assistent lese denne ruterens
++RADV_01=En <b>skrivebeskyttet</b> bro som lar <b>din egen</b> AI-assistent lese denne ruterens status og konfigurasjon.
+ RADV_02=<b>Av som standard.</b> Ingenting lytter før du aktiverer den nedenfor, og den overlever aldri en omstart.
+ RADV_03=<b>Kun LAN.</b> Den binder seg til ruterens LAN-adresse og er aldri tilgjengelig fra internett.
+ RADV_04=<b>Skrivebeskyttet.</b> Den kan ikke endre en innstilling. Når du tillater det, kan den også kjøre avgrensede, skrivebeskyttede nettverksdiagnostikker (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Fant ikke den registrerte USB-nøkkelen. Sett inn nøkkelen for å akti
+ RADVE_18=Kan ikke skrive øktfilen.
+ RADVE_19=Ukjent handling.
+ RCON_35=QoS-klasse
++RCON_36=Tilstand
++RCON_37=Omfang
++RCON_38=Rask oversikt
++RCON_39=Avansert
++RCON_40=Pause
+ RWIF_81=Låsing fester denne radioen til gjeldende kanal og starter det trådløse på nytt - alle enheter på denne radioen kobles fra i omtrent 20 sekunder mens den kommer tilbake. Fortsette?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Alle aktiverte feeder slås sammen til ett duplikatfritt sett, slik at overlappende lister aldri blokkerer to ganger eller forsinker matching. FireHOL Level 1 inkluderer allerede Spamhaus DROP, DShield og Feodo &mdash; å aktivere disse i tillegg er overflødig (Spamhaus legger fortsatt til sin IPv6-liste).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 8db30778e4..f82172caec 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Doradca AI
+ Reaper_c_system_info=Informacje o systemie
+ Reaper_c_language=Język
+ RSHL_reboot_note=Interfejs zostanie przeładowany, gdy router wróci do pracy.
+-RADV_01=<b>Tylko do odczytu</b> most, który pozwala <b>Twojemu własnemu</b> asystentowi AI odczytywać dane tego routera
++RADV_01=Most <b>tylko do odczytu</b>, który pozwala <b>Twojemu własnemu</b> asystentowi AI odczytywać stan i konfigurację tego routera.
+ RADV_02=<b>Domyślnie wyłączony.</b> Nic nie nasłuchuje, dopóki go nie uzbroisz poniżej, i nie przetrwa ponownego uruchomienia.
+ RADV_03=<b>Tylko LAN.</b> Wiąże się z adresem LAN tego routera i nigdy nie jest osiągalny z internetu.
+ RADV_04=<b>Tylko do odczytu.</b> Nie może zmienić żadnego ustawienia. Gdy zezwolisz, może też uruchamiać ograniczoną, tylko do odczytu diagnostykę sieci (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Nie znaleziono zarejestrowanego klucza USB. Włóż klucz, aby aktywowa
+ RADVE_18=Nie można zapisać pliku sesji.
+ RADVE_19=Nieznana akcja.
+ RCON_35=Klasa QoS
++RCON_36=Stan
++RCON_37=Zakres
++RCON_38=Szybki podgląd
++RCON_39=Zaawansowane
++RCON_40=Wstrzymaj
+ RWIF_81=Zablokowanie przypina to radio do bieżącego kanału i ponownie uruchamia sieć bezprzewodową - wszystkie urządzenia na tym radiu zostaną rozłączone na około 20 sekund, zanim wróci. Kontynuować?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Wszystkie włączone źródła są łączone w jeden zestaw bez duplikatów, więc nakładające się listy nigdy nie blokują dwukrotnie ani nie spowalniają dopasowywania. FireHOL Level 1 zawiera już Spamhaus DROP, DShield i Feodo &mdash; włączanie ich obok niego jest zbędne (Spamhaus nadal dodaje swoją listę IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index d2bd05c8b5..6dace16012 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=Consilier AI
+ Reaper_c_system_info=Informații sistem
+ Reaper_c_language=Limbă
+ RSHL_reboot_note=Interfața se va reîncărca când routerul revine.
+-RADV_01=O punte <b>doar-citire</b> care permite propriului tău asistent AI să citească datele acestui router
++RADV_01=O punte <b>doar pentru citire</b> care permite <b>propriului dvs.</b> asistent IA să citească starea și configurația acestui router.
+ RADV_02=<b>Dezactivat implicit.</b> Nimic nu ascultă până nu îl activezi mai jos, și nu supraviețuiește unei reporniri.
+ RADV_03=<b>Doar LAN.</b> Se leagă la adresa LAN a acestui router și nu este niciodată accesibil de pe internet.
+ RADV_04=<b>Doar citire.</b> Nu poate modifica nicio setare. Când permiți, poate rula și diagnostice de rețea limitate, doar-citire (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Cheia USB înregistrată nu a fost găsită. Introduceți cheia pentru
+ RADVE_18=Nu se poate scrie fișierul de sesiune.
+ RADVE_19=Acțiune necunoscută.
+ RCON_35=Clasă QoS
++RCON_36=Stare
++RCON_37=Domeniu
++RCON_38=Vizualizare rapidă
++RCON_39=Avansat
++RCON_40=Pauză
+ RWIF_81=Blocarea fixează această radio pe canalul curent și repornește rețeaua wireless - toate dispozitivele de pe această radio se vor deconecta timp de aproximativ 20 de secunde până își revine. Continuați?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Toate fluxurile activate sunt combinate într-un singur set fără duplicate, astfel încât listele suprapuse nu blochează niciodată de două ori și nu încetinesc potrivirea. FireHOL Level 1 include deja Spamhaus DROP, DShield și Feodo &mdash; activarea acestora alături de el este redundantă (Spamhaus adaugă totuși lista sa IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 24916fba45..06e4bc5578 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI-советник
+ Reaper_c_system_info=Сведения о системе
+ Reaper_c_language=Язык
+ RSHL_reboot_note=Интерфейс перезагрузится, когда роутер снова будет доступен.
+-RADV_01=<b>Только для чтения</b> мост, позволяющий <b>вашему собственному</b> AI-ассистенту читать данные этого роутера
++RADV_01=Мост <b>только для чтения</b>, позволяющий <b>вашему собственному</b> ИИ-ассистенту читать состояние и конфигурацию этого маршрутизатора.
+ RADV_02=<b>Выключено по умолчанию.</b> Ничто не слушает, пока вы не активируете ниже, и это не переживает перезагрузку.
+ RADV_03=<b>Только LAN.</b> Привязывается к LAN-адресу роутера и недоступен из интернета.
+ RADV_04=<b>Только чтение.</b> Не может менять настройки. При вашем разрешении может также запускать ограниченную сетевую диагностику только для чтения (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Зарегистрированный USB-ключ не найден. В
+ RADVE_18=Не удаётся записать файл сеанса.
+ RADVE_19=Неизвестное действие.
+ RCON_35=Класс QoS
++RCON_36=Состояние
++RCON_37=Область
++RCON_38=Быстрый просмотр
++RCON_39=Дополнительно
++RCON_40=Пауза
+ RWIF_81=Блокировка закрепляет этот радиомодуль на текущем канале и перезапускает беспроводную сеть - все устройства на этом радиомодуле отключатся примерно на 20 секунд, пока он восстанавливается. Продолжить?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Все включённые списки объединяются в один набор без дубликатов, поэтому перекрывающиеся списки никогда не блокируют дважды и не замедляют сопоставление. FireHOL Level 1 уже включает Spamhaus DROP, DShield и Feodo &mdash; включать их вместе с ним излишне (Spamhaus всё же добавляет свой список IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index a856dcb8a1..8d84d8ce5c 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -124,15 +124,15 @@ code{font-family:var(--mono)}
+     </div>
+     <div class="spacer"></div>
+     <div class="viewtog" id="viewtog">
+-      <button data-v="quick">Quick Look</button>
+-      <button data-v="advanced">Advanced</button>
++      <button data-v="quick"><#RCON_38#></button>
++      <button data-v="advanced"><#RCON_39#></button>
+     </div>
+     <div class="live">
+       <div class="rate" id="rate">
+         <button data-ms="500">500 ms</button>
+         <button data-ms="1000" class="on">1 s</button>
+         <button data-ms="4000">4 s</button>
+-        <button data-ms="0">Pause</button>
++        <button data-ms="0"><#RCON_40#></button>
+       </div>
+       <button class="livebtn" id="livebtn"><span class="dot"></span><#RCON_04#></button>
+     </div>
+@@ -256,14 +256,14 @@ code{font-family:var(--mono)}
+       return '<div class="qrow">'+
+         '<div class="qdev">'+dev+'</div>'+
+         '<div class="qip">'+esc(c.srv+(c.spt?(":"+c.spt):""))+'</div>'+
+-        '<div>'+(inside?'<span class="scope int">Internal</span>':'<span class="scope ext">External</span>')+'</div>'+
++        '<div>'+(inside?'<span class="scope int"><#IPConnection_VSList_Internal#></span>':'<span class="scope ext"><#IPConnection_VSList_External#></span>')+'</div>'+
+         '<div><span class="proto '+esc(protoName(c.proto).toLowerCase())+'">'+esc(protoName(c.proto))+'</span></div>'+
+         '<div>'+st+'</div>'+
+         '</div>';
+     }).join("");
+     qv.innerHTML='<div class="qsum">'+conns.length+' connections &middot; '+ext+' external, '+(conns.length-ext)+' internal</div>'+
+       '<div class="qtable"><div class="qhead">'+
+-        '<div>Device</div><div><#AiProtection_event_Destination#></div><div>Scope</div><div><#RCON_27#></div><div>State</div>'+
++        '<div><#Clientlist_device#></div><div><#AiProtection_event_Destination#></div><div><#RCON_37#></div><div><#RCON_27#></div><div><#RCON_36#></div>'+
+       '</div>'+rows+'</div>';
+   }
+ 
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 5d73b4a27d..497d54bfad 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -336,6 +336,22 @@ function getJSON(f, cb){
+    collector only knew the IP. Fetched once at load; rows fall back to raw
+    ip/mac until (or unless) it answers. ---- */
+ var CLNAME={}, IP2MAC={};
++/* reaper: seed names from custom_clientlist (the persistent master client store) so a
++   device that is OFFLINE - and therefore absent from the live networkmap get_clientlist
++   below - still shows its user-assigned name in the history views (24h / week / month)
++   instead of falling back to a bare IP/MAC. The live list still overwrites these with the
++   freshest nickName for currently-online devices. Entry format: <name>mac>group>type>... */
++(function seedCustomNames(){
++  try{
++    var raw=decodeURIComponent('<% nvram_char_to_ascii("", "custom_clientlist"); %>').replace(/&#62/g, ">").replace(/&#60/g, "<");
++    var ents=raw.split('<');
++    for(var i=0;i<ents.length;i++){
++      if(!ents[i]) continue;
++      var f=ents[i].split('>'), nm=f[0]||'', mac=(f[1]||'').toLowerCase();
++      if(nm && mac.indexOf(':')>-1) CLNAME[mac]=nm;
++    }
++  }catch(e){}
++})();
+ function fetchClNames(){
+   var x=new XMLHttpRequest();
+   x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+Date.now(),true);
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 2f01d0cd97..bd76211493 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI svetovalec
+ Reaper_c_system_info=Podatki o sistemu
+ Reaper_c_language=Jezik
+ RSHL_reboot_note=Vmesnik se bo ponovno naložil, ko bo usmerjevalnik znova na voljo.
+-RADV_01=<b>Samo za branje</b> most, ki vašemu <b>lastnemu</b> AI pomočniku omogoča branje podatkov tega usmerjevalnika.
++RADV_01=Most <b>samo za branje</b>, ki <b>vašemu lastnemu</b> pomočniku z UI omogoča branje stanja in konfiguracije tega usmerjevalnika.
+ RADV_02=<b>Privzeto izklopljeno.</b> Nič ne posluša, dokler tega ne aktivirate spodaj, in ne preživi ponovnega zagona.
+ RADV_03=<b>Samo LAN.</b> Veže se na LAN naslov tega usmerjevalnika in nikoli ni dosegljiv iz interneta.
+ RADV_04=<b>Samo za branje.</b> Nastavitev ne more spremeniti. Ko dovolite, lahko izvaja tudi omejeno, samo bralno omrežno diagnostiko (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Registrirani ključ USB ni bil najden. Vstavite ključ za aktivacijo.
+ RADVE_18=Datoteke seje ni mogoče zapisati.
+ RADVE_19=Neznano dejanje.
+ RCON_35=Razred QoS
++RCON_36=Stanje
++RCON_37=Obseg
++RCON_38=Hitri pregled
++RCON_39=Napredno
++RCON_40=Premor
+ RWIF_81=Zaklepanje pripne ta radio na trenutni kanal in znova zažene brezžično omrežje - vse naprave na tem radiu bodo za približno 20 sekund prekinjene, dokler se ne obnovi. Nadaljujem?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Vsi omogočeni viri se združijo v en nabor brez podvojitev, tako da prekrivajoči se seznami nikoli ne blokirajo dvakrat ali upočasnijo ujemanje. FireHOL Level 1 že vključuje Spamhaus DROP, DShield in Feodo &mdash; njihovo omogočanje ob njem je odveč (Spamhaus še vedno doda svoj seznam IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 43f46b08dd..0b46b17480 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI-rådgivare
+ Reaper_c_system_info=Systeminfo
+ Reaper_c_language=Språk
+ RSHL_reboot_note=Gränssnittet laddas om när routern är tillbaka.
+-RADV_01=En <b>skrivskyddad</b> brygga som låter <b>din egen</b> AI-assistent läsa denna routers
++RADV_01=En <b>skrivskyddad</b> brygga som låter <b>din egen</b> AI-assistent läsa den här routerns status och konfiguration.
+ RADV_02=<b>Av som standard.</b> Ingenting lyssnar förrän du aktiverar det nedan, och det överlever aldrig en omstart.
+ RADV_03=<b>Endast LAN.</b> Det binds till routerns LAN-adress och är aldrig nåbart från internet.
+ RADV_04=<b>Skrivskyddat.</b> Det kan inte ändra en inställning. När du tillåter det kan det även köra begränsade, skrivskyddade nätverksdiagnostik (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Den registrerade USB-nyckeln hittades inte. Sätt i din nyckel för att
+ RADVE_18=Det går inte att skriva sessionsfilen.
+ RADVE_19=Okänd åtgärd.
+ RCON_35=QoS-klass
++RCON_36=Tillstånd
++RCON_37=Omfattning
++RCON_38=Snabböversikt
++RCON_39=Avancerat
++RCON_40=Pausa
+ RWIF_81=Låsning låser den här radion till den aktuella kanalen och startar om det trådlösa - alla enheter på den här radion kopplas från i cirka 20 sekunder medan den kommer tillbaka. Fortsätta?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Alla aktiverade flöden slås samman till en avdubblerad uppsättning, så överlappande listor blockerar aldrig två gånger eller saktar ner matchningen. FireHOL Level 1 innehåller redan Spamhaus DROP, DShield och Feodo &mdash; att aktivera dessa vid sidan av är överflödigt (Spamhaus lägger ändå till sin IPv6-lista).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 299d8970fc..04fc1ca363 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=ที่ปรึกษา AI
+ Reaper_c_system_info=ข้อมูลระบบ
+ Reaper_c_language=ภาษา
+ RSHL_reboot_note=UI จะโหลดใหม่เมื่อเราเตอร์กลับมาทำงาน
+-RADV_01=สะพานเชื่อมแบบ<b>อ่านอย่างเดียว</b> ที่ให้ผู้ช่วย AI <b>ของคุณเอง</b> อ่านข้อมูลของเราเตอร์นี้
++RADV_01=บริดจ์<b>แบบอ่านอย่างเดียว</b>ที่ให้ผู้ช่วย AI <b>ของคุณเอง</b>อ่านสถานะและการกำหนดค่าของเราเตอร์นี้ได้
+ RADV_02=<b>ปิดโดยค่าเริ่มต้น</b> จะไม่มีการรอรับการเชื่อมต่อจนกว่าคุณจะเปิดใช้งานด้านล่าง และจะไม่คงอยู่หลังรีบูต
+ RADV_03=<b>LAN เท่านั้น</b> ผูกกับที่อยู่ LAN ของเราเตอร์นี้และเข้าถึงจากอินเทอร์เน็ตไม่ได้
+ RADV_04=<b>อ่านอย่างเดียว</b> ไม่สามารถเปลี่ยนการตั้งค่าได้ เมื่อคุณอนุญาต มันยังสามารถรันการวินิจฉัยเครือข่ายแบบอ่านอย่างเดียวที่จำกัดขอบเขต (ping / traceroute / DNS / netstat)
+@@ -6186,8 +6186,13 @@ RADVE_17=ไม่พบกุญแจ USB ที่ลงทะเบียน
+ RADVE_18=ไม่สามารถเขียนไฟล์เซสชันได้
+ RADVE_19=การดำเนินการที่ไม่รู้จัก
+ RCON_35=คลาส QoS
++RCON_36=สถานะ
++RCON_37=ขอบเขต
++RCON_38=ดูอย่างรวดเร็ว
++RCON_39=ขั้นสูง
++RCON_40=หยุดชั่วคราว
+ RWIF_81=การล็อกจะตรึงวิทยุนี้ไว้ที่ช่องปัจจุบันและรีสตาร์ตระบบไร้สาย - อุปกรณ์ทั้งหมดบนวิทยุนี้จะหลุดการเชื่อมต่อประมาณ 20 วินาทีระหว่างที่ระบบกลับมา ต้องการดำเนินการต่อหรือไม่?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=ฟีดที่เปิดใช้งานทั้งหมดจะถูกรวมเป็นชุดเดียวที่ตัดข้อมูลซ้ำออก ดังนั้นรายการที่ทับซ้อนกันจะไม่บล็อกซ้ำสองครั้งหรือทำให้การจับคู่ช้าลง FireHOL Level 1 มี Spamhaus DROP, DShield และ Feodo อยู่แล้ว &mdash; การเปิดใช้งานสิ่งเหล่านี้ควบคู่ไปด้วยจึงซ้ำซ้อน (Spamhaus ยังคงเพิ่มรายการ IPv6 ของตน)
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index eba185c4f4..906cf02690 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI Danışmanı
+ Reaper_c_system_info=Sistem Bilgisi
+ Reaper_c_language=Dil
+ RSHL_reboot_note=Yönlendirici geri geldiğinde arayüz yeniden yüklenecek.
+-RADV_01=<b>Salt okunur</b> bir köprü olup <b>kendi</b> AI asistanınızın bu yönlendiricinin verilerini okumasına izin verir
++RADV_01=<b>Kendi</b> yapay zeka asistanınızın bu yönlendiricinin durumunu ve yapılandırmasını okumasını sağlayan <b>salt okunur</b> bir köprü.
+ RADV_02=<b>Varsayılan olarak kapalı.</b> Aşağıdan etkinleştirene kadar hiçbir şey dinlemez ve yeniden başlatma sonrası asla kalıcı olmaz.
+ RADV_03=<b>Yalnızca LAN.</b> Bu yönlendiricinin LAN adresine bağlanır ve internetten asla erişilemez.
+ RADV_04=<b>Salt okunur.</b> Bir ayarı değiştiremez. İzin verdiğinizde ayrıca sınırlı, salt okunur ağ tanılamaları (ping / traceroute / DNS / netstat) çalıştırabilir.
+@@ -6186,8 +6186,13 @@ RADVE_17=Kayıtlı USB anahtarı bulunamadı. Etkinleştirmek için anahtarını
+ RADVE_18=Oturum dosyası yazılamıyor.
+ RADVE_19=Bilinmeyen işlem.
+ RCON_35=QoS Sınıfı
++RCON_36=Durum
++RCON_37=Kapsam
++RCON_38=Hızlı Bakış
++RCON_39=Gelişmiş
++RCON_40=Duraklat
+ RWIF_81=Kilitlemek bu radyoyu geçerli kanala sabitler ve kablosuzu yeniden başlatır - bu radyodaki tüm cihazlar geri gelene kadar yaklaşık 20 saniye bağlantısını kaybeder. Devam edilsin mi?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Etkinleştirilen tüm akışlar yinelenenlerden arındırılmış tek bir kümede birleştirilir, böylece çakışan listeler asla iki kez engellemez veya eşleştirmeyi yavaşlatmaz. FireHOL Level 1 zaten Spamhaus DROP, DShield ve Feodo'yu içerir &mdash; bunları onunla birlikte etkinleştirmek gereksizdir (Spamhaus yine de IPv6 listesini ekler).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 6fb02b7706..7551e1f210 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI 顧問
+ Reaper_c_system_info=系統資訊
+ Reaper_c_language=語言
+ RSHL_reboot_note=路由器恢復後，介面將自動重新載入。
+-RADV_01=一座<b>唯讀</b>橋接，讓<b>您自己的</b> AI 助理讀取此路由器的
++RADV_01=一個<b>唯讀</b>橋接，讓<b>您自己的</b>AI 助理讀取此路由器的狀態與設定。
+ RADV_02=<b>預設關閉。</b>在您於下方啟用前不會有任何監聽，且重新啟動後絕不保留。
+ RADV_03=<b>僅限 LAN。</b>它只綁定此路由器的 LAN 位址，永遠無法從網際網路存取。
+ RADV_04=<b>唯讀。</b>它無法變更任何設定。當您允許時，它也可執行受限的唯讀網路診斷（ping / traceroute / DNS / netstat）。
+@@ -6186,8 +6186,13 @@ RADVE_17=找不到已註冊的 USB 金鑰。請插入金鑰以啟用。
+ RADVE_18=無法寫入工作階段檔案。
+ RADVE_19=未知的動作。
+ RCON_35=QoS 類別
++RCON_36=狀態
++RCON_37=範圍
++RCON_38=快速檢視
++RCON_39=進階
++RCON_40=暫停
+ RWIF_81=鎖定會將此無線電固定到目前頻道並重新啟動無線 - 在其恢復期間，此無線電上的所有裝置都會中斷約 20 秒。要繼續嗎？
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=所有已啟用的來源會合併為一個去重複的集合，因此重疊的清單不會重複封鎖或拖慢比對速度。FireHOL Level 1 已包含 Spamhaus DROP、DShield 和 Feodo &mdash; 再一併啟用這些是多餘的（Spamhaus 仍會加入其 IPv6 清單）。
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 30d31ff04f..8a8a97b2bd 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5244,7 +5244,7 @@ Reaper_c_ai_advisor=AI-радник
+ Reaper_c_system_info=Про систему
+ Reaper_c_language=Мова
+ RSHL_reboot_note=Інтерфейс перезавантажиться, коли маршрутизатор повернеться в мережу.
+-RADV_01=<b>Лише для читання</b> міст, що дозволяє <b>вашому власному</b> AI-асистенту читати дані цього маршрутизатора
++RADV_01=Міст <b>лише для читання</b>, який дозволяє <b>вашому власному</b> ШІ-асистенту читати стан і конфігурацію цього маршрутизатора.
+ RADV_02=<b>Вимкнено за замовчуванням.</b> Нічого не прослуховує, доки ви не активуєте нижче, і це не переживає перезавантаження.
+ RADV_03=<b>Лише LAN.</b> Прив'язується до LAN-адреси цього маршрутизатора й недоступний з інтернету.
+ RADV_04=<b>Лише для читання.</b> Не може змінити налаштування. Коли ви дозволите, він також може виконувати обмежену мережеву діагностику лише для читання (ping / traceroute / DNS / netstat).
+@@ -6186,8 +6186,13 @@ RADVE_17=Зареєстрований USB-ключ не знайдено. Вст
+ RADVE_18=Не вдається записати файл сеансу.
+ RADVE_19=Невідома дія.
+ RCON_35=Клас QoS
++RCON_36=Стан
++RCON_37=Область
++RCON_38=Швидкий огляд
++RCON_39=Додатково
++RCON_40=Пауза
+ RWIF_81=Блокування закріплює цей радіомодуль на поточному каналі та перезапускає бездротову мережу - усі пристрої на цьому радіомодулі відключаться приблизно на 20 секунд, поки він відновлюється. Продовжити?
+-RWDN_55=All enabled feeds merge into one de-duplicated set, so overlapping lists never block twice or slow matching. FireHOL Level 1 already includes Spamhaus DROP, DShield and Feodo &mdash; enabling those alongside it is redundant (Spamhaus still adds its IPv6 list).
++RWDN_55=Усі ввімкнені канали об'єднуються в один набір без дублікатів, тож списки, що перекриваються, ніколи не блокують двічі й не сповільнюють зіставлення. FireHOL Level 1 вже містить Spamhaus DROP, DShield і Feodo &mdash; вмикати їх разом із ним зайве (Spamhaus усе одно додає свій список IPv6).
+ RDST_43=USB Disks
+ RDST_44=No USB disk is connected.
+ RDST_45=Holds the long-term store
+diff --git a/release/src/router/www/index.asp b/release/src/router/www/index.asp
+index c40a7bfb2c..6c18bfdb52 100644
+--- a/release/src/router/www/index.asp
++++ b/release/src/router/www/index.asp
+@@ -1639,29 +1639,11 @@ function select_image(clientObj, useDefaultType = false){
+         }
+     }
+ 
+-    if(useDefaultType && clientObj.isASUS && clientObj.name!=="ASUS"){
+-        fetch(`https://nw-dlcdnet.asus.com/plugin/productIcons/${clientObj.name}.png`)
+-            .then(response => {
+-                if (response.status === 200) {
+-                    response.blob().then(blob => {
+-                        const reader = new FileReader();
+-                        reader.readAsDataURL(blob);
+-                        reader.onloadend = function () {
+-                            $("#client_image").empty();
+-                            $('#client_image').append($('<img>').addClass('clientIcon_no_hover').attr('src',reader.result));
+-                            userIconBase64 = reader.result;
+-                            userUploadFlag = true;
+-                        }
+-                    });
+-                }
+-            })
+-            .catch(error => {
+-                console.error('Error:', error);
+-                useTypeIcon(clientObj);
+-            });
+-    }else{
+-        useTypeIcon(clientObj);
+-    }
++    /* reaper de-cloud: do not fetch productIcons/<name>.png from nw-dlcdnet.asus.com -
++       that request leaks the presence/model of ASUS devices to ASUS from the admin's
++       browser. Always use the bundled local type icon (this is exactly what the fetch's
++       own error path already did). */
++    useTypeIcon(clientObj);
+ }
+ 
+ function hideEditBlock(){
+diff --git a/release/src/router/www/js/httpApi.js b/release/src/router/www/js/httpApi.js
+index ccd9fe994a..862b92ed8d 100644
+--- a/release/src/router/www/js/httpApi.js
++++ b/release/src/router/www/js/httpApi.js
+@@ -1373,27 +1373,12 @@ var httpApi ={
+ 	},
+ 
+ 	"checkCloudModelIcon": function(model_info, callBackSuccess, callBackError){
+-		var server = "https://nw-dlcdnet.asus.com";
+-		var cloudModelName = "";
+-		if(model_info.cloudModelName != undefined && model_info.cloudModelName != "")
+-			cloudModelName = model_info.cloudModelName;
+-		else
+-			cloudModelName = httpApi.transformCloudModelName(model_info);
+-
+-		var fileName = "/plugin/productIcons/" + cloudModelName + ".png";
+-		var img_src = server + fileName;
+-		if(cloudModelName != ""){
+-			$("<img>")
+-				.attr('src', img_src)
+-				.on("load", function(e){
+-					if(callBackSuccess) callBackSuccess($(this).attr("src"));
+-					$(this).remove();
+-				})
+-				.on("error", function(e){
+-					if(callBackError) callBackError();
+-					$(this).remove();
+-				});
+-		}
++		/* reaper de-cloud: never fetch AiMesh node/model icons from
++		   nw-dlcdnet.asus.com - that request leaks the device model to ASUS from
++		   the admin's browser. Report "no cloud icon" so every caller falls back to
++		   its bundled/default icon (same de-cloud pattern as the v2.2.0 clientlist
++		   icon fix). */
++		if(callBackError) callBackError();
+ 	},
+ 
+ 	"getAiMeshLabelMac": function(modelName, macAddr, callBackSuccess, callBackError){
+diff --git a/release/src/router/www/popup.js b/release/src/router/www/popup.js
+index 5d56cd7860..0b9240f94d 100644
+--- a/release/src/router/www/popup.js
++++ b/release/src/router/www/popup.js
+@@ -93,7 +93,11 @@ class AsusLoaderComponent {
+ 				right: 0;
+ 				bottom: 0;
+ 				left: 0;
+-				z-index: 2000;
++				/* reaper: this UI4 loader is appended to top.document.body and must sit
++				   ABOVE the Reaper shell chrome (header/side-nav, modals up to z 20000)
++				   so the loading / percent-wait / rebooting overlay blocks clicks on the
++				   nav and header instead of leaving them live. Was 2000 (below the menu). */
++				z-index: 2147483000;
+ 				backdrop-filter: blur(3px);
+ 				-webkit-backdrop-filter: blur(3px);
+ 				background-color: rgba(255, 255, 255, 0.6);
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 55bd1bd974..55c955ed18 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -3,6 +3,27 @@ if(typeof stringSafeGet != "function"){
+ 		return str.replace(new RegExp("&#39;", 'g'), "'");
+ 	}
+ }
++/* reaper: mask the plaintext Wi-Fi key in the post-apply reconnect card. The shared
++ * state.js showWlHintContainer() renders "<#Network_key#>: <b>KEY</b>" per band as a
++ * reconnect hint for a Wi-Fi admin whose connection restart_wireless is about to bounce;
++ * showing the key in the clear is a shoulder-surf exposure. We keep the SSID hint but
++ * replace the key text with dots after the card renders. Scoped to sdn.js only - the
++ * shared state.js body (also used by mlo/Advanced_VLAN/Roaming) is left untouched. */
++function reaperMaskWlHintKey(){
++	try{
++		var c = top.document.getElementById("WlHintContainer");
++		if(!c) return;
++		var rows = c.querySelectorAll(".nologin");
++		for(var i=0; i<rows.length; i++){
++			var bolds = rows[i].getElementsByTagName("b");	/* [0]=SSID, [1]=key */
++			if(bolds.length >= 2){
++				var txt = (bolds[1].textContent || bolds[1].innerText || "");
++				if(txt !== "" && txt !== "Open System")
++					bolds[1].textContent = Array(9).join(String.fromCharCode(0x2022)); /* 8 dot chars, ASCII source */
++			}
++		}
++	}catch(e){}
++}
+ if(typeof Get_Component_PWD_Strength_Meter != "function"){
+ 	function Get_Component_PWD_Strength_Meter(id){
+ 		var postfix = (id == undefined)? "": ("_"+id);
+@@ -745,7 +766,7 @@ function Get_Component_Profile_Item(_profile_data){
+ 				showLoading();
+ 				httpApi.nvramSet(nvramSet_obj, function(){
+ 					if(isWLclient()){
+-						showWlHintContainer();
++						showWlHintContainer(); reaperMaskWlHintKey();
+ 						check_isAlive_and_redirect({"page": "" + ((parent_cntr == "mlo") ? "MLO" : "SDN") + ".asp", "time": showLoading_status.time});
+ 						return;
+ 					}
+@@ -2455,7 +2476,7 @@ function show_popup_Wizard_Setting(_type){
+ 						}
+ 						httpApi.nvramSet(nvramSet_obj, function(){
+ 							if(isWLclient()){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 								check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 								return;
+ 							}
+@@ -2940,7 +2961,7 @@ function show_popup_Wizard_Setting(_type){
+ 						}
+ 						httpApi.nvramSet(nvramSet_obj, function(){
+ 							if(isWLclient()){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 								check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 								return;
+ 							}
+@@ -3353,7 +3374,7 @@ function show_popup_Wizard_Setting(_type){
+ 						}
+ 						httpApi.nvramSet(nvramSet_obj, function(){
+ 							if(isWLclient()){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 								check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 								return;
+ 							}
+@@ -3733,7 +3754,7 @@ function show_popup_Wizard_Setting(_type){
+ 						}
+ 						httpApi.nvramSet(nvramSet_obj, function(){
+ 							if(isWLclient()){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 								check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 								return;
+ 							}
+@@ -4118,7 +4139,7 @@ function show_popup_Wizard_Setting(_type){
+ 						}
+ 						httpApi.nvramSet(nvramSet_obj, function(){
+ 							if(isWLclient()){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 								check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 								return;
+ 							}
+@@ -4476,7 +4497,7 @@ function show_popup_Wizard_Setting(_type){
+ 						}
+ 						httpApi.nvramSet(nvramSet_obj, function(){
+ 							if(isWLclient()){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 								check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 								return;
+ 							}
+@@ -4851,7 +4872,7 @@ function show_popup_Wizard_Setting(_type){
+ 						}
+ 						httpApi.nvramSet(nvramSet_obj, function(){
+ 							if(isWLclient()){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 								check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 								return;
+ 							}
+@@ -5693,7 +5714,7 @@ function Get_Wizard_MLO(view_mode){
+ 					}
+ 					httpApi.nvramSet(nvramSet_obj, function(){
+ 						if(isWLclient()){
+-							showWlHintContainer();
++							showWlHintContainer(); reaperMaskWlHintKey();
+ 							check_isAlive_and_redirect({"page": "" + ((parent_cntr == "mlo") ? "MLO" : "SDN") + ".asp", "time": showLoading_status.time});
+ 							return;
+ 						}
+@@ -5945,7 +5966,7 @@ function Get_Wizard_MAINFH(view_mode){
+ 						if(isWLclient()){
+ 							showLoading(showLoading_status.time);
+ 							setTimeout(function(){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 							}, showLoading_status.time*1000);
+ 							check_isAlive_and_redirect({"page": "SDN.asp", "time": showLoading_status.time});
+ 						}
+@@ -8638,7 +8659,7 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 				}
+ 				httpApi.nvramSet(nvramSet_obj, function(){
+ 					if(isWLclient()){
+-						showWlHintContainer();
++						showWlHintContainer(); reaperMaskWlHintKey();
+ 						check_isAlive_and_redirect({"page": "" + ((parent_cntr == "mlo") ? "MLO" : "SDN") + ".asp", "time": showLoading_status.time});
+ 						return;
+ 					}
+@@ -9602,7 +9623,7 @@ function set_apply_btn_status(_obj){
+ 					httpApi.nvramSet(nvramSet_obj, function(){
+ 						if(isWLclient()){
+ 							if(sdn_profile.sdn_rl.sdn_name != "Gaming"){
+-								showWlHintContainer();
++								showWlHintContainer(); reaperMaskWlHintKey();
+ 							}
+ 							check_isAlive_and_redirect({"page": "" + ((parent_cntr == "mlo") ? "MLO" : "SDN") + ".asp", "time": showLoading_status.time});
+ 							return;
+diff --git a/release/src/router/www/sysdep/FUNCTION/UI4/index_style.css b/release/src/router/www/sysdep/FUNCTION/UI4/index_style.css
+index 210eb80fbe..f61f4ac052 100644
+--- a/release/src/router/www/sysdep/FUNCTION/UI4/index_style.css
++++ b/release/src/router/www/sysdep/FUNCTION/UI4/index_style.css
+@@ -360,13 +360,16 @@ body {
+ .copyright {font-family: Verdana, MS UI Gothic, MS P Gothic, Microsoft Yahei UI, sans-serif;font-size : 11px;text-align:right;color:#FFFFFF;padding-right:10px; margin:0 auto; width:983px;}
+ 
+ .popup_bg{
+-	position:absolute;	
++	position:absolute;
+ 	margin: auto;
+ 	top: 0;
+ 	left: 0;
+ 	width:100%;
+ 	height:100%;
+-	z-index:9999;
++	/* reaper: raise the legacy #Loading overlay above any in-page menu/modal so it
++	   fully blocks the content frame while an apply/reboot runs (was 9999, tied with
++	   the top menu). The top-document UI4 loader covers the outer shell chrome. */
++	z-index:2147483000;
+ 	background-color: transparent;
+ 	filter:alpha(opacity=94);  /*IE5、IE5.5、IE6、IE7*/
+ 	opacity: .94;  /*Opera9.0+、Firefox1.5+、Safari、Chrome*/
+-- 
+2.25.1
+

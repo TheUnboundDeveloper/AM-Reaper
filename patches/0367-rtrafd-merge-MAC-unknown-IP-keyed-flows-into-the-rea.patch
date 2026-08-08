@@ -1,0 +1,400 @@
+From 60aa3693762d699fba5b408b64c4dde5a77c00ed Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 8 Aug 2026 12:57:36 -0400
+Subject: [PATCH 367/369] rtrafd: merge MAC-unknown IP-keyed flows into the
+ real device slot; trim Roaming Assistant help
+
+cli_slot(): a flow whose source MAC can't be resolved (offline device, aged-out
+ARP/bridge entry) fell back to keying the client by its IP - creating a SECOND
+slot for a device already tracked by MAC. The same device then appeared twice
+(once by MAC, once with the IP jammed into the "mac" field) in health.json, the
+Prometheus/analytics export, and the Traffic Analyzer. Now, before creating an
+IP-keyed slot, reuse any existing MAC-keyed slot with the same IP. IPv4-looking
+keys only; the "router" bucket and real MACs are untouched. Runs only on a cache
+miss on the uncommon MAC-unknown path, so no hot-path cost for known clients.
+
+Also: the Roaming Assistant help on Reaper_WiFiPro.asp (RWFP_14) is trimmed to
+just "0 = off" (was "0 = off; otherwise the dBm threshold to disconnect weak
+clients") per owner.
+
+v2.3.0.
+---
+ release/src/router/rtrafd/rtrafd.c | 12 ++++++++++++
+ release/src/router/www/BR.dict     |  2 +-
+ release/src/router/www/CN.dict     |  2 +-
+ release/src/router/www/CZ.dict     |  2 +-
+ release/src/router/www/DA.dict     |  2 +-
+ release/src/router/www/DE.dict     |  2 +-
+ release/src/router/www/EN.dict     |  2 +-
+ release/src/router/www/ES.dict     |  2 +-
+ release/src/router/www/FI.dict     |  2 +-
+ release/src/router/www/FR.dict     |  2 +-
+ release/src/router/www/HU.dict     |  2 +-
+ release/src/router/www/IT.dict     |  2 +-
+ release/src/router/www/JP.dict     |  2 +-
+ release/src/router/www/KR.dict     |  2 +-
+ release/src/router/www/MS.dict     |  2 +-
+ release/src/router/www/NL.dict     |  2 +-
+ release/src/router/www/NO.dict     |  2 +-
+ release/src/router/www/PL.dict     |  2 +-
+ release/src/router/www/RO.dict     |  2 +-
+ release/src/router/www/RU.dict     |  2 +-
+ release/src/router/www/SL.dict     |  2 +-
+ release/src/router/www/SV.dict     |  2 +-
+ release/src/router/www/TH.dict     |  2 +-
+ release/src/router/www/TR.dict     |  2 +-
+ release/src/router/www/TW.dict     |  2 +-
+ release/src/router/www/UK.dict     |  2 +-
+ 26 files changed, 37 insertions(+), 25 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 09c55bd41d..0a28b022ae 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -397,6 +397,18 @@ static int cli_slot(const char *key, const char *ip)
+ 		cli[i].last = time(NULL);
+ 		return i;
+ 	}
++	/* v2.3.0: a MAC-unknown flow falls back to an IP key (cli_slot(ip, ip)). If this
++	 * device is already tracked by its real MAC, reuse that slot instead of spawning a
++	 * duplicate IP-keyed phantom - the same (usually offline) device otherwise appears
++	 * twice, once by MAC and once by IP, in the health/traffic tables and the exports.
++	 * Only for an IPv4-looking key (no ':', has '.'); never a MAC or the "router" bucket. */
++	if (!strchr(key, ':') && strchr(key, '.')) {
++		for (i = 0; i < NCLI; i++)
++			if (cli[i].used && strchr(cli[i].key, ':') && strcmp(cli[i].ip, ip) == 0) {
++				cli[i].last = time(NULL);
++				return i;
++			}
++	}
+ 	/* new client: a free slot (the O(NCLI) walk here runs only on first sight) */
+ 	for (i = 0; i < NCLI; i++)
+ 		if (!cli[i].used) { oldest = i; goto take; }
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index bf3bef0eda..93ebdeb29d 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=pendente
+ RWFP_11=Aplicando a todos os rádios - reiniciando o Wi-Fi...
+ RWFP_12=A região e o escalonador sem fio permanecem na página Profissional clássica. A visibilidade do SSID da rede principal e o isolamento de clientes são definidos nas páginas Wireless Geral e Rede.
+ RWFP_13=Desativar 802.11b
+-RWFP_14=0 = desligado; caso contrário, o limite em dBm para desconectar clientes fracos.
++RWFP_14=0 = off
+ RFB_01=Configuração inicial
+ RFB_02=Este roteador acabou de ser redefinido ou configurado pela primeira vez. Defina agora o nome de usuário e a senha de administrador. Em seguida, você definirá a senha do Wi&#8209;Fi. Tudo pode ser alterado depois na interface.
+ RFB_03=Nome de usuário do roteador
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 057a084ccf..270425e7ef 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=待定
+ RWFP_11=正在应用到所有射频 - 正在重启 Wi-Fi...
+ RWFP_12=地区和无线调度器仍保留在经典的 Professional 页面。主网络 SSID 可见性和客户端隔离在 General Wireless 和 Network 页面设置。
+ RWFP_13=禁用 802.11b
+-RWFP_14=0 = 关闭；否则为断开弱客户端的 dBm 阈值。
++RWFP_14=0 = off
+ RFB_01=首次设置
+ RFB_02=此路由器刚被重置或首次设置。请立即设置管理员用户名和密码。接下来将要求您设置 Wi&#8209;Fi 密码。所有内容以后都可以在管理界面中更改。
+ RFB_03=路由器用户名
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index ef77b2b334..19c5975895 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=čeká
+ RWFP_11=Použití na všechna rádia - restartuji Wi-Fi...
+ RWFP_12=Region a bezdrátový plánovač zůstávají na klasické stránce Professional. Viditelnost SSID hlavní sítě a izolace klientů se nastavují na stránkách Obecné bezdrátové a Síť.
+ RWFP_13=Zakázat 802.11b
+-RWFP_14=0 = vypnuto; jinak práh dBm pro odpojení slabých klientů.
++RWFP_14=0 = off
+ RFB_01=První nastavení
+ RFB_02=Tento router byl právě resetován nebo nastaven poprvé. Nyní nastavte uživatelské jméno a heslo správce. Poté budete požádáni o nastavení hesla Wi&#8209;Fi. Vše lze později změnit v rozhraní.
+ RFB_03=Uživatelské jméno routeru
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 4484718302..9b5ac26ba8 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=afventer
+ RWFP_11=Anvender på alle radioer - genstarter Wi-Fi...
+ RWFP_12=Region og den trådløse planlægger forbliver på den klassiske Professional-side. Hovednetværkets SSID-synlighed og klientisolation indstilles på siderne Generelt trådløst og Netværk.
+ RWFP_13=Deaktivér 802.11b
+-RWFP_14=0 = fra; ellers dBm-tærsklen for at afbryde svage klienter.
++RWFP_14=0 = off
+ RFB_01=Førstegangsopsætning
+ RFB_02=Denne router er netop blevet nulstillet eller sat op for første gang. Angiv administratorbrugernavn og adgangskode nu. Derefter bliver du bedt om at angive din Wi&#8209;Fi-adgangskode. Alt kan ændres senere i brugerfladen.
+ RFB_03=Routerens brugernavn
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index d6f4157e34..27c9b160d1 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=ausstehend
+ RWFP_11=Wird auf alle Funkmodule angewendet - Wi-Fi wird neu gestartet...
+ RWFP_12=Region und der Wireless-Scheduler bleiben auf der klassischen Professional-Seite. Sichtbarkeit der Haupt-SSID und Client-Isolation werden auf den Seiten Allgemein (WLAN) und Netzwerk festgelegt.
+ RWFP_13=802.11b deaktivieren
+-RWFP_14=0 = aus; andernfalls die dBm-Schwelle zum Trennen schwacher Clients.
++RWFP_14=0 = off
+ RFB_01=Ersteinrichtung
+ RFB_02=Dieser Router wurde soeben zurückgesetzt oder zum ersten Mal eingerichtet. Legen Sie jetzt den Admin-Benutzernamen und das Passwort fest. Anschließend werden Sie gebeten, Ihr WLAN-Passwort festzulegen. Alles kann später in der Oberfläche geändert werden.
+ RFB_03=Router-Benutzername
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 5a53a4ce07..afa79905b2 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=pending
+ RWFP_11=Applying to all radios - restarting Wi-Fi...
+ RWFP_12=Region and the wireless scheduler stay on the classic Professional page. Main-network SSID visibility and client isolation are set on the General Wireless and Network pages.
+ RWFP_13=Disable 802.11b
+-RWFP_14=0 = off; otherwise the dBm threshold to disconnect weak clients.
++RWFP_14=0 = off
+ RFB_01=First-time setup
+ RFB_02=This router was just reset or set up for the first time. Set an admin username and password now. Next you'll be asked to set your Wi&#8209;Fi password. You can change all of these later in the GUI.
+ RFB_03=Router username
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index b418177b25..d0c42357aa 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=pendiente
+ RWFP_11=Aplicando a todas las radios - reiniciando el Wi-Fi...
+ RWFP_12=La región y el planificador inalámbrico permanecen en la página Profesional clásica. La visibilidad del SSID de la red principal y el aislamiento de clientes se configuran en las páginas Inalámbrico general y Red.
+ RWFP_13=Desactivar 802.11b
+-RWFP_14=0 = desactivado; de lo contrario, el umbral en dBm para desconectar clientes débiles.
++RWFP_14=0 = off
+ RFB_01=Configuración inicial
+ RFB_02=Este router se acaba de restablecer o configurar por primera vez. Establezca ahora el nombre de usuario y la contraseña de administrador. Después se le pedirá la contraseña de la red Wi&#8209;Fi. Todo puede cambiarse más tarde en la interfaz.
+ RFB_03=Nombre de usuario del router
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 8e4ce29b05..4e27987ec0 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=odottaa
+ RWFP_11=Otetaan käyttöön kaikille radioille - käynnistetään Wi-Fi uudelleen...
+ RWFP_12=Alue ja langaton ajoitin pysyvät klassisella Professional-sivulla. Pääverkon SSID:n näkyvyys ja asiakkaiden eristys asetetaan Yleinen langaton- ja Verkko-sivuilla.
+ RWFP_13=Poista 802.11b käytöstä
+-RWFP_14=0 = pois; muuten dBm-kynnys heikkojen asiakkaiden katkaisemiseen.
++RWFP_14=0 = off
+ RFB_01=Ensimmäinen käyttöönotto
+ RFB_02=Tämä reititin on juuri nollattu tai otettu käyttöön ensimmäistä kertaa. Aseta järjestelmänvalvojan käyttäjätunnus ja salasana nyt. Seuraavaksi sinua pyydetään asettamaan Wi&#8209;Fi-salasana. Kaikkia voi muuttaa myöhemmin käyttöliittymässä.
+ RFB_03=Reitittimen käyttäjätunnus
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d612704009..098424c402 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=en attente
+ RWFP_11=Application à toutes les radios - redémarrage du Wi-Fi...
+ RWFP_12=La région et l'ordonnanceur sans fil restent sur la page Professionnel classique. La visibilité du SSID du réseau principal et l'isolation des clients se règlent sur les pages Sans fil général et Réseau.
+ RWFP_13=Désactiver 802.11b
+-RWFP_14=0 = désactivé ; sinon, le seuil en dBm pour déconnecter les clients faibles.
++RWFP_14=0 = off
+ RFB_01=Première configuration
+ RFB_02=Ce routeur vient d'être réinitialisé ou configuré pour la première fois. Définissez maintenant le nom d'utilisateur et le mot de passe administrateur. Vous serez ensuite invité à définir votre mot de passe Wi&#8209;Fi. Tout pourra être modifié plus tard dans l'interface.
+ RFB_03=Nom d'utilisateur du routeur
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 8705ed6cd4..554bb358c6 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=függőben
+ RWFP_11=Alkalmazás minden rádióra - Wi-Fi újraindítása...
+ RWFP_12=A régió és a vezeték nélküli ütemező a klasszikus Professional oldalon marad. A fő hálózat SSID láthatósága és a kliensizolálás az Általános vezeték nélküli és Hálózat oldalakon állítható be.
+ RWFP_13=802.11b letiltása
+-RWFP_14=0 = ki; egyébként a dBm küszöb a gyenge kliensek lekapcsolásához.
++RWFP_14=0 = off
+ RFB_01=Első beállítás
+ RFB_02=Ezt a routert most állították vissza vagy először állítják be. Adja meg most az adminisztrátori felhasználónevet és jelszót. Ezután a Wi&#8209;Fi jelszó megadását kéri a rendszer. Minden később módosítható a felületen.
+ RFB_03=Router felhasználónév
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index fbeac54b30..c75acd7c8b 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=in sospeso
+ RWFP_11=Applicazione a tutte le radio - riavvio del Wi-Fi...
+ RWFP_12=La regione e lo scheduler wireless restano nella pagina Professionale classica. La visibilità dell'SSID della rete principale e l'isolamento dei client si impostano nelle pagine Wireless generale e Rete.
+ RWFP_13=Disabilita 802.11b
+-RWFP_14=0 = disattivato; altrimenti la soglia in dBm per disconnettere i client deboli.
++RWFP_14=0 = off
+ RFB_01=Prima configurazione
+ RFB_02=Questo router è stato appena ripristinato o configurato per la prima volta. Imposta ora nome utente e password amministratore. Poi ti verrà chiesto di impostare la password Wi&#8209;Fi. Tutto potrà essere modificato in seguito nell'interfaccia.
+ RFB_03=Nome utente del router
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index e0f7ff0c0a..af0e4d3ebb 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=保留中
+ RWFP_11=すべてのラジオに適用中 - Wi-Fi を再起動中...
+ RWFP_12=地域とワイヤレススケジューラーは従来の Professional ページのままです。メインネットワークの SSID 可視性とクライアント分離は General Wireless および Network ページで設定します。
+ RWFP_13=802.11b を無効化
+-RWFP_14=0 = オフ；それ以外は弱いクライアントを切断する dBm しきい値。
++RWFP_14=0 = off
+ RFB_01=初期セットアップ
+ RFB_02=このルーターはリセット直後、または初めてのセットアップです。管理者のユーザー名とパスワードを今すぐ設定してください。次に Wi&#8209;Fi パスワードの設定を求められます。いずれも後から管理画面で変更できます。
+ RFB_03=ルーターのユーザー名
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 10a5359115..661dab0544 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=대기 중
+ RWFP_11=모든 라디오에 적용 중 - Wi-Fi 재시작 중...
+ RWFP_12=지역 및 무선 스케줄러는 기존 Professional 페이지에 남아 있습니다. 메인 네트워크 SSID 표시 여부 및 클라이언트 격리는 일반 무선 및 네트워크 페이지에서 설정합니다.
+ RWFP_13=802.11b 비활성화
+-RWFP_14=0 = 꺼짐; 그렇지 않으면 약한 클라이언트를 연결 해제하는 dBm 임계값.
++RWFP_14=0 = off
+ RFB_01=최초 설정
+ RFB_02=이 라우터는 방금 초기화되었거나 처음 설정됩니다. 지금 관리자 사용자 이름과 비밀번호를 설정하세요. 다음으로 Wi&#8209;Fi 비밀번호를 설정하라는 안내가 표시됩니다. 모두 나중에 관리 화면에서 변경할 수 있습니다.
+ RFB_03=라우터 사용자 이름
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 08fd58de2f..4838b775db 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=belum selesai
+ RWFP_11=Menggunakan pada semua radio - memulakan semula Wi-Fi...
+ RWFP_12=Wilayah dan penjadual wayarles kekal pada halaman Professional klasik. Keterlihatan SSID rangkaian utama dan pengasingan klien ditetapkan pada halaman General Wireless dan Network.
+ RWFP_13=Lumpuhkan 802.11b
+-RWFP_14=0 = mati; jika tidak, ambang dBm untuk memutuskan klien lemah.
++RWFP_14=0 = off
+ RFB_01=Persediaan kali pertama
+ RFB_02=Router ini baru sahaja ditetapkan semula atau disediakan buat kali pertama. Tetapkan nama pengguna dan kata laluan pentadbir sekarang. Seterusnya anda akan diminta menetapkan kata laluan Wi&#8209;Fi. Semuanya boleh diubah kemudian dalam antara muka.
+ RFB_03=Nama pengguna router
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 07a1c1f509..0a679eb243 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=in behandeling
+ RWFP_11=Toepassen op alle radio's - Wi-Fi opnieuw starten...
+ RWFP_12=Regio en de draadloze scheduler blijven op de klassieke Professional-pagina. SSID-zichtbaarheid van het hoofdnetwerk en clientisolatie worden ingesteld op de pagina's Algemeen draadloos en Netwerk.
+ RWFP_13=802.11b uitschakelen
+-RWFP_14=0 = uit; anders de dBm-drempel om zwakke clients te ontkoppelen.
++RWFP_14=0 = off
+ RFB_01=Eerste installatie
+ RFB_02=Deze router is zojuist gereset of voor het eerst ingesteld. Stel nu de gebruikersnaam en het wachtwoord van de beheerder in. Daarna stelt u het Wi&#8209;Fi-wachtwoord in. Alles is later te wijzigen in de interface.
+ RFB_03=Gebruikersnaam router
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index cb0e8d7d89..8d8b6721d4 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=venter
+ RWFP_11=Bruker på alle radioer - starter Wi-Fi på nytt...
+ RWFP_12=Region og den trådløse planleggeren forblir på den klassiske Professional-siden. Hovednettverkets SSID-synlighet og klientisolasjon stilles inn på sidene Generelt trådløst og Nettverk.
+ RWFP_13=Deaktiver 802.11b
+-RWFP_14=0 = av; ellers dBm-terskelen for å koble fra svake klienter.
++RWFP_14=0 = off
+ RFB_01=Førstegangsoppsett
+ RFB_02=Denne ruteren ble nettopp tilbakestilt eller satt opp for første gang. Angi administratorbrukernavn og passord nå. Deretter blir du bedt om å angi Wi&#8209;Fi-passordet. Alt kan endres senere i grensesnittet.
+ RFB_03=Ruterens brukernavn
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 0f7ee001a2..c5a03ab6d6 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=oczekuje
+ RWFP_11=Stosowanie do wszystkich radiów - ponowne uruchamianie Wi-Fi...
+ RWFP_12=Region i harmonogram bezprzewodowy pozostają na klasycznej stronie Professional. Widoczność SSID sieci głównej i izolacja klientów ustawiane są na stronach Ogólne bezprzewodowe i Sieć.
+ RWFP_13=Wyłącz 802.11b
+-RWFP_14=0 = wył.; w przeciwnym razie próg dBm do rozłączania słabych klientów.
++RWFP_14=0 = off
+ RFB_01=Pierwsza konfiguracja
+ RFB_02=Ten router został właśnie zresetowany lub skonfigurowany po raz pierwszy. Ustaw teraz nazwę użytkownika i hasło administratora. Następnie zostaniesz poproszony o ustawienie hasła Wi&#8209;Fi. Wszystko można później zmienić w interfejsie.
+ RFB_03=Nazwa użytkownika routera
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 26eb4a61e9..f58676be9d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=în așteptare
+ RWFP_11=Se aplică tuturor radiourilor - se repornește Wi-Fi...
+ RWFP_12=Regiunea și planificatorul wireless rămân pe pagina clasică Professional. Vizibilitatea SSID a rețelei principale și izolarea clienților se setează pe paginile General Wireless și Network.
+ RWFP_13=Dezactivează 802.11b
+-RWFP_14=0 = oprit; altfel pragul dBm pentru deconectarea clienților slabi.
++RWFP_14=0 = off
+ RFB_01=Configurare inițială
+ RFB_02=Acest router tocmai a fost resetat sau configurat pentru prima dată. Setați acum numele de utilizator și parola de administrator. Apoi vi se va cere să setați parola Wi&#8209;Fi. Totul poate fi schimbat ulterior în interfață.
+ RFB_03=Nume de utilizator router
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index f389ce2066..fa8fb5a102 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=ожидает
+ RWFP_11=Применение ко всем радиомодулям - перезапуск Wi-Fi...
+ RWFP_12=Регион и беспроводной планировщик остаются на классической странице Professional. Видимость SSID основной сети и изоляция клиентов задаются на страницах Общие беспроводные и Сеть.
+ RWFP_13=Отключить 802.11b
+-RWFP_14=0 = выкл; иначе порог dBm для отключения слабых клиентов.
++RWFP_14=0 = off
+ RFB_01=Первоначальная настройка
+ RFB_02=Этот роутер только что сброшен или настраивается впервые. Задайте имя пользователя и пароль администратора. Затем вам будет предложено задать пароль Wi&#8209;Fi. Всё это можно изменить позже в интерфейсе.
+ RFB_03=Имя пользователя роутера
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 7d4e8d5f8f..cbb97653a9 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=v čakanju
+ RWFP_11=Uveljavljanje na vseh radiih - ponovni zagon Wi-Fi...
+ RWFP_12=Regija in brezžični razporejevalnik ostaneta na klasični strani Professional. Vidnost SSID glavnega omrežja in izolacija odjemalcev se nastavita na straneh Splošno brezžično in Omrežje.
+ RWFP_13=Onemogoči 802.11b
+-RWFP_14=0 = izklop; sicer prag dBm za odklop šibkih odjemalcev.
++RWFP_14=0 = off
+ RFB_01=Prva nastavitev
+ RFB_02=Ta usmerjevalnik je bil pravkar ponastavljen ali prvič nastavljen. Zdaj nastavite skrbniško uporabniško ime in geslo. Nato boste pozvani k nastavitvi gesla Wi&#8209;Fi. Vse lahko pozneje spremenite v vmesniku.
+ RFB_03=Uporabniško ime usmerjevalnika
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index a10e904d45..bb99ca2739 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=väntande
+ RWFP_11=Tillämpar på alla radioenheter - startar om Wi-Fi...
+ RWFP_12=Region och den trådlösa schemaläggaren stannar kvar på den klassiska Professional-sidan. Huvudnätverkets SSID-synlighet och klientisolering ställs in på sidorna Allmänt trådlöst och Nätverk.
+ RWFP_13=Inaktivera 802.11b
+-RWFP_14=0 = av; annars dBm-tröskeln för att koppla från svaga klienter.
++RWFP_14=0 = off
+ RFB_01=Förstagångsinstallation
+ RFB_02=Den här routern har just återställts eller konfigurerats för första gången. Ange administratörens användarnamn och lösenord nu. Därefter ombeds du ange ditt Wi&#8209;Fi-lösenord. Allt kan ändras senare i gränssnittet.
+ RFB_03=Routerns användarnamn
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 82559bc622..b81e3aa7ee 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=รอดำเนินการ
+ RWFP_11=กำลังใช้กับวิทยุทั้งหมด - กำลังรีสตาร์ท Wi-Fi...
+ RWFP_12=ภูมิภาคและตัวจัดตารางเวลาไร้สายยังคงอยู่ในหน้า Professional แบบคลาสสิก การมองเห็น SSID ของเครือข่ายหลักและการแยกไคลเอนต์ตั้งค่าในหน้า General Wireless และ Network
+ RWFP_13=ปิด 802.11b
+-RWFP_14=0 = ปิด; มิฉะนั้นคือเกณฑ์ dBm ที่จะตัดการเชื่อมต่อไคลเอนต์ที่สัญญาณอ่อน
++RWFP_14=0 = off
+ RFB_01=การตั้งค่าครั้งแรก
+ RFB_02=เราเตอร์นี้เพิ่งถูกรีเซ็ตหรือถูกตั้งค่าเป็นครั้งแรก โปรดตั้งชื่อผู้ใช้และรหัสผ่านผู้ดูแลระบบตอนนี้ จากนั้นระบบจะให้ตั้งรหัสผ่าน Wi&#8209;Fi ทั้งหมดนี้เปลี่ยนได้ภายหลังในหน้าจัดการ
+ RFB_03=ชื่อผู้ใช้ของเราเตอร์
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 6bcb94a837..74c5daa99b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=beklemede
+ RWFP_11=Tüm radyolara uygulanıyor - Wi-Fi yeniden başlatılıyor...
+ RWFP_12=Bölge ve kablosuz zamanlayıcı klasik Professional sayfasında kalır. Ana ağ SSID görünürlüğü ve istemci yalıtımı General Wireless ve Network sayfalarında ayarlanır.
+ RWFP_13=802.11b'yi devre dışı bırak
+-RWFP_14=0 = kapalı; aksi halde zayıf istemcileri kesecek dBm eşiği.
++RWFP_14=0 = off
+ RFB_01=İlk kurulum
+ RFB_02=Bu router az önce sıfırlandı veya ilk kez kuruluyor. Şimdi yönetici kullanıcı adını ve parolasını belirleyin. Ardından Wi&#8209;Fi parolanızı belirlemeniz istenecek. Hepsi daha sonra arayüzden değiştirilebilir.
+ RFB_03=Router kullanıcı adı
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 2a7560896c..8caf6067bb 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=待處理
+ RWFP_11=正在套用到所有無線電 - 正在重新啟動 Wi-Fi...
+ RWFP_12=地區和無線排程器仍保留在經典的 Professional 頁面。主網路 SSID 可見性和用戶端隔離在 General Wireless 和 Network 頁面設定。
+ RWFP_13=停用 802.11b
+-RWFP_14=0 = 關閉；否則為中斷弱用戶端的 dBm 閾值。
++RWFP_14=0 = off
+ RFB_01=首次設定
+ RFB_02=此路由器剛被重設或首次設定。請立即設定管理員使用者名稱與密碼。接著將要求您設定 Wi&#8209;Fi 密碼。所有設定之後皆可在管理介面中變更。
+ RFB_03=路由器使用者名稱
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 2a1d94adc6..43d4eead97 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5692,7 +5692,7 @@ RWFP_10=очікує
+ RWFP_11=Застосування до всіх радіо - перезапуск Wi-Fi...
+ RWFP_12=Регіон і бездротовий планувальник лишаються на класичній сторінці Professional. Видимість SSID основної мережі та ізоляція клієнтів налаштовуються на сторінках General Wireless і Network.
+ RWFP_13=Вимкнути 802.11b
+-RWFP_14=0 = вимк; інакше поріг у dBm для відключення слабких клієнтів.
++RWFP_14=0 = off
+ RFB_01=Початкове налаштування
+ RFB_02=Цей маршрутизатор щойно скинуто або налаштовується вперше. Задайте ім'я користувача та пароль адміністратора. Далі вам буде запропоновано задати пароль Wi&#8209;Fi. Усе це можна змінити пізніше в інтерфейсі.
+ RFB_03=Ім'я користувача маршрутизатора
+-- 
+2.25.1
+

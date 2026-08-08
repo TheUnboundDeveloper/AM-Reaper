@@ -1,0 +1,174 @@
+From 3accf2d76a76b3ac6e92c4c85b8fd2ab3dc09389 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 7 Aug 2026 08:31:17 -0400
+Subject: [PATCH 351/352] v2.2.3: rtrafd O(1) cli_slot index - fix the residual
+ Traffic Analyzer stutter
+
+The NCLI 64->192 bump in v2.2.2 tripled cli_slot()'s O(NCLI) linear scan, which
+is called once per client-connection inside poll_fcache() (every 5 s, up to 1536
+flows) and poll_conntrack(). On a 100+ client LAN that pushed the 5 s heavy tick
+over the 100 ms budget -> an occasional micro-stutter in the live analyzer graph
+that persists even with the v2.2.2 health probe OFF (probe-independent).
+
+Fix: an open-addressed fnv(key)->slot hash index (cli_hash[512]) makes the common
+path - a client we already track - a short hash probe instead of a full NCLI scan.
+The index is maintained on the free-slot insert (cli_index_put), rebuilt on the
+rare LRU eviction and on db restore (cli_index_rebuild), and cleared at startup;
+cli_index_get re-checks the key so a hash collision can't false-match. New-client
+allocation keeps its O(NCLI) free-slot walk (runs only on first sight of a client).
+
+Scope: this is the probe-INDEPENDENT residual-stutter fix (plan item 0). The health
+probe's own loop-blocking (conntrack parse + flash append + ICMP burst on the 10 Hz
+tick) and the speed-test RT-throttle interaction remain for a follow-up (v2.2.4);
+keep rtraf_hprobe=0 for now. See docs/V222-REGRESSION-PLAN.md.
+
+BE96U MCP build owed (this commit) for owner testing.
+---
+ release/src-rt/version.conf        |  2 +-
+ release/src/router/rtrafd/rtrafd.c | 76 +++++++++++++++++++++++++++---
+ 2 files changed, 70 insertions(+), 8 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 47ef544a09..254f1f454a 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.2.2
++EXTENDNO=Reaper_v2.2.3
+ 
+ RCNO=0
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index b60c9556a6..cff997fb4f 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -68,6 +68,10 @@
+ #define NM		24	/* month slots  (2 y)  */
+ #define NNET		8
+ #define NCLI		192	/* per-device cap (v2.2.2: 64 -> 192 for 100-150 client LANs) */
++#define CLI_HASH	512	/* v2.2.3: open-addressed fnv(key)->slot index (power of 2, > NCLI)
++				 * so cli_slot() is O(1) not O(NCLI). The NCLI 64->192 bump had
++				 * tripled the per-flow linear scan in the 5 s poll_fcache tick,
++				 * pushing it over budget on large LANs = the residual stutter. */
+ #define RT_NETLBL	"Router"	/* per-network + per-device bucket for the router's
+ 				   OWN (locally-terminated) traffic: its speed test, DNS,
+ 				   firmware checks, ntp, the latency probe - so br0 + Router
+@@ -129,6 +133,7 @@ static ring_t *r_wan, *r_net[NNET], *r_cls[7], *r_cli[NCLI], *r_prb;
+ static char netname[NNET][16];
+ static int nnet = 0;
+ static cli_t cli[NCLI];
++static int cli_hash[CLI_HASH];		/* v2.2.3: fnv(cli.key) -> slot; -1 = empty */
+ static flow_t *flows;			/* conntrack-fallback delta table */
+ static uint32_t flowgen = 0;
+ static uint64_t *fc_last;		/* fcache flow-id -> last cumulative TotalBytes */
+@@ -325,27 +330,82 @@ static const char *dev_bridge(const char *dev)
+ 	return brmap[nbrmap++].br;
+ }
+ 
++/* v2.2.3: O(1) client-slot lookup. cli_slot() was an O(NCLI) linear scan called
++ * once per client-connection inside poll_fcache() (every 5 s, up to 1536 flows) and
++ * poll_conntrack(); the NCLI 64->192 bump tripled it and pushed the 5 s heavy tick
++ * over the 100 ms budget on large LANs (the residual analyzer stutter that persists
++ * with the health probe OFF). An open-addressed fnv(key)->slot index makes the
++ * common path - a client we already track - a short hash probe. The index is
++ * maintained on the free-slot insert and rebuilt on the rare LRU eviction / db
++ * restore, so it can never hold a stale entry (and cli_index_get re-checks the key,
++ * so a hash collision can't false-match). */
++static void cli_index_clear(void)
++{
++	int i;
++	for (i = 0; i < CLI_HASH; i++) cli_hash[i] = -1;
++}
++
++static void cli_index_put(const char *key, int slot)
++{
++	uint32_t h = (uint32_t)(fnv64(key) & (CLI_HASH - 1));
++	int j;
++	for (j = 0; j < CLI_HASH; j++) {
++		int p = (h + j) & (CLI_HASH - 1);
++		if (cli_hash[p] < 0 || cli_hash[p] == slot) { cli_hash[p] = slot; return; }
++	}
++}
++
++static void cli_index_rebuild(void)
++{
++	int i;
++	cli_index_clear();
++	for (i = 0; i < NCLI; i++)
++		if (cli[i].used) cli_index_put(cli[i].key, i);
++}
++
++static int cli_index_get(const char *key)
++{
++	uint32_t h = (uint32_t)(fnv64(key) & (CLI_HASH - 1));
++	int j;
++	for (j = 0; j < CLI_HASH; j++) {
++		int p = (h + j) & (CLI_HASH - 1);
++		int s = cli_hash[p];
++		if (s < 0) return -1;			/* empty slot terminates the probe */
++		if (cli[s].used && strcmp(cli[s].key, key) == 0) return s;
++	}
++	return -1;
++}
++
+ static int cli_slot(const char *key, const char *ip)
+ {
+ 	int i, oldest = 0;
+ 	time_t omin = 0;
+-	for (i = 0; i < NCLI; i++)
+-		if (cli[i].used && strcmp(cli[i].key, key) == 0) {
+-			strlcpy(cli[i].ip, ip, sizeof(cli[i].ip));
+-			cli[i].last = time(NULL);
+-			return i;
+-		}
++	/* fast path: a client we already track (the overwhelmingly common case) */
++	if ((i = cli_index_get(key)) >= 0) {
++		strlcpy(cli[i].ip, ip, sizeof(cli[i].ip));
++		cli[i].last = time(NULL);
++		return i;
++	}
++	/* new client: a free slot (the O(NCLI) walk here runs only on first sight) */
+ 	for (i = 0; i < NCLI; i++)
+ 		if (!cli[i].used) { oldest = i; goto take; }
+-	/* LRU replace: wipe that client's history */
++	/* table full: LRU replace, wipe that client's history, then rebuild the index
++	 * (the evicted key must leave it) */
+ 	for (i = 0; i < NCLI; i++)
+ 		if (omin == 0 || cli[i].last < omin) { omin = cli[i].last; oldest = i; }
+ 	memset(r_cli[oldest], 0, sizeof(ring_t));
++	cli[oldest].used = 1;
++	strlcpy(cli[oldest].key, key, sizeof(cli[0].key));
++	strlcpy(cli[oldest].ip, ip, sizeof(cli[0].ip));
++	cli[oldest].last = time(NULL);
++	cli_index_rebuild();
++	return oldest;
+ take:
+ 	cli[oldest].used = 1;
+ 	strlcpy(cli[oldest].key, key, sizeof(cli[0].key));
+ 	strlcpy(cli[oldest].ip, ip, sizeof(cli[0].ip));
+ 	cli[oldest].last = time(NULL);
++	cli_index_put(key, oldest);
+ 	return oldest;
+ }
+ 
+@@ -1457,6 +1517,7 @@ static int db_load(const char *path)
+ 		cli[i].ip[sizeof(cli[0].ip) - 1] = 0;
+ 		cli[i].used = cli[i].used ? 1 : 0;
+ 	}
++	cli_index_rebuild();	/* v2.2.3: index the restored client table */
+ 	if (fread(r_wan, sizeof(ring_t), 1, o) != 1) goto trunc;
+ 	for (i = 0; i < NNET; i++) if (fread(r_net[i], sizeof(ring_t), 1, o) != 1) goto trunc;
+ 	for (i = 0; i < 7; i++) if (fread(r_cls[i], sizeof(ring_t), 1, o) != 1) goto trunc;
+@@ -1525,6 +1586,7 @@ int main(int argc, char **argv)
+ 	 * db_attached = the requested medium was reachable and its db (if any) loaded;
+ 	 * until then keep retrying from the main loop for STORE_RETRY_SECS, and NEVER
+ 	 * save over a file we did not load (see the clobber guard at the save site). */
++	cli_index_clear();	/* v2.2.3: empty the O(1) client index before any cli_slot / db_load */
+ 	store = resolve_store(dbpath, sizeof(dbpath));
+ 	set_store_dir(dbpath);
+ 	if (dbpath[0]) {
+-- 
+2.25.1
+

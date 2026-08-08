@@ -30,7 +30,10 @@ VER_REL=release/src-rt/version.conf
 BANNER_REFS=(release/src/router/www/Main_Login.asp
              release/src/router/www/Main_ReaperDash.asp
              release/src/router/www/reaper_shell.asp
-             release/src/router/www/state.js)
+             release/src/router/www/state.js
+             release/src/router/www/Main_Password.asp
+             release/src/router/www/Reaper_FirstBoot.asp
+             release/src/router/www/Logout.asp)
 
 MODEL="${1:-}"; shift 2>/dev/null || true
 DO_COMMIT=0; SET_VER=""
@@ -43,21 +46,22 @@ while [ $# -gt 0 ]; do case "$1" in
 # BRANCH TARGET BANNER_FILE BANNER_SHA256 BUILD_NAME HAS6G QUAD
 model_meta() {
   case "$1" in
-  RT-BE96U)    BRANCH=be96u-only;  TARGET=rt-be96u;    BANNER_FILE=RT-96U_REAPER_Header.png;
+  RT-BE96U)    BRANCH=be96u-only;  TARGET=rt-be96u;    BANNER_FILE=RT-96U_REAPER_Header.png; MP4_SRC="RT-BE96U Header Animation.mp4";
                BSHA=f2607d4fd490041bebde08fd526d28704083332eef97417e2d67cafd7bd68c7d; BUILD_NAME=RT-BE96U;    HAS6G=y; QUAD=n;;
-  RT-BE86U)    BRANCH=rt-be86u;    TARGET=rt-be86u;    BANNER_FILE=RT-BE86U_REAPER_Header.png;
+  RT-BE86U)    BRANCH=rt-be86u;    TARGET=rt-be86u;    BANNER_FILE=RT-BE86U_REAPER_Header.png; MP4_SRC="RT-BE86U Header Animation.mp4";
                BSHA=643036d89ca249311eec964035d973a6eeaaec38d5c9ec1ecd47f33298c28ece; BUILD_NAME=RT-BE86U;    HAS6G=n; QUAD=n;;
-  RT-BE88U)    BRANCH=rt-be88u;    TARGET=rt-be88u;    BANNER_FILE=RT-BE88U_REAPER_Header.png;
+  RT-BE88U)    BRANCH=rt-be88u;    TARGET=rt-be88u;    BANNER_FILE=RT-BE88U_REAPER_Header.png; MP4_SRC="RT-BE88U Header Animation.mp4";
                BSHA=a46320ea1abf53eb4212eb02b1682ed80a91a129f0c7d1ced6a836d832817f27; BUILD_NAME=RT-BE88U;    HAS6G=n; QUAD=n;;
-  GT-BE98)     BRANCH=gt-be98;     TARGET=gt-be98;     BANNER_FILE=GT-BE98_REAPER_Header.png;
+  GT-BE98)     BRANCH=gt-be98;     TARGET=gt-be98;     BANNER_FILE=GT-BE98_REAPER_Header.png; MP4_SRC="GT-BE98 Header Animation.mp4";
                BSHA=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; BUILD_NAME=GT-BE98;     HAS6G=y; QUAD=y;;
-  GT-BE98_PRO) BRANCH=gt-be98-pro; TARGET=gt-be98_pro; BANNER_FILE=GT-BE98P_REAPER_Header.png;
+  GT-BE98_PRO) BRANCH=gt-be98-pro; TARGET=gt-be98_pro; BANNER_FILE=GT-BE98P_REAPER_Header.png; MP4_SRC="GT-BE98P Header Animation.mp4";
                BSHA=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; BUILD_NAME=GT-BE98_PRO; HAS6G=y; QUAD=y;;
   *) return 1;; esac
 }
 ALL_MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
 model_meta "$MODEL" || { echo "FATAL: unknown model '$MODEL' (valid: $ALL_MODELS)"; exit 2; }
 BANNER_REL="$IMGDIR/$BANNER_FILE"
+MP4_FILE="${BANNER_FILE%.png}.mp4"; MP4_REL="$IMGDIR/$MP4_FILE"
 
 cd "$R" || { echo "FATAL: no repo at $R"; exit 2; }
 FAIL=0; die(){ echo "  [GUARD-FAIL] $*"; FAIL=1; }; ok(){ echo "  [ok] $*"; }; note(){ echo "  [..] $*"; }
@@ -88,15 +92,11 @@ else die "band: HAS_6G ($S6) contradicts manifest ($HAS6G)"; fi
 [ "$FAIL" = 1 ] && { echo; echo "ABORT: preflight guards failed -- refusing to touch $MODEL"; exit 1; }
 
 # =================== OVERLAY / PROTECT SET ==================================
-# blobs + generated + per-model build dirs + the model banner + per-branch bits
-PROTECT_RE='(/sysdep/|/prebuild/|/prebuilt/|targets/|bootloaders/|bcmdrivers/|/dts/|/rdp/|router-sysdep\.|\.o$|\.a$|\.so$|\.ko$|\.bin$|/config_[a-z0-9_-]+$|_REAPER_Header\.png$)'
-PROTECT_EXACT=( "$VER_REL" "$TMAK_REL" )
-PROTECT_GLOB='[A-Z][A-Z]\.dict$|Main_WStatus_Content\.asp|Tools_Sysinfo\.asp|reaper_chanlist_shim\.c'
-is_protected(){ local f="$1" e
-  echo "$f" | grep -qE "$PROTECT_RE" && return 0
-  echo "$f" | grep -qE "$PROTECT_GLOB" && return 0
-  for e in "${PROTECT_EXACT[@]}"; do [ "$f" = "$e" ] && return 0; done
-  return 1; }
+# Classification rules live in _port_protect.sh -- the SINGLE SOURCE shared
+# with reaper_verify.sh's shared-parity check. Do not redefine rules here.
+. /home/reaper/reaper_build/_port_protect.sh
+PROTECT_RE="$PP_PROTECT_RE"
+is_protected(){ [ "$(pp_classify "$1")" = 0 ]; }
 
 echo "== compute shared-vs-overlay split ($MODEL vs $CANON) =="
 mapfile -t DIFFS < <(git diff --name-only "$CANON" "$BRANCH" 2>/dev/null)
@@ -124,6 +124,8 @@ if [ "$DO_COMMIT" = 1 ]; then
   echo "== enforce IDENTITY OVERLAY =="
   # 1) authoritative banner content, model-unique filename
   cp "$MOCK/$BANNER_FILE" "$R/$BANNER_REL" || die "cannot copy banner $BANNER_FILE"
+  # per-model animated header .mp4 (same per-model discipline as the banner .png)
+  cp "$MOCK/$MP4_SRC" "$R/$MP4_REL" || die "cannot copy header mp4 $MP4_SRC"
   # 2) remove any FOREIGN model banner that a sync may have introduced
   for stray in "$R/$IMGDIR"/*_REAPER_Header.png; do
     [ -e "$stray" ] || continue
@@ -133,7 +135,7 @@ if [ "$DO_COMMIT" = 1 ]; then
   # 3) re-point every banner reference at THIS model's filename (files were synced from be96u)
   for rf in "${BANNER_REFS[@]}"; do
     [ -e "$R/$rf" ] || continue
-    sed -i "s#[A-Za-z0-9_-]*_REAPER_Header\.png#$BANNER_FILE#g; s#REAPER1\.png#$BANNER_FILE#g" "$R/$rf"
+    sed -i "s#[A-Za-z0-9_-]*_REAPER_Header\.mp4#$MP4_FILE#g; s#[A-Za-z0-9_-]*_REAPER_Header\.png#$BANNER_FILE#g; s#REAPER1\.png#$BANNER_FILE#g" "$R/$rf"
   done
   # 4) target.mak: keep model block; ensure SAMBA4 override present
   if ! sed -n "/^export ${MODEL} /,/^$/p" "$R/$TMAK_REL" | grep -q "SAMBA4=y"; then
@@ -181,7 +183,7 @@ echo "$TM" | sed -n "/^export ${MODEL} /,/^\$/p" | grep -q "SAMBA4=y" && ok "tar
 if [ "$DO_COMMIT" = 1 ]; then
   # stage ONLY the files this port touched -- never `git add -A` (the tree is
   # full of untracked build artifacts that must not enter the commit).
-  git add -- "$BANNER_REL" "$TMAK_REL" "$VER_REL" "${BANNER_REFS[@]}" 2>/dev/null
+  git add -- "$BANNER_REL" "$MP4_REL" "$TMAK_REL" "$VER_REL" "${BANNER_REFS[@]}" 2>/dev/null
   [ "${#SYNC[@]}" -gt 0 ] && git add -- "${SYNC[@]}" 2>/dev/null
   git diff --cached --quiet && { echo "== no changes (already in sync) =="; exit 0; }
   git commit -q -m "$BRANCH: overlay-port shared code from $CANON (guarded)
@@ -192,6 +194,15 @@ model www/blobs). Guards: banner==$MODEL (rejects foreign), one banner file,
 refs point at it, BUILD_NAME=$MODEL, base router-sysdep.${TARGET}, HAS_6G=$HAS6G.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+  # post-commit residual assertion: after a port, ZERO shared files may still
+  # differ from canon (catches partial checkouts / classifier drift AT THE PORT)
+  resid=$(pp_parity_check "$CANON" HEAD)
+  if [ -n "$resid" ]; then
+    echo "$resid" | sed 's/^/     /'
+    echo "ABORT: port committed but a shared residual remains -- fix before building."
+    exit 1
+  fi
+  echo "  [ok] post-commit parity: 0 unsynced shared files vs $CANON"
   echo "== committed $(git rev-parse --short HEAD) on $BRANCH =="
   echo "   NEXT: build_${TARGET}.sh  ->  reaper_verify re-checks banner/model-id/samba on the image"
 fi

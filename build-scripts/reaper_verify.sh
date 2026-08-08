@@ -175,6 +175,53 @@ foreign=$(ls "$FS"/www/images/*_REAPER_Header.png 2>/dev/null | grep -v "/${ban_
 if [ -n "$foreign" ]; then fail "banner-foreign" "foreign banner staged: $(echo "$foreign" | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
 
+# ---- 9. shared-code parity vs canon (the /sysdep/ lesson, 2026-08-05) ------
+# Every SHARED file must match canon (be96u-only) at build time; per-model
+# overlay files are skipped and the four banner-ref pages compare with the
+# model banner filename normalized. Classifier = _port_protect.sh (the SAME
+# rules the port uses -- if they disagree, gaps ship silently).
+if [ -f /home/reaper/reaper_build/_port_protect.sh ]; then
+  . /home/reaper/reaper_build/_port_protect.sh
+  CANON_REF=be96u-only
+  if git -C "$R" rev-parse --verify -q "$CANON_REF" >/dev/null 2>&1; then
+    HEADB=$(git -C "$R" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ "$HEADB" = "$CANON_REF" ]; then
+      pass "shared-parity" "build branch IS canon ($CANON_REF)"
+    else
+      plist=$(cd "$R" && pp_parity_check "$CANON_REF" HEAD)
+      if [ -z "$plist" ]; then
+        pass "shared-parity" "0 unsynced shared files vs canon $(git -C "$R" rev-parse --short "$CANON_REF")"
+      else
+        echo "$plist" | sed 's/^/    /'
+        fail "shared-parity" "shared files differ from canon (PORT GAP) -- see list"
+      fi
+    fi
+  else warn "shared-parity" "no local canon ref $CANON_REF"; fi
+else warn "shared-parity" "_port_protect.sh not deployed -- parity unchecked"; fi
+
+# ---- 10. rung-critical patch markers in the STAGED image -------------------
+# verify_markers.txt lines: <staged-path>|<literal>|<min>  or  <staged-path>|!<literal>
+# One line per field-critical fix -> every model/variant image PROVES it ships.
+MARKF=/home/reaper/reaper_build/verify_markers.txt
+if [ -f "$MARKF" ]; then
+  mfail=0; mnum=0
+  while IFS='|' read -r mpath mpat mmin; do
+    case "$mpath" in ''|'#'*) continue;; esac
+    mnum=$((mnum+1))
+    tgt="$FS/$mpath"
+    if [ ! -f "$tgt" ]; then fail "patch-marker" "$mpath MISSING from staged fs"; mfail=1; continue; fi
+    case "$mpat" in
+      '!'*) c=$(grep -aFc -- "${mpat#!}" "$tgt" 2>/dev/null); c=${c:-0}
+            [ "$c" -eq 0 ] || { fail "patch-marker" "$mpath: FORBIDDEN '${mpat#!}' present x$c"; mfail=1; };;
+      *)    c=$(grep -aFc -- "$mpat" "$tgt" 2>/dev/null); c=${c:-0}
+            [ "$c" -ge "${mmin:-1}" ] || { fail "patch-marker" "$mpath: '$mpat' x$c < ${mmin:-1}"; mfail=1; };;
+    esac
+  done < "$MARKF"
+  [ "$mfail" = 0 ] && pass "patch-markers" "$mnum marker rules hold in the staged fs"
+else
+  warn "patch-markers" "verify_markers.txt missing -- no rung markers checked"
+fi
+
 # ---- summary ---------------------------------------------------------------
 echo "------------------------------------------------------------"
 # ---- 16. i18n quote-context safety (reaper-ui rule 29) ---------------------

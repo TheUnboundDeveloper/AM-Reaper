@@ -1,0 +1,80 @@
+From 4dd685524b6f1197a834e2e606e60474b74be7d2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 8 Aug 2026 08:13:01 -0400
+Subject: [PATCH 360/369] shell: lock the header + nav during a framed-page
+ apply (iframe overlay can't cover them)
+
+v2.2.8 raised the shell's own applying/rebooting overlays above the navbar, which
+fixes shell-initiated waits. But a stock settings page's showLoading() spinner
+(#Loading) lives INSIDE the content iframe, and an iframe can never paint over the
+parent shell's header/left-nav - so no z-index will cover it, and the user could
+still click a nav item mid-apply.
+
+Fix (owner's suggestion): instead of covering the viewport, disable interaction on
+the shell chrome while loading. New window.shellChromeLock(on) sets pointer-events
+none + dims the header (.top) and rail (#rail). Driven from:
+  - reaperWait()/reaperWaitDone() (shell-initiated framed waits), and
+  - a MutationObserver on the framed page's #Loading element, re-attached on every
+    iframe load, so a stock-page apply locks the chrome the moment its spinner shows
+    and releases it when the spinner hides (or the next page has no spinner).
+
+CSS-only interaction guard, no logic change to any page. Rides v2.2.9 (unbuilt).
+Metal check: on a stock settings page, click Apply -> header + left nav are dimmed
+and unclickable until the spinner clears.
+---
+ release/src/router/www/reaper_shell.asp | 26 ++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index db9225b0ee..fc33ed0c93 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -204,13 +204,25 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+ var DEFAULT_PAGE = 'index.asp';
+ 
+ /* reusable themed waiting modal, callable from framed Reaper content pages */
++/* reaper v2.2.9: lock the shell chrome (header + left rail) during any apply/loading so
++   the user can't navigate away at a critical moment. The z-index overlays cover the shell
++   for shell-initiated waits, but a stock settings page's showLoading() spinner lives
++   INSIDE the iframe and can never paint over the parent header/nav - so we disable pointer
++   events on them (and dim them) instead. Driven from reaperWait/Done AND the #Loading
++   watcher attached on every iframe load below. */
++window.shellChromeLock = function(on){
++  var t=document.querySelector('.top'), r=document.getElementById('rail');
++  if(t){ t.style.pointerEvents=on?'none':''; t.style.opacity=on?'.45':''; }
++  if(r){ r.style.pointerEvents=on?'none':''; r.style.opacity=on?'.45':''; }
++};
+ window.reaperWait = function(msg){
+   var o=document.getElementById('reaper_wait'); if(!o) return;
+   var m=document.getElementById('reaper_wait_msg'); if(m && msg) m.textContent=msg;
+-  o.style.display='block';
++  o.style.display='block'; window.shellChromeLock(true);
+ };
+ window.reaperWaitDone = function(){
+   var o=document.getElementById('reaper_wait'); if(o) o.style.display='none';
++  window.shellChromeLock(false);
+ };
+ 
+ var ICONS = {
+@@ -478,6 +490,18 @@ function buildRail(menuTree){
+     fit();
+     window.scrollTo(0,0);   /* v1.4.7: bounce to top so the tab strip is never hidden */
+     try{ if(window.reaperIdleAttach) window.reaperIdleAttach(f.contentDocument); }catch(e){}
++    /* reaper v2.2.9: mirror the framed page's own loading spinner (#Loading, shown by the
++       stock showLoading() on an apply) onto the shell-chrome lock - that overlay is inside
++       the iframe and cannot cover the header/rail. Re-attached on every iframe load. */
++    try{
++      var _ld=f.contentDocument.getElementById('Loading');
++      if(_ld){
++        var _dv=f.contentDocument.defaultView;
++        var _sync=function(){ window.shellChromeLock(_dv.getComputedStyle(_ld).visibility==='visible'); };
++        new MutationObserver(_sync).observe(_ld,{attributes:true,attributeFilter:['style','class']});
++        _sync();
++      } else { window.shellChromeLock(false); }
++    }catch(e){ window.shellChromeLock(false); }
+   });
+   window.addEventListener('resize', fit);
+ })();
+-- 
+2.25.1
+

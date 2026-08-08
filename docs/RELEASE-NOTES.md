@@ -1,9 +1,9 @@
 # "Reaper" — Release Notes
 
-**Release:** v2.1.9 — **device names are unified and finally stick.** There is now one master name list (the same store every page already read), and a rename made anywhere shows everywhere: three long-standing defects are fixed — removing an offline client could silently **wipe every custom device name** after a reboot; a rename made on the Devices page appended a duplicate record instead of replacing the old one, so some pages kept resolving the **old** name while others showed the new (the field "rename reverts" reports); and the stock rename popup saved from a stale page-load snapshot, silently rolling back names changed elsewhere. Existing duplicate records self-heal on the first reboot. Two readers are aligned with the rest of the UI: **Gatekeeper now shows your custom name first** (the device's self-reported hostname is only a fallback), and the **DHCP-leases log gains a unified "Device Name" column** beside the raw lease hostname. Also in this rung: **Traffic Analyzer history survives firmware flashes** (a flash could detach the store mid-write; the collector now guards against phantom mounts and re-attaches late), the **Long-Term Storage tab gains a USB disk panel** (disk info, health scan, format, eject — migrated from the stock networkmap side menu), and the **siblings catch up to the PPPoE-1500 GUI fix** (v2.1.5's fix reached only the RT-BEXXU image — a port-process gap kept the sibling images at the 1492 cap; the gap is closed and the port now syncs every shared page regardless of where it lives, so the class can't recur), and the **WAN-MTU field's 1508 allowance is rolled back** (it only renders on automatic/static-IP connections where 1508 is invalid, yet it accepted and applied it; back to 1280–1500 — PPPoE keeps 1500 with the automatic, PPPoE-only +8 on the physical interface, confirmed by code sweep; this rung was first cut as v2.1.7, respun as v2.1.8 for the WAN-MTU rollback, then respun once more as v2.1.9 after a full code audit — neither v2.1.7 nor v2.1.8 was published). A **full code audit of the Reaper sources** (four parallel security / correctness / performance / code-quality reviews plus a deterministic cross-model parity check) found **no critical or high-severity defect** and confirmed parity across all five models; its confirmed fixes are folded in (see §3 and [`CODE-AUDIT-2026-08-05.md`](CODE-AUDIT-2026-08-05.md)). Builds on **v2.1.6** (opt-in update notifications, real WAN IPv6 on the dashboard, Warden/watchdog fixes), **v2.1.5** (PPPoE-1500 from the GUI, self-recovering first-boot page, Traffic Analyzer reboot persistence), **v2.1.4** (factory-reset credential lockout fix), **v2.1.3** (Connections **"Quick Look"**, **RFC 4638 baby-jumbo PPPoE MTU**, a stored-XSS fix), **v2.1.2** (Merlin 3006.102.8 carry-forward — **OpenVPN 2.7.5**), **v2.1.1** (localization + hardening), and **v2.1.0** (the pre-release code-review pass). The base firmware line is unchanged. See §3/§5 and [`CHANGELOG.md`](CHANGELOG.md). **Test any OpenVPN server configuration after flashing** — the 2.7 line removes some long-deprecated server options.
-**Firmware:** `3006.102.8_Reaper_v2.1.9`
+**Release:** v2.3.0 — **animated model header, a standalone health-probe switch, a real "Store only" export mode, and one row per device in the metrics.** The **sign-in / set-password / logout** screens gain an **animated model header** that plays once and freezes on the logo (an APNG served through the normal image path, so it needs no change to how the login page is served). The per-device **health probe** (latency / jitter / loss + TCP state) gets a **standalone on/off switch** on Administration -> Data Export, **independent of export**, so you can collect and **Preview** the metrics with no external destination (Preview now shows a helpful message instead of empty ``{}``). The Long-Term Storage export control now has **four modes -- Off / Store only / Store + Export / Export only** -- with the misleading "Off" label fixed. And a device that could show **twice** (once by MAC, once with its IP in the MAC field) is folded to **one row per device**. Also: Warden's total-blocked count truly persists across reboots; the apply/reboot overlay locks the header + nav during a framed load; the update-check log lines are de-Merlin'd; the Traffic Analyzer hides its own "Router" self-traffic row; and the Roaming Assistant help reads just "0 = off". Rides the v2.2 line (connection-health metrics + analytics export, the speed-test freeze fix, the first-boot loop fix, Gatekeeper-behind-LAN-DNS, the de-cloud/field-fix batch). A four-agent pre-distribution review found **no shipping blockers**; its follow-ups were folded in (the Health-probe toggle now refuses to turn off while an export mode is armed -- which would otherwise freeze the pushed feed; the Storage export note flags that non-off modes enable the probe; a dead leftover `.mp4` httpd handler removed). **Built + shipped on all five models, both variants each.** Per-version detail in [`CHANGELOG.md`](CHANGELOG.md).
+**Firmware:** `3006.102.8_Reaper_v2.3.0` -- current head, **built + shipped on all five models** (both variants each). Prior full-fleet release: **v2.2.6**.
 **Base:** Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng)
-**Models:** ASUS **RT-BEXXU** (primary, hardware-validated), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.1.9 is built + shipped on all five models (both variants each, all passing the 19-check verify gate) by the parallel per-model build fleet.** WiFi 7, Broadcom BCM4916.
+**Models:** ASUS **RT-BEXXU** (primary), plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (per-model branches of the same tree). **v2.3.0 is built + shipped on all five models** (both variants each). WiFi 7, Broadcom BCM4916.
 **Flash images:** two variants per model — **with** or **without** the AI Advisor (see §2)
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -38,21 +38,44 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BEXXU_…_Reaper_v2.1.9_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.1.9_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BEXXU_…_Reaper_v2.2.7_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.2.7_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
 identical. Pick whichever you prefer; the AI Advisor is opt-in even in the variant
 that includes it.
 
-> Naming note: the build artifacts are `…_Reaper_v2.1.9_nand_squashfs.pkgtb`
-> (**with** the Advisor) and `…_Reaper_v2.1.9_noMCP_…` (**without**). §8 lists these
-> exact filenames and their hashes.
+> Naming note: the build artifacts are `…_Reaper_v2.2.7_nand_squashfs.pkgtb`
+> (**with** the Advisor) and `…_Reaper_v2.2.7_noMCP_…` (**without**). §8 lists the
+> exact filenames and their hashes per release (the current full-fleet hash set is v2.1.9;
+> the full-fleet **v2.2.6** images are on the `reaper-firmware/` ladder — all five models, both
+> variants; **v2.2.7** is RT-BE96U-only so far, both variants, sibling fan-out pending metal).
 
 ---
 
 ## 3. New since v1.0
+
+### Since v2.2.5 — the speed-test freeze fix, a front-end cleanup, and the v2.3.0 feature batch (v2.2.6 – v2.3.0)
+
+Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
+
+- **v2.3.0 — animated header, a standalone health-probe switch, a real "Store only" mode, and one row per device.** The **sign-in / set-password / logout** screens gain an **animated model header** that plays once and freezes on the logo — an **animated PNG** served through the normal image path, so it needs no change to how the login page is served (an earlier `.mp4` attempt never displayed, because a logged-out browser is only served a fixed set of image types on the pre-authentication login page; the dead `.mp4` handler was reverted, leaving that surface unchanged). The per-device **health probe** (round-trip latency / jitter / loss + TCP state) gets a **standalone on/off switch** on Administration → Data Export, **independent of export**, so you can collect and **Preview** the metrics without configuring any external destination (Preview now shows a helpful message instead of empty `{}`). The Long-Term Storage export control now offers **four modes — Off / Store only / Store + Export / Export only** — with the misleading "Off" label fixed ("Off" now genuinely keeps and sends nothing; "Store only" keeps history locally with no external push). A device that could appear **twice** in the metrics / export / Traffic Analyzer — once by MAC, once with its **IP in the MAC field** — is folded to **one row per device** (an unresolved-MAC flow used to seed a phantom IP-keyed entry; it's now merged into the real device and a once-a-second sweep clears any that slipped through). Plus: **Warden's total-blocked count truly persists** across reboots (a boot-time baseline wipe that survived the v2.2.1 fix is closed), the **apply/reboot overlay locks the header + side nav** while a framed page loads, the **update-check log lines are de-Merlin'd**, the **Traffic Analyzer hides its own "Router" self-traffic row**, and the **Roaming Assistant help reads just "0 = off"**. A four-agent **pre-distribution review** found no shipping blockers; its follow-ups were folded in — the Health-probe toggle now **refuses to turn off while an export mode is armed** (which would otherwise freeze the pushed feed), the Storage export note flags that non-off modes enable the probe, and a dead leftover `.mp4` httpd handler was removed. **Built + shipped on all five models, both variants each.**
+- **v2.2.7 — internal front-end cleanup (no new features).** One shared device-name resolver (offline devices keep their names on Connections + QoS too, not just the Traffic Analyzer), one decimal-SI byte formatter shared by Traffic + Connections, and unified accent colors across the Reaper pages. A long-standing "spurious leading `<`" review note was verified not-a-bug and closed.
+- **v2.2.6 — the Internet Speed Test no longer freezes the browser mid-run.** The live result polling changed from a blocking request repeated five times a second to a non-blocking chained poll, so the page stays responsive through the CPU-heavy download/upload phases and updates smoothly to the finish.
+
+### Since v2.1.9 — connection-health metrics + analytics export, a de-cloud + field-fix batch, and a privacy/polish pass (v2.2.0 – v2.2.5)
+
+v2.2.0, v2.2.1, and **v2.2.5** shipped on **all five models** (both variants); the intermediate v2.2.2 – v2.2.4 rungs were RT-BE96U-only. On-hardware validation of v2.2.5 is owed. Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
+
+- **v2.2.0 — first-boot loop fixed for good, Gatekeeper internet-only behind a LAN DNS, USB tools rehomed, de-cloud console cleanup.** The first-boot setup no longer ends in an endlessly reloading login window (the web server re-decides its landing page on every request instead of once at startup, and the wizard exits straight to the dashboard); a power-cycle recovers an already-affected box, no reflash. **Gatekeeper "internet-only"** now works when your DHCP-assigned DNS is a LAN server (AdGuard / Pi-hole) — DNS to that server still resolves while other LAN access and the router's own services stay blocked. The USB disk utilities moved to their own tab. Three de-cloud leftovers were removed: the stock ASUS privacy-policy check (it logged an error on every page), the dashboard client-list's ASUS icon-CDN fetches, and three tooltip fields gained HTML encoding.
+- **v2.2.1 — Warden count survives reboots, per-dataset "collecting since", USB scan result stays on screen, dead Security-Update panel gone.** Warden's **total-blocked counter persists across a reboot and a reflash** (banked in persistent storage, not a rule the restart rebuilds). Every enabled Long-Term Storage dataset stamps and shows its own start date. The USB Health Scanner result no longer flashes and vanishes. And the stock cloud **"Security Update"** (Trend Micro signature) panel was removed from the firmware page — Reaper's own GitHub update check is unchanged.
+- **v2.2.2 — per-device connection-health metrics + export to an analytics engine.** The traffic collector can now measure, **per device, round-trip latency / jitter / loss** (a batched in-router ping, never one process per device) plus **TCP connection count and state**, alongside the throughput / online state it already tracked. A new **Administration → Data Export** page streams that to **Splunk (HEC), Datadog, Dynatrace, Elastic/Kibana, a generic HTTP/JSON collector, OpenTelemetry, or a TLS syslog target** — or exposes a token-gated **Prometheus** scrape endpoint — with **Test-connection** and **Preview-payload** buttons; the Long-Term Storage page gains **Off / Store+Export / Export-only** modes. Everything is **off by default**, TLS-verify is **on by default**, the API token never appears in the process list or logs, and an optional switch hashes device MACs before they leave. The per-device capacity was raised 64 → 192. Also in this build: the **USB Health Scanner now actually scans ext4** disks and reports a real pass/fail verdict.
+- **v2.2.3 — live Traffic Analyzer graph smoothed on large networks.** Fixed a micro-stutter that appeared after the 64 → 192 device-cap bump: the per-connection device lookup on the five-second update was a linear scan; it is now constant-time. Independent of the health probe, so everyone benefits.
+- **v2.2.4 — the connection-health probe made light enough to leave running.** The opt-in probe (still **off by default**) could stutter the live graph and dip a speed test once enabled on a busy 100+ device network; the work is now spread across many collector ticks (a bounded slice of the connection table per tick, ≤16 pings per tick), history is staged in RAM and flushed on the hourly save, and a saturated WAN defers a cycle so the probe never competes with a speed test. Default probe interval relaxed 30 → 60 s.
+- **v2.2.5 — privacy and polish.** The **Wi-Fi key is masked** on the post-apply reconnect card; **three more ASUS-cloud icon callbacks are removed** (bundled icons used, so viewing those pages no longer tells ASUS which devices/apps you have); the **loading / reboot overlay now covers the whole screen** (the nav and header are no longer clickable mid-apply); **offline devices keep their names** in the Traffic Analyzer 24h / week / month history; and more of the UI is translated (the AI Advisor intro completed and a Warden note translated across all 24 non-English languages, and the Connections "Quick Look" labels localized). A **five-agent pre-release review** of the v2.2.4 + v2.2.5 changes found **no critical / high / medium** defect; the one low — a single self-healing file descriptor held if the opt-in probe is disabled mid-scan — was fixed.
+
+> **Known limitation (GT-BE98, not fixable in Reaper).** Creating a Guest Network Pro network with AP isolation *while a manual WAN VLAN is in use* can stop the 2.5 Gbps-1 LAN port from passing untagged main-LAN traffic (an 802.1Q tag becomes required). Investigated on-metal in depth — the hardware VLAN programming is a closed Broadcom/ASUS component with **no software interface to read or correct it**, so it cannot be fixed in the Reaper firmware (and almost certainly affects stock ASUS the same way). Workarounds: keep Guest Pro off that port, move the device to another LAN port, or tag it VID-52.
 
 ### Since v2.1.0 — localization, an upstream carry-forward, feature adds, and field fixes (v2.1.1 – v2.1.9)
 
@@ -131,7 +154,7 @@ detail is in [`CHANGELOG.md`](CHANGELOG.md):
   the router's own locally-terminated traffic (speed test, DNS, firmware checks, latency probe) appears
   under a new **"Router"** row instead of vanishing from every per-device/per-network view.
 - **Security-hardening milestone — two full code audits (v2.0.0).** A comprehensive security review of
-  the whole firmware: two end-to-end audits — one over all Reaper-authored code, a second over the
+**Firmware:** `3006.102.8_Reaper_v2.3.0` -- current head (RT-BE96U, both variants). Last full five-model fleet release: **v2.2.6**.
   inherited ASUS/Merlin open source Reaper ships — with every surfaced issue fixed and no critical or
   high-severity flaw left open. The web UI no longer trusts device-supplied names (hostname / Wi-Fi /
   VPN / USB / mesh names are HTML-encoded at every display point — dashboard and network-map client
@@ -402,7 +425,7 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v2.1.9 flashable-image hashes (SHA-256)** — the current head, **built + shipped on all five models**
+**v2.1.9 flashable-image hashes (SHA-256)** — the last **full five-model fleet** release, **built + shipped on all five models**
 (both variants each, 19-check verify gate) by the parallel per-model fleet, 2026-08-05. The RT-BE96U
 image hashes are shown below; each sibling has its own `SHA256SUMS-<MODEL>-Reaper_v2.1.9.txt`
 alongside its images under `releases/<Model>/`. (v2.1.7 and v2.1.8 were both built but never
@@ -520,12 +543,16 @@ Analyzer, the de-cloud removals, and the Reaper UI at all page depths. The **AI 
 (arming, LAN-only bind, token auth, secret redaction, USB third-factor, and the
 network-diagnostics tier) is **metal-validated** on the RT-BEXXU (v1.4.x–v1.5.0a). In the
 v1.5.x line the newest fully metal-validated build is **v1.5.6**; every rung since —
-through the current **v2.1.9** — is built + shipped. **v2.0.0** had its **upgrade-path first boot verified on the physical
-RT-BEXXU** (clean boot + healthy diagnostics). Every rung from **v2.1.4** onward is a **five-model,
+through the current **v2.2.5** — is built + shipped. **v2.0.0** had its **upgrade-path first boot verified on the physical
+RT-BEXXU** (clean boot + healthy diagnostics). Every rung from **v2.1.4 through v2.2.1** is a **five-model,
 both-variant fan-out** (all five built + shipped, each passing the staged-image verify gate — 17
 checks through v2.1.6, **19 from v2.1.7** after the shared-parity and patch-marker checks were
-added; GT-BE98 Pro was converted to Samba 4 during the v2.1.x line). On-hardware validation of the
-v2.1.x rungs is owed.
+added; GT-BE98 Pro was converted to Samba 4 during the v2.1.x line). The intermediate **v2.2.2 – v2.2.4**
+rungs were RT-BE96U-only; **v2.2.5 (current head) is built + shipped on all five models, both variants**
+(2026-08-07) — each built as itself, per-model banner/base/BUILD_NAME verified and the noMCP images
+confirmed Advisor-free. **On-hardware validation of the entire v2.1.x + v2.2.x line is owed** — in particular, enabling the
+opt-in, default-off per-device health probe (`nvram set rtraf_hprobe=1; restart_rtraf`) to confirm it stays
+smooth with the probe on.
 
 ---
 

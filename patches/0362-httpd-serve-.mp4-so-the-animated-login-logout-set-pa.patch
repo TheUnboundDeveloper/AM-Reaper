@@ -1,0 +1,73 @@
+From 9c3ab041948b85d5a938a6229f24bf782058d7ca Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 8 Aug 2026 09:58:15 -0400
+Subject: [PATCH 362/369] httpd: serve .mp4 so the animated
+ login/logout/set-password header plays
+
+The v2.2.9 animated header showed only the static poster because httpd never
+served the .mp4: basic.c registers .avi/.mov/.mpeg/.png/.gif etc. but had no
+.mp4 handler, so the request 404'd and <video> fell back to the poster.
+
+Fix (hardening-neutral - .mp4 treated exactly like the static media already
+served unauthenticated):
+  - basic.c: add { "**.mp4", "video/mp4", ... do_file ... NULL }. Same handler
+    (do_file, with its path-traversal sanitisation) and same NULL auth field as
+    .avi/.mov/.mpeg/.png. handler->auth is the real auth gate and is UNCHANGED,
+    so no new authenticated surface is exposed.
+  - httpd.c: add the header file to the login-IP *accounting* skip-list (runs
+    AFTER auth_check, so it is not an authorization gate). Scoped to
+    "_REAPER_Header.mp4" - narrower than the existing bare .png/.gif entries -
+    so only the header video is affected, not arbitrary .mp4.
+
+Net: the login page's .mp4 loads pre-auth exactly like its poster .png does
+today, via the same sandboxed static-file path. No auth bypass, no new code
+path, no widened pre-auth surface.
+
+Bump EXTENDNO to Reaper_v2.3.0 (v2.2.9 already shipped the header, static).
+---
+ release/src-rt/version.conf      | 2 +-
+ release/src/router/httpd/basic.c | 1 +
+ release/src/router/httpd/httpd.c | 3 ++-
+ 3 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 66c48fb978..887cba1571 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.2.9
++EXTENDNO=Reaper_v2.3.0
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/basic.c b/release/src/router/httpd/basic.c
+index 6187fbc5c2..eedad5aae9 100644
+--- a/release/src/router/httpd/basic.c
++++ b/release/src/router/httpd/basic.c
+@@ -33,6 +33,7 @@ struct mime_handler mime_handlers[] = {
+ 	{ "**.avi", "video/x-msvideo", NULL, NULL, do_file, NULL },
+ 	{ "**.mov", "video/quicktime", NULL, NULL, do_file, NULL },
+ 	{ "**.mpeg", "video/mpeg", NULL, NULL, do_file, NULL },
++	{ "**.mp4", "video/mp4", NULL, NULL, do_file, NULL },	/* reaper v2.3.0: animated login/logout/set-password header; same NULL-auth do_file static-media class as .avi/.mov/.mpeg/.png */
+ 	{ "**.vrml", "model/vrml", NULL, NULL, do_file, NULL },
+ 	{ "**.midi", "audio/midi", NULL, NULL, do_file, NULL },
+ 	{ "**.mp3", "audio/mpeg", NULL, NULL, do_file, NULL },
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 5cd032e662..0a63e62d33 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1857,7 +1857,8 @@ handle_request(void)
+ 							&& !strstr(url, ".css")
+ 							&& !strstr(url, ".gif")
+ 							&& !strstr(url, ".webp")
+-							&& !strstr(url, ".png")) {
++							&& !strstr(url, ".png")
++							&& !strstr(url, "_REAPER_Header.mp4")) {	/* reaper: header video is static media - keep it out of login-IP accounting like the other static assets (scoped to the header file, NOT all .mp4; authorization is unchanged - do_file/NULL-auth handler) */
+ #if defined(RTCONFIG_WIRELESSREPEATER) || defined(RTCONFIG_CONCURRENTREPEATER)
+ 						/* reaper: x_Setting==0 no longer implies first-boot QIS; keep the
+ 						 * login-IP accounting exactly as on a configured box. */
+-- 
+2.25.1
+

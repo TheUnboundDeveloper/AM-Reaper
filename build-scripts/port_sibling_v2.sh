@@ -19,9 +19,19 @@
 #         default = DRY RUN (report only).  --commit performs sync + commit.
 # ============================================================================
 set -u
-. "$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/_reaper_env.sh"   # WIN_ASUS_ROOT (override: export WINUSER)
 R=/home/reaper/asuswrt-be96u
-MOCK="$WIN_ASUS_ROOT/reaper-mockups"
+# Identity art (per-model banner .png + animated _anim.png). Prefer the copy
+# vendored in this repo at build-assets/ -- that is the source of truth and the
+# only one a clean checkout or a CI runner can see. Fall back to the developer's
+# out-of-tree mockups folder when the scripts are deployed standalone to
+# /home/reaper/reaper_build (where ../build-assets does not exist).
+_PSV_HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+if [ -d "$_PSV_HERE/../build-assets" ]; then
+  MOCK="$(cd "$_PSV_HERE/../build-assets" && pwd)"
+else
+  . "$_PSV_HERE/_reaper_env.sh"          # WIN_ASUS_ROOT (override: export WINUSER)
+  MOCK="$WIN_ASUS_ROOT/reaper-mockups"
+fi
 CANON=be96u-only
 IMGDIR=release/src/router/www/images
 TMAK_REL=release/src-rt/target.mak
@@ -61,7 +71,7 @@ model_meta() {
 ALL_MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
 model_meta "$MODEL" || { echo "FATAL: unknown model '$MODEL' (valid: $ALL_MODELS)"; exit 2; }
 BANNER_REL="$IMGDIR/$BANNER_FILE"
-MP4_FILE="${BANNER_FILE%.png}.mp4"; MP4_REL="$IMGDIR/$MP4_FILE"
+ANIM_FILE="${BANNER_FILE%.png}_anim.png"; ANIM_REL="$IMGDIR/$ANIM_FILE"
 
 cd "$R" || { echo "FATAL: no repo at $R"; exit 2; }
 FAIL=0; die(){ echo "  [GUARD-FAIL] $*"; FAIL=1; }; ok(){ echo "  [ok] $*"; }; note(){ echo "  [..] $*"; }
@@ -124,18 +134,28 @@ if [ "$DO_COMMIT" = 1 ]; then
   echo "== enforce IDENTITY OVERLAY =="
   # 1) authoritative banner content, model-unique filename
   cp "$MOCK/$BANNER_FILE" "$R/$BANNER_REL" || die "cannot copy banner $BANNER_FILE"
-  # per-model animated header .mp4 (same per-model discipline as the banner .png)
-  cp "$MOCK/$MP4_SRC" "$R/$MP4_REL" || die "cannot copy header mp4 $MP4_SRC"
+  # per-model animated header APNG (same per-model discipline as the banner .png)
+  cp "$MOCK/$ANIM_FILE" "$R/$ANIM_REL" || die "cannot copy header APNG $ANIM_FILE"
   # 2) remove any FOREIGN model banner that a sync may have introduced
   for stray in "$R/$IMGDIR"/*_REAPER_Header.png; do
     [ -e "$stray" ] || continue
     [ "$(basename "$stray")" = "$BANNER_FILE" ] && continue
     note "removing foreign banner $(basename "$stray")"; git rm -q -f --ignore-unmatch "$stray" 2>/dev/null || rm -f "$stray"
   done
+  for stray in "$R/$IMGDIR"/*_REAPER_Header_anim.png; do
+    [ -e "$stray" ] || continue
+    [ "$(basename "$stray")" = "$ANIM_FILE" ] && continue
+    note "removing foreign header APNG $(basename "$stray")"; git rm -q -f --ignore-unmatch "$stray" 2>/dev/null || rm -f "$stray"
+  done
+  # header is an APNG now -- purge any stale per-model .mp4 (v2.2.9-era leftover)
+  for stray in "$R/$IMGDIR"/*_REAPER_Header.mp4; do
+    [ -e "$stray" ] || continue
+    note "removing stale header mp4 $(basename "$stray")"; git rm -q -f --ignore-unmatch "$stray" 2>/dev/null || rm -f "$stray"
+  done
   # 3) re-point every banner reference at THIS model's filename (files were synced from be96u)
   for rf in "${BANNER_REFS[@]}"; do
     [ -e "$R/$rf" ] || continue
-    sed -i "s#[A-Za-z0-9_-]*_REAPER_Header\.mp4#$MP4_FILE#g; s#[A-Za-z0-9_-]*_REAPER_Header\.png#$BANNER_FILE#g; s#REAPER1\.png#$BANNER_FILE#g" "$R/$rf"
+    sed -i "s#[A-Za-z0-9_-]*_REAPER_Header_anim\.png#$ANIM_FILE#g; s#[A-Za-z0-9_-]*_REAPER_Header\.png#$BANNER_FILE#g; s#REAPER1\.png#$BANNER_FILE#g" "$R/$rf"
   done
   # 4) target.mak: keep model block; ensure SAMBA4 override present
   if ! sed -n "/^export ${MODEL} /,/^$/p" "$R/$TMAK_REL" | grep -q "SAMBA4=y"; then
@@ -183,7 +203,7 @@ echo "$TM" | sed -n "/^export ${MODEL} /,/^\$/p" | grep -q "SAMBA4=y" && ok "tar
 if [ "$DO_COMMIT" = 1 ]; then
   # stage ONLY the files this port touched -- never `git add -A` (the tree is
   # full of untracked build artifacts that must not enter the commit).
-  git add -- "$BANNER_REL" "$MP4_REL" "$TMAK_REL" "$VER_REL" "${BANNER_REFS[@]}" 2>/dev/null
+  git add -- "$BANNER_REL" "$ANIM_REL" "$TMAK_REL" "$VER_REL" "${BANNER_REFS[@]}" 2>/dev/null
   [ "${#SYNC[@]}" -gt 0 ] && git add -- "${SYNC[@]}" 2>/dev/null
   git diff --cached --quiet && { echo "== no changes (already in sync) =="; exit 0; }
   git commit -q -m "$BRANCH: overlay-port shared code from $CANON (guarded)

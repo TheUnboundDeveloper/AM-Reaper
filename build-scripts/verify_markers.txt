@@ -1,0 +1,42 @@
+# reaper_verify patch-marker manifest -- proves rung-critical fixes are
+# physically inside every staged image, per model, per variant.
+# Format:  <staged-path>|<literal string>|<min-count>     (>= min occurrences)
+#          <staged-path>|!<literal string>                (must be ABSENT)
+# Add a line whenever a field-critical fix ships; prune only when obsolete.
+#
+# v2.1.5/v2.1.7 -- PPPoE baby-jumbo MTU 1500 in the SHIPPED WAN page.
+# Model nuance (found by this very check, 2026-08-05): GT-BE98 (non-Pro) builds
+# WITHOUT MULTISERVICE_WAN (its target.mak block never had the token - separate
+# GPL lineage), so it installs the BASE WAN page = 2x "128, 1500"; the MSWAN
+# variant on the other four models has 4x. min=2 covers both; the forbidden
+# 1492 line is the real tripwire either way.
+www/Advanced_WAN_Content.asp|128, 1500|2
+www/Advanced_WAN_Content.asp|!128, 1492
+# v2.1.8 -- the 1508 WAN-MTU allowance is ROLLED BACK (owner field report: the
+# visible WAN-MTU box only shows on DHCP/static where 1508 is invalid; 1508 was
+# enterable + applyable). wan_mtu caps at 1500 again; PPPoE keeps 1500 with the
+# automatic backend +8. A 1508-capped page must never ship again:
+www/Advanced_WAN_Content.asp|!1280, 1508
+# v2.1.7 -- rename popup re-reads live custom_clientlist at save:
+www/client_function.js|nvramCharToAscii(["custom_clientlist"]|1
+# v2.1.7 -- DHCP leases page carries the unified Device Name column:
+www/Main_DHCPStatus_Content.asp|Device Name|1
+www/Main_DHCPStatus_Content.asp|fetchDeviceNames|2
+# 2026-08-06 -- Gatekeeper internet-only DNS carve-out (owner field report: a
+# DHCP-advertised LAN DNS (AdGuard) was sealed off by the bridge DROP, so an
+# internet-only device had no resolver = no usable internet). The generator's
+# shell-helper name proves the carve-out is compiled into rc:
+sbin/rc|gk_same_net|1
+# 2026-08-06 -- first-boot login refresh-loop fix (v2.1.6 field reports): the
+# FirstBoot page must leave to the DASHBOARD, never to "/" (the stale httpd
+# indexpage cache could route "/" back to the wizard = infinite reload). The
+# C half (live get_index_page recompute in httpd.c + web.c login_cgi) has no
+# greppable literal -- covered by the factory-reset metal acceptance test.
+www/Reaper_FirstBoot.asp|/Main_ReaperDash.asp|2
+www/Reaper_FirstBoot.asp|!location.replace("/")
+# 2026-08-06 -- Warden block count now persists across reboot/reflash: the
+# cumulative baseline lives on /jffs (was /tmp, which cleared on reboot).
+sbin/rc|/jffs/rwarden/blocked_base|1
+# 2026-08-06 -- de-cloud: the stock TrendMicro "Security Update" auto-upgrade
+# section is removed from the firmware page (must never ship again).
+www/Advanced_FirmwareUpgrade_Content.asp|!secur_stab_setting

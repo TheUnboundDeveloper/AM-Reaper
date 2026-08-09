@@ -114,6 +114,14 @@ branch. The per-model banner art is already vendored here in `build-assets/`.
 | Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
+| Reaper version built | `Reaper_v2.3.1` (patch series `0001`–`0374`) |
+
+The version is not an input you choose — the patch series sets `EXTENDNO` itself.
+The workflow declares the version it expects (`EXPECTED_VERSION`) and **fails the
+run** if applying the series produces anything else, so a stale or partially
+extracted series can never produce an image labelled as something it is not.
+Adding a rung means committing its patches and bumping `EXPECTED_VERSION` in the
+same commit.
 
 The base pin never moves. Upstream carry-forwards are cherry-picked into the
 patch series rather than rebased, so this reproduction recipe stays stable across

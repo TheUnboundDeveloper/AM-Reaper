@@ -94,6 +94,31 @@ export REAPER_PASS1_LOG="${REAPER_PASS1_LOG:-/tmp/pass1_${MODEL}_${VARIANT}.log}
 # patch in the published series.
 export lt_cv_sys_max_cmd_len="${lt_cv_sys_max_cmd_len:-1572864}"
 
+# ROOT CAUSE (confirmed from the run-4 post-mortem, not inferred):
+#   with_gnu_ld="no"   archive_cmds=""   build_libtool_libs=yes
+# On Linux libtool only fills archive_cmds when it believes the linker is GNU
+# ld. In the container its probe said "no", leaving archive_cmds EMPTY -- and
+# link mode does `eval cmds=\"$archive_cmds\"` then loops over the result, so an
+# empty list runs zero commands, prints nothing, and returns success. libtool
+# then symlinks libgmp.so -> libgmp.so.10.4.1, a file it never built, and
+# `make install` dies on the symlink target two steps later.
+#
+# The linker IS GNU ld: `ld -v` reports "GNU ld (GNU Binutils) 2.36.1". The
+# probe is what is wrong. Locally the question never arises: build-reaper.sh
+# skips the whole chain while staging/lib/libgnutls.so.30 exists, so the
+# maintainer's libtool was generated once in a clean environment and reused
+# ever since. CI re-configures every run, under the vendor make environment.
+#
+# lt_cv_path_LD / lt_cv_prog_gnu_ld are the cache variables behind that probe.
+# Pinning them states something true of every linker in this build (target and
+# host are both GNU binutils), so it is safe to set globally.
+_tc="$(ls -d /opt/toolchains/crosstools-arm_softfp-gcc-10.3*/usr/bin 2>/dev/null | head -1)"
+if [ -x "$_tc/arm-buildroot-linux-gnueabi-ld" ]; then
+  export lt_cv_path_LD="${lt_cv_path_LD:-$_tc/arm-buildroot-linux-gnueabi-ld}"
+fi
+export lt_cv_prog_gnu_ld="${lt_cv_prog_gnu_ld:-yes}"
+echo "libtool LD pin: lt_cv_path_LD=${lt_cv_path_LD:-<unset>} lt_cv_prog_gnu_ld=$lt_cv_prog_gnu_ld"
+
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # NOTE: _reaper_env.sh is deliberately NOT sourced -- it shells out to
 # powershell.exe to resolve a Windows profile path, which is meaningless here.

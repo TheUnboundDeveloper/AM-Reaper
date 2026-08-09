@@ -38,6 +38,19 @@ TDIR=$P/targets/96813GW
 : "${REAPER_JOBS:=1}"
 _rb_variant() {   # $1 = MCP|noMCP
   local label="$1"
+
+  # STALE-CONFIGURE GUARD (2026-08-09). `<pkg>/Makefile: <pkg>/configure` never
+  # re-fires on a warm tree because tarball configure scripts carry an epoch
+  # mtime, so a patch that changes --enable/--disable flags is silently inert.
+  # strongswan shipped that way for three weeks across all five models before a
+  # CI-vs-local image diff caught it. --fix clears the stale state so the next
+  # build re-configures; a clean tree (CI) is a no-op.
+  local _sc="$(dirname "${BASH_SOURCE[0]}")/reaper_stale_configure.sh"
+  if [ -x "$_sc" ] || [ -f "$_sc" ]; then
+    echo "=== [$label] stale-configure guard ==="
+    bash "$_sc" --fix "$R" || true
+  fi
+
   cd "$P" || return 9
   rm -f .config "config_${TARGET}" "$R"/release/src/router/zlib/stamp-h1
   echo "=== [$label] make $TARGET pass1 (regen; may die at setprofile, -j${REAPER_JOBS}) $(date) ==="

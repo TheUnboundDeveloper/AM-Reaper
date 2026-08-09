@@ -22,17 +22,29 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # Sibling plumbing is in place (overlays/, ci/build_one.sh, the overlay +
-      # platform-archive steps in ci/container_build.sh), but the sibling
-      # overlays are not yet verified to reproduce their branch trees exactly.
-      # Shipping an unverified sibling is the v1.8.6 failure mode -- an image
-      # that looks right and carries the wrong identity -- so the other four
-      # stay unselectable until their reproduction check passes.
+      # All five models are selectable as of 2026-08-09. Each sibling overlay
+      # was verified by REPLAY: applied to an independently rebuilt CI tree
+      # (pinned base + all 374 patches, plus the platform archive for the two
+      # GT-BE98 variants) and compared path-by-path against the real sibling
+      # branch -- ~485,000 paths each, zero content mismatches.
+      #
+      #   RT-BE86U  17 files  PASS      GT-BE98      22 files  PASS
+      #   RT-BE88U  25 files  PASS      GT-BE98_PRO  29 files  PASS
+      #
+      # That check exists because of the v1.8.6 fan-out, where every sibling
+      # shipped with the RT-BE96U banner: an image that builds, verifies, and
+      # carries the wrong identity. reaper_verify pins the banner SHA-256 and
+      # ci/build_one.sh fails the build if the expected banner is absent or a
+      # foreign one is present, so that failure mode cannot repeat silently.
+      #
+      # NOTE: reproducing a tree exactly is not the same as building it. Only
+      # RT-BE96U has completed a green clean-room build; the other four are
+      # unproven end-to-end. Build them one at a time.
       model:
         description: 'Model to build'
         type: choice
         default: RT-BE96U
-        options: [RT-BE96U]
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO]
 
 permissions:
   contents: read

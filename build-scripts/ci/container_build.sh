@@ -23,8 +23,22 @@
 set -euo pipefail
 
 : "${UPSTREAM_REPO:?}" "${BASE_COMMIT:?}" "${BASE_TAG:?}" "${TOOLCHAIN_COMMIT:?}"
-: "${MODEL:?}" "${VARIANT:?}" "${BUILD_BRANCH:?}"
+: "${MODEL:?}" "${VARIANT:?}"
 : "${REPO_DIR:?}" "${OUT_DIR:?}" "${SRC_DIR:?}"
+
+# The build branch must match what ci/build_one.sh expects for this model --
+# _reaper_build_lib.sh refuses to build unless HEAD is on the model's branch.
+if [ -z "${BUILD_BRANCH:-}" ]; then
+  case "$MODEL" in
+    RT-BE96U)    BUILD_BRANCH=be96u-only;;
+    RT-BE86U)    BUILD_BRANCH=rt-be86u;;
+    RT-BE88U)    BUILD_BRANCH=rt-be88u;;
+    GT-BE98)     BUILD_BRANCH=gt-be98;;
+    GT-BE98_PRO) BUILD_BRANCH=gt-be98-pro;;
+    *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
+  esac
+fi
+export BUILD_BRANCH
 
 REAPER_HOME=/home/reaper
 BUILD_SCRIPTS="$REAPER_HOME/reaper_build"
@@ -172,6 +186,52 @@ ROUTER_TREE="$(git rev-parse "HEAD:release/src/router")"
 SRC_RT_TREE="$(git rev-parse "HEAD:release/src-rt")"
 echo "   applied cleanly -> $SOURCE_COMMIT"
 
+# --- per-model identity overlay ---------------------------------------------
+# The series reproduces the RT-BE96U canon. A sibling is that tree plus its
+# published overlay. GT-BE98 additionally needs the platform tree that the
+# pinned upstream does not carry (its ASUS GPL drop is a different release);
+# that ships here as a hash-pinned archive so no external download is needed.
+if [ "$MODEL" != "RT-BE96U" ]; then
+  hr; echo " Applying the $MODEL identity overlay"; hr
+
+  PLAT="$REPO_DIR/overlays/${MODEL}-platform.tar.gz"
+  if [ -f "$PLAT" ]; then
+    SUMS="$REPO_DIR/overlays/${MODEL}-platform.sha256"
+    if [ -f "$SUMS" ]; then
+      want=$(awk '{print $1}' "$SUMS" | head -1)
+      got=$(sha256sum "$PLAT" | cut -d' ' -f1)
+      echo "   platform archive sha256 $got"
+      if [ "$want" != "$got" ]; then
+        echo "::error::$MODEL platform archive hash mismatch"
+        echo "   expected $want"; echo "   got      $got"; exit 1
+      fi
+      echo "   [MATCH] platform archive matches its recorded hash"
+    else
+      echo "::error::$PLAT has no recorded sha256 -- refusing to unpack an unverified archive"; exit 1
+    fi
+    tar -xzf "$PLAT"
+    echo "   unpacked $(tar -tzf "$PLAT" | wc -l) platform files"
+  fi
+
+  OV="$REPO_DIR/overlays/${MODEL}.patch"
+  [ -f "$OV" ] || { echo "::error::no overlay for $MODEL at overlays/${MODEL}.patch"; exit 1; }
+  if ! git apply --binary --whitespace=nowarn "$OV"; then
+    echo "::error::$MODEL overlay failed to apply"
+    git apply --binary --check -v "$OV" 2>&1 | head -20
+    exit 1
+  fi
+  # Deterministic tree id for the post-overlay source, so a sibling build is as
+  # traceable as a canon one. The overlay is intentionally uncommitted, so stage
+  # it briefly to let git compute the tree, then restore the working state.
+  git add -A >/dev/null 2>&1
+  echo "   overlay applied: $(git diff --cached --name-only | wc -l) files staged"
+  _MROOT="$(git write-tree)"
+  MODEL_TREE="$(git rev-parse "${_MROOT}:release/src/router")"
+  git reset --mixed HEAD >/dev/null 2>&1
+else
+  MODEL_TREE="$ROUTER_TREE"
+fi
+
 VER="$(grep -oE 'Reaper_v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' release/src-rt/version.conf | head -1)"
 [ -n "$VER" ] || { echo "ERROR: cannot read Reaper version from version.conf"; exit 1; }
 SHORT_VER="${VER#Reaper_}"
@@ -236,6 +296,7 @@ PATCH_REPO_COMMIT=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknow
 PATCH_COUNT=$PATCH_COUNT
 SOURCE_COMMIT=$SOURCE_COMMIT
 SOURCE_TREE_ROUTER=$ROUTER_TREE
+MODEL_TREE_ROUTER=$MODEL_TREE
 SOURCE_TREE_SRC_RT=$SRC_RT_TREE
 TOOLCHAIN_COMMIT=$TOOLCHAIN_COMMIT
 EOF
@@ -331,6 +392,7 @@ echo "REPRODUCIBILITY=$REPRO" >> "$OUT_DIR/source-${MODEL}-${VARIANT}.env"
   echo "Patches applied:    $PATCH_COUNT"
   echo "Patched HEAD:       $SOURCE_COMMIT"
   echo "release/src/router: $ROUTER_TREE"
+  echo "post-overlay router: $MODEL_TREE"
   echo "release/src-rt:     $SRC_RT_TREE"
   echo "Toolchain commit:   $TOOLCHAIN_COMMIT"
   echo "Build environment:  Ubuntu 20.04 container, user reaper (uid 1001)"

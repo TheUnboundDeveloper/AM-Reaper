@@ -42,6 +42,23 @@ _rb_variant() {   # $1 = MCP|noMCP
   rm -f .config "config_${TARGET}" "$R"/release/src/router/zlib/stamp-h1
   echo "=== [$label] make $TARGET pass1 (regen; may die at setprofile, -j${REAPER_JOBS}) $(date) ==="
   nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}" >/dev/null 2>&1; echo "[$label] pass1_exit=$?"
+
+  # COLD-TREE GUARD (2026-08-09, found by the first clean-room CI build).
+  # samba-4.15.13/build/ is gitignored, so a fresh clone has no crypto chain.
+  # build-reaper.sh only builds that chain when staging/lib/libgnutls.so.30 is
+  # absent, and it `tar xf`s the dep tarballs OVER whatever is already there.
+  # Pass 1 legitimately dies at setprofile, leaving gmp half-built; pass 2 then
+  # re-extracts on top, make treats libgmp.la as current, and `make install`
+  # copies .libs/libgmp.so.10.4.1 -- which was never linked:
+  #   /usr/bin/install: cannot stat '.libs/libgmp.so.10.4.1': No such file
+  # Clearing a demonstrably incomplete chain makes pass 2 build it from scratch.
+  # NO-OP on a warm tree (the .so exists), so local builds are unaffected.
+  local _sam="$R/release/src/router/samba-4.15.13"
+  if [ -d "$_sam/build" ] && [ ! -e "$_sam/build/staging/lib/libgnutls.so.30" ]; then
+    echo "[$label] cold-tree: samba crypto chain incomplete after pass1 -- clearing build/ so pass2 builds it clean"
+    rm -rf "$_sam/build" "$_sam/.reaper-built"
+  fi
+
   echo "=== [$label] make $TARGET pass2 (-j${REAPER_JOBS}) $(date) ==="
   nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}"; echo "[$label] MAKE_EXIT=$?"
   cd "$R" || return 1

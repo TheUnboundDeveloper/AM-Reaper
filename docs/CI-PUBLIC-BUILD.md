@@ -93,7 +93,12 @@ clean-room checkout yet:
 
 1. **Each model's identity overlay**, published in-repo: its `target.mak` block,
    `version.conf`, and model-only blobs. The banner and animated-header art is
-   already vendored here in `build-assets/`.
+   already vendored here in [`reaper-mockups/`](../reaper-mockups/) — the
+   project's own assets, including the per-model animated `_anim.png` headers.
+   These are not interchangeable: `port_sibling_v2.sh` and `reaper_verify.sh`
+   both pin the **SHA-256 of each model's banner**, so recreated or substituted
+   art fails the gate rather than silently shipping. Any port must source the
+   art from this folder; do not regenerate it to make a check pass.
 2. **A port path that works from a single branch.** `port_sibling_v2.sh` computes
    `git diff be96u-only <branch>`, which needs a clone holding all five branches.
    CI has one. This has to become an overlay applied to the canon tree rather
@@ -101,14 +106,69 @@ clean-room checkout yet:
 3. **GT-BE98 needs a different upstream base.** It does not share the RT-BE96U
    GPL drop — it is a separate ASUS GPL release, which is why it needed its own
    `v1.8.6d` fix and why it cannot be built by pinning the same `BASE_COMMIT` as
-   the other four. Whatever base it does need must be **self-hosted and
-   hash-verified** in this repo, never fetched from a third party's release,
-   since it ends up inside a distributed firmware image.
+   the other four.
+
+   The candidate source is `github.com/ExtremeFiretop/AM-Reaper/releases`.
+   **As of 2026-08-09 that repository returns HTTP 404** (private, renamed, or
+   removed), so its contents cannot currently be inspected or hashed. Two rules
+   apply before it is wired into any runner: verify the drop byte-for-byte
+   against ASUS's own GPL release for the GT-BE98, then **re-host it here** and
+   pin it by SHA-256. A distributable firmware image must never depend on a
+   third party's release URL — it can change or disappear under you, and an
+   unverifiable blob inside a security-hardened image defeats the point of the
+   whole pipeline.
 
 Items 1 and 2 cover RT-BE86U, RT-BE88U and GT-BE98_PRO. GT-BE98 additionally
 needs item 3 and should be done last.
 
 ---
+
+## Reading the build log — noise that is not a problem
+
+A firmware build is loud. The log contains thousands of lines, and several of
+them look alarming but are normal and appear in **every** build, including the
+ones whose images ship. This section exists so you don't chase them. Counts
+below are from the real RT-BE96U v2.3.1 build (105,012 lines, both variants).
+
+**Only two things determine success:** `MAKE_EXIT=0` for the variant, and
+`reaper_verify` ending in `VERIFY OK`. The workflow enforces both — the job
+fails if either is missing, so a green run means they held.
+
+### From GitHub Actions itself (before the build starts)
+
+| Message | Why |
+|---|---|
+| `DeprecationWarning: The 'punycode' module is deprecated` (DEP0040) | Emitted by a dependency bundled inside a JavaScript action (checkout / cache / upload-artifact), not by this project. |
+| `DeprecationWarning: url.parse() behavior is not standardized` (DEP0169) | Same origin. The mention of CVEs is generic Node wording about `url.parse()` in general — it is not a report of a vulnerability in this build. |
+
+Neither can affect the firmware: every JS action does is check out files, restore
+a cache, and upload artifacts. The compile runs inside a Docker container where
+no Node is present. Note that these are **runtime deprecations, not removals** —
+they persist on Node 24, so they disappear when the action's own bundle stops
+calling those APIs, not when the runtime moves forward.
+
+### From the firmware build (inside the container)
+
+| Message | Count | Why |
+|---|---|---|
+| `cp: cannot stat '.../prebuilt/...'` | ~190 (152 under `hnd_extra/prebuilt`) | The vendor tree copies optional prebuilt headers behind `if [ -f ]` guards. Files like `ivi_map.h` belong to the older AX SDK trees and legitimately do not exist for `src-rt-5.04behnd.4916`. Non-fatal by construction. |
+| `... (ignored)` on make lines | ~34 | Vendor recipes prefixed with `-`, so make continues. Normal for the www-install and `image_linux_fit` steps. |
+| `strip: ... Permission denied` | ~16 | The build strips staged binaries, some of which are already mode `0500` read-only. They ship correctly stripped or not at all; neither breaks the image. |
+| `/bin/sh: repo: command not found` | ~12 | The Android `repo` tool is not installed, deliberately — the local build environment doesn't have it either, and the build does not need it. Installing it would make CI differ from the validated local flow. |
+| `LnxHtmlEnumDict` + `Segmentation fault` | 6 each | The i18n dictionary enumerator crashes on the Captive Portal `_template.json` files and `calendar/jquery-ui.js`. The build continues and the damage is contained to those three files; the shipped dictionaries stay lockstep, which `reaper_verify` checks. Present on every model that builds with `CAPTIVE_PORTAL=y`. |
+| `warning: N lines add whitespace errors` / `squelched N whitespace errors` | many | From `git am` applying the patch series. Cosmetic whitespace in patch context; the applied content is byte-exact, which the source-tree hash assertion proves. |
+
+### What is *not* noise
+
+If you see any of these, something is genuinely wrong and the job will fail:
+
+- `Attempting to build as root` — the build user was not set up correctly.
+- `patch does not apply` / `Patch failed at` — the patch series did not replay.
+- `version mismatch after applying N patches` — the series produced a different
+  version than the workflow expects.
+- `source tree MISMATCH` — the patched source does not match recorded provenance.
+- `[FAIL]` lines from `reaper_verify`, or `VERIFY FAILED`.
+- `MAKE_EXIT` set to anything but `0`.
 
 ## Expectations and limits
 

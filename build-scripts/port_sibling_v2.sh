@@ -21,13 +21,13 @@
 set -u
 R=/home/reaper/asuswrt-be96u
 # Identity art (per-model banner .png + animated _anim.png). Prefer the copy
-# vendored in this repo at build-assets/ -- that is the source of truth and the
+# vendored in this repo at reaper-mockups/ -- that is the source of truth and the
 # only one a clean checkout or a CI runner can see. Fall back to the developer's
 # out-of-tree mockups folder when the scripts are deployed standalone to
-# /home/reaper/reaper_build (where ../build-assets does not exist).
+# /home/reaper/reaper_build (where ../reaper-mockups does not exist).
 _PSV_HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-if [ -d "$_PSV_HERE/../build-assets" ]; then
-  MOCK="$(cd "$_PSV_HERE/../build-assets" && pwd)"
+if [ -d "$_PSV_HERE/../reaper-mockups" ]; then
+  MOCK="$(cd "$_PSV_HERE/../reaper-mockups" && pwd)"
 else
   . "$_PSV_HERE/_reaper_env.sh"          # WIN_ASUS_ROOT (override: export WINUSER)
   MOCK="$WIN_ASUS_ROOT/reaper-mockups"

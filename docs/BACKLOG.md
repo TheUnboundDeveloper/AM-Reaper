@@ -213,6 +213,16 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   to reclaim past growth. Third-party hosts (OneDrive etc.) are NOT suitable for the on-router
   downloader: unstable direct-URL semantics and they'd break the upgrade script's GitHub host-pin.
 
+- **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
+  Owner-approved (2026-08-08) design in [`docs/FIREWALL-PLAN.md`](FIREWALL-PLAN.md): a native
+  `Reaper_Firewall.asp` hub replacing all four stock tabs (General / Network Services / URL /
+  Keyword) plus new tabs — **Status** (live v4+v6 chains + hit counters), **custom Rules** engine
+  (Basic form + Advanced DSL, dual-stack, `rc/reaper_fw.c` + `reaper_fw.cgi`, re-apply hook),
+  **Egress** control (IoT containment, outbound geo), **Logging** viewer — all with
+  **commit-confirm auto-rollback** and anti-lockout invariants. Backend stays iptables/ipset.
+  Phased 0→3; each phase build + on-metal (rmcpd lab MCP as the test harness) + fleet fan-out.
+  [owed — build; live inspection done]
+
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the
   functions we want exposed), as already done for Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/

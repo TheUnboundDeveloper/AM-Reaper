@@ -33,19 +33,33 @@ case "$MODEL" in
   *) echo "FATAL: unknown model '$MODEL'"; exit 2;;
 esac
 
-# --- CI buildability gate ---------------------------------------------------
-# The published patches/ series reproduces the CANON branch (be96u-only) only.
-# Sibling models are separate branches produced by port_sibling_v2.sh from a
-# clone that holds all five branches plus the out-of-tree identity art -- none
-# of which exists in a clean-room CI checkout. Fail loudly rather than build
-# something that merely looks like a sibling.
-if [ "$MODEL" != "RT-BE96U" ]; then
-  echo "FATAL: $MODEL cannot be built from the published patch series."
-  echo "       patches/ reproduces be96u-only (RT-BE96U). Sibling models need"
-  echo "       the per-model identity overlay + port_sibling_v2.sh against a"
-  echo "       five-branch clone. See docs/CI-PUBLIC-BUILD.md ('Why one model')."
+# All five models are buildable in CI. The published patches/ series reproduces
+# the CANON tree (RT-BE96U); a sibling is that tree plus overlays/<MODEL>.patch
+# (banner + animated header + the pages that reference them + target.mak), and
+# for GT-BE98 also overlays/GT-BE98-platform.tar.gz (the platform tree the
+# pinned upstream does not carry). container_build.sh applies those before this
+# script runs; here we only sanity-check that the identity actually landed.
+BANNER_DIR=/home/reaper/asuswrt-be96u/release/src/router/www/images
+case "$MODEL" in
+  RT-BE96U)    WANT_BANNER=RT-96U_REAPER_Header.png;;
+  RT-BE86U)    WANT_BANNER=RT-BE86U_REAPER_Header.png;;
+  RT-BE88U)    WANT_BANNER=RT-BE88U_REAPER_Header.png;;
+  GT-BE98)     WANT_BANNER=GT-BE98_REAPER_Header.png;;
+  GT-BE98_PRO) WANT_BANNER=GT-BE98P_REAPER_Header.png;;
+esac
+if [ ! -f "$BANNER_DIR/$WANT_BANNER" ]; then
+  echo "FATAL: $MODEL identity overlay did not land -- $WANT_BANNER is not staged."
+  echo "       Expected overlays/$MODEL.patch to have been applied."
   exit 3
 fi
+foreign=$(ls "$BANNER_DIR"/*_REAPER_Header.png 2>/dev/null | grep -v "/$WANT_BANNER\$" || true)
+if [ -n "$foreign" ]; then
+  echo "FATAL: a foreign model banner is present alongside $MODEL's:"
+  echo "$foreign" | sed 's|.*/|       |'
+  echo "       This is the v1.8.6 clobber signature -- refusing to build."
+  exit 3
+fi
+echo "identity: $WANT_BANNER present, no foreign banner"
 
 STORAGE="nand"          # all five models ship nand only; emmc is a byproduct
 VARIANTS="$VARIANT"     # ONE variant per CI job (6-hour job ceiling)

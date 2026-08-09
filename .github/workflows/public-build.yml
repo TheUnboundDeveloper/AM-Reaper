@@ -22,8 +22,14 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
+      # Sibling plumbing is in place (overlays/, ci/build_one.sh, the overlay +
+      # platform-archive steps in ci/container_build.sh), but the sibling
+      # overlays are not yet verified to reproduce their branch trees exactly.
+      # Shipping an unverified sibling is the v1.8.6 failure mode -- an image
+      # that looks right and carries the wrong identity -- so the other four
+      # stay unselectable until their reproduction check passes.
       model:
-        description: 'Model (only RT-BE96U is buildable from the published patch series)'
+        description: 'Model to build'
         type: choice
         default: RT-BE96U
         options: [RT-BE96U]
@@ -169,12 +175,27 @@ jobs:
       # costs seconds and means a stray target-binary execution during compile
       # fails over to qemu instead of killing a multi-hour job. The interpreter
       # path (/usr/bin/qemu-arm-static) also exists inside the build container.
-      - name: Register ARM binfmt (safety net)
+      # REQUIRED, not optional: samba-4.15.13/build-reaper.sh documents this as a
+      # host prerequisite -- Samba's waf run-tests and the build-time ARM codegen
+      # tools execute ARM binaries during the cross-build. Registration is global
+      # (binfmt_misc is not namespaced), and /usr/bin/qemu-arm-static also exists
+      # inside the build container, so the interpreter resolves there too.
+      # Fail here, two minutes in, rather than forty minutes in at the Samba stage.
+      - name: Register ARM binfmt (required by the Samba cross-build)
         run: |
-          set -uo pipefail
+          set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static binfmt-support || true
-          ls /proc/sys/fs/binfmt_misc/ | grep -i arm || echo "no ARM binfmt handler registered (build should not need one)"
+          sudo apt-get install -y -qq qemu-user-static binfmt-support
+          sudo update-binfmts --enable qemu-arm || true
+          if [ ! -e /proc/sys/fs/binfmt_misc/qemu-arm ]; then
+            echo "::error::ARM binfmt handler is not registered; the Samba cross-build will fail"
+            ls -la /proc/sys/fs/binfmt_misc/ || true
+            exit 1
+          fi
+          echo "qemu-arm binfmt registered:"
+          sed 's/^/  /' /proc/sys/fs/binfmt_misc/qemu-arm | head -4
+          docker run --rm -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
+            ubuntu:20.04 /usr/bin/qemu-arm-static --version | head -1 | sed 's/^/  container qemu: /'
 
       - name: Build in Ubuntu 20.04 clean room
         run: |

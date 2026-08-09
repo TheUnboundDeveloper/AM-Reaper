@@ -128,6 +128,33 @@ echo "== CI build: $MODEL / $VARIANT (branch $BRANCH, target $TARGET) =="
 reaper_build
 rc=$?
 
+# --- dict integrity gate (added 2026-08-09 after the CI-vs-local image diff) ---
+# reaper_verify checks dict LINE COUNTS, which are lockstep at 6142 even when
+# every multibyte character inside those lines has been deleted -- exactly what
+# a non-UTF-8 locale made LnxHtmlEnumDict do. Check the CONTENT instead: a
+# non-Latin dictionary that has lost its non-ASCII text is a broken GUI in that
+# language, and must not ship quietly.
+if [ "$rc" -eq 0 ]; then
+  _fsw="$SRC_DIR/release/src-rt-5.04behnd.4916/targets/96813GW/fs/www"
+  if [ -d "$_fsw" ]; then
+    _bad=""
+    for _d in TH RU JP KR CN TW UK; do
+      [ -f "$_fsw/$_d.dict" ] || continue
+      _n=$(LC_ALL=C grep -c '[^ -~]' "$_fsw/$_d.dict" 2>/dev/null || echo 0)
+      echo "  dict $_d.dict: $_n lines contain non-ASCII"
+      [ "$_n" -lt 500 ] && _bad="$_bad $_d($_n)"
+    done
+    if [ -n "$_bad" ]; then
+      echo "::error::dict integrity FAILED -- non-ASCII text missing from:$_bad"
+      echo "   A non-UTF-8 locale strips multibyte characters from the .dict files"
+      echo "   while leaving the line count intact. Check LANG in the container."
+      rc=1
+    else
+      echo "  dict integrity OK (non-Latin dictionaries retain their text)"
+    fi
+  fi
+fi
+
 # Preserve the pass-1 evidence whether or not the build passed: a build that
 # succeeds still tells us what a healthy cold-tree crypto chain looks like,
 # which is the baseline a future failure gets compared against. Excerpt only --

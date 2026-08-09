@@ -155,8 +155,43 @@ calling those APIs, not when the runtime moves forward.
 | `... (ignored)` on make lines | ~34 | Vendor recipes prefixed with `-`, so make continues. Normal for the www-install and `image_linux_fit` steps. |
 | `strip: ... Permission denied` | ~16 | The build strips staged binaries, some of which are already mode `0500` read-only. They ship correctly stripped or not at all; neither breaks the image. |
 | `/bin/sh: repo: command not found` | ~12 | The Android `repo` tool is not installed, deliberately — the local build environment doesn't have it either, and the build does not need it. Installing it would make CI differ from the validated local flow. |
-| `LnxHtmlEnumDict` + `Segmentation fault` | 6 each | The i18n dictionary enumerator crashes on the Captive Portal `_template.json` files and `calendar/jquery-ui.js`. The build continues and the damage is contained to those three files; the shipped dictionaries stay lockstep, which `reaper_verify` checks. Present on every model that builds with `CAPTIVE_PORTAL=y`. |
+| `LnxHtmlEnumDict` + `Segmentation fault` | 6 each | **NOT noise — this was a real defect, fixed 2026-08-09.** See below. |
 | `warning: N lines add whitespace errors` / `squelched N whitespace errors` | many | From `git am` applying the patch series. Cosmetic whitespace in patch context; the applied content is byte-exact, which the source-tree hash assertion proves. |
+
+### The one that was misclassified: `LnxHtmlEnumDict`
+
+This table originally listed the `LnxHtmlEnumDict` segfaults as benign, on the
+reasoning that dictionary **line counts** stayed lockstep and `reaper_verify`
+checks exactly that. Comparing a CI image against a locally built one on
+2026-08-09 proved that wrong:
+
+```
+TH.dict   local:  908,347 bytes   5,579 lines containing non-ASCII
+          CI:     152,470 bytes       14 lines containing non-ASCII
+```
+
+Every line was present and the count was identical at 6142 — but the Thai,
+Cyrillic, CJK and other multibyte text *inside* those lines had been deleted.
+All 25 dictionaries were affected. A user flashing that image and selecting one
+of those languages would have got a GUI of blank labels.
+
+**Cause:** `www/*.dict` are UTF-8 and the build runs them through the prebuilt
+`router/tools/Lnx_ToolHelp/LnxHtmlEnumDict`. A bare `ubuntu:20.04` container
+sets no locale and ships no `locales` package, so it runs under POSIX/C with no
+multibyte support — the tool segfaults and emits ASCII-only output. The
+maintainer's WSL builds under `LANG=C.UTF-8`, which is why local images were
+always correct.
+
+**Fix:** the container installs `locales` and exports `LANG=C.UTF-8`, matching
+the validated local environment, and `ci/build_one.sh` now gates on dictionary
+*content* — a non-Latin dictionary with fewer than 500 non-ASCII lines fails the
+build. Line-count lockstep alone cannot detect this class of damage.
+
+**The general lesson:** "the build completed and the gate passed" is not the
+same as "the output is correct." This defect was invisible to a 19/19
+`reaper_verify` pass and was only caught by diffing the produced image against a
+known-good one. That comparison is worth doing whenever the build environment
+changes.
 
 ### What is *not* noise
 

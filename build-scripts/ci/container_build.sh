@@ -91,9 +91,27 @@ if [ "$(id -u)" = 0 ]; then
   ln -sf bash /bin/sh
   update-alternatives --install /usr/bin/python python /usr/bin/python2 1 >/dev/null
 
+  # UTF-8 LOCALE -- REQUIRED, not cosmetic. The 25 www/*.dict language files are
+  # UTF-8, and the build runs them through the PREBUILT tool
+  # router/tools/Lnx_ToolHelp/LnxHtmlEnumDict. A bare ubuntu:20.04 container has
+  # no locale set and no `locales` package, i.e. POSIX/C with no multibyte
+  # support -- under which that tool SEGFAULTS (6 times, seen in every run so
+  # far) and emits ASCII-only dictionaries. The 2026-08-09 CI-vs-local image
+  # diff caught it: TH.dict went from 5,579 lines containing non-ASCII down to
+  # 14, i.e. every Thai/Cyrillic/CJK string silently deleted, while the line
+  # count stayed lockstep at 6142 so the verify gate never noticed.
+  # The maintainer's WSL builds under LANG=C.UTF-8 -- match it exactly.
+  apt-get install -y -qq locales >/dev/null 2>&1 || true
+  export LANG=C.UTF-8 LANGUAGE=
+  # NOTE: LANG only. Do NOT export LC_ALL -- the staged-fs digest below relies on
+  # inline `LC_ALL=C sort` for deterministic ordering, and a global LC_ALL would
+  # be harder to reason about. C.UTF-8 is built into glibc on Focal, so this
+  # needs no locale-gen.
+
   echo "-- build environment"
   grep PRETTY_NAME /etc/os-release
   echo "   sh   -> $(readlink -f /bin/sh)"
+  echo "   LANG -> ${LANG:-<unset>}  (multibyte: $(printf 'ä' | wc -m) char for a 2-byte sequence -- must be 1)"
   echo "   $(python --version 2>&1)"
   echo "   $(gcc --version | head -1)"
 

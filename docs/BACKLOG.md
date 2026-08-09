@@ -146,6 +146,11 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   row.** Cosmetic — the probe pings the gateway/self IP and emits it like a client. Filter the router's
   own LAN address (or bucket it as the router) in rtrafd's health output. [cosmetic]
 
+- **New Firmware** The function is not firing and the check button still points at ASUS servers.
+
+- **Device Image** The ASUS Mesh page no longer fetches the device picture from ASUS servers. 
+  Need to remove the icon left over.
+
 ## Known issues (cause identified)
 
 - **[P3] Unescaped `title='...'` attributes on the stock client lists — PARTIALLY DONE.** The reported
@@ -184,13 +189,28 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
 
 ## Features to add
 
-- **[P2] PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
-  Replace the stock firmware tab with a Reaper-native page (shell/inject-skip, theme tokens, dict
-  lockstep). Surface functions the stock page disables: one-click download of the published `.pkgtb`
-  from `webs_state_url` → verify SHA256 (already in the manifest) → flash; show the release note inline;
-  guard model+variant so a noMCP box can't pull an MCP image; optional rollback awareness. Pulls in
-  image-signing / GPL-delivery considerations. Depends on Phase 1's manifest + nvram wiring (shipped
-  v2.1.6). [owed — build]
+- **[P2→DONE in tree, commit `0623fd3900`] PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
+  Built 2026-08-08 (rides the next rung; **metal owed**): native page replaces the stock firmware tab
+  (menuTree repoint; stock page kept on disk as fallback), one-click download of the published `.pkgtb`
+  → SHA-256 + `firmware_check` verify → flash (`reaper_webs_upgrade.sh`, host-pinned to AM-Reaper,
+  model anchored at `_3006`, MCP/noMCP guard both in the URL offer and re-checked on-box); inline
+  release note; scheduled-check toggle; manual upload with progress. **Root-caused the field report on
+  the way in:** with CFGSYNC compiled in, the stock page's Check went `action_mode=firmware_check` →
+  cfg_mnt blob → ASUS's servers, so Phase 1's check never ran from the GUI — both stock-page branches
+  are now forced onto the direct `start_webs_update` path; the note script also wrote
+  `release_note.txt` while the viewer reads `release_note0.txt` (fixed, plus argless tolerance).
+  Manifest gained `#SHA256#SIZE` fields (old firmware ignores them; new firmware refuses to flash
+  without them). **Remaining:** metal round-trip (check/badge/note, one-click install of a *published*
+  release, manual upload, cross-variant refusal), RFWU_1–31 dict tokens are English-seeded in all 25
+  dicts (translation pass owed), sibling fan-out at next rung.
+
+- **[P2 — OWNER DECISION] Stop committing `.pkgtb` images in-tree under `releases/` (repo-size).**
+  GitHub *Release assets* live outside the git repo (no repo-size impact, 2 GB/file limit) and are
+  what the update manifest + in-GUI installer download from — the in-tree copies (~750 MB history
+  growth per full release) are only for file-tree visibility and nothing consumes them. Option: drop
+  the in-tree copy step in `stage_release.ps1` (one-line change) and optionally rewrite history later
+  to reclaim past growth. Third-party hosts (OneDrive etc.) are NOT suitable for the on-router
+  downloader: unstable direct-URL semantics and they'd break the upgrade script's GitHub host-pin.
 
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the

@@ -65,6 +65,14 @@ STORAGE="nand"          # all five models ship nand only; emmc is a byproduct
 VARIANTS="$VARIANT"     # ONE variant per CI job (6-hour job ceiling)
 unset SHIP_DIR          # no ladder in CI; reaper_build is called without 'ship'
 
+# Capture pass 1 instead of discarding it. On a cold clean-room tree pass 1 is
+# where the samba crypto chain gets built, so its output is the only record of
+# how that chain went -- discarding it is why the first two clean-room failures
+# could not be diagnosed from the job log. It goes to /tmp, NOT the job's stdout
+# (pass 1 is expected to die at setprofile and its full output is hundreds of
+# MB); an excerpt is copied into OUT_DIR below so it rides the evidence upload.
+export REAPER_PASS1_LOG="${REAPER_PASS1_LOG:-/tmp/pass1_${MODEL}_${VARIANT}.log}"
+
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # NOTE: _reaper_env.sh is deliberately NOT sourced -- it shells out to
 # powershell.exe to resolve a Windows profile path, which is meaningless here.
@@ -72,3 +80,24 @@ source "$HERE/../_reaper_build_lib.sh"
 
 echo "== CI build: $MODEL / $VARIANT (branch $BRANCH, target $TARGET) =="
 reaper_build
+rc=$?
+
+# Preserve the pass-1 evidence whether or not the build passed: a build that
+# succeeds still tells us what a healthy cold-tree crypto chain looks like,
+# which is the baseline a future failure gets compared against. Excerpt only --
+# the full log is far too large for an artifact.
+if [ -n "${OUT_DIR:-}" ] && [ -f "$REAPER_PASS1_LOG" ]; then
+  EX="$OUT_DIR/pass1-crypto-${MODEL}-${VARIANT}.log"
+  {
+    echo "### pass1 crypto-chain excerpt -- $MODEL/$VARIANT (rc=$rc)"
+    echo "### full pass1 log was $(wc -c <"$REAPER_PASS1_LOG") bytes"
+    echo
+    grep -nE '\[build-reaper\]|libgmp|libgnutls|libnettle|mode=link|gcc -shared|cannot stat|Error [0-9]+|No such file' \
+      "$REAPER_PASS1_LOG" 2>/dev/null | head -400
+    echo
+    echo "### last 200 lines of pass1"
+    tail -200 "$REAPER_PASS1_LOG"
+  } > "$EX" 2>/dev/null || true
+  echo "pass1 excerpt -> $(basename "$EX")"
+fi
+exit $rc

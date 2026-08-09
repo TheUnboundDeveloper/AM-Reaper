@@ -143,10 +143,11 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   expected only the active WAN's profile to log.
 
 - **[P3] The connection-health probe lists the router's own LAN IP (e.g. `192.168.50.1`) as a device
-  row.** Cosmetic — the probe pings the gateway/self IP and emits it like a client. Filter the router's
-  own LAN address (or bucket it as the router) in rtrafd's health output. [cosmetic]
-
-- **New Firmware** The function is not firing and the check button still points at ASUS servers.
+  row — field-confirmed 2026-08-08 as the ONLY remaining "IP in the MAC slot" row after the v2.3.0
+  one-row-per-device dedup (owner confirmed the dedup itself looks good on metal).** Cosmetic — the
+  probe pings the gateway/self IP and emits it like a client. Filter the router's own LAN address
+  (or bucket it as the router, consistent with the Traffic Analyzer's hidden "Router" self-bucket)
+  in rtrafd's health output. [cosmetic — owner: no fix needed now]
 
 - **Device Image** The ASUS Mesh page no longer fetches the device picture from ASUS servers. 
   Need to remove the icon left over.

@@ -40,11 +40,16 @@ on:
       # NOTE: reproducing a tree exactly is not the same as building it. Only
       # RT-BE96U has completed a green clean-room build; the other four are
       # unproven end-to-end. Build them one at a time.
+      #
+      # 'all' fans out to every model. Combined with variant=both that is 10
+      # concurrent jobs of ~1.5 h each -- within the 20-job limit for public
+      # repos, and fail-fast is off below so one model dying does not cancel
+      # the other four.
       model:
-        description: 'Model to build'
+        description: 'Model to build (all = every model)'
         type: choice
         default: RT-BE96U
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO]
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, all]
 
 permissions:
   contents: read
@@ -111,13 +116,16 @@ jobs:
   # but keeps each job inside the 6-hour hosted-runner ceiling.
   # ---------------------------------------------------------------------------
   build:
-    name: ${{ inputs.model }} ${{ matrix.variant }}
+    name: ${{ matrix.model }} ${{ matrix.variant }}
     needs: toolchain
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
+      # fail-fast MUST stay false. A fleet run is 10 independent builds; one
+      # model failing should not cancel four healthy ones an hour in.
       fail-fast: false
       matrix:
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -221,7 +229,7 @@ jobs:
             -e TOOLCHAIN_COMMIT="$TOOLCHAIN_COMMIT" \
             -e BUILD_BRANCH="$BUILD_BRANCH" \
             -e EXPECTED_VERSION="$EXPECTED_VERSION" \
-            -e MODEL="${{ inputs.model }}" \
+            -e MODEL="${{ matrix.model }}" \
             -e VARIANT="${{ matrix.variant }}" \
             -e REPO_DIR=/work/reaper \
             -e OUT_DIR=/work/out \
@@ -236,9 +244,9 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          P="$GITHUB_WORKSPACE/out/build-provenance-${{ inputs.model }}-${{ matrix.variant }}.txt"
+          P="$GITHUB_WORKSPACE/out/build-provenance-${{ matrix.model }}-${{ matrix.variant }}.txt"
           {
-            echo "## ${{ inputs.model }} ${{ matrix.variant }}"
+            echo "## ${{ matrix.model }} ${{ matrix.variant }}"
             if [ -f "$P" ]; then echo; echo '```'; cat "$P"; echo '```'
             else echo; echo "Build did not reach the provenance step - see the job log."; fi
             echo; echo "_Artifacts are unsigned Actions artifacts from an unvalidated CI pipeline. Flash at your own risk; the published releases remain the authoritative images._"
@@ -248,7 +256,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: firmware-${{ inputs.model }}-${{ matrix.variant }}
+          name: firmware-${{ matrix.model }}-${{ matrix.variant }}
           path: out/*.pkgtb
           if-no-files-found: error
           retention-days: 30
@@ -258,7 +266,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evidence-${{ inputs.model }}-${{ matrix.variant }}
+          name: evidence-${{ matrix.model }}-${{ matrix.variant }}
           path: |
             out/*.txt
             out/*.env

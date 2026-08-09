@@ -82,10 +82,31 @@ clone holding all five branches so it can compute the shared-code diff. A
 clean-room CI checkout has one branch, so it cannot produce a sibling.
 
 `build-scripts/ci/build_one.sh` refuses a sibling model outright rather than
-building something that merely resembles one. Extending CI to the siblings means
-first publishing each model's identity overlay (its `target.mak` block,
-`version.conf`, model-only blobs) and a port path that works from a single
-branch. The per-model banner art is already vendored here in `build-assets/`.
+building something that merely resembles one. That refusal is deliberate: the
+v1.8.6 fan-out is exactly what happens when a port copies the canon verbatim
+over a sibling's identity — every sibling came out branded RT-BE96U, and it took
+three corrective rungs (`v1.8.6a`/`b`/`c`) to unwind, plus a fourth (`v1.8.6d`)
+for GT-BE98.
+
+Extending CI to the siblings needs three things that do not exist in a
+clean-room checkout yet:
+
+1. **Each model's identity overlay**, published in-repo: its `target.mak` block,
+   `version.conf`, and model-only blobs. The banner and animated-header art is
+   already vendored here in `build-assets/`.
+2. **A port path that works from a single branch.** `port_sibling_v2.sh` computes
+   `git diff be96u-only <branch>`, which needs a clone holding all five branches.
+   CI has one. This has to become an overlay applied to the canon tree rather
+   than a branch diff.
+3. **GT-BE98 needs a different upstream base.** It does not share the RT-BE96U
+   GPL drop — it is a separate ASUS GPL release, which is why it needed its own
+   `v1.8.6d` fix and why it cannot be built by pinning the same `BASE_COMMIT` as
+   the other four. Whatever base it does need must be **self-hosted and
+   hash-verified** in this repo, never fetched from a third party's release,
+   since it ends up inside a distributed firmware image.
+
+Items 1 and 2 cover RT-BE86U, RT-BE88U and GT-BE98_PRO. GT-BE98 additionally
+needs item 3 and should be done last.
 
 ---
 

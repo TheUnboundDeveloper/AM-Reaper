@@ -273,3 +273,74 @@ jobs:
             out/*.log
           if-no-files-found: warn
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # RELEASE HAND-OFF -- main only. On Dev (or a fork, or any other branch) both
+  # jobs below are skipped entirely, so a development build can never publish.
+  #
+  # `if:` REPLACES the implicit success() that `needs:` would otherwise apply,
+  # which is why success() is written out. Without it these would run even after
+  # a failed build.
+  # ---------------------------------------------------------------------------
+  tag:
+    name: Tag for release
+    needs: build
+    if: success() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write          # job-scoped -- the build job stays contents: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /LICENSE
+
+      - name: Create per-model tags
+        id: v
+        run: |
+          set -euo pipefail
+          # EXPECTED_VERSION is "Reaper_v2.3.1"; tags are "v2.3.1-<MODEL>".
+          V="${EXPECTED_VERSION#Reaper_}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.model }}" = "all" ]; then
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
+          else
+            MODELS="${{ inputs.model }}"
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for M in $MODELS; do
+            T="$V-$M"
+            # Idempotent by design: a version can only auto-release once. Re-runs
+            # and repeat dispatches are no-ops; deleting the tag is the explicit
+            # way to re-release.
+            if git ls-remote --exit-code --tags origin "refs/tags/$T" >/dev/null 2>&1; then
+              echo "  $T already exists -- skipping"
+            else
+              git tag -a "$T" -m "Reaper $V ($M) -- clean-room build ${{ github.run_id }}"
+              git push origin "$T"
+              echo "  $T created at ${GITHUB_SHA:0:12}"
+            fi
+          done
+
+  # Calls release.yml DIRECTLY rather than relying on the tag push to trigger it:
+  # events created with GITHUB_TOKEN do not start new workflow runs, so a tag
+  # push alone would silently publish nothing. A direct call needs no PAT and
+  # keeps release.yml the single release authority.
+  release:
+    name: Publish
+    needs: [build, tag]
+    if: success() && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}

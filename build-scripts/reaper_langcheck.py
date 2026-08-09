@@ -15,7 +15,8 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        'Reaper_GK.asp', 'Reaper_Warden.asp', 'Reaper_Advisor.asp', 'Reaper_Diag.asp',
        'Reaper_Wireless.asp', 'Reaper_FirstBoot.asp', 'Reaper_Devices.asp',
        'Reaper_Storage.asp', 'Reaper_WiFiPro.asp', 'Reaper_QoSDiag.asp',
-       'Reaper_Conn.asp', 'Reaper_WiFiAccel.asp']
+       'Reaper_Conn.asp', 'Reaper_WiFiAccel.asp',
+       'Reaper_USB.asp', 'Reaper_Analytics.asp', 'Reaper_Firmware.asp']
 
 BT = re.compile(r'`([^`]*)`', re.S)
 SQ = re.compile(r"'((?:[^'\\\n]|\\[^\n])*)'")

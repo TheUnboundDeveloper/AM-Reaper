@@ -73,6 +73,27 @@ unset SHIP_DIR          # no ladder in CI; reaper_build is called without 'ship'
 # MB); an excerpt is copied into OUT_DIR below so it rides the evidence upload.
 export REAPER_PASS1_LOG="${REAPER_PASS1_LOG:-/tmp/pass1_${MODEL}_${VARIANT}.log}"
 
+# ---------------------------------------------------------------------------
+# gmp shared-link failure (runs #1-#4). OBSERVED, not inferred: in CI libtool
+# emitted NO link command for libgmp -- no `gcc -shared`, no linker-script
+# fallback, not even the `rm -fr .libs/libgmp.lai` that precedes every healthy
+# link in the same log -- then created .libs/libgmp.so.10{,.4.1} symlinks
+# pointing at a file it never built, and exited 0. `make install` then failed
+# with `cannot stat '.libs/libgmp.so.10.4.1'`.
+#
+# gmp is the longest link in the build (~700 objects, ~120-char paths), and it
+# is the ONLY one that fails, so libtool's "command line too long" handling is
+# the suspect branch. Which sub-branch it takes is fixed at configure time by
+# max_cmd_len / file_list_spec / with_gnu_ld. Locally max_cmd_len=1572864 and
+# the direct link is used; a forced-small value still links via a linker
+# script. Both local paths work -- so pin CI to the known-good local value
+# rather than let it probe its way into the branch that produces nothing.
+#
+# lt_cv_sys_max_cmd_len is an autoconf CACHE variable: configure honours it
+# from the environment, so this needs no change to build-reaper.sh or any
+# patch in the published series.
+export lt_cv_sys_max_cmd_len="${lt_cv_sys_max_cmd_len:-1572864}"
+
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # NOTE: _reaper_env.sh is deliberately NOT sourced -- it shells out to
 # powershell.exe to resolve a Windows profile path, which is meaningless here.

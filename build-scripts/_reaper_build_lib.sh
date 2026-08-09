@@ -117,6 +117,16 @@ _rb_crypto_postmortem() {   # $1 = label
     else
       echo "    libgmp.la absent -- gmp never reached its link step"
     fi
+    # The three values that decide which link branch libtool takes. gmp is the
+    # longest link in the build and the only one that fails, and in CI libtool
+    # emitted no link command at all -- so these are the numbers that explain
+    # it. Locally: max_cmd_len=1572864, and the link succeeds.
+    if [ -f "$G/libtool" ]; then
+      echo "  libtool link-branch config:"
+      grep -E '^(max_cmd_len|file_list_spec|with_gnu_ld|archive_cmds|build_libtool_libs)=' \
+        "$G/libtool" | cut -c1-160 | sed 's/^/    /'
+    fi
+    echo "  lt_cv_sys_max_cmd_len in env: ${lt_cv_sys_max_cmd_len:-<unset>}"
   else
     echo "  no gmp build dir (chain not reached, or cleared by the cold-tree guard)"
   fi

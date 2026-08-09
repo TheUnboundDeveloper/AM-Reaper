@@ -9,7 +9,8 @@
       "release/src/router": "91ac46a9fde7714dbed651d02c04898b4e134be0",
       "release/src-rt": "3de97a56ffbfb82625b1bb8929c3c70da9dc9c80"
     },
-    "note": "The base pin never moves. Reaper changes are carried as the patches/ series, and upstream carry-forwards (e.g. Merlin 3006.102.8 -> v2.1.2) are cherry-picked, NOT rebased, so this base stays constant and the reproduction recipe below is stable across releases."
+    "note": "The base pin never moves. Reaper changes are carried as the patches/ series, and upstream carry-forwards (e.g. Merlin 3006.102.8 -> v2.1.2) are cherry-picked, NOT rebased, so this base stays constant and the reproduction recipe below is stable across releases.",
+    "series_note": "Applying the published patches/ series from this base reproduces every release's source. Two hashes are recorded per release: source_tree is the tree of the build commit on the RT-BE96U branch (what the firmware was actually built from); source_tree_from_series is what `git am --keep-cr patches/[0-9]*.patch` onto this base yields. They differ ONLY by three vendored openssh-sftp documentation files (README.md, SECURITY.md, .github/ci-status.md) that the series' *.md doc-hunk exclusion strips; no source or code file differs, and release/src-rt is identical. CI (verify-provenance.yml) checks source_tree_from_series."
   },
   "toolchain": {
     "host": "Ubuntu 20.04 (WSL2)",
@@ -19,6 +20,46 @@
   },
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
+    {
+      "version": "v2.3.1",
+      "firmware": "3006.102.8_Reaper_v2.3.1",
+      "build_commit": "eb0234214f",
+      "source_tree": {
+        "release/src/router": "45fed7610e4d1316f4fabd664f56e37d88cd47a5",
+        "release/src-rt": "3b656f85db89b73147fc630c7de492bd6f17d93e"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "f45570426e350a29bba9245ee1b11ffab41ecd1a",
+        "release/src-rt": "3b656f85db89b73147fc630c7de492bd6f17d93e"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.3.1_nand_squashfs.pkgtb",
+          "sha256": "c38c682412d1284e82aa6c1b12500929730371fbfb1cb7a8676fc2cc1bf9f960"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "noMCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.3.1_noMCP_nand_squashfs.pkgtb",
+          "sha256": "d7dd6361318e7856331d316f05ef9c62f75309345f29056dc7fdefc826058ffc"
+        }
+      ],
+      "patch_count": 374,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U",
+        "RT-BE86U",
+        "RT-BE88U",
+        "GT-BE98",
+        "GT-BE98_PRO"
+      ],
+      "date": "2026-08-08",
+      "parent": "v2.3.0",
+      "summary": "Native firmware page rung: Reaper_Firmware.asp (Phase 2 - check, download, verify and flash from the router GUI) plus the update-check path fix so the check never routes through cfg_mnt/ASUS. Shipped fleet-wide (all five models, both variants, 19/19 on the verify gate) and published as five GitHub releases. This is the first release whose full patch series applies end-to-end onto the pinned base: patches 0246/0247/0252 (the v1.8.6a banner rename and version bump, and the v1.8.6c version bump) had never been extracted, which broke the replay at old patch 0247 for every release from v1.8.6a onward.",
+      "models_note": "The published patch series is the RT-BE96U line; siblings are produced by porting the shared code onto each per-model branch, so they are not independently patch-reproducible. The image SHAs above are RT-BE96U; per-model sums are in each SHA256SUMS-<MODEL>-Reaper_v2.3.1.txt."
+    },
     {
       "version": "v2.1.5",
       "firmware": "3006.102.8_Reaper_v2.1.5",
@@ -57,7 +98,7 @@
         "build": "provenance/logs/v2.1.5/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.1.5/reaper_verify-rt-be96u.log"
       },
-      "patch_count": 322,
+      "patch_count": 325,
       "verifiable": true,
       "models": [
         "RT-BE96U",
@@ -69,7 +110,11 @@
       "date": "2026-08-04",
       "parent": "v2.1.4",
       "summary": "Three field-report fixes: PPPoE baby-jumbo MTU applied to the WAN page variant that actually ships on MULTISERVICE_WAN builds (the v2.1.3 raise had landed on the non-shipped base page; both silent 1492 clamps now fire only when the WAN MTU was deliberately lowered), a self-recovering first-boot credential page (leaves on load when the credential step is already done; a rejected chpass re-probes live state and finishes when the password actually applied - closes the 'won't accept anything' loop), and rtrafd JFFS/USB history persistence (late store attach with 15-min retry so a hotplug-mounted USB store is restored instead of overwritten; never saves over an unloaded db - preserves .prev; USB saves every 15 min, JFFS stays hourly). Built + shipped on all five models in two parallel waves on the new per-model build fleet.",
-      "models_note": "Built + shipped on all five models (both variants each, all 17/17 on the verify gate). The image SHAs and source-tree hash above are the RT-BE96U reference; the patch series is RT-BE96U-only, and the siblings are produced by porting the shared code onto each per-model branch (banner/target.mak/blob overlay), so they are not independently patch-reproducible. Per-model image SHAs are in each SHA256SUMS-<MODEL>-Reaper_v2.1.5.txt on the release ladder."
+      "models_note": "Built + shipped on all five models (both variants each, all 17/17 on the verify gate). The image SHAs and source-tree hash above are the RT-BE96U reference; the patch series is RT-BE96U-only, and the siblings are produced by porting the shared code onto each per-model branch (banner/target.mak/blob overlay), so they are not independently patch-reproducible. Per-model image SHAs are in each SHA256SUMS-<MODEL>-Reaper_v2.1.5.txt on the release ladder.",
+      "source_tree_from_series": {
+        "release/src/router": "ebbed045f4841b89a8c8d1eacce74961518445b9",
+        "release/src-rt": "967e3bea6bd7fc69d687680ea83ab4e4460e5201"
+      }
     },
     {
       "version": "v2.1.4",
@@ -112,7 +157,7 @@
         "build": "provenance/logs/v2.1.4/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.1.4/reaper_verify-rt-be96u.log"
       },
-      "patch_count": 318,
+      "patch_count": 321,
       "verifiable": true,
       "models": [
         "RT-BE96U",
@@ -121,7 +166,11 @@
         "GT-BE98",
         "GT-BE98_PRO"
       ],
-      "models_note": "Built + shipped on all five models (both variants each, all 17/17 on the verify gate). The image SHAs and source-tree hash above are the RT-BE96U reference; the patch series is RT-BE96U-only, and the siblings are produced by porting the shared code onto each per-model branch (banner/target.mak/blob overlay), so they are not independently patch-reproducible. Per-model image SHAs are in each SHA256SUMS-<MODEL>-Reaper_v2.1.4.txt on the release ladder."
+      "models_note": "Built + shipped on all five models (both variants each, all 17/17 on the verify gate). The image SHAs and source-tree hash above are the RT-BE96U reference; the patch series is RT-BE96U-only, and the siblings are produced by porting the shared code onto each per-model branch (banner/target.mak/blob overlay), so they are not independently patch-reproducible. Per-model image SHAs are in each SHA256SUMS-<MODEL>-Reaper_v2.1.4.txt on the release ladder.",
+      "source_tree_from_series": {
+        "release/src/router": "e2c1828901d08089a951e14ec982212fcf337923",
+        "release/src-rt": "212e9e67bd9fbc952e073be8e65cf112881fb2f9"
+      }
     },
     {
       "version": "v2.1.3",
@@ -164,11 +213,15 @@
         "build": "provenance/logs/v2.1.3/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.1.3/reaper_verify-rt-be96u.log"
       },
-      "patch_count": 315,
+      "patch_count": 318,
       "verifiable": true,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "source_tree_from_series": {
+        "release/src/router": "d89a6bec8ca5ca5189b723efa0f7b17ffa4bfecf",
+        "release/src-rt": "9f98bed0e70817b304efd41e760e81c606eea206"
+      }
     },
     {
       "version": "v2.1.2",
@@ -181,7 +234,7 @@
         "release/src/router": "b2c357fa4a340d51a1cd6ef8777693781db92c56",
         "release/src-rt": "6d199e5fa9468526ec9b68d47deca8fe1cf83f8e"
       },
-      "patch_count": 310,
+      "patch_count": 313,
       "verifiable": true,
       "models": [
         "RT-BE96U"
@@ -215,6 +268,10 @@
       "logs": {
         "build": "provenance/logs/v2.1.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.1.2/reaper_verify-rt-be96u.log"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "08bfbd2870471409144fdb51d9999cd87b44899a",
+        "release/src-rt": "6d199e5fa9468526ec9b68d47deca8fe1cf83f8e"
       }
     },
     {
@@ -228,7 +285,7 @@
         "release/src/router": "3ae0d9144034bfc3a62fb5814d798a45b7db3ac6",
         "release/src-rt": "475fbccb2d09ebe70e113b9ee3cdb76d11ed78f1"
       },
-      "patch_count": 290,
+      "patch_count": 293,
       "verifiable": true,
       "models": [
         "RT-BE96U"
@@ -262,6 +319,10 @@
       "logs": {
         "build": "provenance/logs/v2.1.1/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.1.1/reaper_verify-rt-be96u.log"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "7d0c3e2fbe4fd3ce7672c9026b6cb43e635e5cd5",
+        "release/src-rt": "475fbccb2d09ebe70e113b9ee3cdb76d11ed78f1"
       }
     },
     {
@@ -275,7 +336,7 @@
         "release/src/router": "96e3ea406837de4d26558c2a9f411eeeb17cb105",
         "release/src-rt": "5faca3f896def375685e353e3af2e7e2a8490d11"
       },
-      "patch_count": 289,
+      "patch_count": 292,
       "patch_tip": "0289-reaper-v2.1.0-pre-release-code-review-hardening-batc.patch",
       "verifiable": true,
       "models": [
@@ -314,6 +375,10 @@
       "logs": {
         "build": "provenance/logs/v2.1.0/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.1.0/reaper_verify-rt-be96u.log"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "0a1eb6136cdacca581a95eac7f6aeba0ca08b740",
+        "release/src-rt": "5faca3f896def375685e353e3af2e7e2a8490d11"
       }
     },
     {

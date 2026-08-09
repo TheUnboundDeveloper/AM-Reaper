@@ -176,6 +176,19 @@ VER="$(grep -oE 'Reaper_v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' release/src-rt/version
 [ -n "$VER" ] || { echo "ERROR: cannot read Reaper version from version.conf"; exit 1; }
 SHORT_VER="${VER#Reaper_}"
 
+# The patch series carries its own EXTENDNO. Assert it produced the version the
+# workflow declares, so a stale or partially-extracted series can never ship an
+# image labelled as something it is not.
+if [ -n "${EXPECTED_VERSION:-}" ] && [ "$VER" != "$EXPECTED_VERSION" ]; then
+  echo "::error::version mismatch after applying $PATCH_COUNT patches"
+  echo "   workflow expects $EXPECTED_VERSION"
+  echo "   series produced  $VER"
+  echo "   Either the series is missing the newest rung's patches, or"
+  echo "   EXPECTED_VERSION in the workflow needs bumping."
+  exit 1
+fi
+echo "   version: $VER (matches EXPECTED_VERSION)"
+
 # --- source-level reproducibility gate --------------------------------------
 # provenance/manifest.json records the release/src/router tree hash produced by
 # a given patch count. When the series length matches a recorded release, the
@@ -200,7 +213,10 @@ if not hit:
           f"record tree {got} in provenance/manifest.json to make this build self-verifying")
     raise SystemExit(0)
 r = hit[0]
-want = r["source_tree"]["release/src/router"]
+# source_tree_from_series is what applying the published patches from the pinned
+# base yields; source_tree is the build commit's tree on the branch. They differ
+# only by vendored openssh-sftp *.md files the doc-hunk exclusion strips.
+want = (r.get("source_tree_from_series") or r["source_tree"])["release/src/router"]
 if want == got:
     print(f"   [MATCH] {r['version']}: release/src/router = {got}")
 else:

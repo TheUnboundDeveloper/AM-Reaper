@@ -1,0 +1,227 @@
+name: Build firmware from source
+
+# Clean-room firmware build that anyone can run for themselves.
+#
+# Fork this repository, open the Actions tab in YOUR fork, enable workflows,
+# and run "Build firmware from source". Nothing is fetched from a private
+# location and nothing is published: the run downloads the pinned upstream
+# Asuswrt-Merlin base and the pinned Merlin toolchains, applies this repo's
+# published patch series, builds with the project's own build engine, runs the
+# reaper_verify QA gate, and uploads the .pkgtb plus its provenance as Actions
+# artifacts. See docs/CI-PUBLIC-BUILD.md.
+#
+# It deliberately does NOT create a release. A firmware image published under
+# a repository's name should come from a validated pipeline, not from an
+# arbitrary dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'Which variant(s) to build'
+        type: choice
+        default: both
+        options: [both, MCP, noMCP]
+      model:
+        description: 'Model (only RT-BE96U is buildable from the published patch series)'
+        type: choice
+        default: RT-BE96U
+        options: [RT-BE96U]
+
+permissions:
+  contents: read
+
+env:
+  # The base pin never moves. Upstream carry-forwards are cherry-picked into the
+  # patch series rather than rebased, so this stays constant across releases
+  # (provenance/manifest.json "base.note").
+  UPSTREAM_REPO: https://github.com/RMerl/asuswrt-merlin.ng.git
+  BASE_TAG: 3006.102.8-beta2
+  BASE_COMMIT: a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3
+  TOOLCHAIN_REPO: https://github.com/RMerl/am-toolchains.git
+  TOOLCHAIN_COMMIT: d1af80e6b6686a4edc680386c09a8361453dd5c1
+  BUILD_BRANCH: be96u-only
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fetch the pinned crosstools once and cache them, so the two variant jobs
+  # don't each pull the same multi-GB toolchain.
+  # ---------------------------------------------------------------------------
+  toolchain:
+    name: Pinned toolchains
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Restore toolchain cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/am-toolchains
+          key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
+
+      - name: Fetch pinned crosstools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          CACHE="${GITHUB_WORKSPACE}/.cache/am-toolchains"
+          rm -rf "$CACHE"; mkdir -p "$(dirname "$CACHE")"
+          git init -q "$CACHE"
+          git -C "$CACHE" remote add origin "$TOOLCHAIN_REPO"
+          git -C "$CACHE" sparse-checkout init --cone
+          git -C "$CACHE" sparse-checkout set \
+            brcm-arm-hnd/crosstools-aarch64-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1 \
+            brcm-arm-hnd/crosstools-arm-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1 \
+            brcm-arm-hnd/crosstools-arm_softfp-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1
+          git -C "$CACHE" fetch --depth 1 -q origin "$TOOLCHAIN_COMMIT"
+          git -C "$CACHE" checkout -q --detach FETCH_HEAD
+          ACTUAL="$(git -C "$CACHE" rev-parse HEAD)"
+          echo "expected $TOOLCHAIN_COMMIT"
+          echo "actual   $ACTUAL"
+          [ "$ACTUAL" = "$TOOLCHAIN_COMMIT" ] || { echo "::error::toolchain commit mismatch"; exit 1; }
+          du -sh "$CACHE"
+
+  # ---------------------------------------------------------------------------
+  # One job per variant. Each is an independent clean-room build: fresh clone of
+  # the pinned base, full patch series, full compile. That costs a duplicate
+  # compile versus the local flow (which builds both variants in one warm tree),
+  # but keeps each job inside the 6-hour hosted-runner ceiling.
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ inputs.model }} ${{ matrix.variant }}
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
+
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          set -uo pipefail
+          echo "--- before ---"; df -h / /mnt 2>/dev/null || df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell \
+                      /usr/local/share/chromium /usr/local/lib/node_modules \
+                      /opt/hostedtoolcache 2>/dev/null || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          sudo apt-get clean
+          echo "--- after ---"; df -h / /mnt 2>/dev/null || df -h /
+
+      # The build tree is large. /mnt is the runner's temp resource disk and is
+      # usually far roomier than /, so put the build home wherever there is more
+      # space and bind-mount it into the container at /home/reaper.
+      - name: Choose build volume
+        run: |
+          set -euo pipefail
+          root_free=$(df -k --output=avail / | tail -1)
+          mnt_free=0
+          [ -d /mnt ] && mnt_free=$(df -k --output=avail /mnt | tail -1) || true
+          if [ "$mnt_free" -gt "$root_free" ]; then BUILD_HOME=/mnt/reaper-home; else BUILD_HOME="$RUNNER_TEMP/reaper-home"; fi
+          sudo mkdir -p "$BUILD_HOME"
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD_HOME"
+          echo "BUILD_HOME=$BUILD_HOME" >> "$GITHUB_ENV"
+          echo "build home: $BUILD_HOME  (/ free ${root_free}K, /mnt free ${mnt_free}K)"
+
+      # blob:none + non-cone sparse checkout: this repo carries firmware images
+      # in-tree under releases/, so a plain checkout would pull multiple GB. We
+      # need patches, build-scripts, provenance, and the published SHA256SUMS
+      # (for the reproducibility comparison) -- not the .pkgtb files themselves.
+      - name: Checkout patch series and build scripts
+        uses: actions/checkout@v4
+        with:
+          path: reaper
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /patches/
+            /build-scripts/
+            /provenance/
+            /docs/CI-PUBLIC-BUILD.md
+            /releases/*/*/SHA256SUMS*.txt
+            /LICENSE
+            /LICENSE.reaper
+
+      - name: Restore pinned toolchains
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.cache/am-toolchains
+          key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
+          fail-on-cache-miss: true
+
+      - name: Verify toolchain pin
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git -C "${GITHUB_WORKSPACE}/.cache/am-toolchains" rev-parse HEAD)"
+          echo "expected $TOOLCHAIN_COMMIT"; echo "actual   $ACTUAL"
+          [ "$ACTUAL" = "$TOOLCHAIN_COMMIT" ]
+
+      # Safety net only: the local WSL flow builds without emulation (Samba
+      # cross-compiles via cross-answers). Registering ARM binfmt on the host
+      # costs seconds and means a stray target-binary execution during compile
+      # fails over to qemu instead of killing a multi-hour job. The interpreter
+      # path (/usr/bin/qemu-arm-static) also exists inside the build container.
+      - name: Register ARM binfmt (safety net)
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static binfmt-support || true
+          ls /proc/sys/fs/binfmt_misc/ | grep -i arm || echo "no ARM binfmt handler registered (build should not need one)"
+
+      - name: Build in Ubuntu 20.04 clean room
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          docker pull -q ubuntu:20.04
+          docker run --rm \
+            -e UPSTREAM_REPO="$UPSTREAM_REPO" \
+            -e BASE_TAG="$BASE_TAG" \
+            -e BASE_COMMIT="$BASE_COMMIT" \
+            -e TOOLCHAIN_COMMIT="$TOOLCHAIN_COMMIT" \
+            -e BUILD_BRANCH="$BUILD_BRANCH" \
+            -e MODEL="${{ inputs.model }}" \
+            -e VARIANT="${{ matrix.variant }}" \
+            -e REPO_DIR=/work/reaper \
+            -e OUT_DIR=/work/out \
+            -e SRC_DIR=/home/reaper/asuswrt-be96u \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v "$BUILD_HOME:/home/reaper" \
+            -v "$GITHUB_WORKSPACE/.cache/am-toolchains:/opt/am-toolchains" \
+            ubuntu:20.04 \
+            bash /work/reaper/build-scripts/ci/container_build.sh
+
+      - name: Job summary
+        if: always()
+        run: |
+          set -uo pipefail
+          P="$GITHUB_WORKSPACE/out/build-provenance-${{ inputs.model }}-${{ matrix.variant }}.txt"
+          {
+            echo "## ${{ inputs.model }} ${{ matrix.variant }}"
+            if [ -f "$P" ]; then echo; echo '```'; cat "$P"; echo '```'
+            else echo; echo "Build did not reach the provenance step - see the job log."; fi
+            echo; echo "_Artifacts are unsigned Actions artifacts from an unvalidated CI pipeline. Flash at your own risk; the published releases remain the authoritative images._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ inputs.model }}-${{ matrix.variant }}
+          path: out/*.pkgtb
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ inputs.model }}-${{ matrix.variant }}
+          path: |
+            out/*.txt
+            out/*.env
+            out/*.log
+          if-no-files-found: warn
+          retention-days: 30

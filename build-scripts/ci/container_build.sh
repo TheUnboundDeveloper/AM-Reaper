@@ -18,7 +18,8 @@
 # Runs first as root (environment prep), then re-execs itself as `reaper`.
 #
 # Required env: UPSTREAM_REPO BASE_COMMIT BASE_TAG TOOLCHAIN_COMMIT
-#               MODEL VARIANT BUILD_BRANCH REPO_DIR OUT_DIR SRC_DIR
+#               MODEL VARIANT REPO_DIR OUT_DIR SRC_DIR
+#               (BUILD_BRANCH is DERIVED from MODEL below -- do not pass it in)
 # ============================================================================
 set -euo pipefail
 
@@ -28,17 +29,29 @@ set -euo pipefail
 
 # The build branch must match what ci/build_one.sh expects for this model --
 # _reaper_build_lib.sh refuses to build unless HEAD is on the model's branch.
-if [ -z "${BUILD_BRANCH:-}" ]; then
-  case "$MODEL" in
-    RT-BE96U)    BUILD_BRANCH=be96u-only;;
-    RT-BE86U)    BUILD_BRANCH=rt-be86u;;
-    RT-BE88U)    BUILD_BRANCH=rt-be88u;;
-    GT-BE98)     BUILD_BRANCH=gt-be98;;
-    GT-BE98_PRO) BUILD_BRANCH=gt-be98-pro;;
-    *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
-  esac
+#
+# MODEL is the ONLY source of truth. This used to honour an inherited
+# BUILD_BRANCH, and public-build.yml carried a leftover single-model pin
+# (BUILD_BRANCH: be96u-only) that therefore won for every sibling -- all four
+# aborted with rc=8 "on branch 'be96u-only' but this launcher builds '<model>'"
+# before a single object was compiled. An inherited value is now REFUSED rather
+# than obeyed: a caller that disagrees with the model is a caller with a bug.
+case "$MODEL" in
+  RT-BE96U)    _WANT_BRANCH=be96u-only;;
+  RT-BE86U)    _WANT_BRANCH=rt-be86u;;
+  RT-BE88U)    _WANT_BRANCH=rt-be88u;;
+  GT-BE98)     _WANT_BRANCH=gt-be98;;
+  GT-BE98_PRO) _WANT_BRANCH=gt-be98-pro;;
+  *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
+esac
+if [ -n "${BUILD_BRANCH:-}" ] && [ "$BUILD_BRANCH" != "$_WANT_BRANCH" ]; then
+  echo "::error::BUILD_BRANCH='$BUILD_BRANCH' was inherited but MODEL='$MODEL' requires '$_WANT_BRANCH'."
+  echo "          Unset BUILD_BRANCH in the caller -- it is derived from MODEL here."
+  exit 2
 fi
+BUILD_BRANCH="$_WANT_BRANCH"
 export BUILD_BRANCH
+echo "build branch for $MODEL: $BUILD_BRANCH"
 
 REAPER_HOME=/home/reaper
 BUILD_SCRIPTS="$REAPER_HOME/reaper_build"

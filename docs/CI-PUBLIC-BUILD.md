@@ -120,10 +120,19 @@ distributable firmware image must never depend on a third party's release URL,
 which can change or vanish, and an unverifiable blob inside a security-hardened
 image defeats the whole pipeline.
 
-**One thing reproduction does not prove.** Reproducing a tree exactly is not the
-same as building it. At the time of writing only RT-BE96U has completed a green
-clean-room build; the other four are verified-to-reproduce but unproven
-end-to-end. Build them one at a time first.
+**What a green build does and does not prove.** As of 2026-08-10 all five models
+build green in the clean room. That is not the same as being shippable, and the
+distinction is worth keeping:
+
+- Reproducing a tree exactly is not the same as building it — RT-BE86U proved
+  that by dying inside u-boot on a prebuilt blob that exists in no git ref.
+- Building it is not the same as shipping it. **No CI-built sibling image has yet
+  been diffed against a published one.** Until one has, treat sibling artifacts
+  as pipeline-proof, not shipping-proof.
+- A verification that only asks "is everything the sibling branch has reproduced
+  correctly?" never asks the reverse, and will pass over a stale branch tip. An
+  earlier overlay generation did exactly that and carried v2.1.4-era content for
+  seven files per model.
 
 ---
 

@@ -420,3 +420,75 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
+
+  # ---------------------------------------------------------------------------
+  # UPDATE-MANIFEST REFRESH -- runs ONCE, after the whole per-model release
+  # matrix. The on-router update check reads updates/manifest_3006.txt (and the
+  # notes viewer updates/notes/Reaper_v<ver>.txt); those were only ever written
+  # by build-scripts/stage_release.ps1 (the local ship flow), so a version
+  # published through this CI hand-off shipped as releases while the manifest
+  # still advertised the previous one and the router reported "up to date".
+  # This job closes that gap by regenerating the discovery files from the
+  # releases just published. It is a SINGLE writer on purpose: the release job
+  # is a per-model matrix, so refreshing inside it would race five commits to
+  # main. The concurrency group serializes it across overlapping runs too.
+  # ---------------------------------------------------------------------------
+  refresh_manifest:
+    name: Refresh update manifest
+    needs: [tag, release]
+    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: reaper-manifest-refresh
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /updates/
+            /releases/latest.json
+            /docs/CHANGELOG.md
+            /build-scripts/refresh_manifest.py
+
+      - name: Regenerate manifest, latest.json and notes from the published releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.tag.outputs.version }}
+          MODELSEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          export VNUM="${V#v}"
+          if [ "$MODELSEL" = "all" ]; then
+            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
+          else
+            export MODELS="$MODELSEL"
+          fi
+          export DATE="$(date -u +%Y-%m-%d)"
+          python3 build-scripts/refresh_manifest.py
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add updates/manifest_3006.txt releases/latest.json updates/notes/
+          if git diff --cached --quiet; then
+            echo "manifest already advertises $V -- nothing to commit"
+            exit 0
+          fi
+          git commit -m "updates: advertise Reaper $V in the firmware update manifest [skip ci]"
+          # Single-writer, but guard against a concurrent main push anyway.
+          for i in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "pushed manifest refresh for $V"
+              exit 0
+            fi
+            echo "push rejected (attempt $i) -- rebasing onto origin/main"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort || true; }
+          done
+          echo "::error::could not push the manifest refresh after 3 attempts"
+          exit 1

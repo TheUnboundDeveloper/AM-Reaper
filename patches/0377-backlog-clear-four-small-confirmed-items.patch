@@ -1,0 +1,184 @@
+From 052d3d6a22e9ff0b059d5e37fbc697b3e480a22d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 10 Aug 2026 06:44:09 -0400
+Subject: [PATCH] backlog: clear four small confirmed items
+
+Triage pass over the consolidated backlog for items that are genuinely
+small, self-contained and verifiable by reading. Four were still open;
+several others turned out to be already fixed and are noted below so the
+backlog can be trimmed.
+
+QOSDIAG-1 (Low) -- others/reaper_diag read `tmctl getportshaper`
+unconditionally, so a perfectly healthy qos_type=10 box always reported
+(0,0,0) and looked uncapped. type 10 shapes qid0 and sets NO port shaper
+by design; only type 11 does. That readback is what sent the 2026-08-01
+investigation down a blind alley. The diag now names the running engine
+and reads the shaper that engine actually uses.
+
+B3-SEC-002 (Low) -- rc/services.c single-quoted the nvram-sourced
+`region` and `conntype` straight into a system() string, so one
+apostrophe escaped the quoting and the remainder ran as root. Admin-
+authenticated, but a real shell injection. Both are short opaque tokens
+from the HMA profile list, so they are now accepted only against a
+conservative grammar and the call is skipped (with a log line) otherwise
+-- simpler and safer than trying to escape.
+
+B5-SEC-002 (Low) -- libpasswd/passwd.c compared the computed hash with
+strcmp(), which short-circuits at the first differing byte and so leaks
+how much matched. Not practically exploitable (the attacker cannot choose
+the hash and httpd rate-limits login), but a password check should not
+leak anything. Now folds every byte plus the length difference, so the
+result never depends on WHERE the mismatch was. NOTE: this file is CRLF;
+the edit preserves it.
+
+A3-REL-008 (Low) -- rwatch incident dumps already fired only on the
+transition into failure, with retention capped at 3 directories, but a
+flapping fail/recover/fail condition still wrote a full dump to /jffs per
+flap. Rate-limited to one dump per 30 min. The syslog FAILURE line still
+fires every time, so nothing is hidden -- only the flash write is
+suppressed.
+
+ALREADY FIXED, backlog entries are stale (verified in tree, no change
+needed):
+  A2-QUALITY-003  gatekeeper.c strdups gk_rl immediately (rc/gatekeeper.c:208)
+  QOSDIAG-2       classful setportshaper now logs failures (cef37f5cea)
+  s18 probe/export decouple  the guard exists, with the review's own rationale
+  s18 dead **.mp4 handler    gone, and basic.o is not in httpd OBJS
+  s15 Reaper_Conn.asp        has esc(), 15 call sites
+  s15 Reaper_QoS.asp         escapes via bwlEsc() (& < > " ')
+  s15 Reaper_QoSDiag.asp     port names go through esc()
+
+NOT TOUCHED, deliberately: A4-UI-006 (chpass GET fallback with a b64
+password in the URL). The fallback is load-bearing on the first-boot
+path, which already has a history of lockout regressions -- changing it
+needs a factory-reset metal test, not a code sweep.
+
+NOT BUILT. Rides the next rung with 9612fdba90 and cef37f5cea; owes a
+metal test and a sibling port.
+---
+ release/src/router/libpasswd/passwd.c | 15 ++++++++++++++-
+ release/src/router/others/reaper_diag | 18 +++++++++++++++++-
+ release/src/router/rc/rwatch.c        | 16 +++++++++++++++-
+ release/src/router/rc/services.c      | 22 +++++++++++++++++++---
+ 4 files changed, 65 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/libpasswd/passwd.c b/release/src/router/libpasswd/passwd.c
+index 68f4bd8ac9..a315c1160e 100644
+--- a/release/src/router/libpasswd/passwd.c
++++ b/release/src/router/libpasswd/passwd.c
+@@ -139,7 +139,20 @@ int compare_passwd_in_shadow(const char *username, const char *passwd)
+ 		goto ERROR;
+ 
+ 	free(salt);
+-	return !strcmp(supplied, correct);
++	/* B5-SEC-002: strcmp() short-circuits at the first differing byte, so its
++	 * timing leaks how much of the stored hash matched. Not practically
++	 * exploitable here -- the attacker cannot choose the hash directly and httpd
++	 * rate-limits login -- but a password check should not leak anything. Walk
++	 * every byte of the shorter string and fold the length difference in, so the
++	 * result never depends on WHERE the mismatch was. */
++	{
++		size_t i, ls = strlen(supplied), lc = strlen(correct);
++		size_t n = (ls < lc) ? ls : lc;
++		unsigned char diff = (unsigned char)((ls == lc) ? 0 : 1);
++		for (i = 0; i < n; i++)
++			diff |= (unsigned char)(supplied[i] ^ correct[i]);
++		return diff == 0;
++	}
+ 	
+ ERROR:
+ 	if(salt)
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index cc798db473..d606ea820c 100755
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -280,8 +280,24 @@ for k in qos_enable qos_type qos_obw qos_ibw qos_pshaper qos_minrates qos_dscp_t
+   echo "  $k = $(nvram get $k 2>/dev/null)"
+ done
+ WANIF="$(nvram get wan0_ifname 2>/dev/null)"; [ -z "$WANIF" ] && WANIF=eth0
++QT="$(nvram get qos_type 2>/dev/null)"
++QE="$(nvram get qos_enable 2>/dev/null)"
+ if have tmctl; then
+-  echo "  -- tmctl portshaper ($WANIF) --"; tmctl getportshaper --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++  # QOSDIAG-1: the port shaper is a type-11 (classful) mechanism ONLY. type 10
++  # shapes qid0 and sets no port shaper BY DESIGN, so reading it unconditionally
++  # made a healthy type-10 box report (0,0,0) and look uncapped -- which is
++  # exactly what sent the 2026-08-01 investigation down a blind alley. Say which
++  # engine is running and read the shaper that engine actually uses.
++  if [ "$QE" = "1" ] && [ "$QT" = "10" ]; then
++    echo "  -- engine: HW QoS (type 10) - shapes qid0, NO port shaper by design --"
++    echo "  -- qid0 shaper ($WANIF) --"; tmctl getqcfg --devtype 0 --if $WANIF --qid 0 2>/dev/null | sed 's/^/     /'
++  elif [ "$QE" = "1" ] && [ "$QT" = "11" ]; then
++    echo "  -- engine: HW QoS classful (type 11) - port shaper applies --"
++    echo "  -- tmctl portshaper ($WANIF) --"; tmctl getportshaper --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++  else
++    echo "  -- engine: not hardware QoS (qos_enable=$QE qos_type=$QT); shaper readbacks below are informational --"
++    echo "  -- tmctl portshaper ($WANIF) --"; tmctl getportshaper --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++  fi
+   echo "  -- tmctl portrxrate ($WANIF) --"; tmctl getportrxrate --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
+   q=0; while [ $q -le 6 ]; do
+     echo "  -- qcfg qid $q --"; tmctl getqcfg --devtype 0 --if $WANIF --qid $q 2>/dev/null | head -3 | sed 's/^/     /'
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 18a60770ff..044af5d496 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -142,8 +142,22 @@ static void rwatch_gen(void)
+ 	  "fi\n"
+ 	  "\n"
+ 	  "rw_dump() {\n"
+-	  "  D=\"$DUMPROOT/inc-$(date +%s)\"\n"
++	  /* A3-REL-008: dumps already fire only on the TRANSITION into failure and
++	   * retention is capped at 3 dirs, but a flapping condition
++	   * (fail/recover/fail) still writes a full dump per flap onto /jffs. Rate-
++	   * limit to one dump per RWDUMP_MIN_S. The syslog FAILURE line still fires
++	   * every time, so nothing is hidden -- only the flash write is suppressed. */
++	  "  RWDUMP_MIN_S=1800\n"
++	  "  NOWD=$(date +%s)\n"
++	  "  LAST=\"$(cat $DUMPROOT/.last 2>/dev/null)\"\n"
++	  "  case \"$LAST\" in ''|*[!0-9]*) LAST=0 ;; esac\n"
++	  "  if [ $((NOWD - LAST)) -lt $RWDUMP_MIN_S ]; then\n"
++	  "    logger -t rwatch \"incident dump suppressed ($(( (NOWD-LAST)/60 )) min since the last one)\"\n"
++	  "    return\n"
++	  "  fi\n"
++	  "  D=\"$DUMPROOT/inc-$NOWD\"\n"
+ 	  "  mkdir -p \"$D\" 2>/dev/null || return\n"
++	  "  echo $NOWD > \"$DUMPROOT/.last\" 2>/dev/null\n"
+ 	  "  { date; uptime; echo \"reasons:$*\"; } > \"$D/summary.txt\" 2>&1\n"
+ 	  "  { ip route; ip -6 route; } > \"$D/route.txt\" 2>&1\n"
+ 	  "  iptables -nvxL > \"$D/iptables.txt\" 2>&1\n"
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 92b3f8fe91..9109d36897 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -21563,9 +21563,25 @@ retry_wps_enr:
+ 					if (is_tpvpn_configured(TPVPN_HMA, region, conntype, unit))
+ 						start_ovpn_client(unit);
+ 					else {
+-						snprintf(cmd, sizeof(cmd), "hmavpn setconf '%s' '%s' %d &"
+-							, region, conntype, unit);
+-						system(cmd);
++						/* B3-SEC-002: region/conntype are nvram-sourced and were
++						 * single-quoted into this system() string, so a lone
++						 * apostrophe escaped the quoting and ran as root. Both
++						 * are short opaque tokens from the HMA profile list, so
++						 * accept only a conservative token grammar and skip the
++						 * call otherwise rather than trying to quote-escape. */
++						if (region && conntype &&
++						    strspn(region,   "abcdefghijklmnopqrstuvwxyz"
++									     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
++									     "0123456789._-") == strlen(region) &&
++						    strspn(conntype, "abcdefghijklmnopqrstuvwxyz"
++									     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
++									     "0123456789._-") == strlen(conntype)) {
++							snprintf(cmd, sizeof(cmd), "hmavpn setconf '%s' '%s' %d &"
++								, region, conntype, unit);
++							system(cmd);
++						} else {
++							logmessage("vpnc", "refusing hmavpn setconf: illegal characters in region/conntype");
++						}
+ 					}
+ 					break;
+ 				}
+-- 
+2.25.1
+

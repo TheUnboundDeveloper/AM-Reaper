@@ -1,0 +1,430 @@
+From cef37f5ceaa11698b6e62f4e3e335f8fff5c2624 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 10 Aug 2026 06:23:08 -0400
+Subject: [PATCH] qos: fix the defects found in the end-to-end review
+
+Review of the 449-line Reaper delta in rc/qos.c plus its defaults, GUI and
+httpd paths, prompted by a field report of high in-game latency. The
+report itself is NOT explained by any of these -- see the note at the end.
+
+CLASSIFICATION / POLICY
+
+* qos_dscp_wmm now defaults OFF. It defaulted to "1", and the code only
+  disables on a literal "0", so every factory-reset box running type 11
+  stamped Q1 CS6 and Q2 CS5 on all LAN-bound traffic. The shipped preset
+  classifies every HTTP/HTTPS flow under 512 KB as Q1, so ordinary web
+  browsing was promoted to AC_VO (Voice) on the air, where it preempts
+  latency-sensitive traffic sitting in AC_BE and aggregates poorly. The
+  same feature already caused one field regression (v1.5.3 demoted Q5 to
+  AC_BK: 1.5% loss, 77 ms jitter on a healthy 6 GHz client); the lift half
+  was never re-examined. Opt-in now, exactly as qos_ipolicer became after
+  its own regression.
+
+* qos_default 3 -> 4. The class template is
+    0 Web/VoIP  1 Streaming  2 Gaming  3 Downloads  4 Default
+  and the catch-all class is qos_default + 1, so "3" put every unmatched
+  flow -- games included -- into Q4 "Downloads", the same queue the
+  >512 KB File Transfer preset targets. Unmatched traffic now goes to the
+  class actually named Default.
+
+* DSCP->class map un-inverted. It sent the GAMING codepoints (CS4/AF4x)
+  to Q2 "Streaming" and the STREAMING codepoints (CS3/AF3x) to Q3
+  "Gaming". A game that marked DSCP correctly could never reach the queue
+  named for it. CS1 (scavenger) moved from Q5 -- the catch-all -- to Q4
+  "Downloads", which is the actual bulk class.
+
+CORRECTNESS
+
+* Committed rates are now budgeted. The shipped template asks for
+  80+10+5+3+2 = 100% and a hand-tuned 20x5 also lands on exactly 100%,
+  leaving qid 0 (unclassified) and qid 6 (LAN/multicast) with no
+  guarantee and the scheduler with no slack. The table is parsed up front
+  and anything over QOS_MINRATE_BUDGET_PCT (85) is scaled down
+  proportionally, preserving the operator's ratios, with a log line.
+
+* Hardware QoS refuses to arm with no upload bandwidth. Every rate
+  element sits behind its own "> 0" guard, so a blank qos_obw programmed
+  the classification chain, PI2 on all seven queues and the WRR/L4S queue
+  config while emitting no shaper, no port shaper and no policer: the
+  full cost of QoS with none of its benefit, silently. Field-observed on a
+  tester's box (both bandwidth fields empty, qos_enable=1, qos_type=11).
+  Both engines now log why and leave the queues stock, and
+  add_iQosRules() skips the classful chain too, so the box behaves
+  exactly as QoS-off rather than "reclassified but unshaped".
+
+* calc() genuinely widens now. (unsigned long) is 32-bit on this ARM
+  target, so the cast widened nothing and bw*pct wrapped above ~42.9
+  Gbit/s. Not reachable at today's rates, but it was doing none of what
+  it looked like it was doing.
+
+ROBUSTNESS
+
+* Classful gained the idempotence guard and tmctl error logging that the
+  2026-07-29 audit (F2) gave type 10 and never back-ported. start_iQos
+  re-runs on every WAN event and both setqcfg and setqdropalg
+  destructively rewrite the LIVE queue config with traffic in flight.
+  Keyed on a djb2 signature of the config nvram, emitted as a plain
+  number so nothing user-controlled reaches the generated shell.
+
+* The apply script's exit status is no longer discarded on either engine.
+
+* qos_cake_rtt gained a default; it was the only reaper QoS key without
+  one, so it never appeared in nvram and the knob was undiscoverable.
+
+HARDENING
+
+* httpd now grammar-checks qos_orates and qos_sched on save, the missing
+  half of the defence-in-depth the bandwidth fields already had. Not a
+  known escape -- rc/qos.c bounds every value before use.
+
+NOT A DEFECT, examined and cleared: Reaper_QoS.asp escapes every
+nvram-derived value reaching innerHTML via bwlEsc(); MODES is static
+tokens and the remaining sink interpolates formatted numbers.
+
+NOTE ON THE FIELD REPORT: none of the above explains 150 ms on an IDLE
+link. Metal readbacks are correct (port 2252800, qid4 2140160), qid4
+qsize 2728 caps queueing at ~15 ms, and a PC->router ping is flat at
+2-4 ms. The affected client is on MLO across mismatched links (6 GHz
+320 MHz + 5 GHz 80 MHz), which remains the open lead. These are defects
+found alongside it, not a fix for it.
+
+NOT BUILT. Owes a metal test and a port to the four sibling branches.
+---
+ release/src/router/httpd/web.c       |  17 +++
+ release/src/router/rc/qos.c          | 155 ++++++++++++++++++++++++---
+ release/src/router/shared/defaults.c |  16 ++-
+ 3 files changed, 172 insertions(+), 16 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f559ccbdf9..36191b22eb 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4897,6 +4897,23 @@ int validate_apply(webs_t wp, json_object *root)
+ 					dbg("reject out-of-range qos_type=%s\n", value);
+ 					continue;
+ 				}
++				/* Same reasoning applied to the class table (2026-08-10 review): these
++				 * drive the per-class shapers and the scheduler mode in the generated
++				 * script. rc/qos.c parses them with sscanf/strsep and bounds every
++				 * value before use, so this is not a known escape - it is the missing
++				 * half of the defence-in-depth the bandwidth fields already had.
++				 *   qos_orates  "min-ceil,min-ceil,..."   digits , -
++				 *   qos_sched   "p" | "w<1-63>" x5        p w digits , */
++				if(!strcmp(name, "qos_orates") && *value &&
++				   strspn(value, "0123456789,-") != strlen(value)){
++					dbg("reject malformed qos_orates=%s\n", value);
++					continue;
++				}
++				if(!strcmp(name, "qos_sched") && *value &&
++				   strspn(value, "pw0123456789,") != strlen(value)){
++					dbg("reject malformed qos_sched=%s\n", value);
++					continue;
++				}
+ 
+ 				/* log no prefix nvram */
+ 				nvram_modify_log(name, nvram_safe_get(name), value, activity_obj);
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 6efd425c95..658aab8607 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -371,10 +371,43 @@ end:
+ 	QOSLOG("is_ip=%d, is_mac=%d, is_range=%d, type=%d, new=%s", is_ip, is_mac, is_range, *type, new);
+ }
+ 
++/* Committed rates are a budget, not a wish list: they may not consume the whole
++ * port. The shipped template asked for 80+10+5+3+2 = 100%% and a hand-tuned
++ * 20x5 also lands on exactly 100%%, which leaves qid 0 (unclassified) and qid 6
++ * (LAN/multicast) with no guarantee at all and the scheduler with no slack.
++ * Anything over this budget is scaled down proportionally, preserving the
++ * operator's intended ratios. */
++#define QOS_MINRATE_BUDGET_PCT	85
++
++/* djb2 over the nvram that determines the emitted script. Used only to decide
++ * whether a re-apply would be a no-op, so collisions cost a redundant rewrite,
++ * never a wrong config. Emitted as a plain number, so nothing user-controlled
++ * reaches the generated shell. */
++static unsigned qos_cfg_sig(const char *wan_ifname)
++{
++	static const char *keys[] = { "qos_obw", "qos_ibw", "qos_orates", "qos_sched",
++				      "qos_l4s", "qos_minrates", "qos_pshaper", "qos_ipolicer" };
++	unsigned h = 5381;
++	const char *s;
++	int k;
++	for (s = wan_ifname; s && *s; s++) h = ((h << 5) + h) ^ (unsigned char)*s;
++	for (k = 0; k < (int)(sizeof(keys)/sizeof(keys[0])); k++) {
++		h = ((h << 5) + h) ^ 0x2c;
++		for (s = nvram_safe_get(keys[k]); s && *s; s++)
++			h = ((h << 5) + h) ^ (unsigned char)*s;
++	}
++	return h;
++}
++
+ static unsigned calc(unsigned bw, unsigned pct)
+ {
+-	unsigned n = ((unsigned long)bw * pct) / 100;
+-	return (n < 2) ? 2 : n;
++	/* unsigned long is 32-bit on this ARM target, so the old
++	 * (unsigned long) cast widened nothing and bw*pct wrapped above
++	 * ~42.9 Gbit/s. Not reachable at today's link rates, but the cast was
++	 * doing none of what it looked like it was doing. */
++	unsigned long long n = ((unsigned long long)bw * pct) / 100;
++	if (n > 0xFFFFFFFFULL) n = 0xFFFFFFFFULL;
++	return (n < 2) ? 2 : (unsigned)n;
+ }
+ 
+ void del_EbtablesRules(void)
+@@ -928,10 +961,19 @@ static int add_qos_rules(char *pcWANIF)
+ 	 * with the documented HW-offload freeze semantics for type 11. */
+ 	if (IS_HWQOS_CLASSFUL() && nvram_match("qos_dscp_trust", "1")) {
+ 		static const struct { const char *dscp; int cls; } dscp_map[] = {
+-			{ "EF", 1 }, { "CS7", 1 }, { "CS6", 1 }, { "CS5", 1 },	/* voice / interactive     -> Q1 */
+-			{ "CS4", 2 }, { "AF41", 2 }, { "AF42", 2 }, { "AF43", 2 },	/* video conf / gaming     -> Q2 */
+-			{ "CS3", 3 }, { "AF31", 3 }, { "AF32", 3 }, { "AF33", 3 },	/* streaming / signaling   -> Q3 */
+-			{ "CS1", 5 },						/* scavenger / bulk        -> Q5 */
++			/* Classes are named by the shipped template:
++			 *   Q1 Web/VoIP   Q2 Streaming   Q3 Gaming   Q4 Downloads   Q5 Default
++			 * The map used to send the GAMING codepoints (CS4/AF4x) to Q2
++			 * "Streaming" and the STREAMING codepoints (CS3/AF3x) to Q3
++			 * "Gaming" -- exactly inverted, so a game that marked DSCP
++			 * correctly never reached the queue named for it. CS1 (scavenger)
++			 * also landed in Q5, which is the catch-all default class, giving
++			 * deprioritised bulk the same treatment as unmatched traffic;
++			 * Q4 "Downloads" is the bulk class and is where it belongs. */
++			{ "EF", 1 }, { "CS7", 1 }, { "CS6", 1 }, { "CS5", 1 },	/* voice / interactive   -> Q1 Web/VoIP  */
++			{ "CS3", 2 }, { "AF31", 2 }, { "AF32", 2 }, { "AF33", 2 },	/* streaming / signaling -> Q2 Streaming */
++			{ "CS4", 3 }, { "AF41", 3 }, { "AF42", 3 }, { "AF43", 3 },	/* interactive / gaming  -> Q3 Gaming    */
++			{ "CS1", 4 },						/* scavenger / bulk      -> Q4 Downloads */
+ 		};
+ 		int di;
+ 		for (di = 0; di < (int)(sizeof(dscp_map)/sizeof(dscp_map[0])); di++) {
+@@ -2804,6 +2846,15 @@ int add_iQosRules(char *pcWANIF)
+ 		return -1;
+ 	}
+ 
++	/* Classful with no bandwidth never reaches the shaper (start_hwqos_classful
++	 * refuses), so installing its classification chain would leave marking and
++	 * DSCP rewriting active with nothing shaping -- the same all-cost/no-benefit
++	 * state, just in iptables. Tear down and stay out, exactly as IS_HWQOS does. */
++	if (IS_HWQOS_CLASSFUL() && strtoul(nvram_safe_get("qos_obw"), NULL, 10) == 0) {
++		del_iQosRules();
++		return -1;
++	}
++
+ 	if (IS_TQOS() || IS_HWQOS_CLASSFUL()) {
+ 		status = add_qos_rules(pcWANIF);
+ 	}
+@@ -3108,6 +3159,16 @@ int start_hwqos(void)
+ 
+ 	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
+ 
++	/* Same contract as the classful engine: with no upload bandwidth there is
++	 * nothing to shape, and arming would only apply PI2 to qid 0 for no
++	 * benefit. Refuse, and say why. */
++	if (obw == 0) {
++		logmessage("qos", "hardware QoS not started: no upload bandwidth set "
++				  "(qos_obw is empty). Enter your measured upload speed to enable shaping.");
++		_dprintf("[%s] refusing to arm: qos_obw empty\n", __FUNCTION__);
++		return -1;
++	}
++
+ 	/* wan_ifname is single-quoted in the generated root script; a literal quote
+ 	 * (or any shell-unsafe char) would break out. wanX_ifname is a kernel-derived
+ 	 * token, but guard defensively: reject anything that isn't a plain interface
+@@ -3164,7 +3225,8 @@ int start_hwqos(void)
+ 	fclose(f);
+ 	chmod(qosfn, 0755);
+ 	run_custom_script("qos-start", 120, "init", NULL);
+-	eval((char *)qosfn, "start");
++	if (eval((char *)qosfn, "start") != 0)
++		logmessage("qos", "hardware QoS apply script failed - shaping may not be active");
+ 
+ 	return 0;
+ }
+@@ -3198,6 +3260,8 @@ int start_hwqos_classful(void)
+ {
+ 	FILE *f;
+ 	unsigned int obw, ibw, burst, rate, ceil, cap, minr;
++	unsigned int crate[5], cceil[5], mtot;	/* pre-parsed class table + minrate total */
++	int cvalid[5];
+ 	int i, qid, minrates, l4s;
+ 	int sched_w[5];		/* v4: per-class WRR weight, 0 = strict priority */
+ 	char *buf, *g, *p;
+@@ -3209,6 +3273,21 @@ int start_hwqos_classful(void)
+ 	 * unset or any value other than literal "0" = on, "0" = off. */
+ 	minrates = !nvram_match("qos_minrates", "0");
+ 
++	/* REFUSE TO ARM WITH NO UPLOAD BANDWIDTH. Every rate element below is
++	 * behind its own "> 0" guard, so a blank qos_obw used to program the
++	 * classification chain, PI2 on all seven queues and the WRR/L4S queue
++	 * config while emitting NO shaper, NO port shaper and NO policer: the
++	 * full cost of QoS with none of its benefit, and no warning anywhere.
++	 * Field-observed 2026-08-10 on a tester's box (qos_obw and qos_ibw both
++	 * empty, qos_enable=1, qos_type=11). Bail loudly and leave the queues in
++	 * stock configuration so the box behaves exactly as QoS-off. */
++	if (obw == 0) {
++		logmessage("qos", "hardware QoS (classful) not started: no upload bandwidth set "
++				  "(qos_obw is empty). Enter your measured upload speed to enable shaping.");
++		_dprintf("[%s] refusing to arm: qos_obw empty\n", __FUNCTION__);
++		return -1;
++	}
++
+ 	/* same shell-safety guard as start_hwqos: wan_ifname is single-quoted in
+ 	 * the generated root script; reject anything that isn't a plain interface
+ 	 * name and fall back to an empty (inert) WANIF rather than emit it. */
+@@ -3224,10 +3303,25 @@ int start_hwqos_classful(void)
+ 
+ 	fprintf(f,
+ 		"#!/bin/sh\n"
+-		"WANIF='%s'\n\n"
++		"WANIF='%s'\n"
++		"SIG='%u'\n"
++		"HWCST=/tmp/qos_hwc_state\n\n"
+ 		"case \"$1\" in\n"
+-		"start)\n",
+-		wan_ifname
++		"start)\n"
++		/* Idempotence guard. start_iQos re-runs this on every WAN event, and
++		 * both setqcfg and setqdropalg destructively rewrite the LIVE queue
++		 * config with traffic in flight. The type-10 engine got this guard in
++		 * the 2026-07-29 audit (F2); classful never did. Skip when the wanted
++		 * config is already applied AND the TM still answers for a class queue
++		 * (a queue lost to a link/driver reset falls through and is
++		 * reprogrammed). "force" as $2 overrides. */
++		"\tif [ \"$2\" != \"force\" ] && [ \"$(cat $HWCST 2>/dev/null)\" = \"$WANIF:$SIG\" ] \\\n"
++		"\t   && tmctl getqcfg --devtype 0 --if $WANIF --qid 1 >/dev/null 2>&1; then\n"
++		"\t\texit 0\n"
++		"\tfi\n"
++		"\trm -f $HWCST\n",
++		wan_ifname,
++		qos_cfg_sig(wan_ifname)
+ 	);
+ 
+ 	/* v4: per-class scheduler mode from qos_sched - 5 comma tokens by queue
+@@ -3256,10 +3350,37 @@ int start_hwqos_classful(void)
+ 	 * v3: the min half of each "min-ceil" pair (ignored by v2) is now emitted as
+ 	 * a committed rate (--minrate) - lower classes keep a guaranteed floor while
+ 	 * the SP scheduler lets higher classes take the rest (CBWFQ model). */
++	/* Parse the whole class table BEFORE emitting anything: the committed rates
++	 * have to be budgeted collectively, which cannot be done one class at a
++	 * time. */
++	for (i = 0; i < 5; ++i) { cvalid[i] = 0; crate[i] = 0; cceil[i] = 0; }
+ 	g = buf = strdup(nvram_safe_get("qos_orates"));
+ 	for (i = 0; i < 5; ++i) {
+ 		if ((!g) || ((p = strsep(&g, ",")) == NULL)) break;
+ 		if (sscanf(p, "%u-%u", &rate, &ceil) != 2) continue;
++		crate[i] = rate; cceil[i] = ceil; cvalid[i] = 1;
++	}
++	free(buf);
++
++	/* Apply the committed-rate budget. Without it the guarantees can claim the
++	 * entire port, starving qid 0 / qid 6 (which carry no minrate of their own)
++	 * and leaving the scheduler nothing to arbitrate with. */
++	mtot = 0;
++	for (i = 0; i < 5; ++i)
++		if (cvalid[i] && crate[i] >= 1 && crate[i] <= 100) mtot += crate[i];
++	if (minrates && mtot > QOS_MINRATE_BUDGET_PCT) {
++		logmessage("qos", "class guarantees total %u%% of upload; scaling to %u%% so "
++				  "unclassified and LAN/multicast queues keep a share",
++			   mtot, (unsigned)QOS_MINRATE_BUDGET_PCT);
++		for (i = 0; i < 5; ++i)
++			if (cvalid[i] && crate[i] >= 1 && crate[i] <= 100)
++				crate[i] = (crate[i] * QOS_MINRATE_BUDGET_PCT) / mtot;
++	}
++
++	for (i = 0; i < 5; ++i) {
++		if (!cvalid[i]) continue;
++		rate = crate[i];
++		ceil = cceil[i];
+ 		qid = i + 1;
+ 		/* v4: setqcfg FIRST - like setqdropalg it rewrites the whole queue
+ 		 * config (the v1 ordering lesson), so scheduler mode must land before
+@@ -3282,12 +3403,12 @@ int start_hwqos_classful(void)
+ 		fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid %d --dropalg 4\n", qid);
+ 		if (cap > 0) {
+ 			if (minr > 0)
+-				fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --minrate %u --shapingrate %u\n", qid, minr, cap);
++				fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --minrate %u --shapingrate %u"
++					   " || logger -t hwqos \"setqshaper FAILED (rc=$?) qid %d\"\n", qid, minr, cap, qid);
+ 			else
+ 				fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --shapingrate %u\n", qid, cap);
+ 		}
+ 	}
+-	free(buf);
+ 
+ 	/* qid 0 (unclassified) and qid 6 (LAN/multicast class): PI2 + full OBW cap */
+ 	fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid 0 --dropalg 4\n");
+@@ -3303,7 +3424,8 @@ int start_hwqos_classful(void)
+ 	 * exceeding OBW (the ISP buffer stays out of the game even when several
+ 	 * classes saturate at once). qos_pshaper="0" kills. */
+ 	if (obw > 0 && !nvram_match("qos_pshaper", "0"))
+-		fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate %u\n", obw);
++		fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate %u"
++			   " || logger -t hwqos \"setportshaper FAILED (rc=$?) on $WANIF\"\n", obw);
+ 
+ 	/* v5: download cap - WAN ingress RX policer (kbps, same units as the egress
+ 	 * shapers; backed by an rdpa policer object, so the flow accelerator stays
+@@ -3329,7 +3451,11 @@ int start_hwqos_classful(void)
+ 		fprintf(f, "\ttmctl setportrxrate --devtype 0 --if $WANIF --shapingrate %u --burstsize %u\n", prate, burst);
+ 	}
+ 
++	/* Only record applied-state after the whole start branch has run, so a
++	 * partial failure retries on the next event instead of being cached. */
++	fprintf(f, "\techo \"$WANIF:$SIG\" > $HWCST\n");
+ 	fprintf(f, "\t;;\nstop)\n");
++	fprintf(f, "\trm -f $HWCST\n");
+ 	fprintf(f, "\ttmctl setportshaper --devtype 0 --if $WANIF --shapingrate 0\n");
+ 	/* readback guard: clearing a policer that was never set logs a one-time
+ 	 * kernel ERR (_drv_policer_clear_profile, metal-observed on first apply
+@@ -3355,7 +3481,8 @@ int start_hwqos_classful(void)
+ 	fclose(f);
+ 	chmod(qosfn, 0755);
+ 	run_custom_script("qos-start", 120, "init", NULL);
+-	eval((char *)qosfn, "start");
++	if (eval((char *)qosfn, "start") != 0)
++		logmessage("qos", "hardware QoS (classful) apply script failed - shaping may not be active");
+ 
+ 	return 0;
+ }
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 98e416cde0..0c73d44319 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3080,13 +3080,19 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
+ 	{ "qos_sched", "p,p,p,p,p", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight */
+ 	{ "qos_l4s", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 EXPERIMENTAL: flag class queues L4S (DualPI2 ECT(1) marking) */
++	{ "qos_cake_rtt", "50", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* cake AQM RTT target (ms); was the only reaper QoS key with no default, so it never appeared in nvram */
+ 	/* reaper QoS v5 (download side): inert until qos_type 11 is active. The RX
+ 	 * policer defaults OFF ("0"); set "1" to opt in. A policer has no queue, so it
+ 	 * drops (not delays) excess and clips loss-sensitive real-time UDP (metal
+ 	 * 2026-07-20: Teams-call packet loss) - so it is opt-in, not on by default.
+ 	 * When opted in, qos_ibw > 0 arms it. qos_dscp_wmm (WMM-lift half) stays ON. */
+ 	{ "qos_ipolicer", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 download cap: WAN ingress RX policer at qos_ibw; default OFF (opt-in) */
+-	{ "qos_dscp_wmm", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 downstream class->DSCP stamp (WMM AC lift on wifi egress) */
++	{ "qos_dscp_wmm", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 downstream class->DSCP stamp (WMM AC lift on wifi egress) */
++	/* v5 downstream DSCP stamp: OPT-IN as of 2026-08-10. Defaulting it on put
++	 * every HTTP/HTTPS flow under 512 KB -- which the shipped preset classifies
++	 * as Q1 -- into AC_VO (Voice) on the air, where it preempts latency-sensitive
++	 * traffic sitting in AC_BE and aggregates poorly. Same opt-in treatment
++	 * qos_ipolicer got after its own field regression. */
+ 
+ 	/* reaper v1.3.0 traffic collector (rtrafd) */
+ 	{ "rtraf_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* collector on/off (no listener) */
+@@ -3178,7 +3184,13 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_orules", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_burst0", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_burst1", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "qos_default", "3", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "qos_default", "4", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* Catch-all class index. The class template is
++	 *   0 Web/VoIP  1 Streaming  2 Gaming  3 Downloads  4 Default
++	 * and the catch-all class is qos_default + 1, so "3" sent every unmatched
++	 * flow -- games included -- into Q4 "Downloads", the same queue the
++	 * >512 KB File Transfer preset targets. Unmatched traffic belongs in the
++	 * class actually named Default, which is index 4. */
+ 	{ "qos_bw_rulelist", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ 	// TriggerList
+-- 
+2.25.1
+

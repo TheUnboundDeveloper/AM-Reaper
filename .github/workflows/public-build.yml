@@ -171,10 +171,33 @@ jobs:
             /patches/
             /build-scripts/
             /provenance/
+            /overlays/
             /docs/CI-PUBLIC-BUILD.md
             /releases/*/*/SHA256SUMS*.txt
             /LICENSE
             /LICENSE.reaper
+
+      # Everything container_build.sh reads out of the repo must be listed in
+      # the sparse-checkout above. Omitting /overlays/ is what made all four
+      # siblings fail while RT-BE96U passed -- RT-BE96U never touches them, so
+      # the gap was invisible until a fleet run. Assert it here, in seconds,
+      # rather than discovering it after the patch series has replayed.
+      - name: Verify the checkout has everything the build needs
+        run: |
+          set -uo pipefail
+          rc=0
+          for p in patches build-scripts provenance; do
+            if [ -d "reaper/$p" ]; then echo "  ok   $p/ ($(ls "reaper/$p" | wc -l) entries)"
+            else echo "::error::checkout is missing $p/ -- add it to sparse-checkout"; rc=1; fi
+          done
+          if [ "${{ matrix.model }}" != "RT-BE96U" ]; then
+            OV="reaper/overlays/${{ matrix.model }}.patch"
+            if [ -f "$OV" ]; then echo "  ok   $OV ($(stat -c%s "$OV") bytes)"
+            else echo "::error::no overlay for ${{ matrix.model }} at $OV -- sibling builds need /overlays/ in sparse-checkout"; rc=1; fi
+            PL="reaper/overlays/${{ matrix.model }}-platform.tar.gz"
+            if [ -f "$PL" ]; then echo "  ok   $PL ($(stat -c%s "$PL") bytes) + sha256"; fi
+          fi
+          exit $rc
 
       - name: Restore pinned toolchains
         uses: actions/cache/restore@v6

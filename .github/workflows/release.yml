@@ -30,6 +30,10 @@ on:
         description: 'Mark as pre-release'
         type: boolean
         default: false
+      allow_republish:
+        description: 'Overwrite an EXISTING release (its assets are clobbered)'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       tag:
@@ -38,6 +42,10 @@ on:
         type: string
       prerelease:
         description: 'Mark as pre-release'
+        type: boolean
+        default: false
+      allow_republish:
+        description: 'Overwrite an EXISTING release (its assets are clobbered)'
         type: boolean
         default: false
 
@@ -200,7 +208,22 @@ jobs:
             pre="--prerelease"
           fi
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "release $TAG exists — updating notes and re-uploading assets"
+            # REPUBLISH GUARD. Overwriting a published release replaces the
+            # assets the in-GUI updater downloads, so it is never a side effect
+            # of something else -- it has to be asked for. This matters most on
+            # the public-build.yml hand-off: EXPECTED_VERSION is pinned, so once
+            # a version has shipped, every later run on main would otherwise
+            # clobber five live releases with clean-room artifacts. On a `push`
+            # event inputs are empty, so that path is guarded too.
+            if [ "${{ inputs.allow_republish }}" != "true" ]; then
+              echo "::warning::release $TAG already exists — NOT overwriting it."
+              echo "  Nothing was published. The existing release and its assets are untouched."
+              echo "  To replace them deliberately: run this workflow via workflow_dispatch"
+              echo "  with allow_republish = true, or delete the release first."
+              echo "skipped: https://github.com/${{ github.repository }}/releases/tag/$TAG"
+              exit 0
+            fi
+            echo "release $TAG exists and allow_republish=true — updating notes and re-uploading assets"
             gh release edit "$TAG" --repo "${{ github.repository }}" --title "Reaper $V — $M" --notes-file "$RUNNER_TEMP/notes.md"
             gh release upload "$TAG" "$stage"/* --repo "${{ github.repository }}" --clobber
           else

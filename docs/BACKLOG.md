@@ -15,52 +15,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ---
 
-## v2.3.0 pre-distribution review (2026-08-08) — 4-agent parallel audit
-
-Four focused agents reviewed the v2.3.0 delta (`a2a93452aa..522241c96c`): rtrafd (health/dedup
-daemon), the httpd CGI + pre-auth surface, the changed www/UI, and cross-component coherence.
-**Unanimous verdict: SAFE TO DISTRIBUTE — no shipping blockers.** No auth/pre-auth regression
-(pre-auth surface byte-identical to pre-v2.3.0), no crashes/hangs/leaks/corruption in rtrafd, no
-broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coherent end-to-end
-(UI ↔ CGI ↔ nvram ↔ rtrafd ↔ rexport); dict lockstep 6074 ×25. Follow-ups (one Med, rest Low/slop):
-
-- **[P2 / Med] Probe toggle can decouple collection from an armed export → stale data pushed.**
-  `web.c` `action=probe` (~24304) sets `rtraf_hprobe` without consulting `reaper_export_mode`.
-  Reachable: export = both/exportonly, then turn the standalone Health-probe toggle OFF → the probe
-  stops updating `/tmp/rtraf/health.json` but the `rexport` cron stays armed and keeps POSTing the
-  **frozen** last snapshot every interval with no error to the collector (Splunk/Prometheus show a
-  live-looking but frozen feed). Fix: in `action=probe`, when turning off while
-  `reaper_export_mode!=off`, reject (`"disable export first"`) or also set mode=off; and/or gate the
-  UI toggle while export is active.
-- **[P3 / Low] Explicit probe-OFF is silently re-enabled by any Save while export mode ≠ off.**
-  `web.c:24167` (store_set) and `web.c:24281` (export save) force `rtraf_hprobe=1` for any non-off
-  mode. On Reaper_Analytics the re-enable is visible (status reloads); via **Reaper_Storage**
-  (changing location/mode) it is **invisible** (no probe indicator on that page). Fix: gate the probe
-  toggle on export state + a "required while export is on" note (extend `RANL_47`).
-- **[P3 / Low] Dead `**.mp4` mime handler in `httpd/basic.c:36` (slop).** Left over from the
-  mp4→APNG saga; `basic.o` is NOT in the httpd Makefile OBJS, so the table is dead/unreachable
-  (confirmed by 3 of 4 agents). Functionally harmless — delete the line so it can't mislead a future
-  audit or be resurrected if basic.o is ever relinked.
-- **[P3 / Low] "Off" now persists nothing — behavior change for probe-on upgraders.** `rtrafd.c:1438`
-  gate changed `!= EXP_ONLY` → `(EXP_STORE||EXP_BOTH)`. A power-user who ran the opt-in probe with
-  mode=off + a durable location was accumulating `healthhist.log`; after upgrade that log stops
-  growing (existing data not deleted) until they pick the new "Store only". Fix: release-note, or
-  one-time migrate off+durable-store users to storeonly on upgrade. (Health log is separate from the
-  traffic dataset — verified; traffic history unaffected.)
-- **[P3 / Low] rtrafd DHCP-churn mis-merge.** `rtrafd.c:407` / `:1476`: if an offline MAC-keyed slot
-  retains an old IP and DHCP reassigns that IP to a new IP-only device, the new device's flow merges
-  into the stale MAC slot → traffic attributed to the wrong device name. Bounded to stale-lease reuse;
-  no crash. Fix (optional): compare `now - cli[j].last` freshness before merging/evicting.
-- **[P3 / Low] rtrafd phantom-history discard.** `rtrafd.c:1478`: on eviction the phantom IP-slot's
-  accumulated rings are `memset` rather than folded into the MAC twin, so pre-MAC-resolution bytes are
-  dropped from history — slight undercount only. Documented tradeoff in the code.
-- **[P3 / Low, pre-existing — watch] `rexport.sh` unquoted nvram (audit `rc/rexport.c`).** NOT a
-  v2.3.0 change (v2.2.2): `reaper_export.cgi?action=test` runs `doSystem("sh /tmp/rexport.sh test")`,
-  and rexport.sh consumes CGI-set nvram (`url/engine/index/…`). If any are interpolated unquoted,
-  that's a post-auth, CSRF-guarded, admin-only command-injection vector. Verify the quoting.
-
----
-
 ## Open bugs / under investigation
 
 - **[P1] VPN speedtest hang → `sched: RT throttling activated` → wireless-only drop —
@@ -149,8 +103,11 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   (or bucket it as the router, consistent with the Traffic Analyzer's hidden "Router" self-bucket)
   in rtrafd's health output. [cosmetic — owner: no fix needed now]
 
-- **Device Image** The ASUS Mesh page no longer fetches the device picture from ASUS servers. 
-  Need to remove the icon left over.
+- **[P3, pre-existing — verify] `rexport.sh` unquoted nvram (audit `rc/rexport.c`).** From v2.2.2
+  (flagged by the v2.3.0 review, not a v2.3.0 change): `reaper_export.cgi?action=test` runs
+  `doSystem("sh /tmp/rexport.sh test")`, and rexport.sh consumes CGI-set nvram (`url/engine/index/…`).
+  If any are interpolated unquoted, that's a post-auth, CSRF-guarded, admin-only command-injection
+  vector. Verify the quoting. [owed — audit]
 
 ## Known issues (cause identified)
 
@@ -167,9 +124,13 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   `gameProfile`) plus hardcoded ASUS-CDN game-image URLs in `css/gameprofile.css`. The `www/Makefile`
   also `wget`s several at **build time** into `ajax/` (a baked-in copy, not a runtime phone-home —
   lower priority, but worth a bundled-copy policy). **Fix pattern:** drop the remote fetch, fall back to
-  the bundled/local asset, or gate off by default. [owed — de-cloud cleanup]
+  the bundled/local asset, or gate off by default. **Ai Mesh** On the Ai Mesh menu remove the white 
+  icon in the upper right area that used to be an image of the router downloaded from ASUS CDN.
 
 ## UI / UX polish
+
+- **[P3] Firmware-page translation pass.** The `RFWU_1–31` dict tokens for the native firmware page
+  (v2.3.1) are English-seeded in all 25 language packs. [owed]
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
   blocking during an apply/reboot is done (v2.2.5, refined v2.3.0). Remaining: convert these modals to
@@ -188,22 +149,19 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   unescaped-SSID behavior in the **shared** `state.js` (out of scope of the mask's design). Optional
   hardening: mask the LAST `<b>` per row instead of index 1. [watch — cosmetic/privacy]
 
+- **Network Map** Review / Disconnect the "Network Map" page from the router GUI. The dashboard button
+  should be removed from the header and put in the place of the Network Map item.
+
+- **Addons** Currently when a user has addons the nav menu buttons for Addons is not showing. 
+  Rearange the nav menu and add logic to deal with addon nav menu selections.
+
 ## Features to add
 
-- **[P2→DONE in tree, commit `0623fd3900`] PHASE 2 — native Reaper firmware page (`Reaper_Firmware.asp`) with in-GUI download + flash.**
-  Built 2026-08-08 (rides the next rung; **metal owed**): native page replaces the stock firmware tab
-  (menuTree repoint; stock page kept on disk as fallback), one-click download of the published `.pkgtb`
-  → SHA-256 + `firmware_check` verify → flash (`reaper_webs_upgrade.sh`, host-pinned to AM-Reaper,
-  model anchored at `_3006`, MCP/noMCP guard both in the URL offer and re-checked on-box); inline
-  release note; scheduled-check toggle; manual upload with progress. **Root-caused the field report on
-  the way in:** with CFGSYNC compiled in, the stock page's Check went `action_mode=firmware_check` →
-  cfg_mnt blob → ASUS's servers, so Phase 1's check never ran from the GUI — both stock-page branches
-  are now forced onto the direct `start_webs_update` path; the note script also wrote
-  `release_note.txt` while the viewer reads `release_note0.txt` (fixed, plus argless tolerance).
-  Manifest gained `#SHA256#SIZE` fields (old firmware ignores them; new firmware refuses to flash
-  without them). **Remaining:** metal round-trip (check/badge/note, one-click install of a *published*
-  release, manual upload, cross-variant refusal), RFWU_1–31 dict tokens are English-seeded in all 25
-  dicts (translation pass owed), sibling fan-out at next rung.
+- **First Boot** The Reaper first boot continues to be problematic. Investigate and improve functionality.
+
+- **Firmware Mesh Nodes** Add a feature to be able to see mesh nodes firmware version from the main 
+  hub in the firmware menu. This feature should also allow the user to click on each one and chose the 
+  file to update the firmware with or go directly to the node and flash it natively.
 
 - **[P2 — OWNER DECISION] Stop committing `.pkgtb` images in-tree under `releases/` (repo-size).**
   GitHub *Release assets* live outside the git repo (no repo-size impact, 2 GB/file limit) and are
@@ -212,6 +170,9 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   the in-tree copy step in `stage_release.ps1` (one-line change) and optionally rewrite history later
   to reclaim past growth. Third-party hosts (OneDrive etc.) are NOT suitable for the on-router
   downloader: unstable direct-URL semantics and they'd break the upgrade script's GitHub host-pin.
+  *Update 2026-08-10:* the CI release hand-off now publishes release assets straight from build
+  artifacts, so nothing consumes the in-tree copies anymore — dropping them is purely the owner's call.
+  (v2.3.1 images were still committed in-tree, so this is not yet done.)
 
 - **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
   Owner-approved (2026-08-08) design in [`docs/FIREWALL-PLAN.md`](FIREWALL-PLAN.md): a native
@@ -226,7 +187,8 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the
   functions we want exposed), as already done for Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/
-  Advisor/Conn/QoSDiag/Analytics/Storage. Firmware tab (Phase 2 above) is the next candidate. [ongoing]
+  Advisor/Conn/QoSDiag/Analytics/Storage/Firmware (v2.3.1). The Firewall suite (above) is the next
+  candidate. [ongoing]
 
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** Today each control applies
   immediately (e.g. changing all three Wi-Fi bands = three applies + three `restart_wireless`). Add a
@@ -243,12 +205,7 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
     stock ASUS pages). *Recommended path:* Reaper-native pages first; quick sub-win = a single Reaper
     Wireless page for all three bands that applies once. The full cross-page system is its own project.
 
-- **[P3] Warden: explicit IPv6 enable option + broader IPv6 feed coverage. [HELD — leave IPv6
-  always-on for now, revisit later.]** IPv6 enforcement is already built and always-on. When picked up:
-  a `rwarden_ipv6` nvram (default `1`) gating just the v6 block, a UI switch + dict token, and a v4/v6
-  hit-count split — **flag the security implication** (off drops all v6 Warden enforcement). Feed
-  reality: the open, redistributable IPv6 *threat*-feed space is thin (Spamhaus DROPv6, already
-  ingested, is about the best available) — a watch-item, not a quick win.
+- **Warden Counts** Warden hit counts are still not being persistant across reboots or firmware upgrades.  
 
 - **[P3] Remote syslog push/fetch.** The router can already send its log to a remote collector
   (send-only). Add the ability to **push to / be fetched by** analytics systems (most SIEM pipelines are

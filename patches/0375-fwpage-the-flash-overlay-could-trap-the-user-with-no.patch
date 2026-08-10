@@ -1,0 +1,179 @@
+From 9612fdba905c41c72ed738d6b8594366a982f923 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 10 Aug 2026 05:19:15 -0400
+Subject: [PATCH] fwpage: the flash overlay could trap the user with no way out
+
+FIELD REPORT (2026-08-10, owner, on metal): flashing from the new
+firmware page left the browser apparently locked -- no click anywhere
+did anything -- and the only recovery was End Task and relaunch. It
+happened mid-flash.
+
+.veil is position:fixed; inset:0; z-index:1000 -- a full-viewport click
+blocker. It had NO close control and NO dismiss path, so while it was up
+the page was completely inert by construction. Two paths raised it and
+simply returned (pollBack/pollUpBack at tries>450), and any uncaught
+error inside a poll chain killed the chain and left the overlay up
+forever. Mid-flash that is indistinguishable from a frozen browser.
+
+The page's own async work was NOT at fault and is unchanged: no
+synchronous XHR, no busy-wait, every chain bounded, x.timeout set with
+one request in flight -- so it never exhausted the browser connection
+pool.
+
+Fixes, all additive:
+
+  - ESCAPE HATCH. A Close button, shown immediately by the new veilFail()
+    on terminal states and -- regardless of state -- after 25 s on any
+    long-running one, plus Esc once it is offered. It is now impossible
+    to be trapped. Dismissing only removes the overlay; it cannot stop a
+    flash already running on the router, which is why it is not offered
+    in the first seconds.
+
+  - HEARTBEAT. Elapsed mm:ss, phase and poll count render inside the
+    overlay, so a stalled chain is visibly distinct from a working one.
+    Digits and a separator only -- deliberately needs no translation.
+
+  - ERROR GUARD. An uncaught error now reveals the hatch instead of
+    stranding the overlay silently.
+
+  - FALSE REJECT. pollUpBack declared the image rejected after ~2 min of
+    the router still answering, but httpd stays up through verification
+    and the start of the flash -- so a good image could be reported
+    rejected moments before the box rebooted. Raised to ~5 min, still
+    bounded.
+
+Button label reuses <#CTL_close#>, which is present in all 25 shipped
+dictionaries, so this needs no dictionary work.
+
+Not yet built or metal-tested. Owes a port to the four sibling branches.
+---
+ release/src/router/www/Reaper_Firmware.asp | 81 ++++++++++++++++++++--
+ 1 file changed, 76 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index cc4fa0e6a0..3632763775 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -133,6 +133,18 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+     <div class="bar" id="veilBar"><i id="veilBarI"></i></div>
+     <div class="vs" id="veilS"></div>
+     <div class="vw"><#RFWU_26#></div>
++    <!-- heartbeat: elapsed mm:ss, phase and poll count. Digits and a separator
++         only, deliberately -- it needs no translation and it is how a stalled
++         poll chain is told apart from a working one. -->
++    <div class="vs" id="veilTick" style="opacity:.55"></div>
++    <!-- ESCAPE HATCH. The veil covers the viewport and eats every click, so
++         there must always be a way out of it. Hidden while a flash is visibly
++         progressing; revealed on any terminal state and, regardless, after
++         VEIL_ESCAPE_MS. Dismissing only removes the overlay -- it cannot stop
++         a flash already running on the router. -->
++    <div id="veilAct" style="margin-top:18px;display:none">
++      <button type="button" class="btn2" id="veilBtn" onclick="veilDismiss()"><#CTL_close#></button>
++    </div>
+   </div>
+ </div>
+ 
+@@ -285,14 +297,67 @@ function pollNote(tries){
+ 
+ /* ---------------- download + install ---------------- */
+ 
+-function veil(title, sub, showBar){
++/* The veil is a full-viewport click blocker (position:fixed; inset:0;
++   z-index:1000). Before 2026-08-10 it had no close control at all, and both
++   pollBack/pollUpBack raised it at tries>450 and returned -- so the page could
++   end up permanently unclickable with no way out but killing the browser.
++   Nothing below can leave the user trapped: veilFail() is escapable at once,
++   and even a healthy long-running flash exposes the hatch after 25 s. */
++var VEIL_ESCAPE_MS = 25000;
++var veilT0 = 0, veilTickH = 0, veilEscH = 0, veilPhase = '', veilPolls = 0;
++
++function veil(title, sub, showBar, phase){
+   $id('veilT').innerHTML = title;
+   $id('veilS').innerHTML = sub || '';
+   $id('veilBar').style.display = showBar ? 'block' : 'none';
+   $id('veil').style.display = 'flex';
++  if(phase){ veilPhase = phase; veilPolls = 0; }
++  if(!veilT0){ veilT0 = Date.now(); veilTick(); }
++  if(!veilEscH) veilEscH = setTimeout(function(){ veilEscape(true); }, VEIL_ESCAPE_MS);
++}
++function veilTick(){
++  clearTimeout(veilTickH);
++  var n = $id('veilTick');
++  if(n && veilT0){
++    var s = Math.round((Date.now() - veilT0) / 1000);
++    n.textContent = Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2)
++                  + (veilPhase ? ' \u00b7 ' + veilPhase : '')
++                  + (veilPolls ? ' \u00b7 ' + veilPolls : '');
++  }
++  veilTickH = setTimeout(veilTick, 1000);
+ }
++function veilBeat(phase){    /* one poll completed -- keeps the heartbeat honest */
++  if(phase) veilPhase = phase;
++  veilPolls++;
++}
++function veilEscape(show){
++  var a = $id('veilAct');
++  if(a) a.style.display = show ? '' : 'none';
++}
++function veilFail(title, sub){   /* terminal state: always escapable, at once */
++  veil(title, sub, false);
++  veilEscape(true);
++}
++function veilDismiss(){ busy = 0; veilOff(); }
+ function veilPct(p){ $id('veilBarI').style.width = Math.max(0, Math.min(100, p)) + '%'; }
+-function veilOff(){ $id('veil').style.display = 'none'; }
++function veilOff(){
++  $id('veil').style.display = 'none';
++  veilEscape(false);
++  clearTimeout(veilTickH); clearTimeout(veilEscH);
++  veilTickH = 0; veilEscH = 0; veilT0 = 0; veilPhase = ''; veilPolls = 0;
++}
++/* Esc leaves the overlay, but only once the hatch is offered -- so it cannot be
++   fumbled during the first seconds of a flash. */
++document.addEventListener('keydown', function(e){
++  if(e.key !== 'Escape' && e.keyCode !== 27) return;
++  var a = $id('veilAct');
++  if($id('veil').style.display === 'flex' && a && a.style.display !== 'none') veilDismiss();
++});
++/* An uncaught error used to kill a poll chain silently and leave the veil up
++   forever. Now it surfaces the hatch instead. */
++window.addEventListener('error', function(){
++  if($id('veil') && $id('veil').style.display === 'flex') veilEscape(true);
++});
+ 
+ function doInstall(){
+   if(busy || !FW.sha) return;
+@@ -351,7 +416,9 @@ function installFail(tok){
+ function pollBack(tries, wentDown){
+   /* wait for the router to reboot into the new firmware: it must go DOWN
+      first (wentDown), then answer again -> back to login */
+-  if(tries > 450){ veil(esc(`<#FIRM_reboot_manually#>`), '', false); return; }
++  if(tries > 450){ veilFail(esc(`<#FIRM_reboot_manually#>`), ''); return; }
++  veilBeat('pollBack');
++  veilBeat('pollUpBack');
+   var x = new XMLHttpRequest();
+   x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
+   x.timeout = 3000;
+@@ -423,13 +490,17 @@ function doUpload(){
+ }
+ 
+ function pollUpBack(tries, wentDown){
+-  if(!wentDown && tries > 60){   /* ~2 min still answering = image rejected */
++  /* Liveness verdict. httpd can keep answering right through verification and
++     the start of the flash, so a 2-minute window declared a perfectly good
++     image rejected moments before the box actually rebooted. ~5 min instead:
++     still bounded, but past the point where a real rejection is ambiguous. */
++  if(!wentDown && tries > 150){
+     busy = 0;
+     veilOff();
+     setStat('upStat', esc(`<#RFWU_27#>`), 'err');
+     return;
+   }
+-  if(tries > 450){ veil(esc(`<#FIRM_reboot_manually#>`), '', false); return; }
++  if(tries > 450){ veilFail(esc(`<#FIRM_reboot_manually#>`), ''); return; }
+   var x = new XMLHttpRequest();
+   x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
+   x.timeout = 3000;
+-- 
+2.25.1
+

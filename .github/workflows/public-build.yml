@@ -57,6 +57,14 @@ on:
         type: choice
         default: RT-BE96U
         options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, all]
+      # Publishing is OPT-IN and takes effect on main only. Left unticked (the
+      # default) the run builds, verifies and uploads its artifacts, and stops
+      # there -- no tag, no release, nothing user-facing. Tick it only when you
+      # intend these clean-room images to become the published ones.
+      publish:
+        description: 'Publish a GitHub Release when the build succeeds (main only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -309,17 +317,28 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # RELEASE HAND-OFF -- main only. On Dev (or a fork, or any other branch) both
-  # jobs below are skipped entirely, so a development build can never publish.
+  # RELEASE HAND-OFF -- OPT-IN, and main only.
   #
+  # THREE independent conditions must all hold before anything is published:
+  #   1. inputs.publish  -- an explicit checkbox on the dispatch, default FALSE.
+  #      Publishing is never a side effect of building; you ask for it.
+  #   2. the branch is main -- on Dev, a fork, or any other branch both jobs are
+  #      skipped entirely, so a development build can never publish.
+  #   3. the build succeeded.
   # `if:` REPLACES the implicit success() that `needs:` would otherwise apply,
   # which is why success() is written out. Without it these would run even after
   # a failed build.
+  #
+  # Publishing stays opt-in because a clean-room image is not automatically a
+  # shippable one: no CI-built sibling has yet been diffed against a published
+  # image. release.yml carries a second, independent guard -- it refuses to
+  # overwrite an EXISTING release unless allow_republish is set -- so even a
+  # ticked box cannot silently replace live assets.
   # ---------------------------------------------------------------------------
   tag:
     name: Tag for release
     needs: build
-    if: success() && github.ref == 'refs/heads/main'
+    if: success() && github.ref == 'refs/heads/main' && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write          # job-scoped -- the build job stays contents: read
@@ -368,7 +387,7 @@ jobs:
   release:
     name: Publish
     needs: [build, tag]
-    if: success() && github.ref == 'refs/heads/main'
+    if: success() && github.ref == 'refs/heads/main' && inputs.publish
     permissions:
       contents: write
     strategy:

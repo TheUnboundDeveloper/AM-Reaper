@@ -1,37 +1,8 @@
 Reaper v2.3.2
 
-A safer firmware-flash screen, Hardware QoS that finally classifies the way
-its labels say, and a small security and reliability sweep.
+The firmware page's flashing overlay can no longer trap you. (Field report 2026-08-10: mid-flash, the page appeared completely frozen — no click did anything — and the only way out was killing the browser.) The full-screen "please wait" veil had no dismiss path, so if its status polling ever died the page was inert by construction. It now shows a Close button (and accepts Esc) immediately on any terminal state and, on any long-running one, after 25 seconds; a live elapsed-time / phase heartbeat renders inside the overlay so a stalled operation looks visibly different from a working one; and an unexpected page error reveals the escape instead of stranding the overlay silently. Dismissing only clears the overlay — it cannot stop a flash already running on the router, which is why it isn't offered in the first seconds. Also fixed: the manual-upload flow could declare a good image "rejected" after ~2 minutes while the router was in fact still verifying it; the window is now ~5 minutes.
+Hardware QoS (classful mode) classification corrected end-to-end. A review of the classful engine found the defaults working against their own labels, all fixed: unmatched traffic now lands in the class actually named "Default" (an off-by-one sent it — games included — into "Downloads", the same queue as bulk file transfers); the DSCP-to-class map was inverted (gaming codepoints went to the Streaming queue and vice versa — a game that marked its traffic correctly could never reach the queue named for it); committed minimum rates are now budgeted (the shipped template committed exactly 100% of the port, leaving unclassified and LAN traffic no guarantee and the scheduler no slack — anything over 85% is now scaled down proportionally, preserving your ratios); and QoS with empty bandwidth fields now behaves as QoS-off instead of silently reclassifying everything with no shaper at all (all of the cost, none of the benefit). The downstream DSCP→WMM stamp is now opt-in: defaulting it on promoted ordinary web browsing to the Voice class on the air, where it preempts genuinely latency-sensitive traffic. Robustness alongside: queue configuration is no longer destructively rewritten on every WAN event when nothing changed, apply errors are logged instead of discarded, and saved schedules/rates are grammar-checked on save. (These were found while investigating a high-idle-latency field report and do not explain it — that investigation remains open.)
+Four small confirmed items cleared from the consolidated backlog. The QoS diagnostic read the port shaper that only the classful engine uses, so a healthy classless box always looked uncapped (this false reading sent an earlier investigation down a blind alley) — it now names the running engine and reads the shaper that engine actually uses. A VPN-provider setup path quoted two profile values into a root shell command such that a single apostrophe escaped the quoting (admin-authenticated, but a real injection) — the values are now accepted only against a strict grammar. The password check compared hashes in a way that took measurably longer the more of the hash matched (not practically exploitable — the attacker can't choose the hash and logins are rate-limited — but a password check should leak nothing); it is now constant-time. And the rwatch health watchdog now writes at most one incident dump to flash per 30 minutes under a flapping condition (every failure is still logged; only the repeated flash writes are suppressed).
+This is the first version built and released through the public clean-room CI pipeline (GitHub Actions builds every model from the published patch series and publishes the release assets directly — see docs/CI-PUBLIC-BUILD.md). Source rung cut 2026-08-10; on-device validation to come.
 
-FIRMWARE PAGE
-- The flashing overlay can no longer trap you. It now shows a Close button
-  (and accepts Esc) on any finished state, and after 25 seconds on any
-  long-running one, with a live elapsed-time/phase heartbeat so a stalled
-  operation looks different from a working one. Dismissing only clears the
-  overlay - it cannot stop a flash already running on the router.
-- A good image is no longer wrongly reported "rejected" while the router is
-  still verifying it (the wait window was widened).
-
-HARDWARE QoS (CLASSFUL MODE)
-- Unmatched traffic now lands in the class actually named "Default" instead
-  of sharing the bulk "Downloads" queue.
-- The DSCP-to-class map was inverted (gaming and streaming codepoints were
-  swapped) - corrected, so traffic reaches the queue named for it.
-- Committed minimum rates are now budgeted: a template that asked for 100% of
-  the line left unclassified and LAN traffic no guarantee; anything over 85%
-  is now scaled down proportionally, preserving your ratios.
-- QoS with both bandwidth fields blank now behaves as QoS-off instead of
-  reclassifying everything with no shaper.
-- The downstream DSCP-to-WMM stamp is now opt-in (it was promoting ordinary
-  web browsing to the Voice class on the air).
-
-SECURITY & RELIABILITY
-- The QoS diagnostic now reads the shaper the running engine actually uses,
-  instead of always reporting a classless box as uncapped.
-- Closed a shell-injection path in a VPN-provider setup value.
-- The admin password check is now constant-time.
-- The health watchdog no longer writes repeated incident dumps to flash under
-  a flapping condition.
-
-This is the first release published through the public clean-room CI pipeline.
 Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

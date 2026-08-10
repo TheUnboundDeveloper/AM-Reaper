@@ -26,6 +26,10 @@ on:
       tag:
         description: 'Existing per-model tag to (re)publish, e.g. v2.1.2-RT-BE96U'
         required: true
+      run_id:
+        description: 'Build run to pull firmware artifacts from (blank = this run). Set it to a green public-build run to publish WITHOUT a rebuild.'
+        required: false
+        default: ''
       prerelease:
         description: 'Mark as pre-release'
         type: boolean
@@ -40,6 +44,11 @@ on:
         description: 'Per-model tag to publish, e.g. v2.1.2-RT-BE96U'
         required: true
         type: string
+      run_id:
+        description: 'Build run to pull firmware artifacts from (blank = the calling run)'
+        required: false
+        type: string
+        default: ''
       prerelease:
         description: 'Mark as pre-release'
         type: boolean
@@ -119,15 +128,22 @@ jobs:
             (cd "$d" && grep -E " ${M}_" "$(basename "$sums")" | sha256sum -c -)
             cp "${imgs[@]}" "$sums" "$stage"/
           else
-            echo "== no in-tree images for $M $V; using this run's clean-room artifacts"
+            # Which run holds the firmware artifacts? Under workflow_call from
+            # public-build GITHUB_RUN_ID is the caller's build run (correct). For
+            # a manual re-publish, pass run_id = the green build run so we pull its
+            # existing artifacts instead of forcing a full rebuild (artifacts are
+            # retained 30 days). Blank falls back to this run.
+            SRC_RUN="${{ inputs.run_id }}"
+            [ -n "$SRC_RUN" ] || SRC_RUN="$GITHUB_RUN_ID"
+            echo "== no in-tree images for $M $V; pulling clean-room artifacts from run $SRC_RUN"
             dl="$RUNNER_TEMP/ci"; mkdir -p "$dl"
-            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            gh run download "$SRC_RUN" --repo "$GITHUB_REPOSITORY" \
                --pattern "firmware-${M}-*" --pattern "evidence-${M}-*" --dir "$dl" || true
             imgs=("$dl"/firmware-"$M"-*/*.pkgtb)
             if [ ${#imgs[@]} -eq 0 ]; then
-              echo "::error::no images for model '$M' version '$V' — not in releases/*/*-REAPER-$V/ and not in this run's artifacts"
+              echo "::error::no images for model '$M' version '$V' — not in releases/*/*-REAPER-$V/ and not in run $SRC_RUN's artifacts"
               echo "   in-tree route: stage with build-scripts/stage_release.ps1 and push before tagging"
-              echo "   CI route:      this workflow must be called by a green public-build run on main"
+              echo "   CI route:      call this workflow from a green public-build run, or dispatch it with run_id set to that build run"
               exit 1
             fi
             # CI writes one SHA256SUMS per variant; merge them into the single
@@ -147,6 +163,12 @@ jobs:
           TAG="${{ steps.ver.outputs.tag }}"
           REPO="${{ github.repository }}"
           notes="$RUNNER_TEMP/notes.md"
+          # The asset step already collected+verified this model's images and its
+          # SHA256SUMS into $stage, from EITHER source (in-tree or clean-room
+          # artifacts). Read the checksum list from there -- never re-glob the
+          # in-tree releases/ dir, which is empty for a CI-built version and made
+          # `done < "$sums"` abort the step under set -e.
+          stage="${{ steps.assets.outputs.stage }}"
 
           # --- 1. CHANGELOG section for this version -------------------------------
           awk -v v="$V" '
@@ -163,12 +185,15 @@ jobs:
             printf '\n---\n\n## Images & checksums (%s)\n\n' "$M"
             printf 'Two flashable images: **+ AI Advisor** (default) and **Standard** (`noMCP`, all AI components compiled out entirely). Flash the `*_nand_squashfs.pkgtb` via Administration > Firmware Upgrade.\n\n'
             printf '| Variant | File | SHA-256 |\n|---|---|---|\n'
-            sums=$(ls releases/*/*-REAPER-"$V"/SHA256SUMS-"$M"-Reaper_"$V".txt 2>/dev/null | head -1)
-            while read -r sha file; do
-              [ -z "${file:-}" ] && continue
-              case "$file" in *noMCP*) variant="Standard" ;; *) variant="+ AI Advisor" ;; esac
-              printf '| %s | `%s` | `%s` |\n' "$variant" "$file" "$sha"
-            done < "$sums"
+            sums="$stage/SHA256SUMS-$M-Reaper_$V.txt"
+            if [ -f "$sums" ]; then
+              while read -r sha file; do
+                [ -z "${file:-}" ] && continue
+                file="${file#\*}"   # sha256sum binary-mode marker, if present
+                case "$file" in *noMCP*) variant="Standard" ;; *) variant="+ AI Advisor" ;; esac
+                printf '| %s | `%s` | `%s` |\n' "$variant" "$file" "$sha"
+              done < "$sums"
+            fi
             printf '\nVerify a download against the attached `SHA256SUMS-%s-Reaper_%s.txt`.\n' "$M" "$V"
           } >> "$notes"
 

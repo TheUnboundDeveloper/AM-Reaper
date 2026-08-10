@@ -134,35 +134,57 @@ def write_latest(new_latest):
         fh.write("\n")
 
 
+def demark(s):
+    """Strip markdown emphasis/code markers for the plain-text viewer."""
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
+    return s.replace("*", "").replace("`", "").strip()
+
+
 def write_note():
-    """On-router 'what's new' = the CHANGELOG section for this version, lightly
-    de-marked for the plain-text viewer. Falls back to a generic pointer."""
+    """On-router 'what's new' = the CHANGELOG section for this version, formatted
+    for the .notebox viewer (white-space:pre-wrap monospace). Each changelog
+    bullet '- **Headline.** body' becomes a marked headline line, a blank line,
+    then the body, with a blank line between items so it scans instead of reading
+    as a wall of text. Falls back to a generic pointer when no section exists."""
     os.makedirs("updates/notes", exist_ok=True)
-    sec, on = [], False
+    raw, on = [], False
     if os.path.exists("docs/CHANGELOG.md"):
-        for line in open("docs/CHANGELOG.md"):
+        for line in open("docs/CHANGELOG.md", encoding="utf-8"):
             if line.startswith("## " + V + " ") or line.rstrip() == "## " + V:
                 on = True
                 continue
             if on and line.startswith("## "):
                 break
             if on:
-                sec.append(line)
-    body = "".join(sec).strip()
-    if body:
-        # light de-markdown for the plain-text on-router viewer: drop bold/italic
-        # markers and code ticks; the bullets keep their text.
-        body = re.sub(r"\*\*(.+?)\*\*", r"\1", body)
-        body = body.replace("*", "").replace("`", "")
-        body = "\n".join(l[2:] if l.startswith("- ") else l
-                         for l in body.splitlines())
-        note = ("Reaper %s\n\n%s\n\nFull changelog: "
-                "https://github.com/%s/blob/main/docs/CHANGELOG.md\n"
-                % (V, body, REPO))
-    else:
+                raw.append(line.rstrip("\n"))
+
+    out, items = ["Reaper %s" % V, ""], 0
+    for line in raw:
+        s = line.strip()
+        if not s:
+            continue
+        m = re.match(r"^-\s+\*\*(.+?)\*\*[.:]?\s*(.*)$", s)   # "- **Headline.** body"
+        if m:
+            head, body = demark(m.group(1)).rstrip("."), demark(m.group(2))
+            out.append("> " + head)
+            if body:
+                out += ["", body]
+            out.append("")
+            items += 1
+        elif s.startswith("- "):                              # bullet without a bold lead
+            out += ["> " + demark(s[2:]), ""]
+            items += 1
+        else:                                                 # lead paragraph, if any
+            out += [demark(s), ""]
+
+    if items == 0:
         note = ("Reaper %s is available.\n\nRelease notes: "
                 "https://github.com/%s/releases\n" % (V, REPO))
-    with open("updates/notes/Reaper_%s.txt" % V, "w", newline="\n") as fh:
+    else:
+        out.append("Full changelog: "
+                   "https://github.com/%s/blob/main/docs/CHANGELOG.md" % REPO)
+        note = "\n".join(out).rstrip() + "\n"
+    with open("updates/notes/Reaper_%s.txt" % V, "w", newline="\n", encoding="utf-8") as fh:
         fh.write(note)
 
 

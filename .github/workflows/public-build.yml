@@ -22,24 +22,31 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # All five models are selectable as of 2026-08-09. Each sibling overlay
-      # was verified by REPLAY: applied to an independently rebuilt CI tree
-      # (pinned base + all 374 patches, plus the platform archive for the two
-      # GT-BE98 variants) and compared path-by-path against the real sibling
-      # branch -- ~485,000 paths each, zero content mismatches.
+      # All five models are selectable, and as of 2026-08-10 all five have
+      # completed a green clean-room build.
       #
-      #   RT-BE86U  17 files  PASS      GT-BE98      22 files  PASS
-      #   RT-BE88U  25 files  PASS      GT-BE98_PRO  29 files  PASS
+      # A sibling is the canon tree plus overlays/<MODEL>.patch (14-28 identity
+      # files: banner, animated header, the pages referencing them, target.mak),
+      # plus overlays/GT-BE98-platform.tar.gz for GT-BE98 alone -- the pinned
+      # upstream carries router-sysdep for every other model but not that one.
       #
-      # That check exists because of the v1.8.6 fan-out, where every sibling
-      # shipped with the RT-BE96U banner: an image that builds, verifies, and
-      # carries the wrong identity. reaper_verify pins the banner SHA-256 and
-      # ci/build_one.sh fails the build if the expected banner is absent or a
-      # foreign one is present, so that failure mode cannot repeat silently.
+      # The overlays are generated from the per-model branch tips. An earlier
+      # generation read those branches from the WRONG place and silently carried
+      # v2.1.4-era content for 7 files per model; the regeneration in ca5c941
+      # fixed that. Two lessons kept deliberately:
+      #   - reproducing a tree exactly is NOT the same as building it, and
+      #     neither is the same as shipping it. No CI-built sibling image has yet
+      #     been diffed against a published one, so sibling artifacts are
+      #     pipeline-proof, not shipping-proof.
+      #   - a check that only asks "is everything the sibling has reproduced
+      #     correctly?" never asks the reverse, and will pass over a stale tip.
       #
-      # NOTE: reproducing a tree exactly is not the same as building it. Only
-      # RT-BE96U has completed a green clean-room build; the other four are
-      # unproven end-to-end. Build them one at a time.
+      # Identity is enforced regardless: this exists because of the v1.8.6
+      # fan-out, where every sibling shipped with the RT-BE96U banner -- an image
+      # that builds, verifies, and carries the wrong identity. reaper_verify pins
+      # the banner SHA-256 and ci/build_one.sh fails the build if the expected
+      # banner is absent or a foreign one is present, so that failure mode cannot
+      # repeat silently.
       #
       # 'all' fans out to every model. Combined with variant=both that is 10
       # concurrent jobs of ~1.5 h each -- within the 20-job limit for public

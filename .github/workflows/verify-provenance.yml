@@ -25,7 +25,7 @@ jobs:
   manifest-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Manifest is valid and well-formed
         run: |
           python3 - <<'PY'
@@ -39,6 +39,8 @@ jobs:
               v = r["version"]; assert v not in seen, f"duplicate {v}"; seen.add(v)
               for k, h in r["source_tree"].items():
                   assert hexre.fullmatch(h), f"{v}: bad tree hash for {k}"
+              for k, h in r.get("source_tree_from_series", {}).items():
+                  assert hexre.fullmatch(h), f"{v}: bad series tree hash for {k}"
               for img in r.get("images", []):
                   assert sha256re.fullmatch(img["sha256"]), f"{v}: bad sha256 for {img['file']}"
               if r.get("verifiable"):
@@ -60,7 +62,7 @@ jobs:
           df -h /
 
       - name: Checkout patches + manifest
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: reaper
           sparse-checkout: |
@@ -76,7 +78,12 @@ jobs:
           rs = [r for r in m["releases"] if r.get("verifiable") and r.get("patch_count")]
           rs.sort(key=lambda r: r["patch_count"])
           for r in rs:
-              print(f'{r["version"]}\t{r["patch_count"]}\t{r["source_tree"]["release/src/router"]}')
+              # source_tree_from_series is what applying the published patches from
+              # the pinned base actually yields; source_tree is the build commit's
+              # tree (they differ only by the vendored openssh-sftp *.md files the
+              # doc-hunk exclusion strips). Compare against the series value.
+              t = r.get("source_tree_from_series") or r["source_tree"]
+              print(f'{r["version"]}\t{r["patch_count"]}\t{t["release/src/router"]}')
           PY
           echo "base=$(python3 -c 'import json;print(json.load(open("reaper/provenance/manifest.json"))["base"]["commit"])')" >> "$GITHUB_OUTPUT"
           echo "--- reproduction plan ---"; cat "$RUNNER_TEMP/plan.tsv"

@@ -10,6 +10,14 @@ name: Publish release
 #
 # workflow_dispatch re-publishes/repairs an EXISTING per-model tag.
 
+#
+# workflow_call lets public-build.yml hand off to this workflow after a green
+# clean-room build on main. It is a DIRECT invocation, not an event, which
+# matters: a tag pushed with GITHUB_TOKEN does NOT trigger workflows (GitHub
+# blocks that to prevent recursion), so a "push a tag and let release.yml fire"
+# hand-off would silently do nothing. Calling it avoids needing a PAT and keeps
+# this file the single release authority.
+
 on:
   push:
     tags: ['v*-*']
@@ -20,6 +28,24 @@ on:
         required: true
       prerelease:
         description: 'Mark as pre-release'
+        type: boolean
+        default: false
+      allow_republish:
+        description: 'Overwrite an EXISTING release (its assets are clobbered)'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Per-model tag to publish, e.g. v2.1.2-RT-BE96U'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        type: boolean
+        default: false
+      allow_republish:
+        description: 'Overwrite an EXISTING release (its assets are clobbered)'
         type: boolean
         default: false
 
@@ -35,11 +61,12 @@ jobs:
         id: ver
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
+          # inputs.tag is set for BOTH workflow_dispatch and workflow_call; it is
+          # empty on a tag push, where the ref itself is the tag. Testing the
+          # input rather than github.event_name is what makes all three work --
+          # under workflow_call github.event_name is still the CALLER's event.
+          TAG="${{ inputs.tag }}"
+          [ -n "$TAG" ] || TAG="${GITHUB_REF_NAME}"
           # tag = v<X.Y.Z[a]>-<MODEL>; model prefixes contain hyphens/underscores
           # (RT-BE96U, GT-BE98_PRO), so pull the version by pattern and treat the
           # remainder as the model.
@@ -54,12 +81,23 @@ jobs:
           echo "model=$MODEL"     >> "$GITHUB_OUTPUT"
           echo "resolved: tag=$TAG version=$VERSION model=$MODEL"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.ver.outputs.tag }}
 
+      # Two sources, in order. Either way the checksums are verified here before
+      # anything is attached to a release.
+      #   1. in-tree  — images staged by build-scripts/stage_release.ps1 (the
+      #                 maintainer's local flow, unchanged)
+      #   2. artifacts — the clean-room build that CALLED this workflow. Those
+      #                 images are never committed in-tree: release assets do not
+      #                 count toward repo size and are what the in-GUI updater
+      #                 downloads. Under workflow_call GITHUB_RUN_ID is the
+      #                 CALLER's run, which is exactly the build we want.
       - name: Collect and verify this model's firmware assets
         id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
@@ -67,21 +105,37 @@ jobs:
           stage="$RUNNER_TEMP/assets"
           mkdir -p "$stage"
           shopt -s nullglob
+
           imgs=(releases/*/*-REAPER-"$V"/"$M"_3006_102.8_Reaper_"$V"_*.pkgtb)
-          if [ ${#imgs[@]} -eq 0 ]; then
-            echo "::error::no images for model '$M' version '$V' under releases/*/*-REAPER-$V/ — stage with build-scripts/stage_release.ps1 and push before tagging"
-            exit 1
+          if [ ${#imgs[@]} -gt 0 ]; then
+            d=$(dirname "${imgs[0]}")
+            echo "== in-tree assets: $d ($M)"
+            sums=$(ls "$d"/SHA256SUMS-"$M"-Reaper_"$V".txt 2>/dev/null | head -1)
+            if [ -z "$sums" ]; then
+              echo "::error::missing SHA256SUMS-$M-Reaper_$V.txt in $d"
+              exit 1
+            fi
+            # verify only this model's files against its checksum list
+            (cd "$d" && grep -E " ${M}_" "$(basename "$sums")" | sha256sum -c -)
+            cp "${imgs[@]}" "$sums" "$stage"/
+          else
+            echo "== no in-tree images for $M $V; using this run's clean-room artifacts"
+            dl="$RUNNER_TEMP/ci"; mkdir -p "$dl"
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+               --pattern "firmware-${M}-*" --pattern "evidence-${M}-*" --dir "$dl" || true
+            imgs=("$dl"/firmware-"$M"-*/*.pkgtb)
+            if [ ${#imgs[@]} -eq 0 ]; then
+              echo "::error::no images for model '$M' version '$V' — not in releases/*/*-REAPER-$V/ and not in this run's artifacts"
+              echo "   in-tree route: stage with build-scripts/stage_release.ps1 and push before tagging"
+              echo "   CI route:      this workflow must be called by a green public-build run on main"
+              exit 1
+            fi
+            # CI writes one SHA256SUMS per variant; merge them into the single
+            # per-model list the release publishes.
+            cat "$dl"/evidence-"$M"-*/SHA256SUMS-*.txt > "$stage/SHA256SUMS-$M-Reaper_$V.txt"
+            cp "${imgs[@]}" "$stage"/
+            ( cd "$stage" && sha256sum -c "SHA256SUMS-$M-Reaper_$V.txt" )
           fi
-          d=$(dirname "${imgs[0]}")
-          echo "== $d ($M)"
-          sums=$(ls "$d"/SHA256SUMS-"$M"-Reaper_"$V".txt 2>/dev/null | head -1)
-          if [ -z "$sums" ]; then
-            echo "::error::missing SHA256SUMS-$M-Reaper_$V.txt in $d"
-            exit 1
-          fi
-          # verify only this model's files against its checksum list
-          (cd "$d" && grep -E " ${M}_" "$(basename "$sums")" | sha256sum -c -)
-          cp "${imgs[@]}" "$sums" "$stage"/
           ls -la "$stage"
           echo "stage=$stage" >> "$GITHUB_OUTPUT"
 
@@ -154,7 +208,22 @@ jobs:
             pre="--prerelease"
           fi
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "release $TAG exists — updating notes and re-uploading assets"
+            # REPUBLISH GUARD. Overwriting a published release replaces the
+            # assets the in-GUI updater downloads, so it is never a side effect
+            # of something else -- it has to be asked for. This matters most on
+            # the public-build.yml hand-off: EXPECTED_VERSION is pinned, so once
+            # a version has shipped, every later run on main would otherwise
+            # clobber five live releases with clean-room artifacts. On a `push`
+            # event inputs are empty, so that path is guarded too.
+            if [ "${{ inputs.allow_republish }}" != "true" ]; then
+              echo "::warning::release $TAG already exists — NOT overwriting it."
+              echo "  Nothing was published. The existing release and its assets are untouched."
+              echo "  To replace them deliberately: run this workflow via workflow_dispatch"
+              echo "  with allow_republish = true, or delete the release first."
+              echo "skipped: https://github.com/${{ github.repository }}/releases/tag/$TAG"
+              exit 0
+            fi
+            echo "release $TAG exists and allow_republish=true — updating notes and re-uploading assets"
             gh release edit "$TAG" --repo "${{ github.repository }}" --title "Reaper $V — $M" --notes-file "$RUNNER_TEMP/notes.md"
             gh release upload "$TAG" "$stage"/* --repo "${{ github.repository }}" --clobber
           else

@@ -1,0 +1,1847 @@
+From 0623fd39008727c1c5e81a58154d50bc8c2b21dd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 8 Aug 2026 20:33:29 -0400
+Subject: [PATCH] firmware: Phase 2 native Reaper_Firmware.asp + fix the check
+ path (never cfg_mnt/ASUS)
+
+Field report: the update badge never fired and the firmware page's Check
+still talked to ASUS. Root cause: with RTCONFIG_CFGSYNC=y the stock page's
+detect_update() takes the cfg_sync branch (apply.cgi?action_mode=
+firmware_check -> do_firmware_check -> cfg_mnt blob -> ASUS's servers), so
+the Phase 1 reaper_webs_update.sh never ran from the GUI (only from the
+opt-in watchdog path). Second Phase 1 defect: reaper_webs_note.sh wrote
+/tmp/release_note.txt while the GUI's viewer (/release_note0.asp,
+nvram_dump) reads release_note0.txt - and it bailed when called argless via
+the plain start_release_note rc service.
+
+Phase 2 (the backlog item): a Reaper-native firmware page replaces the
+stock tab and surfaces what stock disables - one-click download + install:
+
+- www/Reaper_Firmware.asp (NEW, reaper_native chrome): installed
+  model/variant/version card (variant derived from EXTENDNO _noMCP stamp),
+  update check driven directly via start_webs_update + webs_state_* polling,
+  inline release note (release_note0.asp), Download-and-Install with
+  progress (stock ej ajax_fwdl_percent.asp), scheduled-check toggle
+  (firmware_check_enable via saveNvram), manual .pkgtb upload to the stock
+  upgrade.cgi with XHR progress + liveness verdict, flash veil + wait-for-
+  reboot -> login. All strings tokenized (RFWU_1..31 in all 25 dicts,
+  English-seeded; translation pass owed).
+- rom/webs_scripts/reaper_webs_upgrade.sh (NEW, installed as
+  /usr/sbin/webs_upgrade.sh, runs via the generic webs_* rc fallback):
+  host-pinned to the AM-Reaper GitHub, re-checks model (anchored at _3006 so
+  GT-BE98 never matches GT-BE98_PRO) and MCP/noMCP variant on-box, refuses
+  to flash without a manifest SHA-256, tmpfs space check, GNU wget with
+  fwget_log progress, size + sha256sum verify, stock firmware_check applet,
+  then the stock flash sequence (ejusb/stop_logger/stop_jffs2/
+  restart_upgrade). Never auto-runs - user-initiated only.
+- reaper_webs_update.sh: parse new manifest fields 5/6 ->
+  webs_state_sha256/webs_state_size (older 4-field manifests still work;
+  the page then falls back to notify-only).
+- reaper_webs_note.sh: argless-tolerant (version from webs_state_info) and
+  writes /tmp/release_note0.txt (+ legacy release_note.txt copy).
+- Advanced_FirmwareUpgrade_Content.asp (kept as fallback page): both
+  cfg_sync_support branches of detect_update()/detect_firmware() disabled
+  (if(0 && ...)) so even the stock page checks via the Reaper manifest.
+- menuTrees/menuTree.js: Administration -> Firmware Upgrade tab now loads
+  Reaper_Firmware.asp; dashboard badge href follows.
+- reaper_inject.c: Reaper_Firmware.asp registered in reaper_native[].
+
+Manifest format (stage_release.ps1, lean repo):
+PRODUCTID#VARIANT#VERSION#URL#SHA256#SIZE.
+
+Validated: sh -n on all three scripts; page ASCII-clean, all tokens present,
+no single-quoted tokens, node --check on the inline JS with EN dict
+substitution; dicts 25/25 lockstep at 6294; reaper_langcheck (now also
+scanning Reaper_USB/Analytics/Firmware) 0 breakers across 25 languages.
+Metal owed: check/badge/note round-trip, one-click install on a published
+release, manual upload path, noMCP cross-variant refusal.
+---
+ release/src/router/httpd/reaper_inject.c      |   1 +
+ release/src/router/rom/Makefile               |   3 +
+ .../rom/webs_scripts/reaper_webs_note.sh      |  26 +-
+ .../rom/webs_scripts/reaper_webs_update.sh    |  12 +-
+ .../rom/webs_scripts/reaper_webs_upgrade.sh   | 120 +++++
+ .../www/Advanced_FirmwareUpgrade_Content.asp  |   9 +-
+ release/src/router/www/BR.dict                |  31 ++
+ release/src/router/www/CN.dict                |  31 ++
+ release/src/router/www/CZ.dict                |  31 ++
+ release/src/router/www/DA.dict                |  31 ++
+ release/src/router/www/DE.dict                |  31 ++
+ release/src/router/www/EN.dict                |  31 ++
+ release/src/router/www/ES.dict                |  31 ++
+ release/src/router/www/FI.dict                |  31 ++
+ release/src/router/www/FR.dict                |  31 ++
+ release/src/router/www/HU.dict                |  31 ++
+ release/src/router/www/IT.dict                |  31 ++
+ release/src/router/www/JP.dict                |  31 ++
+ release/src/router/www/KR.dict                |  31 ++
+ release/src/router/www/MS.dict                |  31 ++
+ release/src/router/www/Main_ReaperDash.asp    |   2 +-
+ release/src/router/www/NL.dict                |  31 ++
+ release/src/router/www/NO.dict                |  31 ++
+ release/src/router/www/PL.dict                |  31 ++
+ release/src/router/www/RO.dict                |  31 ++
+ release/src/router/www/RU.dict                |  31 ++
+ release/src/router/www/Reaper_Firmware.asp    | 465 ++++++++++++++++++
+ release/src/router/www/SL.dict                |  31 ++
+ release/src/router/www/SV.dict                |  31 ++
+ release/src/router/www/TH.dict                |  31 ++
+ release/src/router/www/TR.dict                |  31 ++
+ release/src/router/www/TW.dict                |  31 ++
+ release/src/router/www/UK.dict                |  31 ++
+ .../router/www/require/menuTrees/menuTree.js  |   2 +-
+ 34 files changed, 1402 insertions(+), 13 deletions(-)
+ create mode 100755 release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+ create mode 100644 release/src/router/www/Reaper_Firmware.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 63cefdcbbb..2e83105891 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -170,6 +170,7 @@ static const char *reaper_native[] = {
+ 	"Reaper_WiFiPro.asp",
+ 	"Reaper_USB.asp",	/* 2026-08-05: USB disk utilities (USB Application tab) */
+ 	"Reaper_Analytics.asp",	/* v2.2.2: Data Export (Administration group) */
++	"Reaper_Firmware.asp",	/* Phase 2: native firmware check/download/flash page */
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/rom/Makefile b/release/src/router/rom/Makefile
+index 2e5917747a..673fa95f33 100644
+--- a/release/src/router/rom/Makefile
++++ b/release/src/router/rom/Makefile
+@@ -177,7 +177,10 @@ ifeq ($(RTCONFIG_MERLINUPDATE),y)
+ # reaper: point the stock update-check at Reaper's own GitHub manifest (notify-only,
+ # opt-in via firmware_check_enable) instead of Merlin's fwupdate site. Variant/model
+ # aware; never downloads or flashes. See rom/webs_scripts/reaper_webs_update.sh.
++# Phase 2: reaper_webs_upgrade.sh = the in-GUI download+verify+flash backend for
++# Reaper_Firmware.asp (sha256-verified, model+variant guarded, host-pinned).
+ 	cp -f webs_scripts/reaper_webs_update.sh $(INSTALLDIR)/usr/sbin/webs_update.sh
++	cp -f webs_scripts/reaper_webs_upgrade.sh $(INSTALLDIR)/usr/sbin/webs_upgrade.sh
+ ifeq ($(RTCONFIG_CFGSYNC),y)
+ 	cp -f webs_scripts/reaper_webs_note.sh $(INSTALLDIR)/usr/sbin/webs_note.sh
+ endif
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_note.sh b/release/src/router/rom/webs_scripts/reaper_webs_note.sh
+index 042a4a6877..ef64a11340 100755
+--- a/release/src/router/rom/webs_scripts/reaper_webs_note.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_note.sh
+@@ -1,22 +1,31 @@
+ #!/bin/sh
+ # reaper_webs_note.sh - release-note fetch for the Reaper update check.
+-# Args: $1 = model (unused; kept for stock call-signature compat)  $2 = version
+-# Fetches updates/notes/Reaper_v<ver>.txt from the Reaper GitHub raw tree into
+-# /tmp/release_note.txt and sets cfg_note the way the stock page expects.
++# Args: $1 = model (unused; stock call-signature compat)  $2 = version string.
++# BOTH args are optional: when absent (the plain "start_release_note" rc
++# service passes none) the version comes from webs_state_info, which the
++# update check has already set. Fetches updates/notes/Reaper_v<ver>.txt from
++# the Reaper GitHub raw tree and writes it where the GUI reads notes:
++# /tmp/release_note0.txt (nvram_dump target of /release_note0.asp - the file
++# the stock viewer iframe and Reaper_Firmware.asp actually fetch; the
++# original Phase 1 script wrote only /tmp/release_note.txt, which nothing
++# displayed). cfg_note: 0 = fetching, 1 = ready, 2 = failed.
+ 
+ wget_options="-q -t 2 -T 30"
+ RAW_BASE="https://raw.githubusercontent.com/TheUnboundDeveloper/AM-Reaper/main/updates/notes"
+-NOTE_PATH="/tmp/release_note.txt"
++NOTE_PATH="/tmp/release_note0.txt"
+ 
+ nvram set cfg_note=0
+ 
+-if [ $# -lt 2 ]; then
++info="$2"
++[ -n "$info" ] || info=$(nvram get webs_state_info)
++if [ -z "$info" ]; then
+ 	nvram set cfg_note=2
+ 	exit 0
+ fi
+ 
+-# $2 arrives as the webs_state_info string "3006.102.8_Reaper_v2.1.5"; take the vX.Y.Z
+-ver=$(echo "$2" | sed 's/.*Reaper_v//; s/[^0-9.].*//')
++# "$info" arrives as the webs_state_info string "3006.102.8_Reaper_v2.1.5"
++# (or a bare "2.1.5"); take the X.Y.Z
++ver=$(echo "$info" | sed 's/.*Reaper_v//; s/[^0-9.].*//')
+ [ -z "$ver" ] && { nvram set cfg_note=2; exit 0; }
+ 
+ /usr/sbin/wget $wget_options "$RAW_BASE/Reaper_v${ver}.txt" -O "$NOTE_PATH"
+@@ -27,4 +36,7 @@ if [ "$?" != "0" ] || [ ! -s "$NOTE_PATH" ]; then
+ 	echo "Release notes: https://github.com/TheUnboundDeveloper/AM-Reaper/releases" >> "$NOTE_PATH"
+ fi
+ 
++# legacy Phase 1 path, kept for anything that learned the old location
++cp -f "$NOTE_PATH" /tmp/release_note.txt
++
+ nvram set cfg_note=1
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index fc7e8840f2..b52603a60f 100755
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -16,6 +16,8 @@ nvram set webs_state_update=0
+ nvram set webs_state_flag=0
+ nvram set webs_state_error=0
+ nvram set webs_state_url=""
++nvram set webs_state_sha256=""
++nvram set webs_state_size=""
+ 
+ echo "---- reaper update check $(date) ----" > "$LOG"
+ 
+@@ -46,7 +48,9 @@ if [ "$?" != "0" ] || [ ! -s "$TMP" ]; then
+ 	exit 0
+ fi
+ 
+-# manifest line: MODEL#VARIANT#X.Y.Z#<download-url>
++# manifest line: MODEL#VARIANT#X.Y.Z#<download-url>[#SHA256[#SIZE]]
++# (fields 5/6 arrived with Phase 2; older manifests lack them - the page then
++# offers notify-only and the upgrade script refuses to flash unverified)
+ line=$(grep "^${model}#${variant}#" "$TMP" | head -1)
+ if [ -z "$line" ]; then
+ 	echo "---- no manifest entry for ${model}#${variant} ----" >> "$LOG"
+@@ -58,6 +62,8 @@ fi
+ 
+ rem_ver=$(echo "$line" | cut -d'#' -f3)
+ rem_url=$(echo "$line" | cut -d'#' -f4)
++rem_sha=$(echo "$line" | cut -d'#' -f5)
++rem_size=$(echo "$line" | cut -d'#' -f6)
+ rm -f "$TMP"
+ 
+ # numeric compare: X.Y.Z -> XXXYYYZZZ (zero-padded), integer -gt
+@@ -72,8 +78,10 @@ if [ "$rem_n" -gt "$cur_n" ] 2>/dev/null; then
+ 	nvram set webs_state_flag=1
+ 	# firmware-string shape the page renders; keeps the Reaper version visible
+ 	nvram set webs_state_info="3006.102.8_Reaper_v${rem_ver}"
+-	# Phase 2 will consume this; harmless in Phase 1 (page never auto-downloads)
++	# consumed by reaper_webs_upgrade.sh (Phase 2 download+flash)
+ 	nvram set webs_state_url="$rem_url"
++	nvram set webs_state_sha256="$rem_sha"
++	nvram set webs_state_size="$rem_size"
+ else
+ 	echo "---- up to date ----" >> "$LOG"
+ 	nvram set webs_state_flag=0
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh b/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+new file mode 100755
+index 0000000000..7d65e56175
+--- /dev/null
++++ b/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+@@ -0,0 +1,120 @@
++#!/bin/sh
++# reaper_webs_upgrade.sh - Reaper GitHub-hosted download + verify + FLASH (Phase 2).
++# Installed as /usr/sbin/webs_upgrade.sh (rom/Makefile, MERLINUPDATE branch) and
++# run by the generic "start_webs_upgrade" rc service (services.c webs_* fallback).
++# Downloads the image webs_state_url points at - that nvram is set ONLY by
++# reaper_webs_update.sh from the Reaper manifest - re-checks the URL host, the
++# model and the MCP/noMCP variant on this box, verifies the manifest SHA-256,
++# runs the platform firmware_check applet, then flashes with the same sequence
++# stock ssl_webs_upgrade.sh uses (stop services -> restart_upgrade). On success
++# the router reboots into the new firmware and this script never returns.
++#
++# UI contract (Reaper_Firmware.asp polls ajax_fwdl_percent.asp):
++#   webs_state_upgrade  0 = running (downloading/verifying)
++#                       2 = verified, flashing (reboot imminent)
++#                       1 = finished WITHOUT flashing - read webs_state_error
++#   webs_state_error    1 = guard/download failure   2 = not enough RAM
++#                       3 = verification failure (size/sha256/firmware_check)
++
++LOG=/tmp/webs_upgrade.log
++FW=/tmp/linux.trx
++WGET_LOG=/tmp/fwget_log
++
++fail() {
++	echo "---- ABORT: $1 ----" >> "$LOG"
++	logger -t REAPER_UPGRADE "abort: $1"
++	rm -f "$FW"
++	nvram set webs_state_error=$2
++	nvram set webs_state_upgrade=1
++	exit 0
++}
++
++nvram set webs_state_upgrade=0
++nvram set webs_state_error=0
++echo "---- reaper webs upgrade $(date) ----" > "$LOG"
++rm -f "$FW" "$WGET_LOG"
++
++url=$(nvram get webs_state_url)
++sha=$(nvram get webs_state_sha256 | tr 'A-F' 'a-f')
++size=$(nvram get webs_state_size)
++model=$(nvram get productid)
++
++[ -n "$url" ] || fail "no download url - run the update check first" 1
++[ "$(nvram get webs_state_flag)" = "1" ] || fail "no update pending - run the update check first" 1
++
++# host pin: only images published on the Reaper GitHub release channel
++case "$url" in
++	https://github.com/TheUnboundDeveloper/AM-Reaper/*) ;;
++	*) fail "url is not the Reaper release channel: $url" 1 ;;
++esac
++
++# model guard: the image basename must be for THIS productid (anchored at
++# "_3006" so GT-BE98 can never match a GT-BE98_PRO image or vice versa)
++base=${url##*/}
++case "$base" in
++	"${model}_3006"*) ;;
++	*) fail "image $base is not for $model" 1 ;;
++esac
++
++# variant guard: same on-box signal reaper_webs_update.sh / reaper_verify use
++if [ -f /usr/sbin/rmcpd ] || [ -f /www/Reaper_Advisor.asp ]; then
++	case "$base" in
++		*_noMCP_*) fail "noMCP image offered to an MCP box" 1 ;;
++	esac
++else
++	case "$base" in
++		*_noMCP_*) ;;
++		*) fail "MCP image offered to a noMCP box" 1 ;;
++	esac
++fi
++
++# never flash blind: the manifest entry must carry the image checksum
++[ -n "$sha" ] || fail "manifest carries no sha256 for this image - not flashing unverified" 3
++
++# space check: /tmp (tmpfs) must hold the image plus slack
++need_kb=$(( ${size:-125829120} / 1024 + 8192 ))
++free_kb=$(df -k /tmp | awk 'NR==2{print $4}')
++if [ -z "$free_kb" ] || [ "$free_kb" -le "$need_kb" ]; then
++	fail "not enough free RAM for the download (need ${need_kb}kB have ${free_kb:-0}kB)" 2
++fi
++
++echo "---- downloading $base ----" >> "$LOG"
++logger -t REAPER_UPGRADE "downloading $base"
++# GNU wget; --output-file feeds ej_get_fwdl_percent (the page's progress bar)
++/usr/sbin/wget -t 2 -T 30 --output-file="$WGET_LOG" "$url" -O "$FW"
++if [ "$?" != "0" ] || [ ! -s "$FW" ]; then
++	fail "download failed" 1
++fi
++
++if [ -n "$size" ] && [ "$(wc -c < "$FW")" != "$size" ]; then
++	fail "size mismatch (got $(wc -c < "$FW") want $size)" 3
++fi
++
++got=$(sha256sum "$FW" | cut -d' ' -f1)
++if [ "$got" != "$sha" ]; then
++	fail "sha256 mismatch (got $got want $sha)" 3
++fi
++echo "---- sha256 verified ----" >> "$LOG"
++logger -t REAPER_UPGRADE "sha256 verified"
++
++# platform image sanity check (stock applet; sets nvram firmware_check=1 on pass)
++nvram set firmware_check=0
++firmware_check "$FW"
++sleep 1
++if [ "$(nvram get firmware_check)" != "1" ]; then
++	fail "firmware_check rejected the image" 3
++fi
++
++nvram set webs_state_upgrade=2
++echo "---- image verified - flashing, router will reboot ----" >> "$LOG"
++logger -t REAPER_UPGRADE "image verified - flashing, router will reboot"
++
++# stock flash sequence (mirrors ssl_webs_upgrade.sh; RSA step replaced by the
++# SHA-256 + firmware_check verification above)
++/sbin/ejusb -1 0
++rc rc_service stop_logger
++rc rc_service "stop_jffs2 0"
++sleep 1
++nvram set auto_upgrade=0
++nvram commit
++rc rc_service restart_upgrade
+diff --git a/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp b/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp
+index d510f61aed..e24d3fd948 100644
+--- a/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp
++++ b/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp
+@@ -741,7 +741,9 @@ function detect_firmware(flag){
+ 		},
+ 
+ 		success: function(){
+-			if(cfg_sync_support){
++			/* reaper Phase 2: result polling must match the direct (non-cfg_mnt)
++			   check above - read webs_state_*, not cfg_check. */
++			if(0 && cfg_sync_support){
+ 				if(cfg_check == "" || cfg_check == "0" || cfg_check == "1" || cfg_check == "5"){
+ 					setTimeout("detect_firmware();", 1000);
+ 				}
+@@ -873,7 +875,10 @@ function detect_update(){
+ 	document.getElementById('update_states').innerHTML="Checking for available updates...";
+ 	document.getElementById('update_scan').style.display="";
+ 	document.getElementById('update').disabled = true;
+-	if(cfg_sync_support){
++	/* reaper Phase 2: NEVER route the check through cfg_mnt (action_mode=
++	   firmware_check asks ASUS's servers and bypasses reaper_webs_update.sh).
++	   Always drive the Reaper manifest check directly. */
++	if(0 && cfg_sync_support){
+ 		cfgsync_firmware_check();
+ 	}
+ 	else{
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 4382feb5c5..94f288d167 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 617fae06fc..cd77de78ac 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index d46e578901..b86e41dd51 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 639b40fc37..0182c3b780 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 7fda57005d..61b1ae67a4 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 47a8b33a5b..be56f887f1 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 8f316f2606..7094914375 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 43cf92e24a..e2fc8e281c 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e2c5c1b184..c0d087fe86 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 8891b472f2..63614065e0 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 10af5267d0..70544738e4 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 337de790dd..6a34bbe458 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 859be0da67..63414db0f2 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 77923abdff..f1da11b6a7 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 8ba047120d..7bf3a1e3e9 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -351,7 +351,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+              costs nothing when there is no update (or the opt-in check is off); the flag
+              is only ever 1 after reaper_webs_update.sh finds a newer Reaper release for
+              this model+variant. Links to the firmware page. -->
+-        <a class="pill fwupd" id="fw_update_badge" href="/reaper_shell.asp#Advanced_FirmwareUpgrade_Content.asp" style="display:none">
++        <a class="pill fwupd" id="fw_update_badge" href="/reaper_shell.asp#Reaper_Firmware.asp" style="display:none">
+           <span class="dot"></span><span class="k"><#FW_new_firmware_available#></span><span class="v mono" id="p_fwnew">&mdash;</span></a>
+         <script>(function(){
+           /* reveal the update badge only when the opt-in check has flagged a newer
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 5ae9979cd7..12fb7bcc6a 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index b48b382537..bcac37932c 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 5e361223e7..255a9f052c 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 56521ef3d5..36f7009ed4 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index a68e7273ea..9b71294adf 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+new file mode 100644
+index 0000000000..cc4fa0e6a0
+--- /dev/null
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -0,0 +1,465 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     reaper 2026-08-08: Phase 2 native firmware page (replaces the stock
++     Advanced_FirmwareUpgrade_Content.asp tab). The stock page's Check routed
++     through cfg_mnt (action_mode=firmware_check -> ASUS's servers) whenever
++     cfg_sync is compiled in, so the Reaper update check (reaper_webs_update.sh,
++     Phase 1) never ran from the GUI. This page drives the Reaper scripts
++     directly: start_webs_update (manifest check), start_release_note (note
++     fetch), start_webs_upgrade (reaper_webs_upgrade.sh: download, SHA-256 +
++     firmware_check verify, flash). Manual upload posts to the stock
++     upgrade.cgi (do_upgrade_post) like the stock page did. Progress rides the
++     stock ej ajax_fwdl_percent.asp; notes ride /release_note0.asp. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#menu5_6_3#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card h2{font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
++.note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:6px}
++.rowg{display:grid;grid-template-columns:170px 1fr;gap:4px 14px;font-size:13px}
++.rowg .rl{color:var(--steel);text-transform:uppercase;font-size:11px;letter-spacing:.08em;align-self:center}
++.rowg .rv{color:var(--bone)}
++.badge{display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border:1px solid var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10);border-radius:4px;padding:2px 7px;margin-left:8px;vertical-align:1px}
++.btn2{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:11.5px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 16px;cursor:pointer}
++.btn2:hover{color:var(--bone);border-color:var(--crimson-deep)}
++.btn2[disabled]{opacity:.4;cursor:not-allowed}
++.btnP{font-family:var(--hdr);font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btnP:hover{filter:brightness(1.12)}
++.btnP[disabled]{opacity:.4;cursor:not-allowed;filter:none}
++.acts{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
++.stat{font-size:12.5px;margin-top:10px;color:var(--steel)}
++.stat.ok{color:var(--jade)} .stat.err{color:var(--danger)} .stat.run{color:var(--bone-dim)}
++.avail{display:none;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);padding:14px 16px;margin-top:12px}
++.avail .av{font-family:var(--hdr);font-weight:700;font-size:19px;color:var(--bone)}
++.avail .avtag{color:var(--crimson);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;margin-bottom:2px}
++.notebox{display:none;margin-top:10px;max-height:280px;overflow:auto;background:#0a0a0c;border:1px solid var(--line-soft);border-radius:8px;padding:10px 12px;font:11.5px/1.6 monospace;color:var(--bone-dim);white-space:pre-wrap}
++.nblbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--steel);margin-top:12px;display:none}
++.bar{height:8px;border-radius:5px;background:#1c1c21;overflow:hidden;margin-top:10px;display:none}
++.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--crimson-deep),var(--crimson));transition:width .4s ease}
++.tgl{display:flex;align-items:center;gap:10px;margin-top:2px}
++.tgl input{width:16px;height:16px;accent-color:#555a60;cursor:pointer}
++.tgl label{color:var(--bone);font-size:13px;cursor:pointer}
++.file{margin-top:4px}
++.file input[type=file]{color:var(--bone-dim);font-size:12.5px}
++.file input[type=file]::file-selector-button{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:11px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:7px 14px;margin-right:12px;cursor:pointer}
++.veil{display:none;position:fixed;inset:0;background:rgba(4,4,5,.92);z-index:1000;align-items:center;justify-content:center}
++.veil .vin{max-width:480px;width:90%;text-align:center}
++.veil .vt{font-family:var(--hdr);font-weight:700;font-size:20px;color:var(--bone);letter-spacing:.04em}
++.veil .vs{font-size:12.5px;color:var(--bone-dim);margin-top:8px}
++.veil .vw{font-size:11.5px;color:var(--amber);text-transform:uppercase;letter-spacing:.08em;margin-top:14px}
++.veil .bar{display:block}
++</style>
++</head>
++<body>
++<div class="pagehead">
++  <h1><#menu5_6_3#></h1>
++</div>
++
++<div class="card">
++  <h2><#RFWU_1#></h2>
++  <div class="rowg">
++    <span class="rl"><#RFWU_29#></span><span class="rv" id="rvModel"></span>
++    <span class="rl"><#RFWU_24#></span><span class="rv" id="rvVariant"></span>
++    <span class="rl"><#RFWU_20#></span><span class="rv" id="rvVer"></span>
++    <span class="rl"><#RFWU_21#></span><span class="rv" id="rvBase"></span>
++  </div>
++  <p class="note"><#RFWU_23#></p>
++</div>
++
++<div class="card">
++  <h2><#RFWU_2#></h2>
++  <div class="acts">
++    <button class="btn2" id="btnCheck" onclick="doCheck()"><#RFWU_3#></button>
++    <span class="stat" id="chkStat" style="margin-top:0"></span>
++  </div>
++  <div class="avail" id="availBox">
++    <div class="avtag"><#RFWU_6#></div>
++    <div class="av" id="availVer"></div>
++    <div class="acts">
++      <button class="btnP" id="btnInstall" onclick="doInstall()"><#RFWU_8#></button>
++      <span class="note" id="shaNote" style="margin-top:0"></span>
++    </div>
++    <div class="nblbl" id="noteLbl"><#RFWU_19#></div>
++    <div class="notebox" id="noteBox"></div>
++  </div>
++  <div style="margin-top:16px;border-top:1px solid var(--line-soft);padding-top:12px">
++    <div class="tgl">
++      <input type="checkbox" id="schedChk" onchange="schedSave()">
++      <label for="schedChk"><#RFWU_14#></label>
++      <span class="stat ok" id="schedStat" style="margin-top:0;display:none">&#10003;</span>
++    </div>
++    <p class="note"><#RFWU_15#></p>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RFWU_16#></h2>
++  <p class="note" style="margin:0 0 8px"><#RFWU_17#> <#RFWU_26#></p>
++  <div class="acts file">
++    <input type="file" id="fwFile" accept=".pkgtb,.trx,.w">
++    <button class="btnP" id="btnUpload" onclick="doUpload()"><#CTL_upload#></button>
++  </div>
++  <div class="stat" id="upStat"></div>
++</div>
++
++<div class="veil" id="veil">
++  <div class="vin">
++    <div class="vt" id="veilT"></div>
++    <div class="bar" id="veilBar"><i id="veilBarI"></i></div>
++    <div class="vs" id="veilS"></div>
++    <div class="vw"><#RFWU_26#></div>
++  </div>
++</div>
++
++<iframe name="fw_hidden" style="display:none"></iframe>
++
++<script>
++var MODEL = '<% nvram_get("productid"); %>';
++var FIRMVER = '<% nvram_get("firmver"); %>';
++var BUILDNO = '<% nvram_get("buildno"); %>';
++var EXTENDNO = '<% nvram_get("extendno"); %>';
++var PREF_LANG = '<% nvram_get("preferred_lang"); %>';
++var FW = {
++  flag: '<% nvram_get("webs_state_flag"); %>',
++  info: '<% nvram_get("webs_state_info"); %>',
++  url:  '<% nvram_get("webs_state_url"); %>',
++  sha:  '<% nvram_get("webs_state_sha256"); %>',
++  err:  '<% nvram_get("webs_state_error"); %>',
++  upd:  '<% nvram_get("webs_state_update"); %>'
++};
++var CHK_EN = '<% nvram_get("firmware_check_enable"); %>';
++/* the noMCP build stamps "_noMCP" into EXTENDNO (same signal the backend
++   scripts read from the filesystem) - no extra probe needed */
++var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
++var busy = 0;
++
++function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
++function $id(i){ return document.getElementById(i); }
++function prettyVer(s){
++  /* "3006.102.8_Reaper_v2.3.0[_noMCP]" or "Reaper_v2.3.0a" -> "Reaper v2.3.0a" */
++  var m = String(s||'').match(/Reaper_v([0-9][0-9a-z.\-]*)/);
++  return m ? 'Reaper v' + m[1] : String(s||'');
++}
++
++function nvGet(name, cb){   /* single-nvram read via appGet (Reaper_USB pattern) */
++  var x = new XMLHttpRequest();
++  x.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('nvram_get(' + name + ')') + '&_=' + Date.now(), true);
++  x.timeout = 8000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    var v = null;
++    if(x.status === 200){
++      try{ var j = JSON.parse(x.responseText), k; for(k in j){ v = j[k]; break; } }catch(e){}
++    }
++    cb(v === null ? '' : String(v));
++  };
++  x.onerror = function(){ cb(''); };
++  x.send();
++}
++function nvGetMany(names, cb, acc){   /* sequential reads -> {name:value} */
++  acc = acc || {};
++  if(!names.length){ cb(acc); return; }
++  var n = names[0];
++  nvGet(n, function(v){ acc[n] = v; nvGetMany(names.slice(1), cb, acc); });
++}
++
++function post(fields){      /* stock apply flow (start_apply.htm, hidden iframe) */
++  var f = document.createElement('form'), k;
++  f.method = 'POST'; f.action = '/start_apply.htm'; f.target = 'fw_hidden'; f.style.display = 'none';
++  fields.action_mode = 'apply';
++  if(!('action_wait' in fields)) fields.action_wait = '1';
++  for(k in fields){
++    var i = document.createElement('input');
++    i.type = 'hidden'; i.name = k; i.value = fields[k]; f.appendChild(i);
++  }
++  document.body.appendChild(f); f.submit();
++  setTimeout(function(){ f.parentNode && f.parentNode.removeChild(f); }, 4000);
++}
++
++function setStat(id, txt, cls){
++  var n = $id(id);
++  if(n){ n.className = 'stat' + (cls ? ' ' + cls : ''); n.innerHTML = txt; if(id === 'chkStat') n.style.marginTop = '0'; }
++}
++
++/* ---------------- update check ---------------- */
++
++function doCheck(){
++  if(busy) return;
++  busy = 1;
++  $id('btnCheck').disabled = true;
++  $id('availBox').style.display = 'none';
++  setStat('chkStat', esc(`<#RFWU_4#>`), 'run');
++  post({ action_script: 'start_webs_update' });
++  setTimeout(function(){ pollCheck(0); }, 2500);
++}
++
++function pollCheck(tries){
++  if(tries > 40){ checkDone({ 'webs_state_error': '1' }); return; }
++  nvGet('webs_state_update', function(v){
++    if(v !== '1'){ setTimeout(function(){ pollCheck(tries + 1); }, 1500); return; }
++    nvGetMany(['webs_state_flag','webs_state_error','webs_state_info','webs_state_url','webs_state_sha256'], checkDone);
++  });
++}
++
++function checkDone(r){
++  busy = 0;
++  $id('btnCheck').disabled = false;
++  FW.flag = r['webs_state_flag'] || '0';
++  FW.err  = r['webs_state_error'] || '0';
++  FW.info = r['webs_state_info'] || '';
++  FW.url  = r['webs_state_url'] || '';
++  FW.sha  = r['webs_state_sha256'] || '';
++  if(FW.err !== '' && FW.err !== '0'){
++    setStat('chkStat', esc(`<#RFWU_7#>`), 'err');
++    return;
++  }
++  if(FW.flag === '1'){ showAvail(); }
++  else setStat('chkStat', esc(`<#RFWU_5#>`), 'ok');
++}
++
++function showAvail(){
++  setStat('chkStat', '', '');
++  $id('availVer').textContent = prettyVer(FW.info);
++  $id('btnInstall').disabled = !FW.sha;
++  $id('shaNote').innerHTML = FW.sha ? ('SHA-256 ' + esc(FW.sha.substring(0, 16)) + '&hellip;') : esc(`<#RFWU_22#>`);
++  $id('availBox').style.display = 'block';
++  loadNote(0);
++}
++
++/* ---------------- release note ---------------- */
++
++function loadNote(round){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/release_note0.asp?_=' + Date.now(), true);
++  x.timeout = 8000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    var t = (x.status === 200) ? String(x.responseText || '').replace(/^\s+|\s+$/g, '') : '';
++    if(t.length > 4){
++      $id('noteBox').textContent = t;
++      $id('noteBox').style.display = 'block';
++      $id('noteLbl').style.display = 'block';
++      return;
++    }
++    if(round === 0){
++      /* nothing cached on the box yet - ask rc to fetch it, then poll */
++      post({ action_script: 'start_release_note' });
++      setTimeout(function(){ pollNote(0); }, 2000);
++    }
++  };
++  x.send();
++}
++function pollNote(tries){
++  if(tries > 15) return;
++  nvGet('cfg_note', function(v){
++    if(v === '1'){ loadNote(1); }
++    else if(v === '2'){ /* fetch failed; leave the box hidden */ }
++    else setTimeout(function(){ pollNote(tries + 1); }, 1500);
++  });
++}
++
++/* ---------------- download + install ---------------- */
++
++function veil(title, sub, showBar){
++  $id('veilT').innerHTML = title;
++  $id('veilS').innerHTML = sub || '';
++  $id('veilBar').style.display = showBar ? 'block' : 'none';
++  $id('veil').style.display = 'flex';
++}
++function veilPct(p){ $id('veilBarI').style.width = Math.max(0, Math.min(100, p)) + '%'; }
++function veilOff(){ $id('veil').style.display = 'none'; }
++
++function doInstall(){
++  if(busy || !FW.sha) return;
++  if(!confirm(`<#RFWU_9#>`)) return;
++  busy = 1;
++  veil(esc(`<#RFWU_10#>`), prettyVer(FW.info), true);
++  veilPct(0);
++  post({ action_script: 'start_webs_upgrade' });
++  setTimeout(function(){ pollInstall(0); }, 2500);
++}
++
++function pollInstall(tries){
++  if(tries > 900){ installFail(`<#RFWU_12#>`); return; }   /* 30 min cap */
++  var x = new XMLHttpRequest();
++  x.open('GET', '/ajax_fwdl_percent.asp?_=' + Date.now(), true);
++  x.timeout = 6000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    if(x.status !== 200){
++      /* httpd going away while installing = the flash sequence took over */
++      veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
++      pollBack(0, 0);
++      return;
++    }
++    var t = String(x.responseText || '');
++    var up = (t.match(/webs_state_upgrade\s*=\s*'?(\d+)/) || [])[1] || '0';
++    var er = (t.match(/webs_state_error\s*=\s*'?(\d+)/) || [])[1] || '0';
++    var pc = (t.match(/fwdl_percent\s*=\s*"(\d+)%/) || [])[1];
++    if(up === '2'){
++      veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
++      setTimeout(function(){ pollBack(0, 0); }, 4000);
++      return;
++    }
++    if(up === '1'){
++      if(er === '2') installFail(`<#RFWU_25#>`);
++      else if(er === '3') installFail(`<#RFWU_13#>`);
++      else installFail(`<#RFWU_12#>`);
++      return;
++    }
++    if(pc !== undefined) veilPct(parseInt(pc, 10));
++    setTimeout(function(){ pollInstall(tries + 1); }, 2000);
++  };
++  x.onerror = function(){
++    veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
++    pollBack(0, 0);
++  };
++  x.send();
++}
++
++function installFail(tok){
++  busy = 0;
++  veilOff();
++  setStat('chkStat', esc(tok), 'err');
++}
++
++function pollBack(tries, wentDown){
++  /* wait for the router to reboot into the new firmware: it must go DOWN
++     first (wentDown), then answer again -> back to login */
++  if(tries > 450){ veil(esc(`<#FIRM_reboot_manually#>`), '', false); return; }
++  var x = new XMLHttpRequest();
++  x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
++  x.timeout = 3000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    if(x.status === 200){
++      if(wentDown){ location.href = '/Main_Login.asp'; return; }
++      setTimeout(function(){ pollBack(tries + 1, 0); }, 2000);
++    } else {
++      setTimeout(function(){ pollBack(tries + 1, 1); }, 2000);
++    }
++  };
++  x.onerror = function(){ setTimeout(function(){ pollBack(tries + 1, 1); }, 2000); };
++  x.send();
++}
++
++/* ---------------- scheduled check ---------------- */
++
++function schedSave(){
++  var v = $id('schedChk').checked ? '1' : '0';
++  post({ action_script: 'saveNvram', firmware_check_enable: v });
++  var s = $id('schedStat');
++  s.style.display = 'inline';
++  setTimeout(function(){ s.style.display = 'none'; }, 2500);
++}
++
++/* ---------------- manual upload ---------------- */
++
++function doUpload(){
++  if(busy) return;
++  var inp = $id('fwFile');
++  if(!inp.files || !inp.files.length){ setStat('upStat', esc(`<#RFWU_17#>`), ''); return; }
++  var f = inp.files[0], nm = String(f.name || '');
++  var looksRight = nm.indexOf(MODEL + '_3006') === 0 &&
++                   (IS_MCP ? nm.indexOf('_noMCP_') < 0 : nm.indexOf('_noMCP_') >= 0);
++  if(!looksRight && !confirm(`<#RFWU_30#>`)) return;
++  if(!confirm(`<#RFWU_31#>`)) return;
++  busy = 1;
++  setStat('upStat', '', '');
++  veil(esc(`<#RFWU_18#>`), esc(nm), true);
++  veilPct(0);
++  var fd = new FormData();
++  fd.append('current_page', 'Reaper_Firmware.asp');
++  fd.append('next_page', '');
++  fd.append('action_mode', '');
++  fd.append('action_script', '');
++  fd.append('action_wait', '');
++  fd.append('preferred_lang', PREF_LANG);
++  fd.append('firmver', FIRMVER);
++  fd.append('file', f, nm);
++  var x = new XMLHttpRequest();
++  x.open('POST', '/upgrade.cgi', true);
++  if(x.upload) x.upload.onprogress = function(ev){
++    if(ev.lengthComputable) veilPct(Math.round(ev.loaded / ev.total * 100));
++  };
++  x.onload = function(){
++    /* do_upgrade_post has the image; httpd now verifies + flashes (success
++       reboots the box). Liveness decides the verdict: if the router never
++       goes down, the image was rejected. */
++    veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
++    pollUpBack(0, 0);
++  };
++  x.onerror = function(){
++    /* connection torn down mid-response usually means the flash started */
++    veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
++    pollUpBack(0, 0);
++  };
++  x.send(fd);
++}
++
++function pollUpBack(tries, wentDown){
++  if(!wentDown && tries > 60){   /* ~2 min still answering = image rejected */
++    busy = 0;
++    veilOff();
++    setStat('upStat', esc(`<#RFWU_27#>`), 'err');
++    return;
++  }
++  if(tries > 450){ veil(esc(`<#FIRM_reboot_manually#>`), '', false); return; }
++  var x = new XMLHttpRequest();
++  x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
++  x.timeout = 3000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    if(x.status === 200){
++      if(wentDown){ location.href = '/Main_Login.asp'; return; }
++      setTimeout(function(){ pollUpBack(tries + 1, 0); }, 2000);
++    } else {
++      setTimeout(function(){ pollUpBack(tries + 1, 1); }, 2000);
++    }
++  };
++  x.onerror = function(){ setTimeout(function(){ pollUpBack(tries + 1, 1); }, 2000); };
++  x.send();
++}
++
++/* ---------------- boot ---------------- */
++
++function boot(){
++  $id('rvModel').textContent = MODEL;
++  $id('rvVariant').innerHTML = IS_MCP ? 'AI Advisor <span class="badge">MCP</span>' : 'Standard <span class="badge">noMCP</span>';
++  $id('rvVer').textContent = prettyVer(EXTENDNO);
++  $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
++  $id('schedChk').checked = (CHK_EN === '1');
++  /* a previous check (scheduled or manual) already found an update ->
++     render it immediately (this is where the dashboard badge lands) */
++  if(FW.flag === '1' && FW.info){ showAvail(); }
++}
++if(document.readyState !== 'loading') boot();
++else document.addEventListener('DOMContentLoaded', boot);
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 97d6855c4b..b2a9f159a4 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index e1b70a7200..e588f1ef9c 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index b91e7bea90..f55232dc81 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index deeac6beca..6b591c3a0a 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 274130f6ba..0d62ec6183 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 48a7c2852b..d27c909403 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6261,3 +6261,34 @@ RDST_60=Store only
+ RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
+ RDST_62=History is written to the storage location selected above.
+ RDST_63=Selecting a mode other than Off enables the connection-health probe.
++RFWU_1=Installed Firmware
++RFWU_2=Updates
++RFWU_3=Check for Update
++RFWU_4=Checking the Reaper release channel...
++RFWU_5=Your firmware is up to date.
++RFWU_6=Update available
++RFWU_7=Update check failed. The router could not reach the release channel, or no release is published for this model and variant. Details: /tmp/webs_upgrade.log
++RFWU_8=Download and Install
++RFWU_9=Download and install this update? The router will download the image, verify its SHA-256 checksum, flash it, and reboot. Do not power off the router until it comes back online.
++RFWU_10=Downloading firmware
++RFWU_11=Verifying and flashing. The router is rebooting into the new firmware.
++RFWU_12=Download failed. Check the internet connection and try again. Details: /tmp/webs_upgrade.log
++RFWU_13=Image verification failed. The downloaded file was discarded and nothing was flashed.
++RFWU_14=Scheduled Check
++RFWU_15=Check the Reaper release channel once a day (around 2 AM) and show a dashboard notice when a new release is published. Nothing is ever downloaded or installed automatically.
++RFWU_16=Manual Upload
++RFWU_17=Flash a firmware image file from your computer. Use the image built for this exact model and variant.
++RFWU_18=Uploading image
++RFWU_19=Release Notes
++RFWU_20=Installed version
++RFWU_21=Base build
++RFWU_22=The published manifest predates checksum support, so one-click install is disabled for this release. Update manually once; later releases install from here.
++RFWU_23=The previous firmware remains in the standby partition, and the bootloader rescue mode can always reflash the router over Ethernet.
++RFWU_24=Variant
++RFWU_25=Not enough free memory to stage the download. Reboot the router and try again.
++RFWU_26=Do not power off or restart the router.
++RFWU_27=The router rejected the uploaded image. Nothing was flashed.
++RFWU_28=Waiting for the router to come back online...
++RFWU_29=Model
++RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
++RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index f7a69210bd..da53100a27 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -354,7 +354,7 @@ define(function(){
+ 				tab: [
+ 					{url: "Advanced_OperationMode_Content.asp", tabName: "<#menu5_6_1#>"},
+ 					{url: "Advanced_System_Content.asp", tabName: "<#menu5_6_2#>"},
+-					{url: "Advanced_FirmwareUpgrade_Content.asp", tabName: "<#menu5_6_3#>"},
++					{url: "Reaper_Firmware.asp", tabName: "<#menu5_6_3#>"},	/* reaper Phase 2: native firmware page (stock Advanced_FirmwareUpgrade_Content.asp kept on disk as fallback) */
+ 					{url: "Advanced_SettingBackup_Content.asp", tabName: "<#menu5_6_4#>"},
+ 					{url: "Advanced_PerformanceTuning_Content.asp", tabName: "<#fan_tuning_temperature#>"},
+ 					{url: "Advanced_ADSL_Content.asp", tabName: "<#menu_dsl_setting#>"},
+-- 
+2.25.1
+

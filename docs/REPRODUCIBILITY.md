@@ -72,12 +72,23 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 322 patches for v2.1.5.
+#   fails without it. This applies all 374 patches (through v2.3.1).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
-#   expected for v2.1.2:  b2c357fa4a340d51a1cd6ef8777693781db92c56
-#   (this value is releases[].source_tree["release/src/router"] in manifest.json)
+#   expected after all 374 patches (v2.3.1):
+#                         f45570426e350a29bba9245ee1b11ffab41ecd1a
+#   (this value is releases[].source_tree_from_series["release/src/router"])
+#
+#   Two hashes are recorded per release. source_tree is the tree of the commit
+#   the firmware was built from; source_tree_from_series is what this replay
+#   yields. They differ ONLY by three vendored openssh-sftp documentation files
+#   (README.md, SECURITY.md, .github/ci-status.md) that the series' *.md
+#   doc-hunk exclusion strips. No source or code file differs, and
+#   release/src-rt is identical. Compare against source_tree_from_series.
+#
+#   To check an EARLIER release instead, apply only its patch_count patches:
+#     ls patches/[0-9]*.patch | head -325 | xargs git am --keep-cr   # v2.1.5
 
 # --- (d) Confirm the image you downloaded is the published one ----------------
 sha256sum RT-BE96U_3006_102.8_Reaper_v2.1.2_nand_squashfs.pkgtb

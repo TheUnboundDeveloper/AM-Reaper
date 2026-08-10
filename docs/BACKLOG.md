@@ -143,10 +143,11 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   expected only the active WAN's profile to log.
 
 - **[P3] The connection-health probe lists the router's own LAN IP (e.g. `192.168.50.1`) as a device
-  row.** Cosmetic — the probe pings the gateway/self IP and emits it like a client. Filter the router's
-  own LAN address (or bucket it as the router) in rtrafd's health output. [cosmetic]
-
-- **New Firmware** The function is not firing and the check button still points at ASUS servers.
+  row — field-confirmed 2026-08-08 as the ONLY remaining "IP in the MAC slot" row after the v2.3.0
+  one-row-per-device dedup (owner confirmed the dedup itself looks good on metal).** Cosmetic — the
+  probe pings the gateway/self IP and emits it like a client. Filter the router's own LAN address
+  (or bucket it as the router, consistent with the Traffic Analyzer's hidden "Router" self-bucket)
+  in rtrafd's health output. [cosmetic — owner: no fix needed now]
 
 - **Device Image** The ASUS Mesh page no longer fetches the device picture from ASUS servers. 
   Need to remove the icon left over.
@@ -211,6 +212,16 @@ broken menus/viewports/JS/raw-tokens, and the 4-mode Store/Export chain is coher
   the in-tree copy step in `stage_release.ps1` (one-line change) and optionally rewrite history later
   to reclaim past growth. Third-party hosts (OneDrive etc.) are NOT suitable for the on-router
   downloader: unstable direct-URL semantics and they'd break the upgrade script's GitHub host-pin.
+
+- **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
+  Owner-approved (2026-08-08) design in [`docs/FIREWALL-PLAN.md`](FIREWALL-PLAN.md): a native
+  `Reaper_Firewall.asp` hub replacing all four stock tabs (General / Network Services / URL /
+  Keyword) plus new tabs — **Status** (live v4+v6 chains + hit counters), **custom Rules** engine
+  (Basic form + Advanced DSL, dual-stack, `rc/reaper_fw.c` + `reaper_fw.cgi`, re-apply hook),
+  **Egress** control (IoT containment, outbound geo), **Logging** viewer — all with
+  **commit-confirm auto-rollback** and anti-lockout invariants. Backend stays iptables/ipset.
+  Phased 0→3; each phase build + on-metal (rmcpd lab MCP as the test harness) + fleet fan-out.
+  [owed — build; live inspection done]
 
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the

@@ -1,0 +1,399 @@
+name: Build firmware from source
+
+# Clean-room firmware build that anyone can run for themselves.
+#
+# Fork this repository, open the Actions tab in YOUR fork, enable workflows,
+# and run "Build firmware from source". Nothing is fetched from a private
+# location and nothing is published: the run downloads the pinned upstream
+# Asuswrt-Merlin base and the pinned Merlin toolchains, applies this repo's
+# published patch series, builds with the project's own build engine, runs the
+# reaper_verify QA gate, and uploads the .pkgtb plus its provenance as Actions
+# artifacts. See docs/CI-PUBLIC-BUILD.md.
+#
+# It deliberately does NOT create a release. A firmware image published under
+# a repository's name should come from a validated pipeline, not from an
+# arbitrary dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'Which variant(s) to build'
+        type: choice
+        default: both
+        options: [both, MCP, noMCP]
+      # All five models are selectable, and as of 2026-08-10 all five have
+      # completed a green clean-room build.
+      #
+      # A sibling is the canon tree plus overlays/<MODEL>.patch (14-28 identity
+      # files: banner, animated header, the pages referencing them, target.mak),
+      # plus overlays/GT-BE98-platform.tar.gz for GT-BE98 alone -- the pinned
+      # upstream carries router-sysdep for every other model but not that one.
+      #
+      # The overlays are generated from the per-model branch tips. An earlier
+      # generation read those branches from the WRONG place and silently carried
+      # v2.1.4-era content for 7 files per model; the regeneration in ca5c941
+      # fixed that. Two lessons kept deliberately:
+      #   - reproducing a tree exactly is NOT the same as building it, and
+      #     neither is the same as shipping it. No CI-built sibling image has yet
+      #     been diffed against a published one, so sibling artifacts are
+      #     pipeline-proof, not shipping-proof.
+      #   - a check that only asks "is everything the sibling has reproduced
+      #     correctly?" never asks the reverse, and will pass over a stale tip.
+      #
+      # Identity is enforced regardless: this exists because of the v1.8.6
+      # fan-out, where every sibling shipped with the RT-BE96U banner -- an image
+      # that builds, verifies, and carries the wrong identity. reaper_verify pins
+      # the banner SHA-256 and ci/build_one.sh fails the build if the expected
+      # banner is absent or a foreign one is present, so that failure mode cannot
+      # repeat silently.
+      #
+      # 'all' fans out to every model. Combined with variant=both that is 10
+      # concurrent jobs of ~1.5 h each -- within the 20-job limit for public
+      # repos, and fail-fast is off below so one model dying does not cancel
+      # the other four.
+      model:
+        description: 'Model to build (all = every model)'
+        type: choice
+        default: RT-BE96U
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, all]
+      # Publishing is OPT-IN and takes effect on main only. Left unticked (the
+      # default) the run builds, verifies and uploads its artifacts, and stops
+      # there -- no tag, no release, nothing user-facing. Tick it only when you
+      # intend these clean-room images to become the published ones.
+      publish:
+        description: 'Publish a GitHub Release when the build succeeds (main only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # The base pin never moves. Upstream carry-forwards are cherry-picked into the
+  # patch series rather than rebased, so this stays constant across releases
+  # (provenance/manifest.json "base.note").
+  UPSTREAM_REPO: https://github.com/RMerl/asuswrt-merlin.ng.git
+  BASE_TAG: 3006.102.8-beta2
+  BASE_COMMIT: a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3
+  TOOLCHAIN_REPO: https://github.com/RMerl/am-toolchains.git
+  TOOLCHAIN_COMMIT: d1af80e6b6686a4edc680386c09a8361453dd5c1
+  # NOTE: BUILD_BRANCH is deliberately NOT set here. ci/container_build.sh derives
+  # it PER MODEL, but only when it arrives unset -- and ci/build_one.sh +
+  # _reaper_build_lib.sh refuse to build unless HEAD is on the model's own branch.
+  # A workflow-level pin here (it used to say "be96u-only", from the single-model
+  # era) silently wins over that derivation and aborts every sibling with rc=8
+  # "on branch 'be96u-only' but this launcher builds '<model>'". 2026-08-09.
+  # The Reaper version the patch series is expected to produce. The series sets
+  # EXTENDNO itself, so this is an assertion, not an input: if applying
+  # patches/ yields any other version the run fails immediately rather than
+  # producing a mislabelled image. Bump this in the same commit that adds the
+  # next rung's patches.
+  EXPECTED_VERSION: Reaper_v2.3.1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fetch the pinned crosstools once and cache them, so the two variant jobs
+  # don't each pull the same multi-GB toolchain.
+  # ---------------------------------------------------------------------------
+  toolchain:
+    name: Pinned toolchains
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Restore toolchain cache
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.cache/am-toolchains
+          key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
+
+      - name: Fetch pinned crosstools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          CACHE="${GITHUB_WORKSPACE}/.cache/am-toolchains"
+          rm -rf "$CACHE"; mkdir -p "$(dirname "$CACHE")"
+          git init -q "$CACHE"
+          git -C "$CACHE" remote add origin "$TOOLCHAIN_REPO"
+          git -C "$CACHE" sparse-checkout init --cone
+          git -C "$CACHE" sparse-checkout set \
+            brcm-arm-hnd/crosstools-aarch64-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1 \
+            brcm-arm-hnd/crosstools-arm-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1 \
+            brcm-arm-hnd/crosstools-arm_softfp-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1
+          git -C "$CACHE" fetch --depth 1 -q origin "$TOOLCHAIN_COMMIT"
+          git -C "$CACHE" checkout -q --detach FETCH_HEAD
+          ACTUAL="$(git -C "$CACHE" rev-parse HEAD)"
+          echo "expected $TOOLCHAIN_COMMIT"
+          echo "actual   $ACTUAL"
+          [ "$ACTUAL" = "$TOOLCHAIN_COMMIT" ] || { echo "::error::toolchain commit mismatch"; exit 1; }
+          du -sh "$CACHE"
+
+  # ---------------------------------------------------------------------------
+  # One job per variant. Each is an independent clean-room build: fresh clone of
+  # the pinned base, full patch series, full compile. That costs a duplicate
+  # compile versus the local flow (which builds both variants in one warm tree),
+  # but keeps each job inside the 6-hour hosted-runner ceiling.
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.model }} ${{ matrix.variant }}
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      # fail-fast MUST stay false. A fleet run is 10 independent builds; one
+      # model failing should not cancel four healthy ones an hour in.
+      fail-fast: false
+      matrix:
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
+
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          set -uo pipefail
+          echo "--- before ---"; df -h / /mnt 2>/dev/null || df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell \
+                      /usr/local/share/chromium /usr/local/lib/node_modules \
+                      /opt/hostedtoolcache 2>/dev/null || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          sudo apt-get clean
+          echo "--- after ---"; df -h / /mnt 2>/dev/null || df -h /
+
+      # The build tree is large. /mnt is the runner's temp resource disk and is
+      # usually far roomier than /, so put the build home wherever there is more
+      # space and bind-mount it into the container at /home/reaper.
+      - name: Choose build volume
+        run: |
+          set -euo pipefail
+          root_free=$(df -k --output=avail / | tail -1)
+          mnt_free=0
+          [ -d /mnt ] && mnt_free=$(df -k --output=avail /mnt | tail -1) || true
+          if [ "$mnt_free" -gt "$root_free" ]; then BUILD_HOME=/mnt/reaper-home; else BUILD_HOME="$RUNNER_TEMP/reaper-home"; fi
+          sudo mkdir -p "$BUILD_HOME"
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD_HOME"
+          echo "BUILD_HOME=$BUILD_HOME" >> "$GITHUB_ENV"
+          echo "build home: $BUILD_HOME  (/ free ${root_free}K, /mnt free ${mnt_free}K)"
+
+      # blob:none + non-cone sparse checkout: this repo carries firmware images
+      # in-tree under releases/, so a plain checkout would pull multiple GB. We
+      # need patches, build-scripts, provenance, and the published SHA256SUMS
+      # (for the reproducibility comparison) -- not the .pkgtb files themselves.
+      - name: Checkout patch series and build scripts
+        uses: actions/checkout@v7
+        with:
+          path: reaper
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /patches/
+            /build-scripts/
+            /provenance/
+            /overlays/
+            /docs/CI-PUBLIC-BUILD.md
+            /releases/*/*/SHA256SUMS*.txt
+            /LICENSE
+            /LICENSE.reaper
+
+      # Everything container_build.sh reads out of the repo must be listed in
+      # the sparse-checkout above. Omitting /overlays/ is what made all four
+      # siblings fail while RT-BE96U passed -- RT-BE96U never touches them, so
+      # the gap was invisible until a fleet run. Assert it here, in seconds,
+      # rather than discovering it after the patch series has replayed.
+      - name: Verify the checkout has everything the build needs
+        run: |
+          set -uo pipefail
+          rc=0
+          for p in patches build-scripts provenance; do
+            if [ -d "reaper/$p" ]; then echo "  ok   $p/ ($(ls "reaper/$p" | wc -l) entries)"
+            else echo "::error::checkout is missing $p/ -- add it to sparse-checkout"; rc=1; fi
+          done
+          if [ "${{ matrix.model }}" != "RT-BE96U" ]; then
+            OV="reaper/overlays/${{ matrix.model }}.patch"
+            if [ -f "$OV" ]; then echo "  ok   $OV ($(stat -c%s "$OV") bytes)"
+            else echo "::error::no overlay for ${{ matrix.model }} at $OV -- sibling builds need /overlays/ in sparse-checkout"; rc=1; fi
+            PL="reaper/overlays/${{ matrix.model }}-platform.tar.gz"
+            if [ -f "$PL" ]; then echo "  ok   $PL ($(stat -c%s "$PL") bytes) + sha256"; fi
+          fi
+          exit $rc
+
+      - name: Restore pinned toolchains
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/.cache/am-toolchains
+          key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
+          fail-on-cache-miss: true
+
+      - name: Verify toolchain pin
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git -C "${GITHUB_WORKSPACE}/.cache/am-toolchains" rev-parse HEAD)"
+          echo "expected $TOOLCHAIN_COMMIT"; echo "actual   $ACTUAL"
+          [ "$ACTUAL" = "$TOOLCHAIN_COMMIT" ]
+
+      # Safety net only: the local WSL flow builds without emulation (Samba
+      # cross-compiles via cross-answers). Registering ARM binfmt on the host
+      # costs seconds and means a stray target-binary execution during compile
+      # fails over to qemu instead of killing a multi-hour job. The interpreter
+      # path (/usr/bin/qemu-arm-static) also exists inside the build container.
+      # REQUIRED, not optional: samba-4.15.13/build-reaper.sh documents this as a
+      # host prerequisite -- Samba's waf run-tests and the build-time ARM codegen
+      # tools execute ARM binaries during the cross-build. Registration is global
+      # (binfmt_misc is not namespaced), and /usr/bin/qemu-arm-static also exists
+      # inside the build container, so the interpreter resolves there too.
+      # Fail here, two minutes in, rather than forty minutes in at the Samba stage.
+      - name: Register ARM binfmt (required by the Samba cross-build)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static binfmt-support
+          sudo update-binfmts --enable qemu-arm || true
+          if [ ! -e /proc/sys/fs/binfmt_misc/qemu-arm ]; then
+            echo "::error::ARM binfmt handler is not registered; the Samba cross-build will fail"
+            ls -la /proc/sys/fs/binfmt_misc/ || true
+            exit 1
+          fi
+          echo "qemu-arm binfmt registered:"
+          sed 's/^/  /' /proc/sys/fs/binfmt_misc/qemu-arm | head -4
+          docker run --rm -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
+            ubuntu:20.04 /usr/bin/qemu-arm-static --version | head -1 | sed 's/^/  container qemu: /'
+
+      - name: Build in Ubuntu 20.04 clean room
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          docker pull -q ubuntu:20.04
+          docker run --rm \
+            -e UPSTREAM_REPO="$UPSTREAM_REPO" \
+            -e BASE_TAG="$BASE_TAG" \
+            -e BASE_COMMIT="$BASE_COMMIT" \
+            -e TOOLCHAIN_COMMIT="$TOOLCHAIN_COMMIT" \
+            -e EXPECTED_VERSION="$EXPECTED_VERSION" \
+            -e MODEL="${{ matrix.model }}" \
+            -e VARIANT="${{ matrix.variant }}" \
+            -e REPO_DIR=/work/reaper \
+            -e OUT_DIR=/work/out \
+            -e SRC_DIR=/home/reaper/asuswrt-be96u \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v "$BUILD_HOME:/home/reaper" \
+            -v "$GITHUB_WORKSPACE/.cache/am-toolchains:/opt/am-toolchains" \
+            ubuntu:20.04 \
+            bash /work/reaper/build-scripts/ci/container_build.sh
+
+      - name: Job summary
+        if: always()
+        run: |
+          set -uo pipefail
+          P="$GITHUB_WORKSPACE/out/build-provenance-${{ matrix.model }}-${{ matrix.variant }}.txt"
+          {
+            echo "## ${{ matrix.model }} ${{ matrix.variant }}"
+            if [ -f "$P" ]; then echo; echo '```'; cat "$P"; echo '```'
+            else echo; echo "Build did not reach the provenance step - see the job log."; fi
+            echo; echo "_Artifacts are unsigned Actions artifacts from an unvalidated CI pipeline. Flash at your own risk; the published releases remain the authoritative images._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.model }}-${{ matrix.variant }}
+          path: out/*.pkgtb
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evidence-${{ matrix.model }}-${{ matrix.variant }}
+          path: |
+            out/*.txt
+            out/*.env
+            out/*.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # RELEASE HAND-OFF -- OPT-IN, and main only.
+  #
+  # THREE independent conditions must all hold before anything is published:
+  #   1. inputs.publish  -- an explicit checkbox on the dispatch, default FALSE.
+  #      Publishing is never a side effect of building; you ask for it.
+  #   2. the branch is main -- on Dev, a fork, or any other branch both jobs are
+  #      skipped entirely, so a development build can never publish.
+  #   3. the build succeeded.
+  # `if:` REPLACES the implicit success() that `needs:` would otherwise apply,
+  # which is why success() is written out. Without it these would run even after
+  # a failed build.
+  #
+  # Publishing stays opt-in because a clean-room image is not automatically a
+  # shippable one: no CI-built sibling has yet been diffed against a published
+  # image. release.yml carries a second, independent guard -- it refuses to
+  # overwrite an EXISTING release unless allow_republish is set -- so even a
+  # ticked box cannot silently replace live assets.
+  # ---------------------------------------------------------------------------
+  tag:
+    name: Tag for release
+    needs: build
+    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write          # job-scoped -- the build job stays contents: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /LICENSE
+
+      - name: Create per-model tags
+        id: v
+        run: |
+          set -euo pipefail
+          # EXPECTED_VERSION is "Reaper_v2.3.1"; tags are "v2.3.1-<MODEL>".
+          V="${EXPECTED_VERSION#Reaper_}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.model }}" = "all" ]; then
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
+          else
+            MODELS="${{ inputs.model }}"
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for M in $MODELS; do
+            T="$V-$M"
+            # Idempotent by design: a version can only auto-release once. Re-runs
+            # and repeat dispatches are no-ops; deleting the tag is the explicit
+            # way to re-release.
+            if git ls-remote --exit-code --tags origin "refs/tags/$T" >/dev/null 2>&1; then
+              echo "  $T already exists -- skipping"
+            else
+              git tag -a "$T" -m "Reaper $V ($M) -- clean-room build ${{ github.run_id }}"
+              git push origin "$T"
+              echo "  $T created at ${GITHUB_SHA:0:12}"
+            fi
+          done
+
+  # Calls release.yml DIRECTLY rather than relying on the tag push to trigger it:
+  # events created with GITHUB_TOKEN do not start new workflow runs, so a tag
+  # push alone would silently publish nothing. A direct call needs no PAT and
+  # keeps release.yml the single release authority.
+  release:
+    name: Publish
+    needs: [build, tag]
+    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}

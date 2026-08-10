@@ -251,12 +251,19 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
 | Reaper version built | `Reaper_v2.3.1` (patch series `0001`–`0374`) |
 
-The version is not an input you choose — the patch series sets `EXTENDNO` itself.
-The workflow declares the version it expects (`EXPECTED_VERSION`) and **fails the
-run** if applying the series produces anything else, so a stale or partially
-extracted series can never produce an image labelled as something it is not.
-Adding a rung means committing its patches and bumping `EXPECTED_VERSION` in the
-same commit.
+The version is not something you choose — the patch series sets `EXTENDNO`
+itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and
+**fails the run** if applying the series produces anything else, so a stale or
+partially extracted series can never produce an image labelled as something it
+is not. Adding a rung means committing its patches and bumping
+`EXPECTED_VERSION` in the same commit.
+
+The dispatch form has an optional **version** field that overrides the pinned
+`EXPECTED_VERSION` for that run (blank uses the pin; `2.3.2`, `v2.3.2` and
+`Reaper_v2.3.2` are all accepted). It is still an assertion — a value that does
+not match what the series builds fails the run — so it cannot mislabel an
+image; it only saves editing the workflow file when dispatching a rung whose
+pin has not been bumped yet.
 
 The base pin never moves. Upstream carry-forwards are cherry-picked into the
 patch series rather than rebased, so this reproduction recipe stays stable across
@@ -282,8 +289,10 @@ commit as the rung, or the next run fails immediately:
 | Sibling overlays | `overlays/*.patch` | Regenerate if a rung touched per-model files, or the overlay will not apply. |
 | `.github/pii-allowlist.txt` | if patches were renumbered | Entries are path-matched — a renumber invalidates them and repo-hygiene fails. |
 
-The version is not an input. `EXPECTED_VERSION` is an assertion, not a setting:
-its whole job is to refuse to produce an image labelled as something it is not.
+`EXPECTED_VERSION` is an assertion, not a setting: its whole job is to refuse
+to produce an image labelled as something it is not. The dispatch form's
+optional version field overrides the pin for a single run but is asserted the
+same way — it does not replace bumping the pin when a rung lands.
 
 ---
 

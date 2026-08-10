@@ -228,9 +228,15 @@ If you see any of these, something is genuinely wrong and the job will fail:
   hosted runners are tight. The workflow reclaims space aggressively and puts the
   build tree on whichever volume has more room. If a run dies on disk, that is
   the reason.
-- **No releases.** The workflow never publishes. Artifacts are unsigned outputs
-  of a pipeline that has not yet been validated against a local build; the
-  published releases remain the authoritative images.
+- **No releases, unless you explicitly ask for one.** Publishing is opt-in: the
+  dispatch carries a `publish` checkbox that defaults to **off**, and it takes
+  effect on `main` only. Left alone — which is every run in a fork, on any other
+  branch, or on `main` without ticking it — the workflow builds, verifies,
+  uploads its artifacts and stops. No tag, no release, nothing user-facing.
+  `release.yml` carries a second, independent guard: it refuses to overwrite an
+  existing release unless `allow_republish` is set, so even a ticked box cannot
+  silently replace live assets. Artifacts are unsigned outputs of a pipeline not
+  yet validated against a published image; those releases remain authoritative.
 - **Flashing is at your own risk.** This is third-party firmware for hardware you
   own. Read the install and rollback notes before flashing anything.
 

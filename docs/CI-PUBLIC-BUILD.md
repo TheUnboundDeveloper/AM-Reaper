@@ -331,6 +331,17 @@ object was compiled.
    right; the input was wrong. `MODEL` is now the only source of truth, and an
    inherited `BUILD_BRANCH` that disagrees is refused rather than obeyed.
 
+6. **A build input that exists on no branch** (this commit). `RTL_OBJS.o`, the
+   Realtek RTL8372 switch blob, ships in the ASUS bootloader drop and is
+   **untracked in every git ref** — it had only ever existed on the maintainer's
+   disk. The first time a sibling actually compiled, RT-BE86U died inside u-boot
+   on `cp: cannot stat '.../rtl8372/RTL_OBJS.o'`. RT-BE96U never noticed because
+   it does not enable rtl8372. Shipped now as two hash-pinned archives (GT-BE98's
+   blob differs from everyone else's, as with its platform tree), staged only for
+   models whose — possibly overlay-patched — u-boot Makefile actually enables
+   rtl8372, and asserted present before the build starts rather than 40 minutes
+   in. Affects RT-BE86U, GT-BE98 and GT-BE98_PRO; RT-BE88U does not enable it.
+
 **Modified**
 
 - `build-scripts/_reaper_build_lib.sh` — `REAPER_PASS1_LOG` capture,

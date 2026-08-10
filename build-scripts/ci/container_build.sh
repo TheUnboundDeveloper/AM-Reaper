@@ -263,6 +263,52 @@ else
   MODEL_TREE="$ROUTER_TREE"
 fi
 
+# --- u-boot rtl8372 prebuilt -------------------------------------------------
+# RTL_OBJS.o is the Realtek RTL8372 switch blob. It ships in the ASUS bootloader
+# drop and is UNTRACKED IN EVERY GIT REF -- it has only ever existed on the
+# maintainer's disk, so the clean room could never get it. That is why RT-BE86U
+# died in u-boot the first time a sibling actually compiled (2026-08-10):
+#   cp: cannot stat '.../u-boot-2019.07/drivers/net/bcmbca/rtl8372/RTL_OBJS.o'
+# RT-BE96U and RT-BE88U never noticed because neither enables rtl8372.
+#
+# Which models need it is DERIVED from the (possibly overlay-patched) Makefile
+# rather than hardcoded: rt-be86u's overlay adds $(RTBE86U) to the enable list,
+# while GTBE98/GTBE98_PRO are in it already upstream.
+UB_DIR=release/src-rt-5.04behnd.4916/bootloaders/u-boot-2019.07/drivers/net/bcmbca
+case "$MODEL" in
+  RT-BE96U) UB_SYM=RTBE96U;;  RT-BE86U) UB_SYM=RTBE86U;;  RT-BE88U) UB_SYM=RTBE88U;;
+  GT-BE98)  UB_SYM=GTBE98;;   GT-BE98_PRO) UB_SYM=GTBE98_PRO;;
+  *) UB_SYM="";;
+esac
+# The literal "$(SYM)" including the closing paren, so GTBE98 never matches
+# GTBE98_PRO.
+if [ -n "$UB_SYM" ] && grep -B4 'obj-y += rtl8372/' "$UB_DIR/Makefile" 2>/dev/null \
+     | grep -q -F "\$($UB_SYM)"; then
+  hr; echo " $MODEL enables rtl8372 -- staging the RTL_OBJS.o prebuilt"; hr
+  # GT-BE98's blob differs from every other model's (its GPL drop is a different
+  # release), exactly as with its platform tree.
+  case "$MODEL" in
+    GT-BE98) RTL_NAME=uboot-rtl8372-GT-BE98;;
+    *)       RTL_NAME=uboot-rtl8372-default;;
+  esac
+  RTL_TGZ="$REPO_DIR/overlays/$RTL_NAME.tar.gz"
+  RTL_SUM="$REPO_DIR/overlays/$RTL_NAME.sha256"
+  [ -f "$RTL_TGZ" ] || { echo "::error::$MODEL needs rtl8372 but $RTL_NAME.tar.gz is missing"; exit 1; }
+  [ -f "$RTL_SUM" ] || { echo "::error::$RTL_NAME.tar.gz has no recorded sha256 -- refusing to unpack an unverified archive"; exit 1; }
+  _want=$(awk '{print $1}' "$RTL_SUM" | head -1)
+  _got=$(sha256sum "$RTL_TGZ" | cut -d' ' -f1)
+  echo "   archive sha256 $_got"
+  [ "$_want" = "$_got" ] || { echo "::error::$RTL_NAME.tar.gz hash mismatch"; echo "   expected $_want"; echo "   got      $_got"; exit 1; }
+  echo "   [MATCH] archive matches its recorded hash"
+  tar -xzf "$RTL_TGZ"
+  # Fail loudly here rather than 40 minutes later inside u-boot.
+  [ -f "$UB_DIR/rtl8372/RTL_OBJS.o" ] \
+    || { echo "::error::RTL_OBJS.o still absent after unpacking $RTL_NAME.tar.gz"; exit 1; }
+  echo "   staged $UB_DIR/rtl8372/RTL_OBJS.o ($(stat -c%s "$UB_DIR/rtl8372/RTL_OBJS.o") bytes)"
+else
+  echo "rtl8372 not enabled for $MODEL -- RTL_OBJS.o not needed"
+fi
+
 VER="$(grep -oE 'Reaper_v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' release/src-rt/version.conf | head -1)"
 [ -n "$VER" ] || { echo "ERROR: cannot read Reaper version from version.conf"; exit 1; }
 SHORT_VER="${VER#Reaper_}"

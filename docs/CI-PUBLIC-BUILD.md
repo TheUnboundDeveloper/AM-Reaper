@@ -311,6 +311,26 @@ lesson worth keeping.
    change stays inert. strongswan shipped without `ipsec`/`starter`/`stroke`
    across the whole release history because of it.
 
+**Fixed — two fleet-enablement defects, both single-model leftovers**
+
+Neither could show up until the first `model: all` run, because for RT-BE96U
+both were accidentally correct. Both failed all four siblings before a single
+object was compiled.
+
+4. **`overlays/` was missing from the checkout** (`613260b`). The job uses a
+   sparse checkout listing exactly what the build needs, and `/overlays/` had
+   never been added to it — so every sibling reached the overlay step with no
+   overlay to apply.
+5. **A hardcoded `BUILD_BRANCH`** (this commit). `public-build.yml` carried
+   `BUILD_BRANCH: be96u-only` from the single-model era.
+   `ci/container_build.sh` derives the branch per model, but only when it
+   arrives *unset*, so the stale pin won every time — and since
+   `_reaper_build_lib.sh` refuses to build unless HEAD is on the model's own
+   branch, all four siblings aborted with rc=8
+   (`on branch 'be96u-only' but this launcher builds 'gt-be98'`). The guard was
+   right; the input was wrong. `MODEL` is now the only source of truth, and an
+   inherited `BUILD_BRANCH` that disagrees is refused rather than obeyed.
+
 **Modified**
 
 - `build-scripts/_reaper_build_lib.sh` — `REAPER_PASS1_LOG` capture,

@@ -1,0 +1,160 @@
+From 383f9019a3a91b547011d3473707c3f8112808eb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 4 Aug 2026 17:26:48 -0400
+Subject: [PATCH 321/322] rtrafd: fix history persistence - late store attach +
+ clobber guard (USB lost ALL history every reboot)
+
+Field reports: Traffic Analyzer history 'not persistent' on both stores
+(internal jffs and external USB).
+
+Confirmed at source, two distinct failures:
+
+1. USB (external) - BROKEN EVERY REBOOT, structural. resolve_store()+db_load()
+   ran exactly once at daemon startup, but rtrafd starts from start_services
+   while USB mounts later via hotplug: /tmp/mnt is empty at that moment, so
+   the store silently fell back to RAM and the previous boot's rtraf.db was
+   NEVER loaded. One hour later the save timer re-resolved the (now mounted)
+   stick and overwrote that db with boot-fresh empty rings. Saved perfectly,
+   restored never.
+
+2. JFFS (internal) - tail loss. /jffs mounts before services so the boot load
+   works, but saves are hourly and the only shutdown save rides SIGTERM
+   (killall_tk); any unclean reboot (power pull, HW watchdog) discards up to
+   an hour. Right after a reboot the most recent history is missing, which
+   users read as 'not persistent'.
+
+Fix:
+- Track attach state (db_attached). If the requested medium is not mounted at
+  startup, log it (LOG_NOTICE, visible in logread) and retry resolve+load at
+  1 Hz for STORE_RETRY_SECS (900 s) - USB typically appears within a minute;
+  history is then restored instead of clobbered.
+- Never save over a db that was never loaded: if the medium only appears after
+  the retry window (or at exit), the existing rtraf.db is preserved once as
+  rtraf.db.prev before the first write, and the event is logged.
+- USB saves every 15 min (SAVE_EVERY_USB 900, no flash-wear concern) so an
+  unclean reboot costs at most 15 min there; jffs stays hourly (NAND wear).
+
+aarch64 gcc -fsyntax-only clean (only pre-existing shared.h header warnings).
+METAL OWED: reboot with rtraf_path=usb -> 'store came up late - attached' in
+logread + history intact; same with jffs; power-pull loses <=15 min on USB.
+
+Rides v2.1.5.
+---
+ release/src/router/rtrafd/rtrafd.c | 67 ++++++++++++++++++++++++++++--
+ 1 file changed, 63 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 8a62651b3d..3324b668ae 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -71,7 +71,9 @@
+ #define NTOP		20
+ #define FC_MAX		1536	/* flows parsed per fcache poll (bounded work) */
+ #define FC_SLOTS	16384	/* fcache flow-id -> last-bytes delta table */
+-#define SAVE_EVERY	3600	/* persist once an hour */
++#define SAVE_EVERY	3600	/* persist once an hour (jffs - NAND wear) */
++#define SAVE_EVERY_USB	900	/* USB has no wear concern; tighter loss window */
++#define STORE_RETRY_SECS 900	/* how long to wait for a late-mounting store */
+ #define DB_MAGIC	0x52545246	/* "RTRF" */
+ #define DB_VER		1
+ 
+@@ -1135,7 +1137,9 @@ int main(int argc, char **argv)
+ {
+ 	char wanif[24], dbpath[160];
+ 	const char *store;
+-	time_t last_save;
++	time_t last_save, boot_t;
++	int db_attached = 0;	/* requested store reachable + old db (if any) loaded */
++	int db_gave_up = 0;	/* retry window expired without the medium appearing */
+ 	int i;
+ 
+ 	if (daemon(0, 0) < 0) return 1;
+@@ -1173,8 +1177,25 @@ int main(int argc, char **argv)
+ 		}
+ 	}
+ 
++	/* v2.1.5 (field: "JFFS/USB history not persistent"): the store medium is NOT
++	 * guaranteed mounted when we start. USB in particular mounts via hotplug AFTER
++	 * start_services launches us, so the old one-shot resolve here always fell back
++	 * to RAM (no load), and the first hourly save then re-resolved the now-mounted
++	 * stick and OVERWROTE the previous boot's rtraf.db with empty rings - i.e. USB
++	 * history was lost on every reboot by design. Track attach state instead:
++	 * db_attached = the requested medium was reachable and its db (if any) loaded;
++	 * until then keep retrying from the main loop for STORE_RETRY_SECS, and NEVER
++	 * save over a file we did not load (see the clobber guard at the save site). */
+ 	store = resolve_store(dbpath, sizeof(dbpath));
+-	db_load(dbpath);
++	if (dbpath[0]) {
++		db_load(dbpath);
++		db_attached = 1;
++	} else if (nvram_safe_get("rtraf_path")[0]) {
++		syslog(LOG_NOTICE,
++		       "rtrafd: store '%s' not mounted yet - holding history in RAM and retrying for %d s",
++		       nvram_safe_get("rtraf_path"), STORE_RETRY_SECS);
++	}
++	boot_t = time(NULL);
+ 	last_save = time(NULL);
+ 	slots_for(time(NULL), &i5cur, &ihcur, &idcur, &imcur);
+ 	refresh_cfg();		/* seed cached config before the first live write */
+@@ -1276,12 +1297,44 @@ int main(int argc, char **argv)
+ 		if (tick % TPS == 0) {
+ 			refresh_cfg();	/* reload cached nvram config at 1 Hz, not per tick */
+ 			check_quota();	/* monthly cap: once a second is plenty */
++			/* late store attach: the medium (USB especially) may mount minutes
++			 * after boot. Retry cheaply at 1 Hz; on success restore history.
++			 * Restoring overwrites at most STORE_RETRY_SECS of since-boot RAM
++			 * data with the whole saved history - the right trade this early. */
++			if (!db_attached && !db_gave_up && nvram_safe_get("rtraf_path")[0]) {
++				if (now - boot_t <= STORE_RETRY_SECS) {
++					store = resolve_store(dbpath, sizeof(dbpath));
++					if (dbpath[0]) {
++						db_load(dbpath);
++						db_attached = 1;
++						syslog(LOG_NOTICE, "rtrafd: store came up late - attached %s", dbpath);
++					}
++				} else {
++					db_gave_up = 1;
++					syslog(LOG_WARNING,
++					       "rtrafd: store '%s' never appeared within %d s - history is RAM-only until it mounts (existing db will be preserved as .prev)",
++					       nvram_safe_get("rtraf_path"), STORE_RETRY_SECS);
++				}
++			}
+ 		}
+ 
+ 		write_live(store);
+ 
+-		if (now - last_save >= SAVE_EVERY) {
++		if (now - last_save >= (strcmp(store, "usb") == 0 ? SAVE_EVERY_USB : SAVE_EVERY)) {
+ 			store = resolve_store(dbpath, sizeof(dbpath));
++			/* If the medium appeared only after the retry window (db_gave_up),
++			 * this is the first time we can see the file - and we never loaded
++			 * it, so writing now would destroy the previous boot's history.
++			 * Preserve it once as rtraf.db.prev, then own the path. */
++			if (dbpath[0] && !db_attached) {
++				char prev[176];
++				snprintf(prev, sizeof(prev), "%s.prev", dbpath);
++				if (access(dbpath, F_OK) == 0) {
++					rename(dbpath, prev);
++					syslog(LOG_WARNING, "rtrafd: unloaded prior history preserved as %s", prev);
++				}
++				db_attached = 1;
++			}
+ 			db_save(dbpath);
+ 			last_save = now;
+ 		}
+@@ -1305,6 +1358,12 @@ int main(int argc, char **argv)
+ 	}
+ 
+ 	store = resolve_store(dbpath, sizeof(dbpath));
++	if (dbpath[0] && !db_attached) {
++		char prev[176];
++		snprintf(prev, sizeof(prev), "%s.prev", dbpath);
++		if (access(dbpath, F_OK) == 0)
++			rename(dbpath, prev);
++	}
+ 	db_save(dbpath);
+ 	syslog(LOG_INFO, "rtrafd: stopped (history %s)", dbpath[0] ? "saved" : "in RAM only - lost");
+ 	return 0;
+-- 
+2.25.1
+

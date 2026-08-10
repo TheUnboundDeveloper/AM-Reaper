@@ -1,0 +1,89 @@
+From bc6a73617bf7244ae9e71a9bb8086f2f22293cdb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 5 Aug 2026 18:46:13 -0400
+Subject: [PATCH] wan: roll back the 1280-1508 WAN-MTU GUI allowance (keep
+ PPPoE 1500)
+
+Owner field report (BE96U, DHCP WAN): the visible WAN-MTU field - which only
+renders for DHCP/static connections - accepted and applied 1508, an invalid
+MTU for a standard Ethernet WAN. The 1508 allowance came in with the v2.1.3/
+v2.1.5 PPPoE fixes but was never needed: for PPPoE the wan_mtu row is hidden
+and rc/wan.c raises the parent to pppoe_mtu+8 automatically. The original
+sibling complaint was the port script skipping /sysdep/, not this cap.
+
+wan_mtu validators + hints return to 1280-1500 in BOTH page variants (base +
+MULTISERVICE_WAN sysdep). PPPoE MTU/MRU stay 128-1500 (the real fix), and the
+'only clamp when the user lowered wan_mtu below 1500' guards stay. A new
+forbidden verify marker (1280, 1508) keeps a 1508-capped page from ever
+shipping again.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/Advanced_WAN_Content.asp           | 4 ++--
+ .../FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp    | 8 ++++----
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/www/Advanced_WAN_Content.asp b/release/src/router/www/Advanced_WAN_Content.asp
+index 887994a24c..eafd33bd31 100644
+--- a/release/src/router/www/Advanced_WAN_Content.asp
++++ b/release/src/router/www/Advanced_WAN_Content.asp
+@@ -1132,7 +1132,7 @@ function validForm(){
+ 		 	return false;
+ 
+ 	if($("#wan_mtu_tr").css("display") != "none" && (orig_mtu != "" || document.form.wan_mtu.value.length > 0)) {
+-		if(!validator.numberRange(document.form.wan_mtu, 1280, 1508)) {
++		if(!validator.numberRange(document.form.wan_mtu, 1280, 1500)) {
+ 			document.form.wan_mtu.focus();
+ 			document.form.wan_mtu.select();
+ 			return false;
+@@ -3136,7 +3136,7 @@ function get_default_wan_name(){
+ 				<#PPPConnection_x_PPPoEMTU_itemname#>
+ 			</th>
+ 			<td>
+-				<input type="text" maxlength="5" name="wan_mtu" class="input_6_table" value="<% nvram_get("wan_mtu"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"/>&nbsp;1280 - 1508
++				<input type="text" maxlength="5" name="wan_mtu" class="input_6_table" value="<% nvram_get("wan_mtu"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"/>&nbsp;1280 - 1500
+ 			</td>
+ 		</tr>
+ 		</table>
+diff --git a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+index f72a2235b9..a644cca33c 100644
+--- a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+@@ -1168,14 +1168,14 @@ function Get_Component_Setting_Profile(type){//internet, user_defined
+ 			});
+ 	}
+ 
+-	var wan_mtu_parm = {"title":"<#PPPConnection_x_PPPoEMTU_itemname#> (1280-1508)", "type":"text", "id":"wan_mtu", "need_check":true, "maxlength":4, "container_id":"wan_mtu_container"};
++	var wan_mtu_parm = {"title":"<#PPPConnection_x_PPPoEMTU_itemname#> (1280-1500)", "type":"text", "id":"wan_mtu", "need_check":true, "maxlength":4, "container_id":"wan_mtu_container"};
+ 	Get_Component_Input(wan_mtu_parm).appendTo($special_isp_container)
+ 		.find("#" + wan_mtu_parm.id + "")
+ 		.unbind("keypress").keypress(function(){
+ 			return validator.isNumber(this,event);
+ 		})
+ 		.change(function(){
+-			return validator.numberRange(this, 1280, 1508);
++			return validator.numberRange(this, 1280, 1500);
+ 		})
+ 
+ 	var $action_container = $("<div>").addClass("action_container").appendTo($content_container);
+@@ -2256,7 +2256,7 @@ function validForm(){
+ 		}
+ 
+ 	if($("#wan_mtu_tr").css("display") != "none" && (orig_mtu != "" || document.form.wan_mtu.value.length > 0)) {
+-		if(!validator.numberRange(document.form.wan_mtu, 1280, 1508)) {
++		if(!validator.numberRange(document.form.wan_mtu, 1280, 1500)) {
+ 			document.form.wan_mtu.focus();
+ 			document.form.wan_mtu.select();
+ 			return false;
+@@ -4414,7 +4414,7 @@ function change_wizard(o, id){
+ 											<#PPPConnection_x_PPPoEMTU_itemname#>
+ 										</th>
+ 										<td>
+-											<input type="text" maxlength="5" name="wan_mtu" class="input_6_table" value="<% nvram_get("wan_mtu"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"/>&nbsp;1280 - 1508
++											<input type="text" maxlength="5" name="wan_mtu" class="input_6_table" value="<% nvram_get("wan_mtu"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"/>&nbsp;1280 - 1500
+ 										</td>
+ 									</tr>
+ 									</table>
+-- 
+2.25.1
+

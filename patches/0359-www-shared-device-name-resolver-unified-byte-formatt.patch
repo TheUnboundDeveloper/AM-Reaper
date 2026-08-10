@@ -1,0 +1,542 @@
+From aa6324594a3e3d90c8dc411110f25719bcd57ce6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 7 Aug 2026 23:24:32 -0400
+Subject: [PATCH] www: shared device-name resolver + unified byte formatters +
+ theme-token canon (D1/D3/D4)
+
+D1 - one shared device-name resolver (reaper_util.js). The get_clientlist +
+nickName||name resolver was reimplemented three ways across the Reaper-native
+pages (Traffic: lc-MAC + IP, seeded from custom_clientlist; Conn: IP-only; QoS:
+lc-MAC). reaper_util.js#ReaperNames is the single implementation - one index keyed
+by BOTH lowercase MAC and IP, seeded from the persistent custom_clientlist master
+store (so OFFLINE devices keep their user-assigned name - the v2.2.5 Traffic
+behaviour, now shared by Conn and QoS too) then overwritten by the freshest live
+nickName. Reaper_Traffic/Conn/QoS now delegate to it (each call site keeps its own
+fallback: '' for Traffic/Conn, the MAC for QoS). The server-side custom_clientlist
+string is still injected per-page via the ASP nvram_char_to_ascii tag (a .js file
+is not ASP-processed) and passed to refresh(). Stock index.asp / Advanced_DHCP use
+the trivial inline nickName||name field and are intentionally left (refactoring
+stock dashboard/DHCP for a one-liner is poor risk/reward).
+
+D3 - one decimal-SI byte formatter + the bit-rate formatters (reaper_util.js#ReaperFmt).
+Traffic and Conn each carried their own fmtBytes/fmtRate copies that had drifted in
+decimals; both now delegate to ReaperFmt (decimal SI: 1 MB = 1,000,000 B, per owner
+decision). Both bit-rate label styles ("Mb/s" and "Mbps") are provided so no page's
+rate label text changes. QoS bandwidth CAPS keep their own 1024 bit formatter by
+design (a bitrate cap is a different quantity). Only visible change: Conn byte totals
+now show SI decimals (e.g. 5 GB -> 5.00 GB).
+
+D4 (partial) - canonicalize accidental same-name/different-value theme-token drift
+across the 15 Reaper pages: --body quoted 'Segoe UI' (8 pages, renders identically),
+--amber #d9a441 -> #E0A93B (6 pages), --danger #E10600 -> #FF3B30 (1 page, FirstBoot).
+The naming-vocabulary consolidation (--panel2/--red -> --panel-2/--crimson) and the
+--line cream-vs-red divergence require rewriting each page's CSS usages and stay
+deferred to the native-page migration.
+
+L1 - closed as not-a-bug (no code change): the leading '<' in the set_name/set_reserve
+RMW output is the correct, required stock list format for custom_clientlist and
+dhcp_staticlist (every parser strtok/strseps on '<'); removing it would corrupt both.
+
+Bump EXTENDNO to Reaper_v2.2.7.
+---
+ release/src-rt/version.conf                 |  2 +-
+ release/src/router/www/Reaper_Advisor.asp   |  2 +-
+ release/src/router/www/Reaper_Analytics.asp |  2 +-
+ release/src/router/www/Reaper_Conn.asp      | 23 ++---
+ release/src/router/www/Reaper_Devices.asp   |  2 +-
+ release/src/router/www/Reaper_FirstBoot.asp |  4 +-
+ release/src/router/www/Reaper_GK.asp        |  2 +-
+ release/src/router/www/Reaper_QoS.asp       | 28 +++---
+ release/src/router/www/Reaper_QoSDiag.asp   |  2 +-
+ release/src/router/www/Reaper_Storage.asp   |  2 +-
+ release/src/router/www/Reaper_Traffic.asp   | 48 +++-------
+ release/src/router/www/Reaper_USB.asp       |  2 +-
+ release/src/router/www/Reaper_Warden.asp    |  2 +-
+ release/src/router/www/Reaper_WiFiPro.asp   |  2 +-
+ release/src/router/www/Reaper_Wireless.asp  |  2 +-
+ release/src/router/www/reaper_util.js       | 99 +++++++++++++++++++++
+ 16 files changed, 143 insertions(+), 81 deletions(-)
+ create mode 100755 release/src/router/www/reaper_util.js
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index d1b21262bf..258ff4bb7b 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.2.6
++EXTENDNO=Reaper_v2.2.7
+ 
+ RCNO=0
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index 8462b12fb2..d31a604936 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -21,7 +21,7 @@
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+   --jade:#4FB286; --amber:#E0A93B;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0;min-height:100%}
+diff --git a/release/src/router/www/Reaper_Analytics.asp b/release/src/router/www/Reaper_Analytics.asp
+index b9f1cfd6d4..d9c20d2e30 100644
+--- a/release/src/router/www/Reaper_Analytics.asp
++++ b/release/src/router/www/Reaper_Analytics.asp
+@@ -22,7 +22,7 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06); --line-mid:rgba(255,255,255,.12);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index 8d84d8ce5c..38bafdd6bd 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -11,7 +11,7 @@
+  --line:rgba(236,231,219,.09);--line2:rgba(236,231,219,.16);
+  --red:#E10600;--red-deep:#B3000C;--red-dim:rgba(225,6,0,.14);
+  --bone:#ECE7DB;--bone-dim:#B7B1A4;--steel:#71767b;--jade:#4FB286;--amber:#E0A93B;--ice:#7EA6C9;
+- --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;--mono:ui-monospace,Consolas,monospace;}
++ --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;--mono:ui-monospace,Consolas,monospace;}
+ *{box-sizing:border-box}html,body{margin:0}
+ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
+  background-image:radial-gradient(1100px 460px at 16% -8%,rgba(225,6,0,.10),transparent 60%),radial-gradient(100% 100% at 50% 30%,transparent 52%,rgba(0,0,0,.6) 100%);
+@@ -163,6 +163,7 @@ code{font-family:var(--mono)}
+   </div>
+ </div>
+ 
++<script src="/reaper_util.js"></script>
+ <script>
+ (function(){
+   "use strict";
+@@ -171,10 +172,10 @@ code{font-family:var(--mono)}
+   var filter="all", currentMs=1000, live=true, timer=null;
+   /* v2.1.3: view mode (Quick Look = default) + device-name map */
+   var view=(function(){ try{ return localStorage.getItem("reaper_conn_view")||"quick"; }catch(e){ return "quick"; } })();
+-  var nameByIp={}, nameTimer=null;
++  var nameTimer=null;   /* D1: names now resolved via reaper_util.js ReaperNames */
+ 
+-  function fmtBytes(b){ if(b>=1e12)return(b/1e12).toFixed(1)+" TB"; if(b>=1e9)return(b/1e9).toFixed(1)+" GB"; if(b>=1e6)return(b/1e6).toFixed(0)+" MB"; if(b>=1e3)return(b/1e3).toFixed(0)+" KB"; return (b|0)+" B"; }
+-  function fmtRate(bps){ if(bps>=1e9)return(bps/1e9).toFixed(2)+" Gbps"; if(bps>=1e6)return(bps/1e6).toFixed(0)+" Mbps"; if(bps>=1e3)return(bps/1e3).toFixed(0)+" Kbps"; return Math.round(bps)+" bps"; }
++  function fmtBytes(b){ return ReaperFmt.bytes(b); }   /* D3: shared decimal-SI formatters (reaper_util.js) */
++  function fmtRate(bps){ return ReaperFmt.rate(bps); }
+   function fmtAge(sec){ if(sec<0)return `<#RCON_17#>`; if(sec>=3600)return Math.floor(sec/3600)+"h "+Math.floor(sec%3600/60)+"m"; if(sec>=60)return Math.floor(sec/60)+"m "+(sec%60)+"s"; return sec+"s"; }
+   function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+   function protoName(p){ return ({6:"TCP",17:"UDP",1:"ICMP",58:"ICMPv6"})[p]||("IP"+p); }
+@@ -192,19 +193,9 @@ code{font-family:var(--mono)}
+ 
+   /* device names from networkmap - same source/endpoint as Reaper_Traffic (v1.5.3) */
+   function loadNames(){
+-    var x=new XMLHttpRequest();
+-    x.open("GET","/appGet.cgi?hook=get_clientlist()&_="+Date.now(),true); x.timeout=6000;
+-    x.onreadystatechange=function(){ if(x.readyState!==4)return; try{
+-      var j=JSON.parse(x.responseText), cl=j.get_clientlist||j, ml=cl.maclist||[], m={};
+-      ml.forEach(function(mac){ var c=cl[mac]; if(!c)return;
+-        var nm=(c.nickName&&String(c.nickName).length)?String(c.nickName):((c.name&&String(c.name).length)?String(c.name):"");
+-        if(c.ip&&nm) m[c.ip]=nm;
+-      });
+-      nameByIp=m; if(view==="quick") render();
+-    }catch(e){} };
+-    x.onerror=x.ontimeout=function(){}; x.send();
++    ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ if(view==="quick") render(); });
+   }
+-  function devName(ip){ return nameByIp[ip]||""; }
++  function devName(ip){ return ReaperNames.byIp(ip,""); }
+ 
+   function fetchOnce(){
+     var x=new XMLHttpRequest();
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index f110f65de8..a25f759eca 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -21,7 +21,7 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+diff --git a/release/src/router/www/Reaper_FirstBoot.asp b/release/src/router/www/Reaper_FirstBoot.asp
+index 1dc955ed4a..69ea7dbd3e 100644
+--- a/release/src/router/www/Reaper_FirstBoot.asp
++++ b/release/src/router/www/Reaper_FirstBoot.asp
+@@ -29,9 +29,9 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#E0A93B; --danger:#E10600;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0;min-height:100%}
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+index 799e0f739c..83bc2d8098 100644
+--- a/release/src/router/www/Reaper_GK.asp
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -18,7 +18,7 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 29110ee510..28eddc55ce 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -21,7 +21,7 @@
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+   --jade:#4FB286; --amber:#E0A93B;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0;min-height:100%}
+@@ -163,6 +163,7 @@ table.classes input.bwlnum{width:66px}
+ </style>
+ </head>
+ <body>
++<script src="/reaper_util.js"></script>
+ <script>
+ /* Reaper-native page: standalone hits get the shell chrome (fragment passes the shell allow-list) */
+ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+@@ -612,12 +613,12 @@ document.addEventListener('visibilitychange', function(){
+    nvram qos_bw_rulelist: rows joined by '<', fields by '>':
+    enable>MAC>download(Kb/s)>upload(Kb/s)>priority ; stored HTML-entity-encoded. */
+ var BWL = [];            /* [{en, mac, dn(kb), up(kb)}] */
+-var BWLNAMES = {};       /* mac(lower) -> display name from the client list */
++/* D1: device names resolved via reaper_util.js ReaperNames (MAC-keyed, custom+live). */
+ function bwlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+ function bwlDecode(s){ return String(s||'').replace(/&#62/g,'>').replace(/&#60/g,'<'); }
+ function bwlKb2Mb(k){ k=parseInt(k,10)||0; return k ? String(Math.round(k/1024*10)/10) : '0'; }
+ function bwlMb2Kb(m){ m=parseFloat(m)||0; return Math.round(m*1024); }
+-function bwlNameOf(mac){ var n=BWLNAMES[String(mac).toLowerCase()]; return n||mac; }
++function bwlNameOf(mac){ return ReaperNames.byMac(mac, mac); }
+ function parseBwl(){
+   BWL = [];
+   var raw = bwlDecode(NV.bwrule);
+@@ -675,23 +676,20 @@ function serializeBwl(){
+ }
+ function fetchBwlClients(){
+   var dl = document.getElementById('bwl_clients'); if(!dl) return;
+-  var x = new XMLHttpRequest();
+-  x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+(new Date()).getTime(), true);
+-  x.onreadystatechange = function(){
+-    if(x.readyState!==4 || x.status!==200) return;
+-    try{
+-      var j = JSON.parse(x.responseText), cl = j.get_clientlist||j, ml = cl.maclist||[];
++  /* D1: one shared fetch/resolve (reaper_util.js); the callback still builds this page's
++     device datalist from the same payload and re-renders with the resolved names. */
++  ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(cl){
++    if(cl){
++      var ml = cl.maclist||[];
+       for(var i=0;i<ml.length;i++){
+         var mac = ml[i], c = cl[mac]; if(!c) continue;
+-        var nm = (c.nickName && c.nickName.length) ? c.nickName : (c.name||mac);
+-        BWLNAMES[String(mac).toLowerCase()] = nm;
++        var nm = ReaperNames.byMac(mac, mac);
+         var o = document.createElement('option'); o.value = mac; o.label = nm+' ('+mac+')';
+         dl.appendChild(o);
+       }
+-      renderBwl();
+-    }catch(e){}
+-  };
+-  x.send();
++    }
++    renderBwl();
++  });
+ }
+ 
+ function applyQoS(){
+diff --git a/release/src/router/www/Reaper_QoSDiag.asp b/release/src/router/www/Reaper_QoSDiag.asp
+index 6eda3ff7b8..571e9b8ead 100644
+--- a/release/src/router/www/Reaper_QoSDiag.asp
++++ b/release/src/router/www/Reaper_QoSDiag.asp
+@@ -11,7 +11,7 @@
+  --line:rgba(236,231,219,.09);--line2:rgba(236,231,219,.16);
+  --red:#E10600;--red-deep:#B3000C;--red-dim:rgba(225,6,0,.14);
+  --bone:#ECE7DB;--bone-dim:#B7B1A4;--steel:#71767b;--jade:#4FB286;--amber:#E0A93B;--ice:#7EA6C9;
+- --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;--mono:ui-monospace,Consolas,monospace;}
++ --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;--mono:ui-monospace,Consolas,monospace;}
+ *{box-sizing:border-box}html,body{margin:0}
+ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
+  background-image:radial-gradient(1100px 460px at 16% -8%,rgba(225,6,0,.10),transparent 60%),radial-gradient(100% 100% at 50% 30%,transparent 52%,rgba(0,0,0,.6) 100%);
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 915a1caf9d..292212906a 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -23,7 +23,7 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 497d54bfad..2b7a44ad21 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -24,7 +24,7 @@
+   --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#9085e9; --s5:#d95926;
+   --s6:#e66767; --s7:#d55181;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0;min-height:100%}
+@@ -270,6 +270,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <input type="hidden" name="rtraf_cap_gb" value="" disabled>
+ </form>
+ 
++<script src="/reaper_util.js"></script>
+ <script>
+ var NV = {
+   enable: '<% nvram_get("rtraf_enable"); %>',
+@@ -308,8 +309,8 @@ function setStalled(s){ if(s===stalled)return; stalled=s;
+   document.getElementById('statuspill').className='pill'+(s?' stall':''); setPill(); }
+ 
+ /* ---- formatting ---- */
+-function fmtBps(b){ b=+b||0; if(b>=1e9)return (b/1e9).toFixed(2)+' Gb/s'; if(b>=1e6)return (b/1e6).toFixed(1)+' Mb/s'; if(b>=1e3)return (b/1e3).toFixed(0)+' kb/s'; return b.toFixed(0)+' b/s'; }
+-function fmtBytes(b){ b=+b||0; if(b>=1e12)return (b/1e12).toFixed(2)+' TB'; if(b>=1e9)return (b/1e9).toFixed(2)+' GB'; if(b>=1e6)return (b/1e6).toFixed(1)+' MB'; if(b>=1e3)return (b/1e3).toFixed(0)+' KB'; return b+' B'; }
++function fmtBps(b){ return ReaperFmt.bps(b); }        /* D3: shared decimal-SI formatters (reaper_util.js) */
++function fmtBytes(b){ return ReaperFmt.bytes(b); }
+ function esc(s){ return String(s).replace(/[<>&"']/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c];}); }
+ var PORTS={20:'FTP',21:'FTP',22:'SSH',25:'SMTP',53:'DNS',80:'HTTP',110:'POP3',143:'IMAP',443:'HTTPS/QUIC',465:'SMTPS',587:'SMTP',993:'IMAPS',3074:'Xbox',3478:'STUN/RTC',5060:'SIP',5061:'SIP',8080:'HTTP-alt',51413:'BitTorrent',32400:'Plex'};
+ function portName(p,proto){ if(PORTS[p]) return PORTS[p]+' ('+p+')'; if(p>=6881&&p<=6999) return 'BitTorrent ('+p+')'; if(p>=27000&&p<=27100) return 'Game ('+p+')'; return (proto===17?'UDP ':proto===6?'TCP ':'')+p; }
+@@ -335,42 +336,15 @@ function getJSON(f, cb){
+    dashboard - keyed by lowercase MAC, plus an IP->MAC map for rows where the
+    collector only knew the IP. Fetched once at load; rows fall back to raw
+    ip/mac until (or unless) it answers. ---- */
+-var CLNAME={}, IP2MAC={};
+-/* reaper: seed names from custom_clientlist (the persistent master client store) so a
+-   device that is OFFLINE - and therefore absent from the live networkmap get_clientlist
+-   below - still shows its user-assigned name in the history views (24h / week / month)
+-   instead of falling back to a bare IP/MAC. The live list still overwrites these with the
+-   freshest nickName for currently-online devices. Entry format: <name>mac>group>type>... */
+-(function seedCustomNames(){
+-  try{
+-    var raw=decodeURIComponent('<% nvram_char_to_ascii("", "custom_clientlist"); %>').replace(/&#62/g, ">").replace(/&#60/g, "<");
+-    var ents=raw.split('<');
+-    for(var i=0;i<ents.length;i++){
+-      if(!ents[i]) continue;
+-      var f=ents[i].split('>'), nm=f[0]||'', mac=(f[1]||'').toLowerCase();
+-      if(nm && mac.indexOf(':')>-1) CLNAME[mac]=nm;
+-    }
+-  }catch(e){}
+-})();
+-function fetchClNames(){
+-  var x=new XMLHttpRequest();
+-  x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+Date.now(),true);
+-  x.onreadystatechange=function(){
+-    if(x.readyState!==4||x.status!==200) return;
+-    try{
+-      var j=JSON.parse(x.responseText), cl=j.get_clientlist||j, ml=cl.maclist||[];
+-      for(var i=0;i<ml.length;i++){ var mac=String(ml[i]), c=cl[mac]; if(!c) continue;
+-        var nm=(c.nickName&&String(c.nickName).length)?String(c.nickName):((c.name&&String(c.name).length)?String(c.name):'');
+-        var lm=mac.toLowerCase(); if(nm) CLNAME[lm]=nm; if(c.ip) IP2MAC[c.ip]=lm; }
+-    }catch(e){}
+-  };
+-  x.send();
+-}
++/* D1: device-name resolution moved to reaper_util.js. ReaperNames indexes by MAC + IP,
++   seeded from custom_clientlist (so OFFLINE devices keep their user-assigned name in the
++   24h/week/month views) then overwritten by the freshest live nickName. Kicked off in
++   init() below via ReaperNames.refresh(); devCell() reads it through byMac()/macForIp(). */
+ /* one-cell identity block: name on top when known, "ip - mac" subline.
+    mac may be an IP (collector key fallback) - only shown when it has ':'. */
+ function devCell(ip, mac){
+-  var m=String(mac||IP2MAC[ip]||'').toLowerCase(); if(m.indexOf(':')<0) m='';
+-  var nm=CLNAME[m]||'';
++  var m=String(mac||ReaperNames.macForIp(ip)||'').toLowerCase(); if(m.indexOf(':')<0) m='';
++  var nm=ReaperNames.byMac(m,'');
+   var head=nm||ip||m.toUpperCase();
+   var bits=[];
+   if(nm&&ip) bits.push(esc(ip));
+@@ -599,7 +573,7 @@ document.addEventListener('keydown',function(e){ if(e.key==='Escape')faqClose();
+ /* ---- init ---- */
+ try{ var pm=localStorage.getItem('rtraf_pollms'); if(pm){ pollMs=parseInt(pm,10)||1000; if(pollMs===200) pollMs=100; /* v1.5.3: Live option tightened 200->100ms */ } }catch(e){}
+ document.getElementById('pollrate').value=String(pollMs);   /* always sync: first option is Live(100ms), default stays 1s */
+-fetchClNames();
++ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){});
+ document.getElementById('tg_enable').checked = (NV.enable!=='0');
+ /* v1.9.1: read-only reflection of the location now managed on the Storage tab */
+ (function(){ var LOC={'':`<#RDST_03#>`,'jffs':`<#RDST_04#>`,'usb':`<#RDST_05#>`};
+diff --git a/release/src/router/www/Reaper_USB.asp b/release/src/router/www/Reaper_USB.asp
+index 3bc72d0a23..a559f0d44f 100644
+--- a/release/src/router/www/Reaper_USB.asp
++++ b/release/src/router/www/Reaper_USB.asp
+@@ -28,7 +28,7 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 490d439c86..5cd2756874 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -18,7 +18,7 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#d9a441; --danger:#FF3B30;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+diff --git a/release/src/router/www/Reaper_WiFiPro.asp b/release/src/router/www/Reaper_WiFiPro.asp
+index a8d22d061d..a5c5551e4c 100644
+--- a/release/src/router/www/Reaper_WiFiPro.asp
++++ b/release/src/router/www/Reaper_WiFiPro.asp
+@@ -12,7 +12,7 @@
+  --line:rgba(236,231,219,.09);--line2:rgba(236,231,219,.16);
+  --red:#E10600;--red-deep:#B3000C;--red-dim:rgba(225,6,0,.14);
+  --bone:#ECE7DB;--bone-dim:#B7B1A4;--steel:#71767b;--jade:#4FB286;--amber:#E0A93B;--ice:#7EA6C9;
+- --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++ --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --labelcol:minmax(210px,330px);--fieldcol:minmax(140px,192px);--bands:3;}
+ *{box-sizing:border-box}html,body{margin:0}
+ body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index a3f901aebd..b38b40b361 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -21,7 +21,7 @@
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+   --jade:#4FB286; --amber:#E0A93B;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+ }
+ *{box-sizing:border-box}
+ html,body{margin:0;min-height:100%}
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+new file mode 100755
+index 0000000000..8be7144176
+--- /dev/null
++++ b/release/src/router/www/reaper_util.js
+@@ -0,0 +1,99 @@
++/* reaper_util.js - shared device-name resolver + byte/rate formatters.
++ *
++ * D1 (backlog): the get_clientlist + nickName||name resolver was reimplemented in
++ * Reaper_Traffic / Reaper_Conn / Reaper_QoS with three different keyings (lc-MAC+IP,
++ * IP-only, lc-MAC). This is the single implementation: one index keyed by BOTH
++ * lowercase MAC and IP, seeded from the persistent custom_clientlist master store
++ * (so OFFLINE devices keep their user-assigned name - the v2.2.5 Traffic behaviour,
++ * now shared by all three pages) and then overwritten by the freshest live nickName.
++ * The server-side custom_clientlist string is still injected per-page via the ASP
++ * <% nvram_char_to_ascii %> tag (a .js file is not ASP-processed) and passed to
++ * refresh(); everything else lives here.
++ *
++ * D3 (backlog): one decimal-SI (1000-based) byte formatter + the bit-rate formatters,
++ * so pages stop each carrying their own slightly-drifted copy. QoS bandwidth CAPS stay
++ * on their own 1024 bit formatter by design (a bitrate cap is a different quantity).
++ */
++window.ReaperNames = (function(){
++  var byMac = {}, ip2mac = {};
++  function nrm(m){ return String(m == null ? '' : m).toLowerCase(); }
++
++  /* parse the ASP-injected custom_clientlist tuple string: <name>mac>group>type>... */
++  function seedCustom(raw){
++    if(!raw) return;
++    try{
++      var s = decodeURIComponent(raw).replace(/&#62/g, '>').replace(/&#60/g, '<');
++      var ents = s.split('<');
++      for(var i = 0; i < ents.length; i++){
++        if(!ents[i]) continue;
++        var f = ents[i].split('>'), nm = f[0] || '', mac = nrm(f[1]);
++        if(nm && mac.indexOf(':') > -1) byMac[mac] = nm;   /* live list overwrites below */
++      }
++    }catch(e){}
++  }
++
++  /* fetch the live networkmap client list once; nickName||name; key by lc-MAC and IP.
++     cb(clientListObj|null) lets a caller do page-specific work (e.g. QoS datalist)
++     with the same fetched payload - no second request. */
++  function fetchLive(cb){
++    var x = new XMLHttpRequest();
++    x.open('GET', '/appGet.cgi?hook=get_clientlist()&_=' + Date.now(), true);
++    x.timeout = 6000;
++    x.onreadystatechange = function(){
++      if(x.readyState !== 4) return;
++      var cl = null;
++      if(x.status === 200){
++        try{
++          var j = JSON.parse(x.responseText); cl = j.get_clientlist || j;
++          var ml = cl.maclist || [];
++          for(var i = 0; i < ml.length; i++){
++            var mac = String(ml[i]), c = cl[mac]; if(!c) continue;
++            var nm = (c.nickName && String(c.nickName).length) ? String(c.nickName)
++                   : ((c.name && String(c.name).length) ? String(c.name) : '');
++            var lm = nrm(mac);
++            if(nm) byMac[lm] = nm;            /* freshest live name wins over custom */
++            if(c.ip) ip2mac[c.ip] = lm;
++          }
++        }catch(e){ cl = null; }
++      }
++      if(cb) cb(cl);
++    };
++    x.onerror = x.ontimeout = function(){ if(cb) cb(null); };
++    x.send();
++  }
++
++  return {
++    /* customRaw = the page's ASP-injected custom_clientlist string (may be ''). */
++    refresh: function(customRaw, cb){ seedCustom(customRaw); fetchLive(cb); },
++    /* name for a MAC; fb defaults to '' (Traffic/Conn), pass the MAC for QoS. */
++    byMac: function(mac, fb){ var n = byMac[nrm(mac)]; return (n !== undefined && n !== '') ? n : (fb !== undefined ? fb : ''); },
++    /* name for an IP (via the live IP->MAC index). */
++    byIp: function(ip, fb){ var m = ip2mac[ip], n = m ? byMac[m] : undefined; return (n !== undefined && n !== '') ? n : (fb !== undefined ? fb : ''); },
++    /* the lc-MAC the live list mapped to this IP (Traffic identity cell), or ''. */
++    macForIp: function(ip){ return ip2mac[ip] || ''; }
++  };
++})();
++
++/* D3: one decimal-SI byte formatter + bit-rate formatters. Both bit-rate label styles
++   are provided ("Mb/s" and "Mbps") so no page's rate label text changes; the numeric
++   logic (thresholds, decimals, 1000-base) is what gets unified. */
++window.ReaperFmt = {
++  bytes: function(b){ b = +b || 0;
++    if(b >= 1e12) return (b/1e12).toFixed(2) + ' TB';
++    if(b >= 1e9)  return (b/1e9).toFixed(2)  + ' GB';
++    if(b >= 1e6)  return (b/1e6).toFixed(1)  + ' MB';
++    if(b >= 1e3)  return (b/1e3).toFixed(0)  + ' KB';
++    return b + ' B'; },
++  /* bit/s with "b/s" family label (Reaper_Traffic style) */
++  bps: function(b){ b = +b || 0;
++    if(b >= 1e9) return (b/1e9).toFixed(2) + ' Gb/s';
++    if(b >= 1e6) return (b/1e6).toFixed(1) + ' Mb/s';
++    if(b >= 1e3) return (b/1e3).toFixed(0) + ' kb/s';
++    return b.toFixed(0) + ' b/s'; },
++  /* bit/s with "bps" family label (Reaper_Conn style) */
++  rate: function(b){ b = +b || 0;
++    if(b >= 1e9) return (b/1e9).toFixed(2) + ' Gbps';
++    if(b >= 1e6) return (b/1e6).toFixed(0) + ' Mbps';
++    if(b >= 1e3) return (b/1e3).toFixed(0) + ' Kbps';
++    return Math.round(b) + ' bps'; }
++};
+-- 
+2.25.1
+

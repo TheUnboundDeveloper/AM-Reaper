@@ -1,0 +1,73 @@
+From 2354f0af13dc174d3b543f4a20b843c51695c8d1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 8 Aug 2026 07:52:49 -0400
+Subject: [PATCH 358/369] de-merlin: rename auto_firmware_check_merlin ->
+ _reaper (syslog branding)
+
+The watchdog firmware-update scheduler logs via FAUPGRADE_DBG, which prints
+__FUNCTION__ -- so the periodic check leaked the Merlin name to syslog:
+  WATCHDOG: [FAUPGRADE][auto_firmware_check_merlin:(12390)]do webs_update
+This is the Reaper GitHub update-check driver, just still carrying the stock
+function name. Rename it (decl in rc.h, call + def in watchdog.c) so the log
+reads auto_firmware_check_reaper. No behaviour change.
+
+(adjust_merlin_config in format.c is left as-is: internal stock/Merlin config
+migration, its only __FUNCTION__ log is commented out, never hits syslog.)
+
+Bump EXTENDNO to Reaper_v2.2.9.
+---
+ release/src-rt/version.conf      | 2 +-
+ release/src/router/rc/rc.h       | 2 +-
+ release/src/router/rc/watchdog.c | 4 ++--
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index a6f09f32bb..66c48fb978 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.2.8
++EXTENDNO=Reaper_v2.2.9
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 68f69749c7..f84f3db0e3 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2076,7 +2076,7 @@ extern void timecheck(void);
+ extern void led_DSLWAN(int force_update);
+ #endif
+ #ifdef RTCONFIG_MERLINUPDATE
+-extern void auto_firmware_check_merlin();
++extern void auto_firmware_check_reaper();
+ #endif
+ 
+ // check_watchdog.c
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 1831f730a9..cee8439330 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -11900,7 +11900,7 @@ wdp:
+ #if 0
+ 	auto_firmware_check();
+ #elif RTCONFIG_MERLINUPDATE
+-	auto_firmware_check_merlin();
++	auto_firmware_check_reaper();
+ #ifdef RTCONFIG_NOTIFICATION_CENTER
+ 	noti_new_fw_available();
+ #endif
+@@ -12300,7 +12300,7 @@ int wdg_monitor_main(int argc, char *argv[])
+ 
+ #ifdef RTCONFIG_MERLINUPDATE
+ // Asuswrt-Merlin's code, without the auto-upgrade and debug logging
+-void auto_firmware_check_merlin()
++void auto_firmware_check_reaper()
+ {
+ 	int periodic_check = 0;
+ 	static time_t periodic_check_timestamp = 0;
+-- 
+2.25.1
+

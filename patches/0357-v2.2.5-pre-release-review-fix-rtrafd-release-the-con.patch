@@ -1,0 +1,47 @@
+From 0008280781c72664ac04569236abeb3d9c8d34d9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 7 Aug 2026 17:36:35 -0400
+Subject: [PATCH] v2.2.5 pre-release review fix: rtrafd - release the conntrack
+ fd if the health probe is disabled mid-cycle
+
+Five-agent pre-release review of v2.2.4+v2.2.5 found no Critical/High/Medium
+issues. The one Low (found independently by two reviewers): if nvram rtraf_hprobe
+(the opt-in, default-off per-device health probe) is turned OFF while the health
+cycle is mid-SCAN, the cfg_hprobe-gated main-loop block stops running and the open
+/proc/net/nf_conntrack handle (hp_ctf) is never fclosed - one leaked fd until the
+probe is re-enabled (health_conn_begin closes the stale handle) or the process
+exits. Single fd, self-healing, opt-in feature; not accumulating, not a crash.
+
+Fix: right after the 1 Hz refresh_cfg(), if the probe is now off and a cycle is
+still open, fclose hp_ctf and reset h_phase to HP_IDLE. Only acts on the disable
+transition, so the normal probe-on path is unchanged.
+
+No version bump (rides v2.2.5); BE96U MCP rebuilt+reshipped with the fix.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index a3adfabe42..7e44131c48 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -1850,6 +1850,14 @@ int main(int argc, char **argv)
+ 		}
+ 		if (tick % TPS == 0) {
+ 			refresh_cfg();	/* reload cached nvram config at 1 Hz, not per tick */
++			/* v2.2.5 review: if the health probe is turned OFF mid-cycle, the
++			 * cfg_hprobe-gated block below stops running - release the conntrack
++			 * handle and reset the phase so no fd is held while it's disabled
++			 * (also self-heals on re-enable, but don't wait for that). */
++			if (!cfg_hprobe && h_phase != HP_IDLE) {
++				if (hp_ctf) { fclose(hp_ctf); hp_ctf = NULL; }
++				h_phase = HP_IDLE;
++			}
+ 			check_quota();	/* monthly cap: once a second is plenty */
+ 			/* late store attach: the medium (USB especially) may mount minutes
+ 			 * after boot. Retry cheaply at 1 Hz; on success restore history.
+-- 
+2.25.1
+

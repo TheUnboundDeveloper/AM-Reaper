@@ -1,0 +1,65 @@
+From a25d901712b29c06755f92350c4306238e0b3286 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 1 Aug 2026 13:16:27 -0400
+Subject: [PATCH] reaper v2.0.1: fix Samba 4 account enrollment - smbpasswd
+ needs -c /etc/smb.conf
+
+Metal (owner RT-BE96U, v2.0.1): smbd started fine but NO login worked -> every
+session dropped to guest -> "Encryption is not supported for guest access".
+Root cause: /etc/samba/smbpasswd came up EMPTY on boot even though the account
+list has users. start_samba() enrolls accounts with `smbpasswd -s -a <user>`,
+but WITHOUT -c the tool uses Samba 4's compiled default config path
+(/etc/samba/smb.conf, per `smbd -b`), not this build's /etc/smb.conf -- so it
+wrote the passdb to the wrong place and smbd's own passdb (smb passwd file =
+/etc/samba/smbpasswd, read via `smbd -s /etc/smb.conf`) stayed empty. Result:
+account-mode shares (valid users = <acct>) rejected every login.
+
+Fix: pass `-c /etc/smb.conf` on all three SAMBA4 smbpasswd enrollment calls
+(nobody + PMS-account loop + acc_list loop) so entries land in the passdb smbd
+actually reads. Verified on metal: `smbpasswd -c /etc/smb.conf -a admin`
+populated /etc/samba/smbpasswd and the Windows `net use /user:admin` mounted the
+share. (SAMBA36X paths use the old `smbpasswd "user" "pass"` form and are
+untouched.)
+
+Completes the Samba 4 fix set: lib path (ld.so.conf) + runtime dirs +
+map-to-guest + this enrollment fix = SMB works out of the box.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/rc/usb.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 415a2a3425..72b21e3420 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3574,7 +3574,7 @@ start_samba(void)
+ 	//system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -s -a nobody");
+ 	system("/usr/sbin/smbpasswd nobody \"\"");
+ #elif defined(RTCONFIG_SAMBA4)
+-	system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -s -a nobody");
++	system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a nobody");
+ #else
+ 	system("smbpasswd nobody \"\"");
+ #endif
+@@ -3611,7 +3611,7 @@ start_samba(void)
+ 		//snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ 		snprintf(cmd, sizeof(cmd), "/usr/sbin/smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #elif defined(RTCONFIG_SAMBA4)
+-		snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
++		snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ #else
+ 		snprintf(cmd, sizeof(cmd), "smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #endif
+@@ -3666,7 +3666,7 @@ start_samba(void)
+ 			//snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ 			snprintf(cmd, sizeof(cmd), "/usr/sbin/smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #elif defined(RTCONFIG_SAMBA4)
+-			snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
++			snprintf(cmd, sizeof(cmd), "echo -e \"%s\n%s\n\"  |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a \"%s\"", suit_passwd, suit_passwd, suit_user);
+ #else
+ 			snprintf(cmd, sizeof(cmd), "smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #endif
+-- 
+2.25.1
+

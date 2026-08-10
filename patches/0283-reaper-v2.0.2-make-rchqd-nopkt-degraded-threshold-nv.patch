@@ -1,0 +1,74 @@
+From c0d79ec5ba39ad403a5eb42df5b95682b37f998c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 1 Aug 2026 15:38:33 -0400
+Subject: [PATCH] reaper v2.0.2: make rchqd nopkt "degraded" threshold
+ nvram-tunable
+
+The channel-quality monitor flagged "degraded" at a hardcoded smoothed-nopkt
+threshold of 20%. Make it tunable via nvram rchq_degraded, re-read live on each
+tick (like rchq_enable already is), so it can be adjusted with no rebuild and no
+daemon restart. Unset / out-of-range (<=0 or >100) falls back to the compiled
+default RCHQ_DEGRADED (20), so stock behavior is unchanged.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/rchqd/rchqd.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rchqd/rchqd.c b/release/src/router/rchqd/rchqd.c
+index 68b850eb8e..7a3cd1c7da 100644
+--- a/release/src/router/rchqd/rchqd.c
++++ b/release/src/router/rchqd/rchqd.c
+@@ -42,7 +42,7 @@
+ #define RCHQ_LIVE	RCHQ_DIR "/live.json"
+ #define RCHQ_TICK	10		/* seconds between passive samples */
+ #define RCHQ_MAXUNIT	3		/* quad-band ceiling */
+-#define RCHQ_DEGRADED	20		/* smoothed nopkt %% at/above = degraded advisory */
++#define RCHQ_DEGRADED	20		/* default smoothed nopkt %% at/above = degraded; override via nvram rchq_degraded */
+ #define RCHQ_LOG_HOLDOFF 900		/* min seconds between repeat degraded syslogs per radio */
+ 
+ static volatile sig_atomic_t running = 1;
+@@ -189,7 +189,7 @@ int main(int argc, char **argv)
+ 	while (running) {
+ 		char ifname[32], hex[32], rkey[32];
+ 		FILE *f;
+-		int unit, first = 1, s;
++		int unit, first = 1, s, degraded_thresh;
+ 
+ 		/* honor a runtime disable without needing a signal */
+ 		if (!nvram_get_int("rchq_enable")) {
+@@ -197,6 +197,13 @@ int main(int argc, char **argv)
+ 			break;
+ 		}
+ 
++		/* reaper: nopkt "degraded" threshold is nvram-tunable (rchq_degraded),
++		 * re-read live each tick; falls back to the compiled default if unset
++		 * or out of range. */
++		degraded_thresh = nvram_get_int("rchq_degraded");
++		if (degraded_thresh <= 0 || degraded_thresh > 100)
++			degraded_thresh = RCHQ_DEGRADED;
++
+ 		/* the JSON snapshot is best-effort: sampling and the syslog trail
+ 		 * below run regardless, so a full tmpfs cannot blind the log */
+ 		if ((f = fopen(tmp, "w")) != NULL)
+@@ -230,7 +237,7 @@ int main(int argc, char **argv)
+ 			/* EWMA: new = 3/4 old + 1/4 sample */
+ 			if (!have_ewma[unit]) { ewma_nopkt[unit] = nopkt; have_ewma[unit] = 1; }
+ 			else ewma_nopkt[unit] = (ewma_nopkt[unit] * 3 + nopkt) / 4;
+-			degraded = (ewma_nopkt[unit] >= RCHQ_DEGRADED) ? 1 : 0;
++			degraded = (ewma_nopkt[unit] >= degraded_thresh) ? 1 : 0;
+ 
+ 			if (degraded && !log_degraded[unit]) {
+ 				time_t now = mono_now();
+@@ -238,7 +245,7 @@ int main(int argc, char **argv)
+ 					syslog(LOG_WARNING,
+ 						"rchqd: wl%d (%s, %s) channel quality degraded - avg nopkt %d%% (threshold %d%%); run Auto Scan on the Wireless page for a cleaner channel",
+ 						unit, ifname, cs_pretty[unit][0] ? cs_pretty[unit] : "?",
+-						ewma_nopkt[unit], RCHQ_DEGRADED);
++						ewma_nopkt[unit], degraded_thresh);
+ 					log_last[unit] = now; log_ever[unit] = 1;
+ 					log_degraded[unit] = 1;
+ 				}
+-- 
+2.25.1
+

@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Patch series is gapless and single-identity
         run: |
@@ -42,9 +42,12 @@ jobs:
           # GPL provenance. So we don't require a single identity - we hard-block only the two
           # bad states we've actually hit: the owner's personal gmail, and the reaper@localhost
           # default that a From:-normalization miss leaves behind.
-          badid=$(grep -m1 -H '^From: ' *.patch | grep -Ei 'e2hoodyhoo|@localhost' || true)
+          # @local(host)? — the bare-hostname defaults a From:-normalization miss
+          # leaves behind. Both spellings have shipped: reaper@localhost in the
+          # v1.8.x regen batch, reaper@local in 0354-0356 (v2.2.5/v2.2.6 rung).
+          badid=$(grep -m1 -H '^From: ' *.patch | grep -Ei 'e2hoodyhoo|@local(host)?>' || true)
           if [ -n "$badid" ]; then
-            echo "::error::patches with a disallowed From: identity (owner gmail or @localhost):"
+            echo "::error::patches with a disallowed From: identity (owner gmail or @local/@localhost):"
             echo "$badid"
             exit 1
           fi

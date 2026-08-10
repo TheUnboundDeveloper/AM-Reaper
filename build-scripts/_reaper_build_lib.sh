@@ -38,13 +38,117 @@ TDIR=$P/targets/96813GW
 : "${REAPER_JOBS:=1}"
 _rb_variant() {   # $1 = MCP|noMCP
   local label="$1"
+
+  # STALE-CONFIGURE GUARD (2026-08-09). `<pkg>/Makefile: <pkg>/configure` never
+  # re-fires on a warm tree because tarball configure scripts carry an epoch
+  # mtime, so a patch that changes --enable/--disable flags is silently inert.
+  # strongswan shipped that way for three weeks across all five models before a
+  # CI-vs-local image diff caught it. --fix clears the stale state so the next
+  # build re-configures; a clean tree (CI) is a no-op.
+  local _sc="$(dirname "${BASH_SOURCE[0]}")/reaper_stale_configure.sh"
+  if [ -x "$_sc" ] || [ -f "$_sc" ]; then
+    echo "=== [$label] stale-configure guard ==="
+    bash "$_sc" --fix "$R" || true
+  fi
+
   cd "$P" || return 9
   rm -f .config "config_${TARGET}" "$R"/release/src/router/zlib/stamp-h1
   echo "=== [$label] make $TARGET pass1 (regen; may die at setprofile, -j${REAPER_JOBS}) $(date) ==="
-  nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}" >/dev/null 2>&1; echo "[$label] pass1_exit=$?"
+  # Pass 1 is silenced because it is EXPECTED to die at setprofile. On a cold
+  # tree that is a problem: the samba crypto chain (zlib/gmp/nettle/gnutls) is
+  # built HERE, so discarding pass 1 throws away every compile and link line for
+  # it. A chain failure then surfaces only in pass 2 as a bare
+  #   install: cannot stat '.libs/libgmp.so.10.4.1'
+  # with no build output anywhere in the log to explain it -- which is exactly
+  # how the first two clean-room CI runs failed undiagnosably.
+  # Local builds keep the quiet default; set REAPER_PASS1_LOG=<path> to capture.
+  local _p1rc
+  if [ -n "${REAPER_PASS1_LOG:-}" ]; then
+    nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}" >"$REAPER_PASS1_LOG" 2>&1; _p1rc=$?
+  else
+    nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}" >/dev/null 2>&1; _p1rc=$?
+  fi
+  echo "[$label] pass1_exit=$_p1rc"
+
+  # COLD-TREE GUARD (2026-08-09, found by the first clean-room CI build).
+  # samba-4.15.13/build/ is gitignored, so a fresh clone has no crypto chain.
+  # build-reaper.sh only builds that chain when staging/lib/libgnutls.so.30 is
+  # absent, and it `tar xf`s the dep tarballs OVER whatever is already there.
+  # Pass 1 legitimately dies at setprofile, leaving gmp half-built; pass 2 then
+  # re-extracts on top, make treats libgmp.la as current, and `make install`
+  # copies .libs/libgmp.so.10.4.1 -- which was never linked:
+  #   /usr/bin/install: cannot stat '.libs/libgmp.so.10.4.1': No such file
+  # Clearing a demonstrably incomplete chain makes pass 2 build it from scratch.
+  # NO-OP on a warm tree (the .so exists), so local builds are unaffected.
+  # The guard reports on EVERY path, not just when it fires. A guard that is
+  # silent when it decides to do nothing is indistinguishable in the log from a
+  # guard that never ran -- which is precisely why run #2 could not be read: it
+  # was impossible to tell whether gmp was built in pass 1 (discarded) or in
+  # pass 2 (logged), and therefore whether the evidence existed at all.
+  local _sam="$R/release/src/router/samba-4.15.13"
+  if [ ! -d "$_sam/build" ]; then
+    echo "[$label] cold-tree guard: no samba build/ after pass1 -- pass2 builds the crypto chain from scratch"
+  elif [ ! -e "$_sam/build/staging/lib/libgnutls.so.30" ]; then
+    echo "[$label] cold-tree guard: FIRED -- chain incomplete after pass1 (no libgnutls.so.30); clearing build/"
+    echo "[$label]   staging/lib was: $(ls "$_sam/build/staging/lib" 2>/dev/null | tr '\n' ' ')"
+    echo "[$label]   gmp .so present: $(ls "$_sam"/build/gmp-6.2.1/.libs/libgmp.so.10.4.1 2>/dev/null || echo NO)"
+    rm -rf "$_sam/build" "$_sam/.reaper-built"
+  else
+    echo "[$label] cold-tree guard: not needed -- crypto chain complete after pass1 (libgnutls.so.30 staged)"
+  fi
+
   echo "=== [$label] make $TARGET pass2 (-j${REAPER_JOBS}) $(date) ==="
-  nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}"; echo "[$label] MAKE_EXIT=$?"
+  local _p2rc
+  nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}"; _p2rc=$?
+  echo "[$label] MAKE_EXIT=$_p2rc"
+  [ "$_p2rc" -eq 0 ] || _rb_crypto_postmortem "$label"
   cd "$R" || return 1
+}
+
+# Called only when pass 2 failed. The samba crypto chain is the one part of the
+# build whose failure mode is silent -- `make all` can report success while the
+# shared object was never linked, so the error lands in `make install` and names
+# a file, not a cause. This answers the questions that actually discriminate:
+# was the library linked at all, does the .la claim a shared name, and does make
+# consider it up to date against sources a re-extract may have back-dated.
+_rb_crypto_postmortem() {   # $1 = label
+  local label="$1" S="$R/release/src/router/samba-4.15.13" G
+  G="$S/build/gmp-6.2.1"
+  echo "--- [$label] crypto-chain post-mortem ---"
+  echo "  staging/lib : $(ls "$S/build/staging/lib" 2>/dev/null | tr '\n' ' ')"
+  if [ -d "$G" ]; then
+    if ls "$G"/.libs/libgmp.so* >/dev/null 2>&1; then
+      ls -l "$G"/.libs/libgmp.so* 2>/dev/null | sed 's/^/    /'
+    else
+      echo "    NO .libs/libgmp.so* -- the shared link never ran"
+    fi
+    if [ -f "$G/libgmp.la" ]; then
+      grep -E '^(dlname|library_names|installed)=' "$G/libgmp.la" | sed 's/^/    la: /'
+      echo "  sources newer than libgmp.la (would force a relink):"
+      find "$G" -maxdepth 1 -name '*.c' -newer "$G/libgmp.la" 2>/dev/null | head -3 | sed 's/^/    /'
+      echo "  libgmp.la mtime: $(stat -c%y "$G/libgmp.la" 2>/dev/null)"
+    else
+      echo "    libgmp.la absent -- gmp never reached its link step"
+    fi
+    # The three values that decide which link branch libtool takes. gmp is the
+    # longest link in the build and the only one that fails, and in CI libtool
+    # emitted no link command at all -- so these are the numbers that explain
+    # it. Locally: max_cmd_len=1572864, and the link succeeds.
+    if [ -f "$G/libtool" ]; then
+      echo "  libtool link-branch config:"
+      grep -E '^(max_cmd_len|file_list_spec|with_gnu_ld|archive_cmds|build_libtool_libs)=' \
+        "$G/libtool" | cut -c1-160 | sed 's/^/    /'
+    fi
+    echo "  lt_cv_sys_max_cmd_len in env: ${lt_cv_sys_max_cmd_len:-<unset>}"
+  else
+    echo "  no gmp build dir (chain not reached, or cleared by the cold-tree guard)"
+  fi
+  [ -n "${REAPER_PASS1_LOG:-}" ] && [ -f "$REAPER_PASS1_LOG" ] && {
+    echo "  pass1 crypto-chain lines (pass 1 is where the chain is built):"
+    grep -E '\[build-reaper\]|libgmp|mode=link|cannot stat|Error [0-9]' \
+      "$REAPER_PASS1_LOG" 2>/dev/null | tail -25 | sed 's/^/    /'
+  }
+  echo "--- end post-mortem ---"
 }
 
 reaper_ship() {   # $1 = VER

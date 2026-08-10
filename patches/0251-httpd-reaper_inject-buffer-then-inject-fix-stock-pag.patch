@@ -1,0 +1,218 @@
+From 48797633cf7e77a243780d93de1cb577f00cdff6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 28 Jul 2026 14:10:26 -0400
+Subject: [PATCH] httpd/reaper_inject: buffer-then-inject (fix stock-page
+ garble, v1.8.6c)
+
+The theme injection streamed do_ej output through a fopencookie filter that
+held a partial </head> prefix mid-stream. A held/delayed prefix reorders
+against any bytes reaching the socket outside the filter - the HTTP status/
+headers already written to conn_fp, or a handler's direct write - producing
+binary garble + leaked response headers on complex stock pages
+(field-reported: Advanced_LAN_Content.asp on GT-BE98 v1.8.6b; metal-confirmed
+that nvram reaper_inject=0 clears it; language-independent).
+
+Fix: capture the whole generated page (open_memstream), locate the first
+</head> case-insensitively, emit head + block + tail in ONE ordered write.
+Nothing is held back, so nothing can be reordered. Fail-open on memstream
+failure (unfiltered stock output). Shared reaper code - port to all model
+branches after metal-validation on GT-BE98.
+---
+ release/src/router/httpd/reaper_inject.c | 146 +++++++++--------------
+ 1 file changed, 59 insertions(+), 87 deletions(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 7dfac701be..d9aa0334b6 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -12,12 +12,18 @@
+  * one-line hook in httpd.c.
+  *
+  * reaper_output() wraps mime_handler->output(). For text/html responses (and
+- * not the excluded chrome/login pages) it interposes a streaming filter
+- * (fopencookie) between the page generator (do_ej / do_*_ej) and the socket
+- * FILE*, emitting the reaper block exactly once immediately before the first
+- * </head>. Because do_ej serves every .asp/.htm INCLUDING the deeply nested
+- * SDN/MLO SPA docs (sdn.html/mlo.html), the theme now reaches every iframe
+- * depth uniformly.
++ * not the excluded chrome/login pages) it captures the whole generated page in
++ * memory (open_memstream), then emits head + reaper block + tail to the socket
++ * FILE* in a single ordered write, inserting the block exactly once immediately
++ * before the first </head>. Because do_ej serves every .asp/.htm INCLUDING the
++ * deeply nested SDN/MLO SPA docs (sdn.html/mlo.html), the theme now reaches
++ * every iframe depth uniformly.
++ *
++ * v1.8.6c: the earlier design streamed through a fopencookie filter that HELD a
++ * partial </head> prefix mid-stream; a held prefix reorders against bytes that
++ * reach the socket outside the filter (the HTTP headers, or a handler's direct
++ * write), which corrupted complex stock pages (Advanced_LAN_Content.asp garble).
++ * Buffer-then-inject holds nothing back, so nothing can be reordered.
+  *
+  * Safety: fail-open (any allocation failure -> unfiltered stock output) and
+  * gated by nvram 'reaper_inject' (default on; set to 0 + restart_httpd to serve
+@@ -156,15 +162,6 @@ static const char *reaper_native[] = {
+ 	NULL
+ };
+ 
+-struct reaper_filt {
+-	FILE	*dst;			/* the real socket stream (conn_fp) */
+-	int	 done;			/* block already injected */
+-	int	 hlen;			/* bytes currently held (a </head> prefix) */
+-	char	 hold[REAPER_TAGLEN];
+-	const char *block;		/* block to inject: stock (REAPER_BLOCK) vs native */
+-	size_t	 blocklen;		/* length of block (excludes NUL) */
+-};
+-
+ /* True when the (query-stripped) basename ends in .asp/.htm/.html. CGI
+  * endpoints also answer as text/html but emit tiny redirect stubs
+  * (login.cgi/login_v2.cgi meta-refresh, QIS_default.cgi, page_default.cgi);
+@@ -240,71 +237,44 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ }
+ 
+ /*
+- * fopencookie write hook. Streams the generator's output to st->dst, injecting
+- * REAPER_BLOCK once immediately before the first </head> (case-insensitive),
+- * tolerant of </head> split across write() calls and of false starts. Note that
+- * "</head>" has no repeating prefix (empty KMP border), so on any mismatch the
+- * correct recovery is to flush all held bytes and restart the match at the
+- * current byte.
++ * Case-insensitive search for "</head>" inside a length-bounded buffer (the
++ * generated page may contain embedded NULs from a hook, so no strcasestr).
+  */
+-static ssize_t reaper_cookie_write(void *cookie, const char *buf, size_t size)
++static char *reaper_find_tag(char *buf, size_t len)
+ {
+-	struct reaper_filt *st = (struct reaper_filt *)cookie;
+ 	size_t i;
+ 
+-	/* Once injected, the generator already batched its output — pass the
+-	 * whole chunk through in one fwrite instead of a per-byte fputc loop.
+-	 * </head> sits near the top of the document, so this is ~99% of a page. */
+-	if (st->done)
+-		return fwrite(buf, 1, size, st->dst) == size ? (ssize_t)size : -1;
+-
+-	for (i = 0; i < size; i++) {
+-		unsigned char c = (unsigned char)buf[i];
+-
+-		if (tolower(c) == (unsigned char)REAPER_TAG[st->hlen]) {
+-			st->hold[st->hlen++] = (char)c;
+-			if (st->hlen == REAPER_TAGLEN) {	/* full </head> held */
+-				fwrite(st->block, 1, st->blocklen, st->dst);
+-				fwrite(st->hold, 1, REAPER_TAGLEN, st->dst);
+-				st->done = 1;
+-				st->hlen = 0;
+-				/* flush the remainder of this chunk in one shot */
+-				if (i + 1 < size)
+-					fwrite(buf + i + 1, 1, size - i - 1, st->dst);
+-				return ferror(st->dst) ? -1 : (ssize_t)size;
+-			}
+-			continue;
+-		}
+-
+-		/* mismatch: flush the held prefix, then this byte may start a fresh one */
+-		if (st->hlen > 0) {
+-			fwrite(st->hold, 1, st->hlen, st->dst);
+-			st->hlen = 0;
+-		}
+-		if (tolower(c) == (unsigned char)REAPER_TAG[0])
+-			st->hold[st->hlen++] = (char)c;
+-		else
+-			fputc(c, st->dst);
+-	}
+-
+-	return ferror(st->dst) ? -1 : (ssize_t)size;
+-}
+-
+-static int reaper_cookie_close(void *cookie)
+-{
+-	struct reaper_filt *st = (struct reaper_filt *)cookie;
+-
+-	/* a partial </head> prefix stranded at EOF was never a real tag: emit it */
+-	if (!st->done && st->hlen > 0)
+-		fwrite(st->hold, 1, st->hlen, st->dst);
+-	return ferror(st->dst) ? -1 : 0;
++	if (len < REAPER_TAGLEN)
++		return NULL;
++	for (i = 0; i + REAPER_TAGLEN <= len; i++)
++		if (strncasecmp(buf + i, REAPER_TAG, REAPER_TAGLEN) == 0)
++			return buf + i;
++	return NULL;
+ }
+ 
++/*
++ * reaper_output - inject the reaper theme block immediately before the first
++ * </head> of a stock/native page, then emit head + block + tail to conn_fp in a
++ * SINGLE ordered pass.
++ *
++ * We buffer the whole generated page (open_memstream) rather than streaming it
++ * through a fopencookie filter that HELD a partial </head> prefix mid-stream.
++ * A held/delayed prefix reorders against any bytes that reach the socket
++ * outside our stream - the HTTP status/headers already written to conn_fp, or
++ * anything a handler emits directly - and that reordering corrupted complex
++ * stock pages (field-reported garble on Advanced_LAN_Content.asp, v1.8.6:
++ * binary bytes + leaked response headers). One ordered write removes that whole
++ * class: nothing is ever held back, so nothing can be reordered.
++ *
++ * Stock .asp pages are bounded (tens of KB). open_memstream failure fails open
++ * (serve the unfiltered stock page) - the page is never dropped, only unthemed.
++ */
+ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ {
+-	struct reaper_filt st;
+-	cookie_io_functions_t io;
+-	FILE *filt;
++	const char *block;
++	size_t blocklen, bodylen = 0;
++	char *body = NULL, *tag;
++	FILE *mem;
+ 	int mode;
+ 
+ 	if (!handler || !handler->output)
+@@ -316,27 +286,29 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 		return;
+ 	}
+ 
+-	st.dst  = conn_fp;
+-	st.done = 0;
+-	st.hlen = 0;
+ 	/* mode 2 = reaper-native page: inject the bounce block WITHOUT the
+ 	 * reaper_content.css <link> (it would fight the page's own chrome). */
+-	st.block    = (mode == 2) ? REAPER_NATIVE_BLOCK : REAPER_BLOCK;
+-	st.blocklen = (mode == 2) ? sizeof(REAPER_NATIVE_BLOCK) - 1 : sizeof(REAPER_BLOCK) - 1;
+-
+-	memset(&io, 0, sizeof(io));
+-	io.write = reaper_cookie_write;
+-	io.close = reaper_cookie_close;
++	block    = (mode == 2) ? REAPER_NATIVE_BLOCK : REAPER_BLOCK;
++	blocklen = (mode == 2) ? sizeof(REAPER_NATIVE_BLOCK) - 1 : sizeof(REAPER_BLOCK) - 1;
+ 
+-	filt = fopencookie(&st, "w", io);
+-	if (!filt) {				/* fail-open: serve unfiltered stock output */
++	mem = open_memstream(&body, &bodylen);
++	if (!mem) {				/* fail-open: serve unfiltered stock output */
+ 		handler->output(file, conn_fp);
+ 		return;
+ 	}
+-	setvbuf(filt, NULL, _IONBF, 0);		/* stream through per generator write */
++	handler->output(file, mem);		/* do_ej / do_*_ej write into memory */
++	fclose(mem);				/* flushes; body/bodylen now valid */
+ 
+-	handler->output(file, filt);		/* do_ej / do_*_ej write through us */
++	if (!body)				/* generator produced nothing */
++		return;
+ 
+-	fflush(filt);
+-	fclose(filt);				/* frees filt only; conn_fp is untouched */
++	tag = reaper_find_tag(body, bodylen);
++	if (tag) {
++		fwrite(body, 1, (size_t)(tag - body), conn_fp);			/* head */
++		fwrite(block, 1, blocklen, conn_fp);				/* inject */
++		fwrite(tag, 1, bodylen - (size_t)(tag - body), conn_fp);	/* </head> + tail */
++	} else {
++		fwrite(body, 1, bodylen, conn_fp);	/* no </head>: emit verbatim */
++	}
++	free(body);
+ }
+-- 
+2.25.1
+

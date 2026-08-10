@@ -1,0 +1,437 @@
+From 3a38a4c24dd2eaa04b19bcf95b677cdfaff854bd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 29 Jul 2026 17:53:52 -0400
+Subject: [PATCH] reaper v1.9.2: Devices page - MLO link awareness + offline
+ connection-dash fix
+
+Two metal-reported Rung A (Device Identity Manager) fixes:
+
+1. Offline/never-seen devices printed a literal "&mdash;" in the Connection
+   column: that cell was the one dash passed through esc(), so & became &amp;.
+   Build the connection cell as HTML like the other dash cells. (Worst for
+   upgraders: a reserved device that has not associated since the flash has no
+   band yet, so the placeholder showed until first connect.)
+
+2. Wi-Fi 7 MLO: wl assoclist reports each affiliated per-link MAC (locally-
+   administered, lease-less) so an MLO client surfaced as several scary
+   "Private addr / No lease" orphan rows. do_reaper_dev_cgi now detects MLO
+   fronthaul active (mld_enable=1 + non-empty mld{0,1,2}_ifnames) and flags such
+   stations mlo_link; the page labels them "MLO . <band>" with an explanatory
+   tooltip (RDEV_87) and stops counting them under Unnamed / Randomized /
+   Needs-attention. Zero behavior change when MLO is off. Row-merging into one
+   device per MLD is a follow-up (needs the driver link->MLD map).
+---
+ release/src-rt/version.conf               |  2 +-
+ release/src/router/httpd/web.c            | 20 ++++++++++++----
+ release/src/router/www/BR.dict            |  1 +
+ release/src/router/www/CN.dict            |  1 +
+ release/src/router/www/CZ.dict            |  1 +
+ release/src/router/www/DA.dict            |  1 +
+ release/src/router/www/DE.dict            |  1 +
+ release/src/router/www/EN.dict            |  1 +
+ release/src/router/www/ES.dict            |  1 +
+ release/src/router/www/FI.dict            |  1 +
+ release/src/router/www/FR.dict            |  1 +
+ release/src/router/www/HU.dict            |  1 +
+ release/src/router/www/IT.dict            |  1 +
+ release/src/router/www/JP.dict            |  1 +
+ release/src/router/www/KR.dict            |  1 +
+ release/src/router/www/MS.dict            |  1 +
+ release/src/router/www/NL.dict            |  1 +
+ release/src/router/www/NO.dict            |  1 +
+ release/src/router/www/PL.dict            |  1 +
+ release/src/router/www/RO.dict            |  1 +
+ release/src/router/www/RU.dict            |  1 +
+ release/src/router/www/Reaper_Devices.asp | 29 ++++++++++++++---------
+ release/src/router/www/SL.dict            |  1 +
+ release/src/router/www/SV.dict            |  1 +
+ release/src/router/www/TH.dict            |  1 +
+ release/src/router/www/TR.dict            |  1 +
+ release/src/router/www/TW.dict            |  1 +
+ release/src/router/www/UK.dict            |  1 +
+ 28 files changed, 60 insertions(+), 16 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index b3c7d91def..0b82e9ffdd 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.9.1
++EXTENDNO=Reaper_v1.9.2
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index e177613b99..c59be05537 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23147,7 +23147,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		FILE *f;
+ 		char *buf, *tok, *sp = NULL;
+ 		unsigned int lan_ip, lan_mask, lan_net, dstart, dend;
+-		int pool_size, gk_on;
++		int pool_size, gk_on, mlo_on;
+ 
+ 		lan_ip   = rdev_ip2u(nvram_safe_get("lan_ipaddr"));
+ 		lan_mask = rdev_ip2u(nvram_safe_get("lan_netmask"));
+@@ -23156,6 +23156,14 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		dend     = rdev_ip2u(nvram_safe_get("dhcp_end"));
+ 		pool_size = (dend >= dstart && dstart) ? (int)(dend - dstart + 1) : 0;
+ 		gk_on    = nvram_match("gk_enable", "1") ? 1 : 0;
++		/* MLO fronthaul active? mld_enable is the master switch (same flag the
++		 * stock Wireless page reads); a non-empty mld{0,1,2}_ifnames means a
++		 * Multi-Link Device is actually formed. When on, a client's per-link
++		 * affiliated MACs each appear in a radio assoclist as a locally-
++		 * administered, lease-less station - NOT a separate device. */
++		mlo_on = (nvram_match("mld_enable", "1") &&
++		          (*nvram_safe_get("mld0_ifnames") || *nvram_safe_get("mld1_ifnames") ||
++		           *nvram_safe_get("mld2_ifnames"))) ? 1 : 0;
+ 
+ 		/* 1. DHCP leases: known devices (ip + self-reported host) */
+ 		f = fopen("/var/lib/misc/dnsmasq.leases", "r");
+@@ -23272,7 +23280,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				if (!taken) { chosen = cand; break; }
+ 			}
+ 
+-			websWrite(stream, "{\"now\":%ld,\"gk_enable\":%d,", (long)time(NULL), gk_on);
++			websWrite(stream, "{\"now\":%ld,\"gk_enable\":%d,\"mlo\":%d,", (long)time(NULL), gk_on, mlo_on);
+ 			websWrite(stream, "\"pool\":{\"subnet\":\"%u.%u.%u\",\"start\":\"%s\",\"end\":\"%s\",\"size\":%d},",
+ 				(lan_net >> 24) & 0xff, (lan_net >> 16) & 0xff, (lan_net >> 8) & 0xff,
+ 				nvram_safe_get("dhcp_start"), nvram_safe_get("dhcp_end"), pool_size);
+@@ -23293,6 +23301,10 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 			int rin = (d->resv && rip && dstart && rip >= dstart && rip <= dend) ? 1 : 0;
+ 			int orphan = (d->resv && rip && lan_mask && (rip & lan_mask) != lan_net) ? 1 : 0;
+ 			int nolease = (d->wifi && !d->ip[0]) ? 1 : 0;
++			/* affiliated MLO link: a Wi-Fi-associated, locally-administered,
++			 * lease-less, un-reserved station while MLO is active = one radio
++			 * link of a multi-link device, not a device in its own right. */
++			int mlo_link = (mlo_on && d->wifi && !d->ip[0] && !d->resv && rdev_is_rand(d->mac)) ? 1 : 0;
+ 			int dup = 0, j;
+ 			const char *src;
+ 
+@@ -23319,8 +23331,8 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				d->gk_state, d->gk_expiry, d->resv ? 1 : 0, rin);
+ 			websWrite(stream, "\"resv_ip\":");
+ 			gk_json_esc(stream, d->resv_ip);
+-			websWrite(stream, ",\"rand\":%d,\"orphan\":%d,\"dup\":%d,\"nolease\":%d}",
+-				rdev_is_rand(d->mac), orphan, dup, nolease);
++			websWrite(stream, ",\"rand\":%d,\"orphan\":%d,\"dup\":%d,\"nolease\":%d,\"mlo_link\":%d}",
++				rdev_is_rand(d->mac), orphan, dup, nolease, mlo_link);
+ 		}
+ 		websWrite(stream, "]}");
+ 		return;
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index d289e42c82..45b6cb9d95 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 8774dc2fb3..45498e61d6 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index d8463ad2ab..234242acb4 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 70ebbf2861..27b05e760d 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 4865032de8..3d2675b1c7 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index a04ef6691a..6cbb960ec0 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index bf76f21fed..0f1e6cd396 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 891cec4d17..849c53e2ca 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 0029c84671..94c6f94f04 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 8c48da3fc9..e410f707a2 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 70b8d469ab..c5a9fbd5a4 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 1339b1fab7..43579aab44 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 25a23a30e0..0b8518dcfc 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 69806f21c6..6ba68e4949 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 232cf2ad83..d133dae3d8 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 87d9c27204..876b43a706 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 8e6e785500..b6183c5cd7 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 47c8c23182..1eee3b2c6c 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index f08847a4fc..76133d0821 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 7d7649aab6..ff90f26b73 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -195,7 +195,7 @@ var L = {
+   RDEV_77:`<#RDEV_77#>`, RDEV_78:`<#RDEV_78#>`, RDEV_79:`<#RDEV_79#>`, RDEV_80:`<#RDEV_80#>`,
+   RDEV_81:`<#RDEV_81#>`, RDEV_82:`<#RDEV_82#>`, RDEV_83:`<#RDEV_83#>`, RDEV_84:`<#RDEV_84#>`,
+   RDEV_85:`<#RDEV_85#>`, RDEV_86:`<#RDEV_86#>`, RDEV_62:`<#RDEV_62#>`, RDEV_63:`<#RDEV_63#>`,
+-  RDEV_64:`<#RDEV_64#>`
++  RDEV_64:`<#RDEV_64#>`, RDEV_87:`<#RDEV_87#>`
+ };
+ function T(id){ return L[id] || ''; }
+ function ago(sec){
+@@ -292,9 +292,9 @@ function render(){
+   var s = {
+     all: D.devices.length,
+     online: D.devices.filter(function(d){return d.online;}).length,
+-    unnamed: D.devices.filter(function(d){return !d.name;}).length,
++    unnamed: D.devices.filter(function(d){return !d.name && !d.mlo_link;}).length,
+     resv: D.devices.filter(function(d){return d.resv;}).length,
+-    rand: D.devices.filter(function(d){return d.rand;}).length,
++    rand: D.devices.filter(function(d){return d.rand && !d.mlo_link;}).length,
+     attn: issues.length
+   };
+   document.getElementById('stats').innerHTML =
+@@ -356,7 +356,7 @@ function buildIssues(){
+         actions: [{id:'unpin_dup', label:T('RDEV_49')}], macs: D.devices.filter(function(x){return x.resv_ip===d.resv_ip;}).map(function(x){return x.mac;}) });
+     }
+   });
+-  var noleases = D.devices.filter(function(d){ return d.nolease; });
++  var noleases = D.devices.filter(function(d){ return d.nolease && !d.mlo_link; });
+   if(noleases.length && pm.free === 0){
+     out.push({ sev:'crit',
+       html: '<b>' + noleases.length + '</b> ' + esc(T('RDEV_51')),
+@@ -368,11 +368,11 @@ function buildIssues(){
+ function visible(d){
+   if(filter==='online' && !d.online) return false;
+   if(filter==='offline' && d.online) return false;
+-  if(filter==='unnamed' && d.name) return false;
++  if(filter==='unnamed' && (d.name || d.mlo_link)) return false;
+   if(filter==='resv' && !d.resv) return false;
+-  if(filter==='rand' && !d.rand) return false;
++  if(filter==='rand' && (!d.rand || d.mlo_link)) return false;
+   if(filter==='blocked' && d.gk !== 0) return false;
+-  if(filter==='attn' && !(d.orphan || d.dup || d.nolease)) return false;
++  if(filter==='attn' && (!(d.orphan || d.dup || d.nolease) || d.mlo_link)) return false;
+   if(q){
+     var hay = ((d.name||'') + ' ' + d.mac + ' ' + (d.ip||'') + ' ' + (d.host||'')).toLowerCase();
+     if(hay.indexOf(q.toLowerCase()) < 0) return false;
+@@ -388,8 +388,10 @@ function renderRows(){
+     var nameHtml = d.name
+       ? '<span class="dname rtip" data-i="' + i + '" title="' + esc(T('RDEV_68')) + '">' + esc(d.name) + '</span><span class="src">' + esc(d.src) + '</span>'
+       : '<span class="dname unnamed rtip" data-i="' + i + '" title="' + esc(T('RDEV_69')) + '">' + (d.host ? esc(d.host) : esc(T('RDEV_42'))) + '</span><span class="src">' + (d.host ? 'lease' : '&mdash;') + '</span>';
+-    var chipsHtml = (d.rand ? '<span class="chip rand" title="' + esc(T('RDEV_70')) + '">' + esc(T('RDEV_36')) + '</span>' : '') +
+-                    (d.nolease ? '<span class="chip nolease" title="' + esc(T('RDEV_71')) + '">' + esc(T('RDEV_37')) + '</span>' : '');
++    var chipsHtml = d.mlo_link
++      ? '<span class="chip pin" title="' + esc(T('RDEV_87')) + '">MLO</span>'
++      : ((d.rand ? '<span class="chip rand" title="' + esc(T('RDEV_70')) + '">' + esc(T('RDEV_36')) + '</span>' : '') +
++         (d.nolease ? '<span class="chip nolease" title="' + esc(T('RDEV_71')) + '">' + esc(T('RDEV_37')) + '</span>' : ''));
+     var ipHtml = d.nolease ? '<span style="color:var(--danger)">&mdash;</span>'
+                : (d.ip ? esc(d.ip) : '<span style="color:var(--steel)">&mdash;</span>');
+     if(d.resv){
+@@ -397,7 +399,12 @@ function renderRows(){
+       else if(d.dup) ipHtml += '<span class="chip pindead" title="' + esc(T('RDEV_73')) + '">' + esc(T('RDEV_41')) + '</span>';
+       else ipHtml += '<span class="chip ' + (d.resv_in_pool ? 'pin' : 'pinout') + '" title="' + esc(d.resv_in_pool ? T('RDEV_74') : T('RDEV_75')) + '">' + esc(d.resv_in_pool ? T('RDEV_38') : T('RDEV_39')) + '</span>';
+     }
+-    var conn = d.wired ? T('RDEV_43') : (d.band ? d.band + ' GHz' : '&mdash;');
++    /* built as HTML (NOT esc'd) so the em-dash renders; the offline/unknown case
++       used to pass '&mdash;' through esc() and printed the literal entity text */
++    var connHtml = d.mlo_link ? ('MLO' + (d.band ? ' &middot; ' + esc(d.band) + ' GHz' : ''))
++                 : d.wired ? esc(T('RDEV_43'))
++                 : d.band ? (esc(d.band) + ' GHz')
++                 : '<span style="color:var(--steel)">&mdash;</span>';
+     var gksel = D.gk_enable
+       ? '<select class="acc" data-i="' + i + '">' +
+         [[1,T('RDEV_30')],[2,T('RDEV_31')],[3,T('RDEV_32')],[0,T('RDEV_33')]].map(function(o){
+@@ -409,7 +416,7 @@ function renderRows(){
+       '<td><div class="dcell"><span class="dot' + (d.online?' on':'') + '"></span><span>' + nameHtml + chipsHtml + '</span></div></td>' +
+       '<td class="mac">' + esc(d.mac) + '</td>' +
+       '<td class="ip">' + ipHtml + '</td>' +
+-      '<td><span class="conn">' + esc(conn) + '</span></td>' +
++      '<td><span class="conn">' + connHtml + '</span></td>' +
+       '<td>' + gksel + '</td>' +
+       '<td class="lastseen">' + (d.online ? '<span style="color:var(--jade)">' + esc(T('RDEV_29')) + '</span>' : (d.last ? ago(now - d.last) : '&mdash;')) + '</td>' +
+       '<td><a class="tlink" href="#reaper_shell.asp" data-traf="' + esc(d.mac) + '">' + fmtBytes(traf) + '</a></td>' +
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index d351cd08d2..6dd144b4b7 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index ec7e17b96e..b90772ab33 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 4b9ce4bd3a..5b6d34fe61 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 288909a9cc..9e029d1ef0 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index b002a8b809..282899446d 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 884c00e7fe..0ea6f3c656 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5963,3 +5963,4 @@ RDST_39=Off
+ RDST_40=Storage location is now set on the Long-Term Storage tab (System Log).
+ RDST_41=System Log
+ RDST_42=Long-term history storage:
++RDEV_87=Affiliated link of a Multi-Link (MLO) device - not a separate device; its lease and name belong to the device itself.
+-- 
+2.25.1
+

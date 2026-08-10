@@ -1,0 +1,137 @@
+From fe3b2056049e9e059871d36c20da73c3177706e3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 6 Aug 2026 08:39:59 -0400
+Subject: [PATCH] gatekeeper: let internet-only/guest devices reach a
+ LAN-hosted DNS (field report 2026-08-06)
+
+An internet-only device had no usable internet on a network whose DHCP
+advertises a LAN DNS server (AdGuard/Pi-hole style) and blocks public
+port-53: the bridge seal (ebtables REAPER_GK source-MAC DROP) cut the
+device off from its own assigned resolver - ARP included - so every
+lookup died even though routed FORWARD was open. Networks whose DHCP
+hands out the router or a public IP as DNS never see this, which is why
+it survived until a LAN-DNS field setup hit it.
+
+apply.sh now resolves dhcp_dns1_x / dhcp_dns2_x / lan_netmask at RUN
+time (v1.7.3 rule; S7 charset-gated) and, for each internet-only/guest
+MAC, emits ahead of that MAC's terminal DROP: ARP to the DNS IP alone,
+and udp+tcp port-53 to the DNS IP - only when the server is IN-SUBNET
+(gk_same_net helper). Router DNS is bridge INPUT (already open via
+REAPER_GKI) and public DNS is routed (already open via REAPER_GKF), so
+those emit nothing: the change is a structural no-op on networks
+without a LAN DNS. Blocked/quarantined devices are untouched (per-MAC
+emission, not chain-head). NOTE: the DNS host itself must be an
+approved-full device or its replies die on ITS source-MAC rule.
+
+Also: gk_teardown_rules() cmd buffer 512 -> 768. The teardown command
+is 556 bytes with lanif=br0 (605 worst-case), so snprintf silently
+truncated the trailing 'ebtables -X REAPER_GK; fc flush' on EVERY
+arm/disarm - stray empty chain + skipped accelerator flush on disable.
+Surfaced by -Wformat-truncation while harness-compiling the generator.
+
+Validated: generator harness-compiled standalone (stub nvram); the
+generated apply.sh parses under dash AND busybox ash; gk_same_net
+unit-tested (9 cases: in/out of subnet, router IP, public, malformed,
+empty, /20 mask). Kernel EBT_IP/EBT_ARP are =y on this platform.
+Enforcement behavior is metal-owed; marker sbin/rc|gk_same_net added
+to verify_markers.txt.
+---
+ release/src/router/rc/gatekeeper.c | 60 ++++++++++++++++++++++++++++--
+ 1 file changed, 57 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 3590f5d653..996e04f412 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -22,7 +22,11 @@
+  *     Only approved-FULL MACs may source bridged frames; internet-only,
+  *     guest, blocked and (in quarantine mode) unknown devices cannot reach,
+  *     probe or ARP-scan other LAN devices. Router-bound frames are local
+- *     bridge INPUT, not FORWARD, so DHCP/DNS/captive still work.
++ *     bridge INPUT, not FORWARD, so DHCP/DNS/captive still work. ONE narrow
++ *     exception (2026-08-06 field report): internet-only/guest MACs may
++ *     reach a DHCP-advertised IN-SUBNET DNS server on port 53 (+ ARP for
++ *     that IP alone), else a LAN-hosted resolver (AdGuard/Pi-hole) is
++ *     sealed off and "internet only" has no working DNS. See gk_emit_mac.
+  *
+  * The rule set is written to /tmp/gk/apply.sh (idempotent: full teardown
+  * then rebuild) so gkd can self-heal after a firewall or wireless restart
+@@ -86,8 +90,25 @@ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ 		fprintf(f, "for T in iptables ip6tables; do\n"
+ 			   "  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
+ 			   "  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
++			   "done\n", mac, mac);
++		/* DNS carve-out (2026-08-06 field report): the terminal DROP below
++		 * also sealed off a DHCP-advertised LAN DNS server, leaving the
++		 * device resolver-less = "no internet" despite the open FORWARD.
++		 * Allow this MAC exactly port-53 (udp+tcp) to each advertised
++		 * in-subnet server, plus ARP for that IP alone - the seal drops ARP,
++		 * and without address resolution the port-53 rules never see a
++		 * frame. Everything else on the LAN stays sealed; blocked/unknown
++		 * emitters never reach this. NOTE: the DNS host itself must be an
++		 * approved-full device, or its replies die on ITS source-MAC rule.
++		 * Empty GKDNS vars make the loop a no-op (router/public DNS need no
++		 * bridge rule - see the preamble note). */
++		fprintf(f, "for D in $GKDNS1 $GKDNS2; do\n"
++			   "  gk_same_net \"$D\" || continue\n"
++			   "  ebtables -A REAPER_GK -s %s -p ARP --arp-ip-dst \"$D\" -j RETURN\n"
++			   "  ebtables -A REAPER_GK -s %s -p IPv4 --ip-dst \"$D\" --ip-proto udp --ip-dport 53 -j RETURN\n"
++			   "  ebtables -A REAPER_GK -s %s -p IPv4 --ip-dst \"$D\" --ip-proto tcp --ip-dport 53 -j RETURN\n"
+ 			   "done\n"
+-			   "ebtables -A REAPER_GK -s %s -j DROP\n", mac, mac, mac);
++			   "ebtables -A REAPER_GK -s %s -j DROP\n", mac, mac, mac, mac);
+ 		break;
+ 	}
+ 	/* known MACs never hit the captive redirect */
+@@ -135,6 +156,35 @@ static void gk_gen_apply(void)
+ 		      Reject anything outside the expected charset before use. */
+ 		   "case \"$LANIF\" in *[!A-Za-z0-9._-]*) logger -t gatekeeper 'bad lan_ifname' 2>/dev/null; exit 1;; esac\n"
+ 		   "case \"$LANIP\" in *[!0-9.]*) logger -t gatekeeper 'bad lan_ipaddr' 2>/dev/null; exit 1;; esac\n"
++		   /* DNS carve-out inputs (2026-08-06 field report: an internet-only
++		    * device had no usable internet). dhcp_dns1_x/dhcp_dns2_x are the
++		    * servers dnsmasq advertises to clients via DHCP option 6
++		    * (services.c). When one lives ON the LAN (AdGuard/Pi-hole style),
++		    * the bridge seal below cuts a restricted device off from its own
++		    * assigned resolver and every lookup dies. Resolved at RUN time
++		    * like the rest of the identity (v1.7.3 rule); charset-gated (S7)
++		    * because the values are spliced into ebtables commands. Rules are
++		    * emitted only for an IN-SUBNET server (gk_same_net): router DNS
++		    * is bridge INPUT (already open via REAPER_GKI) and public DNS is
++		    * routed (already open via REAPER_GKF), so an empty/foreign value
++		    * degrades to a no-op on networks without a LAN DNS. */
++		   "GKDNS1=\"$(nvram get dhcp_dns1_x)\"\n"
++		   "GKDNS2=\"$(nvram get dhcp_dns2_x)\"\n"
++		   "GKMASK=\"$(nvram get lan_netmask)\"\n"
++		   "case \"$GKDNS1\" in ''|*[!0-9.]*) GKDNS1=;; esac\n"
++		   "case \"$GKDNS2\" in ''|*[!0-9.]*) GKDNS2=;; esac\n"
++		   "case \"$GKMASK\" in ''|*[!0-9.]*) GKMASK=255.255.255.0;; esac\n"
++		   "gk_same_net() {\n"		/* $1 inside LANIP/GKMASK? malformed -> 1 (fail-closed: no rule) */
++		   "  GKD=\"$1\"; [ -n \"$GKD\" ] || return 1\n"
++		   "  oIFS=\"$IFS\"; IFS=.\n"
++		   "  set -- $GKD; gd1=$1; gd2=$2; gd3=$3; gd4=$4\n"
++		   "  set -- $LANIP; gl1=$1; gl2=$2; gl3=$3; gl4=$4\n"
++		   "  set -- $GKMASK; gm1=$1; gm2=$2; gm3=$3; gm4=$4\n"
++		   "  IFS=\"$oIFS\"\n"
++		   "  [ -n \"$gd4\" ] && [ -n \"$gl4\" ] && [ -n \"$gm4\" ] || return 1\n"
++		   "  [ $((gd1&gm1)) -eq $((gl1&gm1)) ] && [ $((gd2&gm2)) -eq $((gl2&gm2)) ] && "
++		   "[ $((gd3&gm3)) -eq $((gl3&gm3)) ] && [ $((gd4&gm4)) -eq $((gl4&gm4)) ]\n"
++		   "}\n"
+ 		   "# ---- teardown ----\n"
+ 		   "for T in iptables ip6tables; do\n"
+ 		   "  $T -D FORWARD -i $LANIF -j REAPER_GKF 2>/dev/null\n"
+@@ -226,7 +276,11 @@ void gk_teardown_rules(void)
+ 	/* fixed, state-free teardown (mirrors the apply.sh preamble) */
+ 	const char *lanif = nvram_safe_get("lan_ifname");
+ 	const char *p;
+-	char cmd[512];
++	/* 2026-08-06: was 512, but the command needs 556 bytes with lanif "br0"
++	 * (605 worst-case at IFNAMSIZ) - snprintf silently truncated the tail
++	 * ("...ebtables -X REAPER_GK; fc flush") on EVERY teardown, leaving a
++	 * stray empty chain and skipping the accelerator flush on disable. */
++	char cmd[768];
+ 	/* S7 twin: lanif is spliced unquoted into the system() below, exactly like
+ 	 * gk_gen_apply's apply.sh preamble - gate its charset the same way and fall
+ 	 * back to br0 on anything unexpected (empty included). */
+-- 
+2.25.1
+

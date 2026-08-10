@@ -1,0 +1,46 @@
+From a2394f9f2630fa8cb7d3f37a0fbb725b1dbfa9d8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 5 Aug 2026 07:55:39 -0400
+Subject: [PATCH] dashboard: WAN IPv6 shows the br0 global, never the fe80
+ gateway/link-local
+
+On native/DHCP-PD lines the delegated global lands on br0 (ipv6_rtr_addr);
+the WAN face carries only fe80. The card fell back to IPv6_Gateway then
+Link_Local_Address, so it displayed a link-local as the WAN address.
+Mirror stock Main_IPV6Status_Content (data_arrays.c get_ipv6net_array):
+WAN-face global first, else nvram ipv6_rtr_addr, else blank.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index fcaa266482..bafd35a151 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -621,6 +621,7 @@ if(!HAS_6G){
+ }
+ var USBINFO = <% get_usb_info(); %>;
+ var WAN6 = <% wan_ipv6_network(); %>;   /* {status, Connection_Type, IPv6_Address, Link_Local_Address, IPv6_Gateway, DNS_Servers} */
++var V6RTR = '<% nvram_get("ipv6_rtr_addr"); %>';   /* br0 global - on native/DHCP-PD the delegated global lands on the LAN bridge, not the WAN face; stock Main_IPV6Status uses this same fallback */
+ var UPSTR = "<% sysuptime(); %>";
+ var OPMODE = [<% get_operation_mode(); %>][0];   /* "rt"/"rp"/"ap"/"mb"/"ew2"/"ew5"/"hs"/"wisp" */
+ function $id(id){return document.getElementById(id);}
+@@ -647,9 +648,10 @@ function v6Up(){
+        IPv6 from wan_ipv6_network(). Card renders per the ipv6 mock:
+        v4-only = today, dual = v6 line + v6 meta row, v6-only = v6 hero. */
+     var wanUp = (SSI.wan_state==='2') && !!SSI.wanip && SSI.wanip!=='0.0.0.0';
+-    var v6addr = String((WAN6 && WAN6.IPv6_Address) || '').split('/')[0]
+-              || String((WAN6 && WAN6.IPv6_Gateway) || '')
+-              || String((WAN6 && WAN6.Link_Local_Address) || '').split('/')[0];
++    /* WAN-face global first, else the br0 global (V6RTR). Never show the
++       fe80:: gateway/link-local as the WAN address - the gateway has its own
++       cell (i_gw6) and a link-local here reads as a broken v6 config. */
++    var v6addr = String((WAN6 && WAN6.IPv6_Address) || V6RTR || '').split('/')[0];
+     var v6up = v6Up();
+     var anyUp = wanUp || v6up;
+     setTxt('p_wan', anyUp?`<#Connected#>`:`<#Disconnected#>`);
+-- 
+2.25.1
+

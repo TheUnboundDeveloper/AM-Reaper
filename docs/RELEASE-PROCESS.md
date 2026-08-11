@@ -35,7 +35,7 @@ is automated here.
 ```
 
 Each model gets its own tag and release, so models can version independently
-(e.g. RT-BE96U at v2.1.4 while the siblings catch up on the fan-out). `stage_release.ps1`
+(e.g. RT-BE96U at v2.3.3 while the siblings catch up on the fan-out). `stage_release.ps1`
 prints the exact per-model tag commands for whatever it staged.
 
 Update `docs/CHANGELOG.md` (a `## vX.Y.Z — Title` section) **before** tagging —

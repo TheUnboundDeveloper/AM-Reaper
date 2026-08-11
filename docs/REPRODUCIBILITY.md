@@ -72,13 +72,20 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 374 patches (through v2.3.1).
+#   fails without it. This applies all 379 patches (through v2.3.3).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
 #   expected after all 374 patches (v2.3.1):
 #                         f45570426e350a29bba9245ee1b11ffab41ecd1a
 #   (this value is releases[].source_tree_from_series["release/src/router"])
+#
+#   v2.3.3 (all 379 patches) build-commit tree:
+#                         18c5fc0eefa28393cdf038eeb2adb3a411fb6876
+#   Its source_tree_from_series counterpart is recorded at publish time; the two
+#   differ only by the three openssh-sftp *.md files described just below. The
+#   379-patch replay was verified clean on 2026-08-10 — `git am --keep-cr`
+#   returned 0 and the only diff was exactly those three files.
 #
 #   Two hashes are recorded per release. source_tree is the tree of the commit
 #   the firmware was built from; source_tree_from_series is what this replay
@@ -193,6 +200,6 @@ The authoritative, machine-readable list is
 | v2.1.0 | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` |
 
 The image SHA-256s for each release are in the manifest and in the release's
-`SHA256SUMS-*.txt`. (The built fleet has advanced to **v2.1.9**; those rungs are
-shipped but not yet exported to patches — the series and this table are extended
-for them at publish time.)
+`SHA256SUMS-*.txt`. (The last full-fleet build is **v2.3.2**, published through the
+clean-room CI pipeline. **v2.3.3** is exported to patches (`0379`) and built for the
+RT-BE96U only; its manifest entry and image hashes are added at publish time.)

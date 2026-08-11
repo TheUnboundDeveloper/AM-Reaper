@@ -71,6 +71,9 @@ If step 4 matches, the image you hold is the one that was built. CI does steps
 
 | Version | Base | Patches | `release/src/router` tree | Source reproducible in CI |
 |---|---|---|---|---|
+| **v2.3.3** | `a7ebfa133a` | `0001`–`0379` | `18c5fc0eefa28393cdf038eeb2adb3a411fb6876` | ⏳ pending publish |
+| **v2.3.2** | `a7ebfa133a` | `0001`–`0378` | `c24138c41233a6a1cec7ee2496518cddc2cc4950` | ✅ yes |
+| **v2.3.1** | `a7ebfa133a` | `0001`–`0374` | `45fed7610e4d1316f4fabd664f56e37d88cd47a5` | ✅ yes |
 | **v2.1.5** | `a7ebfa133a` | `0001`–`0322` | `9c98f7483f8eb3f8c0d1b5250b8bf3d38803f63c` | ✅ yes |
 | **v2.1.4** | `a7ebfa133a` | `0001`–`0318` | `066a89ce574f3bdccbdb1af40d354f6ded822574` | ✅ yes |
 | **v2.1.3** | `a7ebfa133a` | `0001`–`0315` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` | ✅ yes |
@@ -88,10 +91,10 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 `066a89ce…` (v2.1.4), and `0001`–`0322` yields `9c98f748…` (v2.1.5). The
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
-every tree on each run. **The built fleet is ahead of the exported series:** the
-v2.1.6 → v2.1.9 rungs are built + shipped on all five models but not yet exported
-to patches (the series is regenerated for those rungs at publish). The RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro images (current at v2.1.9) are produced by
+every tree on each run. **The exported series now leads the fleet:** the
+series runs to `0379` (v2.3.3, RT-BE96U-only), while the last full-fleet build is
+v2.3.2. The RT-BE86U /
+RT-BE88U / GT-BE98 / GT-BE98 Pro images (current at v2.3.2) are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob
 overlay); the patch series is RT-BE96U-only, so the tree hash above is the
 RT-BE96U reference and the siblings are not independently patch-reproducible
@@ -112,11 +115,17 @@ are attached to the corresponding GitHub Release.
 Provenance is recorded for the **RT-BE96U** — the primary development platform.
 The [manifest](../provenance/manifest.json) covers it back to **v1.8.6**:
 
-- **v2.1.0 – v2.1.5** carry the full record and are **reproducible in CI**
-  (`verifiable: true`): source-tree hash, image SHA-256s, and logs, with the
-  published patch series proven to reproduce the tree. (The built fleet has since
-  advanced to **v2.1.9**; those rungs are shipped but not yet exported to patches —
-  the series and provenance are regenerated for them at publish time.)
+- **v2.1.0 – v2.1.5**, **v2.3.1** and **v2.3.2** carry the full record and are
+  **reproducible in CI** (`verifiable: true`): source-tree hash, image SHA-256s, and
+  logs, with the published patch series proven to reproduce the tree. **v2.3.2** is
+  the first rung built and published end-to-end by the public clean-room pipeline.
+- **v2.3.3** is exported to patches (`0379`) and its source-tree hash is recorded
+  above, but it is **not yet published**, so `provenance/manifest.json` has no entry
+  for it and the CI verifier does not cover it yet. The 379-patch series was
+  replay-verified on 2026-08-10 (`git am --keep-cr` → 0, tree reproduced except the
+  three excluded `openssh-sftp` `*.md` files).
+- **v2.1.6 – v2.3.0** are shipped rungs with no per-release row here; the series and
+  provenance were regenerated forward rather than backfilled per rung.
 - **v1.8.6 – v2.0.8** are **historical** entries (`verifiable: false`): the build
   log + `reaper_verify` summary and the `release/src/router` source-tree
   fingerprint are recorded, but the firmware images themselves are not retained,

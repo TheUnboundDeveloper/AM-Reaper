@@ -249,7 +249,7 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
-| Reaper version built | `Reaper_v2.3.1` (patch series `0001`–`0374`) |
+| Reaper version built | `Reaper_v2.3.2` (patch series `0001`–`0378`) — the pinned `EXPECTED_VERSION`. `v2.3.3` (`0001`–`0379`) is exported but the pin is not yet bumped, so a blank-version dispatch will fail the assertion until it is. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and

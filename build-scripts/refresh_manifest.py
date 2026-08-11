@@ -129,6 +129,11 @@ def write_latest(new_latest):
     latest.setdefault("models", {})
     for short, entries in new_latest.items():
         latest["models"][short] = entries
+    # releases/ no longer holds the images (they are GitHub release assets), so
+    # the directory's existence must not be load-bearing: a checkout that has
+    # never had one would otherwise fail here and take the publish workflow -
+    # and with it the router's update manifest - down with it.
+    os.makedirs("releases", exist_ok=True)
     with open("releases/latest.json", "w", newline="\n") as fh:
         json.dump(latest, fh, indent=2)
         fh.write("\n")

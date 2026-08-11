@@ -1,0 +1,418 @@
+From 79036fb47f0bc43722590ca3c189f82c31da01a8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 10:19:17 -0400
+Subject: [PATCH] qos: preset rules no longer classify by transferred bytes
+
+Backlog [P2], found on live metal 2026-08-10. The shipped qos_rulelist was
+
+  Web Surf>>80>tcp>0~512>0   HTTPS>>443>tcp>0~512>0
+  File Transfer>>80>tcp>512~>3   File Transfer>>443>tcp>512~>3
+
+so any HTTP/HTTPS flow past 512 KB was demoted to the bulk class. Streaming
+video IS HTTPS and passes that in seconds, so a TV's flows -- and under type 11,
+which shapes UPLOAD, its ACK stream -- rode the bulk queue while the queue named
+"Streaming" showed 0 packets. Worse, a rule carrying a transferred range gets
+rule_gum = 0 in add_qos_rules() (non-sticky) and matches with -m connbytes,
+which re-evaluates on every packet: incompatible with hardware flow offload. The
+standing guidance since the v2 metal validation has been "classify on
+port/proto/IP/MAC, never transferred bytes" -- the shipped defaults were the
+thing violating it.
+
+NEW PACK (every rule has an EMPTY transferred field, so all are sticky and
+offload-safe). First match wins -- add_qos_rules emits CONNMARK --set-return, or
+--set-mark plus an explicit RETURN -- so specific precedes broad:
+
+  Conferencing  udp 3478:3481    -> Q1 Web/VoIP   (STUN/TURN: Teams, Meet, WebRTC)
+  SIP           udp 5060:5061    -> Q1 Web/VoIP
+  Game Console  udp 3074         -> Q2 Gaming     (Xbox Live / PSN)
+  Steam         udp 27015:27030  -> Q2 Gaming
+  BitTorrent    tcp/udp 6881:6889-> Q4 Downloads  (default-port clients only)
+  Web           tcp/udp 80,443   -> Q1 Web/VoIP
+
+Two deliberate choices worth stating. There is NO Streaming preset: streaming is
+TCP/UDP 443, indistinguishable from browsing by port, which is precisely why the
+old pack reached for byte counts -- that class is meant to be filled by
+per-device rules (the TV's MAC/IP), which are sticky. And 80/443 sits in
+Web/VoIP rather than anywhere lower, because it carries interactive web AND the
+ACK stream of every download, both of which want a short queue; the committed
+minimums on the classes below (qos_minrates) stop a bulk HTTPS upload in that
+class from starving them. Ports are tcp/udp so QUIC gets the same treatment as
+TCP for the same traffic.
+
+Validated against what the parser actually accepts, not by eye: 6 fields per
+rule, prio 0-4, port charset inside the multiport injection guard, known proto,
+empty transferred, multiport entry budget (a range counts as 2 of 15).
+
+WARNING IN THE UI: Reaper_QoS.asp now reads qos_rulelist and, under the classful
+engine only, names any rule still carrying a transferred range (the stock editor
+writes a bare "~" for "no range" -- treated as empty). Rules are still edited on
+the stock user-rules page; this page only reports. Exercised by running the
+page's own rulesWarn() against the old pack (warns, names all four), the new
+pack (silent), a bare "~" (silent), an empty list (silent), and the old pack in
+a non-classful mode (silent).
+
+New token RQOS_123, English-seeded, appended to all 25 dicts in lockstep
+(6294 -> 6295 lines each); translation pass owed with the RFWU_* backlog item.
+
+NOT BUILT. Metal owed: confirm the presets land as written after a factory
+reset, and that a Teams/Meet call now marks into Q1 (it will NOT when the call
+is inside a VPN -- the tunnel hides the ports and it correctly falls to Default;
+that case still wants a per-endpoint rule).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c  | 29 ++++++++++++++++++++++++-
+ release/src/router/www/BR.dict        |  1 +
+ release/src/router/www/CN.dict        |  1 +
+ release/src/router/www/CZ.dict        |  1 +
+ release/src/router/www/DA.dict        |  1 +
+ release/src/router/www/DE.dict        |  1 +
+ release/src/router/www/EN.dict        |  1 +
+ release/src/router/www/ES.dict        |  1 +
+ release/src/router/www/FI.dict        |  1 +
+ release/src/router/www/FR.dict        |  1 +
+ release/src/router/www/HU.dict        |  1 +
+ release/src/router/www/IT.dict        |  1 +
+ release/src/router/www/JP.dict        |  1 +
+ release/src/router/www/KR.dict        |  1 +
+ release/src/router/www/MS.dict        |  1 +
+ release/src/router/www/NL.dict        |  1 +
+ release/src/router/www/NO.dict        |  1 +
+ release/src/router/www/PL.dict        |  1 +
+ release/src/router/www/RO.dict        |  1 +
+ release/src/router/www/RU.dict        |  1 +
+ release/src/router/www/Reaper_QoS.asp | 31 ++++++++++++++++++++++++++-
+ release/src/router/www/SL.dict        |  1 +
+ release/src/router/www/SV.dict        |  1 +
+ release/src/router/www/TH.dict        |  1 +
+ release/src/router/www/TR.dict        |  1 +
+ release/src/router/www/TW.dict        |  1 +
+ release/src/router/www/UK.dict        |  1 +
+ 27 files changed, 83 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index c9d8269204..c01686bce6 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3068,7 +3068,34 @@ struct nvram_tuple router_defaults[] = {
+ #if defined(RTCONFIG_MULTIWAN_CFG)
+ 	{ "qos_unit", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },		/* Last configured QoS */
+ #endif
+-	{ "qos_rulelist", "<Web Surf>>80>tcp>0~512>0<HTTPS>>443>tcp>0~512>0<File Transfer>>80>tcp>512~>3<File Transfer>>443>tcp>512~>3", CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* Classification presets. Format per rule: desc>addr>port>proto>transferred>prio,
++	 * rules separated by '<', prio 0-4 = class index (0 Web/VoIP .. 4 Default).
++	 * FIRST MATCH WINS (add_qos_rules emits CONNMARK --set-return, or --set-mark
++	 * plus an explicit RETURN), so the specific rules must precede the broad one.
++	 *
++	 * reaper 2026-08-11: the transferred-bytes preset pack is GONE. It read
++	 *   Web Surf>>80>tcp>0~512>0 <HTTPS>>443>tcp>0~512>0
++	 *   File Transfer>>80>tcp>512~>3 <File Transfer>>443>tcp>512~>3
++	 * i.e. any HTTP/HTTPS flow past 512 KB was demoted to the bulk class. Two
++	 * problems, both proven on metal 2026-08-10: (1) streaming video IS HTTPS and
++	 * passes 512 KB in seconds, so a TV's flows -- and under type 11, which shapes
++	 * UPLOAD, its ACK stream -- rode the bulk queue while the queue named
++	 * "Streaming" saw 0 packets; (2) a rule with a transferred range sets
++	 * rule_gum=0 (qos.c), i.e. NON-STICKY, and matches with -m connbytes, which
++	 * re-evaluates per packet -- incompatible with hardware flow offload. The
++	 * standing guidance since the v2 metal validation has been "classify on
++	 * port/proto/IP/MAC, never transferred bytes"; the shipped defaults were the
++	 * thing violating it. Every rule below carries an EMPTY transferred field.
++	 *
++	 * Note what is deliberately NOT here: a Streaming preset. Streaming video is
++	 * TCP/UDP 443, indistinguishable from web browsing by port -- which is exactly
++	 * why the old pack reached for byte counts. That class is meant to be filled
++	 * by per-device rules (the TV's MAC or IP), which are sticky and offload-safe.
++	 * 80/443 therefore sits in Web/VoIP: it carries interactive web AND the ACK
++	 * stream of every download, both of which want a short queue, and the
++	 * committed minimums on the lower classes (qos_minrates) keep a bulk HTTPS
++	 * upload in that class from starving them. */
++	{ "qos_rulelist", "<Conferencing>>3478:3481>udp>>0<SIP>>5060:5061>udp>>0<Game Console>>3074>udp>>1<Steam>>27015:27030>udp>>1<BitTorrent>>6881:6889>tcp/udp>>3<Web>>80,443>tcp/udp>>0", CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ 	/* reaper 2026-08-11 (owner-set profile, replaces the v3 template):
+ 	 *   Q1 Web/VoIP  p   min 15  ceil 100
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 94f288d167..51f580b191 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index cd77de78ac..261eae45c8 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index b86e41dd51..1bb86096ee 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 0182c3b780..8acfdf8e17 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 61b1ae67a4..c808f301d1 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index be56f887f1..70e7c0fc69 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 7094914375..0969b85137 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index e2fc8e281c..7bf6e2aa37 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index c0d087fe86..13f763e38f 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 63614065e0..fa0c9801a6 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 70544738e4..37507e8775 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 6a34bbe458..14b7dc24d6 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 63414db0f2..15ad7976ac 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index f1da11b6a7..ec391b8f2b 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 12fb7bcc6a..468d469615 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index bcac37932c..ddfb2489b4 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 255a9f052c..a274cee546 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 36f7009ed4..27120fa8f5 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 9b71294adf..3f71478a40 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 28eddc55ce..b53925732e 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -259,6 +259,10 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+     <tbody id="ctbody"></tbody>
+   </table>
+   <div class="hint" style="margin-top:8px"><#RQOS_28#></div>
++  <!-- transferred-range rules are non-sticky (rule_gum=0) and match with
++       connbytes, so they re-evaluate per packet and cannot ride hardware flow
++       offload. Filled by rulesWarn() only when such a rule is actually present. -->
++  <div class="hint" id="xferwarn" style="margin-top:8px;display:none;color:var(--amber)"></div>
+ 
+   <div class="xq">
+     <div class="xt"><div class="xn"><#RQOS_29#></div><div class="xv statcell" id="xq0">&ndash;</div></div>
+@@ -409,7 +413,8 @@ var NV = {
+   l4s:     '<% nvram_get("qos_l4s"); %>',
+   ipolicer:'<% nvram_get("qos_ipolicer"); %>',
+   wmm:     '<% nvram_get("qos_dscp_wmm"); %>',
+-  bwrule:  '<% nvram_get("qos_bw_rulelist"); %>'
++  bwrule:  '<% nvram_get("qos_bw_rulelist"); %>',
++  rules:   decodeURIComponent('<% nvram_char_to_ascii("", "qos_rulelist"); %>')
+ };
+ 
+ /* ---------- mode model (qos_type 1/Adaptive is retired with the DPI stack) ---------- */
+@@ -445,8 +450,32 @@ function renderModes(){
+     host.appendChild(d);
+   })(MODES[i]); }
+ }
++/* A classification rule that matches on TRANSFERRED BYTES cannot ride hardware
++   flow offload: add_qos_rules() gives it rule_gum=0 (non-sticky) and matches it
++   with -m connbytes, which re-evaluates on every packet. Under the classful
++   engine it also misclassifies anything long-lived -- streaming video is HTTPS
++   and passes any byte threshold in seconds, so it ends up in the bulk class
++   (metal, 2026-08-10). The shipped presets no longer do this; a user rule still
++   can, so name the offenders. Rules are edited on the stock user-rules page;
++   this page only reports. Format: desc>addr>port>proto>transferred>prio, and
++   the stock editor writes a bare "~" for "no range". */
++function rulesWarn(){
++  var el = document.getElementById('xferwarn');
++  if(!el) return;
++  var bad = [], parts = String(NV.rules || '').split('<'), i, f;
++  for(i = 0; i < parts.length; i++){
++    if(!parts[i]) continue;
++    f = parts[i].split('>');
++    if(f.length === 6 && f[4] && f[4] !== '~') bad.push(f[0] || ('#' + i));
++  }
++  if(!bad.length || sel !== '11'){ el.style.display = 'none'; return; }
++  el.innerHTML = `<#RQOS_123#>` + ' <b>' + bwlEsc(bad.join(', ')) + '</b>';
++  el.style.display = '';
++}
++
+ function syncPanels(){
+   document.getElementById('clpanel').style.display = (sel === '11') ? '' : 'none';
++  rulesWarn();
+   document.getElementById('bwlimpanel').style.display = (sel === '2') ? '' : 'none';
+   document.getElementById('bwpanel').style.display = (sel === '2') ? 'none' : '';
+   var on = (NV.enable === '1');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index b2a9f159a4..ed082486fe 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index e588f1ef9c..cc0126d770 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index f55232dc81..6a4fa1d61e 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 6b591c3a0a..616a04aaed 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 0d62ec6183..ab8475e9a4 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index d27c909403..fc146665e9 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6292,3 +6292,4 @@ RFWU_28=Waiting for the router to come back online...
+ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
++RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+-- 
+2.25.1
+

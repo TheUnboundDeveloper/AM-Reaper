@@ -1,0 +1,143 @@
+From f667ecc44146d980ea610f86e7f600f2d81468af Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 08:42:43 -0400
+Subject: [PATCH] shell: anchor framed overlays to the visible viewport, not
+ the framed page
+
+Owner item: "Please Wait", loading bars and countdowns must sit in the
+middle of the SCREEN, not the middle of the shell's framed page.
+
+CAUSE - the shell grows #page_frame to its full content height so the only
+scrollbar is the browser's own. That also means the frame never scrolls, so
+its viewport IS the whole document: anything the framed page positions with
+position:fixed centres on the middle of that document. On a long settings
+page the stock "Please wait ... N%" loader, the loading bar and the Reaper
+pages' apply/flash overlays therefore land far below the fold - the user
+sees a dimmed, dead page with no message anywhere on it. The stock loader is
+worse still: showLoading() places its block with margins it computes from
+the frame's measurements.
+
+FIX - the shell publishes the slice of the frame the user can actually see
+onto the framed document root as two custom properties, --rv-top (offset
+from the top of the framed document) and --rv-h (its height), refreshed on
+scroll, resize and every frame re-fit, and injects a small stylesheet that
+re-anchors the overlays to that slice. They then sit in the middle of the
+browser window and follow the scrollbar, while still dimming the page behind
+them.
+
+Scoping, deliberately narrow:
+- stock pages get the two loader ids only (#Loading / #LoadingBar, plus the
+  margin reset on their blocks). Generic class names are NOT matched on stock
+  markup - too easy to catch something that is not an overlay.
+- reaper-native pages (meta reaper-native) additionally get the classes they
+  actually use: .veil .ovl #ovl .applying .overlay .fbov .scrim .flyout.
+- the slice is clamped inside the frame so an anchored overlay can never grow
+  the framed document and re-trip the auto-grow fit().
+- same-origin only, every step guarded: a measurement failure just leaves the
+  overlay where the page put it.
+
+NOT BUILT. Needs a browser check on a long framed page (stock apply spinner,
+loading bar, flash veil) before it can be called done.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 76 +++++++++++++++++++++++++
+ 1 file changed, 76 insertions(+)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index fc33ed0c93..4025beb2a1 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -416,6 +416,79 @@ function buildRail(menuTree){
+   });
+ })();
+ 
++/* ---- overlay viewport anchor (owner item, 2026-08-11) --------------------
++   The shell grows #page_frame to its FULL content height (below), so the frame
++   never scrolls and its "viewport" is the whole document. Anything a framed
++   page positions with position:fixed - the stock "Please wait ... N%" loader,
++   the loading bar, reboot countdowns, the Reaper pages' apply/flash overlays -
++   therefore centres on the middle of that document instead of on the screen: on
++   a long page it lands far below the fold and the user sees a dead, dimmed page
++   with no message on it.
++
++   Fix: publish the slice of the frame the user can actually SEE as two custom
++   properties on the framed document root - --rv-top (its offset from the top of
++   the framed document) and --rv-h (its height) - and re-anchor the known
++   overlays to that slice. They then sit in the middle of the browser window,
++   follow the scrollbar, and still dim the page behind them. Same-origin only
++   (every framed page is); each step is guarded so a measurement failure just
++   leaves the overlay where the page put it. */
++/* stock pages: the shared loader ids only (generic class names are NOT touched
++   on stock markup - too easy to catch something that is not an overlay) */
++var RV_CSS =
++  '#Loading,#LoadingBar{position:absolute!important;top:var(--rv-top,0px)!important;'
+++ 'bottom:auto!important;left:0!important;width:100%!important;'
+++ 'height:var(--rv-h,100vh)!important;max-height:none!important;'
+++ 'display:flex!important;align-items:center!important;justify-content:center!important}'
++/* those blocks are placed with JS-computed margins measured against the frame:
++   drop them and let the (now screen-sized) backdrop centre the block */
+++ '#loadingBlock,#loadingBarBlock{margin:0!important;position:static!important;left:auto!important;float:none!important}';
++/* reaper-native pages: their own full-frame overlays, by the classes they use */
++var RV_CSS_NATIVE = RV_CSS
+++ '.veil,.ovl,#ovl,.applying,.overlay,.fbov,.scrim,.flyout{'
+++ 'position:absolute!important;top:var(--rv-top,0px)!important;bottom:auto!important;'
+++ 'height:var(--rv-h,100vh)!important;max-height:none!important}';
++
++(function(){
++  var f=$id('page_frame');
++  if(!f) return;
++  var HDR=64;                    /* sticky topbar: the frame's visible slice starts under it */
++  function anchor(){
++    try{
++      var d=f.contentDocument;
++      if(!d||!d.documentElement) return;
++      var r=f.getBoundingClientRect();
++      if(!r.height) return;
++      var top=Math.max(0, Math.min(r.height, HDR-r.top));
++      var bot=Math.max(0, Math.min(r.height, window.innerHeight-r.top));
++      var h=bot-top;
++      if(h<160){                                    /* never collapse to a sliver */
++        h=Math.min(r.height, 160);
++        top=Math.min(top, r.height-h);              /* ... and never run past the
++                                                       frame, which would grow the
++                                                       document and re-trip fit() */
++      }
++      var s=d.documentElement.style;
++      s.setProperty('--rv-top', Math.round(top)+'px');
++      s.setProperty('--rv-h', Math.round(h)+'px');
++    }catch(e){}
++  }
++  window.reaperAnchorOverlays=anchor;
++  f.addEventListener('load', function(){
++    try{
++      var d=f.contentDocument;
++      if(d && !d.getElementById('reaper_rv_css')){
++        var st=d.createElement('style');
++        st.id='reaper_rv_css';
++        st.textContent=d.querySelector('meta[name="reaper-native"]') ? RV_CSS_NATIVE : RV_CSS;
++        (d.head||d.documentElement).appendChild(st);
++      }
++    }catch(e){}
++    anchor();
++  });
++  window.addEventListener('scroll', anchor, {passive:true});
++  window.addEventListener('resize', anchor);
++})();
++
+ /* auto-grow the frame to its content height so long pages (SDN.asp) scroll
+    with the browser scrollbar instead of a nested iframe scrollbar. Same-origin
+    only (all framed pages are); guarded so a measurement failure just leaves
+@@ -458,6 +531,9 @@ function buildRail(menuTree){
+       var w=Math.max(d.documentElement.scrollWidth, d.body?d.body.scrollWidth:0);
+       if(cw>0 && w>cw+4) f.style.width=w+'px';
+     }catch(e){}
++    /* the frame just changed size: re-publish the visible slice the framed
++       overlays are anchored to (see the overlay viewport anchor above) */
++    try{ if(window.reaperAnchorOverlays) window.reaperAnchorOverlays(); }catch(e){}
+   }
+   f.addEventListener('load', function(){
+     f.style.height=''; f.style.width='';   /* reset before measuring the new page */
+-- 
+2.25.1
+

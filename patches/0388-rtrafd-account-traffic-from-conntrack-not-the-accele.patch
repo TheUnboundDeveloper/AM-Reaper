@@ -1,0 +1,453 @@
+From 6da01d306213f1fbe72467bc4d890e38b77f44aa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 11:59:25 -0400
+Subject: [PATCH] rtrafd: account traffic from conntrack, not the accelerator
+ table
+
+Field report: the Traffic Analyzer is not accurate - devices with large fast
+downloads are missing from the list, and br0 looks wrong. The owner's hypothesis
+was that only one of the two packet paths is being seen. That is exactly right,
+and the source says which one.
+
+WHAT WAS WRONG
+
+rtrafd took its per-device and per-network bytes from /proc/fcache/nflist and
+used conntrack only as an all-or-nothing FALLBACK, entered when the flow cache
+yielded no flows at all. But nflist lists ACCELERATED flows only. A flow that is
+not offloaded - or is merely between evictions - simply is not in that file, so
+its bytes were invisible whenever ANY other flow was accelerated, which is the
+normal state of the box. The fallback never ran, because "no flows at all" is
+rare.
+
+The comment that justified the design was wrong on this platform. It claimed "an
+offloaded flow's conntrack bytes freeze at offload, so the two sources never
+account the same bytes". On Broadcom HND they do not freeze:
+
+  nf_conntrack_acct.c seq_print_acct()  prints
+      software counter + blog_ct_get_stats(<live accelerated bytes>)
+  blog.c blog_ct_put_stats()            "when flow is evicted push the flow
+                                         stats in to ct"
+
+So /proc/net/nf_conntrack already reports software AND accelerated bytes,
+monotonically, with no double counting - it is the COMPLETE source, and it was
+the one being left on the shelf.
+
+Large fast downloads were hit twice, which is why they were the visible symptom.
+They are the flows most likely to be evicted and re-learned (and with the
+transferred-bytes QoS presets fixed earlier today, evicted constantly - see
+79036fb47f). On top of that, the flow-cache pass could only attribute a client's
+NAT'd download by pairing it to the connection's UPLOAD half through the shared
+nf_conn pointer, and required that half to be present in the same 5 s sample with
+a non-zero delta. For a big download the upload half is a thin ACK stream that is
+routinely absent, evicted, or past the FC_MAX truncation - and then the whole
+download was dropped rather than mis-attributed.
+
+WHAT IT DOES NOW
+
+poll_conntrack() runs every sample and owns the client and per-network rings.
+poll_fcache() keeps only what the accelerator table can say and conntrack cannot:
+the router's own traffic (those flows ride a *_local pseudo-dev and carry no LAN
+address) and the per-flow first-seen times the Connections page shows as age. The
+two cannot double count: conntrack skips any flow whose source is not on a LAN
+bridge, and the flow-cache pass now skips every flow that is.
+
+Per-network attribution needed a way to place a bare address, since conntrack
+carries no netdev. Added brsub_refresh()/ip_bridge(): the LAN bridges and their
+subnets, read from the live interfaces with SIOCGIFCONF/SIOCGIFNETMASK rather
+than from nvram, so guest/SDN bridges are picked up whenever they are created
+with no schema knowledge. That also fixes a second, quieter gap - conntrack
+attribution tested only br0's subnet, so every guest/SDN client was dropped
+outright.
+
+Two things fall out of it:
+- br0 is now summed from the same complete source as the device rows, so the
+  network total can reconcile with the WAN line instead of counting only the
+  offloaded part.
+- the router's own LAN address stops being credited as a device row - it goes to
+  the Router bucket, which is the [P3] "connection-health probe lists the router
+  as a device" backlog item.
+
+NOT BUILT. Cross-compiles clean (aarch64 gcc-10.3, -Wall, no new warnings).
+Metal is what settles it, and the check is a reconciliation, not a glance: start a
+large download on one client, then confirm the client row, the br0 row and the
+WAN line agree to within a few percent over the same window, and that the sum of
+device rows plus Router tracks br0. Watch for a double count (device + Router)
+and for a guest-network client appearing under its own bridge.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c | 269 ++++++++++++++++++-----------
+ 1 file changed, 164 insertions(+), 105 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 48c844308a..80da9ab8d1 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -43,6 +43,8 @@
+ #include <netinet/in.h>
+ #include <netinet/ip.h>
+ #include <netinet/ip_icmp.h>
++#include <sys/ioctl.h>
++#include <net/if.h>
+ 
+ #include <bcmnvram.h>
+ #include <shutils.h>
+@@ -159,8 +161,63 @@ static uint64_t last_cls_txb[7], last_cls_dp[7];
+ static int have_cls_last = 0;
+ 
+ static uint32_t lan_net = 0, lan_mask = 0;
++static uint32_t lan_ip = 0;		/* the router's OWN LAN address (host order) */
+ static volatile sig_atomic_t running = 1;
+ 
++/* reaper 2026-08-11: every LAN bridge and its subnet, so a client IP alone can
++ * be attributed to its network. The flow cache carries RxDev/TxDev and needed no
++ * such map, but conntrack - which is the only COMPLETE byte source on this
++ * platform (see poll_conntrack) - carries addresses only. Enumerated from the
++ * live interfaces rather than nvram so guest/SDN bridges are picked up whenever
++ * they are created, with no schema knowledge. */
++#define NBRSUB 16
++static struct { char br[16]; uint32_t net, mask; } brsub[NBRSUB];
++static int nbrsub = 0;
++
++static void brsub_refresh(void)
++{
++	struct ifconf ifc;
++	struct ifreq buf[32], ifr;
++	int s, i, n;
++
++	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0) return;
++	memset(&ifc, 0, sizeof(ifc));
++	ifc.ifc_len = sizeof(buf);
++	ifc.ifc_req = buf;
++	if (ioctl(s, SIOCGIFCONF, &ifc) < 0) { close(s); return; }
++
++	nbrsub = 0;
++	n = ifc.ifc_len / (int)sizeof(struct ifreq);
++	for (i = 0; i < n && nbrsub < NBRSUB; i++) {
++		uint32_t a, m;
++
++		if (strncmp(buf[i].ifr_name, "br", 2) != 0) continue;	/* LAN bridges only */
++		if (buf[i].ifr_addr.sa_family != AF_INET) continue;
++		a = ntohl(((struct sockaddr_in *)&buf[i].ifr_addr)->sin_addr.s_addr);
++
++		memset(&ifr, 0, sizeof(ifr));
++		strlcpy(ifr.ifr_name, buf[i].ifr_name, sizeof(ifr.ifr_name));
++		if (ioctl(s, SIOCGIFNETMASK, &ifr) < 0) continue;
++		m = ntohl(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr);
++		if (!m) continue;
++
++		strlcpy(brsub[nbrsub].br, buf[i].ifr_name, sizeof(brsub[0].br));
++		brsub[nbrsub].mask = m;
++		brsub[nbrsub].net = a & m;
++		nbrsub++;
++	}
++	close(s);
++}
++
++/* which LAN bridge owns this address, or NULL if it is not on any of them */
++static const char *ip_bridge(uint32_t ip)
++{
++	int i;
++	for (i = 0; i < nbrsub; i++)
++		if ((ip & brsub[i].mask) == brsub[i].net) return brsub[i].br;
++	return NULL;
++}
++
+ /* probe accumulators for the open 5-min bucket */
+ static uint64_t prb_rtt_sum = 0;
+ static uint32_t prb_n = 0, prb_lost = 0;
+@@ -637,23 +694,16 @@ static void poll_fcache(void)
+ 	FILE *f = fopen("/proc/fcache/nflist", "r");
+ 	char line[1024];
+ 	static struct fcf fl[FC_MAX];
+-	static char consumed[FC_MAX];
+-	int nfl = 0, i, j;
++	int nfl = 0, i;
+ 
+-	if (!f) { poll_conntrack(); return; }	/* accelerator table absent */
++	if (!f) return;		/* accelerator table absent: conntrack already ran */
+ 
+-	ntop = 0;
+-	/* Load the ARP table on THIS path too, not only in the conntrack fallback.
+-	 * poll_conntrack() is the fallback (accelerator off / no flows); with the
+-	 * accelerator on - the normal state - we return below without ever reaching
+-	 * it, so arp_n stayed 0 for the daemon's whole life and every arp_mac()
+-	 * lookup in write_live() missed. Top-talker and top-device rows could then
+-	 * only ever show raw IPs, never a MAC, and so never resolve to a device
+-	 * name. Cheap: one small file, once per 5 s fcache sample. */
+-	arp_refresh();
+-	/* reset the live per-device/per-network rate accumulators for this sample */
+-	memset(lv_cli_rx, 0, sizeof(lv_cli_rx)); memset(lv_cli_tx, 0, sizeof(lv_cli_tx));
+-	memset(lv_net_rx, 0, sizeof(lv_net_rx)); memset(lv_net_tx, 0, sizeof(lv_net_tx));
++	/* Runs AFTER poll_conntrack(), which owns the client and per-network rings
++	 * and has already refreshed ARP and zeroed the live accumulators. What is
++	 * left here is only what the accelerator table can say and conntrack cannot:
++	 * the router's OWN traffic (its flows ride a *_local pseudo-dev rather than a
++	 * LAN bridge, so there is no LAN address to attribute) and the per-flow first
++	 * seen times the Connections page shows as flow age. */
+ 	if (!fgets(line, sizeof(line), f) || !fgets(line, sizeof(line), f)) {
+ 		fclose(f);		/* two header lines */
+ 		return;
+@@ -718,29 +768,20 @@ static void poll_fcache(void)
+ 
+ 	connseen_update(fl, nfl);
+ 
+-	/* nflist yielded no flows-with-deltas. Two cases: (a) genuinely idle, or
+-	 * (b) the accelerator is OFF - which is exactly what the software QoS
+-	 * engines (Traditional type 0, Cake type 9) do. Either way, fall back to
+-	 * conntrack, which sees the software path accurately when accel is off (and
+-	 * finds little when merely idle). No double counting: when accel is ON,
+-	 * nfl>0 and this is skipped; and an offloaded flow's conntrack bytes freeze
+-	 * at offload, so the two sources never account the same bytes. */
+-	if (nfl == 0) {
+-		poll_conntrack();
++	if (nfl == 0)
+ 		return;
+-	}
+ 
+ 	/* age the fc_last table: any slot NOT seen this poll keeps its value, which
+ 	 * is fine (delta stays 0 until it grows or a new flow recycles the slot). */
+ 
+-	/* ---- Pass 1: per-network attribution + a "Router" bucket, taken straight
+-	 *      from each flow's own direction. This needs NO upload<->download
+-	 *      correlation, so the per-network (br0) numbers now reflect real LAN
+-	 *      traffic, and locally-terminated traffic - the router's OWN speed
+-	 *      test / DNS / firmware checks / probe, whose flows ingress or egress
+-	 *      a "*_local" pseudo-dev rather than a LAN bridge - stops being
+-	 *      invisible. br0 + Router + clients then reconcile with the WAN line,
+-	 *      which counts every byte regardless of who sourced it. ---- */
++	/* ---- The router's OWN traffic - its speed test / DNS / firmware checks /
++	 *      health probe. Those flows ingress or egress a "*_local" pseudo-dev
++	 *      rather than a LAN bridge, so they carry no LAN address for conntrack
++	 *      to attribute, and this is the one thing the accelerator table can say
++	 *      that conntrack cannot. Client and LAN-bridge traffic is NOT counted
++	 *      here any more (2026-08-11): conntrack owns those rings, because the
++	 *      accelerator table sees only offloaded flows. Keeping both would either
++	 *      double count or, as it did, undercount. ---- */
+ 	{
+ 		int rci = -1;		/* "Router" device slot, allocated on first use */
+ 		for (i = 0; i < nfl; i++) {
+@@ -751,18 +792,10 @@ static void poll_fcache(void)
+ 
+ 			if (!dev[0]) continue;
+ 			br = dev_bridge(dev);
+-			if (fl[i].lan) {			/* LAN client -> WAN: upload */
+-				ns = net_slot(br);
+-				if (ns >= 0) {
+-					ring_add(r_net[ns], 0, d);
+-					lv_net_tx[ns] += d * 8 / FCACHE_SECS;
+-				}
+-			} else if (br[0] == 'b' && br[1] == 'r') {	/* WAN -> a LAN bridge: client download */
+-				ns = net_slot(br);
+-				if (ns >= 0) {
+-					ring_add(r_net[ns], d, 0);
+-					lv_net_rx[ns] += d * 8 / FCACHE_SECS;
+-				}
++			if (fl[i].lan) {			/* LAN client -> WAN: conntrack's job */
++				continue;
++			} else if (br[0] == 'b' && br[1] == 'r') {	/* WAN -> a LAN bridge: conntrack's job */
++				continue;
+ 			} else {			/* neither end on a LAN bridge: the router's own traffic */
+ 				int into_router = (strstr(dev, "local") != NULL);
+ 				ns = net_slot(RT_NETLBL);
+@@ -786,54 +819,43 @@ static void poll_fcache(void)
+ 		}
+ 	}
+ 
+-	/* ---- Pass 2: per-DEVICE (client) attribution. A client's download is NAT'd
+-	 *      (src = internet, dst = WAN IP, no LAN address), so it is matched back
+-	 *      to the client by the nf_conn[0] pointer shared by the connection's two
+-	 *      flows. Per-network is already done in Pass 1, so this pass only fills
+-	 *      the client rings + top-talkers. ---- */
+-	memset(consumed, 0, nfl);
+-	for (i = 0; i < nfl; i++) {
+-		uint64_t nfc, up = 0, dn = 0;
+-		int have_lan = 0, ci;
+-		uint32_t cli_ip = 0, dst_ip = 0;
+-		int dport = 0;
+-		char cli_mac[20] = "", ips[16], dsts[16];
+-
+-		if (consumed[i]) continue;
+-		nfc = fl[i].nfc;
+-		/* group both directions of this connection (shared nf_conn) */
+-		for (j = i; j < nfl; j++) {
+-			if (consumed[j]) continue;
+-			if (nfc && fl[j].nfc != nfc) continue;
+-			if (!nfc && j != i) continue;	/* nfc==0: don't group blindly */
+-			consumed[j] = 1;
+-			if (fl[j].lan) {
+-				up += fl[j].delta;
+-				if (!have_lan) {
+-					have_lan = 1;
+-					cli_ip = fl[j].sip;
+-					dst_ip = fl[j].dip;
+-					dport = fl[j].dport;
+-					strlcpy(cli_mac, fl[j].mac, sizeof(cli_mac));
+-				}
+-			} else {
+-				dn += fl[j].delta;
+-			}
+-		}
+-		if (!have_lan)
+-			continue;	/* no LAN side: router-originated or an unmatched download (both handled in Pass 1) */
+-
+-		ip2str(cli_ip, ips);
+-		ci = cli_slot(cli_mac[0] ? cli_mac : ips, ips);
+-		ring_add(r_cli[ci], dn, up);	/* rx=download, tx=upload */
+-		lv_cli_rx[ci] += dn * 8 / FCACHE_SECS;
+-		lv_cli_tx[ci] += up * 8 / FCACHE_SECS;
+-
+-		ip2str(dst_ip, dsts);
+-		top_note(ips, dsts, dport, 0, up, dn);
+-	}
++	/* The per-DEVICE pass that used to live here is GONE (2026-08-11). It paired
++	 * a client's NAT'd download back to the client through the nf_conn[0] pointer
++	 * shared by the connection's two flows, which meant a download was only ever
++	 * attributed if its UPLOAD half was in the same 5 s sample with a non-zero
++	 * delta. For a large fast download the upload half is a thin ACK stream that
++	 * is routinely absent, evicted, or past the FC_MAX truncation - so the very
++	 * transfers the user most wants to see were the ones most likely to be
++	 * dropped, which is the "devices with large fast downloads are not shown"
++	 * report. conntrack needs no such pairing: it carries both directions'
++	 * byte counters on one line. */
+ }
+ 
++/* THE byte-accounting pass.
++ *
++ * Until 2026-08-11 this was only a FALLBACK, used when /proc/fcache/nflist
++ * yielded nothing - i.e. when the accelerator was off. That was wrong, and it is
++ * the "Traffic Analyzer only sees one of two packet paths" report:
++ *
++ *   - /proc/fcache/nflist lists ACCELERATED flows only. A flow that is not
++ *     offloaded (or is between evictions) simply is not there, so its bytes were
++ *     invisible whenever ANY other flow was accelerated - which is the normal
++ *     state. Large fast downloads are the worst case, because they are exactly
++ *     the flows that get evicted and re-learned (and, with the pre-2026-08-11
++ *     connbytes QoS presets, evicted constantly).
++ *   - conntrack, on THIS kernel, is complete. The old comment here claimed "an
++ *     offloaded flow's conntrack bytes freeze at offload"; that is not true on
++ *     Broadcom HND. nf_conntrack_acct.c seq_print_acct() prints
++ *         software counter + blog_ct_get_stats(<live accelerated bytes>)
++ *     and blog_ct_put_stats() folds the accelerated bytes into the software
++ *     counter when the flow is evicted ("when flow is evicted push the flow
++ *     stats in to ct"). So /proc/net/nf_conntrack already carries BOTH paths,
++ *     monotonically, with no double counting.
++ *
++ * So this pass now runs every sample and owns the client + per-network rings.
++ * poll_fcache() keeps only what conntrack cannot give: the router's own traffic
++ * (whose flows ride a *_local pseudo-dev) and the Connections page's flow ages.
++ */
+ static void poll_conntrack(void)
+ {
+ 	FILE *f = fopen("/proc/net/nf_conntrack", "r");
+@@ -842,6 +864,7 @@ static void poll_conntrack(void)
+ 	flowgen++;
+ 	ntop = 0;
+ 	arp_refresh();		/* load /proc/net/arp ONCE per poll, not per flow */
++	brsub_refresh();	/* bridges can appear when a guest network is created */
+ 	while (fgets(line, sizeof(line), f)) {
+ 		char proto[16] = "", src[64] = "", dst[64] = "";
+ 		char rsrc[64] = "";
+@@ -876,8 +899,19 @@ static void poll_conntrack(void)
+ 			char kbuf[160], mac[20];
+ 			int ci;
+ 
++			uint32_t sip;
++			const char *br;
++
+ 			if (inet_aton(src, &a) == 0) continue;
+-			if ((ntohl(a.s_addr) & lan_mask) != lan_net) continue;
++			sip = ntohl(a.s_addr);
++			/* any LAN bridge, not just br0 - guest/SDN clients live on their
++			   own subnets and used to be dropped here entirely */
++			if ((br = ip_bridge(sip)) == NULL) continue;
++			/* the router's own LAN address is not a client. It reaches here via
++			   the health probe and any router-sourced LAN traffic; crediting it
++			   as a device is the "router appears as a device row" backlog item.
++			   Bucket it with the router instead. */
++			if (lan_ip && sip == lan_ip) br = NULL;
+ 
+ 			snprintf(kbuf, sizeof(kbuf), "%d/%s/%s/%d/%d", pnum, src, dst, sport, dport);
+ 			key = fnv64(kbuf);
+@@ -914,21 +948,32 @@ static void poll_conntrack(void)
+ 			fl->key = key; fl->ob = ob; fl->rb = rb; fl->gen = flowgen;
+ 
+ 			if (dob == 0 && drb == 0) continue;
++
++			/* per-network (br0 / guest bridges / Router), from the same complete
++			   source as the per-device numbers - so br0 now reconciles with the
++			   WAN line instead of showing accelerated flows only */
++			{
++				int ns = net_slot(br ? br : RT_NETLBL);
++				if (ns >= 0) {
++					ring_add(r_net[ns], drb, dob);
++					lv_net_rx[ns] += drb * 8 / FCACHE_SECS;
++					lv_net_tx[ns] += dob * 8 / FCACHE_SECS;
++				}
++			}
++			if (!br) {			/* router-sourced: the Router device bucket */
++				ci = cli_slot(RT_DEVKEY, RT_DEVLBL);
++				ring_add(r_cli[ci], drb, dob);
++				lv_cli_rx[ci] += drb * 8 / FCACHE_SECS;
++				lv_cli_tx[ci] += dob * 8 / FCACHE_SECS;
++				top_note(src, dst, dport, pnum, dob, drb);
++				continue;
++			}
+ 			if (!arp_mac(src, mac, sizeof(mac)))
+ 				strlcpy(mac, src, sizeof(mac));
+ 			ci = cli_slot(mac, src);
+ 			ring_add(r_cli[ci], drb, dob);	/* rx=download(reply), tx=upload(orig) */
+-			/* Feed the LIVE per-device rates as well. poll_fcache() zeroes
+-			 * the lv_cli_ and lv_net_ accumulators at the top of each sample
+-			 * and repopulates them on its own path; when it hands off here it has
+-			 * already zeroed them and nothing here filled them back in, so the
+-			 * live per-device rows read a flat zero for as long as a software
+-			 * QoS engine (type 0/9, accelerator off) is selected. Same
+-			 * bits/sec convention as the fcache path.
+-			 * NOTE: lv_net_* (per-network) is still not filled here - this path
+-			 * has no LAN-side device to map to a bridge, unlike the flow cache
+-			 * which carries RxDev/TxDev. Per-network live rows therefore remain
+-			 * zero on the fallback; the history rings are unaffected. */
++			/* live per-device rates, same bits/sec convention as the rings.
++			 * The caller zeroes the lv_* accumulators before this pass. */
+ 			lv_cli_rx[ci] += drb * 8 / FCACHE_SECS;
+ 			lv_cli_tx[ci] += dob * 8 / FCACHE_SECS;
+ 			top_note(src, dst, dport, pnum, dob, drb);
+@@ -1725,8 +1770,10 @@ int main(int argc, char **argv)
+ 		    inet_aton(nvram_safe_get("lan_netmask"), &m)) {
+ 			lan_mask = ntohl(m.s_addr);
+ 			lan_net = ntohl(a.s_addr) & lan_mask;
++			lan_ip = ntohl(a.s_addr);	/* the router itself is not a client */
+ 		}
+ 	}
++	brsub_refresh();	/* LAN bridge subnets, for conntrack's network attribution */
+ 
+ 	/* v2.1.5 (field: "JFFS/USB history not persistent"): the store medium is NOT
+ 	 * guaranteed mounted when we start. USB in particular mounts via hotplug AFTER
+@@ -1845,9 +1892,21 @@ int main(int argc, char **argv)
+ 			tcls_prev = tcls; have_tcls = 1;
+ 		}
+ 
+-		/* flow cache (per-device/per-network/top-talkers) + probe: slow cadence */
+-		if (tick % HEAVY_EVERY == 0)
++		/* per-device / per-network / top-talkers + probe: slow cadence.
++		 * ORDER MATTERS (2026-08-11): poll_conntrack() is the complete byte
++		 * source (software path AND accelerated bytes - the Broadcom kernel
++		 * folds the fast-path counters into the conntrack readout) and it owns
++		 * the client and network rings, so it zeroes the live accumulators and
++		 * runs first. poll_fcache() then adds only the router's own traffic and
++		 * refreshes the Connections page's flow ages. */
++		if (tick % HEAVY_EVERY == 0) {
++			memset(lv_cli_rx, 0, sizeof(lv_cli_rx));
++			memset(lv_cli_tx, 0, sizeof(lv_cli_tx));
++			memset(lv_net_rx, 0, sizeof(lv_net_rx));
++			memset(lv_net_tx, 0, sizeof(lv_net_tx));
++			poll_conntrack();
+ 			poll_fcache();
++		}
+ 		if (tick % PROBE_EVERY == 0)
+ 			poll_probe();
+ 
+-- 
+2.25.1
+

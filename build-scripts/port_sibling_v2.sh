@@ -19,7 +19,12 @@
 #         default = DRY RUN (report only).  --commit performs sync + commit.
 # ============================================================================
 set -u
-R=/home/reaper/asuswrt-be96u
+# The tree this port runs in. It used to be safe to hardcode: every model had its
+# own WSL instance with its own branch checked out. Those four instances were
+# deleted 2026-08-10, so a sibling port now runs in a `git worktree` created off
+# the hub tip inside the canon instance - and that worktree is NOT this path.
+# Override with REAPER_TREE=<worktree>; the default keeps the old single-tree use.
+R=${REAPER_TREE:-/home/reaper/asuswrt-be96u}
 # Identity art (per-model banner .png + animated _anim.png). Prefer the copy
 # vendored in this repo at reaper-mockups/ -- that is the source of truth and the
 # only one a clean checkout or a CI runner can see. Fall back to the developer's

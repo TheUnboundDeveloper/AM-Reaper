@@ -1,0 +1,450 @@
+From 5b558ee6b05de75dde25f163fa6feefa1f5599c9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 11:32:48 -0400
+Subject: [PATCH] ui: retire the Network Map - the dashboard takes its rail
+ slot and its header button goes
+
+Owner item. Three parts, one shape: the stock Network Map (index.asp,
+NETWORKMAP_PAGE in shared.h) is superseded by the Reaper dashboard, so it should
+not be reachable and should not occupy the first slot in the nav.
+
+1. DISCONNECTED. reaper_inject.c's injected bounce redirected index.asp to the
+dashboard only when it loaded as the TOP document. Framed, it still rendered -
+which is exactly what the rail did with it. It now redirects the TOP window in
+BOTH contexts, so a bookmark, a stock in-page link or a stray frame target all
+land on the dashboard. It gets its own line rather than a SUP{} entry because
+SUP targets are FRAMED pages ("/reaper_shell.asp#" + target) and the dashboard is
+top-level.
+
+Verified by extracting the REAPER_BOUNCE_JS macro exactly as the preprocessor
+concatenates it and running it against a stubbed location/self/top:
+
+  index.asp        top-level -> /Main_ReaperDash.asp     (unchanged)
+  index.asp        FRAMED    -> /Main_ReaperDash.asp     (NEW - used to stay put)
+  QoS_EZQoS (SUP)  both      -> /reaper_shell.asp#Reaper_QoS.asp   (unchanged)
+  Advanced_LAN     top-level -> /reaper_shell.asp#...    (unchanged)
+  Advanced_LAN     FRAMED    -> stays put                (unchanged)
+
+2. RAIL. The Network Map entry in menuTrees/menuTree.js (and the railFallback
+copy in reaper_shell.asp, and the hardcoded rail in Main_ReaperDash.asp - all
+three must move together, standing rule 6/20) now points at the dashboard. The
+dashboard carries its OWN chrome, so framing it would paint the header and rail
+twice: buildRail() gained isTopLevelPage(), which emits it as a plain navigation
+link with no data-page, so the framing click handler leaves it alone. Verified by
+running the shipped buildRail() against a stub menuTree - dashboard renders as
+href="/Main_ReaperDash.asp" with no data-page, stock entries still frame, an
+addon's off-origin entry still opens in a new tab, and no index.asp remains.
+
+3. HEADER. The Dashboard button is removed. With the dashboard owning the first
+rail slot, a second entry point beside Reboot/Logout was redundant; the brand
+logo still links there as it always has.
+
+NEW TOKEN Reaper_c_dashboard, translated into all 25 packs rather than reusing
+ASUS's AiProtection_title_Dashboard_title - whose FR value is "Page de jeu"
+(game page), which is right for the ROG dashboard it was written for and wrong
+for a primary nav label. Wording matches the "dashboard" phrasing already used
+inside RFWU_15 per language. Dicts stay in lockstep at 6297 lines, identical key
+order; all 475 page/language combinations still compile.
+
+NOT BUILT. Metal: confirm the rail's first item goes to the dashboard without
+framing it, that the header no longer shows the button, and that a manual
+/index.asp lands on the dashboard.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      | 16 ++++++++++----
+ release/src/router/www/BR.dict                |  1 +
+ release/src/router/www/CN.dict                |  1 +
+ release/src/router/www/CZ.dict                |  1 +
+ release/src/router/www/DA.dict                |  1 +
+ release/src/router/www/DE.dict                |  1 +
+ release/src/router/www/EN.dict                |  1 +
+ release/src/router/www/ES.dict                |  1 +
+ release/src/router/www/FI.dict                |  1 +
+ release/src/router/www/FR.dict                |  1 +
+ release/src/router/www/HU.dict                |  1 +
+ release/src/router/www/IT.dict                |  1 +
+ release/src/router/www/JP.dict                |  1 +
+ release/src/router/www/KR.dict                |  1 +
+ release/src/router/www/MS.dict                |  1 +
+ release/src/router/www/Main_ReaperDash.asp    |  2 +-
+ release/src/router/www/NL.dict                |  1 +
+ release/src/router/www/NO.dict                |  1 +
+ release/src/router/www/PL.dict                |  1 +
+ release/src/router/www/RO.dict                |  1 +
+ release/src/router/www/RU.dict                |  1 +
+ release/src/router/www/SL.dict                |  1 +
+ release/src/router/www/SV.dict                |  1 +
+ release/src/router/www/TH.dict                |  1 +
+ release/src/router/www/TR.dict                |  1 +
+ release/src/router/www/TW.dict                |  1 +
+ release/src/router/www/UK.dict                |  1 +
+ release/src/router/www/reaper_shell.asp       | 21 +++++++++++++++++--
+ .../router/www/require/menuTrees/menuTree.js  | 12 ++++++++---
+ 29 files changed, 66 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 2e83105891..41d4337d2c 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -50,8 +50,16 @@
+  * TOP window to the reaper page instead of showing the dead stock page. The
+  * suppression check runs in BOTH top and framed contexts (top.location), so a
+  * bookmark or in-page link can't sneak a superseded page into the shell iframe.
+- * The normal index->dashboard / other->shell bounce still runs for top-level
+- * loads that are not suppressed. */
++ * The normal other->shell bounce still runs for top-level loads that are not
++ * suppressed.
++ *
++ * index.asp (the stock Network Map, NETWORKMAP_PAGE in shared.h) is suppressed
++ * the same way as of 2026-08-11: the Reaper dashboard replaces it, and it took
++ * the Network Map's slot in the rail. It gets its own line rather than a SUP{}
++ * entry because SUP targets are FRAMED pages ("/reaper_shell.asp#" + target) and
++ * the dashboard is top-level. Previously index.asp was only redirected when it
++ * loaded as the top document, so it still rendered inside the shell frame when
++ * something linked to it - which is exactly what the rail used to do. */
+ /* Split into two macros so reaper-native pages (which render their OWN chrome/CSS)
+  * can receive the bounce WITHOUT the reaper_content.css <link> that would fight
+  * their styling.
+@@ -76,10 +84,10 @@
+ 	"\"advanced_qosuserprio_content.asp\":\"Reaper_QoS.asp\"," \
+ 	"\"advanced_qosuserrules_content.asp\":\"Reaper_QoS.asp\"," \
+ 	"\"qos_ezqos.asp\":\"Reaper_QoS.asp\"};" \
++	"if(rp.toLowerCase()===\"index.asp\"){top.location.replace(\"/Main_ReaperDash.asp\");return;}" \
+ 	"var s=SUP[rp.toLowerCase()];" \
+ 	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}" \
+-	"if(self===top){location.replace(rp===\"index.asp\"?\"/Main_ReaperDash.asp\":" \
+-	"\"/reaper_shell.asp#\"+rp+location.search);}})();</script>"
++	"if(self===top){location.replace(\"/reaper_shell.asp#\"+rp+location.search);}})();</script>"
+ 
+ /* stock pages: theme <link> + bounce */
+ static const char REAPER_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS;
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 63c99810fb..646e5a0562 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modelo
+ RFWU_30=O arquivo escolhido não parece ser uma imagem para este roteador (modelo ou variante diferente). Gravar mesmo assim?
+ RFWU_31=Enviar e gravar esta imagem? O roteador vai verificá-la, gravá-la e reiniciar. Não desligue o roteador até ele voltar a ficar on-line.
+ RQOS_123=Estas regras classificam por bytes transferidos, portanto não podem usar a aceleração de fluxo por hardware e são reavaliadas a cada pacote; além disso, os fluxos longos acabam na classe errada (vídeo em streaming é HTTPS). Use porta, protocolo, IP ou MAC. Afetadas:
++Reaper_c_dashboard=Painel
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 9c1ec197d9..54b6050c13 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=型号
+ RFWU_30=所选文件似乎不是此路由器的镜像（型号或版本不匹配）。仍要写入吗？
+ RFWU_31=上传并写入此镜像？路由器将校验、写入并重启。在路由器重新上线之前，请勿断电。
+ RQOS_123=这些规则按传输字节数分类，因此无法使用硬件流加速，并且会对每个数据包重新判定；长连接也会落入错误的类别（流媒体视频使用 HTTPS）。请改用端口、协议、IP 或 MAC 进行匹配。受影响的规则：
++Reaper_c_dashboard=仪表板
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 8f5ec800b3..6f96973746 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Vybraný soubor nevypadá jako obraz pro tento router (nesouhlasí model nebo varianta). Přesto zapsat?
+ RFWU_31=Nahrát a zapsat tento obraz? Router jej ověří, zapíše a restartuje se. Nevypínejte router, dokud se znovu nepřipojí.
+ RQOS_123=Tato pravidla klasifikují podle přenesených bajtů, takže nemohou využít hardwarovou akceleraci toků a vyhodnocují se u každého paketu; dlouhé toky navíc skončí ve špatné třídě (streamované video jde přes HTTPS). Používejte raději port, protokol, IP nebo MAC. Týká se pravidel:
++Reaper_c_dashboard=Nástěnka
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 79078012bf..098b19be5b 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Den valgte fil ser ikke ud til at være et aftryk til denne router (model eller variant passer ikke). Vil du skrive det alligevel?
+ RFWU_31=Vil du uploade og skrive dette aftryk? Routeren kontrollerer det, skriver det og genstarter. Sluk ikke routeren, før den er online igen.
+ RQOS_123=Disse regler klassificerer efter overførte byte og kan derfor ikke bruge hardwareacceleration af flows; de vurderes igen for hver pakke, og lange flows havner desuden i den forkerte klasse (streamingvideo er HTTPS). Match i stedet på port, protokol, IP eller MAC. Berørte:
++Reaper_c_dashboard=Oversigt
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 8060f925a3..aa928f3c4a 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modell
+ RFWU_30=Die gewählte Datei scheint kein Abbild für diesen Router zu sein (Modell oder Variante passt nicht). Trotzdem schreiben?
+ RFWU_31=Dieses Abbild hochladen und schreiben? Der Router prüft es, schreibt es und startet neu. Schalten Sie den Router nicht aus, bis er wieder online ist.
+ RQOS_123=Diese Regeln klassifizieren nach übertragenen Bytes und können daher die Hardware-Flow-Beschleunigung nicht nutzen; sie werden bei jedem Paket neu ausgewertet, und lange Verbindungen landen in der falschen Klasse (Streaming-Video ist HTTPS). Verwenden Sie stattdessen Port, Protokoll, IP oder MAC. Betroffen:
++Reaper_c_dashboard=Dashboard
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 70e7c0fc69..f1ec68a5d6 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=The selected file does not look like an image for this router (model or variant mismatch). Flash it anyway?
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+ RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
++Reaper_c_dashboard=Dashboard
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 53bbce1802..0659c2343e 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modelo
+ RFWU_30=El archivo elegido no parece una imagen para este router (el modelo o la variante no coinciden). ¿Grabarlo de todos modos?
+ RFWU_31=¿Subir y grabar esta imagen? El router la verificará, la grabará y se reiniciará. No apague el router hasta que vuelva a estar en línea.
+ RQOS_123=Estas reglas clasifican por bytes transferidos, por lo que no pueden usar la aceleración hardware de flujos y se reevalúan en cada paquete; además, los flujos largos acaban en la clase equivocada (el vídeo en streaming es HTTPS). Use en su lugar el puerto, el protocolo, la IP o la MAC. Afectadas:
++Reaper_c_dashboard=Panel
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 02de5a7ac4..0c59117484 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Malli
+ RFWU_30=Valittu tiedosto ei näytä tämän reitittimen levykuvalta (malli tai versio ei täsmää). Kirjoitetaanko silti?
+ RFWU_31=Lähetetäänkö ja kirjoitetaanko tämä levykuva? Reititin tarkistaa sen, kirjoittaa sen ja käynnistyy uudelleen. Älä katkaise reitittimen virtaa ennen kuin se on taas verkossa.
+ RQOS_123=Nämä säännöt luokittelevat siirrettyjen tavujen perusteella, joten ne eivät voi käyttää laitteistokiihdytettyä vuonsiirtoa ja ne arvioidaan uudelleen jokaisella paketilla; lisäksi pitkät vuot päätyvät väärään luokkaan (suoratoistovideo on HTTPS). Käytä sen sijaan porttia, protokollaa, IP:tä tai MAC-osoitetta. Koskee sääntöjä:
++Reaper_c_dashboard=Koontinäyttö
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 9520a937ef..50050de025 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modèle
+ RFWU_30=Le fichier choisi ne semble pas être une image pour ce routeur (modèle ou variante différent). L'écrire quand même ?
+ RFWU_31=Envoyer et écrire cette image ? Le routeur va la vérifier, l'écrire et redémarrer. N'éteignez pas le routeur avant son retour en ligne.
+ RQOS_123=Ces règles classifient selon les octets transférés : elles ne peuvent donc pas utiliser l'accélération matérielle des flux et sont réévaluées à chaque paquet ; de plus, les flux longs arrivent dans la mauvaise classe (la vidéo en streaming est en HTTPS). Utilisez plutôt le port, le protocole, l'IP ou la MAC. Concernées :
++Reaper_c_dashboard=Tableau de bord
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index f06b2ac93f..181db1df91 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modell
+ RFWU_30=A kiválasztott fájl nem tűnik ehhez a routerhez való lemezképnek (eltérő modell vagy változat). Ennek ellenére kiírja?
+ RFWU_31=Feltölti és kiírja ezt a lemezképet? A router ellenőrzi, kiírja, majd újraindul. Ne kapcsolja ki a routert, amíg újra elérhető nem lesz.
+ RQOS_123=Ezek a szabályok az átvitt bájtok alapján osztályoznak, ezért nem használhatják a hardveres folyamgyorsítást, és minden csomagnál újraértékelődnek; a hosszú folyamok ráadásul rossz osztályba kerülnek (a streamelt videó HTTPS). Használjon inkább portot, protokollt, IP- vagy MAC-címet. Érintett szabályok:
++Reaper_c_dashboard=Irányítópult
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 1698ab704a..de316d5c83 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modello
+ RFWU_30=Il file scelto non sembra un'immagine per questo router (modello o variante non corrispondenti). Scriverlo comunque?
+ RFWU_31=Caricare e scrivere questa immagine? Il router la verificherà, la scriverà e si riavvierà. Non spegnere il router finché non torna online.
+ RQOS_123=Queste regole classificano in base ai byte trasferiti, quindi non possono usare l'accelerazione hardware dei flussi e vengono rivalutate a ogni pacchetto; inoltre i flussi lunghi finiscono nella classe sbagliata (il video in streaming è HTTPS). Usa invece porta, protocollo, IP o MAC. Interessate:
++Reaper_c_dashboard=Dashboard
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 3bce270435..7d3a20f67a 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=モデル
+ RFWU_30=選択したファイルはこのルーター用のイメージではないようです (モデルまたはバリアントが一致しません)。それでも書き込みますか?
+ RFWU_31=このイメージをアップロードして書き込みますか? ルーターは検証して書き込み、再起動します。オンラインに戻るまでルーターの電源を切らないでください。
+ RQOS_123=これらのルールは転送バイト数で分類するため、ハードウェアのフローオフロードを利用できず、パケットごとに再評価されます。さらに、長時間の通信が誤ったクラスに入ります (ストリーミング動画は HTTPS です)。代わりにポート、プロトコル、IP、MAC で一致させてください。対象:
++Reaper_c_dashboard=ダッシュボード
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index f559aec309..beff2b66e7 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=모델
+ RFWU_30=선택한 파일은 이 라우터용 이미지가 아닌 것 같습니다(모델 또는 버전 불일치). 그래도 기록할까요?
+ RFWU_31=이 이미지를 업로드하여 기록할까요? 라우터가 검증하고 기록한 뒤 재부팅합니다. 라우터가 다시 온라인이 될 때까지 전원을 끄지 마세요.
+ RQOS_123=이 규칙들은 전송된 바이트 수로 분류하므로 하드웨어 플로 오프로드를 사용할 수 없고 패킷마다 다시 판정됩니다. 또한 오래 지속되는 흐름이 잘못된 클래스로 들어갑니다(스트리밍 영상은 HTTPS입니다). 대신 포트, 프로토콜, IP 또는 MAC으로 일치시키세요. 해당 규칙:
++Reaper_c_dashboard=대시보드
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index db03ab5c1e..f9909b7f32 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Fail yang dipilih nampaknya bukan imej untuk penghala ini (model atau varian tidak sepadan). Tulis juga?
+ RFWU_31=Muat naik dan tulis imej ini? Penghala akan mengesahkannya, menulisnya dan but semula. Jangan matikan kuasa penghala sehingga ia kembali dalam talian.
+ RQOS_123=Peraturan ini mengelaskan mengikut bait yang dipindahkan, jadi ia tidak boleh menggunakan pemecutan aliran perkakasan dan dinilai semula pada setiap paket; aliran panjang juga tersalah kelas (video strim menggunakan HTTPS). Sebaliknya, padankan mengikut port, protokol, IP atau MAC. Terjejas:
++Reaper_c_dashboard=Papan Pemuka
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 7bf3a1e3e9..58220e3fc5 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -308,7 +308,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+     <div class="grp"><#menu5_1_1#></div>
+     <nav class="nav">
+-      <a href="/reaper_shell.asp#index.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span class="nl"><#menu1#></span></a>
++      <a href="/Main_ReaperDash.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span class="nl"><#Reaper_c_dashboard#></span></a>
+       <a href="/reaper_shell.asp#AiMesh.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg></span><span class="nl">AiMesh</span></a>
+       <a href="/reaper_shell.asp#SDN.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl"><#Network#></span></a>
+       <a href="/reaper_shell.asp#Reaper_GK.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M9 11v-1.5a3 3 0 0 1 6 0V11"/><rect x="9" y="11" width="6" height="5" rx="1"/></svg></span><span class="nl"><#RGK_00#></span></a>
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 94dce23cfb..6d5a4510ed 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Het gekozen bestand lijkt geen image voor deze router (model of variant komt niet overeen). Toch wegschrijven?
+ RFWU_31=Dit image uploaden en wegschrijven? De router controleert het, schrijft het weg en start opnieuw op. Schakel de router niet uit voordat hij weer online is.
+ RQOS_123=Deze regels classificeren op overgedragen bytes, waardoor ze de hardwareversnelling voor flows niet kunnen gebruiken en bij elk pakket opnieuw worden geëvalueerd; bovendien komen lange verbindingen in de verkeerde klasse terecht (streamingvideo is HTTPS). Gebruik in plaats daarvan poort, protocol, IP of MAC. Betreft:
++Reaper_c_dashboard=Dashboard
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 9bd78f9f77..d0517915e6 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modell
+ RFWU_30=Den valgte filen ser ikke ut til å være et bilde for denne ruteren (modell eller variant stemmer ikke). Skrive det likevel?
+ RFWU_31=Laste opp og skrive dette bildet? Ruteren kontrollerer det, skriver det og starter på nytt. Ikke slå av ruteren før den er tilkoblet igjen.
+ RQOS_123=Disse reglene klassifiserer etter overførte byte og kan derfor ikke bruke maskinvareakselererte flyter; de vurderes på nytt for hver pakke, og lange flyter havner i feil klasse (strømmevideo er HTTPS). Bruk heller port, protokoll, IP eller MAC. Berørte:
++Reaper_c_dashboard=Oversikt
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 377710ded5..bf32da9c14 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Wybrany plik nie wygląda na obraz dla tego routera (niezgodny model lub wariant). Zapisać mimo to?
+ RFWU_31=Przesłać i zapisać ten obraz? Router zweryfikuje go, zapisze i uruchomi się ponownie. Nie wyłączaj routera, dopóki nie wróci do trybu online.
+ RQOS_123=Te reguły klasyfikują według przesłanych bajtów, więc nie mogą korzystać ze sprzętowego przyspieszania przepływów i są oceniane przy każdym pakiecie; długie połączenia trafiają też do niewłaściwej klasy (wideo strumieniowe to HTTPS). Zamiast tego dopasowuj po porcie, protokole, IP lub MAC. Dotyczy:
++Reaper_c_dashboard=Pulpit
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index bae8a36bbb..bbc3e9140e 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Fișierul ales nu pare a fi o imagine pentru acest router (modelul sau varianta nu se potrivesc). Îl scrieți oricum?
+ RFWU_31=Încărcați și scrieți această imagine? Routerul o va verifica, o va scrie și va reporni. Nu opriți routerul până nu revine online.
+ RQOS_123=Aceste reguli clasifică după octeții transferați, deci nu pot folosi accelerarea hardware a fluxurilor și sunt reevaluate la fiecare pachet; în plus, fluxurile lungi ajung în clasa greșită (videoclipurile în streaming folosesc HTTPS). Folosiți în schimb portul, protocolul, IP-ul sau MAC-ul. Reguli afectate:
++Reaper_c_dashboard=Panou
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 19c50a87a0..65677b5d56 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Модель
+ RFWU_30=Выбранный файл не похож на образ для этого роутера (не совпадает модель или вариант). Всё равно записать?
+ RFWU_31=Отправить и записать этот образ? Роутер проверит его, запишет и перезагрузится. Не выключайте роутер, пока он снова не выйдет в сеть.
+ RQOS_123=Эти правила классифицируют трафик по объёму переданных байтов, поэтому не могут использовать аппаратное ускорение потоков и пересчитываются на каждом пакете; кроме того, длинные потоки попадают не в тот класс (потоковое видео идёт по HTTPS). Используйте вместо этого порт, протокол, IP или MAC. Затронуты:
++Reaper_c_dashboard=Панель
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 775b82eb54..c0ae7777c1 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Izbrana datoteka ni videti kot slika za ta usmerjevalnik (model ali različica se ne ujema). Jo vseeno zapišem?
+ RFWU_31=Želite naložiti in zapisati to sliko? Usmerjevalnik jo bo preveril, zapisal in se znova zagnal. Usmerjevalnika ne izklapljajte, dokler ni spet povezan.
+ RQOS_123=Ta pravila razvrščajo po prenesenih bajtih, zato ne morejo uporabiti strojnega pospeševanja tokov in se ovrednotijo pri vsakem paketu; dolgi tokovi poleg tega pristanejo v napačnem razredu (pretočni video je HTTPS). Namesto tega se ujemajte po vratih, protokolu, naslovu IP ali MAC. Zadeva pravila:
++Reaper_c_dashboard=Nadzorna plošča
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 23d27fe205..1c22255e2a 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Modell
+ RFWU_30=Den valda filen verkar inte vara en avbildning för den här routern (modell eller variant stämmer inte). Skriva den ändå?
+ RFWU_31=Ladda upp och skriva den här avbildningen? Routern verifierar den, skriver den och startar om. Stäng inte av routern förrän den är online igen.
+ RQOS_123=De här reglerna klassificerar efter överförda byte och kan därför inte använda maskinvaruaccelererade flöden, utan omprövas för varje paket; långa flöden hamnar dessutom i fel klass (strömmande video är HTTPS). Matcha i stället på port, protokoll, IP eller MAC. Berörda:
++Reaper_c_dashboard=Instrumentpanel
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 56d69d319f..972ef77aec 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=รุ่น
+ RFWU_30=ไฟล์ที่เลือกดูเหมือนจะไม่ใช่อิมเมจสำหรับเราเตอร์นี้ (รุ่นหรือชนิดไม่ตรงกัน) ต้องการเขียนต่อไปหรือไม่
+ RFWU_31=อัปโหลดและเขียนอิมเมจนี้หรือไม่ เราเตอร์จะตรวจสอบ เขียน แล้วรีบูต อย่าปิดเครื่องจนกว่าเราเตอร์จะกลับมาออนไลน์
+ RQOS_123=กฎเหล่านี้จัดประเภทตามจำนวนไบต์ที่ถ่ายโอน จึงไม่สามารถใช้การเร่งความเร็วโฟลว์ด้วยฮาร์ดแวร์ และต้องประเมินใหม่ทุกแพ็กเก็ต อีกทั้งการเชื่อมต่อที่ยาวนานจะตกไปอยู่ผิดคลาส (วิดีโอสตรีมมิงใช้ HTTPS) ให้จับคู่ด้วยพอร์ต โปรโตคอล IP หรือ MAC แทน กฎที่ได้รับผลกระทบ:
++Reaper_c_dashboard=แดชบอร์ด
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 746930d13f..8abad3898d 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Model
+ RFWU_30=Seçilen dosya bu yönlendiriciye ait bir imaj gibi görünmüyor (model veya sürüm uyuşmuyor). Yine de yazılsın mı?
+ RFWU_31=Bu imaj yüklenip yazılsın mı? Yönlendirici doğrulayacak, yazacak ve yeniden başlayacak. Yönlendirici yeniden çevrimiçi olana kadar gücünü kesmeyin.
+ RQOS_123=Bu kurallar aktarılan bayta göre sınıflandırır; bu yüzden donanım akış hızlandırmasını kullanamaz ve her pakette yeniden değerlendirilir, ayrıca uzun akışlar yanlış sınıfa düşer (akış videosu HTTPS'tir). Bunun yerine bağlantı noktası, protokol, IP veya MAC ile eşleştirin. Etkilenenler:
++Reaper_c_dashboard=Pano
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index ca6a50bdd4..a87f2e73c1 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=型號
+ RFWU_30=所選檔案看起來不是此路由器的映像檔（型號或版本不符）。仍要寫入嗎？
+ RFWU_31=要上傳並寫入此映像檔嗎？路由器將驗證、寫入並重新開機。在路由器重新上線之前，請勿關閉電源。
+ RQOS_123=這些規則依傳輸位元組數分類，因此無法使用硬體流量加速，而且每個封包都會重新判定；長連線也會落入錯誤的類別（串流影片使用 HTTPS）。請改用連接埠、通訊協定、IP 或 MAC 進行比對。受影響的規則：
++Reaper_c_dashboard=儀表板
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 73b38a6bee..424a3b3bad 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6293,3 +6293,4 @@ RFWU_29=Модель
+ RFWU_30=Вибраний файл не схожий на образ для цього маршрутизатора (не збігається модель або варіант). Усе одно записати?
+ RFWU_31=Надіслати та записати цей образ? Маршрутизатор перевірить його, запише та перезавантажиться. Не вимикайте маршрутизатор, доки він знову не з'явиться в мережі.
+ RQOS_123=Ці правила класифікують за переданими байтами, тому не можуть використовувати апаратне прискорення потоків і переоцінюються на кожному пакеті; крім того, довгі потоки потрапляють не в той клас (потокове відео йде через HTTPS). Використовуйте натомість порт, протокол, IP або MAC. Стосується правил:
++Reaper_c_dashboard=Панель
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 4025beb2a1..fb184c34b0 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -142,7 +142,10 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+       <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+     </div>
+     <span class="spacer"></span>
+-    <a class="btn" href="/Main_ReaperDash.asp"><#AiProtection_title_Dashboard_title#></a>
++    <!-- reaper: the header Dashboard button is GONE - the dashboard now owns the
++         first rail slot (where Network Map used to be), so a second entry point
++         in the header was redundant. The brand logo at the left still links to
++         it, as it always has. -->
+     <button class="btn" type="button" id="btn_reboot"><#BTN_REBOOT#></button>
+     <button class="btn crit" type="button" id="btn_logout"><#t1Logout#></button>
+   </header>
+@@ -201,6 +204,9 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+ 
+ <script>
+ /* Full rollout: every stock page carries /reaper/reaper_content.css baked in. */
++/* frameUrl() falls back here when a page name fails the allow-list. index.asp is
++   the (now superseded) Network Map: framing it makes reaper_inject's bounce send
++   the TOP window to the dashboard, so a malformed target lands somewhere sane. */
+ var DEFAULT_PAGE = 'index.asp';
+ 
+ /* reusable themed waiting modal, callable from framed Reaper content pages */
+@@ -264,6 +270,15 @@ function frameUrl(page){
+   return '/' + page;
+ }
+ 
++/* reaper: a rail target that carries its OWN chrome and must therefore replace
++   the whole window instead of loading into the frame. The dashboard is the only
++   one today (it took the Network Map's rail slot, which is why this case now
++   exists); framing it would paint the shell header/rail twice. Emitted as a
++   plain link with no data-page, so the click handler below leaves it alone. */
++function isTopLevelPage(u){
++  return /^\/?Main_ReaperDash\.asp$/i.test(String(u||''));
++}
++
+ function isExternalUrl(u){
+   /* an addon-supplied menu target that is NOT a bare same-origin page: an
+      absolute/protocol-relative http(s) link or a mailto (e.g. a third-party
+@@ -373,6 +388,8 @@ function buildRail(menuTree){
+     var furl=m.tab[first].url;
+     if(isExternalUrl(furl))   /* whole menu points off-origin: new-tab link */
+       h+='<a class="item" href="'+esc(furl)+'" target="_blank" rel="noopener noreferrer">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
++    else if(isTopLevelPage(furl))  /* own chrome: navigate, never frame */
++      h+='<a class="item" href="/'+esc(furl)+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+     else
+       h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+   }
+@@ -601,7 +618,7 @@ function railFallback(){
+   buildRail({
+     list:[
+       {menuName:`<#menu5_1_1#>`, index:'menu_Split', tab:[{url:'NULL',tabName:'__HIDE__'}]},
+-      {menuName:`<#menu1#>`, index:'menu_Index', tab:[{url:'index.asp',tabName:'__HIDE__'}]},
++      {menuName:`<#Reaper_c_dashboard#>`, index:'menu_Index', tab:[{url:'Main_ReaperDash.asp',tabName:'__HIDE__'}]},
+       {menuName:`<#menu5#>`, index:'menu_Split', tab:[{url:'NULL',tabName:'__HIDE__'}]},
+       {menuName:`<#menu5_1#>`, index:'menu_Wireless', tab:[{url:'Advanced_Wireless_Content.asp',tabName:`<#menu5_1_1#>`}]},
+       {menuName:`<#menu5_2#>`, index:'menu_LAN', tab:[{url:'Advanced_LAN_Content.asp',tabName:`<#menu5_2_1#>`}]},
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index a3a66df08e..47e26131bf 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -34,14 +34,20 @@ define(function(){
+ 					{url: "NULL", tabName: "__HIDE__"}
+ 				] 
+ 			},
++			/* reaper: the Network Map (index.asp) is superseded by the Reaper
++			   dashboard - see reaper_inject.c, which redirects index.asp in BOTH
++			   the top and framed contexts. This rail slot now IS the dashboard.
++			   Main_ReaperDash.asp is a TOP-LEVEL page (its own chrome), so the
++			   shell must navigate to it rather than frame it: reaper_shell.asp
++			   buildRail() emits it as a plain link with no data-page. */
+ 			{
+-				menuName: "<#menu1#>",
++				menuName: "<#Reaper_c_dashboard#>",
+ 				index: "menu_Index",
+ 				tab: [
+-					{url: "<% networkmap_page(); %>", tabName: "__HIDE__"},
++					{url: "Main_ReaperDash.asp", tabName: "__HIDE__"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+-			}, 
++			},
+ 			{
+ 				menuName: "AiMesh",
+ 				index: "menu_AiMesh", 
+-- 
+2.25.1
+

@@ -1,0 +1,192 @@
+From 0df80aff0b09c0eaca1464131fa221b25ec80a32 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 09:46:10 -0400
+Subject: [PATCH] qos: ship the owner-set classful profile as the default, and
+ fix the class template
+
+Owner request: make the classful QoS layout arrived at on metal 2026-08-11 the
+shipped default.
+
+  Q1 Web/VoIP   priority    min 15  ceil 100
+  Q2 Gaming     priority    min 15  ceil  90
+  Q3 Streaming  weighted 20 min 20  ceil  90
+  Q4 Downloads  weighted  5 min  5  ceil  95
+  Q5 Default    weighted 15 min 25  ceil  95
+
+Two strict-priority classes on top, the three bulk classes in a WRR pool below
+them. The old default was p,p,p,p,p - all five strict priority - which left Q5
+last in line behind four classes. Q5 is the catch-all, and a VPN-wrapped call
+lands there (nothing in the preset rulelist matches an encrypted tunnel), so on
+the owner box a live Teams call sat in the queue most exposed to starvation and
+was the only one accumulating AQM drops. Minimums now sum to 80%, deliberately
+under QOS_MINRATE_BUDGET_PCT (85), so the numbers run as written instead of
+being scaled - the old template summed to exactly 100 and every value was
+silently scaled by 0.85.
+
+FOUND WHILE DOING IT - the label list and the engine disagreed about which
+class is which. qos_class_names shipped as
+
+  Gaming, Web/VoIP, Streaming, Downloads, Default
+
+while everything that actually classifies keys on the QUEUE INDEX and treats the
+template as
+
+  Q1 Web/VoIP, Q2 Streaming, Q3 Gaming, Q4 Downloads, Q5 Default
+
+(rc/qos.c dscp_map and wmm_map, the qos_default catch-all comment, and the
+qos_rulelist presets, which target 0 = Q1 for Web Surf/HTTPS and 3 = Q4 for File
+Transfer). So out of the box the row labelled "Gaming" WAS the Web/VoIP class,
+"Web/VoIP" was Streaming, and "Streaming" was Gaming - the same defect class the
+v2.3.2 pass fixed for the DSCP map itself, one layer up. Unreported; the labels
+are what a user reasons about, so this made the editor actively misleading.
+
+Resolved in the direction of the owner profile: the template is now
+Web/VoIP, Gaming, Streaming, Downloads, Default, and dscp_map moves with it -
+CS4/AF4x (gaming) to Q2, CS3/AF3x (streaming) to Q3. Q1, Q4 and Q5 do not move,
+so qos_rulelist and qos_default=4 are untouched. wmm_map's Q2 -> AC_VI now lifts
+Gaming rather than Streaming, which is the right AC for either occupant (and it
+is opt-in, default off, as is qos_dscp_trust).
+
+Also: QoS_EZQoS.asp carried its own stale copy of both the name list and the min
+template as editor fallbacks - updated to match. That page is superseded by
+Reaper_QoS.asp and redirects, but the copy would have outlived the redirect.
+
+These are FACTORY DEFAULTS: a box that has already run this firmware keeps the
+qos_* values in its nvram. Only a factory reset or a fresh install picks up the
+new profile.
+
+NOT BUILT. Owes a build, a factory-reset check that the profile lands as written
+(and that the editor accepts it without the contiguity alert), and a sibling
+port.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c          | 32 +++++++++++++++++-----------
+ release/src/router/shared/defaults.c | 26 ++++++++++++++++++----
+ release/src/router/www/QoS_EZQoS.asp |  4 ++--
+ 3 files changed, 43 insertions(+), 19 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 7606d11aab..480463b200 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -961,18 +961,24 @@ static int add_qos_rules(char *pcWANIF)
+ 	 * with the documented HW-offload freeze semantics for type 11. */
+ 	if (IS_HWQOS_CLASSFUL() && nvram_match("qos_dscp_trust", "1")) {
+ 		static const struct { const char *dscp; int cls; } dscp_map[] = {
+-			/* Classes are named by the shipped template:
+-			 *   Q1 Web/VoIP   Q2 Streaming   Q3 Gaming   Q4 Downloads   Q5 Default
+-			 * The map used to send the GAMING codepoints (CS4/AF4x) to Q2
+-			 * "Streaming" and the STREAMING codepoints (CS3/AF3x) to Q3
+-			 * "Gaming" -- exactly inverted, so a game that marked DSCP
+-			 * correctly never reached the queue named for it. CS1 (scavenger)
+-			 * also landed in Q5, which is the catch-all default class, giving
+-			 * deprioritised bulk the same treatment as unmatched traffic;
+-			 * Q4 "Downloads" is the bulk class and is where it belongs. */
++			/* Classes are named by the shipped template (shared/defaults.c
++			 * qos_class_names -- KEEP THE TWO IN STEP, this map keys on the
++			 * queue index and the name list is only a label):
++			 *   Q1 Web/VoIP   Q2 Gaming   Q3 Streaming   Q4 Downloads   Q5 Default
++			 * 2026-08-11: Gaming and Streaming swapped to Q2/Q3 with the
++			 * owner-set default profile, which puts Gaming in the second
++			 * strict-priority slot and Streaming at the head of the WRR pool.
++			 * Historical: the map once sent the GAMING codepoints (CS4/AF4x)
++			 * to the streaming queue and the STREAMING codepoints (CS3/AF3x)
++			 * to the gaming queue -- exactly inverted, so a game that marked
++			 * DSCP correctly never reached the queue named for it. CS1
++			 * (scavenger) also landed in Q5, the catch-all default class,
++			 * giving deprioritised bulk the same treatment as unmatched
++			 * traffic; Q4 "Downloads" is the bulk class and is where it
++			 * belongs. */
+ 			{ "EF", 1 }, { "CS7", 1 }, { "CS6", 1 }, { "CS5", 1 },	/* voice / interactive   -> Q1 Web/VoIP  */
+-			{ "CS3", 2 }, { "AF31", 2 }, { "AF32", 2 }, { "AF33", 2 },	/* streaming / signaling -> Q2 Streaming */
+-			{ "CS4", 3 }, { "AF41", 3 }, { "AF42", 3 }, { "AF43", 3 },	/* interactive / gaming  -> Q3 Gaming    */
++			{ "CS4", 2 }, { "AF41", 2 }, { "AF42", 2 }, { "AF43", 2 },	/* interactive / gaming  -> Q2 Gaming    */
++			{ "CS3", 3 }, { "AF31", 3 }, { "AF32", 3 }, { "AF33", 3 },	/* streaming / signaling -> Q3 Streaming */
+ 			{ "CS1", 4 },						/* scavenger / bulk      -> Q4 Downloads */
+ 		};
+ 		int di;
+@@ -1011,8 +1017,8 @@ static int add_qos_rules(char *pcWANIF)
+ 	 * port/proto/IP/MAC, never transferred bytes. */
+ 	if (IS_HWQOS_CLASSFUL() && !nvram_match("qos_dscp_wmm", "0")) {
+ 		static const struct { int cls; const char *dscp; } wmm_map[] = {
+-			{ 1, "CS6" },	/* Q1 highest -> AC_VO */
+-			{ 2, "CS5" },	/* Q2         -> AC_VI */
++			{ 1, "CS6" },	/* Q1 Web/VoIP -> AC_VO */
++			{ 2, "CS5" },	/* Q2 Gaming   -> AC_VI (was Streaming before the 2026-08-11 template swap; both are the right AC for the slot) */
+ 		};
+ 		int wi;
+ 		for (wi = 0; wi < (int)(sizeof(wmm_map)/sizeof(wmm_map[0])); wi++) {
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 616e3652c4..c9d8269204 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3070,15 +3070,30 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 	{ "qos_rulelist", "<Web Surf>>80>tcp>0~512>0<HTTPS>>443>tcp>0~512>0<File Transfer>>80>tcp>512~>3<File Transfer>>443>tcp>512~>3", CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+-	{ "qos_orates", "80-100,10-100,5-100,3-100,2-95,0-0,0-0,0-0,0-0,0-0", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "qos_class_names", "Gaming,Web/VoIP,Streaming,Downloads,Default", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },  /* reaper: HW QoS Classful editor labels (UI-only; engine reads qos_orates) */
++	/* reaper 2026-08-11 (owner-set profile, replaces the v3 template):
++	 *   Q1 Web/VoIP  p   min 15  ceil 100
++	 *   Q2 Gaming    p   min 15  ceil  90
++	 *   Q3 Streaming w20 min 20  ceil  90
++	 *   Q4 Downloads w5  min  5  ceil  95
++	 *   Q5 Default   w15 min 25  ceil  95
++	 * Two strict-priority classes on top, the three bulk classes in a WRR pool
++	 * below them so a busy download can no longer park on top of everything
++	 * beneath it (the old all-priority p,p,p,p,p left Q5 -- the catch-all, and
++	 * where a VPN-wrapped call lands -- last in line behind four classes).
++	 * Minimums sum to 80%, deliberately under the 85% cap that start_hwqos_classful
++	 * scales against, so these numbers run as written and the port keeps slack.
++	 * ORDER IS ENGINE-VISIBLE: qos_class_names is a label list, but the rules,
++	 * the DSCP map (rc/qos.c dscp_map) and the WMM lift (wmm_map) all key on the
++	 * QUEUE INDEX -- so this list and that map must be reordered together. */
++	{ "qos_orates", "15-100,15-90,20-90,5-95,25-95,0-0,0-0,0-0,0-0,0-0", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "qos_class_names", "Web/VoIP,Gaming,Streaming,Downloads,Default", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },  /* reaper: HW QoS Classful editor labels; MUST match the queue identities rc/qos.c maps by index */
+ 	/* reaper QoS v3 (HW classful, qos_type 11): aggregate port shaper + per-class
+ 	 * committed rates default ON ("0" = kill-switch); DSCP trust is a policy
+ 	 * choice (LAN hosts influence their own class) and defaults OFF. */
+ 	{ "qos_pshaper", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 aggregate cap: port shaper at qos_obw */
+ 	{ "qos_minrates", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 guaranteed minimums from qos_orates min half */
+ 	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
+-	{ "qos_sched", "p,p,p,p,p", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight */
++	{ "qos_sched", "p,p,w20,w5,w15", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight. Priority rows must stay ABOVE the weighted pool (all SP queues drain ahead of the whole pool) */
+ 	{ "qos_l4s", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 EXPERIMENTAL: flag class queues L4S (DualPI2 ECT(1) marking) */
+ 	{ "qos_cake_rtt", "50", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* cake AQM RTT target (ms); was the only reaper QoS key with no default, so it never appeared in nvram */
+ 	/* reaper QoS v5 (download side): inert until qos_type 11 is active. The RX
+@@ -3200,7 +3215,10 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_burst1", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_default", "4", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* Catch-all class index. The class template is
+-	 *   0 Web/VoIP  1 Streaming  2 Gaming  3 Downloads  4 Default
++	 *   0 Web/VoIP  1 Gaming  2 Streaming  3 Downloads  4 Default
++	 * (Gaming and Streaming swapped 2026-08-11 with the owner-set profile above;
++	 * rc/qos.c dscp_map moved with them. Q1/Q4/Q5 did not move, so the
++	 * qos_rulelist presets -- which target 0 and 3 -- are unaffected.)
+ 	 * and the catch-all class is qos_default + 1, so "3" sent every unmatched
+ 	 * flow -- games included -- into Q4 "Downloads", the same queue the
+ 	 * >512 KB File Transfer preset targets. Unmatched traffic belongs in the
+diff --git a/release/src/router/www/QoS_EZQoS.asp b/release/src/router/www/QoS_EZQoS.asp
+index a1c5803bc0..36bbea311e 100644
+--- a/release/src/router/www/QoS_EZQoS.asp
++++ b/release/src/router/www/QoS_EZQoS.asp
+@@ -2583,13 +2583,13 @@
+    ceilings persist to qos_orates (positional, "min-ceil"); labels persist to the
+    UI-only qos_class_names nvram. The classful engine (rc/qos.c start_hwqos_classful)
+    reads the ceilings from qos_orates in queue order. */
+-var HWQOSC_MIN_TMPL=[80,10,5,3,2];
++var HWQOSC_MIN_TMPL=[15,15,20,5,25];	/* keep in step with shared/defaults.c qos_orates */
+ function hwqoscParse(){
+   var raw=(document.getElementById('qos_orates_input')||{}).value||'';
+   var parts=raw.split(','),ceils=[];
+   for(var i=0;i<5;i++){var seg=(parts[i]||'').split('-');ceils.push(seg.length>1?(parseInt(seg[1],10)||0):(parseInt(seg[0],10)||0));}
+   var nraw=(document.getElementById('qos_class_names_input')||{}).value||'';
+-  var d=nraw.split(','),def=['Gaming','Web/VoIP','Streaming','Downloads','Default'],names=[];
++  var d=nraw.split(','),def=['Web/VoIP','Gaming','Streaming','Downloads','Default'],names=[];
+   for(var j=0;j<5;j++)names.push((d[j]&&d[j].length)?d[j]:def[j]);
+   return {ceils:ceils,names:names};
+ }
+-- 
+2.25.1
+

@@ -1,0 +1,253 @@
+From a0c115dc457dfc974a26bfc531cc4240af6da2f2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 08:42:42 -0400
+Subject: [PATCH] fwpage: the post-flash wait doubled its poll chain every
+ round
+
+Field report: after a firmware upgrade the browser tab freezes hard - the
+only way back is End Task and relaunch, even once the router is up again.
+The v2.3.2 escape hatch (Close button + Esc + heartbeat) did not help,
+because the tab was not merely covered, it was locked up: no click could
+be delivered at all.
+
+ROOT CAUSE - a failed XMLHttpRequest fires readystatechange (readyState 4,
+status 0) AND then the error event. Every poll chain on this page scheduled
+"the next poll" from BOTH handlers, so each failed round started two chains,
+the next round four, then eight. That failure mode is not an edge case here:
+it is the normal state of the page for the whole reboot window, since the
+router is unreachable by design for minutes after the flash.
+
+Measured with the page's own script driven against an unreachable router
+(virtual clock, 5 s windows):
+
+  before   2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 ...  (65 s)
+  after    1 1 1  1  1  1   1   1   1    1    1    1    1
+
+Doubling every 5 s reaches millions of in-flight requests and timers well
+inside a normal 2-5 minute reboot - which is the freeze. All four chains
+were affected (pollBack, pollUpBack, pollInstall, and pollCheck via nvGet),
+so the same lockup was reachable from an update CHECK that lost the router,
+not only from a flash.
+
+FIX - once(): a one-shot completion guard every terminal path runs through,
+with error/timeout/abort routed to the same guarded handler as
+readystatechange. One request in flight per chain, always.
+
+Also here:
+- gotoLogin() navigates the TOP window when the box comes back. Inside the
+  settings shell the old location.href painted the login page in the frame,
+  under the chrome of a session that no longer exists.
+- the veil now locks the shell chrome (header + rail) while a flash runs -
+  the veil lives in the frame and can never paint over them, so without this
+  the rail was still clickable at the worst possible moment.
+- pollBack counted a heartbeat for BOTH poll phases per round and mislabelled
+  the phase; each chain now beats its own.
+
+NOT BUILT, not metal-tested. Rides the next rung.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Firmware.asp | 93 ++++++++++++++--------
+ 1 file changed, 61 insertions(+), 32 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 3632763775..555e44d7a7 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -178,8 +178,21 @@ function prettyVer(s){
+   return m ? 'Reaper v' + m[1] : String(s||'');
+ }
+ 
++/* ONE-SHOT completion guard. A failed XMLHttpRequest fires readystatechange
++   (readyState 4, status 0) AND then error/timeout - so a handler pair that both
++   schedule "the next poll" schedules it TWICE, and every following round doubles
++   again. That is exactly what a firmware flash does to this page: the router
++   goes away for minutes, so each 2 s round doubled the live poll chains until
++   the tab locked up and the browser had to be killed (owner-reported, "post
++   firmware upgrade freeze"). Every completion path below runs through once(). */
++function once(fn){
++  var done = 0;
++  return function(){ if(done) return; done = 1; fn.apply(null, arguments); };
++}
++
+ function nvGet(name, cb){   /* single-nvram read via appGet (Reaper_USB pattern) */
+   var x = new XMLHttpRequest();
++  var fin = once(cb);
+   x.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('nvram_get(' + name + ')') + '&_=' + Date.now(), true);
+   x.timeout = 8000;
+   x.onreadystatechange = function(){
+@@ -188,9 +201,9 @@ function nvGet(name, cb){   /* single-nvram read via appGet (Reaper_USB pattern)
+     if(x.status === 200){
+       try{ var j = JSON.parse(x.responseText), k; for(k in j){ v = j[k]; break; } }catch(e){}
+     }
+-    cb(v === null ? '' : String(v));
++    fin(v === null ? '' : String(v));
+   };
+-  x.onerror = function(){ cb(''); };
++  x.onerror = x.ontimeout = x.onabort = function(){ fin(''); };
+   x.send();
+ }
+ function nvGetMany(names, cb, acc){   /* sequential reads -> {name:value} */
+@@ -306,11 +319,19 @@ function pollNote(tries){
+ var VEIL_ESCAPE_MS = 25000;
+ var veilT0 = 0, veilTickH = 0, veilEscH = 0, veilPhase = '', veilPolls = 0;
+ 
++/* the shell owns the header + rail; dim and disable them while a flash runs so
++   the frame cannot be navigated away from at the worst possible moment (the
++   veil itself lives inside the frame and can never paint over them) */
++function chromeLock(on){
++  try{ if(window.parent && window.parent !== window && window.parent.shellChromeLock) window.parent.shellChromeLock(!!on); }catch(e){}
++}
++
+ function veil(title, sub, showBar, phase){
+   $id('veilT').innerHTML = title;
+   $id('veilS').innerHTML = sub || '';
+   $id('veilBar').style.display = showBar ? 'block' : 'none';
+   $id('veil').style.display = 'flex';
++  chromeLock(true);
+   if(phase){ veilPhase = phase; veilPolls = 0; }
+   if(!veilT0){ veilT0 = Date.now(); veilTick(); }
+   if(!veilEscH) veilEscH = setTimeout(function(){ veilEscape(true); }, VEIL_ESCAPE_MS);
+@@ -342,6 +363,7 @@ function veilDismiss(){ busy = 0; veilOff(); }
+ function veilPct(p){ $id('veilBarI').style.width = Math.max(0, Math.min(100, p)) + '%'; }
+ function veilOff(){
+   $id('veil').style.display = 'none';
++  chromeLock(false);
+   veilEscape(false);
+   clearTimeout(veilTickH); clearTimeout(veilEscH);
+   veilTickH = 0; veilEscH = 0; veilT0 = 0; veilPhase = ''; veilPolls = 0;
+@@ -372,16 +394,17 @@ function doInstall(){
+ function pollInstall(tries){
+   if(tries > 900){ installFail(`<#RFWU_12#>`); return; }   /* 30 min cap */
+   var x = new XMLHttpRequest();
++  var gone = once(function(){
++    /* httpd going away while installing = the flash sequence took over */
++    veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
++    pollBack(0, 0);
++  });
++  var next = once(function(){ setTimeout(function(){ pollInstall(tries + 1); }, 2000); });
+   x.open('GET', '/ajax_fwdl_percent.asp?_=' + Date.now(), true);
+   x.timeout = 6000;
+   x.onreadystatechange = function(){
+     if(x.readyState !== 4) return;
+-    if(x.status !== 200){
+-      /* httpd going away while installing = the flash sequence took over */
+-      veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+-      pollBack(0, 0);
+-      return;
+-    }
++    if(x.status !== 200){ gone(); return; }
+     var t = String(x.responseText || '');
+     var up = (t.match(/webs_state_upgrade\s*=\s*'?(\d+)/) || [])[1] || '0';
+     var er = (t.match(/webs_state_error\s*=\s*'?(\d+)/) || [])[1] || '0';
+@@ -398,12 +421,9 @@ function pollInstall(tries){
+       return;
+     }
+     if(pc !== undefined) veilPct(parseInt(pc, 10));
+-    setTimeout(function(){ pollInstall(tries + 1); }, 2000);
+-  };
+-  x.onerror = function(){
+-    veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+-    pollBack(0, 0);
++    next();
+   };
++  x.onerror = x.ontimeout = x.onabort = gone;
+   x.send();
+ }
+ 
+@@ -413,25 +433,33 @@ function installFail(tok){
+   setStat('chkStat', esc(tok), 'err');
+ }
+ 
++/* The session is dead once the box reboots into the new image, so leave for the
++   login page in the TOP window - inside the shell frame a framed login would
++   otherwise paint under the shell chrome of a stale session. */
++function gotoLogin(){
++  try{ (window.top || window).location.href = '/Main_Login.asp'; }
++  catch(e){ location.href = '/Main_Login.asp'; }
++}
++
+ function pollBack(tries, wentDown){
+   /* wait for the router to reboot into the new firmware: it must go DOWN
+      first (wentDown), then answer again -> back to login */
+   if(tries > 450){ veilFail(esc(`<#FIRM_reboot_manually#>`), ''); return; }
+   veilBeat('pollBack');
+-  veilBeat('pollUpBack');
+   var x = new XMLHttpRequest();
++  var next = once(function(down){ setTimeout(function(){ pollBack(tries + 1, down); }, 2000); });
+   x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
+   x.timeout = 3000;
+   x.onreadystatechange = function(){
+     if(x.readyState !== 4) return;
+     if(x.status === 200){
+-      if(wentDown){ location.href = '/Main_Login.asp'; return; }
+-      setTimeout(function(){ pollBack(tries + 1, 0); }, 2000);
++      if(wentDown){ gotoLogin(); return; }
++      next(0);
+     } else {
+-      setTimeout(function(){ pollBack(tries + 1, 1); }, 2000);
++      next(1);          /* unreachable: the box is down (or going down) */
+     }
+   };
+-  x.onerror = function(){ setTimeout(function(){ pollBack(tries + 1, 1); }, 2000); };
++  x.onerror = x.ontimeout = x.onabort = function(){ next(1); };
+   x.send();
+ }
+ 
+@@ -474,18 +502,17 @@ function doUpload(){
+   if(x.upload) x.upload.onprogress = function(ev){
+     if(ev.lengthComputable) veilPct(Math.round(ev.loaded / ev.total * 100));
+   };
+-  x.onload = function(){
+-    /* do_upgrade_post has the image; httpd now verifies + flashes (success
+-       reboots the box). Liveness decides the verdict: if the router never
+-       goes down, the image was rejected. */
++  /* do_upgrade_post has the image; httpd now verifies + flashes (success
++     reboots the box). Liveness decides the verdict: if the router never goes
++     down, the image was rejected. A torn-down connection mid-response means the
++     same thing here, so both endings share ONE guarded hand-off - load and
++     error can otherwise both fire and start two polling chains. */
++  var handed = once(function(){
+     veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+     pollUpBack(0, 0);
+-  };
+-  x.onerror = function(){
+-    /* connection torn down mid-response usually means the flash started */
+-    veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+-    pollUpBack(0, 0);
+-  };
++  });
++  x.onload = handed;
++  x.onerror = x.ontimeout = x.onabort = handed;
+   x.send(fd);
+ }
+ 
+@@ -501,19 +528,21 @@ function pollUpBack(tries, wentDown){
+     return;
+   }
+   if(tries > 450){ veilFail(esc(`<#FIRM_reboot_manually#>`), ''); return; }
++  veilBeat('pollUpBack');
+   var x = new XMLHttpRequest();
++  var next = once(function(down){ setTimeout(function(){ pollUpBack(tries + 1, down); }, 2000); });
+   x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
+   x.timeout = 3000;
+   x.onreadystatechange = function(){
+     if(x.readyState !== 4) return;
+     if(x.status === 200){
+-      if(wentDown){ location.href = '/Main_Login.asp'; return; }
+-      setTimeout(function(){ pollUpBack(tries + 1, 0); }, 2000);
++      if(wentDown){ gotoLogin(); return; }
++      next(0);
+     } else {
+-      setTimeout(function(){ pollUpBack(tries + 1, 1); }, 2000);
++      next(1);
+     }
+   };
+-  x.onerror = function(){ setTimeout(function(){ pollUpBack(tries + 1, 1); }, 2000); };
++  x.onerror = x.ontimeout = x.onabort = function(){ next(1); };
+   x.send();
+ }
+ 
+-- 
+2.25.1
+

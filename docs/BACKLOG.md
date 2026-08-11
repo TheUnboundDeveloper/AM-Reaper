@@ -17,6 +17,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Open bugs / under investigation
 
+**Firmware Upgrade** Post firmware upgrade still exhibits a freeze which end task and relaunch has to be done after the router is back online. 
+
 - **[P1] VPN speedtest hang → `sched: RT throttling activated` → wireless-only drop —
   ROOT-CAUSED at source; a decisive on-box diagnostic is the next step before any fix.**
   (Field 2026-08-04, BE96U: built-in Ookla test over an active VPN, QoS off, 4 Gbps ISP —

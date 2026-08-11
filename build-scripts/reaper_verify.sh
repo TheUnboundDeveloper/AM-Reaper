@@ -222,6 +222,27 @@ else
   warn "patch-markers" "verify_markers.txt missing -- no rung markers checked"
 fi
 
+# ---- 17. de-cloud: no ASUS-CDN REQUEST may ship (backlog [P3], 2026-08-11) --
+# The v2.3.3 sweep removed every browser->ASUS request from the files that ship
+# on this model. What it could not do is stop a FUTURE model from reintroducing
+# them: www/Makefile copies sysdep/FUNCTION/{ROG_UI,TUF_UI,UI4,GS_UI} over the
+# staged www whenever the matching RTCONFIG flag is y, and those overlays still
+# carry ~133 ASUS URLs. No model in this tree sets those flags today - so rather
+# than sweep dead source, this gate FAILS THE BUILD the moment such a reference
+# reaches the staged www in a request-shaped position.
+# Deliberately NOT flagged: plain href / openLink / window.open links to ASUS
+# support pages. Those are user-initiated navigation, not a silent callback, and
+# the shipped stock pages carry ~170 of them.
+decloud_hits=$(grep -rlnE \
+  "(fetch\(|XMLHttpRequest|\.ajax\(|getJSON\(|new Image\(|\.src[[:space:]]*=|<script[^>]+src=|<img[^>]+src=|<link[^>]+href=).*https?://[a-z0-9.-]*(asus|dlcdnet)" \
+  "$FS/www" 2>/dev/null | head -20)
+if [ -n "$decloud_hits" ]; then
+  echo "$decloud_hits" | sed 's/^/    /'
+  fail "de-cloud" "staged www makes an ASUS-CDN request (files above)"
+else
+  pass "de-cloud" "no ASUS-CDN request in the staged www"
+fi
+
 # ---- summary ---------------------------------------------------------------
 echo "------------------------------------------------------------"
 # ---- 16. i18n quote-context safety (reaper-ui rule 29) ---------------------

@@ -17,8 +17,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Open bugs / under investigation
 
-**Firmware Upgrade** Post firmware upgrade still exhibits a freeze which end task and relaunch has to be done after the router is back online. 
-
 - **[P1] VPN speedtest hang → `sched: RT throttling activated` → wireless-only drop —
   ROOT-CAUSED at source; a decisive on-box diagnostic is the next step before any fix.**
   (Field 2026-08-04, BE96U: built-in Ookla test over an active VPN, QoS off, 4 Gbps ISP —
@@ -75,15 +73,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `nvram show | grep -E "^wlnband_list=|^smart_connect_x=|^smart_connect_selif_x=|^bsd_(steering|sta_select)_policy"`.
   Any fix must enumerate **dual / tri / quad-band** correctly, like `Reaper_WiFiPro.asp`. [owed]
 
-- **[P2] MLO: individual per-link rows no longer shown for a device (owner report 2026-08-06).**
-  Investigated: the name-unification rung did **not** touch MLO code; on the **Devices page this is by
-  design** (`do_reaper_dev_cgi` folds affiliated randomized MLO links into their MLD device and the page
-  hides `mlo_link` rows — v1.9.2/1.9.3 "merge Wi-Fi 7 MLO links into one row"). So the regressed screen
-  is almost certainly **not** the Devices page — the owner needs to name **which view** used to show the
-  per-link rows (stock Wireless Log, Connections, or a Network-Map client detail). Likely fix: have the
-  target view *resolve* each link MAC to the parent's unified name ("MyLaptop · 5 GHz link") rather than
-  fold it away. [owed — owner to name the exact screen; then scope]
-
 - **[P2] AI Mesh Search** — investigate; reported non-functional a while back.
 
 - **[P2] Dual-WAN failover: both NextDNS profiles receive DNS logs though only one WAN is live.**
@@ -98,44 +87,79 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   (or bucket it as the router, consistent with the Traffic Analyzer's hidden "Router" self-bucket)
   in rtrafd's health output. [cosmetic — owner: no fix needed now]
 
-- **[P2] Shipped QoS preset rules classify by transferred bytes — streaming lands in the bulk queue
-  (found 2026-08-10, live metal).** The stock `qos_rulelist` default
-  (`Web Surf>>80>tcp>0~512>0<HTTPS>>443>tcp>0~512>0<File Transfer>>80>tcp>512~>3<File Transfer>>443>tcp>512~>3`)
-  demotes any HTTPS flow past 512 KB to class 4 ("Downloads"). Streaming video is HTTPS and passes that
-  in seconds, so a TV's flows — and under type 11 (upload-only) its **ACK stream** — ride the bulk queue,
-  4th of 5 under strict priority. Metal proof: the queue named "Streaming" had **0 packets** while the
-  video sat in "Downloads". Separately, `connbytes` matching forces per-packet re-evaluation, which the
-  rule parser marks non-sticky (`rule_gum=0`), so these rules are incompatible with hardware flow
-  offload — the guidance since the v2 metal validation has been "classify on port/proto/IP/MAC, never
-  transferred bytes", which the shipped defaults themselves violate. **Fix:** replace the preset pack in
-  `defaults.c` with port/proto rules carrying an empty `transferred` field, and have `Reaper_QoS.asp`
-  warn when a user rule uses a transferred range under type 11. (Worked around on the owner's box by
-  nvram only; the shipped default is unchanged.) [owed]
+- **[P2] Shipped QoS preset rules classified by transferred bytes — DONE in tree 2026-08-11
+  (`79036fb47f`), rides the next rung; on-metal check owed.** The old `qos_rulelist` demoted any
+  HTTP/HTTPS flow past 512 KB to the bulk class, so streaming video (HTTPS) and, under type 11, a
+  TV's **ACK stream** rode the bulk queue while "Streaming" showed 0 packets; and a transferred range
+  sets `rule_gum=0` + `connbytes`, which cannot ride hardware flow offload. Replaced with six
+  port/proto rules, all with an empty `transferred` field: Conferencing (STUN/TURN udp 3478:3481) and
+  SIP → Web/VoIP, Game Console (udp 3074) and Steam → Gaming, BitTorrent → Downloads, Web (tcp/udp
+  80,443) → Web/VoIP. **No Streaming preset exists on purpose** — streaming is 443, indistinguishable
+  from browsing by port (which is why the old pack used byte counts); that class is filled by
+  per-device rules. `Reaper_QoS.asp` now names any user rule still carrying a transferred range, under
+  the classful engine only (new token `RQOS_123`, translated into all 25 packs the same day by the
+  `410403d6aa` i18n pass). **Owed:** factory-reset check that the presets land as written, and
+  that a conferencing call marks into Q1 — it will not when the call is inside a **VPN**, since the
+  tunnel hides the ports and it correctly falls to Default; that case still wants a per-endpoint rule.[DONE]
 
 ## Known issues (cause identified)
 
-- **[P3] Unescaped `title='...'` attributes on the stock client lists — PARTIALLY DONE.** The reported
-  apostrophe stored-XSS/garble was fixed in v2.1.3; the three client-popup tooltip fields were encoded
-  in v2.2.0. Remaining defense-in-depth only: `client.vendor` / `deviceTypeName` are still emitted into
-  single-quoted `title='...'` in `client_function.js`, but those are vendor/OUI-DB-sourced, not
-  attacker-freeform. [owed — low, optional]
+- **~~[P3] Unescaped `title='...'` attributes on the stock client lists~~ — CLOSED 2026-08-11
+  (`e88ffc4d16`), and it was not a [P3].** The tooltip half was already done (every `htmlEncode` in the
+  tree escapes the apostrophe; `vendor`/`deviceTypeName` were encoded in v2.2.0). The real residual was
+  one layer over: `genClientItem()` puts the device **name** inside `onclick="fn('…')"`, which crosses
+  the HTML-attribute decoder *and* the JS parser — so the v2.1.3 ingestion encoding is not protection
+  there, and a DHCP hostname of `x');<payload>;//` executes. **Browser-verified before and after.**
+  Now tracked as **X1/X2** in [`REAPER-FIXES.md`](REAPER-FIXES.md). *Owed:* on-device check — hostile
+  DHCP hostname on a LAN device, open a page with the client dropdown, confirm it renders as text and
+  still selects the client on click.
 
-- **[P3] ASUS-CDN references remain in the non-shipping model UIs (`sysdep/FUNCTION/{ROG_UI,TUF_UI,UI4,
-  MULTISERVICE_WAN,ADGUARDDNS_UI}`).** The v2.3.3 de-cloud closed every request in the files that ship
-  on this model (verified against the staged `fs.install` tree); **115 references remain** in sysdep
-  overlays that are not selected for the BE-series build. They cost nothing today, but they are shared
-  source and the sibling branches are ported from this tree, so a future model that selects one of
-  those overlays would reintroduce the surface. Needs a per-model shipping check before sweeping.
-  [owed — low]
+- **~~[P3] ASUS-CDN references in the non-shipping model UIs~~ — CLOSED 2026-08-11 (`e88ffc4d16`) by
+  gating instead of sweeping.** The per-model shipping check this asked for is done: `www/Makefile`
+  gates each overlay on an RTCONFIG flag, and **nothing in this tree sets `ROG_UI`, `TUF_UI`,
+  `RT_TUF_UI`, `GS_UI`, `UI4` or `TS_UI` to `y`** — those ~133 references are dead for all five models,
+  so editing upstream-pristine source that never ships would only add patch-series noise. The missing
+  piece was the *guarantee*, which is now **reaper_verify check 17**: the build FAILS if any ASUS-CDN
+  reference reaches the **staged** www in a request-shaped position (`fetch`/XHR/`ajax`/`getJSON`/
+  `new Image`/`.src=`/`script|img src=`/`link href=`). Tested both ways. Also removed the last
+  request-shaped ASUS URL in the image — the dead cloud icon-catalogue `fetch` in
+  `clientlist.module.js`, previously short-circuited behind an early `return` but still shipped.
+  **Not gated, by decision:** plain `href`/`openLink` links to ASUS support pages — user-initiated
+  navigation, not silent callbacks. The shipped stock pages carry ~170 (FAQ/policy/support); removing
+  them is a product decision, not a privacy fix. [owner call if ever wanted]
 
 ## UI / UX polish
 
-- **[P3] Firmware-page translation pass.** The `RFWU_1–31` dict tokens for the native firmware page
-  (v2.3.1) are English-seeded in all 25 language packs. [owed]
+- **Image Alignment** AiMesh needs to center the model name over the mac address. **[DONE in tree
+  2026-08-11 (`e237d03be0`), rides the next rung; on-device confirmation owed.]** Stock right-aligns
+  both lines (`.model_info_bg` `text-align:right` + `.model_name` `justify-content:flex-end`), so they
+  shared only their right edge and the narrower model name hung off to the right of the MAC — measured
+  12 px. Centred on both axes in `reaper_content.css` §11, so whichever line is wider sets the box and
+  the other centres against it. AiMesh is metal-only-validatable (the mock can't render the topology). [DONE]
+
+- **[P3] Firmware-page translation pass — DONE in tree 2026-08-11 (`410403d6aa`), rides the next rung.**
+  An audit of all 25 packs found the same gap on two more Reaper pages, so the pass covered all of it:
+  **98 keys × 24 languages = 2352 strings** — `RFWU_1–31` (firmware), `RANL_*` (Data Export, 46 keys,
+  never translated), `RDST_43–63` (USB + storage), `RQOS_123`, `RWFP_14`. **No untranslated Reaper
+  strings remain.** 15 keys are deliberately English (product/feed names, acronyms, IP examples, the
+  Splunk field names, and `HW Classful` per standing rule 19) — listed in the commit so a later pass
+  doesn't "fix" them. Verified without a build: **475 page/language combinations compile** (19 pages ×
+  25 packs, every token substituted with its real value and the inline JS parsed), dict lockstep
+  intact (6295 lines, identical key order), UTF-8/no-BOM/no-CRLF. Same pass hardened **14 rule-29
+  sites** (tokens inside `'...'` strings, 8 in `menuTree.js` + 2 lines in `Reaper_Conn.asp`) to
+  backticks — prevention, none of those translations carries an apostrophe today. *Owed:* an on-device
+  look at the longest strings in the tightest chrome (German and Finnish are the widest). [DONE]
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
-  blocking during an apply/reboot is done (v2.2.5, refined v2.3.0). Remaining: convert these modals to
-  Reaper-native designs (do with the native-page migration). [owed — migration]
+  blocking during an apply/reboot is done (v2.2.5, refined v2.3.0); the overlays are now anchored to
+  the browser viewport rather than the framed document (fixed in tree, rides the next rung — the shell
+  publishes the frame's visible slice as `--rv-top`/`--rv-h` and re-anchors `#Loading`, `#LoadingBar`
+  and the Reaper pages' own overlays to it). Measured in a headless browser against the shipped
+  block, 1200×900 window, long page scrolled to y=2000: the stock "please wait / N%" block moved from
+  **1693 px above the top of the screen** to the centre of the visible area, and a Reaper page's flash
+  veil from 416 px above it to the same place. Remaining: convert these modals to Reaper-native designs
+  (do with the native-page migration), and confirm the anchoring **on the router** with the real pages.
+  [owed — migration]
 
 - **[P3] Loader z-index raise is class-wide (watch-item).** The z-index bump was applied to the shared
   `.popup_bg` class, so it also raises `#hiddenMask` (the confirm-dialog backdrop) — benign/positive.
@@ -150,13 +174,46 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   unescaped-SSID behavior in the **shared** `state.js` (out of scope of the mask's design). Optional
   hardening: mask the LAST `<b>` per row instead of index 1. [watch — cosmetic/privacy]
 
-- **Network Map** Review / Disconnect the "Network Map" page from the router GUI. The dashboard button
-  should be removed from the header and put in the place of the Network Map item.
+- **~~Network Map~~ — DONE in tree 2026-08-11 (`5b558ee6b0`), rides the next rung; metal owed.**
+  `index.asp` is disconnected: the injected bounce redirected it to the dashboard only when it loaded
+  as the TOP document, so framed it still rendered — which is what the rail did with it. It now
+  redirects the top window in **both** contexts (its own line, not a `SUP{}` entry, because SUP targets
+  are framed pages and the dashboard is top-level). The dashboard takes the vacated rail slot in all
+  three nav copies (`menuTree.js`, the `railFallback` in `reaper_shell.asp`, the hardcoded rail in
+  `Main_ReaperDash.asp`) via a new `isTopLevelPage()` branch in `buildRail()` — it navigates rather
+  than frames, since framing it would paint the chrome twice. Header Dashboard button removed; the
+  brand logo still links there. New token `Reaper_c_dashboard` in all 25 packs rather than reusing
+  ASUS's `AiProtection_title_Dashboard_title`, whose FR value is "Page de jeu". *Owed on metal:* first
+  rail item opens the dashboard un-framed, header button gone, manual `/index.asp` lands on the
+  dashboard. [DONE]
 
 - **Addons** Currently when a user has addons the nav menu buttons for Addons is not showing. 
-  Rearange the nav menu and add logic to deal with addon nav menu selections.
+  Rearange the nav menu and add logic to deal with addon nav menu selections. [Defered]
 
 ## Features to add
+
+- **Research** Integrate Suricata or Snort (IDS/IPS) optimized for multi-threading, or use eBPF 
+  (Extended Berkeley Packet Filter) for lightweight, kernel-level traffic analysis.
+
+- **~~Traffic Analyzer~~ — ROOT-CAUSED at source and FIXED in tree 2026-08-11 (`6da01d3062`); metal
+  reconciliation owed.** The hypothesis was right: rtrafd took its per-device/per-network bytes from
+  `/proc/fcache/nflist`, which lists **accelerated flows only**, and used conntrack merely as an
+  all-or-nothing fallback that fired when the flow cache was completely empty — i.e. almost never. The
+  comment justifying it ("an offloaded flow's conntrack bytes freeze at offload") is **false on this
+  platform**: `seq_print_acct()` prints `software counter + blog_ct_get_stats(live accelerated bytes)`
+  and `blog_ct_put_stats()` folds them in on eviction, so `/proc/net/nf_conntrack` was the complete
+  source all along. Large fast downloads were hit twice — they're the flows most likely to be evicted
+  and re-learned (constantly, under the transferred-bytes QoS presets fixed the same day in
+  `79036fb47f`), *and* the flow-cache pass could only attribute a NAT'd download by pairing it to the
+  connection's upload half in the same 5 s sample, which for a big download is a thin ACK stream that
+  is often absent. **Now:** conntrack owns the client + network rings every sample; the flow cache
+  keeps only the router's own traffic and the Connections page's flow ages; new
+  `brsub_refresh()`/`ip_bridge()` place a bare address on its LAN bridge (via `SIOCGIFCONF`, so
+  guest/SDN bridges are picked up automatically — previously only br0's subnet was tested, so every
+  guest client was dropped). Also closes the "[P3] probe lists the router as a device row" item — the
+  router's own LAN IP now goes to the Router bucket. **Owed:** on metal, a *reconciliation* — client
+  row vs br0 row vs WAN line over the same window, plus a check for double counting (device + Router)
+  and for a guest client appearing under its own bridge. [DONE]
 
 - **First Boot** The Reaper first boot continues to be problematic. Investigate and improve functionality.
 
@@ -165,18 +222,26 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   file to update the firmware with or go directly to the node and flash it natively.
 
 - **Firmware Manifest** The manifest is not updated by the automated publish workflow. Need to add that 
-  to the workflow so user are notified of new versions.
+  to the workflow so user are notified of new versions. [DONE]
 
-- **[P2 — OWNER DECISION] Stop committing `.pkgtb` images in-tree under `releases/` (repo-size).**
-  GitHub *Release assets* live outside the git repo (no repo-size impact, 2 GB/file limit) and are
-  what the update manifest + in-GUI installer download from — the in-tree copies (~750 MB history
-  growth per full release) are only for file-tree visibility and nothing consumes them. Option: drop
-  the in-tree copy step in `stage_release.ps1` (one-line change) and optionally rewrite history later
-  to reclaim past growth. Third-party hosts (OneDrive etc.) are NOT suitable for the on-router
-  downloader: unstable direct-URL semantics and they'd break the upgrade script's GitHub host-pin.
-  *Update 2026-08-10:* the CI release hand-off now publishes release assets straight from build
-  artifacts, so nothing consumes the in-tree copies anymore — dropping them is purely the owner's call.
-  (v2.3.1 images were still committed in-tree, so this is not yet done.)
+- **~~[P2] Stop committing `.pkgtb` images in-tree~~ — DECIDED AND DONE 2026-08-11 (`2a3dd70`);
+  the history purge is PREPARED AND VERIFIED, awaiting the owner's force-push.**
+  Removed 100 `.pkgtb` + 50 `SHA256SUMS` from the tip. Nothing consumed them — the router reads
+  `updates/manifest_3006.txt`, and `release.yml` already attaches assets from the clean-room build
+  artifacts ("empty for a CI-built version"). `releases/latest.json` is **kept**: it's live
+  infrastructure that `refresh_manifest.py` regenerates and the publish workflow commits.
+  Guardrails: `.gitignore` blocks `releases/**/*.pkgtb` + `SHA256SUMS*.txt`; `refresh_manifest.py`
+  now `mkdir`s `releases/` before writing `latest.json` (it used a bare `open()` on a path whose
+  directory this removed — a fresh checkout would have failed the publish workflow and stalled the
+  router's update manifest); `stage_release.ps1` is marked RETIRED rather than deleted.
+  **History purge (prepared on a mirror, nothing pushed):** `835 MB → 138 MB`. Verified — every kept
+  directory (`patches`, `docs`, `updates`, `overlays`, `build-scripts`, `provenance`, `.github`) has a
+  **byte-identical tree hash**, 44 tags preserved, zero `.pkgtb`/`SHA256SUMS` objects remain. One
+  commit disappeared (154→153): `ad23f777` "OpenVPN changes.", whose content was *only* 2 images + a
+  checksum file, so it became empty. Provenance is unaffected — `manifest.json` pins the **upstream**
+  base commit and the **build clone's** `build_commit`, both in other repos.
+  *Left to the owner:* force-push `main` + `Dev` + tags from the mirror, then re-clone or hard-reset
+  the working copy (commit/stash WIP first), and confirm a release asset still downloads. [DONE]
 
 - **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
   Owner-approved (2026-08-08) design: a native

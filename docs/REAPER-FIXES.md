@@ -414,3 +414,28 @@ vulnerable objects remain on disk until that removal lands.
 > by removing the feature, not by patching it. The real open backlog is the
 > priority callout at the top of this section: T10 by reachability (OpenSSL
 > first) and T9 by watching ASUS.
+
+---
+
+## Stored XSS in the client-picker dropdown (2026-08-11, `e88ffc4d16` — NOT BUILT)
+
+Stock ASUS/Merlin code, shared source, so the same flaw is expected on other
+Broadcom HND models running stock firmware. Found while closing a `[P3]` backlog
+item that described only a cosmetic tooltip residual.
+
+| ID | Severity | Component | Issue | Fix | Commit |
+|---|---|---|---|---|---|
+| X1 | **High** (unauth LAN → admin, click-gated) | `www/client_function.js` `showDropdownClientList()` / `genClientItem()` | The device **name** is concatenated into an inline handler: `onclick="fn('<name>')"`. That position crosses **two** parsers — the HTML attribute decoder runs first, then JS — so the ingestion-time HTML encoding (v2.1.3) is not protection there: a DHCP hostname `x');<payload>;//` is stored as `x&#39;);<payload>;//`, the decoder restores the apostrophe, the JS string closes, and the remainder executes. Any LAN device sets its own hostname; ~20 shipped pages mount this dropdown (QoS, Parental Controls, VPN Director, Virtual Server, DNS Director, Key Guard, TOR, ACL, Guest Network, System), and those passing `name>mac` put the name into the handler. | `jsAttrArg()` — HTML-decode to the raw text, escape **that** for a JS single-quoted string, then HTML-encode the result. Applied to every inline-handler argument; `<a id=`/`title=` quoted and encoded. | `e88ffc4d16` |
+| X2 | Cosmetic (same function) | as above | `clientName` was truncated at 30 chars **while HTML-encoded**, so a cut could land inside an entity (`&#39;` → `&#3`) and render as garble — the "garble" half of the original v2.1.3 report. | `clipEncodedName()` slices the decoded text, then re-encodes. | `e88ffc4d16` |
+
+**Browser-verified, not reasoned:** with the callback defined as the real pages
+define it, the injected statement **executed** on click before the fix and does
+not after; the post-fix handler reads `setClientIP('x\');…')` — one string
+argument. An earlier harness run that appeared safe was a **false negative** —
+the callback was undefined, so the first call threw and aborted the rest of the
+handler. Worth remembering as a PoC-design trap.
+
+**Already correct, checked while here:** every `htmlEncode` in the tree escapes
+the apostrophe (`&#39;` is in the default entity set), and the `vendor` /
+`deviceTypeName` tooltips flagged by the backlog were already encoded in v2.2.0 —
+that half of the item needed no change.

@@ -1,0 +1,191 @@
+From e88ffc4d16b96d58374d5b2dbb8e9145463a4a18 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 11:19:10 -0400
+Subject: [PATCH] www: fix a stored XSS in the client-picker dropdown, and drop
+ the last shipped ASUS URL
+
+Two backlog [P3] items. The first turned out to be worse than filed.
+
+1. CLIENT-PICKER DROPDOWN - STORED XSS, NOT THE COSMETIC RESIDUAL ON THE LIST.
+The backlog described the remainder as defense-in-depth on vendor/deviceTypeName
+tooltips. Those are in fact already encoded (v2.2.0), and every htmlEncode in the
+tree does escape the apostrophe, so that part was already done. The real residual
+is one layer over, in showDropdownClientList()/genClientItem():
+
+    code += '<div onclick="' + _callBackFun + '(\''
+    code += getClientValue(param[j], clientObj);      <-- device NAME, raw
+    code += '\');">'
+
+A value there crosses TWO parsers: the HTML attribute decoder runs first, then
+JS. HTML-encoding is therefore NOT protection in that position - and the client
+list is HTML-encoded at ingestion (v2.1.3), so a DHCP hostname of
+
+    x');<payload>;//
+
+is stored as  x&#39;);<payload>;//  , the attribute decoder turns &#39; back into
+an apostrophe, the JS string closes early, and the payload is code. Proven in a
+browser, not by reading: with the callback defined as the real pages define it,
+the injected statement EXECUTED on click; with the fix it does not, and the
+onclick reads setClientIP('x\');...') - one string argument. (An earlier run that
+looked safe was a false negative: the harness had not defined the callback, so
+the first call threw and aborted the rest of the handler.)
+
+Reach: any LAN device can set its own DHCP hostname; ~20 shipped pages mount this
+dropdown (QoS, Parental Controls, VPN Director, Virtual Server, DNS Director,
+Key Guard, TOR, ACL, Guest Network, System...), and the ones passing 'name>mac'
+put the name straight into the handler. Click-gated on the admin, but stored.
+
+FIX: jsAttrArg() - decode to the raw text, escape THAT for a JS single-quoted
+string, then HTML-encode the result so the attribute stays well formed. Applied
+to every value that lands inside an inline handler; the <a id=/title= pair is now
+quoted and encoded too.
+
+Same function, same root cause, cosmetic half: clientName was sliced at 30 chars
+while HTML-ENCODED, so a cut could land inside an entity (&#39; -> &#3) and
+render as garble - the "garble" half of the original report. clipEncodedName()
+slices the decoded text and re-encodes. Measured: old 'aaa...&#..', new
+'aaa...&#39;b..'.
+
+2. DE-CLOUD - THE LAST REQUEST-SHAPED ASUS URL IN THE IMAGE IS GONE.
+clientlist.module.js still carried the v2.2.0 cloud icon-catalogue fetch, dead
+behind an early return but present in the shipped bytes and reading as live to
+anyone grepping the firmware. Body removed; the comment explaining why stays.
+
+The backlog's other half asked for a per-model shipping check before sweeping the
+~133 ASUS URLs left in sysdep/FUNCTION/{ROG_UI,TUF_UI,UI4,GS_UI}. Done, and the
+answer is that sweeping is the wrong move: www/Makefile gates each of those
+overlays on an RTCONFIG flag, and NOTHING in this tree sets ROG_UI, TUF_UI,
+RT_TUF_UI, GS_UI, UI4 or TS_UI to y - they are dead for all five models. Editing
+133 lines of upstream-pristine source that never ships would only add patch-series
+noise. What was missing is the guarantee, so that is now a build gate instead:
+reaper_verify check 17 fails the build if any ASUS-CDN reference reaches the
+STAGED www in a request-shaped position (fetch/XHR/ajax/getJSON/new Image/.src=/
+script|img src=/link href=). A future model that enables one of those overlays
+stops the build rather than silently reintroducing the surface.
+
+Deliberately NOT gated: plain href / openLink / window.open links to ASUS support
+pages - user-initiated navigation, not a silent callback. The shipped stock pages
+carry ~170 of those (FAQ, policy, support); removing them is a separate product
+decision, not a privacy fix, and is left to the owner.
+
+Gate tested both ways: it flags fetch(), <img src=> and .src= to an ASUS host,
+stays quiet on href/openLink links, and reports zero hits across the shipping
+source www.
+
+NOT BUILT. The XSS fix wants an on-device check: set a hostile DHCP hostname on a
+LAN device, open a page with the client dropdown, confirm the name renders as
+text and clicking it still selects the client.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/client_function.js     | 40 ++++++++++++++-----
+ .../www/dashboard/js/clientlist.module.js     | 18 ++++-----
+ 2 files changed, 38 insertions(+), 20 deletions(-)
+
+diff --git a/release/src/router/www/client_function.js b/release/src/router/www/client_function.js
+index 79141077e1..c876b6f73e 100644
+--- a/release/src/router/www/client_function.js
++++ b/release/src/router/www/client_function.js
+@@ -3853,6 +3853,31 @@ function control_dropdown_client_block(_containerID, _pullArrowID, _evt) {
+ 	}
+ }
+ 
++/* reaper: a value that lands INSIDE onclick="fn('...')" crosses TWO parsers -
++ * the HTML attribute decoder runs first, then JS. HTML-encoding alone is
++ * therefore NOT protection in that position, which is the trap this dropdown
++ * fell into: clientList names are HTML-encoded at ingestion (see genClientList),
++ * so a DHCP hostname of  x');...;//  is stored as  x&#39;);...;//  , the
++ * attribute decoder turns it back into an apostrophe, and the JS string closes
++ * early. Verified in a browser: the payload ran on click.
++ * Decode to the raw text, escape THAT for a JS single-quoted string, then
++ * HTML-encode the result so the attribute itself stays well formed. */
++function jsAttrArg(_value) {
++	var raw = htmlEnDeCode.htmlDecode(String((_value == null) ? "" : _value));
++	raw = raw.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/[\r\n\u2028\u2029]/g, " ");
++	return htmlEnDeCode.htmlEncode(raw);
++}
++
++/* reaper: the stored name is HTML-ENCODED, so slicing it by character count can
++ * cut an entity in half (&#39; -> &#3) and render as garble. Slice the decoded
++ * text, then re-encode. */
++function clipEncodedName(_value, _max) {
++	var raw = htmlEnDeCode.htmlDecode(String((_value == null) ? "" : _value));
++	if(raw.length > _max)
++		raw = raw.substring(0, _max - 2) + "..";
++	return htmlEnDeCode.htmlEncode(raw);
++}
++
+ //_callBackFunParam = mac>ip>..., _interfaceMode = all(wired, wll), wired, wl, _clientState = all, online, offline
+ function showDropdownClientList(_callBackFun, _callBackFunParam, _interfaceMode, _containerID, _pullArrowID, _clientState) {
+ 	document.body.addEventListener("click", function(_evt) {control_dropdown_client_block(_containerID, _pullArrowID, _evt);})
+@@ -3898,31 +3923,26 @@ function showDropdownClientList(_callBackFun, _callBackFunParam, _interfaceMode,
+ 		var code = "";
+ 		var clientName = (clientObj.nickName == "") ? clientObj.name : clientObj.nickName;
+ 		
+-		code += '<a id=' + clientList[i] + ' title=' + clientList[i] + '>';
++		code += '<a id="' + htmlEnDeCode.htmlEncode(clientList[i]) + '" title="' + htmlEnDeCode.htmlEncode(clientList[i]) + '">';
+ 		if(_state == "online")
+ 			code += '<div onclick="' + _callBackFun + '(\'';
+ 		else if(_state == "offline")
+ 			code += '<div style="color:#A0A0A0" onclick="' + _callBackFun + '(\'';
+ 		for(var j = 0; j < param.length; j += 1) {
+ 			if(j == 0) {
+-				code += getClientValue(param[j], clientObj);
++				code += jsAttrArg(getClientValue(param[j], clientObj));
+ 			}
+ 			else {
+ 				code += '\', \'';
+-				code += getClientValue(param[j], clientObj);
++				code += jsAttrArg(getClientValue(param[j], clientObj));
+ 			}
+ 		}
+ 		code += '\');">';
+ 		code += '<strong>';
+-		if(clientName.length > 32) {
+-			code += clientName.substring(0, 30) + "..";
+-		}
+-		else {
+-			code += clientName;
+-		}
++		code += clipEncodedName(clientName, 32);
+ 		code += '</strong>';
+ 		if(_state == "offline")
+-			code += '<strong title="Remove this client" style="float:right;margin-right:5px;cursor:pointer;" onclick="removeClient(\'' + clientObj.mac + '\', \'' + _containerID  + '_clientlist_dropdown_expand\', \'' + _containerID  + '_clientlist_offline\')">&times;</strong>';
++			code += '<strong title="Remove this client" style="float:right;margin-right:5px;cursor:pointer;" onclick="removeClient(\'' + jsAttrArg(clientObj.mac) + '\', \'' + jsAttrArg(_containerID)  + '_clientlist_dropdown_expand\', \'' + jsAttrArg(_containerID)  + '_clientlist_offline\')">&times;</strong>';
+ 		code += '</div><!--[if lte IE 6.5]><iframe class="hackiframe2"></iframe><![endif]--></a>';
+ 		return code;
+ 	};
+diff --git a/release/src/router/www/dashboard/js/clientlist.module.js b/release/src/router/www/dashboard/js/clientlist.module.js
+index 9a76f3c03c..9ea283656b 100644
+--- a/release/src/router/www/dashboard/js/clientlist.module.js
++++ b/release/src/router/www/dashboard/js/clientlist.module.js
+@@ -7927,18 +7927,16 @@ class ClinetIconFetcher {
+ 
+     async fetchIconList() {
+         /* reaper de-cloud (v2.2.0, backlog item): no browser->ASUS-CDN requests.
+-           This replaced the bundled icon catalog above with a cloud copy from
+-           nw-dlcdnet.asus.com on every client-popup open. The constructor's
++           This used to replace the bundled icon catalog above with a cloud copy
++           from nw-dlcdnet.asus.com on every client-popup open. The constructor's
+            built-in list stays authoritative; getIconByType/queryIconList work
+-           unchanged against it. */
++           unchanged against it.
++           2026-08-11: the dead fetch body is REMOVED, not just short-circuited
++           behind the early return. It shipped an ASUS URL in the image, it read
++           as a live call to anyone grepping the firmware, and it was the only
++           request-shaped ASUS reference left in the staged www - which is now a
++           build gate (reaper_verify check 17). */
+         return;
+-
+-        const response = await fetch('https://nw-dlcdnet.asus.com/beta/plugin/js/extend_custom_svg_icon.json')
+-            .then(res => res.json())
+-            .then(data => {
+-                this.iconList = data;
+-                this.iconList.source = "cloud";
+-            });
+     }
+ 
+     getIconList() {
+-- 
+2.25.1
+

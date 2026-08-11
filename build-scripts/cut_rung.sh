@@ -124,7 +124,11 @@ echo "  From: -> $IDENTITY, build-host + repo-name strings scrubbed"
 
 # ------------------------------------------------------------------ 4. install
 step "4. install into patches/"
-cp -p "$STAGE"/*.patch "$LEAN/patches/" || die "copy into patches/ failed"
+# Plain cp, NOT cp -p: the lean repo normally sits on a DrvFs /mnt/c mount, where
+# preserving times fails ("Operation not permitted") and cp exits non-zero even
+# though every file copied. Patch mtimes carry no meaning - git records content,
+# and .gitattributes -text is what keeps these byte-exact.
+cp "$STAGE"/*.patch "$LEAN/patches/" || die "copy into patches/ failed"
 mapfile -t nums < <(ls -1 "$LEAN"/patches/[0-9]*.patch | xargs -n1 basename | cut -c1-4 | sort)
 count=${#nums[@]}
 diff <(seq -f '%04g' 1 "$count") <(printf '%s\n' "${nums[@]}") >/dev/null \

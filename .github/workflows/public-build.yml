@@ -140,7 +140,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      # continue-on-error + a duplicate step is the retry: see the comment on
+      # the build job's checkout for why every checkout here needs one.
+      - id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /overlays/
+            /build-scripts/ci/
+
+      - name: Retry checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           filter: blob:none
@@ -244,7 +259,38 @@ jobs:
       # in-tree under releases/, so a plain checkout would pull multiple GB. We
       # need patches, build-scripts, provenance, and the published SHA256SUMS
       # (for the reproducibility comparison) -- not the .pkgtb files themselves.
+      #
+      # RETRY, not decoration. blob:none + sparse checkout means `git checkout`
+      # lazily pulls the blobs it needs from the promisor remote in a SECOND
+      # HTTPS round-trip, after the action's own fetch has already succeeded --
+      # and actions/checkout does not retry that phase. On 2026-08-11 that
+      # second connection failed TLS verification ("server certificate
+      # verification failed. CAfile: none CRLfile: none") on a runner where the
+      # initial fetch had succeeded seconds earlier: transient, and fatal to the
+      # job. continue-on-error + an identical follow-up step is the cheapest
+      # retry that needs no third-party action. Keep the two `with:` blocks in
+      # lockstep. If both attempts fail the retry step fails the job normally.
       - name: Checkout patch series and build scripts
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          path: reaper
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /patches/
+            /build-scripts/
+            /provenance/
+            /overlays/
+            /docs/CI-PUBLIC-BUILD.md
+            /releases/*/*/SHA256SUMS*.txt
+            /LICENSE
+            /LICENSE.reaper
+
+      - name: Retry checkout
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v7
         with:
           path: reaper
@@ -409,7 +455,21 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      # Retry: see the build job's checkout comment. This one matters more than
+      # most -- it runs AFTER the full build matrix, so losing it to a transient
+      # promisor fetch throws away hours of compile.
+      - id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /LICENSE
+
+      - name: Retry checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           filter: blob:none
@@ -485,7 +545,27 @@ jobs:
       group: reaper-manifest-refresh
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
+      # Retry: see the build job's checkout comment. Last job in the chain --
+      # if this one dies the releases are already published and the update
+      # manifest silently stays a version behind, which is exactly the gap this
+      # job exists to close.
+      - id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /updates/
+            /releases/latest.json
+            /docs/CHANGELOG.md
+            /build-scripts/refresh_manifest.py
+
+      - name: Retry checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

@@ -80,75 +80,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log.
 
-- **[P3] The connection-health probe lists the router's own LAN IP (e.g. `192.168.50.1`) as a device
-  row — field-confirmed 2026-08-08 as the ONLY remaining "IP in the MAC slot" row after the v2.3.0
-  one-row-per-device dedup (owner confirmed the dedup itself looks good on metal).** Cosmetic — the
-  probe pings the gateway/self IP and emits it like a client. Filter the router's own LAN address
-  (or bucket it as the router, consistent with the Traffic Analyzer's hidden "Router" self-bucket)
-  in rtrafd's health output. [cosmetic — owner: no fix needed now]
-
-- **[P2] Shipped QoS preset rules classified by transferred bytes — DONE in tree 2026-08-11
-  (`79036fb47f`), rides the next rung; on-metal check owed.** The old `qos_rulelist` demoted any
-  HTTP/HTTPS flow past 512 KB to the bulk class, so streaming video (HTTPS) and, under type 11, a
-  TV's **ACK stream** rode the bulk queue while "Streaming" showed 0 packets; and a transferred range
-  sets `rule_gum=0` + `connbytes`, which cannot ride hardware flow offload. Replaced with six
-  port/proto rules, all with an empty `transferred` field: Conferencing (STUN/TURN udp 3478:3481) and
-  SIP → Web/VoIP, Game Console (udp 3074) and Steam → Gaming, BitTorrent → Downloads, Web (tcp/udp
-  80,443) → Web/VoIP. **No Streaming preset exists on purpose** — streaming is 443, indistinguishable
-  from browsing by port (which is why the old pack used byte counts); that class is filled by
-  per-device rules. `Reaper_QoS.asp` now names any user rule still carrying a transferred range, under
-  the classful engine only (new token `RQOS_123`, translated into all 25 packs the same day by the
-  `410403d6aa` i18n pass). **Owed:** factory-reset check that the presets land as written, and
-  that a conferencing call marks into Q1 — it will not when the call is inside a **VPN**, since the
-  tunnel hides the ports and it correctly falls to Default; that case still wants a per-endpoint rule.[DONE]
-
-## Known issues (cause identified)
-
-- **~~[P3] Unescaped `title='...'` attributes on the stock client lists~~ — CLOSED 2026-08-11
-  (`e88ffc4d16`), and it was not a [P3].** The tooltip half was already done (every `htmlEncode` in the
-  tree escapes the apostrophe; `vendor`/`deviceTypeName` were encoded in v2.2.0). The real residual was
-  one layer over: `genClientItem()` puts the device **name** inside `onclick="fn('…')"`, which crosses
-  the HTML-attribute decoder *and* the JS parser — so the v2.1.3 ingestion encoding is not protection
-  there, and a DHCP hostname of `x');<payload>;//` executes. **Browser-verified before and after.**
-  Now tracked as **X1/X2** in [`REAPER-FIXES.md`](REAPER-FIXES.md). *Owed:* on-device check — hostile
-  DHCP hostname on a LAN device, open a page with the client dropdown, confirm it renders as text and
-  still selects the client on click.
-
-- **~~[P3] ASUS-CDN references in the non-shipping model UIs~~ — CLOSED 2026-08-11 (`e88ffc4d16`) by
-  gating instead of sweeping.** The per-model shipping check this asked for is done: `www/Makefile`
-  gates each overlay on an RTCONFIG flag, and **nothing in this tree sets `ROG_UI`, `TUF_UI`,
-  `RT_TUF_UI`, `GS_UI`, `UI4` or `TS_UI` to `y`** — those ~133 references are dead for all five models,
-  so editing upstream-pristine source that never ships would only add patch-series noise. The missing
-  piece was the *guarantee*, which is now **reaper_verify check 17**: the build FAILS if any ASUS-CDN
-  reference reaches the **staged** www in a request-shaped position (`fetch`/XHR/`ajax`/`getJSON`/
-  `new Image`/`.src=`/`script|img src=`/`link href=`). Tested both ways. Also removed the last
-  request-shaped ASUS URL in the image — the dead cloud icon-catalogue `fetch` in
-  `clientlist.module.js`, previously short-circuited behind an early `return` but still shipped.
-  **Not gated, by decision:** plain `href`/`openLink` links to ASUS support pages — user-initiated
-  navigation, not silent callbacks. The shipped stock pages carry ~170 (FAQ/policy/support); removing
-  them is a product decision, not a privacy fix. [owner call if ever wanted]
-
 ## UI / UX polish
-
-- **Image Alignment** AiMesh needs to center the model name over the mac address. **[DONE in tree
-  2026-08-11 (`e237d03be0`), rides the next rung; on-device confirmation owed.]** Stock right-aligns
-  both lines (`.model_info_bg` `text-align:right` + `.model_name` `justify-content:flex-end`), so they
-  shared only their right edge and the narrower model name hung off to the right of the MAC — measured
-  12 px. Centred on both axes in `reaper_content.css` §11, so whichever line is wider sets the box and
-  the other centres against it. AiMesh is metal-only-validatable (the mock can't render the topology). [DONE]
-
-- **[P3] Firmware-page translation pass — DONE in tree 2026-08-11 (`410403d6aa`), rides the next rung.**
-  An audit of all 25 packs found the same gap on two more Reaper pages, so the pass covered all of it:
-  **98 keys × 24 languages = 2352 strings** — `RFWU_1–31` (firmware), `RANL_*` (Data Export, 46 keys,
-  never translated), `RDST_43–63` (USB + storage), `RQOS_123`, `RWFP_14`. **No untranslated Reaper
-  strings remain.** 15 keys are deliberately English (product/feed names, acronyms, IP examples, the
-  Splunk field names, and `HW Classful` per standing rule 19) — listed in the commit so a later pass
-  doesn't "fix" them. Verified without a build: **475 page/language combinations compile** (19 pages ×
-  25 packs, every token substituted with its real value and the inline JS parsed), dict lockstep
-  intact (6295 lines, identical key order), UTF-8/no-BOM/no-CRLF. Same pass hardened **14 rule-29
-  sites** (tokens inside `'...'` strings, 8 in `menuTree.js` + 2 lines in `Reaper_Conn.asp`) to
-  backticks — prevention, none of those translations carries an apostrophe today. *Owed:* an on-device
-  look at the longest strings in the tightest chrome (German and Finnish are the widest). [DONE]
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
   blocking during an apply/reboot is done (v2.2.5, refined v2.3.0); the overlays are now anchored to
@@ -174,19 +106,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   unescaped-SSID behavior in the **shared** `state.js` (out of scope of the mask's design). Optional
   hardening: mask the LAST `<b>` per row instead of index 1. [watch — cosmetic/privacy]
 
-- **~~Network Map~~ — DONE in tree 2026-08-11 (`5b558ee6b0`), rides the next rung; metal owed.**
-  `index.asp` is disconnected: the injected bounce redirected it to the dashboard only when it loaded
-  as the TOP document, so framed it still rendered — which is what the rail did with it. It now
-  redirects the top window in **both** contexts (its own line, not a `SUP{}` entry, because SUP targets
-  are framed pages and the dashboard is top-level). The dashboard takes the vacated rail slot in all
-  three nav copies (`menuTree.js`, the `railFallback` in `reaper_shell.asp`, the hardcoded rail in
-  `Main_ReaperDash.asp`) via a new `isTopLevelPage()` branch in `buildRail()` — it navigates rather
-  than frames, since framing it would paint the chrome twice. Header Dashboard button removed; the
-  brand logo still links there. New token `Reaper_c_dashboard` in all 25 packs rather than reusing
-  ASUS's `AiProtection_title_Dashboard_title`, whose FR value is "Page de jeu". *Owed on metal:* first
-  rail item opens the dashboard un-framed, header button gone, manual `/index.asp` lands on the
-  dashboard. [DONE]
-
 - **Addons** Currently when a user has addons the nav menu buttons for Addons is not showing. 
   Rearange the nav menu and add logic to deal with addon nav menu selections. [Defered]
 
@@ -195,53 +114,11 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 - **Research** Integrate Suricata or Snort (IDS/IPS) optimized for multi-threading, or use eBPF 
   (Extended Berkeley Packet Filter) for lightweight, kernel-level traffic analysis.
 
-- **~~Traffic Analyzer~~ — ROOT-CAUSED at source and FIXED in tree 2026-08-11 (`6da01d3062`); metal
-  reconciliation owed.** The hypothesis was right: rtrafd took its per-device/per-network bytes from
-  `/proc/fcache/nflist`, which lists **accelerated flows only**, and used conntrack merely as an
-  all-or-nothing fallback that fired when the flow cache was completely empty — i.e. almost never. The
-  comment justifying it ("an offloaded flow's conntrack bytes freeze at offload") is **false on this
-  platform**: `seq_print_acct()` prints `software counter + blog_ct_get_stats(live accelerated bytes)`
-  and `blog_ct_put_stats()` folds them in on eviction, so `/proc/net/nf_conntrack` was the complete
-  source all along. Large fast downloads were hit twice — they're the flows most likely to be evicted
-  and re-learned (constantly, under the transferred-bytes QoS presets fixed the same day in
-  `79036fb47f`), *and* the flow-cache pass could only attribute a NAT'd download by pairing it to the
-  connection's upload half in the same 5 s sample, which for a big download is a thin ACK stream that
-  is often absent. **Now:** conntrack owns the client + network rings every sample; the flow cache
-  keeps only the router's own traffic and the Connections page's flow ages; new
-  `brsub_refresh()`/`ip_bridge()` place a bare address on its LAN bridge (via `SIOCGIFCONF`, so
-  guest/SDN bridges are picked up automatically — previously only br0's subnet was tested, so every
-  guest client was dropped). Also closes the "[P3] probe lists the router as a device row" item — the
-  router's own LAN IP now goes to the Router bucket. **Owed:** on metal, a *reconciliation* — client
-  row vs br0 row vs WAN line over the same window, plus a check for double counting (device + Router)
-  and for a guest client appearing under its own bridge. [DONE]
-
 - **First Boot** The Reaper first boot continues to be problematic. Investigate and improve functionality.
 
 - **Firmware Mesh Nodes** Add a feature to be able to see mesh nodes firmware version from the main 
   hub in the firmware menu. This feature should also allow the user to click on each one and chose the 
   file to update the firmware with or go directly to the node and flash it natively.
-
-- **Firmware Manifest** The manifest is not updated by the automated publish workflow. Need to add that 
-  to the workflow so user are notified of new versions. [DONE]
-
-- **~~[P2] Stop committing `.pkgtb` images in-tree~~ — DECIDED AND DONE 2026-08-11 (`2a3dd70`);
-  the history purge is PREPARED AND VERIFIED, awaiting the owner's force-push.**
-  Removed 100 `.pkgtb` + 50 `SHA256SUMS` from the tip. Nothing consumed them — the router reads
-  `updates/manifest_3006.txt`, and `release.yml` already attaches assets from the clean-room build
-  artifacts ("empty for a CI-built version"). `releases/latest.json` is **kept**: it's live
-  infrastructure that `refresh_manifest.py` regenerates and the publish workflow commits.
-  Guardrails: `.gitignore` blocks `releases/**/*.pkgtb` + `SHA256SUMS*.txt`; `refresh_manifest.py`
-  now `mkdir`s `releases/` before writing `latest.json` (it used a bare `open()` on a path whose
-  directory this removed — a fresh checkout would have failed the publish workflow and stalled the
-  router's update manifest); `stage_release.ps1` is marked RETIRED rather than deleted.
-  **History purge (prepared on a mirror, nothing pushed):** `835 MB → 138 MB`. Verified — every kept
-  directory (`patches`, `docs`, `updates`, `overlays`, `build-scripts`, `provenance`, `.github`) has a
-  **byte-identical tree hash**, 44 tags preserved, zero `.pkgtb`/`SHA256SUMS` objects remain. One
-  commit disappeared (154→153): `ad23f777` "OpenVPN changes.", whose content was *only* 2 images + a
-  checksum file, so it became empty. Provenance is unaffected — `manifest.json` pins the **upstream**
-  base commit and the **build clone's** `build_commit`, both in other repos.
-  *Left to the owner:* force-push `main` + `Dev` + tags from the mirror, then re-clone or hard-reset
-  the working copy (commit/stash WIP first), and confirm a release asset still downloads. [DONE]
 
 - **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
   Owner-approved (2026-08-08) design: a native

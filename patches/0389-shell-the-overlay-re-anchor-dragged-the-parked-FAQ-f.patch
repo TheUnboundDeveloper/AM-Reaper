@@ -1,0 +1,99 @@
+From 1d9d58a2be99c8c39446e52e9c3681c119e21b2b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 15:18:50 -0400
+Subject: [PATCH] shell: the overlay re-anchor dragged the parked FAQ fly-out
+ on-screen-wide
+
+Reaper_QoS.asp and Reaper_Traffic.asp render "zoomed in" and clip at the right
+edge with no scrollbar. Both are the only pages carrying the FAQ fly-out, a
+440px side panel PARKED OFF-SCREEN at right:-460px until opened.
+
+The v2.3.3 overlay re-anchoring listed .flyout alongside the genuine full-frame
+overlays and forced the whole list to position:absolute. A parked ABSOLUTE panel
+counts towards the framed document's scrollWidth; a parked FIXED one does not.
+So the framed document reported 460px more than it had, the frame-grow logic
+widened the frame to match, and every grid on the page stretched to that wider
+frame - which is the "zoomed in" look. The right-hand column then fell outside
+the window.
+
+Measured on the router: doc clientWidth 1405 -> scrollWidth 1865, exactly +460,
+with ASIDE#flyout.flyout the outermost offender. Reproduced and fixed in a mock
+render of the real shell, both pages, with a negative control:
+
+  before   doc 1603 -> 2063  (+460)  frame widened to 1603px  flyout absolute
+  after    doc 1143 -> 1143  (fits)  frame not widened        flyout fixed
+
+Two changes:
+
+1. .flyout comes out of the absolute list and gets its own rule that keeps
+   position:FIXED while still anchoring top/height to the visible slice. Inside
+   a frame that never scrolls internally, fixed and absolute resolve against the
+   same box, so the fly-out still opens centred on the visible area.
+
+   Parking it differently does not help - measured with an absolutely positioned
+   panel: right:-460px adds 460, transform:translateX(100%) adds 440, and
+   visibility:hidden changes nothing. Only a clipping ancestor prevents it, and
+   clipping the framed root would break the deliberate frame-widening that lets
+   wide stock tables pan on a narrow viewport.
+
+2. .stage gets min-width:0. It is a GRID ITEM, so its default min-width:auto
+   refuses to shrink below its content: when the frame did widen, the stage grew
+   with it and overflow-x:auto never got the chance to scroll. That is why the
+   page clipped SILENTLY instead of showing a horizontal scrollbar. With this,
+   any future frame-grow pans instead of clipping - the failure mode becomes
+   visible rather than invisible.
+
+Both pages fit at 1080p after the fix; the fly-out itself is unchanged in
+behaviour.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 24 ++++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index fb184c34b0..3499c81eed 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -105,7 +105,13 @@ a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2
+    iframe scrollbar on long pages (SDN.asp). min-height keeps short pages
+    filling the viewport under the sticky 64px topbar. */
+ .stage{grid-column:2;grid-row:2;min-height:calc(100vh - 64px);background:var(--bg);
+-  display:flex;flex-direction:column;overflow-x:auto;-webkit-overflow-scrolling:touch}
++  display:flex;flex-direction:column;overflow-x:auto;-webkit-overflow-scrolling:touch;
++  /* min-width:0 is load-bearing: .stage is a GRID ITEM, and a grid item's default
++     min-width:auto refuses to shrink below its content -- so when the frame-grow
++     above widens the frame, the stage grows with it and overflow-x:auto never
++     gets to scroll. The page then clips at the window edge with NO scrollbar,
++     which is how the v2.3.3 fly-out regression presented. */
++  min-width:0}
+ #tabbar{display:none;gap:6px;padding:12px 16px 0;flex-wrap:wrap;flex:0 0 auto}
+ #tabbar a.rtab{font-family:var(--hdr);font-weight:600;letter-spacing:.05em;font-size:13px;
+   color:var(--bone-dim);text-decoration:none;padding:8px 14px;border:1px solid var(--line-soft);
+@@ -461,8 +467,22 @@ var RV_CSS =
+ + '#loadingBlock,#loadingBarBlock{margin:0!important;position:static!important;left:auto!important;float:none!important}';
+ /* reaper-native pages: their own full-frame overlays, by the classes they use */
+ var RV_CSS_NATIVE = RV_CSS
+-+ '.veil,.ovl,#ovl,.applying,.overlay,.fbov,.scrim,.flyout{'
+++ '.veil,.ovl,#ovl,.applying,.overlay,.fbov,.scrim{'
+ + 'position:absolute!important;top:var(--rv-top,0px)!important;bottom:auto!important;'
+++ 'height:var(--rv-h,100vh)!important;max-height:none!important}'
++/* The FAQ fly-out is NOT a full-frame overlay: it is a 440px side panel PARKED
++   OFF-SCREEN at right:-460px until opened. Forcing it to position:absolute --
++   as this rule did when it first shipped -- makes that parked 460px count
++   towards the framed document's scrollWidth. The frame-grow above then widens
++   the frame to match, .stage cannot scroll it, and Reaper_QoS/Reaper_Traffic
++   clip on the right with no scrollbar and render 'zoomed in'. Measured, with an
++   absolutely positioned panel: right:-460px adds 460, transform:translateX(100%)
++   adds 440, visibility:hidden changes nothing -- only a clipping ancestor stops
++   it, and clipping the root would kill the deliberate widening for wide stock
++   tables. position:FIXED adds nothing at all, and inside a frame that never
++   scrolls internally fixed and absolute resolve against the same box, so the
++   top/height anchoring below still lands on the visible slice. */
+++ '.flyout{position:fixed!important;top:var(--rv-top,0px)!important;bottom:auto!important;'
+ + 'height:var(--rv-h,100vh)!important;max-height:none!important}';
+ 
+ (function(){
+-- 
+2.25.1
+

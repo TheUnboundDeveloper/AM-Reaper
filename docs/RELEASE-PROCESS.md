@@ -4,6 +4,10 @@ End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually
 hit came from that step being done by hand and missing a piece.
 
+> **Doing a release right now?** Use [`RELEASE-CHECKLIST.md`](RELEASE-CHECKLIST.md)
+> — the tick-box running order from local rung to published firmware. This file
+> is the reference that explains *why* each step is there.
+
 ## Two build paths
 
 | | Where | Used for |
@@ -31,11 +35,19 @@ or a release with no reproducible provenance.
 | 4 | `overlays/*.patch` | Only if the rung touches a file a per-model overlay also patches — then sibling builds conflict. |
 | 5 | `.github/pii-allowlist.txt` | Path-matched, so any renumber invalidates it. |
 
-One command does all five:
+One command does all five, plus the sibling fan-out:
 
 ```bash
-./build-scripts/cut_rung.sh --version v2.3.4
+./build-scripts/cut_fleet.sh --version v2.3.4
 ```
+
+`cut_fleet.sh` is the entry point. It runs `cut_rung.sh` (the five artifacts
+above), then ports the rung onto the four sibling branches, then handles the
+overlays — **in that order.** Regenerating an overlay before the port produces a
+patch that *reverts* the rung on every sibling, and it applies cleanly, so
+nothing downstream catches it. That is the 2026-08-10 regression, and the order
+here is what prevents it. Run `cut_rung.sh` directly only for a canon-only
+change you are deliberately not fanning out.
 
 It refuses to run unless the canon clone is on the right branch, has no
 uncommitted tracked changes, and already carries the version bump. Then it
@@ -66,22 +78,36 @@ the rung is not shippable.
 ## Publishing
 
 ```
-1. CUT + PUSH        cut_rung.sh → review the diff → commit → push main
-                     ("Repo hygiene" validates the push)
+1. CUT                cut_fleet.sh --version vX.Y.Z
+                      (rung → sibling ports → overlays, in that order)
 
-2. BUILD             Actions → Public build → Run workflow
-                     model=all, both variants, version field BLANK
-                     (blank uses the pin; fill it only to override deliberately)
+2. PROSE              provenance summary + models_note, CHANGELOG section
+                      (release notes are extracted from the changelog)
 
-3. TEST              flash one image on metal before fanning out
+3. COMMIT + HUB       commit the lean repo; push canon AND the four ported
+                      branches to the bare hub -- skipping the hub push blocks
+                      the NEXT rung on cut_fleet's ancestry check
 
-4. PUBLISH           tick the publish input, or dispatch release.yml with the
-                     green run's run_id to publish without rebuilding
-                     → one GitHub Release per model, "Reaper vX.Y.Z — <MODEL>"
+4. PUSH               PR into main (runs patch-apply-check + verify-provenance)
+                      or straight to main (runs repo-hygiene ONLY)
 
-5. MANIFEST          the refresh_manifest job rewrites updates/manifest_3006.txt,
-                     latest.json and the release note from the PUBLISHED assets
+5. BUILD              Actions → Public build → Run workflow
+                      model=all, both variants, version BLANK, publish UNTICKED
+                      (the overlay identity gate runs first and gates the matrix)
+
+6. TEST               flash one image on metal before fanning out
+
+7. PUBLISH            re-dispatch with publish ticked, or dispatch release.yml
+                      with the green run's run_id to publish without rebuilding
+                      → one GitHub Release per model, "Reaper vX.Y.Z — <MODEL>"
+
+8. MANIFEST           the refresh_manifest job rewrites updates/manifest_3006.txt,
+                      latest.json and the release note from the PUBLISHED assets
 ```
+
+Publishing is gated **twice**: `github.ref == 'refs/heads/main'` *and* the
+`publish` input, which defaults to off. A dispatch on main with the box clear
+builds and verifies without shipping.
 
 Releases are **per-model** so models can version independently (RT-BE96U at
 v2.3.3 while siblings catch up on the fan-out).
@@ -105,6 +131,7 @@ v2.3.3 while siblings catch up on the fan-out).
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `public-build.yml` | manual dispatch | Clean-room build, model × variant matrix. Applies `patches/`, asserts `EXPECTED_VERSION`, compares the series tree against `provenance/manifest.json`, runs the packaging gate, uploads artifacts, optionally hands off to `release.yml` |
+| ↳ `overlays` job | first, gates the matrix | Asserts each `overlays/<MODEL>.patch` carries **identity only** — in the seven banner-referencing files every changed line must be a banner swap, the banner must be that model's, and no `.dict` may appear. Seconds, no base clone. `git apply` cannot catch a stale overlay: one that reverts shared code still applies cleanly, which is how a fixed first-boot login loop was silently reintroduced in Aug 2026 |
 | `release.yml` | per-model tag `v*-*`, dispatch, or called | Parses `v<version>-<MODEL>`, verifies checksums, extracts CHANGELOG notes, creates/updates the per-model Release. Accepts a `run_id` to publish an existing green build with no rebuild |
 | `repo-hygiene.yml` | every push/PR | Series gapless; no disallowed `From:` identity; PII scan against `.github/pii-allowlist.txt`; no file at GitHub's 100 MB limit; staged checksums verify |
 | `verify-provenance.yml` | dispatch, or PR touching `patches/`/manifest | Lints the manifest and reproduces `verifiable` entries from the pinned base |

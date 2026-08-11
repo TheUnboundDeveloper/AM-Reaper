@@ -109,12 +109,51 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v2.3.3'
+    ${{ inputs.version == '' && 'Reaper_v2.3.4'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Seconds-long gate on the sibling overlays, run BEFORE anything expensive.
+  #
+  # The build already does `git apply` on the overlay and fails if it does not
+  # apply -- but a clean apply is not a correctness check. On 2026-08-10 the
+  # overlays had been generated from stale branch tips: they applied perfectly
+  # and silently reverted 7 files per model to v2.1.4-era content, including
+  # reintroducing an already-fixed first-boot login loop. Nothing in the pipeline
+  # noticed, because a stale overlay is still a well-formed patch.
+  #
+  # check_overlays.py asserts the invariant instead: an overlay is per-model
+  # IDENTITY, so in the seven banner-referencing files every changed line must be
+  # a banner-filename swap. A shared-code line there means canon moved and the
+  # sibling branch did not -- port the rung first, then regenerate.
+  #
+  # Needs only /overlays/, so it costs no base clone and no patch replay. It runs
+  # even for an RT-BE96U-only build: canon does not use an overlay, but a broken
+  # overlay committed alongside a canon-only rung should still be caught now
+  # rather than on the next fleet run.
+  # ---------------------------------------------------------------------------
+  overlays:
+    name: Overlay identity gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /overlays/
+            /build-scripts/ci/
+
+      - name: Assert overlays carry identity only
+        run: |
+          set -euo pipefail
+          python3 build-scripts/ci/check_overlays.py overlays
+
   # ---------------------------------------------------------------------------
   # Fetch the pinned crosstools once and cache them, so the two variant jobs
   # don't each pull the same multi-GB toolchain.
@@ -160,7 +199,9 @@ jobs:
   # ---------------------------------------------------------------------------
   build:
     name: ${{ matrix.model }} ${{ matrix.variant }}
-    needs: toolchain
+    # `overlays` is seconds long, so gating the matrix on it costs nothing and
+    # stops a known-bad overlay from consuming 10 x ~1.5 h of runner time.
+    needs: [toolchain, overlays]
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:

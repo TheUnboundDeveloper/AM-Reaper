@@ -306,24 +306,11 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-> **APPEND-PROCESS HAZARD — proven 2026-08-09, cost every release from v1.8.6a
-> onward.** The per-rung append (rather than full regeneration) silently DROPPED
-> three commits during the churny v1.8.6a/b/c fix iterations: the banner rename
-> `b6216ddc83`, and the version bumps `cb6eb3e215` (v1.8.6a) and `4d01c2f0b3`
-> (v1.8.6c). That broke the `EXTENDNO` chain, so `git am` died at patch `0247`
-> and **no patch after it was reachable** — for eight months of releases, while
-> the manifest still marked them `verifiable: true`. It was mis-diagnosed in
-> `patches/README.md` as "merge commits `git am` can't replay"; the branch has
-> **zero** merge commits. **RULE: after every append, run the full
-> `git am --keep-cr` replay onto a fresh `a7ebfa133a` worktree and diff
-> `release/src/router` against the build commit. A per-patch reverse-apply check
-> is NOT a substitute — it cannot detect a missing commit.** The audit that finds
-> this in seconds: compare `git log --no-merges --format=%H BASE..HEAD` against
-> the `From <sha>` first line of every patch; the only legitimate absentees are
-> the model-strip commit and pure-doc commits.
-
-**Patch-series regeneration recipe (the series is now at 374 patches, `0374` = v2.3.1,
-repaired + full-replay verified 2026-08-09; it was 322 at v2.1.5;
+**Patch-series regeneration recipe (the series is now at 379 patches, `0379` = v2.3.3,
+appended + full-replay verified 2026-08-10 — `git am --keep-cr` of all 379 onto a fresh
+`a7ebfa133a` worktree returned `AM_EXIT=0` and reproduced `release/src/router` with the
+only differences being the three vendored `openssh-sftp` `*.md` files the pathspec
+deliberately excludes; it was 374 at v2.3.1, repaired + replay-verified 2026-08-09; 322 at v2.1.5;
 it was 215 at v1.7.7, and the 190-patch v1.6.6 run on 2026-07-19 was validated
 `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching
 `release/src/router` tree hash — as were the 181-patch v1.6.0, 178-patch v1.5.9 and

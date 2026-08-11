@@ -73,13 +73,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `nvram show | grep -E "^wlnband_list=|^smart_connect_x=|^smart_connect_selif_x=|^bsd_(steering|sta_select)_policy"`.
   Any fix must enumerate **dual / tri / quad-band** correctly, like `Reaper_WiFiPro.asp`. [owed]
 
-- **[P2] QoS download-side ingress shaping stands up regardless of the policer setting (diagnosed
-  2026-08-08).** With QoS on and download bandwidth control **off**, the download side still capped the
-  ISP connection: the ingress shaping path (`qos.c` ~2960) is stood up whenever `qos_ibw > 0`, even
-  with `qos_ipolicer=0`. Owner confirmed clearing the `qos_ibw` field fixed the mid-speedtest download
-  dip. **Proper fix:** skip the ingress setup entirely when download control is off (don't rely on the
-  user clearing the bandwidth field). [owed]
-
 - **[P2] MLO: individual per-link rows no longer shown for a device (owner report 2026-08-06).**
   Investigated: the name-unification rung did **not** touch MLO code; on the **Devices page this is by
   design** (`do_reaper_dev_cgi` folds affiliated randomized MLO links into their MLD device and the page
@@ -103,11 +96,19 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   (or bucket it as the router, consistent with the Traffic Analyzer's hidden "Router" self-bucket)
   in rtrafd's health output. [cosmetic — owner: no fix needed now]
 
-- **[P3, pre-existing — verify] `rexport.sh` unquoted nvram (audit `rc/rexport.c`).** From v2.2.2
-  (flagged by the v2.3.0 review, not a v2.3.0 change): `reaper_export.cgi?action=test` runs
-  `doSystem("sh /tmp/rexport.sh test")`, and rexport.sh consumes CGI-set nvram (`url/engine/index/…`).
-  If any are interpolated unquoted, that's a post-auth, CSRF-guarded, admin-only command-injection
-  vector. Verify the quoting. [owed — audit]
+- **[P2] Shipped QoS preset rules classify by transferred bytes — streaming lands in the bulk queue
+  (found 2026-08-10, live metal).** The stock `qos_rulelist` default
+  (`Web Surf>>80>tcp>0~512>0<HTTPS>>443>tcp>0~512>0<File Transfer>>80>tcp>512~>3<File Transfer>>443>tcp>512~>3`)
+  demotes any HTTPS flow past 512 KB to class 4 ("Downloads"). Streaming video is HTTPS and passes that
+  in seconds, so a TV's flows — and under type 11 (upload-only) its **ACK stream** — ride the bulk queue,
+  4th of 5 under strict priority. Metal proof: the queue named "Streaming" had **0 packets** while the
+  video sat in "Downloads". Separately, `connbytes` matching forces per-packet re-evaluation, which the
+  rule parser marks non-sticky (`rule_gum=0`), so these rules are incompatible with hardware flow
+  offload — the guidance since the v2 metal validation has been "classify on port/proto/IP/MAC, never
+  transferred bytes", which the shipped defaults themselves violate. **Fix:** replace the preset pack in
+  `defaults.c` with port/proto rules carrying an empty `transferred` field, and have `Reaper_QoS.asp`
+  warn when a user rule uses a transferred range under type 11. (Worked around on the owner's box by
+  nvram only; the shipped default is unchanged.) [owed]
 
 ## Known issues (cause identified)
 
@@ -117,15 +118,13 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   single-quoted `title='...'` in `client_function.js`, but those are vendor/OUI-DB-sourced, not
   attacker-freeform. [owed — low, optional]
 
-- **[P3] ASUS-CDN cloud-DATA fetches still in the browser (de-cloud cleanup).** The device/app **icon**
-  phone-home is fully closed (v2.2.0 + v2.2.5). What remains is the wider same-class surface of cloud
-  **DATA** (not icons): several `getJSON`/`fetch` to `nw-dlcdnet.asus.com/plugin/js/*` (`gameList`,
-  `DNS_List`, `tz_db`, `pppIspList_V2`, `ui-model-name`, `opennat_pf`, `iptv_profile`, `collected_FAQ`,
-  `gameProfile`) plus hardcoded ASUS-CDN game-image URLs in `css/gameprofile.css`. The `www/Makefile`
-  also `wget`s several at **build time** into `ajax/` (a baked-in copy, not a runtime phone-home —
-  lower priority, but worth a bundled-copy policy). **Fix pattern:** drop the remote fetch, fall back to
-  the bundled/local asset, or gate off by default. **Ai Mesh** On the Ai Mesh menu remove the white 
-  icon in the upper right area that used to be an image of the router downloaded from ASUS CDN.
+- **[P3] ASUS-CDN references remain in the non-shipping model UIs (`sysdep/FUNCTION/{ROG_UI,TUF_UI,UI4,
+  MULTISERVICE_WAN,ADGUARDDNS_UI}`).** The v2.3.3 de-cloud closed every request in the files that ship
+  on this model (verified against the staged `fs.install` tree); **115 references remain** in sysdep
+  overlays that are not selected for the BE-series build. They cost nothing today, but they are shared
+  source and the sibling branches are ported from this tree, so a future model that selects one of
+  those overlays would reintroduce the surface. Needs a per-model shipping check before sweeping.
+  [owed — low]
 
 ## UI / UX polish
 
@@ -163,6 +162,9 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   hub in the firmware menu. This feature should also allow the user to click on each one and chose the 
   file to update the firmware with or go directly to the node and flash it natively.
 
+- **Firmware Manifest** The manifest is not updated by the automated publish workflow. Need to add that 
+  to the workflow so user are notified of new versions.
+
 - **[P2 — OWNER DECISION] Stop committing `.pkgtb` images in-tree under `releases/` (repo-size).**
   GitHub *Release assets* live outside the git repo (no repo-size impact, 2 GB/file limit) and are
   what the update manifest + in-GUI installer download from — the in-tree copies (~750 MB history
@@ -175,7 +177,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   (v2.3.1 images were still committed in-tree, so this is not yet done.)
 
 - **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
-  Owner-approved (2026-08-08) design in [`docs/FIREWALL-PLAN.md`](FIREWALL-PLAN.md): a native
+  Owner-approved (2026-08-08) design: a native
   `Reaper_Firewall.asp` hub replacing all four stock tabs (General / Network Services / URL /
   Keyword) plus new tabs — **Status** (live v4+v6 chains + hit counters), **custom Rules** engine
   (Basic form + Advanced DSL, dual-stack, `rc/reaper_fw.c` + `reaper_fw.cgi`, re-apply hook),

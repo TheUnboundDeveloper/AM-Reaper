@@ -1,0 +1,3066 @@
+From c2162344ccda3e6c03f2a763f13e05d10f85c6e7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 10 Aug 2026 19:17:55 -0400
+Subject: [PATCH] reaper v2.3.3: de-cloud the browser surface, QoS imq0 gate,
+ rexport + rmcpd hardening
+
+DE-CLOUD (BACKLOG [P3]) - every remaining browser->ASUS-CDN request is gone from
+the files that ship on this model. Verified against the staged fs.install tree,
+not just source: several sites the source grep flagged are already inert inside
+/* */ blocks that survive the build minifier.
+
+- client_function.js x2 (productIcons): leaked the name of every ASUS-made LAN
+  device from the admin browser and wrote the fetched icon into custom_usericon.
+  v2.2.0/v2.2.5 closed the UI4 dashboard copy - which does not even ship - and
+  missed this one, which 49 shipped pages load. Stub + guarded caller removed.
+- adguard_dns.html: the AdGuard promo banner was fetched from the ASUS CDN with
+  the BUNDLED copy wired only as an .on('error') fallback, so every visit to that
+  page announced itself before quietly falling back. Now uses images/adGuard/
+  directly. Found only by grepping the BUILT filesystem: an earlier pass decided
+  which sysdep overlays ship by looking for a directory named after the overlay
+  under fs.install, but the build copies overlay CONTENTS into the web root, so
+  the directory never appears and every overlay looked non-shipping.
+- collected_FAQ (form.js, reached from 31 pages), DNS_List x3 (System, WANPort,
+  sdn.js), extend_sdn_scenarios, ui-model-name, extend_model_icon, tz_db,
+  pppIspList_V2: the bundled /ajax/ copy is authoritative, cloud compare dropped.
+- GameProfile.asp fetched gameProfile.json from ASUS and, on failure, re-armed
+  itself every 5s forever. Now reads a bundled empty catalogue, no retry loop.
+- Open NAT + IPTV profile feeds and the VPN partner server lists resolve locally;
+  the surrounding UI still builds from an empty set.
+- Per-game artwork REMOVED outright (104 .game-p-<name> rules, 414 lines). The
+  images were publisher-owned game art hosted by ASUS - not ours to re-host in a
+  redistributed image - and after the CDN urls were dropped every rule pointed at
+  the same bundled placeholder anyway. The placeholder now lives on .game-profile
+  and .new-g-p-image; the 4 structural .game-p-* rules are kept.
+  NordVPN/Surfshark and CyberGhost promo banners no longer fetch.
+- js/searchIspNameProfile.js deleted - 0 shipped pages included it.
+- MULTISERVICE_WAN overlay: two dead /* */ blocks still carried CDN urls; the
+  base file was already cleaned but the overlay is what actually ships.
+
+DEAD CODE - the gated banner block, the empty icon stub and its caller, three
+upstream /* */ blocks still carrying CDN urls, and the unreachable tail of the
+v2.2.0 clientlist stub. Each proved unreachable AND orphan-free before cutting:
+the naive scan called the banner block unsafe because six of its vars looked
+live, but var hoisting was feeding an already-commented-out reader.
+
+QOS - add_qos_rules() emitted the imq0 ingress redirect for the HARDWARE engines,
+gated only on qos_irates (stock default non-zero), so it fired for qos_type 11 on
+every apply: metal showed 4,619 pkts through imq0 with qos_ibw EMPTY and
+qos_ipolicer=0. Only the tc/HTB engine builds an imq0 qdisc, so the redirect can
+never shape anything. Corrects the [P2] backlog entry - its stated trigger
+(qos_ibw > 0) and line reference (~2960) were both wrong.
+
+REXPORT - the [P3] audit item is CLEAN: rexport_gen() emits a constant script and
+every nvram read is quoted, so there is no shell injection. The exposure is one
+layer over - values land in a curl -K config as url = "<value>", where a double
+quote closes the string and the remainder is read as further curl directives;
+`output = <path>` is an arbitrary file write as root. httpd stored url/token/
+index/source/engine/metrics unvalidated. Added rexport_val_ok() + a runtime
+guard in the generated script.
+
+RMCPD - sb_scrub_secrets() only matched "<frag>[:=] value", so ASUS '>'-delimited
+security tuples (apg1_security = <3>psk2>aes>PASSPHRASE>1) walked through the
+structural scrub and a live PSK reached an operator transcript via the lab exec
+tool. sb_scrub_sec_tuples() now runs first.
+
+RWATCH - the armed log line hardcoded /jffs/rwatch even when rwatch_gen()
+relocates DUMPROOT onto the durable store; it sent a live investigation to the
+wrong path while the mirror was on the USB the whole time.
+
+ALSO CARRIED (pre-existing uncommitted, inert): v2.3.3 Native Firewall Phase 1
+scaffolding. reaper_fw.c is NOT referenced by rc/Makefile so nothing compiles,
+Reaper_Firewall.asp is unwired, reaper_fw_enable defaults to 0.
+
+NOT metal-validated. Verified against the staged filesystem after the build.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/web.c                | 216 ++++-
+ release/src/router/rc/qos.c                   |  20 +-
+ release/src/router/rc/reaper_fw.c             | 360 ++++++++
+ release/src/router/rc/rexport.c               |   6 +
+ release/src/router/rc/rwatch.c                |  11 +-
+ release/src/router/rmcpd/rmcpd.c              |  92 +-
+ release/src/router/shared/defaults.c          |  14 +
+ .../src/router/www/Advanced_IPTV_Content.asp  |   3 +-
+ .../router/www/Advanced_System_Content.asp    |  13 +-
+ .../router/www/Advanced_WANPort_Content.asp   |  13 +-
+ .../src/router/www/Advanced_WAN_Content.asp   |  25 -
+ release/src/router/www/GameProfile.asp        |   6 +-
+ .../router/www/Main_GameServer_Content.asp    |  12 +-
+ release/src/router/www/Reaper_Firewall.asp    | 786 ++++++++++++++++++
+ .../src/router/www/aimesh/aimesh_topology.css |   6 +-
+ .../router/www/aimesh/aimesh_topology.html    |  15 +-
+ release/src/router/www/ajax/gameProfile.json  |   1 +
+ release/src/router/www/client_function.js     |  56 +-
+ release/src/router/www/css/gameprofile.css    | 424 +---------
+ .../www/dashboard/js/clientlist.module.js     |  28 -
+ release/src/router/www/form.js                |  13 +-
+ .../src/router/www/js/searchIspNameProfile.js |  80 --
+ .../src/router/www/js/searchOpenNatProfile.js |   3 +-
+ .../src/router/www/js/uiModelName.module.js   |  11 +-
+ .../FUNCTION/ADGUARDDNS_UI/adguard_dns.html   |  18 +-
+ .../MULTISERVICE_WAN/Advanced_WAN_Content.asp |  25 -
+ .../FUNCTION/QIS_V3/mobile/js/handler.js      |   5 +-
+ .../FUNCTION/QIS_V3/mobile/js/plugins.js      |   7 +-
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js |  44 +-
+ .../www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html | 150 +---
+ 31 files changed, 1568 insertions(+), 897 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_fw.c
+ create mode 100644 release/src/router/www/Reaper_Firewall.asp
+ create mode 100644 release/src/router/www/ajax/gameProfile.json
+ delete mode 100644 release/src/router/www/js/searchIspNameProfile.js
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 3448311d3a..5edc884552 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.3.2
++EXTENDNO=Reaper_v2.3.3
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 36191b22eb..217a75e26d 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23277,6 +23277,178 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 			check_if_dir_writable("/jffs") ? 1 : 0);
+ }
+ 
++/* ===================================================================
++ * reaper v2.3.3: Native Firewall suite, Phase 0 (Reaper_Firewall.asp).
++ *
++ * READ-ONLY visibility CGI: live iptables/ip6tables chain listings with
++ * exact hit counters (action=status) and the firewall-classified tail of
++ * the syslog for the drops viewer (action=drops). It changes nothing -
++ * every setting on the firewall page is written through the stock
++ * start_apply.htm -> restart_firewall path, and both popen() commands are
++ * fixed literals, so no request data ever reaches a shell. The raw listing
++ * text is passed through as JSON strings and parsed client-side (the
++ * Warden stats.sh precedent: keep the C dumb, keep the parsing where it
++ * can be iterated without a firmware build).
++ *
++ * Counters zero on every firewall rebuild (start_firewall fires on WAN
++ * events, service restarts, ...), so the page labels every count "since
++ * the last firewall rebuild" rather than pretending to a lifetime total.
++ *
++ * NOT MCP-gated - ships in both builds (kept OUTSIDE the RTCONFIG_REAPER_MCP
++ * block below, same as do_reaper_gk_cgi / do_reaper_warden_cgi). */
++
++/* emit the BODY of a JSON string (no surrounding quotes) - the same
++ * escaping contract as gk_json_esc, split out so multi-chunk output
++ * (popen lines, syslog lines) can stream into one JSON string value. */
++static void
++fw_json_frag(FILE *stream, const char *s)
++{
++	for (; *s; s++) {
++		unsigned char c = (unsigned char)*s;
++		if (c == '"' || c == '\\') websWrite(stream, "\\%c", c);
++		else if (c < 0x20) websWrite(stream, "\\u%04x", c);
++		else if (c == '<' || c == '>' || c == '&') websWrite(stream, "\\u%04x", c);
++		else websWrite(stream, "%c", c);
++	}
++}
++
++/* stream one FIXED-LITERAL command's stdout as a JSON string value, capped
++ * so a pathological chain set cannot balloon the response. */
++static void
++fw_emit_cmd(FILE *stream, const char *cmd, size_t cap)
++{
++	FILE *p;
++	char buf[512];
++	size_t used = 0;
++
++	websWrite(stream, "\"");
++	if ((p = popen(cmd, "r")) != NULL) {
++		while (fgets(buf, sizeof(buf), p) != NULL) {
++			used += strlen(buf);
++			if (used > cap) {
++				fw_json_frag(stream, "\n(truncated)\n");
++				break;
++			}
++			fw_json_frag(stream, buf);
++		}
++		pclose(p);
++	}
++	websWrite(stream, "\"");
++}
++
++/* a syslog line belongs to the drops viewer iff klogd tagged it kernel:
++ * and it carries one of the three firewall LOG prefixes this build can
++ * emit (complete inventory, rc/ grep 2026-08-10): "DROP " / "ACCEPT "
++ * (fw_log_x target chains, --state NEW only) and "REAPER-WARDEN "
++ * (rwarden_log=1, every packet). Gatekeeper drops emit no LOG rules. */
++static int
++fw_line_is_fwlog(const char *line)
++{
++	const char *k = strstr(line, "kernel:");
++	if (!k) return 0;
++	return (strstr(k, "DROP IN=") != NULL ||
++		strstr(k, "ACCEPT IN=") != NULL ||
++		strstr(k, "REAPER-WARDEN ") != NULL);
++}
++
++#define FW_DROPS_MAX	400
++#define FW_DROPS_LINE	640
++
++static void
++fw_scan_syslog(const char *path, char *ring, int *head, int *count)
++{
++	FILE *f;
++	char line[FW_DROPS_LINE];
++
++	if ((f = fopen(path, "r")) == NULL)
++		return;
++	while (fgets(line, sizeof(line), f) != NULL) {
++		if (!fw_line_is_fwlog(line)) continue;
++		strlcpy(ring + (size_t)(*head) * FW_DROPS_LINE, line, FW_DROPS_LINE);
++		*head = (*head + 1) % FW_DROPS_MAX;
++		if (*count < FW_DROPS_MAX) (*count)++;
++	}
++	fclose(f);
++}
++
++static void
++do_reaper_fw_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++
++	if (!action) action = "status";
++
++	/* reaper (A1-SEC-002 model): every action here forks (popen) or walks
++	 * the syslog - require the http_id CSRF token like the Warden / diag
++	 * readers, on ALL actions. */
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++			return;
++		}
++	}
++
++	if (strcmp(action, "status") == 0) {
++		int v6up = 0;
++#ifdef RTCONFIG_IPV6
++		v6up = ipv6_enabled() ? 1 : 0;
++#endif
++		websWrite(stream,
++			"{\"ok\":1,\"fw\":{\"enable\":%d,\"dos\":%d,\"ping\":%d,"
++			"\"wl\":%d,\"lw\":%d,\"url\":%d,\"kw\":%d,"
++			"\"v6up\":%d,\"v6fw\":%d,\"gk\":%d,\"warden\":%d,\"wlog\":%d,\"log\":",
++			nvram_match("fw_enable_x", "1") ? 1 : 0,
++			nvram_match("fw_dos_x", "1") ? 1 : 0,
++			nvram_match("misc_ping_x", "1") ? 1 : 0,
++			nvram_match("fw_wl_enable_x", "1") ? 1 : 0,
++			nvram_match("fw_lw_enable_x", "1") ? 1 : 0,
++			nvram_match("url_enable_x", "1") ? 1 : 0,
++			nvram_match("keyword_enable_x", "1") ? 1 : 0,
++			v6up,
++			nvram_match("ipv6_fw_enable", "1") ? 1 : 0,
++			nvram_match("gk_enable", "1") ? 1 : 0,
++			nvram_match("rwarden_enable", "1") ? 1 : 0,
++			nvram_match("rwarden_log", "1") ? 1 : 0);
++		gk_json_esc(stream, nvram_safe_get("fw_log_x"));
++		websWrite(stream, "},\"v4\":");
++		fw_emit_cmd(stream, "iptables -nvxL 2>/dev/null", 98304);
++		websWrite(stream, ",\"v6\":");
++		fw_emit_cmd(stream, "ip6tables -nvxL 2>/dev/null", 65536);
++		websWrite(stream, "}");
++		return;
++	}
++
++	if (strcmp(action, "drops") == 0) {
++		/* last FW_DROPS_MAX matching lines across the rotated pair, oldest
++		 * file first so the ring ends holding the newest. 400*640 = 250 KB,
++		 * heap not stack. */
++		char *ring = calloc(FW_DROPS_MAX, FW_DROPS_LINE);
++		int head = 0, count = 0, i;
++
++		if (!ring) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"oom\"}");
++			return;
++		}
++		fw_scan_syslog(get_syslog_fname(1), ring, &head, &count);
++		fw_scan_syslog(get_syslog_fname(0), ring, &head, &count);
++
++		websWrite(stream, "{\"ok\":1,\"wlog\":%d,\"n\":%d,\"log\":",
++			nvram_match("rwarden_log", "1") ? 1 : 0, count);
++		gk_json_esc(stream, nvram_safe_get("fw_log_x"));
++		websWrite(stream, ",\"lines\":\"");
++		for (i = 0; i < count; i++) {
++			int idx = (count < FW_DROPS_MAX) ? i : (head + i) % FW_DROPS_MAX;
++			fw_json_frag(stream, ring + (size_t)idx * FW_DROPS_LINE);
++		}
++		websWrite(stream, "\"}");
++		free(ring);
++		return;
++	}
++
++	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
++}
++
+ /* ===================================================================
+  * reaper v1.9.0: Device Identity Manager (Reaper_Devices.asp).
+  *
+@@ -24223,6 +24395,37 @@ static void gen_scrape_token(char *out, size_t n)
+ 	}
+ }
+ 
++/* reaper: the free-text export settings below are consumed by /tmp/rexport.sh.
++ * The SHELL side is clean - rexport_gen() fputs a CONSTANT script and every
++ * nvram value is read at run time into a double-quoted assignment, so there is
++ * no shell command injection (this is what the [P3] backlog item asked us to
++ * verify; it holds).
++ *
++ * The exposure is one layer over: that script builds a curl config file and
++ * feeds it with -K, writing lines of the form
++ *     url = "<value>"
++ *     header = "<value>"
++ * A double quote inside the value closes the quoted string, and curl reads the
++ * remainder of the line as further config directives. curl config accepts
++ * `output = <path>`, so a crafted URL turns an admin-authenticated save into an
++ * arbitrary file write as root (e.g. into /jffs/scripts) - persistence, not
++ * just exfiltration. Reachable post-auth and CSRF-guarded, which is the tier
++ * the backlog assumed, but it chains with any admin-session XSS.
++ *
++ * Reject rather than sanitise so a mangled value never silently half-applies;
++ * the field keeps its previous value, matching how an invalid "mode" is already
++ * handled. Backslash is deliberately included: curl treats it as an escape
++ * inside a quoted config value. */
++static int rexport_val_ok(const char *s)
++{
++	for (; *s; s++) {
++		unsigned char c = (unsigned char)*s;
++		if (c == '"' || c == '\\' || c < 0x20 || c == 0x7f)
++			return 0;
++	}
++	return 1;
++}
++
+ static void
+ do_reaper_export_cgi(char *url, FILE *stream)
+ {
+@@ -24277,9 +24480,9 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 		char *v;
+ 		if ((v = get_cgi("mode")) && (!strcmp(v, "off") || !strcmp(v, "storeonly") || !strcmp(v, "both") || !strcmp(v, "exportonly")))
+ 			nvram_set("reaper_export_mode", v);
+-		if ((v = get_cgi("engine")))   nvram_set("reaper_export_engine", v);
+-		if ((v = get_cgi("url")))      nvram_set("reaper_export_url", v);
+-		if ((v = get_cgi("token")) && v[0]) nvram_set("reaper_export_token", v);	/* blank = keep existing */
++		if ((v = get_cgi("engine")) && rexport_val_ok(v))   nvram_set("reaper_export_engine", v);
++		if ((v = get_cgi("url")) && rexport_val_ok(v))      nvram_set("reaper_export_url", v);
++		if ((v = get_cgi("token")) && v[0] && rexport_val_ok(v)) nvram_set("reaper_export_token", v);	/* blank = keep existing */
+ 		if ((v = get_cgi("cleartoken")) && !strcmp(v, "1")) nvram_set("reaper_export_token", "");
+ 		if ((v = get_cgi("tlsv")))     nvram_set("reaper_export_tlsverify", strcmp(v, "0") ? "1" : "0");
+ 		if ((v = get_cgi("interval"))) {
+@@ -24287,9 +24490,9 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 			if (n < 10) n = 10; if (n > 3600) n = 3600;
+ 			snprintf(b, sizeof(b), "%d", n); nvram_set("reaper_export_interval", b);
+ 		}
+-		if ((v = get_cgi("metrics")))  nvram_set("reaper_export_metrics", v);
+-		if ((v = get_cgi("index")))    nvram_set("reaper_export_index", v);
+-		if ((v = get_cgi("source")))   nvram_set("reaper_export_source", v);
++		if ((v = get_cgi("metrics")) && rexport_val_ok(v))  nvram_set("reaper_export_metrics", v);
++		if ((v = get_cgi("index")) && rexport_val_ok(v))    nvram_set("reaper_export_index", v);
++		if ((v = get_cgi("source")) && rexport_val_ok(v))   nvram_set("reaper_export_source", v);
+ 		if ((v = get_cgi("maskmac")))  nvram_set("reaper_export_maskmac", strcmp(v, "1") ? "0" : "1");
+ 		if ((v = get_cgi("regen_scrape")) && !strcmp(v, "1")) {
+ 			char t[40]; gen_scrape_token(t, sizeof(t)); nvram_set("reaper_export_scrape_token", t);
+@@ -31956,6 +32159,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_diag.cgi*", "text/plain", no_cache_IE7, do_html_post_and_get, do_reaper_diag_cgi, do_auth },
+ 	{ "reaper_gk.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_gk_cgi, do_auth },
+ 	{ "reaper_warden.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
++	{ "reaper_fw.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_fw_cgi, do_auth },
+ 	{ "reaper_dev.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
+ 	{ "reaper_export.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_export_cgi, do_auth },
+ 	/* Prometheus scrape: public (no session) but ?token= gated inside the handler */
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 658aab8607..7606d11aab 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -1088,11 +1088,29 @@ static int add_qos_rules(char *pcWANIF)
+ 	QOSDBG("[qos] qos_inuse=%d\n", inuse);
+ 
+ 	/* Ingress rules */
++	/* reaper: this block redirects every WAN-ingress packet to imq0 so a
++	 * software qdisc tree can shape the download direction. ONLY the
++	 * traditional (tc/HTB) engine ever builds that tree - the hardware engines
++	 * (qos_type 10/11) leave imq0 on the kernel default pfifo_fast, so the
++	 * redirect cannot shape anything; it just pushes software-path packets
++	 * through an extra netdev for nothing.
++	 *
++	 * Gated on qos_irates alone, it fired for type 11 on every apply. Metal
++	 * 2026-08-10: PREROUTING carried "IMQ --todev 0" on eth0 with 4,619 pkts /
++	 * 1,005 KB through imq0 while qos_ibw was EMPTY and qos_ipolicer=0 - so the
++	 * backlog [P2] entry's stated trigger ("stands up whenever qos_ibw > 0") was
++	 * wrong; qos_irates ships non-zero by default and is the real trigger.
++	 *
++	 * The paired PREROUTING restore-mark exists only to feed that qdisc. QOSO
++	 * opens with its own CONNMARK restore, and the QOSDL downstream stamp reads
++	 * conntrack directly (see the wmm_map comment above), so neither path
++	 * depends on it. Condition added inline rather than wrapping the loop so the
++	 * strdup/free pair around it stays exactly as it was. */
+ 	g = buf = strdup(nvram_safe_get("qos_irates"));
+ 	for (i = 0; i < 10; ++i) {
+ 		if ((!g) || ((p = strsep(&g, ",")) == NULL)) continue;
+ 		if ((inuse & (1 << i)) == 0) continue;
+-		if (safe_atoi(p) > 0) {
++		if (safe_atoi(p) > 0 && !IS_HWQOS() && !IS_HWQOS_CLASSFUL()) {
+ 			fprintf(fn, "-A PREROUTING -i %s -j CONNMARK --restore-mark --mask 0x%x\n", pcWANIF, class_mask);
+ #ifdef CLS_ACT
+ 			fprintf(fn, "-A PREROUTING -i %s -j IMQ --todev 0\n", pcWANIF);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+new file mode 100644
+index 0000000000..4d744c0d99
+--- /dev/null
++++ b/release/src/router/rc/reaper_fw.c
+@@ -0,0 +1,360 @@
++/*
++ * rc/reaper_fw.c - Reaper native firewall: object-model custom rules engine
++ * (RT-BE96U "reaper", v2.3.3, FIREWALL-PLAN Phase 1).
++ *
++ * WHAT THIS IS
++ *   A general-purpose, object-based stateful firewall layer that sits BESIDE
++ *   Gatekeeper (per-device internet on/off) and Warden (inbound geo/threat
++ *   feeds) - it does not absorb them. Users define reusable OBJECTS (address /
++ *   service), GROUPS, and ZONES, then write RULES that reference them by name.
++ *   The engine compiles the ruleset into three owned chains, REAPER_FWI
++ *   (INPUT), REAPER_FWF (FORWARD), REAPER_FWO (OUTPUT), dual-stack (iptables +
++ *   ip6tables), backed by ipset. Model mirrors rc/rwarden.c and rc/gatekeeper.c:
++ *   start_reaper_fw() writes an idempotent teardown+build shell script whose
++ *   interface/subnet values are resolved at RUN time via `nvram get`, then runs
++ *   it, and it re-arms from the start_firewall() re-apply hook so the chains
++ *   survive restart_firewall / WAN events / service restarts. No resident daemon.
++ *
++ * ============================ SECURITY CONTRACT ============================
++ * A firewall is the one subsystem where a single ordering or validation slip is
++ * a real vulnerability. The following are INVARIANTS, not preferences. Any
++ * change here must preserve every one of them (and the pre-build security review
++ * checks them):
++ *
++ * S1. STRUCTURAL ANTI-LOCKOUT. Every owned chain begins, BEFORE any user DROP,
++ *     with protective RETURNs that can never be overridden by a user rule:
++ *       loopback -> RETURN
++ *       ESTABLISHED,RELATED -> RETURN   (keeps the admin's in-flight session,
++ *                                        incl. the commit-confirm POST, alive -
++ *                                        the base est-accept is appended BELOW
++ *                                        our -I jump, so we must carry our own)
++ *       DHCP (v4 67:68 / v6 546:547) -> RETURN
++ *       admin RETURN                    (the REMOTE_ADDR of the session that
++ *                                        applied, to its mgmt transport - so a
++ *                                        bad ruleset cannot sever the operator)
++ *     Only after these do user rules run, then the zone default-policy matrix,
++ *     then a final default. Rule 7 of Warden's chain (the LAN RETURN) taught us
++ *     this the hard way (2026-07-29 lockout); we encode it structurally.
++ *
++ * S2. INPUT IS UNTRUSTED. Everything from nvram is validated STRUCTURALLY (not
++ *     just charset-gated) before it reaches the generated shell, and every field
++ *     that flows into the shell is restricted to a charset that cannot break out
++ *     of its quoting. Object/zone/service NAMES become ipset names and shell
++ *     tokens: [A-Za-z0-9_] only. An invalid record is DROPPED and logged; it is
++ *     never emitted half-formed (a silently-dropped-but-believed-active entry
++ *     was a Warden lockout ingredient).
++ *
++ * S3. COMMIT-CONFIRM IS THE SAFETY NET, AND IT IS LOAD-BEARING. Applying a
++ *     candidate ruleset arms an auto-revert (reaper_fw_confirm seconds, floor
++ *     15, never 0). If the operator does not confirm - e.g. a rule broke their
++ *     own route so the confirm never arrives - the ruleset is reverted. The
++ *     revert deadline is owned by a DURABLE watcher (cru, which survives httpd/rc
++ *     restarts), never a best-effort child process. Rollback REGENERATES our
++ *     chains from the last-good config; it NEVER snapshot/restores the shared
++ *     table (that would clobber GK/Warden/SDN). If regeneration itself fails,
++ *     the last resort is FAIL-OPEN for our layer only: remove our jumps so the
++ *     base firewall still protects the box and connectivity is restored.
++ *
++ * S4. WE TOUCH ONLY WHAT WE OWN. Apply/rollback flush and rebuild ONLY
++ *     REAPER_FWI/FWF/FWO (+ our object ipsets); never another daemon's chains,
++ *     never the built-in chains, never the whole table.
++ *
++ * S5. GEO DEFERS TO WARDEN. A geo object REFERENCES Warden's country set
++ *     rw_g_<cc> / rw_g6_<cc>; the engine never creates a parallel country set.
++ *     If Warden is not managing that country the geo match is not emitted (a
++ *     dead --match-set on a missing set) - the UI routes the operator to Warden.
++ *
++ * S6. SERIALIZE WITH THE BASE. Apply/rollback take the SAME file_lock("firewall")
++ *     the base rebuild uses, so we never interleave with a concurrent
++ *     start_firewall() and load a half-built chain set. (`iptables -w` is not
++ *     relied on - GK/Warden don't use it, so the lock is the real serialization.)
++ *
++ * nvram: reaper_fw_enable reaper_fw_confirm reaper_fw_obj reaper_fw_grp
++ *        reaper_fw_svc reaper_fw_zone reaper_fw_zpol reaper_fw_rules
++ *
++ * RECORD FORMATS (list separator '<', field separator '>'):
++ *   obj:   <name>type>value>comment           type = host|cidr|range|mac|fqdn|geo
++ *   grp:   <name>member,member,...>comment     members = object names
++ *   svc:   <name>proto>ports>comment           proto = tcp|udp|both|icmp
++ *   zone:  <name>iface,iface,...>comment        iface = br0|vlanN|eth0|tun+|wgc+...
++ *   zpol:  <srczone>dstzone>action              action = accept|drop|reject
++ *   rule:  <en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment
++ *          en=0|1  dir=in|out|fwd  action=accept|drop|reject|log
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "rc.h"
++#include <shared.h>
++
++#define RFW_DIR      "/tmp/reaper_fw"
++#define RFW_APPLY    RFW_DIR "/apply.sh"          /* idempotent teardown+build (committed set) */
++#define RFW_CAND     RFW_DIR "/candidate.sh"      /* the armed candidate (staged set) */
++#define RFW_CC       RFW_DIR "/cc_check.sh"       /* cru-run deadline checker */
++#define RFW_ARMED    RFW_DIR "/armed"             /* single-arm CAS token (a directory: mkdir/rmdir are atomic) */
++#define RFW_DEADLINE RFW_DIR "/deadline"          /* absolute epoch the arm reverts at */
++#define RFW_ADMIN    RFW_DIR "/admin"             /* REMOTE_ADDR + transport of the arming session */
++#define RFW_CACHE    "/jffs/reaper_fw"
++#define RFW_LASTGOOD RFW_CACHE "/lastgood"        /* last-CONFIRMED config snapshot = the rollback source (S3) */
++
++#define RFW_CONFIRM_MIN  15                       /* commit-confirm floor, seconds (S3: never 0) */
++#define RFW_CONFIRM_DEF  60
++
++/* ipset object set names are rwfw_<name> (v4) / rwfw6_<name> (v6). The <name>
++ * is validated to [A-Za-z0-9_]{1,28} so the full set name stays within ipset's
++ * 31-char limit and can never break shell quoting (S2). */
++#define RFW_SET4  "rwfw_"
++#define RFW_SET6  "rwfw6_"
++#define RFW_NAME_MAX 28
++
++/* our owned chains */
++#define RFW_CHAIN_IN   "REAPER_FWI"
++#define RFW_CHAIN_FWD  "REAPER_FWF"
++#define RFW_CHAIN_OUT  "REAPER_FWO"
++
++/* ---------------------------------------------------------------------------
++ * S2 validators. Structural, not charset-only. Adapted from rc/rwarden.c's
++ * hardened set (rw_valid_cidr / rw_valid_cidr6 / rw_valid_cc) so the two
++ * subsystems reject identically; extended with name / mac / port / proto for
++ * the object model. Each returns 1 on valid, 0 on reject.
++ * ------------------------------------------------------------------------- */
++
++/* object / group / service / zone NAME: [A-Za-z0-9_], 1..RFW_NAME_MAX. This is
++ * the single most safety-relevant validator - the name becomes an ipset name
++ * AND a shell token in the generated script. No dot, no dash, no space. */
++static int rfw_valid_name(const char *s)
++{
++	const char *p;
++	size_t n = 0;
++	if (!s || !*s) return 0;
++	for (p = s; *p; p++, n++) {
++		if (n >= RFW_NAME_MAX) return 0;
++		if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
++		      (*p >= '0' && *p <= '9') || *p == '_'))
++			return 0;
++	}
++	return 1;
++}
++
++/* single IPv4 address or CIDR: four octets 0-255, optional /0-32. */
++static int rfw_valid_cidr(const char *s)
++{
++	int oct = 0, val = -1, prefix = -1, seen_slash = 0;
++	const char *p;
++	if (!s || !*s || strlen(s) > 18) return 0;
++	for (p = s; *p; p++) {
++		if (*p >= '0' && *p <= '9') {
++			if (seen_slash) {
++				prefix = (prefix < 0 ? 0 : prefix) * 10 + (*p - '0');
++				if (prefix > 32) return 0;
++			} else {
++				val = (val < 0 ? 0 : val) * 10 + (*p - '0');
++				if (val > 255) return 0;
++			}
++			continue;
++		}
++		if (*p == '.') {
++			if (seen_slash || val < 0 || oct >= 3) return 0;
++			oct++; val = -1;
++			continue;
++		}
++		if (*p == '/') {
++			if (seen_slash || val < 0 || oct != 3) return 0;
++			seen_slash = 1;
++			continue;
++		}
++		return 0;
++	}
++	if (seen_slash) return (prefix >= 0);
++	return (oct == 3 && val >= 0);
++}
++
++/* single IPv6 address or CIDR, charset [0-9a-fA-F:/], >=2 colons. ipset parses. */
++static int rfw_valid_cidr6(const char *s)
++{
++	int colon = 0, slash = 0, prefix = -1;
++	const char *p;
++	if (!s || !*s || strlen(s) > 43) return 0;
++	for (p = s; *p; p++) {
++		if (*p == '/') { if (++slash > 1) return 0; continue; }
++		if (slash) {
++			if (*p >= '0' && *p <= '9') {
++				prefix = (prefix < 0 ? 0 : prefix) * 10 + (*p - '0');
++				if (prefix > 128) return 0;
++				continue;
++			}
++			return 0;
++		}
++		if ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') ||
++		    (*p >= 'A' && *p <= 'F')) continue;
++		if (*p == ':') { colon++; continue; }
++		return 0;
++	}
++	if (slash && prefix < 0) return 0;
++	return (colon >= 2);
++}
++
++/* an IPv4 or IPv6 host/cidr (either family). */
++static int rfw_valid_ip(const char *s)
++{
++	return (s && strchr(s, ':')) ? rfw_valid_cidr6(s) : rfw_valid_cidr(s);
++}
++
++/* an address range "A-B", both ends the same family. Emitted to a hash:ip set
++ * (ipset accepts a range on add for hash:ip) or an -m iprange match. */
++static int rfw_valid_range(const char *s)
++{
++	char buf[92], *dash;
++	if (!s || strlen(s) >= sizeof(buf)) return 0;
++	strlcpy(buf, s, sizeof(buf));
++	dash = strchr(buf, '-');
++	if (!dash) return 0;
++	*dash = 0;
++	/* both ends must validate and be the same family (both have ':' or neither) */
++	if (!!strchr(buf, ':') != !!strchr(dash + 1, ':')) return 0;
++	return rfw_valid_ip(buf) && rfw_valid_ip(dash + 1);
++}
++
++/* a MAC address aa:bb:cc:dd:ee:ff (hex, colon-separated, 6 octets). */
++static int rfw_valid_mac(const char *s)
++{
++	int oct = 0, hexn = 0;
++	const char *p;
++	if (!s || strlen(s) != 17) return 0;
++	for (p = s; *p; p++) {
++		if (*p == ':') {
++			if (hexn != 2) return 0;
++			oct++; hexn = 0;
++			continue;
++		}
++		if (!isxdigit((int)*p)) return 0;
++		if (++hexn > 2) return 0;
++	}
++	return (oct == 5 && hexn == 2);
++}
++
++/* an FQDN for a dnsmasq ipset= directive: labels of [A-Za-z0-9-], dot-joined,
++ * no leading/trailing dot or hyphen per label. It flows into a single-quoted
++ * dnsmasq config token; the charset here also keeps it shell-safe. */
++static int rfw_valid_fqdn(const char *s)
++{
++	int label = 0, total = 0;
++	const char *p;
++	if (!s || !*s) return 0;
++	for (p = s; *p; p++, total++) {
++		if (total > 253) return 0;
++		if (*p == '.') {
++			if (label == 0) return 0;          /* empty label / leading dot */
++			label = 0;
++			continue;
++		}
++		if (*p == '-') {
++			if (label == 0) return 0;          /* leading hyphen in label */
++			label++;
++			continue;
++		}
++		if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
++		    (*p >= '0' && *p <= '9')) { label++; continue; }
++		return 0;
++	}
++	return (label > 0);                                 /* no trailing dot */
++}
++
++/* country code: exactly two ascii letters (references Warden's rw_g_<cc>). */
++static int rfw_valid_cc(const char *s)
++{
++	return s && strlen(s) == 2 && isalpha((int)s[0]) && isalpha((int)s[1]);
++}
++
++/* a port list/range for a service object: comma list of N or LOW:HIGH,
++ * 1..65535, LOW<HIGH. Charset [0-9,:] only; emitted into -m multiport / --dport.
++ * Returns 1 valid. Empty is valid (means "all ports"). */
++static int rfw_valid_ports(const char *s)
++{
++	const char *p;
++	int cur = -1, lo = -1, incolon = 0, ndigit = 0;
++	if (!s) return 0;
++	if (!*s) return 1;
++	if (strlen(s) > 128) return 0;
++	for (p = s; ; p++) {
++		if (*p >= '0' && *p <= '9') {
++			cur = (cur < 0 ? 0 : cur) * 10 + (*p - '0');
++			if (cur > 65535) return 0;
++			ndigit++;
++			continue;
++		}
++		if (*p == ':') {
++			if (incolon || ndigit == 0 || cur < 1) return 0;
++			lo = cur; cur = -1; ndigit = 0; incolon = 1;
++			continue;
++		}
++		if (*p == ',' || *p == 0) {
++			if (ndigit == 0 || cur < 1) return 0;
++			if (incolon && !(lo >= 1 && cur <= 65535 && lo < cur)) return 0;
++			if (*p == 0) break;
++			cur = -1; lo = -1; ndigit = 0; incolon = 0;
++			continue;
++		}
++		return 0;
++	}
++	return 1;
++}
++
++/* service protocol token. */
++static int rfw_valid_proto(const char *s)
++{
++	return s && (!strcmp(s, "tcp") || !strcmp(s, "udp") ||
++	             !strcmp(s, "both") || !strcmp(s, "icmp"));
++}
++
++/* rule direction / action tokens. */
++static int rfw_valid_dir(const char *s)
++{
++	return s && (!strcmp(s, "in") || !strcmp(s, "out") || !strcmp(s, "fwd"));
++}
++static int rfw_valid_action(const char *s)
++{
++	return s && (!strcmp(s, "accept") || !strcmp(s, "drop") ||
++	             !strcmp(s, "reject") || !strcmp(s, "log"));
++}
++static int rfw_valid_zpol_action(const char *s)
++{
++	return s && (!strcmp(s, "accept") || !strcmp(s, "drop") || !strcmp(s, "reject"));
++}
++
++/* an interface token for a zone. Kernel ifnames + a trailing '+' wildcard
++ * (iptables -i/-o accept "tun+"). Charset [A-Za-z0-9._+], '+' only last. */
++static int rfw_valid_iface(const char *s)
++{
++	const char *p;
++	size_t n = strlen(s ? s : "");
++	if (!s || n == 0 || n > IFNAMSIZ) return 0;
++	for (p = s; *p; p++) {
++		if (*p == '+') { if (p[1]) return 0; continue; }   /* wildcard, last only */
++		if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
++		      (*p >= '0' && *p <= '9') || *p == '.' || *p == '_'))
++			return 0;
++	}
++	return 1;
++}
++
++/* ---- NOTE: the remainder of the engine is built in the next focused pass ----
++ * Still to add below (chain generation is the ORDERING-CRITICAL part and gets
++ * its own careful pass + the pre-build security review):
++ *   - record iterators over reaper_fw_obj/grp/svc/zone/zpol/rules
++ *   - object -> ipset materialization (host/cidr/range/mac/fqdn; geo -> Warden
++ *     rw_g_<cc> reference per S5) incl. dnsmasq ipset= plumbing for fqdn
++ *   - rfw_gen_apply(): REAPER_FWI/FWF/FWO build with the S1 protective head,
++ *     zone -i/-o matching, service/object matches, zpol matrix, final default;
++ *     dual-stack; fc flush; teardown-before-build (S4)
++ *   - anti-lockout preflight keyed off the arming session's REMOTE_ADDR (S1/S3)
++ *   - commit-confirm state machine: start_reaper_fw (apply+arm), reaper_fw_confirm,
++ *     reaper_fw_rollback; /jffs lastgood; cru deadline; atomic armed CAS;
++ *     fail-open last resort (S3); file_lock("firewall") (S6)
++ *   - dryrun mode (emit the exact iptables lines, no exec) for the CGI preview
++ *   - entry points + rc.h decls + services.c notify_rc + rc/Makefile OBJS
++ */
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index 20a10525f9..bad7dbe69f 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -62,6 +62,12 @@ static void rexport_gen(void)
+ 	  "IDX=\"$(nvram get reaper_export_index)\"\n"
+ 	  "SRC=\"$(nvram get reaper_export_source)\"\n"
+ 	  "MASK=\"$(nvram get reaper_export_maskmac)\"\n"
++	  /* Belt-and-suspenders for the curl-config build far below. httpd rejects a
++	   * double quote in these fields (rexport_val_ok() in web.c), but nvram can
++	   * also be set from a root shell, and a quote here would close the quoted
++	   * value in /tmp/rexport.cfg and let the rest be read by curl as extra
++	   * directives - `output = <path>` among them. Refuse the run instead. */
++	  "case \"$URL$TOKEN$IDX$SRC\" in *'\"'*) logger -t rexport \"illegal character in export settings - refusing\"; exit 0 ;; esac\n"
+ 	  "NOW=$(date +%s)\n"
+ 	  "HOST=\"$(nvram get productid)\"\n"
+ 	  "STAT=/tmp/rexport.status\n"
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 044af5d496..1abfeb8258 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -293,5 +293,14 @@ void start_rwatch(void)
+ 	/* cru convention (rc/wireguard.c): schedule + command are ONE quoted arg */
+ 	snprintf(line, sizeof(line), "*/%d * * * * sh %s", iv, RWATCH_SH);
+ 	eval("cru", "a", "rwatch", line);
+-	logmessage("rwatch", "watchdog armed (probe every %d min; incident dumps in /jffs/rwatch)", iv);
++	/* Do NOT name a single dump path here: rwatch_gen() relocates DUMPROOT to
++	 * <durable-store>/rwatch when reaper_store selects jffs/usb AND 'watch' is
++	 * opted into reaper_store_ds, so a hardcoded "/jffs/rwatch" is wrong on
++	 * exactly the boxes that have durable storage configured. It also reads as
++	 * "the mirror lives here", which it does not - the syslog mirror is
++	 * <durable-store>/syslog.mirror, a different path again. Both of those
++	 * misled a live investigation on 2026-08-10. */
++	logmessage("rwatch", "watchdog armed (probe every %d min; incident dumps in "
++			    "/jffs/rwatch, or <durable store>/rwatch when reaper_store "
++			    "is set and 'watch' is enabled)", iv);
+ }
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index bcb2a431b9..ea6fe4c76a 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -487,11 +487,89 @@ static const char *SCRUB_FRAG[] = {
+ 	NULL
+ };
+ 
++/* ------------------------------------------------------------------ */
++/* ASUS stores Wi-Fi credentials in '>'-delimited TUPLES, not as        */
++/* key=value, so the assignment scrubber below cannot see them:         */
++/*   apg1_security = <3>psk2>aes>ThePassphrase>1<13>psk2>aes>...        */
++/*   wl0_security  = ...>sae>aes+gcmp256>ThePassphrase>...              */
++/* The field AFTER <auth-mode> and <crypto> is the passphrase. The LAB  */
++/* build's exec tool can cat these straight out of nvram, which is how  */
++/* a live PSK reached an operator transcript on 2026-08-10 despite the  */
++/* structural scrub at the tools/call choke point.                      */
++/* Rule: at a '>' or '<' boundary, an auth-mode token followed by '>'   */
++/* means "step over the crypto field, redact the one after it".         */
++/* Longest tokens first so psk2sae/psk2 are not shadowed by psk; the    */
++/* trailing-'>' requirement makes the ordering belt-and-suspenders.     */
++/* ------------------------------------------------------------------ */
++
++static const char *SEC_AUTH[] = {
++	"psk2sae", "pskpsk2", "wpa2wpa3", "psk2", "sae", "wpa3", "wpa2",
++	"wpa", "psk", "radius", NULL
++};
++
++static void sb_scrub_sec_tuples(sbuf_t *in)
++{
++	sbuf_t out;
++	size_t i = 0;
++
++	if (!in->p || !in->len)
++		return;
++	sb_init(&out);
++	if (!out.p) {
++		/* same fail-closed contract as sb_scrub_secrets() */
++		in->len = 0;
++		in->p[0] = 0;
++		in->truncated = 0;
++		sb_puts(in, "(scrub unavailable - output withheld)");
++		return;
++	}
++	while (i < in->len) {
++		int f, matched = 0;
++		int at_bound = (i == 0 || in->p[i - 1] == '>' || in->p[i - 1] == '<');
++
++		for (f = 0; at_bound && SEC_AUTH[f] && !matched; f++) {
++			size_t fl = strlen(SEC_AUTH[f]);
++			size_t j;
++
++			if (i + fl >= in->len ||
++			    strncasecmp(in->p + i, SEC_AUTH[f], fl) != 0 ||
++			    in->p[i + fl] != '>')
++				continue;
++			/* step across the crypto field to its terminating '>' */
++			j = i + fl + 1;
++			while (j < in->len && in->p[j] != '>' &&
++			       in->p[j] != '<' && in->p[j] != '\n')
++				j++;
++			if (j >= in->len || in->p[j] != '>')
++				continue;		/* malformed - leave verbatim */
++			j++;
++			sb_add(&out, in->p + i, j - i);	/* "<auth>><crypto>>" */
++			sb_puts(&out, "<redacted>");
++			while (j < in->len && in->p[j] != '>' &&
++			       in->p[j] != '<' && in->p[j] != '\n')
++				j++;			/* drop the passphrase */
++			i = j;
++			matched = 1;
++		}
++		if (!matched) {
++			sb_add(&out, in->p + i, 1);
++			i++;
++		}
++	}
++	sb_free(in);
++	*in = out;
++}
++
+ static void sb_scrub_secrets(sbuf_t *in)
+ {
+ 	sbuf_t out;
+ 	size_t i = 0;
+ 
++	if (!in->p || !in->len)
++		return;
++	/* tuple-shaped credentials first: they carry no [:=] separator and so
++	 * are invisible to the assignment pass below */
++	sb_scrub_sec_tuples(in);
+ 	if (!in->p || !in->len)
+ 		return;
+ 	sb_init(&out);
+@@ -707,6 +785,18 @@ static void tool_firewall(sbuf_t *s)
+ {
+ 	sb_puts(s, "{\"filter\":");
+ 	{ sbuf_t t; sb_init(&t); sb_addcmd(&t, "iptables -S 2>/dev/null", 32768); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	/* FIREWALL-PLAN Phase 0: ip6tables was invisible to this tool (the plan's
++	 * "IPv6 is second-class" visibility gap) and -S carries no counters, so a
++	 * hit-count question needed the diag exec path.  filter6 mirrors filter for
++	 * the v6 table; counters/counters6 are -nvxL (exact packet/byte counts,
++	 * chain policies, per-rule hits) with tighter caps -- this tool also feeds
++	 * get_settings_audit, which shares the 256 KB envelope. */
++	sb_puts(s, ",\"filter6\":");
++	{ sbuf_t t; sb_init(&t); sb_addcmd(&t, "ip6tables -S 2>/dev/null", 16384); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, ",\"counters\":");
++	{ sbuf_t t; sb_init(&t); sb_addcmd(&t, "iptables -nvxL 2>/dev/null", 49152); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
++	sb_puts(s, ",\"counters6\":");
++	{ sbuf_t t; sb_init(&t); sb_addcmd(&t, "ip6tables -nvxL 2>/dev/null", 24576); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
+ 	sb_puts(s, ",\"nat_forwards\":");
+ 	{ sbuf_t t; sb_init(&t); sb_addcmd(&t, "iptables -t nat -S 2>/dev/null | grep -Ei 'DNAT|VSERVER|dport'", 16384); sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
+ 	sb_puts(s, "}");
+@@ -1013,7 +1103,7 @@ static const char *TOOLS_CATALOG =
+ "{\"name\":\"get_clients\",\"description\":\"Connected clients from ARP and DHCP leases.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_qos\",\"description\":\"QoS engine, type, and bandwidth configuration.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_traffic\",\"description\":\"Traffic Analyzer snapshot for a window.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"string\",\"enum\":[\"live\",\"m5\",\"hour\",\"day\",\"month\"]}}}},"
+-"{\"name\":\"get_firewall_summary\",\"description\":\"iptables filter rules and NAT forwards summary.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_firewall_summary\",\"description\":\"Firewall summary: iptables + ip6tables filter rules, per-rule hit counters (packets/bytes), and NAT forwards.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_nvram\",\"description\":\"Curated non-secret configuration keys (secrets are never included).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_logs\",\"description\":\"Recent system log lines, secrets redacted.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_settings_audit\",\"description\":\"Composed security-posture snapshot for auditing and explanation.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}";
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 0c73d44319..616e3652c4 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3149,6 +3149,20 @@ struct nvram_tuple router_defaults[] = {
+ 	/* reaper v1.8.8: rwatch - WAN/DNS/Warden/accelerator watchdog (rc/rwatch.c). Cron probe, no daemon; first-hop only (no phone-home); syslog transitions + /jffs/rwatch incident dumps. */
+ 	{ "rwatch_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (default ON - diagnostics only, no data-path effect) */
+ 	{ "rwatch_iv", "5", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* probe interval, minutes (1-30) */
++	/* reaper v2.3.3: Native Firewall suite Phase 1 - object-model custom rules engine
++	 * (rc/reaper_fw.c builds REAPER_FWI/FWF/FWO from the ruleset, dual-stack, ipset-backed,
++	 * re-applied from the start_firewall hook alongside GK/Warden). No listener; enforcement
++	 * = iptables/ip6tables/ipset. GEO objects REFERENCE Warden's country sets (rwarden_geo) -
++	 * the engine never creates a parallel country set; overlap is surfaced in the UI. Big
++	 * lists spill to /jffs when nvram-pressured. */
++	{ "reaper_fw_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (default off) */
++	{ "reaper_fw_confirm", "60", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* commit-confirm auto-revert seconds (0 = off; the anti-lockout net, keep >0) */
++	{ "reaper_fw_obj", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address objects: <name>type>value>comment ; type=host|cidr|range|mac|fqdn|geo (geo value=CC ref to Warden) */
++	{ "reaper_fw_grp", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address groups: <name>member,member,...>comment (members = object names) */
++	{ "reaper_fw_svc", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* service objects: <name>proto>ports>comment ; proto=tcp|udp|both|icmp, ports=list/range */
++	{ "reaper_fw_zone", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zones: <name>iface,iface,...>comment (br0, vlanN, tun+, wgc+, eth0=WAN...) */
++	{ "reaper_fw_zpol", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zone default-policy matrix: <srczone>dstzone>action (action=accept|drop|reject) */
++	{ "reaper_fw_rules", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* committed policy: <en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment (dir=in|out|fwd) */
+ 	/* reaper v1.9.1: Device Identity Manager Rung B - unified long-term storage
+ 	 * (Reaper_Storage.asp, System Log group). reaper_store = durable location for
+ 	 * opt-in history datasets: "" / "ram" = RAM only (default, volatile), "jffs" =
+diff --git a/release/src/router/www/Advanced_IPTV_Content.asp b/release/src/router/www/Advanced_IPTV_Content.asp
+index b78c7ffe05..263ee1cae6 100644
+--- a/release/src/router/www/Advanced_IPTV_Content.asp
++++ b/release/src/router/www/Advanced_IPTV_Content.asp
+@@ -223,7 +223,8 @@ function initial(){
+ }
+ 
+ function get_cloud_profiles(){
+-	$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/iptv_profile.json",
++	$.when({}).done(  /* reaper de-cloud: no browser->ASUS-CDN request. IPTV ISP profiles were fetched
++		   from ASUS; bundled/manual profiles only. */
+ 		function(data){
+ 			Object.keys(data).forEach(function(profile_name) {
+ 				var newProfile = {};
+diff --git a/release/src/router/www/Advanced_System_Content.asp b/release/src/router/www/Advanced_System_Content.asp
+index 9f43001b00..3485fc6be8 100644
+--- a/release/src/router/www/Advanced_System_Content.asp
++++ b/release/src/router/www/Advanced_System_Content.asp
+@@ -1882,17 +1882,8 @@ function updatDNSListOnline(){
+ 				return local_data[e];
+ 		});
+ 
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json",
+-			function(cloud_data){
+-				if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-					if(Object.keys(cloud_data).length > 0){
+-						DNSService = Object.keys(cloud_data).map(function(e){
+-							return cloud_data[e];
+-						});
+-					}
+-				}
+-			}
+-		);
++		/* reaper de-cloud: no browser->ASUS-CDN request. The bundled
++		   /ajax/DNS_List.json above is authoritative. */
+ 	});
+ }
+ 
+diff --git a/release/src/router/www/Advanced_WANPort_Content.asp b/release/src/router/www/Advanced_WANPort_Content.asp
+index 9ecfcb1571..efc3200e0c 100644
+--- a/release/src/router/www/Advanced_WANPort_Content.asp
++++ b/release/src/router/www/Advanced_WANPort_Content.asp
+@@ -1890,17 +1890,8 @@ function updatDNSListOnline(){
+ 				return local_data[e];
+ 		});
+ 
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json",
+-			function(cloud_data){
+-				if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-					if(Object.keys(cloud_data).length > 0){
+-						DNSService = Object.keys(cloud_data).map(function(e){
+-							return cloud_data[e];
+-						});
+-					}
+-				}
+-			}
+-		);
++		/* reaper de-cloud: no browser->ASUS-CDN request. The bundled
++		   /ajax/DNS_List.json above is authoritative. */
+ 	});
+ }
+ 
+diff --git a/release/src/router/www/Advanced_WAN_Content.asp b/release/src/router/www/Advanced_WAN_Content.asp
+index eafd33bd31..265a39171e 100644
+--- a/release/src/router/www/Advanced_WAN_Content.asp
++++ b/release/src/router/www/Advanced_WAN_Content.asp
+@@ -308,17 +308,6 @@ function initial(){
+ 					$("#dot_presets_tr").hide();
+ 			};
+ 			gen_dotPresets(local_data);
+-/*
+-			$.getJSON("http://nw-dlcdnet.asus.com/plugin/js/dot-servers.json",
+-				function(cloud_data){
+-					if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-						if(Object.keys(cloud_data).length > 0){
+-							gen_dotPresets(cloud_data);
+-						}
+-					}
+-				}
+-			);
+-*/
+ 		});
+ 	}
+ 	else{
+@@ -2184,20 +2173,6 @@ function updatDNSListOnline(){
+ 				return local_data[e];
+ 		});
+ 		Update_DNS_status();
+-/*
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json",
+-			function(cloud_data){
+-				if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-					if(Object.keys(cloud_data).length > 0){
+-						DNSService = Object.keys(cloud_data).map(function(e){
+-							return cloud_data[e];
+-						});
+-						Update_DNS_status();
+-					}
+-				}
+-			}
+-		);
+-*/
+ 	});
+ }
+ 
+diff --git a/release/src/router/www/GameProfile.asp b/release/src/router/www/GameProfile.asp
+index 2ac1cf8c54..70184610f9 100644
+--- a/release/src/router/www/GameProfile.asp
++++ b/release/src/router/www/GameProfile.asp
+@@ -154,10 +154,12 @@ function collectGameList(){
+ 
+ function updatProfileOnline(){
+ 	$.ajax({
+-		url: 'https://nw-dlcdnet.asus.com/plugin/js/gameProfile.json',
++		/* reaper de-cloud: no browser->ASUS-CDN request. this fetched the game
++		   profile DB from ASUS and, on failure, re-armed itself every 5
++		   seconds forever. Now reads a bundled empty catalogue; no retry. */
++		url: '/ajax/gameProfile.json',
+ 		dataType: 'json', 
+ 		error: function(xhr) {
+-			setTimeout("updatProfileOnline();", 5000);
+ 		},
+ 		success: function(response){
+ 			gameProfile.profile = Object.keys(response).map(function(e){
+diff --git a/release/src/router/www/Main_GameServer_Content.asp b/release/src/router/www/Main_GameServer_Content.asp
+index 1cfa3d3d69..bc206fec40 100644
+--- a/release/src/router/www/Main_GameServer_Content.asp
++++ b/release/src/router/www/Main_GameServer_Content.asp
+@@ -179,20 +179,10 @@
+ 	}
+ 
+ 	var gameList = {}
+-/*
+-	$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/gameList.json", function(data){
+-		gameList = data;
+-		setTimeout(genGameListOption, 100);
+-	})
+-	.fail(function() {
+-*/
+ 		$.getJSON("/ajax/gameList.json", function(data){
+ 			gameList = data;
+ 			setTimeout(genGameListOption, 100);
+-		})
+-/*
+-  	});
+-*/
++		});
+ 	function rawToTable(rawData){
+ 		var parseArray = [];
+ 		for(var i = 0; i < rawData.length; i += 1) {
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+new file mode 100644
+index 0000000000..2353b781be
+--- /dev/null
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -0,0 +1,786 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     reaper v2.3.3: Native Firewall suite, Phase 0. One hub page replacing the four
++     stock firewall tabs (General / Network Services / URL / Keyword) with native
++     equivalents that reuse the stock nvram + restart_firewall apply, plus two new
++     read-only views: Status (live iptables/ip6tables chains + hit counters, chain
++     ownership) and Logging (fw_log_x control + a firewall drop-log viewer). Status
++     and Logging read reaper_fw.cgi; the four filter tabs write through the stock
++     start_apply.htm path. Custom rules engine / egress / commit-confirm are Phase 1+
++     (docs/FIREWALL-PLAN.md), not in this rung. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RFW_0#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418; --panel-3:#191920;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06); --line-mid:rgba(255,255,255,.12);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 60px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++.lede{max-width:82ch;margin:6px 0 16px}
++.lede b{color:var(--bone);font-weight:600}
++.wins{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:1120px}
++.win{font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone-dim);border-radius:8px;padding:8px 15px;cursor:pointer}
++.win:hover{border-color:var(--line)}
++.win.on{color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent}
++.tab{display:none}
++.tab.on{display:block}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:13px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--line-soft);color:var(--bone);display:flex;align-items:center;gap:10px}
++.card>h2 .hint{font-family:var(--body);font-weight:400;letter-spacing:0;text-transform:none;font-size:11.5px;color:var(--steel);margin-left:auto}
++.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:9px 0}
++.row .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);min-width:150px}
++.grid2{display:grid;grid-template-columns:180px 1fr;gap:11px 14px;align-items:center}
++.grid2 .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid var(--line-mid);cursor:pointer;display:inline-block;vertical-align:middle;flex:none}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.tg.on{background:#33333a}
++.tg.on::after{left:21px;background:var(--bone)}
++input.fld,select.fld{width:100%;max-width:520px;background:var(--panel-3);border:1px solid var(--line-mid);border-radius:7px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 11px}
++input.fld.s{max-width:180px}
++input.fld:focus,select.fld:focus{outline:2px solid rgba(225,6,0,.4);outline-offset:1px;border-color:var(--crimson-deep)}
++.fld.mono{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;letter-spacing:.02em}
++.suffix{font-size:12px;color:var(--steel)}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border:1px solid transparent;border-radius:8px;padding:9px 18px;cursor:pointer}
++.btn.ghost{background:transparent;border:1px solid var(--line-mid);color:var(--bone-dim)}
++.btn.ghost:hover{border-color:var(--crimson-deep);color:var(--bone)}
++.btn.sm{padding:6px 13px;font-size:11px}
++.btn[disabled]{opacity:.4;cursor:not-allowed}
++.note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:8px}
++.note.warn{color:var(--amber)}
++.saved{font-size:12px;color:var(--jade);margin-left:10px}
++.saved.err{color:var(--danger)}
++table.rt{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px}
++table.rt th{font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;color:var(--steel);text-align:left;padding:7px 10px;border-bottom:1px solid var(--line-soft)}
++table.rt td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim);vertical-align:top}
++table.rt tr:last-child td{border-bottom:0}
++table.rt .del{color:var(--crimson);cursor:pointer;font-weight:600;border:1px solid var(--line-mid);border-radius:6px;padding:3px 9px;background:transparent;font-size:11px}
++table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
++.addrow{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:12px}
++.addrow .fg{display:flex;flex-direction:column;gap:4px}
++.addrow .fg .fl{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.days{display:flex;gap:6px;flex-wrap:wrap}
++.days label{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--bone-dim);border:1px solid var(--line-mid);border-radius:6px;padding:5px 9px;cursor:pointer}
++.chaincard{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;margin-bottom:10px;overflow:hidden}
++.chaincard .ch{display:flex;align-items:center;gap:10px;padding:9px 12px;background:#111116;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
++.chaincard .ch .nm{font-family:var(--hdr);font-weight:600;font-size:13px;color:var(--bone);letter-spacing:.03em}
++.chaincard .ch .pol{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--steel)}
++.chaincard .ch .pol b{color:var(--bone-dim)}
++.owner{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;border-radius:4px;padding:2px 7px;margin-left:auto}
++.owner.core{border:1px solid var(--line-mid);color:var(--bone-dim)}
++.owner.warden{border:1px solid var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10)}
++.owner.gk{border:1px solid #4a6b8a;color:#a9cde8}
++.owner.vpn{border:1px solid #6a5a9a;color:#c3b6ea}
++.owner.sdn{border:1px solid #3d7a5c;color:#9fd8bb}
++.owner.ctrl{border:1px solid #8a7a3a;color:#e0cf8b}
++.owner.other{border:1px solid var(--line-soft);color:var(--steel)}
++table.ipt{width:100%;border-collapse:collapse;font-family:ui-monospace,Consolas,monospace;font-size:11px}
++table.ipt th{text-align:left;color:var(--steel);font-weight:400;padding:5px 9px;border-bottom:1px solid var(--line-soft)}
++table.ipt td{padding:4px 9px;border-bottom:1px solid rgba(255,255,255,.03);color:var(--bone-dim);white-space:nowrap}
++table.ipt td.n{text-align:right;color:var(--bone)}
++table.ipt td.hit{color:var(--amber)}
++.statgrid{display:flex;gap:22px;flex-wrap:wrap}
++.statgrid .kv{display:flex;flex-direction:column;gap:2px;min-width:96px}
++.statgrid .k{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
++.statgrid .v{font-family:var(--hdr);font-weight:600;font-size:17px;color:var(--bone)}
++.statgrid .v.on{color:var(--jade)}
++.statgrid .v.off{color:var(--steel)}
++.cols2{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:1120px}
++@media(max-width:900px){.cols2{grid-template-columns:1fr}}
++.logtbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
++.logtbl th{font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:10px;color:var(--steel);text-align:left;padding:6px 9px;border-bottom:1px solid var(--line-soft)}
++.logtbl td{padding:5px 9px;border-bottom:1px solid rgba(255,255,255,.03);color:var(--bone-dim);font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:nowrap}
++.logtbl td.cls{font-family:var(--body)}
++.cbadge{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;border-radius:4px;padding:1px 6px}
++.cbadge.drop{border:1px solid var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10)}
++.cbadge.accept{border:1px solid #3d7a5c;color:#9fd8bb}
++.cbadge.warden{border:1px solid var(--crimson-deep);color:#f0b6b2}
++.muted{color:var(--steel)}
++.hidden{display:none}
++.spin{color:var(--steel);font-size:12px;padding:10px 2px}
++</style>
++</head>
++<body>
++<div class="pagehead">
++  <h1><#RFW_0#></h1>
++  <span class="statuspill off" id="pill">&nbsp;</span>
++</div>
++<p class="lede"><#RFW_1#></p>
++
++<div class="wins" id="wins">
++  <div class="win" data-t="status"><#RFW_2#></div>
++  <div class="win" data-t="general"><#menu5_1_1#></div>
++  <div class="win" data-t="netsvc"><#menu5_5_4#></div>
++  <div class="win" data-t="url"><#menu5_5_2#></div>
++  <div class="win" data-t="keyword"><#menu5_5_5#></div>
++  <div class="win" data-t="logging"><#RFW_3#></div>
++</div>
++
++<!-- ============================= STATUS ============================= -->
++<div class="tab" id="tab_status">
++  <div class="card">
++    <h2><#RFW_2#><span class="hint" id="st_hint">&nbsp;</span></h2>
++    <div class="statgrid" id="st_grid"><div class="spin"><#RFW_89#></div></div>
++    <div class="row" style="margin-top:14px">
++      <button class="btn ghost sm" id="st_refresh"><#RFW_19#></button>
++      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
++        <span class="tg" id="st_auto"></span><span class="suffix"><#RFW_20#></span></label>
++    </div>
++    <p class="note"><#RFW_18#></p>
++    <p class="note"><#RFW_24#></p>
++  </div>
++  <div class="cols2">
++    <div class="card" style="max-width:none"><h2><#RFW_12#></h2><div id="st_v4"><div class="spin"><#RFW_89#></div></div></div>
++    <div class="card" style="max-width:none"><h2><#RFW_13#></h2><div id="st_v6"><div class="spin"><#RFW_89#></div></div></div>
++  </div>
++</div>
++
++<!-- ============================= GENERAL ============================= -->
++<div class="tab" id="tab_general">
++  <div class="card">
++    <h2><#menu5_1_1#></h2>
++    <p class="note"><#RFW_45#></p>
++    <div class="grid2" style="margin-top:12px">
++      <span class="lbl"><#RFW_46#></span><span class="tg" data-nv="fw_enable_x"></span>
++      <span class="lbl"><#RFW_47#></span><span class="tg" data-nv="fw_dos_x"></span>
++      <span class="lbl"><#RFW_49#></span><span class="tg" data-nv="misc_ping_x"></span>
++      <span class="lbl"><#RFW_48#></span>
++      <select class="fld s" id="g_log">
++        <option value="none"><#RFW_100#></option>
++        <option value="drop">Drop</option>
++        <option value="accept">Accept</option>
++        <option value="both">Both</option>
++      </select>
++    </div>
++    <div class="row" style="margin-top:14px">
++      <button class="btn" id="g_apply"><#RFW_62#></button><span class="saved hidden" id="g_saved"></span>
++    </div>
++  </div>
++
++  <div class="card">
++    <h2><#RFW_7#><span class="hint"><#RFW_50#></span></h2>
++    <div class="row"><span class="lbl"><#RFW_50#></span><span class="tg" data-nv="fw_wl_enable_x" id="g_wl"></span></div>
++    <table class="rt" id="v4_tbl"><thead><tr><th><#RFW_52#></th><th><#RFW_53#></th><th><#RFW_54#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_52#></span><input class="fld s" id="v4_src" placeholder="0.0.0.0"></div>
++      <div class="fg"><span class="fl"><#RFW_53#></span><input class="fld s" id="v4_port" placeholder="80 or 80:88"></div>
++      <div class="fg"><span class="fl"><#RFW_54#></span><select class="fld s" id="v4_proto"><option>TCP</option><option>UDP</option></select></div>
++      <button class="btn ghost sm" id="v4_add"><#RFW_59#></button>
++    </div>
++  </div>
++
++  <div class="card">
++    <h2><#RFW_8#></h2>
++    <p class="note"><#RFW_55#></p>
++    <div class="row"><span class="lbl"><#RFW_8#></span><span class="tg" data-nv="ipv6_fw_enable" id="g_v6"></span></div>
++    <table class="rt" id="v6_tbl"><thead><tr><th><#RFW_58#></th><th><#RFW_56#></th><th><#RFW_57#></th><th><#RFW_41#></th><th><#RFW_54#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_58#></span><input class="fld s" id="v6_desc"></div>
++      <div class="fg"><span class="fl"><#RFW_56#></span><input class="fld s" id="v6_rip" placeholder="2001::/64"></div>
++      <div class="fg"><span class="fl"><#RFW_57#></span><input class="fld s" id="v6_lip"></div>
++      <div class="fg"><span class="fl"><#RFW_41#></span><input class="fld s" id="v6_port"></div>
++      <div class="fg"><span class="fl"><#RFW_54#></span><select class="fld s" id="v6_proto"><option>TCP</option><option>UDP</option><option>BOTH</option><option>OTHER</option></select></div>
++      <button class="btn ghost sm" id="v6_add"><#RFW_59#></button>
++    </div>
++    <div class="row" style="margin-top:14px">
++      <button class="btn" id="gr_apply"><#RFW_62#></button><span class="saved hidden" id="gr_saved"></span>
++    </div>
++  </div>
++</div>
++
++<!-- ============================= NETWORK SERVICES ============================= -->
++<div class="tab" id="tab_netsvc">
++  <div class="card">
++    <h2><#menu5_5_4#></h2>
++    <p class="note"><#RFW_68#></p>
++    <div class="grid2" style="margin-top:12px">
++      <span class="lbl"><#RFW_69#></span><span class="tg" data-nv="fw_lw_enable_x" id="n_en"></span>
++      <span class="lbl"><#RFW_70#></span>
++      <select class="fld s" id="n_mode"><option value="DROP"><#RFW_71#></option><option value="ACCEPT"><#RFW_72#></option></select>
++    </div>
++    <div class="note warn hidden" id="n_ntp"><#General_x_SystemTime_syncNTP#></div>
++  </div>
++
++  <div class="card">
++    <h2><#FirewallConfig_LWFilterList_groupitemdesc#></h2>
++    <table class="rt" id="lw_tbl"><thead><tr><th><#RFW_52#></th><th>Src <#RFW_41#></th><th><#RFW_73#></th><th>Dst <#RFW_41#></th><th><#RFW_54#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_52#></span><input class="fld s" id="lw_sip"></div>
++      <div class="fg"><span class="fl">Src <#RFW_41#></span><input class="fld s" id="lw_sport"></div>
++      <div class="fg"><span class="fl"><#RFW_73#></span><input class="fld s" id="lw_dip"></div>
++      <div class="fg"><span class="fl">Dst <#RFW_41#></span><input class="fld s" id="lw_dport"></div>
++      <div class="fg"><span class="fl"><#RFW_54#></span><select class="fld s" id="lw_proto"><option>TCP</option><option>TCP SYN</option><option>TCP ACK</option><option>TCP FIN</option><option>TCP RST</option><option>TCP URG</option><option>TCP PSH</option><option>UDP</option></select></div>
++      <button class="btn ghost sm" id="lw_add"><#RFW_59#></button>
++    </div>
++  </div>
++
++  <div class="card">
++    <h2><#RFW_75#></h2>
++    <div class="days" id="lw_days"></div>
++    <div class="grid2" style="margin-top:14px;grid-template-columns:180px 1fr">
++      <span class="lbl"><#RFW_76#></span>
++      <span><input class="fld s" id="lw_wd1" maxlength="5" placeholder="00:00" style="max-width:90px"> &mdash; <input class="fld s" id="lw_wd2" maxlength="5" placeholder="23:59" style="max-width:90px"></span>
++      <span class="lbl"><#RFW_77#></span>
++      <span><input class="fld s" id="lw_we1" maxlength="5" placeholder="00:00" style="max-width:90px"> &mdash; <input class="fld s" id="lw_we2" maxlength="5" placeholder="23:59" style="max-width:90px"></span>
++      <span class="lbl"><#RFW_74#></span><input class="fld s" id="lw_icmp" maxlength="64" placeholder="0 8">
++    </div>
++    <div class="row" style="margin-top:14px">
++      <button class="btn" id="n_apply"><#RFW_62#></button><span class="saved hidden" id="n_saved"></span>
++    </div>
++  </div>
++</div>
++
++<!-- ============================= URL FILTER ============================= -->
++<div class="tab" id="tab_url">
++  <div class="card">
++    <h2><#menu5_5_2#></h2>
++    <p class="note"><#RFW_80#></p>
++    <div class="grid2" style="margin-top:12px">
++      <span class="lbl"><#RFW_81#></span><span class="tg" data-nv="url_enable_x" id="u_en"></span>
++      <span class="lbl"><#RFW_70#></span>
++      <select class="fld s" id="u_mode"><option value="0"><#RFW_72#></option><option value="1"><#RFW_71#></option></select>
++    </div>
++  </div>
++  <div class="card">
++    <h2><#RFW_82#></h2>
++    <table class="rt" id="url_tbl"><thead><tr><th><#RFW_83#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_83#></span><input class="fld" id="url_kw" maxlength="64" style="min-width:280px"></div>
++      <button class="btn ghost sm" id="url_add"><#RFW_59#></button>
++    </div>
++    <div class="row" style="margin-top:14px">
++      <button class="btn" id="u_apply"><#RFW_62#></button><span class="saved hidden" id="u_saved"></span>
++    </div>
++  </div>
++</div>
++
++<!-- ============================= KEYWORD FILTER ============================= -->
++<div class="tab" id="tab_keyword">
++  <div class="card">
++    <h2><#menu5_5_5#></h2>
++    <p class="note"><#RFW_84#></p>
++    <p class="note"><#RFW_85#></p>
++    <div class="row" style="margin-top:12px"><span class="lbl"><#RFW_86#></span><span class="tg" data-nv="keyword_enable_x" id="k_en"></span></div>
++  </div>
++  <div class="card">
++    <h2><#RFW_87#></h2>
++    <table class="rt" id="kw_tbl"><thead><tr><th><#RFW_88#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_88#></span><input class="fld" id="kw_kw" maxlength="32" style="min-width:280px"></div>
++      <button class="btn ghost sm" id="kw_add"><#RFW_59#></button>
++    </div>
++    <div class="row" style="margin-top:14px">
++      <button class="btn" id="k_apply"><#RFW_62#></button><span class="saved hidden" id="k_saved"></span>
++    </div>
++  </div>
++</div>
++
++<!-- ============================= LOGGING ============================= -->
++<div class="tab" id="tab_logging">
++  <div class="card">
++    <h2><#RFW_32#></h2>
++    <div class="grid2" style="margin-top:6px">
++      <span class="lbl"><#RFW_33#></span>
++      <span>
++        <select class="fld s" id="l_log">
++          <option value="none"><#RFW_100#></option>
++          <option value="drop">Drop</option>
++          <option value="accept">Accept</option>
++          <option value="both">Both</option>
++        </select>
++        <button class="btn sm" id="l_apply" style="margin-left:8px"><#RFW_62#></button>
++        <span class="saved hidden" id="l_saved"></span>
++      </span>
++    </div>
++    <p class="note warn hidden" id="l_off"><#RFW_42#></p>
++  </div>
++  <div class="cols2">
++    <div class="card" style="max-width:none">
++      <h2><#RFW_34#><span class="hint" id="l_count">&nbsp;</span></h2>
++      <div class="row"><button class="btn ghost sm" id="l_refresh"><#RFW_19#></button></div>
++      <div id="l_view"><div class="spin"><#RFW_89#></div></div>
++    </div>
++    <div class="card" style="max-width:none">
++      <h2><#RFW_35#></h2>
++      <div id="l_top"><div class="spin"><#RFW_89#></div></div>
++    </div>
++  </div>
++</div>
++
++<form id="fwform" method="post" action="/start_apply.htm" target="fw_hidden" style="display:none">
++  <input type="hidden" name="current_page" value="Reaper_Firewall.asp">
++  <input type="hidden" name="next_page" value="Reaper_Firewall.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_firewall">
++  <input type="hidden" name="action_wait" value="5">
++</form>
++<iframe name="fw_hidden" id="fw_hidden" width="0" height="0" frameborder="0" style="display:none"></iframe>
++
++<script>
++function $(id){return document.getElementById(id);}
++function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
++var REAPER_HTTPID='<% nvram_get("http_id"); %>';
++
++/* nvram snapshot. Rulelists come through nvram_char_to_ascii (URL-percent) so
++   the raw < > survive; scalars are plain. NVRAM HOLDS RAW < > - never emit &#60. */
++var NV={
++  fw_enable_x:'<% nvram_get("fw_enable_x"); %>',
++  fw_dos_x:'<% nvram_get("fw_dos_x"); %>',
++  misc_ping_x:'<% nvram_get("misc_ping_x"); %>',
++  fw_log_x:'<% nvram_get("fw_log_x"); %>',
++  fw_wl_enable_x:'<% nvram_get("fw_wl_enable_x"); %>',
++  ipv6_fw_enable:'<% nvram_get("ipv6_fw_enable"); %>',
++  fw_lw_enable_x:'<% nvram_get("fw_lw_enable_x"); %>',
++  filter_lw_default_x:'<% nvram_get("filter_lw_default_x"); %>',
++  filter_lw_icmp_x:'<% nvram_get("filter_lw_icmp_x"); %>',
++  filter_lw_date_x:'<% nvram_get("filter_lw_date_x"); %>',
++  filter_lw_time_x:'<% nvram_get("filter_lw_time_x"); %>',
++  filter_lw_time2_x:'<% nvram_get("filter_lw_time2_x"); %>',
++  url_enable_x:'<% nvram_get("url_enable_x"); %>',
++  url_mode_x:'<% nvram_get("url_mode_x"); %>',
++  keyword_enable_x:'<% nvram_get("keyword_enable_x"); %>',
++  svc_ready:'<% nvram_get("svc_ready"); %>',
++  filter_wllist:decodeURIComponent('<% nvram_char_to_ascii("", "filter_wllist"); %>'),
++  ipv6_fw_rulelist:decodeURIComponent('<% nvram_char_to_ascii("", "ipv6_fw_rulelist"); %>'),
++  filter_lwlist:decodeURIComponent('<% nvram_char_to_ascii("", "filter_lwlist"); %>'),
++  url_rulelist:decodeURIComponent('<% nvram_char_to_ascii("", "url_rulelist"); %>'),
++  keyword_rulelist:decodeURIComponent('<% nvram_char_to_ascii("", "keyword_rulelist"); %>')
++};
++var DAYNM=[`<#RFW_97#>`,`<#RFW_91#>`,`<#RFW_92#>`,`<#RFW_93#>`,`<#RFW_94#>`,`<#RFW_95#>`,`<#RFW_96#>`]; /* idx0=Sun */
++
++/* ---- generic helpers ---- */
++function xhr(url,cb){
++  var x=new XMLHttpRequest();
++  x.open('GET',url+(url.indexOf('?')<0?'?':'&')+'_='+Date.now(),true);
++  x.timeout=30000;
++  x.onreadystatechange=function(){
++    if(x.readyState!==4)return;
++    var j=null;
++    if(x.status===200){try{j=JSON.parse(x.responseText);}catch(e){j=null;}}
++    cb(j);
++  };
++  x.ontimeout=function(){cb(null);};
++  x.send();
++}
++function tgSet(el,on){el.classList.toggle('on',!!on);}
++function tgGet(el){return el.classList.contains('on')?'1':'0';}
++function showSaved(el,ok,msg){el.className='saved'+(ok?'':' err');el.textContent=msg;el.classList.remove('hidden');setTimeout(function(){el.classList.add('hidden');},4000);}
++
++/* dirty-only apply: writes the given nvram map, then restart_firewall */
++function fwApply(fields,overlayReload){
++  var f=$('fwform');
++  Array.prototype.slice.call(f.querySelectorAll('.dyn')).forEach(function(n){n.remove();});
++  for(var k in fields){
++    var i=document.createElement('input');i.type='hidden';i.className='dyn';i.name=k;i.value=fields[k];f.appendChild(i);
++  }
++  f.submit();
++  if(overlayReload!==false) setTimeout(function(){try{location.reload();}catch(e){}},7000);
++}
++
++/* port list: comma-list of N or LOW:HIGH (LOW<HIGH), 1-65535; also >N / <N shorthand */
++function normPort(v){
++  v=(v||'').replace(/\s+/g,'');
++  if(v==='')return '';
++  var parts=v.split(','),out=[];
++  for(var i=0;i<parts.length;i++){
++    var p=parts[i];
++    if(p==='')continue;
++    if(p.charAt(0)==='>'){p=(parseInt(p.slice(1),10))+':65535';}
++    else if(p.charAt(0)==='<'){p='1:'+parseInt(p.slice(1),10);}
++    p=p.replace(/[-~]/g,':');
++    if(p.indexOf(':')>=0){
++      var a=p.split(':'),lo=parseInt(a[0],10),hi=parseInt(a[1],10);
++      if(!(lo>=1&&hi<=65535&&lo<hi))return null;
++      out.push(lo+':'+hi);
++    }else{
++      var n=parseInt(p,10);
++      if(!(n>=1&&n<=65535))return null;
++      out.push(''+n);
++    }
++  }
++  return out.join(',');
++}
++/* extended blocklist closing the _fw_keyword_safe silent-drop gap (adds " ' ` $) */
++var KWBLOCK=['#','%','&','*','{','}','\\',':','<','>','?','/','+','"',"'",'`','$'];
++function kwBad(v){
++  for(var i=0;i<v.length;i++){var c=v.charCodeAt(i);if(c<32||c>126)return true;}
++  for(var j=0;j<KWBLOCK.length;j++){if(v.indexOf(KWBLOCK[j])>=0)return true;}
++  return false;
++}
++
++/* =================== rule-table model ===================
++   Each editor keeps an array of records; render + serialize on apply. */
++function rtEmpty(tbody,cols){tbody.innerHTML='<tr class="empty"><td colspan="'+cols+'">'+esc(`<#RFW_61#>`)+'</td></tr>';}
++function rtRow(cells,onDel){
++  var tr=document.createElement('tr');
++  for(var i=0;i<cells.length;i++){var td=document.createElement('td');td.textContent=cells[i];tr.appendChild(td);}
++  var td2=document.createElement('td');var b=document.createElement('button');b.className='del';b.textContent=`<#RFW_60#>`;b.onclick=onDel;td2.appendChild(b);tr.appendChild(td2);
++  return tr;
++}
++
++/* ---------- General: IPv4 inbound (filter_wllist) ---------- */
++/* entry: <PROTO>>SRCIP>>>DSTPORT  (6 slots, only 0/2/5 used) */
++var v4rules=[];
++function v4parse(){
++  v4rules=[];
++  var recs=NV.filter_wllist.split('<');
++  for(var i=0;i<recs.length;i++){
++    if(recs[i]==='')continue;
++    var f=recs[i].split('>');
++    v4rules.push({proto:f[0]||'',src:f[2]||'',port:f[5]||''});
++  }
++}
++function v4render(){
++  var tb=$('v4_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!v4rules.length){rtEmpty(tb,4);return;}
++  v4rules.forEach(function(r,idx){tb.appendChild(rtRow([r.src||'*',r.port||'*',r.proto],function(){v4rules.splice(idx,1);v4render();}));});
++}
++/* ---------- General: IPv6 inbound (ipv6_fw_rulelist) ---------- */
++/* entry: <DESC>REMOTE>LOCAL>PORT>PROTO */
++var v6rules=[];
++function v6parse(){
++  v6rules=[];
++  var recs=NV.ipv6_fw_rulelist.split('<');
++  for(var i=0;i<recs.length;i++){
++    if(recs[i]==='')continue;
++    var f=recs[i].split('>');
++    v6rules.push({desc:f[0]||'',rip:f[1]||'',lip:f[2]||'',port:f[3]||'',proto:f[4]||'TCP'});
++  }
++}
++function v6render(){
++  var tb=$('v6_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!v6rules.length){rtEmpty(tb,6);return;}
++  v6rules.forEach(function(r,idx){tb.appendChild(rtRow([r.desc,r.rip||'*',r.lip||'*',r.port||'*',r.proto],function(){v6rules.splice(idx,1);v6render();}));});
++}
++/* ---------- Network Services (filter_lwlist) ---------- */
++/* entry: <SRCIP>SRCPORT>DSTIP>DSTPORT>PROTO ; fields uppercased */
++var lwrules=[];
++function lwparse(){
++  lwrules=[];
++  var recs=NV.filter_lwlist.split('<');
++  for(var i=0;i<recs.length;i++){
++    if(recs[i]==='')continue;
++    var f=recs[i].split('>');
++    lwrules.push({sip:f[0]||'',sport:f[1]||'',dip:f[2]||'',dport:f[3]||'',proto:f[4]||'TCP'});
++  }
++}
++function lwrender(){
++  var tb=$('lw_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!lwrules.length){rtEmpty(tb,6);return;}
++  lwrules.forEach(function(r,idx){tb.appendChild(rtRow([r.sip||'*',r.sport||'*',r.dip||'*',r.dport||'*',r.proto],function(){lwrules.splice(idx,1);lwrender();}));});
++}
++/* ---------- URL (url_rulelist: <1>ALL>URL) ---------- */
++var urlrules=[];
++function urlparse(){
++  urlrules=[];
++  var recs=NV.url_rulelist.split('<');
++  for(var i=0;i<recs.length;i++){
++    if(recs[i]==='')continue;
++    var f=recs[i].split('>');
++    urlrules.push(f[2]||'');
++  }
++}
++function urlrender(){
++  var tb=$('url_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!urlrules.length){rtEmpty(tb,2);return;}
++  urlrules.forEach(function(u,idx){tb.appendChild(rtRow([u],function(){urlrules.splice(idx,1);urlrender();}));});
++}
++/* ---------- Keyword (keyword_rulelist: flat <KW) ---------- */
++var kwrules=[];
++function kwparse(){
++  kwrules=[];
++  var recs=NV.keyword_rulelist.split('<');
++  for(var i=0;i<recs.length;i++){if(recs[i]==='')continue;kwrules.push(recs[i]);}
++}
++function kwrender(){
++  var tb=$('kw_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!kwrules.length){rtEmpty(tb,2);return;}
++  kwrules.forEach(function(k,idx){tb.appendChild(rtRow([k],function(){kwrules.splice(idx,1);kwrender();}));});
++}
++
++/* =================== tab switching =================== */
++var TABS=['status','general','netsvc','url','keyword','logging'];
++var stTimer=null;
++function showTab(t){
++  if(TABS.indexOf(t)<0)t='status';
++  TABS.forEach(function(x){$('tab_'+x).classList.toggle('on',x===t);});
++  Array.prototype.slice.call(document.querySelectorAll('#wins .win')).forEach(function(w){w.classList.toggle('on',w.getAttribute('data-t')===t);});
++  try{localStorage.setItem('reaper_fw_tab',t);}catch(e){}
++  try{history.replaceState(null,'','?t='+t);}catch(e){}
++  if(t==='status'){loadStatus();startAuto();}else{stopAuto();}
++  if(t==='logging')loadDrops();
++}
++function initTab(){
++  var q=(location.search.match(/[?&]t=([a-z]+)/)||[])[1];
++  if(!q){try{q=localStorage.getItem('reaper_fw_tab');}catch(e){}}
++  showTab(q||'status');
++}
++
++/* =================== STATUS view =================== */
++var OWN=[
++  {re:/^(REAPER_WARDEN|RW_DROP|RW_)/,c:'warden',n:`<#RFW_11#>`},
++  {re:/^(REAPER_GK)/,c:'gk',n:`<#RFW_10#>`},
++  {re:/^(WGS|WGC|OVPNS|OVPNC|GRE|VPNC|IPSEC)/,c:'vpn',n:`<#RFW_27#>`},
++  {re:/^(MTWAN)/,c:'other',n:`<#RFW_28#>`},
++  {re:/^(URLF|NWFF|SDN_)/,c:'sdn',n:`<#RFW_29#>`},
++  {re:/^(IControls|PControls|WGNPControls|TIME_QUOTA|DNSFILTER)/,c:'ctrl',n:`<#RFW_26#>`},
++  {re:/^(PTCSRV|HNS-UFWD)/,c:'other',n:`<#RFW_30#>`},
++  {re:/^(INPUT|OUTPUT|FORWARD|SECURITY|logdrop|logaccept|INPUT_PING|INPUT_ICMP|FUPNP|ACCESS_RESTRICTION|ICMP_V6|UPNP|default_block)/,c:'core',n:`<#RFW_25#>`}
++];
++function ownerOf(name){for(var i=0;i<OWN.length;i++){if(OWN[i].re.test(name))return OWN[i];}return {c:'other',n:`<#RFW_31#>`};}
++/* parse `iptables -nvxL` text into chains */
++function parseIpt(txt){
++  var chains=[],cur=null,lines=(txt||'').split('\n');
++  for(var i=0;i<lines.length;i++){
++    var ln=lines[i];
++    var m=ln.match(/^Chain\s+(\S+)\s+\((.*)\)/);
++    if(m){cur={name:m[1],meta:m[2],rows:[]};chains.push(cur);continue;}
++    if(!cur)continue;
++    if(/^\s*pkts\s+bytes\s+target/.test(ln))continue;
++    var t=ln.replace(/^\s+/,'');
++    if(t==='')continue;
++    var parts=t.split(/\s+/);
++    if(parts.length<3||!/^\d+$/.test(parts[0]))continue;
++    cur.rows.push({pkts:parts[0],bytes:parts[1],rest:parts.slice(2)});
++  }
++  return chains;
++}
++function fmtNum(n){n=parseInt(n,10)||0;return n.toLocaleString?n.toLocaleString():''+n;}
++function renderChains(txt,into){
++  var chains=parseIpt(txt);
++  if(!chains.length){into.innerHTML='<div class="note muted">'+esc(`<#RFW_23#>`)+'</div>';return;}
++  var h='';
++  chains.forEach(function(c){
++    var o=ownerOf(c.name);
++    h+='<div class="chaincard"><div class="ch"><span class="nm">'+esc(c.name)+'</span><span class="pol">'+esc(c.meta)+'</span><span class="owner '+o.c+'">'+esc(o.n)+'</span></div>';
++    if(c.rows.length){
++      h+='<table class="ipt"><thead><tr><th><#RFW_14#></th><th><#RFW_15#></th><th><#RFW_16#></th><th>prot</th><th>in</th><th>out</th><th><#RFW_39#></th><th><#RFW_40#></th></tr></thead><tbody>';
++      c.rows.forEach(function(r){
++        var tgt=r.rest[0]||'',prot=r.rest[1]||'',din=r.rest[3]||'',dout=r.rest[4]||'',src=r.rest[5]||'',dst=r.rest[6]||'';
++        var hit=parseInt(r.pkts,10)>0?' hit':'';
++        h+='<tr><td class="n'+hit+'">'+esc(fmtNum(r.pkts))+'</td><td class="n">'+esc(fmtNum(r.bytes))+'</td><td>'+esc(tgt)+'</td><td>'+esc(prot)+'</td><td>'+esc(din)+'</td><td>'+esc(dout)+'</td><td>'+esc(src)+'</td><td>'+esc(dst)+'</td></tr>';
++      });
++      h+='</tbody></table>';
++    }
++    h+='</div>';
++  });
++  into.innerHTML=h;
++}
++function loadStatus(){
++  xhr('/reaper_fw.cgi?action=status&http_id='+encodeURIComponent(REAPER_HTTPID),function(j){
++    if(!j||!j.ok){$('st_grid').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';return;}
++    var f=j.fw;
++    function kv(k,on,txt){return '<div class="kv"><span class="k">'+esc(k)+'</span><span class="v '+(on?'on':'off')+'">'+esc(txt)+'</span></div>';}
++    var onT=`<#RFW_98#>`,offT=`<#RFW_99#>`;
++    var g='';
++    g+=kv(`<#RFW_4#>`,f.enable,f.enable?onT:offT);
++    g+=kv(`<#RFW_5#>`,f.dos,f.dos?onT:offT);
++    g+=kv(`<#RFW_6#>`,f.ping,f.ping?onT:offT);
++    g+=kv(`<#RFW_7#>`,f.wl,f.wl?onT:offT);
++    g+=kv(`<#RFW_8#>`,f.v6fw,f.v6up?(f.v6fw?onT:offT):`<#RFW_23#>`);
++    g+=kv(`<#RFW_10#>`,f.gk,f.gk?onT:offT);
++    g+=kv(`<#RFW_11#>`,f.warden,f.warden?onT:offT);
++    g+=kv(`<#RFW_9#>`,f.log&&f.log!=='none',f.log==='none'?`<#RFW_100#>`:f.log);
++    $('st_grid').innerHTML=g;
++    setPill(f.enable);
++    renderChains(j.v4,$('st_v4'));
++    renderChains(j.v6,$('st_v6'));
++  });
++}
++function setPill(on){var p=$('pill');p.textContent=on?`<#RFW_98#>`:`<#RFW_99#>`;p.className='statuspill'+(on?'':' off');}
++function startAuto(){if($('st_auto').classList.contains('on')&&!stTimer)stTimer=setInterval(loadStatus,10000);}
++function stopAuto(){if(stTimer){clearInterval(stTimer);stTimer=null;}}
++
++/* =================== LOGGING view =================== */
++function classOf(line){
++  if(line.indexOf('REAPER-WARDEN')>=0)return {c:'warden',t:'WARDEN'};
++  if(/ ACCEPT IN=/.test(line))return {c:'accept',t:'ACCEPT'};
++  return {c:'drop',t:'DROP'};
++}
++function field(line,key){var m=line.match(new RegExp(key+'=(\\S+)'));return m?m[1]:'';}
++function loadDrops(){
++  $('l_log').value=NV.fw_log_x||'none';
++  $('l_off').classList.toggle('hidden',!(NV.fw_log_x==='none'||NV.fw_log_x===''||NV.fw_log_x==='accept'));
++  xhr('/reaper_fw.cgi?action=drops&http_id='+encodeURIComponent(REAPER_HTTPID),function(j){
++    if(!j||!j.ok){$('l_view').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';$('l_top').innerHTML='';return;}
++    var lines=(j.log_lines||j.lines||'').split('\n').filter(function(x){return x.trim()!=='';});
++    $('l_count').textContent=(''+lines.length);
++    if(!lines.length){$('l_view').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';$('l_top').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';return;}
++    var rows=[],srcCount={};
++    for(var i=lines.length-1;i>=0;i--){
++      var ln=lines[i],cl=classOf(ln);
++      var tm=(ln.match(/^(\w{3}\s+\d+\s+[\d:]+)/)||[])[1]||'';
++      var src=field(ln,'SRC'),dst=field(ln,'DST'),proto=field(ln,'PROTO'),dpt=field(ln,'DPT'),inif=field(ln,'IN');
++      rows.push({cl:cl,tm:tm,inif:inif,src:src,dst:dst,proto:proto,dpt:dpt});
++      if(src)srcCount[src]=(srcCount[src]||0)+1;
++    }
++    var h='<table class="logtbl"><thead><tr><th><#RFW_36#></th><th><#RFW_37#></th><th><#RFW_38#></th><th><#RFW_39#></th><th><#RFW_40#></th><th>proto</th><th><#RFW_41#></th></tr></thead><tbody>';
++    rows.slice(0,300).forEach(function(r){
++      h+='<tr><td class="cls"><span class="cbadge '+r.cl.c+'">'+esc(r.cl.t)+'</span></td><td>'+esc(r.tm)+'</td><td>'+esc(r.inif)+'</td><td>'+esc(r.src)+'</td><td>'+esc(r.dst)+'</td><td>'+esc(r.proto)+'</td><td>'+esc(r.dpt)+'</td></tr>';
++    });
++    h+='</tbody></table>';
++    $('l_view').innerHTML=h;
++    var top=Object.keys(srcCount).map(function(k){return {ip:k,n:srcCount[k]};}).sort(function(a,b){return b.n-a.n;}).slice(0,15);
++    var th='<table class="logtbl"><thead><tr><th><#RFW_39#></th><th>#</th></tr></thead><tbody>';
++    top.forEach(function(s){th+='<tr><td>'+esc(s.ip)+'</td><td>'+esc(''+s.n)+'</td></tr>';});
++    th+='</tbody></table>';
++    $('l_top').innerHTML=th;
++  });
++}
++
++/* =================== init + wiring =================== */
++function initToggles(){
++  Array.prototype.slice.call(document.querySelectorAll('.tg[data-nv]')).forEach(function(el){
++    tgSet(el,NV[el.getAttribute('data-nv')]==='1');
++    el.onclick=function(){el.classList.toggle('on');};
++  });
++  Array.prototype.slice.call(document.querySelectorAll('.tg:not([data-nv])')).forEach(function(el){
++    el.onclick=function(){el.classList.toggle('on');};
++  });
++}
++function initGeneral(){
++  $('g_log').value=NV.fw_log_x||'none';
++  v4parse();v4render();v6parse();v6render();
++  $('v4_add').onclick=function(){
++    var src=$('v4_src').value.trim(),proto=$('v4_proto').value,port=normPort($('v4_port').value);
++    if(port===null){alert(`<#RFW_67#>`);return;}
++    if(v4rules.length>=128){alert(`<#RFW_64#>`.replace('%N%','128'));return;}
++    v4rules.push({proto:proto,src:src,port:port});$('v4_src').value='';$('v4_port').value='';v4render();
++  };
++  $('v6_add').onclick=function(){
++    var desc=$('v6_desc').value.replace(/[<>'%]/g,'').trim();
++    var rip=$('v6_rip').value.replace(/\s/g,''),lip=$('v6_lip').value.replace(/\s/g,''),port=$('v6_port').value.replace(/\s/g,''),proto=$('v6_proto').value;
++    if(v6rules.length>=128){alert(`<#RFW_64#>`.replace('%N%','128'));return;}
++    v6rules.push({desc:desc,rip:rip,lip:lip,port:port,proto:proto});
++    $('v6_desc').value='';$('v6_rip').value='';$('v6_lip').value='';$('v6_port').value='';v6render();
++  };
++  $('g_apply').onclick=function(){
++    fwApply({
++      fw_enable_x:tgGet(document.querySelector('.tg[data-nv="fw_enable_x"]')),
++      fw_dos_x:tgGet(document.querySelector('.tg[data-nv="fw_dos_x"]')),
++      misc_ping_x:tgGet(document.querySelector('.tg[data-nv="misc_ping_x"]')),
++      fw_log_x:$('g_log').value
++    });
++  };
++  $('gr_apply').onclick=function(){
++    var wl=v4rules.map(function(r){return '<'+r.proto+'>>'+r.src+'>>>'+r.port;}).join('');
++    var v6=v6rules.map(function(r){return '<'+r.desc+'>'+r.rip+'>'+r.lip+'>'+r.port+'>'+r.proto;}).join('');
++    fwApply({
++      fw_wl_enable_x:tgGet($('g_wl')),filter_wllist:wl,
++      ipv6_fw_enable:tgGet($('g_v6')),ipv6_fw_rulelist:v6
++    });
++  };
++}
++function initNetsvc(){
++  $('n_mode').value=(NV.filter_lw_default_x==='ACCEPT')?'ACCEPT':'DROP';
++  $('n_ntp').classList.toggle('hidden',NV.svc_ready!=='0');
++  lwparse();lwrender();
++  var dw=$('lw_days');dw.innerHTML='';
++  var bitmap=(NV.filter_lw_date_x&&NV.filter_lw_date_x.length===7)?NV.filter_lw_date_x:'1111111';
++  for(var d=0;d<7;d++){
++    var id='lwd'+d;
++    var lab=document.createElement('label');
++    lab.innerHTML='<input type="checkbox" id="'+id+'"'+(bitmap.charAt(d)==='1'?' checked':'')+'> '+esc(DAYNM[d]);
++    dw.appendChild(lab);
++  }
++  function hhmm(v){return v&&v.length===8?(v.slice(0,2)+':'+v.slice(2,4)):'00:00';}
++  function hhmm2(v){return v&&v.length===8?(v.slice(4,6)+':'+v.slice(6,8)):'23:59';}
++  $('lw_wd1').value=hhmm(NV.filter_lw_time_x);$('lw_wd2').value=hhmm2(NV.filter_lw_time_x);
++  $('lw_we1').value=hhmm(NV.filter_lw_time2_x);$('lw_we2').value=hhmm2(NV.filter_lw_time2_x);
++  $('lw_icmp').value=NV.filter_lw_icmp_x||'';
++  $('lw_add').onclick=function(){
++    var sip=$('lw_sip').value.trim().toUpperCase(),dip=$('lw_dip').value.trim().toUpperCase();
++    var sport=normPort($('lw_sport').value),dport=normPort($('lw_dport').value),proto=$('lw_proto').value;
++    if(sport===null||dport===null){alert(`<#RFW_67#>`);return;}
++    if(!sip&&!dip&&!sport&&!dport){alert(`<#RFW_66#>`);return;}
++    if(lwrules.length>=128){alert(`<#RFW_64#>`.replace('%N%','128'));return;}
++    lwrules.push({sip:sip,sport:sport,dip:dip,dport:dport,proto:proto});
++    $('lw_sip').value='';$('lw_sport').value='';$('lw_dip').value='';$('lw_dport').value='';lwrender();
++  };
++  $('n_apply').onclick=function(){
++    var anyday=false;var bm='';
++    for(var d=0;d<7;d++){var c=$('lwd'+d).checked;bm+=c?'1':'0';if(c)anyday=true;}
++    if($('n_en').classList.contains('on')&&!anyday){alert(`<#RFW_78#>`);return;}
++    function p4(v){v=(v||'').replace(/\D/g,'').slice(0,4);return (v+'0000').slice(0,4);}
++    function pk(a,b){return p4($(a).value)+p4($(b).value);}
++    var lw=lwrules.map(function(r){return '<'+r.sip+'>'+r.sport+'>'+r.dip+'>'+r.dport+'>'+r.proto;}).join('');
++    fwApply({
++      fw_lw_enable_x:tgGet($('n_en')),filter_lw_default_x:$('n_mode').value,
++      filter_lwlist:lw,filter_lw_date_x:bm,
++      filter_lw_time_x:pk('lw_wd1','lw_wd2'),filter_lw_time2_x:pk('lw_we1','lw_we2'),
++      filter_lw_icmp_x:$('lw_icmp').value.replace(/[^0-9 ]/g,'')
++    });
++  };
++}
++function initUrl(){
++  $('u_mode').value=(NV.url_mode_x==='1')?'1':'0';
++  urlparse();urlrender();
++  $('url_add').onclick=function(){
++    var v=$('url_kw').value.trim();
++    if(!v){alert(`<#RFW_66#>`);return;}
++    if(kwBad(v)){alert(`<#RFW_90#> `+KWBLOCK.join(' '));return;}
++    if(urlrules.length>=64){alert(`<#RFW_64#>`.replace('%N%','64'));return;}
++    for(var i=0;i<urlrules.length;i++){if(urlrules[i].toLowerCase()===v.toLowerCase()){alert(`<#RFW_65#>`);return;}}
++    urlrules.push(v);$('url_kw').value='';urlrender();
++  };
++  $('u_apply').onclick=function(){
++    var list=urlrules.map(function(u){return '<1>ALL>'+u;}).join('');
++    fwApply({url_enable_x:tgGet($('u_en')),url_mode_x:$('u_mode').value,url_rulelist:list});
++  };
++}
++function initKeyword(){
++  kwparse();kwrender();
++  $('kw_add').onclick=function(){
++    var v=$('kw_kw').value.trim();
++    if(!v){alert(`<#RFW_66#>`);return;}
++    if(kwBad(v)){alert(`<#RFW_90#> `+KWBLOCK.join(' '));return;}
++    if(kwrules.length>=64){alert(`<#RFW_64#>`.replace('%N%','64'));return;}
++    for(var i=0;i<kwrules.length;i++){if(kwrules[i]===v){alert(`<#RFW_65#>`);return;}}
++    kwrules.push(v);$('kw_kw').value='';kwrender();
++  };
++  $('k_apply').onclick=function(){
++    var list=kwrules.map(function(k){return '<'+k;}).join('');
++    fwApply({keyword_enable_x:tgGet($('k_en')),keyword_rulelist:list});
++  };
++}
++function initLogging(){
++  $('l_apply').onclick=function(){fwApply({fw_log_x:$('l_log').value});};
++  $('l_refresh').onclick=loadDrops;
++}
++
++function boot(){
++  initToggles();initGeneral();initNetsvc();initUrl();initKeyword();initLogging();
++  Array.prototype.slice.call(document.querySelectorAll('#wins .win')).forEach(function(w){
++    w.onclick=function(){showTab(w.getAttribute('data-t'));};
++  });
++  $('st_refresh').onclick=loadStatus;
++  $('st_auto').onclick=function(){this.classList.toggle('on');stopAuto();startAuto();};
++  document.addEventListener('visibilitychange',function(){if(document.hidden)stopAuto();else if($('tab_status').classList.contains('on'))startAuto();});
++  initTab();
++}
++if(document.readyState!=='loading')boot();
++else document.addEventListener('DOMContentLoaded',boot);
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/aimesh/aimesh_topology.css b/release/src/router/www/aimesh/aimesh_topology.css
+index ffffe408ea..15d748ce9f 100644
+--- a/release/src/router/www/aimesh/aimesh_topology.css
++++ b/release/src/router/www/aimesh/aimesh_topology.css
+@@ -227,10 +227,11 @@
+ }
+ .model_info_bg{
+ 	position: absolute;
+-	left: 16px;
+-	bottom: 5px;
++	right: 16px;
++	top: 12px;
+ 	z-index: 10;
+ 	max-width: 220px;
++	text-align: right;
+ }
+ .model_name{
+ 	margin-bottom: 3px;
+@@ -239,6 +240,7 @@
+ 	text-shadow: 0 1px 7px rgba(0,0,0,0.66);
+ 	display: flex;
+ 	align-items: center;
++	justify-content: flex-end;
+ }
+ .model_name > span.node_feature_notice{
+ 	position: relative;
+diff --git a/release/src/router/www/aimesh/aimesh_topology.html b/release/src/router/www/aimesh/aimesh_topology.html
+index e78f09f227..03c5bfbced 100644
+--- a/release/src/router/www/aimesh/aimesh_topology.html
++++ b/release/src/router/www/aimesh/aimesh_topology.html
+@@ -198,17 +198,9 @@ var aimesh_data = {
+ 	cfg_clientlist : "", sta_binding_list_json : {}
+ }
+ var multi_model_icon_array = "";
+-$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/extend_model_icon.json", {_: new Date().getTime()},
+-	function(data){
+-		multi_model_icon_array = data;
+-		var specific_node_data = aimesh_data.cfg_clientlist.filter(function(item, index, _array){
+-			return (item.mac == current_click_mac);
+-		})[0];
+-		if(specific_node_data != undefined){
+-			set_change_model_icon(specific_node_data);
+-		}
+-	}
+-);
++/* reaper de-cloud: no browser->ASUS-CDN request. This fed the
++   node icon-swap control, which was removed with the .model_icon element.
++   multi_model_icon_array stays "" so set_change_model_icon() hides the swap. */
+ var aimesh_node_client_upload_icon = new Array();
+ var cloudRouterIconCheckCache = new Array();
+ function control_category_block(_category){
+@@ -5415,7 +5407,6 @@ $(document).ready(initial_AiMesh);
+ 					<div class="mac_info"><span>MAC</span><span id="mac"></span></div>
+ 				</div>
+ 				
+-				<div class="model_icon"><div title="<#CTL_Change#>" class="model_icon_exchange"></div></div>
+ 			</div>
+ 		</div>
+ 		<div class="item_space"></div>
+diff --git a/release/src/router/www/ajax/gameProfile.json b/release/src/router/www/ajax/gameProfile.json
+new file mode 100644
+index 0000000000..0967ef424b
+--- /dev/null
++++ b/release/src/router/www/ajax/gameProfile.json
+@@ -0,0 +1 @@
++{}
+diff --git a/release/src/router/www/client_function.js b/release/src/router/www/client_function.js
+index 2d3edd8da1..79141077e1 100644
+--- a/release/src/router/www/client_function.js
++++ b/release/src/router/www/client_function.js
+@@ -364,31 +364,6 @@ var setClientAttr = function(){
+ 	this.ROG = false;
+ }
+ 
+-const saveCloudAsusClientIcon = (mac, name) => {
+-	fetch(`https://nw-dlcdnet.asus.com/plugin/productIcons/${name}.png`)
+-		.then(response => {
+-			if (!response.ok) {
+-				throw new Error('Network response was not ok');
+-			}
+-			return response;
+-		})
+-		.then(response => {
+-			if (response.status === 200) {
+-				response.blob().then(blob => {
+-					const reader = new FileReader();
+-					reader.readAsDataURL(blob);
+-					reader.onloadend = function () {
+-						let nvramSet_obj = {"action_mode": "apply"};
+-						nvramSet_obj["custom_usericon"] = `${mac.replace(/\:/g, "")}>${reader.result}`
+-						httpApi.nvramSet(nvramSet_obj, () => {
+-						}, true, false)
+-					}
+-				});
+-			}
+-		})
+-		.catch(error => {
+-		});
+-}
+ 
+ var clientList = new Array(0);
+ function genClientList(){
+@@ -540,14 +515,11 @@ function genClientList(){
+ 			}
+ 			clientList[thisClientMacAddr].isASUS = (thisClient.isASUS == "1");
+ 
+-			if (clientList[thisClientMacAddr].type != '' && !clientList[thisClientMacAddr].isUserUplaodImg && clientList[thisClientMacAddr].isASUS && clientList[thisClientMacAddr].type == clientList[thisClientMacAddr].defaultType && clientList[thisClientMacAddr].name != "ASUS") {
+-				saveCloudAsusClientIcon(clientList[thisClientMacAddr].mac, clientList[thisClientMacAddr].name);
+-			}
+ 		}
+ 	}
+ 
+ 	var nmpCount = 0;
+-	if(originData.nmpClient.length > 0) {
++	if(originData.nmpClient.length > 0 && originData.nmpClient[0].maclist != undefined) {
+ 		for(var i=0; i<originData.nmpClient[0].maclist.length; i++){
+ 			var thisClient = originData.nmpClient[0][originData.nmpClient[0].maclist[i]];
+ 			var thisClientMacAddr = (typeof thisClient.mac == "undefined") ? false : thisClient.mac.toUpperCase();
+@@ -2094,29 +2066,9 @@ function select_image(clientObj, useDefaultType = false) {
+ 				$("#card_client_image").find("i").addClass("flash");
+ 		}
+ 	}
+-	if(useDefaultType && clientObj.isASUS && clientObj.name!=="ASUS"){
+-		fetch(`https://nw-dlcdnet.asus.com/plugin/productIcons/${clientObj.name}.png`)
+-			.then(response => {
+-				if (response.status === 200) {
+-					response.blob().then(blob => {
+-						const reader = new FileReader();
+-						reader.readAsDataURL(blob);
+-						reader.onloadend = function () {
+-							$("#card_client_image").empty();
+-							$('#card_client_image').append($('<img>').addClass('clientIcon_no_hover').attr('src',reader.result));
+-							card_client_variable.userIconBase64 = reader.result;
+-							card_client_variable.userUploadFlag = true;
+-						}
+-					});
+-				}
+-			})
+-			.catch(error => {
+-				console.error('Error:', error);
+-				useTypeIcon(clientObj);
+-			});
+-	}else{
+-		useTypeIcon(clientObj);
+-	}
++	/* reaper de-cloud: no browser->ASUS-CDN request. The client-detail
++	   card pulled an ASUS product icon from the CDN; bundled type icon only. */
++	useTypeIcon(clientObj);
+ }
+ 
+ function oui_query_card(mac) {
+diff --git a/release/src/router/www/css/gameprofile.css b/release/src/router/www/css/gameprofile.css
+index 3174b0b273..9df79b3cea 100644
+--- a/release/src/router/www/css/gameprofile.css
++++ b/release/src/router/www/css/gameprofile.css
+@@ -1,3 +1,9 @@
++/* reaper de-cloud: the per-game artwork used to be fetched from
++   the ASUS plugin CDN. Those are publisher-owned game
++   images that ASUS hosts; re-hosting them inside a redistributed firmware
++   image is not ours to do, so the artwork is gone rather than bundled.
++   Every .game-p-<name> rule had collapsed to the same bundled placeholder
++   anyway; the placeholder now lives on .game-profile / .new-g-p-image. */
+ .control-f-container {
+     margin: 18px 20px 18px 40px;
+ }
+@@ -16,6 +22,8 @@
+ }
+ 
+ .game-profile {
++    /* reaper: per-game artwork removed - see the note at the top */
++    background-image: url('../images/gameprofile/default-game.png');
+     width: 180px;
+     height: 234px;
+     margin: 18px 3px;
+@@ -211,420 +219,6 @@
+     background-image: url('../images/gameprofile/default-game.png');
+ }
+ 
+-.game-p-cod4mw {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/call-of-duty_modenWarefare.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-destiny2 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/destiny2.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-diablo3 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/diablo3.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-diabloImmortal {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-fifa17 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/fifa17.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-LoL {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/league-of-legends.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-left4dead {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/left-4-dead.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-left4dead2 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/left-4-dead2.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-WoT {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/world-of-tanks.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-assassinsCreed3 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/assassins-creed3.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-overwatch {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/overwatch.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-starcraft2 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/starcraft2.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-WoW {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-fornite {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/fortnite.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-injustice2 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/injustice2.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-minecraft {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/minecraft.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-forhonor {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/for-honor.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-fallout76 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/fallout76.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-dota2 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/dota2.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-csGo {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/cs-go.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-quakechampions {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/quake-champions.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-dow3 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/dawnofwar.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-pubattle {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/playerunknownsbattlegrounds.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-roblox {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/roblok.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-cod4 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-cod4aw {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/cod-aw.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-codbo3 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/cod-ops3.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-codww2 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/cod-ww2.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-battlefield5 {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/battlefield5.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-sniperelite4 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-overwatch {
+-    background-image: url('https://nw-dlcdnet.asus.com/plugin/gameImages/overwatch.jpg'), url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-masseffectandromeda {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-assassinsCreedUnity {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-destiny {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-halflife2 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-halo5 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-splatoon2 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-uncharted4 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-wwe2k17 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-superMarioOdyssey {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-rocketLeague {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-pokemonPikachu {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-marioKart8Deluxe {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-monsterHunterWorld {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-apexLegends {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-fifa20 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-fifa21 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-grandTheftAuto5 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-tomClancyRainbowSix {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-borderLand3 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-codWarzone {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-codeVein {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-cyberpunk2077 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-dauntless {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-gear5 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-gtfo {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-haloInfinite {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-indivisible {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-mlbTheShow20 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-nascarHeat4 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-nioh2 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-overwatch2 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-sniperGhostWarriro3 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-starWarsJediKnightJediAcademy {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-starWarsJediKnight2JediOutcast {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-tekken7 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-wolcenLordsofMayhem {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-animalCrossingNewHorizons {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-finalFantasy7 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-nba2k20 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-.game-p-nba2k23 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-residentEvil2 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-residentEvil3 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-temtem {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-doomEternal {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-superMarioBros35 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-codbocw {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-marvelAvengers {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-mountblade2Bannerlord {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-starWarsSquadrons {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-farcry6 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-maddennfl21 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-forzaHorizon4 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-codmw2 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-codv {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-citizenSleeper {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-dyingLight2 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-eldenRing {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-fifa22 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-.game-p-fifa23 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-granTurismo7 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-horizonForbiddenWest {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-kirbyForgottenLand {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-legoStarWarsSkywalkerSaga {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-lostArk {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-mlbTheShow22 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-olliolliWorld {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-pokemonLegendArceus {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-sniperelite5 {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-switchSports {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-tinyTinaAssaultDragonKeep {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-tunic {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-vRising {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+-.game-p-nvidiaGameStream {
+-    background-image: url('../images/gameprofile/default-game.png');
+-}
+-
+ .new-g-p-t-field {
+     height: 70px;
+     background-color: rgba(30, 28, 28, 0.8);
+@@ -709,6 +303,8 @@
+ }
+ 
+ .new-g-p-image {
++    /* reaper: per-game artwork removed - see the note at the top */
++    background-image: url('../images/gameprofile/default-game.png');
+     width: 92px;
+     height: 127px;
+     background-repeat: no-repeat;
+diff --git a/release/src/router/www/dashboard/js/clientlist.module.js b/release/src/router/www/dashboard/js/clientlist.module.js
+index cfd61b6b09..9a76f3c03c 100644
+--- a/release/src/router/www/dashboard/js/clientlist.module.js
++++ b/release/src/router/www/dashboard/js/clientlist.module.js
+@@ -186,34 +186,6 @@ class Client {
+            icon (already shown for every other vendor) is used instead. */
+         return;
+ 
+-        if (!this.isCloudIconFetched && this.type !== '' && !this.isUserUploadImg && this.isASUS && this.type == this.defaultType && this.name != "ASUS") {
+-            const mac = this.mac.replace(/\:/g, "").toUpperCase();
+-            await fetch(`https://nw-dlcdnet.asus.com/plugin/productIcons/${this.name}.png`)
+-                .then(response => {
+-                    if (!response.ok) {
+-                        throw new Error('Network response was not ok');
+-                    }
+-                    return response;
+-                })
+-                .then(response => {
+-                    if (response.status === 200) {
+-                        response.blob().then(blob => {
+-                            const reader = new FileReader();
+-                            reader.readAsDataURL(blob);
+-                            reader.onloadend = async function () {
+-                                let nvramSet_obj = {"action_mode": "apply"};
+-                                nvramSet_obj["custom_usericon"] = `${mac}>${reader.result}`
+-                                await httpApi.nvramSet(nvramSet_obj, () => {
+-                                }, true, false)
+-                            }
+-                            this.isCloudIconFetched = true;
+-                        });
+-                    }
+-                })
+-                .catch(error => {
+-                    // console.error('There has been a problem with your fetch operation:', error);
+-                });
+-        }
+     }
+ 
+ 
+diff --git a/release/src/router/www/form.js b/release/src/router/www/form.js
+index b9fd39727e..5cd2f3ff60 100644
+--- a/release/src/router/www/form.js
++++ b/release/src/router/www/form.js
+@@ -141,17 +141,8 @@ function updatFAQListOnline(){
+         return local_data[e];
+     });
+ 
+-    $.getJSON("https://nw-dlcdnet.asus.com/plugin/js/collected_FAQ.json",
+-      function(cloud_data){
+-        if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-          if(Object.keys(cloud_data).length > 0){
+-            FAQ_List = Object.keys(cloud_data).map(function(e){
+-              return cloud_data[e];
+-            });
+-          }
+-        }
+-      }
+-    );
++    /* reaper de-cloud: no browser->ASUS-CDN request. The bundled
++       /ajax/collected_FAQ.json above is authoritative. */
+ 
+   });
+ }
+diff --git a/release/src/router/www/js/searchIspNameProfile.js b/release/src/router/www/js/searchIspNameProfile.js
+deleted file mode 100644
+index 3540f60344..0000000000
+--- a/release/src/router/www/js/searchIspNameProfile.js
++++ /dev/null
+@@ -1,80 +0,0 @@
+-var pppIspList = [];
+-
+-window.updateIspList = function(ispProfile){
+-    var ispProfileArray = ispProfile.ispList.split(",");
+-    var arrayMerge = pppIspList.concat(ispProfileArray.filter(
+-        function(item){return (pppIspList.indexOf(item) < 0)}
+-    ))
+-
+-    pppIspList = arrayMerge;
+-
+-    $('input[name="wan_pppoe_username"]')
+-        .unbind("keyup")
+-        .blur(function(){if($(".selectSearchItem").length == 0) $(".listContainer").remove()})
+-        .keyup(function(e){
+-            $(".listContainer").remove()
+-
+-            if(this.value.indexOf("@") != -1){
+-                var ispName = this.value.split("@")[1];	
+-                if(ispName.length < 2) return false;
+-
+-                var searchResult = [];	
+-                searchResult = pppIspList.filter(function(item){
+-                    return (item.indexOf(ispName) != -1)
+-                })
+-
+-                if(searchResult == 0) return false;
+-
+-                var listContainer = $("<div>")
+-                    .addClass("listContainer")
+-                    .css({
+-                        "margin-left": "2px",
+-                        "position": "absolute",
+-                        "z-index": "9999",
+-                        "width":  $('input[name="wan_pppoe_username"]').width() + "px",
+-                        "padding": "10px",
+-                        "background-color": "#303030",
+-                        "color": "#FFF",
+-                        "overflow-y": "auto",
+-                        "border": "1px solid #DBDBDB",
+-                        "max-height": "490px"
+-                    })
+-
+-                for(var j=0; j<searchResult.length; j++){
+-                    $("<div>")
+-                        .hover(function(){
+-                            $(this)
+-                                .css({"background": "#007AFF", "cursor": "pointer"})
+-                                .addClass("selectSearchItem")
+-                        }, function(){
+-                            $(this)
+-                                .css({"background": "#303030"})
+-                                .removeClass("selectSearchItem")
+-                        })
+-                        .css({
+-                            "font-family": "Lucida Console"
+-                        })
+-                        .html(searchResult[j])
+-                        .attr({"id": searchResult[j].replace(".", "_")})
+-                        .click(function(e){
+-                            var ispName = e.target.id.replace("_", ".");
+-                            var curValue = $('input[name="wan_pppoe_username"]').val()
+-                            $('input[name="wan_pppoe_username"]').val(curValue.split("@")[0] + "@" + ispName)
+-                            $(".listContainer").remove();
+-                        })
+-                        .appendTo(listContainer)
+-                }
+-            
+-                $(this).after(listContainer)
+-            }
+-        });
+-}
+-
+-$.getJSON("ajax/pppIspList_V2.json").always(function(local_data, status){
+-    if(status == "success"){
+-        updateIspList(local_data);
+-    }
+-    $.getJSON("https://nw-dlcdnet.asus.com/plugin/js/pppIspList_V2.json", function(cloud_data){
+-        updateIspList(cloud_data);
+-    });
+-});
+\ No newline at end of file
+diff --git a/release/src/router/www/js/searchOpenNatProfile.js b/release/src/router/www/js/searchOpenNatProfile.js
+index 418971d615..67cfbd48b1 100644
+--- a/release/src/router/www/js/searchOpenNatProfile.js
++++ b/release/src/router/www/js/searchOpenNatProfile.js
+@@ -1,6 +1,7 @@
+ var asusGameProfile = []
+ 
+-fetch("https://nw-dlcdnet.asus.com/plugin/js/opennat_pf.json")
++Promise.resolve({ text: () => "updatePfList([])" })  /* reaper de-cloud: no browser->ASUS-CDN request. the Open NAT
++		   game-profile search was fed from ASUS; empty local list instead. */
+     .then(response => response.text())
+     .then(data => {
+         const jsonData = JSON.parse(data.replace(/^updatePfList\((.*)\)$/g, '$1'));
+diff --git a/release/src/router/www/js/uiModelName.module.js b/release/src/router/www/js/uiModelName.module.js
+index 374fa939c2..4dfd043437 100644
+--- a/release/src/router/www/js/uiModelName.module.js
++++ b/release/src/router/www/js/uiModelName.module.js
+@@ -342,15 +342,8 @@ async function loadData() {
+ 	try {
+ 		Object.assign(uiModelNameJson, LOCAL_DATA);
+ 		window.localStorage.setItem('uiModelNameJson', JSON.stringify(uiModelNameJson));
+-		(async () => {
+-			try {
+-				const cloudData = await fetchData("https://nw-dlcdnet.asus.com/plugin/js/ui-model-name.json");
+-				Object.assign(uiModelNameJson, cloudData);
+-				window.localStorage.setItem('uiModelNameJson', JSON.stringify(uiModelNameJson));
+-			} catch (cloudError) {
+-				console.warn("Failed to load cloud data:", cloudError);
+-			}
+-		})();
++		/* reaper de-cloud: no browser->ASUS-CDN request. LOCAL_DATA above
++		   is authoritative for model display names. */
+ 		return uiModelNameJson;
+ 	} catch (error) {
+ 		console.error("Failed to load data:", error);
+diff --git a/release/src/router/www/sysdep/FUNCTION/ADGUARDDNS_UI/adguard_dns.html b/release/src/router/www/sysdep/FUNCTION/ADGUARDDNS_UI/adguard_dns.html
+index b4df94d4f8..d05070ee24 100644
+--- a/release/src/router/www/sysdep/FUNCTION/ADGUARDDNS_UI/adguard_dns.html
++++ b/release/src/router/www/sysdep/FUNCTION/ADGUARDDNS_UI/adguard_dns.html
+@@ -144,18 +144,16 @@ function openLink(url){
+ 
+ function init(){
+ 	if(window_width <= 940){
+-		$(".adGuard_ad_pic").attr('src', 'https://nw-dlcdnet.asus.com/plugin/dns/img_adguard_w940.png')
+-				.on('error', function() {
+-					//fail to load image
+-					$(this).attr("src", 'images/adGuard/img_adguard_w940.png');
+-				});
++		/* reaper de-cloud: was an ASUS-CDN banner fetch with the bundled copy only
++		   as an error fallback - so simply opening this page announced the visit.
++		   The bundled image is now used directly. */
++		$(".adGuard_ad_pic").attr('src', 'images/adGuard/img_adguard_w940.png');
+ 	}
+ 	else{
+-		$(".adGuard_ad_pic").attr('src', 'https://nw-dlcdnet.asus.com/plugin/dns/img_adguard_w1580.png')
+-				.on('error', function() {
+-					//fail to load image
+-					$(this).attr("src", 'images/adGuard/img_adguard_w1580.png');
+-				});
++		/* reaper de-cloud: was an ASUS-CDN banner fetch with the bundled copy only
++		   as an error fallback - so simply opening this page announced the visit.
++		   The bundled image is now used directly. */
++		$(".adGuard_ad_pic").attr('src', 'images/adGuard/img_adguard_w1580.png');
+ 	}
+ 
+ 	if(sdn_theme == "SDN_PROFILE" || sdn_theme == "SDN_WIZARD"){
+diff --git a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+index a644cca33c..d67d801b16 100644
+--- a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+@@ -1706,17 +1706,6 @@ function initial(){
+ 					$("#dot_presets_tr").hide();
+ 			};
+ 			gen_dotPresets(local_data);
+-/*
+-			$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/dot-servers.json",
+-				function(cloud_data){
+-					if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-						if(Object.keys(cloud_data).length > 0){
+-							gen_dotPresets(cloud_data);
+-						}
+-					}
+-				}
+-			);
+-*/
+ 		});
+ 	}
+ 
+@@ -3533,20 +3522,6 @@ function updatDNSListOnline(){
+ 				return local_data[e];
+ 		});
+ 		Update_DNS_status();
+-/*
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json",
+-			function(cloud_data){
+-				if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-					if(Object.keys(cloud_data).length > 0){
+-						DNSService = Object.keys(cloud_data).map(function(e){
+-							return cloud_data[e];
+-						});
+-						Update_DNS_status();
+-					}
+-				}
+-			}
+-		);
+-*/
+ 	});
+ }
+ 
+diff --git a/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/handler.js b/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/handler.js
+index 0b9da6415f..98c8812762 100644
+--- a/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/handler.js
++++ b/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/handler.js
+@@ -3413,9 +3413,8 @@ goTo.PPPoE = function(){
+ 		if(status == "success"){
+ 			updateIspList(local_data);
+ 		}
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/pppIspList_V2.json", function(cloud_data){
+-			updateIspList(cloud_data);
+-		});
++		/* reaper de-cloud: no browser->ASUS-CDN request. bundled
++		   ajax/pppIspList_V2.json only. */
+ 	});
+ 
+ 	postDataModel.remove(wanObj.all);
+diff --git a/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/plugins.js b/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/plugins.js
+index c6a74903dd..ab607462ba 100644
+--- a/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/plugins.js
++++ b/release/src/router/www/sysdep/FUNCTION/QIS_V3/mobile/js/plugins.js
+@@ -1232,7 +1232,8 @@ var Get_Component_ISPSelect = function(){
+ }
+ 
+ function getCloudProfiles(){
+-	$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/iptv_profile.json",
++	$.when({}).done(  /* reaper de-cloud: no browser->ASUS-CDN request. IPTV ISP profiles were fetched
++		   from ASUS; bundled/manual profiles only. */
+ 		function(data){
+ 			Object.keys(data).forEach(function(profile_name) {
+ 				var newProfile = {};
+@@ -1611,9 +1612,7 @@ function setUpTimeZone(){
+ 
+ }
+ function getDST_db(){
+-	$.getJSON("/ajax/tz_db.json", function(data){tz_table = data;
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/tz_db.json", function(data){tz_table = data;});
+-	});
++	$.getJSON("/ajax/tz_db.json", function(data){tz_table = data;});	/* reaper de-cloud: no browser->ASUS-CDN request. bundled tz_db only. */
+ }
+ var getTimeZoneOffset = function(tz){
+ 	return tz_table[tz] ? tz_table[tz] : "M3.2.0/2,M11.1.0/2";
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 55c955ed18..705aaeb046 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -10689,20 +10689,8 @@ function Get_DNS_List_DB(){
+ 		});
+ 		category_DNS();
+ 
+-		setTimeout(function(){
+-			$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json",
+-				function(cloud_data){
+-					if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-						if(Object.keys(cloud_data).length > 0){
+-							dns_list = Object.keys(cloud_data).map(function(e){
+-								return cloud_data[e];
+-							});
+-							category_DNS();
+-						}
+-					}
+-				}
+-			);
+-		}, 1000);
++		/* reaper de-cloud: no browser->ASUS-CDN request. The bundled
++		   /ajax/DNS_List.json above is authoritative. */
+ 	});
+ 
+ 	function category_DNS(){
+@@ -10783,29 +10771,8 @@ function Get_Scenarios_List(){
+ 		{tag:"#WFH",text:stringSafeGet("<#Scenario_WFH#>")},
+ 		{tag:"#BRANCH_OFFICE",text:stringSafeGet("<#Scenario_branchOffice#>")}
+ 	];
+-	setTimeout(function(){
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/extend_sdn_scenarios.json", function(data){
+-			$.each(data, function(index, item){
+-				if(item["type"] == "Kids" && isSupport("BUSINESS")){
+-					item["type"] = "Sched";
+-				}
+-				item["source"] = "Cloud";
+-
+-				if(item.translation != "") {
+-					var specific_translation = sdn_scenarios_db_translation_mapping.filter(function(map_item){
+-						return (map_item.tag == item.translation);
+-					})[0];
+-					if(specific_translation != undefined){
+-						item.text = specific_translation.text;
+-					}
+-				}
+-			});
+-			if(data.length > 0){
+-				$.merge(scenarios_list, data);
+-				scenarios_list.sort(function(a, b){return parseInt(a.idx) - parseInt(b.idx);});
+-			}
+-		});
+-	},1000);
++	/* reaper de-cloud: no browser->ASUS-CDN request. The built-in
++	   scenarios_list above is the complete set. */
+ }
+ 
+ const sdn_all_rl_attr = function(){
+@@ -13937,7 +13904,8 @@ function Get_Game_Profile(){
+ 		});
+ 	});
+ 	if(httpApi.isConnected()){
+-		fetch("https://nw-dlcdnet.asus.com/plugin/js/opennat_pf.json")
++		Promise.resolve({ text: () => "updatePfList([])" })  /* reaper de-cloud: no browser->ASUS-CDN request. the Open NAT
++		   game-profile search was fed from ASUS; empty local list instead. */
+ 			.then(response => response.text())
+ 			.then(data => {
+ 				const jsonData = JSON.parse(data.replace(/^updatePfList\((.*)\)$/g, '$1'));
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html
+index f966f8f396..09536fb7c2 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/VPN/vpnc.html
+@@ -2087,22 +2087,8 @@ function updateRegionListOnline(){
+ 				return local_data[e];
+ 		});
+ 		Update_ssk_region("fw");
+-		if(httpApi.isConnected(0) || httpApi.isConnected(1)){
+-			setTimeout(function(){
+-				$.getJSON("https://nw-dlcdnet.asus.com/plugin/vpn/clusters.json",
+-					function(cloud_data){
+-						if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-							if(Object.keys(cloud_data).length > 0){
+-								ssk_region = Object.keys(cloud_data).map(function(e){
+-									return cloud_data[e];
+-								});
+-								Update_ssk_region("api");
+-							}
+-						}
+-					}
+-				);
+-			}, 500);
+-		}
++		/* reaper de-cloud: no browser->ASUS-CDN request. the bundled region
++		   list loaded above is used; the ASUS-hosted refresh is gone. */
+ 	});
+ }
+ var ssk_country_options = [];
+@@ -2123,23 +2109,8 @@ function updateNordVPNRegionListOnline(){
+ 			return local_data[e];
+ 		});
+ 		Update_nord_region("fw");
+-		if(httpApi.isConnected(0) || httpApi.isConnected(1)){
+-
+-			setTimeout(function(){
+-				$.getJSON("https://nw-dlcdnet.asus.com/plugin/vpn/countries.json").done(
+-					function(cloud_data){
+-						if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-							if(Object.keys(cloud_data).length > 0){
+-								nord_region = Object.keys(cloud_data).map(function(e){
+-									return cloud_data[e];
+-								});
+-								Update_nord_region("api");
+-							}
+-						}
+-					}
+-				);
+-			}, 500);
+-		}
++		/* reaper de-cloud: no browser->ASUS-CDN request. the bundled
++		   /VPN/countries.json loaded above is used. */
+ 	});
+ }
+ var nord_country_options = [];
+@@ -4339,108 +4310,10 @@ function initial(){
+ 	});
+ 	resize_iframe_height();
+ 
+-	if(support_Surfshark){
+-		//Surfshark_w625_Default.png
+-		//Surfshark_w728_Default.png
+-		if(is_CN){
+-			var UrlPromote_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w625_CN.png";
+-			var UrlBanner_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w728_CN.png";
+-			var UrlPromote = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w625_CN.png";
+-			var UrlBanner = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w728_CN.png";
+-		}
+-		else if(!app_lang){
+-			var UrlPromote_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w625_"+ ui_lang +".png";
+-			var UrlBanner_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w728_"+ ui_lang +".png";
+-			var UrlPromote = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w625_"+ ui_lang +".png";
+-			var UrlBanner = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w728_"+ ui_lang +".png";
+-		}
+-		else{
+-			var UrlPromote_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w625_"+ app_lang +".png";
+-			var UrlBanner_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w728_"+ app_lang +".png";
+-			var UrlPromote = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w625_"+ app_lang +".png";
+-			var UrlBanner = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w728_"+ app_lang +".png";
+-		}
+-
+-		var UrlPromoteDefault_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w625_Default.png";
+-		var UrlBannerDefault_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_w728_Default.png";
+-		var UrlPromoteDefault = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w625_Default.png";
+-		var UrlBannerDefault = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_w728_Default.png";
+-
+-		if(is_CN){
+-			var UrlPromoteMobile_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x160_CN_mobile.png";
+-			var UrlBannerMobile_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x72_CN_mobile.png";
+-			var UrlPromoteMobile = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x160_CN_mobile.png";
+-			var UrlBannerMobile = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x72_CN_mobile.png";
+-		}
+-		else if(!app_lang){
+-			var UrlPromoteMobile_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x160_"+ ui_lang +"_mobile.png";
+-			var UrlBannerMobile_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x72_"+ ui_lang +"_mobile.png";
+-			var UrlPromoteMobile = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x160_"+ ui_lang +"_mobile.png";
+-			var UrlBannerMobile = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x72_"+ ui_lang +"_mobile.png";
+-		}
+-		else{
+-			var UrlPromoteMobile_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x160_"+ app_lang +"_mobile.png";
+-			var UrlBannerMobile_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x72_"+ app_lang +"_mobile.png";
+-			var UrlPromoteMobile = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x160_"+ app_lang +"_mobile.png";
+-			var UrlBannerMobile = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x72_"+ app_lang +"_mobile.png";
+-		}
+-
+-		var UrlPromoteMobileDefault_Nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x160_Default_mobile.png";
+-		var UrlBannerMobileDefault_nord = "https://nw-dlcdnet.asus.com/plugin/vpn/NordVPN_375x72_Default_mobile.png";
+-		var UrlPromoteMobileDefault = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x160_Default_mobile.png";
+-		var UrlBannerMobileDefault = "https://nw-dlcdnet.asus.com/plugin/vpn/Surfshark_375x72_Default_mobile.png";
+-
+-		const current_promote_url = (ww > 500) ? UrlPromote : UrlPromoteMobile;
+-		const default_promote_url = (ww > 500) ? UrlPromoteDefault : UrlPromoteMobileDefault;
+-		$ssk_promote_img.attr('src', current_promote_url)
+-			.on('load', function() {
+-				// image loaded successfully
+-				$(this).attr({'data-img-ready':"true"});
+-			})
+-			.on('error', function() {
+-				// image failed to load
+-				$(this).attr('src', default_promote_url)
+-				.on('load', function() {
+-					// image loaded successfully
+-					$(this).attr('data-img-ready', "true");
+-				})
+-				.on('error', function() {
+-					// image failed to load
+-					$(this).unbind('error').unbind("click");
+-				});
+-			})
+-			.on('click', function(e) {
+-				e = e || event;
+-				e.stopPropagation();
+-				window.open(surfshark_href);
+-			});
+-
+-		const current_promote_url_Nord = (ww > 500) ? UrlPromote_Nord : UrlPromoteMobile_Nord;
+-		const default_promote_url_Nord = (ww > 500) ? UrlPromoteDefault_Nord : UrlPromoteMobileDefault_Nord;
+-		$nord_promote_img.attr('src', current_promote_url_Nord)
+-			.on('load', function() {
+-				// image loaded successfully
+-				$(this).attr({'data-img-ready':"true"});
+-			})
+-			.on('error', function() {
+-				// image failed to load
+-				$(this).attr('src', default_promote_url_Nord)
+-				.on('load', function() {
+-					// image loaded successfully
+-					$(this).attr('data-img-ready', "true");
+-				})
+-				.on('error', function() {
+-					// image failed to load
+-					$(this).unbind('error').unbind("click");
+-				});
+-			})
+-			.on('click', function(e) {
+-				e = e || event;
+-				e.stopPropagation();
+-				window.open(Nord_href);
+-			});
+-
+-	}
++		/* reaper de-cloud: the NordVPN/Surfshark promo-banner block that lived
++	   here built 24 image URLs against nw-dlcdnet.asus.com. It was gated
++	   off, then removed outright - its sibling banner block above is
++	   already commented out upstream, so nothing reads its variables. */
+ 	(()=>{
+ 		let current_lang = "EN";
+ 		if(is_CN){
+@@ -4452,8 +4325,11 @@ function initial(){
+ 		else{
+ 			current_lang = app_lang;
+ 		}
+-		const current_promote_url = `https://nw-dlcdnet.asus.com/plugin/CyberGhost/CyberGhost_${current_lang}.png`;
+-		const default_promote_url = "https://nw-dlcdnet.asus.com/plugin/CyberGhost/CyberGhost_Default.png";
++		/* reaper de-cloud: no browser->ASUS-CDN request. the CyberGhost promo
++		   banner was pulled from the ASUS CDN. Inline 1x1 transparent GIF: the
++		   img resolves locally, 'load' fires, no request leaves the browser. */
++		const current_promote_url = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
++		const default_promote_url = current_promote_url;
+ 		$cyberghost_promote_img.attr('src', current_promote_url)
+ 			.on('load', function() {
+ 				// image loaded successfully
+-- 
+2.25.1
+

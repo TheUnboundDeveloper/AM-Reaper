@@ -1,0 +1,308 @@
+From d582ae82e6d82f3bb681989aff77d8f0e4cd4e84 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 12 Aug 2026 17:55:18 -0400
+Subject: [PATCH] httpd: AiMesh onboarding diagnostics, a 5 GHz block sweep,
+ and one-shot WiFiPro nvram
+
+Three changes that share this file.
+
+AiMesh onboarding. Two gates discard a candidate node with no trace, which is why
+"Search for node finds nothing" has had no diagnostic signal since it was first
+reported. ej_get_onboardinglist() drops a candidate lacking model_name or ts_eth;
+select_best_onboarding_re() additionally requires all five of rssi, rssi_5g,
+rssi_5g2, source and ts_eth on a parent, and returns an empty MAC if none
+qualifies - so a node can be discovered perfectly and still never reach the
+wizard. That second gate had never been identified. Both now log which keys were
+missing. Logging only; no gate condition is altered.
+
+Wireless sweep. The sweep ranked bare 20 MHz channels while the radio runs
+80 MHz, so the page pinned the block CONTAINING the winner and "best" and
+"applied" were different values. Candidates for 5 GHz are now derived from the
+driver's own chanspec list as 80 MHz blocks, plus any non-DFS 20 MHz channel no
+block covers; DFS stays out because each channel costs a 60 s radar check with
+the radio off air. Each result now records the chanspec the radio ACTUALLY ran
+rather than the one requested, and a clean sweep locks in its winner instead of
+restoring. Falls back to the previous 20 MHz list if the driver reports no /80
+forms, so an unexpected chanspec vocabulary degrades rather than empties.
+
+WiFiPro. New ej_wlpro_nvram() emits the whole wireless-settings set as one JSON
+object, iterating wl_ifnames so it self-adjusts to the radio count and band
+layout of any model. Replaces 116 individual nvram evaluations on that page, 29
+of which read a wl3 radio that does not exist on a tri-band unit.
+---
+ release/src/router/httpd/web.c | 202 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 197 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f30e8a0c01..2f30b58b2c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22237,6 +22237,16 @@ static const char *rwifi_bw_of(const char *cs)
+ /* non-DFS 20 MHz channels swept per lower band (US plan). 5 GHz skips the DFS
+  * block 52-144 entirely (each DFS channel would cost a 60s radar check). */
+ static const int rwifi_5g_chans[] = { 36, 40, 44, 48, 149, 153, 157, 161, 165, 0 };
++/* reaper: DFS occupies 52-144 in the 5 GHz plan. Sweeping it is deliberately out
++ * of scope: every DFS channel needs a 60 s channel-availability check with the
++ * radio OFF THE AIR (up to 600 s on weather-radar channels), and a radar hit
++ * blacklists the channel for 30 minutes - a full sweep would become a multi-hour
++ * outage. Everything the radio reports outside that range is swept, whatever the
++ * regulatory domain allows. */
++static int rwifi_5g_is_dfs(int ch)
++{
++	return (ch >= 52 && ch <= 144);
++}
+ static const int rwifi_2g_chans[] = { 1, 6, 11, 0 };
+ 
+ /* candidate channels to sweep, per band. Each returned string is a chanspec the
+@@ -22288,6 +22298,64 @@ static int rwifi_scan_candidates(int unit, const char *ifname, char cand[][24],
+ 		return n;
+ 	}
+ 
++	if (nband == 1) {
++		/* reaper: sweep the 80 MHz BLOCKS the radio will actually run, rather than
++		 * bare 20 MHz channels. Previously the sweep ranked 20 MHz channels and the
++		 * page pinned the 80 MHz block CONTAINING the winner, so the ranked value
++		 * and the applied value were different strings (best 44 -> applied 36/80).
++		 * Measuring the block directly also captures interference across the full
++		 * width as actually experienced, instead of inferring it from one 20 MHz
++		 * sample. If the driver reports no /80 forms the branch falls through to
++		 * the legacy 20 MHz list below, so an unexpected chanspec vocabulary
++		 * degrades to the previous behaviour rather than to an empty sweep. */
++		int anchors[16], nanch = 0, bare[64], nbare = 0;
++		int anchor, wid, a, b, covered;
++
++		if ((p = popen(cmd, "r")) == NULL)
++			return 0;
++		while (fgets(line, sizeof(line), p)) {
++			if (sscanf(line, "%23s", tok) != 1)
++				continue;
++			if (sscanf(tok, "%d/%d", &anchor, &wid) == 2) {
++				if (wid != 80 || rwifi_5g_is_dfs(anchor) || nanch >= 16)
++					continue;
++				for (a = 0; a < nanch; a++)
++					if (anchors[a] == anchor)
++						break;
++				if (a == nanch)
++					anchors[nanch++] = anchor;
++				continue;
++			}
++			/* bare 20 MHz form: all digits, no '/' and no l/u suffix */
++			for (i = 0; tok[i]; i++)
++				if (!isdigit((unsigned char)tok[i]))
++					break;
++			if (i == 0 || tok[i] != 0 || nbare >= 64)
++				continue;
++			a = atoi(tok);
++			if (!rwifi_5g_is_dfs(a))
++				bare[nbare++] = a;
++		}
++		pclose(p);
++
++		if (nanch) {
++			for (a = 0; a < nanch && n < max; a++)
++				snprintf(cand[n++], 24, "%d/80", anchors[a]);
++			/* any non-DFS 20 MHz channel that no collected block covers gets
++			 * swept on its own - channel 165 in the US plan, and whatever the
++			 * equivalent is elsewhere. An 80 MHz block spans anchor..anchor+12. */
++			for (b = 0; b < nbare && n < max; b++) {
++				covered = 0;
++				for (a = 0; a < nanch; a++)
++					if (bare[b] >= anchors[a] && bare[b] <= anchors[a] + 12)
++						covered = 1;
++				if (!covered)
++					snprintf(cand[n++], 24, "%d", bare[b]);
++			}
++			return n;
++		}
++	}
++
+ 	if (nband == 1 || nband == 2) {
+ 		const int *want = (nband == 1) ? rwifi_5g_chans : rwifi_2g_chans;
+ 		int present[80], npr = 0, k, c;
+@@ -22464,7 +22532,17 @@ static void rwifi_scan_worker(int unit)
+ 		if (!rwifi_scan_alive())
+ 			break;			/* stopped during the slow restart */
+ 
+-		snprintf(r[n].cs, sizeof(r[n].cs), "%s", cand[i]);
++		/* reaper: record the chanspec the radio ACTUALLY ran, not the one we
++		 * asked for. The driver/wlconf normalise some requested forms, so storing
++		 * the request can label a row with a chanspec that was never on air - and
++		 * that row is exactly what the operator then pins. Falls back to the
++		 * request if the read fails, i.e. never worse than before. */
++		{
++			char act[64];
++
++			rwifi_run_chanspec(ifname, act);
++			snprintf(r[n].cs, sizeof(r[n].cs), "%s", act[0] ? act : cand[i]);
++		}
+ 		rwifi_avg_sample(ifname, RWIFI_SCAN_DWELL, &r[n].nopkt, &r[n].txop, &r[n].glitch, &r[n].knoise);
+ 		r[n].score = r[n].nopkt + (100 - r[n].txop) +
+ 			     (r[n].glitch > 200 ? 200 : r[n].glitch) / 10;
+@@ -22475,11 +22553,25 @@ static void rwifi_scan_worker(int unit)
+ 
+ 	aborted = !rwifi_scan_alive();
+ 
+-	/* restore the pre-scan channel regardless of how we got here */
++	/* reaper: a CLEAN sweep locks in its winner; an aborted or stopped one puts
++	 * back exactly what was there before. r[order[0]].cs is the chanspec the radio
++	 * actually ran during the sweep, so it applies verbatim - ranked and applied
++	 * cannot disagree. Committed, so the choice survives a reboot.
++	 * SIDE EFFECT (stated on the page): this pins the radio. A radio joins
++	 * acs_ifnames only while wlN_chanspec is "0", so auto-channel is off for it
++	 * until the operator sets Control Channel back to Auto. */
++	rwifi_scan_rank(r, n, order);
+ 	snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
+-	nvram_set(nvk, orig_cs);
+-	snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
+-	nvram_set(nvk, orig_bw);
++	if (!aborted && n > 0) {
++		nvram_set(nvk, r[order[0]].cs);
++		snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
++		nvram_set(nvk, rwifi_bw_of(r[order[0]].cs));
++	} else {
++		nvram_set(nvk, orig_cs);
++		snprintf(nvk, sizeof(nvk), "wl%d_bw", unit);
++		nvram_set(nvk, orig_bw);
++	}
++	nvram_commit();
+ 	notify_rc("restart_wireless");
+ 
+ 	rwifi_scan_rank(r, n, order);
+@@ -37542,6 +37634,77 @@ ej_wl_nband_info(int eid, webs_t wp, int argc, char_t **argv)
+ 	return ret;
+ }
+ 
++/* reaper 2026-08-12: one-shot wireless-nvram snapshot for Reaper_WiFiPro.asp.
++ *
++ * That page embedded 116 separate <% nvram_get() %> evaluations - 29 fields
++ * across a HARDCODED wl0..wl3 - so a tri-band model paid 29 reads for a wl3
++ * radio it does not have, and every model paid 116 ej dispatches (each an arg
++ * parse, a wl_nband_to_wlx() translation and an 8 KB stack buffer) before one
++ * byte of the page could render. No other Reaper page uses more than 13.
++ *
++ * Wireless nvram is not a plain memory read on this platform: libnvram.so serves
++ * nvram_get from the same object that exports _wlcsm_init,
++ * _wlcsm_netlink_send_mesg and g_WLCSM_NVRAM_MUTEX, so each wlN_* read costs
++ * materially more than an ordinary one - and they were paid in series.
++ *
++ * Emits the whole set in ONE pass over wl_ifnames, the authoritative radio list,
++ * so it self-adjusts to the radio COUNT and the BAND LAYOUT of whatever model it
++ * runs on - exactly as ej_wl_nband_info() above already does. Radios that do not
++ * exist are simply absent from the object; the page's only reader already treats
++ * a missing key as "" (dv = NV[nm]; if (dv == null) dv = "").
++ */
++static const char *wlpro_nv_fields[] = {
++	"11be", "ampdu_mpdu", "ampdu_rts", "atf", "bcn", "bss_maxassoc",
++	"btc_mode", "dtim", "frag", "frameburst", "gmode_protection", "igs",
++	"itxbf", "mbo_enable", "mumimo", "nmode_x", "ofdma", "plcphdr",
++	"radio", "rateset", "rts", "turbo_qam", "twt", "txbf", "txpower",
++	"user_rssi", "wme", "wme_apsd", "wme_no_ack", NULL
++};
++
++static int
++ej_wlpro_nvram(int eid, webs_t wp, int argc, char_t **argv)
++{
++	char word[256], *next, key[64];
++	int unit = 0, i, ret = 0;
++	json_object *o;
++	const char *s, *p, *q;
++
++	o = json_object_new_object();
++	if (o == NULL)
++		return websWrite(wp, "{}");
++
++	foreach (word, nvram_safe_get("wl_ifnames"), next) {
++		for (i = 0; wlpro_nv_fields[i]; i++) {
++			snprintf(key, sizeof(key), "wl%d_%s", unit, wlpro_nv_fields[i]);
++			json_object_object_add(o, key,
++				json_object_new_string(nvram_safe_get(key)));
++		}
++		unit++;
++	}
++
++	s = json_object_to_json_string(o);
++	/* json-c escapes " \ and control characters but leaves '<' alone, and this
++	 * lands inside an inline <script>. A value containing "</script>" would end
++	 * the script element in the HTML parser before any JS is parsed, so quote
++	 * escaping alone cannot save it - the same trap lease_js_escape() exists for
++	 * in data_arrays.c. Emit '<' as the JSON escape \u003c, which decodes back
++	 * to '<' in the string but which the HTML tokenizer never sees.
++	 */
++	for (p = s; p != NULL && *p != '\0'; ) {
++		for (q = p; *q != '\0' && *q != '<'; q++)
++			;
++		if (q > p)
++			ret += websWrite(wp, "%.*s", (int)(q - p), p);
++		if (*q == '<') {
++			ret += websWrite(wp, "\\u003c");
++			q++;
++		}
++		p = q;
++	}
++	json_object_put(o);
++	return ret;
++}
++
+ int gen_wl_nband_array()
+ {
+ 	int i = 0;
+@@ -41343,6 +41506,20 @@ static char *select_best_onboarding_re(char *newReMac, int *rssi, int *source, l
+ 				json_object_object_get_ex(newReObj, "source", &sourceObj);
+ 				json_object_object_get_ex(newReObj, "ts_eth", &tsEthObj);
+ 				json_object_object_get_ex(newReObj, "type", &typeObj);
++				/* reaper: gate-2 diagnostics. ALL FIVE keys must be present or this
++				 * parent contributes nothing; if no parent qualifies, the new node is
++				 * dropped from the onboarding list entirely and the wizard shows an
++				 * empty search. Note rssi_5g2 is required even on models with no
++				 * second 5 GHz radio. Logging only - the gate itself is unchanged. */
++				if (!(rssiObj && rssi5gObj && rssi5g2Obj && sourceObj && tsEthObj))
++					logmessage("aimesh", "onboarding: parent %s skipped for node %s - missing%s%s%s%s%s",
++						key, newReMac,
++						rssiObj ? "" : " rssi",
++						rssi5gObj ? "" : " rssi_5g",
++						rssi5g2Obj ? "" : " rssi_5g2",
++						sourceObj ? "" : " source",
++						tsEthObj ? "" : " ts_eth");
++
+ 				if (rssiObj && rssi5gObj && rssi5g2Obj && sourceObj && tsEthObj) {
+ 					/* for ethernet */
+ 					if (json_object_get_int(sourceObj) & 0x2) {
+@@ -41556,6 +41733,14 @@ ej_get_onboardinglist(int eid, webs_t wp, int argc, char **argv){
+ 				json_object_object_get_ex(newReObj, "ts_eth", &tsEthObj);
+ 				json_object_object_get_ex(newReObj, "tcode", &tCodeObj);
+ 				json_object_object_get_ex(newReObj, "misc_info", &miscInfoObj);
++				/* reaper: gate-1 diagnostics. A candidate lacking either key is
++				 * discarded here with no trace. Logging only. */
++				if (!(modelNameObj && tsEthObj))
++					logmessage("aimesh", "onboarding: candidate %s dropped - missing%s%s",
++						newReMac,
++						modelNameObj ? "" : " model_name",
++						tsEthObj ? "" : " ts_eth");
++
+ 				if (modelNameObj && tsEthObj) {
+ 					rssi = 0;
+ 					ts_eth = json_object_get_int64(tsEthObj);
+@@ -41582,6 +41767,12 @@ ej_get_onboardinglist(int eid, webs_t wp, int argc, char **argv){
+ 					snprintf(reMac, sizeof(reMac), "%s",
+ 						select_best_onboarding_re(newReMac, &rssi, &source, ts_eth, &type));
+ 
++					/* reaper: passed gate 1 but no parent qualified, so this node never
++					 * reaches the wizard. Logging only. */
++					if (!strlen(reMac))
++						logmessage("aimesh", "onboarding: node %s (%s) seen but no parent selected - not offered",
++							newReMac, modelName);
++
+ 					if (strlen(reMac)) {
+ 						if (!bestReObj)
+ 							bestReObj = json_object_new_object();
+@@ -46442,6 +46633,7 @@ struct ej_handler ej_handlers[] = {
+ 	{ "traffic_limiter_wanStat", ej_traffic_limiter_wanStat},
+ #endif
+ 	{ "wl_nband_info", ej_wl_nband_info},
++	{ "wlpro_nvram", ej_wlpro_nvram},
+ 	{ "wl_nband_list", ej_wl_nband_list},
+ #ifdef RTCONFIG_GEOIP
+ 	{ "geoiplookup", ej_geoiplookup},
+-- 
+2.25.1
+

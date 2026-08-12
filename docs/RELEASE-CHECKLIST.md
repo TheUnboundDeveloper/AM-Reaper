@@ -14,7 +14,7 @@ sibling branches at once, and neither is on GitHub.
 
 ---
 
-## Phase 0 — Preconditions
+## Phase 1 — Preconditions
 
 - [ ] Canon clone is on `be96u-only` with **no uncommitted tracked changes**
       `git -C /home/reaper/asuswrt-be96u status --short --untracked-files=no`
@@ -28,7 +28,7 @@ sibling branches at once, and neither is on GitHub.
 
 ---
 
-## Phase 1 — Cut the rung and port the fleet (local, one command)
+## Phase 2 — Cut the rung and port the fleet (local, one command)
 
 ```bash
 wsl -d Ubuntu-20.04 -u reaper -- \
@@ -55,7 +55,7 @@ the overlay.
 
 ---
 
-## Phase 2 — Write the prose (local, not automatable)
+## Phase 3 — Write the prose (local, not automatable)
 
 - [ ] `provenance/manifest.json` → this release's **`summary`** (what changed and
       why, in prose) and **`models_note`** (fleet/port status)
@@ -72,7 +72,7 @@ the overlay.
 
 ---
 
-## Phase 3 — Review
+## Phase 4 — Review
 
 - [ ] `git diff` and `git status` in the lean repo — expect: new `patches/`,
       `provenance/manifest.json`, `docs/CHANGELOG.md`, and `public-build.yml`
@@ -85,7 +85,7 @@ the overlay.
 
 ---
 
-## Phase 4 — Commit the lean repo
+## Phase 5 — Commit the lean repo
 
 - [ ] Commit. Keep the five coupled artifacts **in one commit**: `patches/`,
       `EXPECTED_VERSION`, `provenance/manifest.json`, `overlays/*` (if they
@@ -94,7 +94,7 @@ the overlay.
 
 ---
 
-## Phase 5 — Push the hub (local, easy to forget)
+## Phase 6 — Push the hub (local, easy to forget)
 
 ```bash
 git -C /home/reaper/asuswrt-be96u push hub \
@@ -111,7 +111,7 @@ git -C /home/reaper/asuswrt-be96u push hub \
 
 ---
 
-## Phase 6 — Push the lean repo
+## Phase 7 — Push the lean repo
 
 Choose one:
 
@@ -126,7 +126,7 @@ Choose one:
 
 ---
 
-## Phase 7 — Build (remote)
+## Phase 8 — Build (remote)
 
 **Actions → Public build → Run workflow**
 
@@ -151,7 +151,7 @@ Watch for:
 
 ---
 
-## Phase 8 — Metal (nothing above proves a router boots)
+## Phase 9 — Metal (nothing above proves a router boots)
 
 - [ ] Flash **one** image on the primary model before fanning out
 - [ ] Boot, sign in, dashboard renders
@@ -160,7 +160,7 @@ Watch for:
 
 ---
 
-## Phase 9 — Publish
+## Phase 10 — Publish
 
 - [ ] Re-dispatch `public-build.yml` from `main` with **`publish` ticked**
 
@@ -180,7 +180,7 @@ Watch for:
 
 ---
 
-## Phase 10 — Verify the published result
+## Phase 11 — Verify the published result
 
 - [ ] One Release per model, assets attached, checksums present
 - [ ] `updates/manifest_3006.txt` advertises the new version

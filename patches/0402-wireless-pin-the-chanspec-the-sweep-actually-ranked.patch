@@ -1,0 +1,94 @@
+From 906945b0ffaee930b4bad4e3f864291d990cf17b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 12 Aug 2026 17:55:19 -0400
+Subject: [PATCH] wireless: pin the chanspec the sweep actually ranked
+
+pinTarget() rewrote a 5 GHz winner into the 80 MHz block containing it, so the
+channel offered was not the channel ranked - reported from the field as "it
+suggests channels completely different from the scan". The sweep now ranks the
+exact chanspec the radio ran, so the substitution is gone and pinTarget() is a
+passthrough.
+
+blockRange() assumed every non-6 GHz row was 20 MHz wide; it now spans the
+chanspec's own width, or an 80 MHz block would have been drawn as a 20 MHz bar.
+The confirm dialog states the applied value against the ranked one if they ever
+differ again.
+---
+ release/src/router/www/Reaper_Wireless.asp | 36 ++++++++++++++--------
+ 1 file changed, 24 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index b38b40b361..676996f225 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -148,6 +148,7 @@ tr.curchan td{background:rgba(224,169,59,.07)}
+ <div class="panel">
+   <h2><#RWIF_30#></h2>
+   <div class="sub"><#RWIF_31#></div>
++  <div class="note"><#RWIF_82#></div>
+   <div class="fld"><label><#RWIF_58#></label><select id="scanband"></select></div>
+   <div>
+     <button class="btn hot" id="scango" onclick="scanStart()"><#RWIF_32#></button>
+@@ -524,21 +525,25 @@ function blockRange(cs,nb){
+     return {loMHz:chFreqMHz(lo,4)-10, hiMHz:chFreqMHz(hi,4)+10};
+   }
+   var c=chOf(cs); if(!c) return null;
+-  return {loMHz:chFreqMHz(c,nb)-10, hiMHz:chFreqMHz(c,nb)+10};   /* 20 MHz wide */
++  /* reaper: span the chanspec's OWN width. 5 GHz rows are now 80 MHz blocks
++   * (36/80, 149/80) and 165 stays 20 MHz, so a fixed +/-10 drew an 80 MHz block
++   * as a 20 MHz bar. The anchor channel's centre less 10 is the block's lower
++   * edge, and the block runs one full width from there - correct for 20, 40, 80
++   * and 160 alike. */
++  var wMHz=parseInt(widthOf(cs),10)||20, lo=chFreqMHz(c,nb)-10;
++  return {loMHz:lo, hiMHz:lo+wMHz};
+ }
+ function freqSpan(cs,nb){
+   var b=blockRange(cs,nb); if(!b) return "&ndash;";
+   return (b.loMHz/1000).toFixed(2)+"&ndash;"+(b.hiMHz/1000).toFixed(2)+" GHz";
+ }
+-/* pin target per band: 6 GHz/2.4 pin as-is; 5 GHz maps the winning 20 MHz
+- * channel to its usable non-DFS 80 MHz block */
+-function pinTarget(cs,nb){
+-  if(nb!==1) return cs;
+-  var c=chOf(cs);
+-  if(c>=36&&c<=48) return "36/80";
+-  if(c>=149&&c<=161) return "149/80";
+-  return String(c);
+-}
++/* reaper: passthrough. The sweep now ranks the exact chanspec the radio ran on
++ * every band - 6 GHz 320 MHz blocks, 5 GHz 80 MHz blocks, 2.4 GHz 20 MHz
++ * channels - so the ranked entry is directly pinnable and needs no rewriting.
++ * The old 5 GHz branch substituted the 80 MHz block containing the winner,
++ * which is exactly why "best" and "applied" disagreed in the field. Kept as a
++ * function so every caller and the guard in scanPin() stay unchanged. */
++function pinTarget(cs,nb){ return cs; }
+ function showToast(msg){
+   var t=document.getElementById("toast"); if(!t) return;
+   t.textContent=msg; t.className="toast show";
+@@ -647,14 +652,21 @@ function renderScan(){
+ function scanPin(){
+   if(!SCANBEST||!SCANBEST.chanspec||!SCANDATA) return;
+   var u=SCANDATA.unit, nb=nbandOf(u), pin=pinTarget(SCANBEST.chanspec,nb);
+-  var msg="<#RWIF_42#> "+(BANDLBL[nb]||"")+" "+pin+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
++  /* reaper: the pin is NOT always the scanned best. On 5 GHz the sweep samples
++   * 20 MHz channels (rwifi_5g_chans, swept at bw=20) but the radio runs 80 MHz,
++   * so pinTarget() substitutes the 80 MHz block CONTAINING the winner - best 44
++   * applies as 36/80. Showing only the substituted value made this read as "it
++   * assigns a completely different channel" in the field. State the transform.
++   * Value-only, no new dict token, so the 24-language lockstep is untouched. */
++  var shown=pin+((pin!==SCANBEST.chanspec)?" \u2190 "+SCANBEST.chanspec:"");
++  var msg="<#RWIF_42#> "+(BANDLBL[nb]||"")+" "+shown+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
+   var res=(SCANDATA.results)||[], ck=blockKey(scanRunCs(),nb), j;
+   for(j=0;j<res.length;j++) if(ck&&blockKey(res[j].chanspec,nb)===ck){
+     msg+="\n<#RWIF_56#> "+res[j].chanspec+" (nopkt "+(+res[j].nopkt).toFixed(0)+"%)"; break;
+   }
+   if(!confirm(msg)) return;
+   submitApply(u,pin,bwCode(pin));
+-  showToast("<#RWIF_57#> "+pin);
++  showToast("<#RWIF_57#> "+shown);
+ }
+ var BANDLBL={4:"6 GHz",1:"5 GHz",2:"2.4 GHz"};
+ /* ---- downloadable / printable landscape report (self-contained HTML + SVG) ---- */
+-- 
+2.25.1
+

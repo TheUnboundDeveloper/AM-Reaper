@@ -56,7 +56,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     runner are **blobs** — not safely fixable from the auditable source.
 
   - **Metal diagnostics to split it:** run the built-in test on type-11 while capturing
-    `logread`+`dmesg`+`fc status`+`tmctl getqstats`; repeat on type-10 (control); run an
+    `/tmp/syslog.log`+`dmesg`+`fc status`+`tmctl getqstats` (**not `logread`** — syslogd always runs
+    with `-O <file>` and never `-C`, so `logread` returns empty on every unit); repeat on type-10 (control); run an
     **external/LAN-client** test under type-11 (if it does NOT freeze, the router-local path is the
     confound); set `qos_pshaper=0` or raise `qos_obw` to line rate → re-run. **Interim workaround:**
     run the built-in test with QoS on a classless mode or off, or use a LAN-client/external test.

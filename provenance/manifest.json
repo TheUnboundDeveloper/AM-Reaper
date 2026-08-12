@@ -21,6 +21,29 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v2.3.6",
+      "firmware": "3006.102.8_Reaper_v2.3.6",
+      "build_commit": "f339cdc5b5",
+      "source_tree": {
+        "release/src/router": "e9cc24c92d938b3abb4c62d06d7da50993c88c99",
+        "release/src-rt": "f25b71e2e970b195dd6fd2dcfaa3b64ef2b9292f"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "3740a7192671ec39854d96f8383e202b46599e90",
+        "release/src-rt": "f25b71e2e970b195dd6fd2dcfaa3b64ef2b9292f"
+      },
+      "images": [],
+      "patch_count": 399,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-08-12",
+      "parent": "v2.3.5",
+      "summary": "Single-change release: a workaround for a Broadcom defect in the closed libnvram.so that can permanently wedge an nvram write while leaving the router otherwise up. _wlcsm_init() passes the ADDRESS of its saved-PID field to the internal netlink port allocator as the port-candidate out-parameter; on EADDRINUSE the allocator walks ten candidates and writes each back through that pointer, corrupting the saved PID. The next call sees saved_pid != getpid(), concludes the process forked, and re-initialises without closing the previous socket - leaking one netlink socket per pass until all ten candidates are gone, after which wlcsm_nvram_getall() retries the failing send without bound while holding the nvram mutex. Because the send path re-enters _wlcsm_init(), each retry redoes the whole socket-plus-ten-binds sequence: roughly sixteen syscalls per pass with no backoff, which burns a core in system time, floods stderr, and never completes the write. The trigger is PID reuse landing on a netlink port a long-lived process already holds, and the leaked ports then squat for the life of the stuck process, so it compounds with uptime and process churn. Caught live on metal 2026-08-11 and confirmed instruction-by-instruction in the shipped binary. The fix is a small LD_PRELOAD object of our own (the closed library is not modified): it interposes bind() and, only when the real call already failed EADDRINUSE on an AF_NETLINK protocol-31 socket with a non-zero nl_pid, retries once with nl_pid = 0 so the kernel autobinds - which is what Broadcom's own second WLCSM socket already does. Every step of the failure chain is gated on that first bind, so making it succeed removes all of it. SHIPS INERT: /etc/ld.so.preload is global to every dynamically linked process and this has not run on hardware, so the nvram flag defaults to 0 and no router behaviour changes until an operator sets wlcsm_bindfix=1. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
+      "models_note": "Canon-only rung; the four sibling BRANCHES are still at v2.3.5 and were not ported. That does not affect CI: build_one.sh reconstructs a sibling as the canon tree replayed from patches/ plus overlays/<MODEL>.patch (identity only), so the new wlcsm_bindfix package reaches all five models straight from the series. cut_rung step 7 confirms it: this rung touches 8 files and overlaps no overlay, so no overlay regeneration is required and none was done. The sibling branches will pick the package up on their next port_sibling_v2 run - worth a dry run first, since a brand-new top-level package directory has not previously been exercised through the protect classifier. NOT BUILT and NOT on hardware on any model."
+    },
+    {
       "version": "v2.3.5",
       "firmware": "3006.102.8_Reaper_v2.3.5",
       "build_commit": "db2c2737f9",

@@ -1,0 +1,528 @@
+From 11580e3800d3ee4e532f3589a2854e5a16e30320 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 12 Aug 2026 10:29:52 -0400
+Subject: [PATCH] wlcsm: work around the Broadcom netlink port-allocation
+ defect in libnvram.so
+
+Field incident, caught live on metal 2026-08-11 and then confirmed instruction
+by instruction in the shipped binary: an nvram save wedged permanently while the
+router stayed up and SSH-accessible. strace showed it creating a netlink socket,
+failing bind() with EADDRINUSE for PID..PID+9, printing "_wlcsm_init failed!",
+and immediately repeating - forever.
+
+ROOT CAUSE (libnvram.so, disassembly-confirmed)
+
+_wlcsm_init() stores getpid() into wlcsm_agent+0x18 and then hands the ADDRESS
+OF THAT SAME FIELD to the internal netlink allocator as its port-candidate
+out-parameter:
+
+    3bbc:  str r0, [r1, #24]!   ; saved_pid = getpid(); r1 = &saved_pid
+    3bc4:  bl  3930             ; alloc(&agent, &saved_pid, 0)
+
+The allocator binds NETLINK protocol 31 with nl_pid = *candidate and, on
+EADDRINUSE, walks ten candidates (0x396c: mov r7,#10) writing each one back
+through that pointer:
+
+    39b8:  add r6, r6, #1
+    39bc:  str r6, [r5]         ; mutates the caller's saved_pid
+
+So the candidate port and the saved PID are the same storage. After any
+collision saved_pid != getpid(), and the next entry tests exactly that:
+
+    3c30:  cmp r4, r0           ; saved_pid vs getpid()
+    3c34:  bne 3ba8             ; "the PID changed" -> re-init
+
+The re-init path never close()s the previous fd. Each pass therefore leaks one
+netlink socket and drifts the candidate further, until all ten are burned and
+_wlcsm_init() fails for good. wlcsm_nvram_getall() then retries the failing send
+without bound (5b2c: bne 5b0c) while holding g_WLCSM_NVRAM_MUTEX, and because
+_wlcsm_netlink_send_mesg() re-enters _wlcsm_init() (3e4c), every iteration redoes
+the whole socket + ten-bind dance: ~16 syscalls per pass with no backoff. That
+burns a core in system time, floods stderr, and the nvram write never completes.
+The leaked ports then squat for the life of the process, making the next
+PID-reuse collision more likely - so it compounds with uptime and process churn.
+
+Trigger: PID reuse landing on a netlink port a long-lived process already owns
+(here, debug_monitor holding 4986/4987 when an nvram save was later given PID
+4986). Killing the port holder released it with no reboot.
+
+THE WORKAROUND
+
+Every step of that chain is gated on the FIRST bind failing. If it succeeds, the
+allocator never increments, saved_pid stays == getpid(), the false "PID changed"
+branch never fires, nothing leaks and nothing spins. wlcsm_bindfix.so interposes
+bind() and, only when the real call already returned EADDRINUSE on an AF_NETLINK
+protocol-31 socket with a non-zero nl_pid, retries once with nl_pid = 0 so the
+kernel autobinds a free port. Everything else passes through untouched.
+
+This is not an exotic change to the subsystem: Broadcom's own SECOND WLCSM socket
+is already allocated with the candidate seeded to zero (3c60: str r4,[sp] with
+r4=0), i.e. it already uses kernel autobind.
+
+The closed library is not modified. This is our own object loaded beside it.
+
+DEFAULT OFF. /etc/ld.so.preload is global to every dynamically linked process and
+this has not yet run on hardware - the same risk class as the /proc readers behind
+the accel-experiment reboot loops. Ships inert; enable deliberately with
+  nvram set wlcsm_bindfix=1 && nvram commit && reboot
+Back to 0 removes the preload on the next boot. Per-process opt-out without a
+reboot: WLCSM_BINDFIX=0 in that process's environment.
+
+Residual risk to settle on metal: after a rescue the socket's port no longer
+equals the PID. Nothing in the kernel cares; the open question is whether the
+wlcsm daemon ever addresses a process by a port it assumes equals its PID. Every
+rescue emits a syslog line naming the pid and port, so it is visible if it bites.
+
+Note for a vendor report: the library's error path writes to stderr via fprintf
+despite linking logmessage_normal, so on a router these failures never reach
+syslog - which is much of why this has gone unexplained for years.
+
+Built and behaviour-tested off-target: cross-compiles clean for elf32-littlearm
+(7,520 bytes, links only libdl/libc/ld-linux - deliberately NOT libnvram, which it
+wraps); rescue path, kill switch, protocol scoping and non-netlink passthrough all
+verified.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/Makefile                   |  18 ++
+ release/src/router/rc/rc.h                    |   1 +
+ release/src/router/rc/services.c              |  83 ++++++++
+ release/src/router/shared/defaults.c          |   6 +
+ release/src/router/wlcsm_bindfix/.gitignore   |   3 +
+ release/src/router/wlcsm_bindfix/Makefile     |  43 ++++
+ .../src/router/wlcsm_bindfix/wlcsm_bindfix.c  | 197 ++++++++++++++++++
+ 7 files changed, 351 insertions(+)
+ create mode 100644 release/src/router/wlcsm_bindfix/.gitignore
+ create mode 100644 release/src/router/wlcsm_bindfix/Makefile
+ create mode 100644 release/src/router/wlcsm_bindfix/wlcsm_bindfix.c
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index e0784d6327..3259dc0b7b 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1199,6 +1199,12 @@ endif
+ endif
+ # reaper v1.3.0: traffic collector (per-client/per-net/per-class history + probe)
+ obj-y += rtrafd
++# reaper 2026-08-12: LD_PRELOAD workaround for the Broadcom WLCSM netlink
++# port-allocation defect in the closed libnvram.so. Always BUILT (7 KB, no deps
++# beyond libdl); activation is runtime-only, gated on nvram wlcsm_bindfix - see
++# start_wlcsm_bindfix() in rc/services.c. Building it unconditionally keeps the
++# five model configs identical.
++obj-y += wlcsm_bindfix
+ # reaper v1.6.1: passive channel-quality monitor (opt-in nvram rchq_enable, read-only)
+ obj-y += rchqd
+ # reaper v1.6.8: Gatekeeper watcher (detection/expiry only; enforcement lives in rc)
+@@ -6413,6 +6419,18 @@ rtrafd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rtrafd-install:
+ 	$(MAKE) -C rtrafd INSTALLDIR=$(INSTALLDIR)/rtrafd install
+ 
++# reaper: the bind() shim. No package deps - it must NOT link libnvram/libshared,
++# since it is preloaded into every process and those call the very path it wraps.
++wlcsm_bindfix:
++	@$(SEP)
++	$(MAKE) -C wlcsm_bindfix
++
++wlcsm_bindfix-install:
++	$(MAKE) -C wlcsm_bindfix INSTALLDIR=$(INSTALLDIR)/wlcsm_bindfix install
++
++wlcsm_bindfix-clean:
++	-@$(MAKE) -C wlcsm_bindfix clean
++
+ gkd: nvram$(BCMEX)$(EX7) shared
+ 
+ gkd-install:
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 3219860a5b..e4e4881064 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2982,6 +2982,7 @@ extern void stop_gk(void);	/* reaper v1.6.8 Gatekeeper device access control (rc
+ extern void start_gk(void);
+ extern void gk_teardown_rules(void);
+ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exact-name pidof misses the latter) */
++extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
+ extern void rw_teardown_rules(void);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index d80cecd9a3..b9d5bf084b 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -8199,6 +8199,83 @@ void start_upnp(void)
+ 	}
+ }
+ 
++/* ===================================================================
++ * reaper 2026-08-12: activate the WLCSM netlink bind() shim.
++ *
++ * THE BUG IT WORKS AROUND (closed libnvram.so, disassembly-confirmed, and caught
++ * live on metal 2026-08-11): _wlcsm_init() stores getpid() into wlcsm_agent+0x18
++ * and hands the ADDRESS OF THAT SAME FIELD to the internal netlink allocator as
++ * the port-candidate out-parameter. On EADDRINUSE the allocator walks up to ten
++ * candidates, writing each one back through that pointer (0x39bc: str r6,[r5]),
++ * so the saved PID is corrupted. The next call sees saved_pid != getpid(),
++ * concludes the process forked, and re-initialises WITHOUT closing the previous
++ * socket. Each pass leaks one netlink socket and drifts further, until all ten
++ * candidates are gone - after which wlcsm_nvram_getall() spins on the failing
++ * send forever (0x5b2c: bne 5b0c) while holding g_WLCSM_NVRAM_MUTEX. That burns
++ * a core in syscalls, floods stderr, and the process never completes its nvram
++ * write. Trigger: PID reuse landing on a netlink port a long-lived process
++ * already owns. The leaked ports then squat, making the next collision likelier.
++ *
++ * The shim makes the FIRST bind succeed (kernel autobind on EADDRINUSE), which
++ * is the single gate the whole chain hangs off - no drift, no leak, no spin.
++ * Broadcom's own second WLCSM socket is already allocated with nl_pid = 0, so
++ * autobind is not a foreign concept to this subsystem.
++ *
++ * DEFAULT OFF. /etc/ld.so.preload is global - it applies to every dynamically
++ * linked process on the box - and this has not yet run on hardware. That is the
++ * same risk class as the /proc readers that caused the accel-experiment reboot
++ * loops, so it ships inert and is enabled deliberately:
++ *     nvram set wlcsm_bindfix=1 && nvram commit && reboot
++ * Setting it back to 0 removes the file on the next boot. Per-process opt-out
++ * without a reboot: WLCSM_BINDFIX=0 in that process's environment.
++ * =================================================================== */
++#define WLCSM_BINDFIX_LIB "/lib/wlcsm_bindfix.so"
++#define LD_SO_PRELOAD     "/etc/ld.so.preload"
++
++/* Only ever remove a preload file that is OURS. Nothing else in this firmware
++ * writes /etc/ld.so.preload today, but silently deleting someone else's would be
++ * a nasty surprise for an add-on. */
++static void wlcsm_bindfix_remove(void)
++{
++	char buf[256] = "";
++	FILE *f = fopen(LD_SO_PRELOAD, "r");
++
++	if (!f)
++		return;
++	if (fgets(buf, sizeof(buf), f) == NULL)
++		buf[0] = '\0';
++	fclose(f);
++	if (strstr(buf, "wlcsm_bindfix"))
++		unlink(LD_SO_PRELOAD);
++}
++
++void start_wlcsm_bindfix(void)
++{
++	FILE *f;
++
++	if (!nvram_match("wlcsm_bindfix", "1")) {
++		wlcsm_bindfix_remove();
++		return;
++	}
++	if (!f_exists(WLCSM_BINDFIX_LIB)) {
++		logmessage("wlcsm_bindfix", "enabled but %s is missing - NOT installing "
++			   "the preload (nvram wlcsm_bindfix=1 has no effect)",
++			   WLCSM_BINDFIX_LIB);
++		wlcsm_bindfix_remove();
++		return;
++	}
++	if ((f = fopen(LD_SO_PRELOAD, "w")) == NULL) {
++		logmessage("wlcsm_bindfix", "cannot write %s (%s) - shim NOT active",
++			   LD_SO_PRELOAD, strerror(errno));
++		return;
++	}
++	fprintf(f, "%s\n", WLCSM_BINDFIX_LIB);
++	fclose(f);
++	logmessage("wlcsm_bindfix", "netlink bind() shim armed via %s - WLCSM port "
++		   "collisions will be rescued by kernel autobind instead of leaking "
++		   "sockets (set wlcsm_bindfix=0 to disable)", LD_SO_PRELOAD);
++}
++
+ /* reaper 2026-08-11: the IGDv2 build runs under a DIFFERENT process name
+  * ("miniupnpd-igdv2", see the xstart() above), and pidof()/killall() are exact
+  * strcmp() matches on the process name (shared/process.c:71). So a bare
+@@ -13383,6 +13460,12 @@ start_services(void)
+ 
+ 	logmessage("services", "start_services: begin");
+ 
++	/* reaper: arm (or clear) the WLCSM netlink bind shim BEFORE any daemon is
++	 * spawned - /etc/ld.so.preload only affects processes started after it is
++	 * written, and the victims of the bug are the nvram users below plus any
++	 * `nvram` invoked from a script. No-op unless nvram wlcsm_bindfix=1. */
++	start_wlcsm_bindfix();
++
+ #if 0
+ #ifdef HND_ROUTER
+ 	start_jitterentropy();
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 8ada03b810..5ddd7dde26 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3188,6 +3188,12 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "rwarden_log", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = LOG (prefix "REAPER-WARDEN ") before DROP */
+ 	{ "rwarden_sched", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* cron schedule for feed refresh; empty = default 30 4 * * * */
+ 	{ "rwarden_lastupd", "", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* epoch of last successful feed update (set by updater) */
++	/* reaper 2026-08-12: activate the WLCSM netlink bind() shim (LD_PRELOAD of
++	   /lib/wlcsm_bindfix.so) that works around the Broadcom libnvram.so port-
++	   allocation defect - see start_wlcsm_bindfix() in rc/services.c.
++	   DEFAULT OFF: /etc/ld.so.preload is global and this has not run on metal
++	   yet. Enable with: nvram set wlcsm_bindfix=1 && nvram commit && reboot */
++	{ "wlcsm_bindfix", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* reaper 2026-08-11: escape hatch for the server-side first-boot gate (httpd.c
+ 	   reaper_firstboot_pending). The gate opens on its own once the live conditions
+ 	   clear - this is NOT written by the wizard. It exists so an operator who gets
+diff --git a/release/src/router/wlcsm_bindfix/.gitignore b/release/src/router/wlcsm_bindfix/.gitignore
+new file mode 100644
+index 0000000000..291f2843fd
+--- /dev/null
++++ b/release/src/router/wlcsm_bindfix/.gitignore
+@@ -0,0 +1,3 @@
++*.o
++*.so
++.*.depend
+diff --git a/release/src/router/wlcsm_bindfix/Makefile b/release/src/router/wlcsm_bindfix/Makefile
+new file mode 100644
+index 0000000000..278cc31d94
+--- /dev/null
++++ b/release/src/router/wlcsm_bindfix/Makefile
+@@ -0,0 +1,43 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 the Reaper project maintainer
++# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++#
++# wlcsm_bindfix.so - LD_PRELOAD workaround for the Broadcom WLCSM netlink
++# port-allocation defect in the closed libnvram.so. See wlcsm_bindfix.c for the
++# full disassembly-backed analysis.
++#
++# Deliberately minimal link: ONLY -ldl. This object is preloaded into every
++# process on the box, so it must not drag in libnvram/libshared - both of which
++# call into the very code path being wrapped.
++include ../common.mak
++
++CFLAGS  += -Os -Wall -Wextra $(EXTRACFLAGS)
++# Same exploit-mitigation set the other Reaper packages use (the BCM base ships
++# no canaries and only partial RELRO). -fPIC not -fPIE: this is a shared object.
++CFLAGS  += -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIC
++LDFLAGS += -shared -Wl,-z,relro,-z,now -ldl
++
++OBJS = wlcsm_bindfix.o
++LIB  = wlcsm_bindfix.so
++
++all: $(LIB)
++
++$(LIB): $(OBJS)
++	@echo " [wlcsm_bindfix] CC -o $@"
++	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f $(LIB) *.o .*.depend
++
++install: all
++	@echo " [wlcsm_bindfix] Installing..."
++	install -D $(LIB) $(INSTALLDIR)/lib/$(LIB)
++	$(STRIP) $(INSTALLDIR)/lib/$(LIB)
++
++%.o: %.c
++	@echo " [wlcsm_bindfix] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.PHONY: all clean install
+diff --git a/release/src/router/wlcsm_bindfix/wlcsm_bindfix.c b/release/src/router/wlcsm_bindfix/wlcsm_bindfix.c
+new file mode 100644
+index 0000000000..92e0a46199
+--- /dev/null
++++ b/release/src/router/wlcsm_bindfix/wlcsm_bindfix.c
+@@ -0,0 +1,197 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * wlcsm_bindfix.c - LD_PRELOAD workaround for the Broadcom WLCSM netlink
++ *                  port-allocation defect in libnvram.so.
++ *
++ * THE BUG (BCM4916 / libnvram.so, disassembly-confirmed)
++ *   _wlcsm_init() stores getpid() into wlcsm_agent+0x18 and then passes the
++ *   ADDRESS OF THAT SAME FIELD to the internal socket allocator (+0x3930) as the
++ *   port-candidate out-parameter:
++ *       3bbc:  str r0, [r1, #24]!      ; saved_pid = getpid(); r1 = &saved_pid
++ *       3bc4:  bl  3930                ; alloc(&agent, &saved_pid, 0)
++ *   The allocator bind()s NETLINK protocol 31 with nl_pid = *candidate and, on
++ *   EADDRINUSE, walks up to 10 candidates - writing each one BACK through that
++ *   pointer:
++ *       39b8:  add r6, r6, #1
++ *       39bc:  str r6, [r5]            ; <-- mutates the caller's saved_pid
++ *   So after any collision, saved_pid != getpid(). The next entry to
++ *   _wlcsm_init() tests exactly that:
++ *       3c30:  cmp r4, r0              ; saved_pid vs getpid()
++ *       3c34:  bne 3ba8                ; "the PID changed" -> re-init
++ *   and the re-init path never close()s the previous fd. Each pass leaks one
++ *   netlink socket and drifts the candidate further, until all ten are burned
++ *   and _wlcsm_init() fails permanently. wlcsm_nvram_getall() then retries the
++ *   failing send forever (5b2c: bne 5b0c) WHILE HOLDING g_WLCSM_NVRAM_MUTEX, so
++ *   that process's nvram is wedged for good. Router stays up; the process does
++ *   not. Trigger in the field: PID reuse landing on a netlink port a long-lived
++ *   process (e.g. debug_monitor) already owns.
++ *
++ * THE FIX HERE
++ *   The whole chain is gated on the FIRST bind failing. If it succeeds, the
++ *   allocator never increments, saved_pid stays == getpid(), the false
++ *   "PID changed" branch never fires, nothing leaks, nothing spins.
++ *   So: on EADDRINUSE for a netlink socket, retry ONCE with nl_pid = 0, which
++ *   asks the kernel to autobind a free port - what this code should have done.
++ *   The caller's saved_pid is left alone (we copy the sockaddr), so its own
++ *   consistency check keeps passing.
++ *
++ * SCOPE / SAFETY
++ *   - Only AF_NETLINK, only when the real bind() already failed EADDRINUSE, and
++ *     only when the requested nl_pid was non-zero. Everything else is passed
++ *     straight through, untouched.
++ *   - Restricted to NETLINK protocol 31 when SO_PROTOCOL is readable, so other
++ *     netlink users (rtnetlink &c.) are never touched.
++ *   - Kill switch: WLCSM_BINDFIX=0 keeps the logging but stops the rewrite, so
++ *     you can A/B on a live box without pulling the preload.
++ *   - Touches no ASUS/Broadcom binary. This is our own code loaded beside it.
++ *
++ * RESIDUAL RISK (bench this before trusting it)
++ *   After autobind the socket's real port != getpid(). Nothing in the kernel
++ *   cares. The open question is whether the wlcsm daemon ever addresses this
++ *   process by a port it ASSUMES equals the PID. wlcsm_register_process()
++ *   exists, which suggests the daemon is told rather than assuming - but that is
++ *   inference. Watch for wlcsm unicast replies going missing after a rewrite
++ *   fires (the log line below tells you exactly when that happened).
++ *
++ * BUILD (target is 32-bit ARM EABI - libnvram.so is ELF32 ARM):
++ *   arm-buildroot-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -Wextra \
++ *       -o wlcsm_bindfix.so wlcsm_bindfix.c -ldl
++ *
++ * USE
++ *   LD_PRELOAD=/jffs/wlcsm_bindfix.so <command>
++ *   ...or export it for a service before it starts. LD_PRELOAD is ignored for
++ *   setuid binaries, and a daemon that does not inherit the env will not pick it
++ *   up - check coverage per process.
++ */
++
++#define _GNU_SOURCE
++#include <dlfcn.h>
++#include <errno.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <syslog.h>
++#include <unistd.h>
++#include <linux/netlink.h>
++
++#ifndef SO_PROTOCOL
++#define SO_PROTOCOL 38
++#endif
++
++#define WLCSM_NETLINK_PROTO 31
++
++static int (*real_bind)(int, const struct sockaddr *, socklen_t);
++static unsigned long rewrites, passthru;
++
++static void resolve(void)
++{
++	if (!real_bind)
++		real_bind = dlsym(RTLD_NEXT, "bind");
++}
++
++/* Rewriting is on unless explicitly disabled. Read every call: cheap, and it
++ * lets you flip behaviour on a running box by restarting just one service. */
++static int rewrite_enabled(void)
++{
++	const char *e = getenv("WLCSM_BINDFIX");
++	return !(e && e[0] == '0');
++}
++
++/* Which netlink protocol to guard. Defaults to WLCSM's 31; overridable so the
++ * logic can be exercised on a bench kernel (protocol 31 only exists where
++ * wlcsm.ko is loaded), and so scope can be widened in the field without a
++ * rebuild if WLCSM ever moves. */
++static int target_proto(void)
++{
++	const char *e = getenv("WLCSM_BINDFIX_PROTO");
++	return (e && *e) ? atoi(e) : WLCSM_NETLINK_PROTO;
++}
++
++/* If SO_PROTOCOL is unreadable we proceed anyway - an EADDRINUSE on a netlink
++ * bind is this bug's signature regardless - but we say so in the log so it is
++ * never a silent assumption. */
++static int is_wlcsm_socket(int fd, int *proto_out)
++{
++	int proto = -1;
++	socklen_t len = sizeof(proto);
++
++	if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &proto, &len) != 0) {
++		*proto_out = -1;
++		return 1;
++	}
++	*proto_out = proto;
++	return proto == target_proto();
++}
++
++int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
++{
++	const struct sockaddr_nl *nl;
++	struct sockaddr_nl retry;
++	int rc, saved_errno, proto = -1;
++
++	resolve();
++	if (!real_bind) {              /* cannot happen in practice; fail safe */
++		errno = ENOSYS;
++		return -1;
++	}
++
++	rc = real_bind(sockfd, addr, addrlen);
++	if (rc == 0)
++		return 0;
++	saved_errno = errno;
++
++	/* Only the exact failure this bug produces. */
++	if (saved_errno != EADDRINUSE ||
++	    addr == NULL || addrlen < (socklen_t)sizeof(struct sockaddr_nl) ||
++	    addr->sa_family != AF_NETLINK) {
++		errno = saved_errno;
++		return rc;
++	}
++
++	nl = (const struct sockaddr_nl *)addr;
++	if (nl->nl_pid == 0) {         /* already autobind - nothing to rescue */
++		errno = saved_errno;
++		return rc;
++	}
++
++	if (!is_wlcsm_socket(sockfd, &proto)) {
++		passthru++;
++		errno = saved_errno;
++		return rc;
++	}
++
++	if (!rewrite_enabled()) {
++		syslog(LOG_DAEMON | LOG_WARNING,
++		       "wlcsm_bindfix: EADDRINUSE nl_pid=%u proto=%d pid=%d "
++		       "(rewrite DISABLED by WLCSM_BINDFIX=0)",
++		       (unsigned)nl->nl_pid, proto, (int)getpid());
++		errno = saved_errno;
++		return rc;
++	}
++
++	/* Copy - never mutate the caller's sockaddr. libnvram passes a pointer
++	 * into its own agent struct, and that storage doubles as its saved PID. */
++	memset(&retry, 0, sizeof(retry));
++	retry.nl_family = AF_NETLINK;
++	retry.nl_groups = nl->nl_groups;
++	retry.nl_pid    = 0;                   /* kernel picks a free port */
++
++	rc = real_bind(sockfd, (const struct sockaddr *)&retry, sizeof(retry));
++	if (rc == 0) {
++		rewrites++;
++		syslog(LOG_DAEMON | LOG_WARNING,
++		       "wlcsm_bindfix: nl_pid=%u was EADDRINUSE (proto=%d%s), "
++		       "rebound via kernel autobind - pid=%d, rewrites=%lu. "
++		       "Broadcom WLCSM would have leaked a socket here.",
++		       (unsigned)nl->nl_pid, proto,
++		       proto < 0 ? ", SO_PROTOCOL unreadable" : "",
++		       (int)getpid(), rewrites);
++		return 0;
++	}
++
++	syslog(LOG_DAEMON | LOG_ERR,
++	       "wlcsm_bindfix: autobind retry ALSO failed (%s) for nl_pid=%u "
++	       "pid=%d - passing the original EADDRINUSE back",
++	       strerror(errno), (unsigned)nl->nl_pid, (int)getpid());
++	errno = saved_errno;
++	return -1;
++}
+-- 
+2.25.1
+

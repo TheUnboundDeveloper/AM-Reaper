@@ -78,6 +78,11 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log.
 
+- **AutoScan** The auto-scan completes correctly across all frequencies and channels. However, 
+  auto-assignment of the best   channel only works properly on the 6GHz band. For the 2.4GHz, 5GHz, 
+  and 5GHz-1 bands, the system suggests assigning channels that are completely different from those 
+  identified as best during the scan.
+
 ## UI / UX polish
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header

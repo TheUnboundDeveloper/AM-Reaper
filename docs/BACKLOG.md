@@ -442,3 +442,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   the 2.5G-1 port, move the device to another LAN port, or tag it VID-52; or avoid pairing a manual WAN
   VLAN with Guest Pro on that port. Almost certainly present on stock ASUS too (same blob). Full
   investigation: [`GUESTPRO-2.5G-VLAN-PLAN.md`](GUESTPRO-2.5G-VLAN-PLAN.md). [blocked — blob; risk-accepted]
+
+- ~~**[P2] Smart Connect Rules — band shows `- -` for every field (field 2026-08-08, BE96U tri-band).**~~
+  **CLOSED 2026-08-11 — NOT A BUG on the owner's box. Confirmed from live nvram; hypothesis (a) refuted
+  by simulation. Two unrelated real defects found and fixed in tree along the way (unbuilt).**

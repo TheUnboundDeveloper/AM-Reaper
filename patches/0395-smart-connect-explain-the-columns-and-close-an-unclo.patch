@@ -1,0 +1,238 @@
+From 496d6a7713932224e1fd0d68c79d33dc80c57f41 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 21:28:53 -0400
+Subject: [PATCH] smart connect: explain the "- -" columns, and close an
+ unclosed <td>
+
+Investigating a report that a band showed "- -" for every field. It is not a
+bug: on the reporting box smart_connect_selif_x=10 = SMRTCONN_SEL_5G |
+SMRTCONN_SEL_6G, so 2.4 GHz is deliberately outside the Smart Connect group,
+and smart_connect_x=2 is correctly derived from that mask. A simulator built
+from the real bandName / get_wl_unit_by_band / wl_nband_title /
+isSmartConnectSelifBand reproduces the screen exactly, and shows that labels
+and cells agree in every dual/tri/quad configuration - so the suspected
+header-versus-cell mismatch is refuted.
+
+What was genuinely wrong is that "- -" explained nothing, which is why it read
+as broken. All 13 suppressed-cell sites now route through one scExcludedCell()
+helper carrying a hover title, and a note above the tables - shown only when a
+column is actually suppressed - says the band is not in the Smart Connect
+group, that its policy is not lost, where to change the selection, and that
+6 GHz is excluded by default on this model.
+
+That refactor also fixes a real markup defect: genSteerLoadBalance() opened a
+<td>, wrote "- -" and then continued, skipping the code += '</td>' at the foot
+of the loop, so the cell was never closed and later cells nested inside it.
+
+Recorded for later: the wireless page's mask builder has a return 7 fallback,
+and on a 2.4/5/6 box 7 means 2G + 5G + 5G2 - a radio that does not exist -
+silently dropping 6 GHz. It is unreachable today, guarded by smartConnectEnable.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../src/router/www/Advanced_Smart_Connect.asp | 74 +++++++++++++++----
+ 1 file changed, 59 insertions(+), 15 deletions(-)
+
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index da288ab398..d4fe47ac93 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -130,6 +130,7 @@ let phyRate = [1148, 4804, 4804, 4804];
+ function initial(){
+ 	show_menu();
+ 	setupSmartConnectToggle();
++	scExcluded = 0;		/* reaper: recount excluded bands on every (re)generation */
+ 	genBand();
+ 	genSteerLoadBalance();
+ 	genSteerBWUtilization();		// Steering Trigger BW Utilization
+@@ -148,6 +149,7 @@ function initial(){
+ 	genIfQualityaCapability();
+ 
+ 	genBounceDetect();
++	genSmartConnectExcludedNote();	/* reaper: explain any "- -" columns */
+ }
+ 
+ function isSmartConnectSelifBand(band){
+@@ -179,6 +181,34 @@ function isSmartConnectSelifBand(band){
+ 	return false;
+ }
+ 
++/* reaper 2026-08-11: every "- -" on this page means ONE thing - that band's slot
++ * bit is clear in smart_connect_selif_x, so isSmartConnectSelifBand() is false and
++ * the row is suppressed. It does NOT mean the band has no policy: the page has
++ * already parsed wl<n>_bsd_steering_policy et al into bsd_steering_policy_array[i]
++ * for every band before it decides to print this. Rendered bare, "- -" reads as
++ * "broken" - which is exactly how it was reported from the field.
++ *
++ * Worth knowing when reading a screenshot of this page: the bit index is the
++ * band's slot in the FIXED five-slot bandName array ["2G","5G1","5G2","6G1","6G2"],
++ * not the wl unit index and not the position among the bands this router has. On a
++ * tri-band 2.4/5/6 box that means 6 GHz needs bit 3, so masks 3 and 7 render
++ * IDENTICALLY (bit 2 is 5G2, a radio that does not exist) - and shared/defaults.c
++ * ships "3" for HAS_6G models on purpose ("don't invole 6GHz band in smart connect
++ * by default"), so 6 GHz showing "- -" out of the box is stock intent, not a fault.
++ * The band selection itself lives on Wireless -> General, not here. */
++let scExcluded = 0;
++function scExcludedCell(styleAttr){
++	scExcluded++;
++	return `<td ${styleAttr} align="center" title="This band is not part of the Smart Connect group, so it has no steering rules to show. Its settings are not lost - add the band under Wireless &gt; General to edit them." style="cursor:help">- -</td>`;
++}
++
++/* Show the explanation under the tables only when something is actually hidden. */
++function genSmartConnectExcludedNote(){
++	const el = document.querySelector('#sc_excluded_note');
++	if(!el) return;
++	el.style.display = scExcluded ? '' : 'none';
++}
++
+ function genBand(){
+ 	let code = '<th style="width:20%"><#Interface#></th>';
+ 
+@@ -198,12 +228,18 @@ function genSteerLoadBalance(){
+ 			flag = true;
+ 		}
+ 
+-		code += '<td align="center">';
++		/* reaper 2026-08-11: this branch opened a <td>, wrote "- -" and then
++		   `continue`d - skipping the `code += '</td>'` at the bottom of the loop, so
++		   the cell was never closed and every later cell in the row nested inside it.
++		   Emit the whole cell in one piece instead (and open the <td> only on the
++		   path that actually closes it). */
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '- -';
++			code += scExcludedCell('');
+ 			continue;
+ 		}
+-		
++
++		code += '<td align="center">';
++
+ 		if(flag){
+ 			code += '<input type="radio" value="1" id="wl'+ i +'_bsd_steering_balance_yes" name="wl'+ i +'_bsd_steering_balance" onchange="loadBalanceChange('+ i +', this)" checked><#checkbox_Yes#>';
+ 			code += '<input type="radio" value="0" id="wl'+ i +'_bsd_steering_balance_no" name="wl'+ i +'_bsd_steering_balance" onchange="loadBalanceChange('+ i +', this)"><#checkbox_No#>';
+@@ -223,7 +259,7 @@ function genSteerBWUtilization(){
+ 	let code = '<th><#smart_connect_Bandwidth#></th>';
+ 	for(let i=0; i< wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -243,7 +279,7 @@ function genStreerRSSI(){
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -272,7 +308,7 @@ function genSteerPhyRateLess(){
+ 	let code = '<th><#PHY_Rate_Less#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -291,7 +327,7 @@ function genSteerPhyRateGreat(){
+ 	let code = '<th><#PHY_Rate_Greater#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -310,7 +346,7 @@ function genSteerCapability(){
+ 	let code = '<th><#Capability#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -352,7 +388,7 @@ function genStaRSSI(){
+ 	let code = '<th>RSSI</th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -381,7 +417,7 @@ function genStaPhyRateLess(){
+ 	let code = '<th style="width:20%"><#PHY_Rate_Less#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -400,7 +436,7 @@ function genStaPhyRateGreat(){
+ 	let code = '<th style="width:20%"><#PHY_Rate_Greater#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td align="center" style="width:20%">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -419,7 +455,7 @@ function genStaCapability(){
+ 	let code = '<th style="width:20%"><#Capability#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -461,7 +497,7 @@ function genIfQualityBWUtilization(){
+ 	let code = '<th><#smart_connect_Bandwidth#></th>';
+ 	for(let i=0; i< wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -480,7 +516,7 @@ function genIfQualityaCapability(){
+ 	let code = '<th style="width:20%"><#Capability#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -533,7 +569,7 @@ function genIfSelectBand(){
+ 	let code = '<th style="width:20%"><#Interface_target#></th>';
+ 	for(let i=0; i< wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += `<td style="width:${80/parseInt(bandList.length)}%;" align="center">- -</td>`;
++			code += scExcludedCell(`style="width:${80/parseInt(bandList.length)}%;"`);
+ 			continue;
+ 		}
+ 
+@@ -1041,6 +1077,14 @@ function toggleSmartConnect(){
+ 			<div id="scDisableDisclaimer" class="formfontdesc" style="display:none;color:#FFCC00;line-height:18px;margin:10px 5px;padding:8px 10px;border:1px solid #FFCC00;border-radius:4px;background:rgba(255,204,0,0.06);">
+ 				<b>Heads up &mdash; Smart Connect is off.</b> Band steering no longer moves your devices between the 2.4 / 5 / 6 GHz radios. If those radios share the same SSID, a device may stay connected to a less-than-optimal band (for example 2.4 GHz instead of 5 GHz or 6 GHz). Set a preferred band on the device itself if that option is available; if it is not, disconnect and reconnect to the Wi-Fi to let the device re-select the preferred band. To make the choice explicit, give each band its own separate SSID.
+ 			</div>
++			<!-- reaper 2026-08-11: a bare "- -" column reads as a broken page. It only ever
++			     means the band is not in the Smart Connect group (its slot bit is clear in
++			     smart_connect_selif_x); the band's steering policy still exists and is
++			     re-shown the moment the band is added back. Shown only when a column is
++			     actually suppressed - see genSmartConnectExcludedNote(). -->
++			<div id="sc_excluded_note" class="formfontdesc" style="display:none;line-height:18px;margin:10px 5px;padding:8px 10px;border:1px solid #6b8fa3;border-radius:4px;background:rgba(107,143,163,0.10);">
++				<b>Some bands show &ldquo;- -&rdquo;.</b> Those radios are not part of the Smart Connect group, so there are no steering rules to display for them. Nothing has been lost &mdash; each band keeps its own policy and it reappears here as soon as the band is added back. Choose which radios take part under <b>Wireless &gt; General</b>. Note that 6 GHz is left out of Smart Connect by default on this model.
++			</div>
+ 			<div id="bsd_steering_div">
+ 				<table cellspacing="0" cellpadding="4" bordercolor="#6b8fa3" border="1" align="center" width="100%" class="FormTable" style="margin-top:10px">
+ 					<thead>
+-- 
+2.25.1
+

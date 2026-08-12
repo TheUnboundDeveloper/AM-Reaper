@@ -1,0 +1,198 @@
+From 17bcea0e532aed7d6610aadc56422a7a4e093d71 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 21:28:52 -0400
+Subject: [PATCH] dhcp leases: resolve Device Name from custom_clientlist, and
+ escape the hostname
+
+Field report: the DHCP Leases page often shows an em-dash for Device Name even
+though the name exists, while the Devices menu names every host.
+
+It was a source mismatch, not a missing name. The column was a client-side
+overlay fed by the get_clientlist() hook, whose universe is networkmap's
+shared-memory client table; custom_clientlist is consulted there only to
+decorate entries that table already holds. A device holding a lease but absent
+from networkmap - aged out, or never catalogued, and networkmap is a closed
+blob whose retention rules are neither inspectable nor fixable - produced no
+entry, so the lookup missed and the cell fell back to an em-dash. The Devices
+and Gatekeeper pages read custom_clientlist directly, which is why they always
+had a name.
+
+ej_get_leases_array() now resolves the admin-assigned name server-side via
+lease_client_name() (mirrors gk_client_name(), case-insensitive MAC compare -
+dnsmasq writes lowercase, custom_clientlist stores uppercase) and appends it as
+the last row field, so existing column indices and the MULTILAN vlanid slot are
+untouched. The page prefers it and keeps the old overlay as a second source, so
+networkmap's auto-derived names still appear for never-renamed devices.
+
+Two escaping defects fixed on the way past. The lease hostname - chosen by any
+LAN client - was written raw into a JavaScript array literal, so one quote in a
+hostname broke the array and blanked the page; and the table API writes every
+cell with jQuery .html(), so that hostname landed in an HTML sink. Both fields
+now pass through lease_js_escape(), which covers ' " \, drops control
+characters, and emits < as \x3c because quote-escaping alone cannot help when a
+literal </script> ends the script element before any JavaScript is parsed. The
+page HTML-escapes the hostname cell before rendering. This closes this page's
+instance only; the networkmap path remains open.
+
+Verified without a build: the real show_leases() was extracted and run against
+both row shapes - 13/13, every column under its correct header; the real
+lease_client_name() was compiled and exercised on actual custom_clientlist
+tuples - 12/12; and lease_js_escape()'s output was confirmed to contain no raw
+</script, to parse as JavaScript, and to decode back to the original string.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/data_arrays.c        | 90 ++++++++++++++++++-
+ .../router/www/Main_DHCPStatus_Content.asp    | 17 +++-
+ 2 files changed, 104 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/httpd/data_arrays.c b/release/src/router/httpd/data_arrays.c
+index 46248d7759..3f69da5b33 100644
+--- a/release/src/router/httpd/data_arrays.c
++++ b/release/src/router/httpd/data_arrays.c
+@@ -66,6 +66,80 @@
+ 
+ #include <json.h>
+ 
++/* reaper 2026-08-11 (field: "DHCP Leases often shows an em-dash for Device Name
++ * even though the name exists; the Devices menu shows it for every host").
++ *
++ * Resolve the admin-assigned device name straight from custom_clientlist
++ * ("<name>MAC>type>..." tuples). Main_DHCPStatus_Content.asp used to overlay this
++ * column client-side from the get_clientlist() hook, whose universe is
++ * NETWORKMAP's shared-memory client table (httpd/web.c, shmget on
++ * CLIENT_DETAIL_INFO_TABLE) - custom_clientlist is only consulted there to
++ * DECORATE entries that table already contains. So a device holding a DHCP lease
++ * but missing from networkmap's table (aged out, or never catalogued - networkmap
++ * is a closed blob, so its retention rules are neither inspectable nor fixable)
++ * yielded no entry at all, the MAC lookup missed, and the cell fell back to an
++ * em-dash. Meanwhile Reaper_Devices.asp and the Gatekeeper page read
++ * custom_clientlist directly (gk_client_name() in web.c) and showed the name -
++ * exactly the discrepancy reported.
++ *
++ * Resolving it here uses the same master source and the same priority as every
++ * other Reaper page, and needs no second request. Mirrors gk_client_name(). */
++/* Escape a value for a JavaScript string literal that lives inside an inline
++ * <script> block. str_escape_quotes() (used elsewhere in this file) covers ' " \
++ * which keeps the ARRAY intact, but it leaves '<' alone - and a value containing
++ * a literal "</script>" ends the script element in the HTML parser before any JS
++ * is parsed at all, so quote-escaping alone cannot save it. Emit '<' as \x3c,
++ * which a JS string decodes back to '<' but the HTML tokenizer never sees.
++ * Worst case is 4 bytes out per byte in; callers size accordingly. */
++static void lease_js_escape(char *out, size_t olen, const char *in)
++{
++	size_t o = 0;
++
++	if (!out || olen == 0)
++		return;
++	out[0] = '\0';
++	if (!in)
++		return;
++	for (; *in && o + 5 < olen; in++) {
++		if (*in == '<') {
++			memcpy(out + o, "\\x3c", 4);
++			o += 4;
++		} else if (*in == '\'' || *in == '"' || *in == '\\') {
++			out[o++] = '\\';
++			out[o++] = *in;
++		} else if ((unsigned char)*in < 0x20) {
++			continue;		/* control chars incl. CR/LF: drop */
++		} else {
++			out[o++] = *in;
++		}
++	}
++	out[o] = '\0';
++}
++
++static void lease_client_name(const char *mac, char *out, size_t olen)
++{
++	char *buf, *tok, *sp = NULL;
++
++	out[0] = '\0';
++	if (!mac || !*mac)
++		return;
++	if ((buf = strdup(nvram_safe_get("custom_clientlist"))) == NULL)
++		return;
++	for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++		char *f1 = strchr(tok, '>'), *f2;
++		if (!f1)
++			continue;
++		*f1++ = '\0';			/* tok = name, f1 = MAC>rest */
++		if ((f2 = strchr(f1, '>')) != NULL)
++			*f2 = '\0';
++		if (!strcasecmp(f1, mac)) {
++			snprintf(out, olen, "%.32s", tok);
++			break;
++		}
++	}
++	free(buf);
++}
++
+ int
+ ej_get_leases_array(int eid, webs_t wp, int argc, char_t **argv)
+ {
+@@ -74,6 +148,11 @@ ej_get_leases_array(int eid, webs_t wp, int argc, char_t **argv)
+ 	struct in6_addr addr6;
+ 	char line[256];
+ 	char *hwaddr, *ipaddr, *name, *next;
++	/* reaper: the lease hostname is attacker-controlled (any LAN client picks its
++	 * own DHCP hostname) and was written raw into a JS array literal - one quote
++	 * in a hostname broke the whole array and blanked the page. Both fields cap at
++	 * 32 chars and lease_js_escape() expands at most 4x, so 160 is generous. */
++	char devname[33], devname_esc[160], name_esc[160];
+ 	unsigned int expires;
+ 	int ret=0;
+ #ifdef RTCONFIG_MULTILAN_CFG
+@@ -127,10 +206,17 @@ ej_get_leases_array(int eid, webs_t wp, int argc, char_t **argv)
+ 			continue;
+ 		} else if (inet_pton(AF_INET, ipaddr, &addr4) == 0)
+ 			continue;
++
++		/* reaper: admin-assigned name, appended as the LAST field of the row so
++		 * the existing column indices (and the MULTILAN vlanid slot) are unchanged;
++		 * the page pops it off before building the Device Name cell. */
++		lease_client_name(hwaddr, devname, sizeof(devname));
++		lease_js_escape(devname_esc, sizeof(devname_esc), devname);
++		lease_js_escape(name_esc, sizeof(name_esc), name);
+ #ifdef RTCONFIG_MULTILAN_CFG
+-		ret += websWrite(wp, "[\"%d\", \"%s\", \"%s\", \"%s\", \"%d\"],\n", expires, hwaddr, ipaddr, name, vlanid);
++		ret += websWrite(wp, "[\"%d\", \"%s\", \"%s\", \"%s\", \"%d\", \"%s\"],\n", expires, hwaddr, ipaddr, name_esc, vlanid, devname_esc);
+ #else
+-		ret += websWrite(wp, "[\"%d\", \"%s\", \"%s\", \"%s\"],\n", expires, hwaddr, ipaddr, name);
++		ret += websWrite(wp, "[\"%d\", \"%s\", \"%s\", \"%s\", \"%s\"],\n", expires, hwaddr, ipaddr, name_esc, devname_esc);
+ #endif
+ 	}
+ 	fclose(fp);
+diff --git a/release/src/router/www/Main_DHCPStatus_Content.asp b/release/src/router/www/Main_DHCPStatus_Content.asp
+index 703ad36381..939a83ae35 100644
+--- a/release/src/router/www/Main_DHCPStatus_Content.asp
++++ b/release/src/router/www/Main_DHCPStatus_Content.asp
+@@ -101,9 +101,24 @@ function show_leases() {
+ 				var popupHandler = `onclick="oui_query_full_vendor('${line[1].toUpperCase()}');overlib_str_tmp='${overlib_str}';return overlib('${overlib_str}');" onmouseout="nd();"`;
+ 
+ 			var leaseMac = line[1].toUpperCase();
+-			var devNameHtml = devNameByMac[leaseMac] ? escDevName(devNameByMac[leaseMac]) : "&mdash;";
++			/* reaper 2026-08-11: the trailing field is the admin-assigned name that
++			   ej_get_leases_array() resolved from custom_clientlist server-side.
++			   That is the authoritative source and, unlike the get_clientlist()
++			   overlay below, it is present even when networkmap has never catalogued
++			   (or has aged out) the device - which is why this column used to show an
++			   em-dash for hosts the Devices page named just fine. The overlay is kept
++			   as a SECOND source so networkmap's auto-derived names still appear for
++			   devices the admin has never renamed. */
++			var custName = String(line.pop() || "");
++			var devName = custName || devNameByMac[leaseMac] || "";
++			var devNameHtml = devName ? escDevName(devName) : "&mdash;";
+ 			leasearray[i][1] = `<span ${popupHandler} style="cursor:pointer; text-decoration:underline; ${macFieldStyle}">${leaseMac}</span>`;
+ 			leasearray[i].splice(2, 0, devNameHtml);	// unified Device Name column after MAC
++			/* The table API writes every cell with jQuery .html() (js/table/table.js),
++			   so the self-reported DHCP hostname - which any LAN client chooses for
++			   itself - lands in an HTML sink. Escape it here; index 4 is the hostname
++			   in both the plain and the MULTILAN row shapes after the splice above. */
++			leasearray[i][4] = escDevName(String(leasearray[i][4] == null ? "" : leasearray[i][4]));
+ 		}
+ 
+ 		var headerarray = [{
+-- 
+2.25.1
+

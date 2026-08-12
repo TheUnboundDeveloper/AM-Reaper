@@ -1,0 +1,46 @@
+From 6c17a0458a8ffad7ebf9e773949a3ca2f19cdbda Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 12 Aug 2026 17:55:20 -0400
+Subject: [PATCH] wifipro: read the wireless settings in one call instead of
+ 116
+
+The page embedded 116 separate server-side nvram evaluations - 29 fields across a
+hardcoded wl0..wl3 - and made no client-side calls at all, so every one of them
+had to complete before a byte of the page could render. No other page here uses
+more than 13. On a tri-band model 29 of the 116 read a wl3 radio that does not
+exist.
+
+Replaced with a single call that returns the whole set for the radios this model
+actually has. The page's only reader already treated a missing key as empty, and
+radios are enumerated from the router's own band list rather than a fixed range,
+so absent units being absent is a no-op.
+---
+ release/src/router/www/Reaper_WiFiPro.asp | 12 +++++-------
+ 1 file changed, 5 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_WiFiPro.asp b/release/src/router/www/Reaper_WiFiPro.asp
+index a5c5551e4c..69c083ce1e 100644
+--- a/release/src/router/www/Reaper_WiFiPro.asp
++++ b/release/src/router/www/Reaper_WiFiPro.asp
+@@ -161,13 +161,11 @@ code{font-family:ui-monospace,Consolas,monospace}
+          ('2'=2.4GHz, '1'=5GHz, '4'=6GHz), in wl_ifnames order. Length = radio count.
+          3 on RT-BE96U, 4 on GT-BE98 (dual 5GHz). ---- */
+   var NBAND = JSON.parse("<% wl_nband_info(); %>".replace(/'/g,'"'));
+-  /* current nvram value for every wlN_field this page can touch, wl0..wl3 (absent units = "") */
+-  var NV = {
+-   'wl0_radio':'<% nvram_get("wl0_radio"); %>','wl0_11be':'<% nvram_get("wl0_11be"); %>','wl0_nmode_x':'<% nvram_get("wl0_nmode_x"); %>','wl0_mbo_enable':'<% nvram_get("wl0_mbo_enable"); %>','wl0_twt':'<% nvram_get("wl0_twt"); %>','wl0_bss_maxassoc':'<% nvram_get("wl0_bss_maxassoc"); %>','wl0_user_rssi':'<% nvram_get("wl0_user_rssi"); %>','wl0_turbo_qam':'<% nvram_get("wl0_turbo_qam"); %>','wl0_ampdu_mpdu':'<% nvram_get("wl0_ampdu_mpdu"); %>','wl0_ampdu_rts':'<% nvram_get("wl0_ampdu_rts"); %>','wl0_rts':'<% nvram_get("wl0_rts"); %>','wl0_frag':'<% nvram_get("wl0_frag"); %>','wl0_rateset':'<% nvram_get("wl0_rateset"); %>','wl0_gmode_protection':'<% nvram_get("wl0_gmode_protection"); %>','wl0_plcphdr':'<% nvram_get("wl0_plcphdr"); %>','wl0_ofdma':'<% nvram_get("wl0_ofdma"); %>','wl0_mumimo':'<% nvram_get("wl0_mumimo"); %>','wl0_txbf':'<% nvram_get("wl0_txbf"); %>','wl0_itxbf':'<% nvram_get("wl0_itxbf"); %>','wl0_atf':'<% nvram_get("wl0_atf"); %>','wl0_btc_mode':'<% nvram_get("wl0_btc_mode"); %>','wl0_igs':'<% nvram_get("wl0_igs"); %>','wl0_wme':'<% nvram_get("wl0_wme"); %>','wl0_wme_no_ack':'<% nvram_get("wl0_wme_no_ack"); %>','wl0_wme_apsd':'<% nvram_get("wl0_wme_apsd"); %>','wl0_dtim':'<% nvram_get("wl0_dtim"); %>','wl0_bcn':'<% nvram_get("wl0_bcn"); %>','wl0_frameburst':'<% nvram_get("wl0_frameburst"); %>','wl0_txpower':'<% nvram_get("wl0_txpower"); %>',
+-   'wl1_radio':'<% nvram_get("wl1_radio"); %>','wl1_11be':'<% nvram_get("wl1_11be"); %>','wl1_nmode_x':'<% nvram_get("wl1_nmode_x"); %>','wl1_mbo_enable':'<% nvram_get("wl1_mbo_enable"); %>','wl1_twt':'<% nvram_get("wl1_twt"); %>','wl1_bss_maxassoc':'<% nvram_get("wl1_bss_maxassoc"); %>','wl1_user_rssi':'<% nvram_get("wl1_user_rssi"); %>','wl1_turbo_qam':'<% nvram_get("wl1_turbo_qam"); %>','wl1_ampdu_mpdu':'<% nvram_get("wl1_ampdu_mpdu"); %>','wl1_ampdu_rts':'<% nvram_get("wl1_ampdu_rts"); %>','wl1_rts':'<% nvram_get("wl1_rts"); %>','wl1_frag':'<% nvram_get("wl1_frag"); %>','wl1_rateset':'<% nvram_get("wl1_rateset"); %>','wl1_gmode_protection':'<% nvram_get("wl1_gmode_protection"); %>','wl1_plcphdr':'<% nvram_get("wl1_plcphdr"); %>','wl1_ofdma':'<% nvram_get("wl1_ofdma"); %>','wl1_mumimo':'<% nvram_get("wl1_mumimo"); %>','wl1_txbf':'<% nvram_get("wl1_txbf"); %>','wl1_itxbf':'<% nvram_get("wl1_itxbf"); %>','wl1_atf':'<% nvram_get("wl1_atf"); %>','wl1_btc_mode':'<% nvram_get("wl1_btc_mode"); %>','wl1_igs':'<% nvram_get("wl1_igs"); %>','wl1_wme':'<% nvram_get("wl1_wme"); %>','wl1_wme_no_ack':'<% nvram_get("wl1_wme_no_ack"); %>','wl1_wme_apsd':'<% nvram_get("wl1_wme_apsd"); %>','wl1_dtim':'<% nvram_get("wl1_dtim"); %>','wl1_bcn':'<% nvram_get("wl1_bcn"); %>','wl1_frameburst':'<% nvram_get("wl1_frameburst"); %>','wl1_txpower':'<% nvram_get("wl1_txpower"); %>',
+-   'wl2_radio':'<% nvram_get("wl2_radio"); %>','wl2_11be':'<% nvram_get("wl2_11be"); %>','wl2_nmode_x':'<% nvram_get("wl2_nmode_x"); %>','wl2_mbo_enable':'<% nvram_get("wl2_mbo_enable"); %>','wl2_twt':'<% nvram_get("wl2_twt"); %>','wl2_bss_maxassoc':'<% nvram_get("wl2_bss_maxassoc"); %>','wl2_user_rssi':'<% nvram_get("wl2_user_rssi"); %>','wl2_turbo_qam':'<% nvram_get("wl2_turbo_qam"); %>','wl2_ampdu_mpdu':'<% nvram_get("wl2_ampdu_mpdu"); %>','wl2_ampdu_rts':'<% nvram_get("wl2_ampdu_rts"); %>','wl2_rts':'<% nvram_get("wl2_rts"); %>','wl2_frag':'<% nvram_get("wl2_frag"); %>','wl2_rateset':'<% nvram_get("wl2_rateset"); %>','wl2_gmode_protection':'<% nvram_get("wl2_gmode_protection"); %>','wl2_plcphdr':'<% nvram_get("wl2_plcphdr"); %>','wl2_ofdma':'<% nvram_get("wl2_ofdma"); %>','wl2_mumimo':'<% nvram_get("wl2_mumimo"); %>','wl2_txbf':'<% nvram_get("wl2_txbf"); %>','wl2_itxbf':'<% nvram_get("wl2_itxbf"); %>','wl2_atf':'<% nvram_get("wl2_atf"); %>','wl2_btc_mode':'<% nvram_get("wl2_btc_mode"); %>','wl2_igs':'<% nvram_get("wl2_igs"); %>','wl2_wme':'<% nvram_get("wl2_wme"); %>','wl2_wme_no_ack':'<% nvram_get("wl2_wme_no_ack"); %>','wl2_wme_apsd':'<% nvram_get("wl2_wme_apsd"); %>','wl2_dtim':'<% nvram_get("wl2_dtim"); %>','wl2_bcn':'<% nvram_get("wl2_bcn"); %>','wl2_frameburst':'<% nvram_get("wl2_frameburst"); %>','wl2_txpower':'<% nvram_get("wl2_txpower"); %>',
+-   'wl3_radio':'<% nvram_get("wl3_radio"); %>','wl3_11be':'<% nvram_get("wl3_11be"); %>','wl3_nmode_x':'<% nvram_get("wl3_nmode_x"); %>','wl3_mbo_enable':'<% nvram_get("wl3_mbo_enable"); %>','wl3_twt':'<% nvram_get("wl3_twt"); %>','wl3_bss_maxassoc':'<% nvram_get("wl3_bss_maxassoc"); %>','wl3_user_rssi':'<% nvram_get("wl3_user_rssi"); %>','wl3_turbo_qam':'<% nvram_get("wl3_turbo_qam"); %>','wl3_ampdu_mpdu':'<% nvram_get("wl3_ampdu_mpdu"); %>','wl3_ampdu_rts':'<% nvram_get("wl3_ampdu_rts"); %>','wl3_rts':'<% nvram_get("wl3_rts"); %>','wl3_frag':'<% nvram_get("wl3_frag"); %>','wl3_rateset':'<% nvram_get("wl3_rateset"); %>','wl3_gmode_protection':'<% nvram_get("wl3_gmode_protection"); %>','wl3_plcphdr':'<% nvram_get("wl3_plcphdr"); %>','wl3_ofdma':'<% nvram_get("wl3_ofdma"); %>','wl3_mumimo':'<% nvram_get("wl3_mumimo"); %>','wl3_txbf':'<% nvram_get("wl3_txbf"); %>','wl3_itxbf':'<% nvram_get("wl3_itxbf"); %>','wl3_atf':'<% nvram_get("wl3_atf"); %>','wl3_btc_mode':'<% nvram_get("wl3_btc_mode"); %>','wl3_igs':'<% nvram_get("wl3_igs"); %>','wl3_wme':'<% nvram_get("wl3_wme"); %>','wl3_wme_no_ack':'<% nvram_get("wl3_wme_no_ack"); %>','wl3_wme_apsd':'<% nvram_get("wl3_wme_apsd"); %>','wl3_dtim':'<% nvram_get("wl3_dtim"); %>','wl3_bcn':'<% nvram_get("wl3_bcn"); %>','wl3_frameburst':'<% nvram_get("wl3_frameburst"); %>','wl3_txpower':'<% nvram_get("wl3_txpower"); %>'
+-  };
++  /* current nvram value for every wlN_field this page can touch. The router
++     emits it in ONE pass over wl_ifnames, so ONLY the radios this model
++     actually has are present - never assume wl3, or even wl2. cellHTML()
++     below already treats a missing key as "". */
++  var NV = <% wlpro_nvram(); %>;
+ 
+   var BAND_LABEL={"2":"2.4 GHz","1":"5 GHz","4":"6 GHz"};
+   var BAND_TYPE ={"2":"2.4","1":"5","4":"6"};
+-- 
+2.25.1
+

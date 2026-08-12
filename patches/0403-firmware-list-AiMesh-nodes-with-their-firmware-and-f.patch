@@ -1,0 +1,142 @@
+From 88f35cff5c3d1d9a77ac75b2554178532d1c64cd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 12 Aug 2026 17:55:19 -0400
+Subject: [PATCH] firmware: list AiMesh nodes with their firmware, and flash
+ each one natively
+
+Adds a Mesh Nodes card listing every node paired with this router - name, IP,
+MAC, reported firmware, online state - from the existing get_cfg_clientlist
+hook, so no new backend was needed.
+
+Update opens that node's own firmware page, which is how stock drives a per-node
+upgrade: the node verifies and flashes the image itself and nothing is relayed
+through this router. A hub-side push is deliberately not attempted; that lives
+inside cfg_server, which ships without source.
+
+All node-reported strings are escaped before rendering - node data arrives over
+the mesh from a peer and is treated as untrusted.
+---
+ release/src/router/www/Reaper_Firmware.asp | 86 ++++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 555e44d7a7..2559641f26 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -41,6 +41,15 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
+ .card h2{font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+ .note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:6px}
++/* reaper: mesh-node rows */
++.nd{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line-soft)}
++.nd:first-child{border-top:0}
++.ndl{flex:1 1 auto;min-width:0}
++.ndn{color:var(--bone);font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.ndm{color:var(--steel);font-size:11.5px;margin-top:2px;font-variant-numeric:tabular-nums}
++.ndv{flex:0 0 auto;color:var(--bone);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right}
++.nda{flex:0 0 auto}
++.nd .badge{margin-left:6px}
+ .rowg{display:grid;grid-template-columns:170px 1fr;gap:4px 14px;font-size:13px}
+ .rowg .rl{color:var(--steel);text-transform:uppercase;font-size:11px;letter-spacing:.08em;align-self:center}
+ .rowg .rv{color:var(--bone)}
+@@ -117,6 +126,13 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+   </div>
+ </div>
+ 
++<div class="card">
++  <h2><#RFWU_32#></h2>
++  <div id="nodeBox"></div>
++  <div class="stat" id="nodeStat"><#RFWU_33#></div>
++  <p class="note"><#RFWU_34#></p>
++</div>
++
+ <div class="card">
+   <h2><#RFWU_16#></h2>
+   <p class="note" style="margin:0 0 8px"><#RFWU_17#> <#RFWU_26#></p>
+@@ -170,6 +186,75 @@ var CHK_EN = '<% nvram_get("firmware_check_enable"); %>';
+ var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
+ var busy = 0;
+ 
++/* ---- mesh nodes -------------------------------------------------------- *
++ * Firmware versions come from the AiMesh client table via the get_cfg_clientlist
++ * hook (the same source the stock firmware page reads). "Update" opens that
++ * node's OWN firmware page, which is exactly what stock does via
++ * httpApi.aimesh_get_win_open_url() - the node then verifies and flashes the
++ * image itself. Nothing is asked of the closed cfg_server blob, and no image is
++ * ever relayed through this router. */
++function nodeUrl(ip){
++  /* mirrors httpApi.aimesh_get_win_open_url(): same scheme as the hub, and on
++   * https the hub's own port, which is how the node is reachable too. */
++  if(location.protocol === 'https:')
++    return 'https://' + ip + (location.port ? ':' + location.port : '') + '/AiMesh_Node_FirmwareUpgrade.asp';
++  return 'http://' + ip + '/AiMesh_Node_FirmwareUpgrade.asp';
++}
++function openNode(ip){ window.open(nodeUrl(ip), '_blank', 'noopener'); }
++
++function renderNodes(list){
++  var box = $id('nodeBox'), stat = $id('nodeStat'), html = '', shown = 0, i;
++  var mine = prettyVer(EXTENDNO);
++  for(i = 0; i < list.length; i++){
++    var nd = list[i];
++    /* level 0 is this router (the CAP); its version is in the card above */
++    if(String(nd.level || '') === '0') continue;
++    var ip = String(nd.ip || '');
++    var name = nd.ui_model_name || nd.model_name || nd.mac || '';
++    var fw = String(nd.fwver || '');
++    var on = String(nd.online || '') === '1';
++    var diff = fw && mine && fw.indexOf(mine) === -1;
++    shown++;
++    html += '<div class="nd"><div class="ndl"><div class="ndn">' + esc(name) +
++            (diff ? ' <span class="badge"><#RFWU_38#></span>' : '') +
++            (on ? '' : ' <span class="badge"><#RFWU_37#></span>') +
++            '</div><div class="ndm">' + esc(ip) + (nd.mac ? ' &middot; ' + esc(nd.mac) : '') +
++            '</div></div><div class="ndv">' + (fw ? esc(fw) : '&mdash;') + '</div><div class="nda">' +
++            (on && ip ? '<button class="btn2" onclick="openNode(\'' + esc(ip) + '\')"><#RFWU_36#></button>' : '') +
++            '</div></div>';
++  }
++  box.innerHTML = html;
++  stat.innerHTML = shown ? '' : '<#RFWU_35#>';
++  stat.style.display = shown ? 'none' : '';
++}
++
++function loadNodes(){
++  var x = new XMLHttpRequest();
++  var fin = once(function(list){
++    if(list) renderNodes(list);
++    else { $id('nodeStat').innerHTML = '<#RFWU_39#>'; $id('nodeStat').style.display = ''; }
++  });
++  x.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('get_cfg_clientlist()') + '&_=' + Date.now(), true);
++  x.timeout = 8000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    var out = null;
++    if(x.status === 200){
++      try{
++        var j = JSON.parse(x.responseText), src = j, k, arr = [];
++        /* appGet wraps the hook result under its own name on some builds */
++        if(j && typeof j === 'object' && j.get_cfg_clientlist) src = j.get_cfg_clientlist;
++        if(Object.prototype.toString.call(src) === '[object Array]') arr = src;
++        else for(k in src){ if(Object.prototype.hasOwnProperty.call(src, k) && src[k] && typeof src[k] === 'object') arr.push(src[k]); }
++        out = arr;
++      }catch(e){}
++    }
++    fin(out);
++  };
++  x.ontimeout = function(){ fin(null); };
++  x.send();
++}
++
+ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+ function $id(i){ return document.getElementById(i); }
+ function prettyVer(s){
+@@ -553,6 +638,7 @@ function boot(){
+   $id('rvVariant').innerHTML = IS_MCP ? 'AI Advisor <span class="badge">MCP</span>' : 'Standard <span class="badge">noMCP</span>';
+   $id('rvVer').textContent = prettyVer(EXTENDNO);
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
++  loadNodes();
+   $id('schedChk').checked = (CHK_EN === '1');
+   /* a previous check (scheduled or manual) already found an update ->
+      render it immediately (this is where the dashboard badge lands) */
+-- 
+2.25.1
+

@@ -1,0 +1,339 @@
+From bdb0dd20244a5413b1056b6ca3c6173048484bd4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 21:28:51 -0400
+Subject: [PATCH] upnp: restore mappings after a firewall rebuild, IGD:2 by
+ default, protect the  router's own ports
+
+Evaluated whether a newer or different UPnP package would help: it would not.
+The tree already carries miniupnpd 2.3.10 plus post-release git, and 2.3.10 is
+still upstream's newest tagged release. UPnP IGD:2 (2010) remains the latest
+gateway specification - there is no IGD:3 - and the genuinely modern protocol,
+PCP (RFC 6887), is already implemented and enabled here. The breakage was all
+in the wiring around the package.
+
+1. Every firewall rebuild silently killed all live mappings. firewall.c applies
+   its rulesets with iptables-restore WITHOUT --noflush, and the payload
+   declares :VUPNP, :PUPNP and :FUPNP - so each rebuild flushes every UPnP,
+   NAT-PMP and PCP mapping. The only recovery hook, reload_upnp(), sent
+   SIGUSR1, whose handler merely sets should_send_public_address_change_notif;
+   it re-adds nothing. miniupnpd kept the mappings in memory and in
+   /tmp/upnp.leases and kept answering clients "that mapping already exists",
+   so nothing retried, while no packet was forwarded. Silent, non-self-healing,
+   and reported as healthy by every layer.
+   reload_upnp() now performs a real restart via notify_rc("restart_upnp").
+   miniupnpd writes its lease file on clean shutdown and re-adds every mapping
+   at startup with its remaining lifetime, so a stop/start restores exactly
+   what the flush destroyed. Asynchronous, because start_upnp() can block for
+   5 s on the GETREALIP probe and start_firewall() must not stall on it.
+
+2. pidof()/killall() are exact process-name matches, but the IGDv2 build runs
+   as miniupnpd-igdv2. stop_upnp() killed both names; reload_upnp() and two
+   NAS paths asked only for the plain one. New pidof_upnp() checks both.
+
+3. --igd2 went only to the miniupnpd-igdv2 build, so leaving IPv6 pinholes off
+   - the default, and the sensible setting here - silently dropped IPv4 clients
+   to IGD:1, costing AddAnyPortMapping ("that port is taken, give me any free
+   one", the two-consoles collision, made likelier because CHECK_PORTINUSE is
+   on) and GetListOfPortMappings. The default daemon is now built --igd2 too.
+   Verified by preprocessor probe that --igd2 without --ipv6 leaves only IGD_V2
+   and ENABLE_PCP defined: ENABLE_6FC_SERVICE and ENABLE_UPNPPINHOLE are nested
+   inside both #ifdef IGD_V2 and #ifdef ENABLE_IPV6, so every pinhole path is
+   compiled out. Backward compatible - UPNP_STRICT is unset, so minissdp.c
+   matches M-SEARCH by prefix and answers IGD:1 searches with an IGD:1 ST.
+
+4. Hardening. The shipped default emitted "allow 1-65535", making the else
+   branch that promises "only ports above 1024" unreachable, and the deny list
+   omitted the router's own OpenVPN, WireGuard, IPSec and SSH listeners while
+   the plain-HTTP admin deny sat behind an #if 0 that could not have compiled.
+   Since VUPNP hooks nat/PREROUTING, ahead of the routing decision, a LAN host
+   could map ext:51820 to itself and intercept inbound WireGuard; secure_mode
+   does not help, because mapping the VPN port to yourself is the attack.
+   upnp_protect_svc (default on) emits denies for those ports regardless of the
+   allowed range, so it also protects boxes still set to 1.
+
+The pinhole toggle is relabelled - it used to read "Enable IGDv2 (IPv6 pinhole
+support)" while actually deciding both things - and "Protect router service
+ports" is exposed next to it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/Makefile                   |  13 +-
+ release/src/router/rc/rc.h                    |   1 +
+ release/src/router/rc/services.c              | 123 ++++++++++++++++--
+ .../src/router/www/Advanced_WAN_Content.asp   |  28 +++-
+ 4 files changed, 153 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 1604f5cafa..e0784d6327 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -4584,7 +4584,18 @@ miniupnpd/config.h: shared/version.h
+ ifeq ($(RTCONFIG_IGD2),y)
+ 	cd miniupnpd-igdv2 && ./configure --vendorcfg --leasefile $(if $(RTCONFIG_IPV6),--ipv6,) --igd2 --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
+ endif
+-	cd miniupnpd && ./configure --vendorcfg --leasefile --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
++	# reaper 2026-08-11: build the default daemon as an IGD:2 device too. IGD:2 and IPv6
++	# pinholes are separable - in the generated config.h, ENABLE_6FC_SERVICE (the IPv6
++	# firewall service) is nested inside BOTH "#ifdef IGD_V2" and "#ifdef ENABLE_IPV6",
++	# and ENABLE_UPNPPINHOLE needs one of those - so --igd2 WITHOUT --ipv6 gives IGD:2
++	# with every pinhole path compiled out. Previously --igd2 went only to the
++	# miniupnpd-igdv2 build, so leaving IPv6 pinholes off (the default, and the sensible
++	# setting for a hardened build) silently also dropped IPv4 clients to IGD:1 and cost
++	# AddAnyPortMapping ("that port is taken, give me any free one" - the two-consoles /
++	# two-torrent-clients collision) and GetListOfPortMappings. Backward compatibility is
++	# safe: UPNP_STRICT is not set, so minissdp.c matches an M-SEARCH ST by prefix only
++	# and answers IGD:1 searches with an IGD:1 ST, as UDA v1.1 requires.
++	cd miniupnpd && ./configure --vendorcfg --leasefile --igd2 --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
+ 
+ miniupnpd: $(IPTABLES) e2fsprogs miniupnpd/config.h
+ 	@$(SEP)
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index f84f3db0e3..3219860a5b 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2981,6 +2981,7 @@ extern void start_rchqd(void);
+ extern void stop_gk(void);	/* reaper v1.6.8 Gatekeeper device access control (rc/gatekeeper.c) */
+ extern void start_gk(void);
+ extern void gk_teardown_rules(void);
++extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exact-name pidof misses the latter) */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
+ extern void rw_teardown_rules(void);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 9109d36897..d80cecd9a3 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -8018,21 +8018,70 @@ void start_upnp(void)
+ 				}
+ 
+ 				if (nvram_get_int("misc_http_x")) {
++					int enable = 0;
+ #ifdef RTCONFIG_HTTPS
+-					int enable = nvram_get_int("http_enable");
++					enable = nvram_get_int("http_enable");
+ 					if (enable != 0) {
+ 						httpx_port = nvram_get_int("misc_httpsport_x") ? : 8443;
+ 						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n", httpx_port);
+ 					}
+ #endif
+-#if 0
+-					if (enable != 1)
+-
+-					{
++					/* reaper 2026-08-11: the plain-HTTP admin port was left behind an
++					   #if 0 - `enable` was declared inside the RTCONFIG_HTTPS block, so
++					   the dead branch could not have compiled even if re-enabled. With
++					   the declaration hoisted it works. http_enable: 0 = HTTP only,
++					   1 = HTTPS only, 2 = both -> deny the HTTP port whenever the web
++					   UI answers HTTP at all. Without this, remote web admin on 8080
++					   was UPnP-hijackable while the HTTPS port was protected. */
++					if (enable != 1) {
+ 						httpx_port = nvram_get_int("misc_httpport_x") ? : 8080;
+ 						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n", httpx_port);
+ 					}
+-#endif
++				}
++
++				/* reaper 2026-08-11 (UPnP hardening): never hand out a mapping on a
++				 * port THIS ROUTER listens on for inbound WAN traffic. VUPNP hooks
++				 * nat/PREROUTING, which is evaluated before the routing decision, so a
++				 * UPnP/NAT-PMP/PCP mapping on e.g. the WireGuard port silently steals
++				 * inbound VPN traffic from the router. secure_mode=yes does not help:
++				 * it only restricts a client to mapping to ITSELF, and mapping the VPN
++				 * port to itself is precisely the attack. The stock deny list covered
++				 * virtual-server entries, the HTTPS admin port, WebDAV, AiCloud and
++				 * DownloadMaster - but none of the VPN or SSH listeners.
++				 * These denies are emitted regardless of the allowed external range,
++				 * so they also protect boxes whose upnp_min_port_ext is still 1. */
++				if (!nvram_match("upnp_protect_svc", "0")) {
++					char svc[64], *sp, *ssave = NULL;
++
++					if (nvram_get_int("wgs_enable"))
++						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n",
++							nvram_get_int("wgs_port") ? : 51820);
++
++					/* vpn_serverx_start is the list of RUNNING OpenVPN server units;
++					   the canonical reader is foreach_44() (rc/dnsfilter.c:194), i.e.
++					   comma-separated - whitespace is tolerated here as well */
++					strlcpy(svc, nvram_safe_get("vpn_serverx_start"), sizeof(svc));
++					for (sp = strtok_r(svc, ", ", &ssave); sp; sp = strtok_r(NULL, ", ", &ssave)) {
++						char key[24];
++						int u = atoi(sp);
++						if (u < 1 || u > 2)
++							continue;
++						snprintf(key, sizeof(key), "vpn_server%d_port", u);
++						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n",
++							nvram_get_int(key) ? : 1194);
++					}
++
++					if (nvram_get_int("ipsec_server_enable")) {
++						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n",
++							nvram_get_int("ipsec_isakmp_port") ? : 500);
++						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n",
++							nvram_get_int("ipsec_nat_t_port") ? : 4500);
++					}
++
++					/* sshd_enable: 1 = WAN+LAN, 2 = LAN only -> only 1 is exposed */
++					if (nvram_get_int("sshd_enable") == 1)
++						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n",
++							nvram_get_int("sshd_port") ? : 22);
+ 				}
+ 
+ #ifdef RTCONFIG_WEBDAV
+@@ -8150,6 +8199,23 @@ void start_upnp(void)
+ 	}
+ }
+ 
++/* reaper 2026-08-11: the IGDv2 build runs under a DIFFERENT process name
++ * ("miniupnpd-igdv2", see the xstart() above), and pidof()/killall() are exact
++ * strcmp() matches on the process name (shared/process.c:71). So a bare
++ * pidof("miniupnpd") silently misses the daemon whenever upnp_pinhole_enable is
++ * set. stop_upnp() below already kills both names - proof the two names were
++ * known - but the three other call sites only ever asked about the plain one.
++ * Ask about both, everywhere. */
++int pidof_upnp(void)
++{
++	int pid = pidof("miniupnpd");
++#ifdef RTCONFIG_IGD2
++	if (pid < 0)
++		pid = pidof("miniupnpd-igdv2");
++#endif
++	return pid;
++}
++
+ void stop_upnp(void)
+ {
+ 	if (getpid() != 1 && getuid() != 0) {
+@@ -8167,6 +8233,37 @@ void stop_upnp(void)
+ #endif
+ }
+ 
++/* Called at the very end of start_firewall().
++ *
++ * reaper 2026-08-11 field fix ("UPnP is broken / port forwards stop working
++ * after a while"). The firewall rebuild applies its rulesets with
++ * iptables-restore WITHOUT --noflush, and those payloads declare
++ * ":VUPNP - [0:0]", ":PUPNP - [0:0]" and ":FUPNP - [0:0]" - so EVERY rebuild
++ * flushes EVERY live UPnP / NAT-PMP / PCP mapping. There are ~29 restart_firewall
++ * call sites across rc and httpd (WAN reconnect, DDNS, VPN toggles, saving any
++ * firewall or port-forward setting, NAS app changes, watchdog recovery), plus
++ * Reaper's own Warden and Gatekeeper arming.
++ *
++ * This used to send SIGUSR1, which re-adds NOTHING: miniupnpd's SIGUSR1 handler
++ * (miniupnpd.c:816) only sets should_send_public_address_change_notif, i.e.
++ * "announce a new WAN IP". So the daemon kept every mapping in its in-memory
++ * list and in /tmp/upnp.leases, kept answering clients "that mapping already
++ * exists" (so the client never retried), and the GUI kept listing them - while
++ * not one packet was forwarded. clean_ruleset_interval only ever REMOVES rules,
++ * so nothing ever recovered. Silent, non-self-healing, and reported as healthy
++ * by every layer: exactly why this reads as "the package is broken".
++ *
++ * Fix: actually restart the daemon. miniupnpd writes its lease file on clean
++ * shutdown (lease_file_rewrite(), miniupnpd.c:3381) and reload_from_lease_file()
++ * re-adds every mapping at startup (upnpredirect.c:155, called from
++ * miniupnpd.c:2265) - with the REMAINING lifetime, because Merlin compiles in
++ * LEASEFILE_USE_REMAINING_TIME. A stop/start therefore restores precisely what
++ * the flush destroyed. This is also what OpenWrt does on a firewall reload.
++ *
++ * Routed through notify_rc() so it is ASYNCHRONOUS: start_upnp() can block for
++ * up to 5 s on the RTCONFIG_GETREALIP probe below, and start_firewall() must not
++ * stall on that. No debounce: every completed rebuild genuinely needs a reinstall,
++ * and a burst during WAN-up simply ends with the last restart winning. */
+ void reload_upnp(void)
+ {
+ 	char tmp[100], prefix[sizeof("wanXXXXXXXXXX_")];
+@@ -8182,8 +8279,14 @@ void reload_upnp(void)
+ #endif
+ 	snprintf(prefix, sizeof(prefix), "wan%d_", unit);
+ 
+-	if (nvram_get_int(strcat_r(prefix, "upnp_enable", tmp)))
+-		killall("miniupnpd", SIGUSR1);
++	if (!nvram_get_int(strcat_r(prefix, "upnp_enable", tmp)))
++		return;
++	/* not running -> the normal start path owns it; there is nothing to restore
++	   and we must not spawn a daemon the user did not ask for */
++	if (pidof_upnp() < 0)
++		return;
++
++	notify_rc("restart_upnp");
+ }
+ 
+ int
+@@ -18661,7 +18764,7 @@ check_ddr_done:
+ 		}
+ 		if(action&RC_SERVICE_START){
+ 			int restart_upnp = 0;
+-			if (pidof("miniupnpd") != -1) {
++			if (pidof_upnp() != -1) {	/* reaper: also matches miniupnpd-igdv2 */
+ 				stop_upnp();
+ 				restart_upnp = 1;
+ 			}
+@@ -23782,7 +23885,7 @@ int run_app_script(const char *pkg_name, const char *pkg_action)
+ 	if(pkg_action == NULL || strlen(pkg_action) <= 0)
+ 		return -1;
+ 
+-	if (pidof("miniupnpd") != -1) {
++	if (pidof_upnp() != -1) {	/* reaper: also matches miniupnpd-igdv2 */
+ 		stop_upnp();
+ 		restart_upnp = 1;
+ 	}
+diff --git a/release/src/router/www/Advanced_WAN_Content.asp b/release/src/router/www/Advanced_WAN_Content.asp
+index 265a39171e..7d9082432d 100644
+--- a/release/src/router/www/Advanced_WAN_Content.asp
++++ b/release/src/router/www/Advanced_WAN_Content.asp
+@@ -493,6 +493,8 @@ function display_upnp_options(){
+ 	document.getElementById("upnp_range_int").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	document.getElementById("upnp_range_ext").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	document.getElementById("upnp_secure_tr").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
++	/* reaper 2026-08-11: router-service-port protection follows the master UPnP switch */
++	document.getElementById("upnp_protect_svc_tr").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	if (igd2_support) {
+ 		document.getElementById("upnp_pinhole").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	} else {
+@@ -2591,11 +2593,21 @@ function get_default_wan_name(){
+ 									<input type="radio" name="wan_upnp_enable" class="input" value="0" onclick="display_upnp_options();return change_common_radio(this, 'LANHostConfig', 'wan_upnp_enable', '0')" <% nvram_match("wan_upnp_enable", "0", "checked"); %>><#checkbox_No#>
+ 								</td>
+ 							</tr>
++							<!-- reaper 2026-08-11: this row used to read "Enable IGDv2 (IPv6 pinhole
++							     support)" and it bundled two unrelated things - it selected the
++							     miniupnpd-igdv2 binary, so turning it OFF also silently dropped the
++							     router to IGD:1 on IPv4 and gave up AddAnyPortMapping (the "port
++							     already taken, give me any free one" action that stops two consoles
++							     or two torrent clients from colliding) and GetListOfPortMappings.
++							     The plain daemon is now built with --igd2 as well, so IGD:2 is always
++							     on and this switch controls only what its name says: the IPv6
++							     firewall-pinhole service (WANIPv6FirewallControl). -->
+ 							<tr id="upnp_pinhole">
+-								<th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50,5);">Enable IGDv2 (IPv6 pinhole support)</a></th>
++								<th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50,5);">UPnP: Allow IPv6 pinholes (IGD:2 firewall control)</a></th>
+ 								<td>
+ 									<input type="radio" name="upnp_pinhole_enable" class="input" value="1" onclick="display_upnp_options();" <% nvram_match("upnp_pinhole_enable", "1", "checked"); %>><#checkbox_Yes#>
+ 									<input type="radio" name="upnp_pinhole_enable" class="input" value="0" onclick="display_upnp_options();" <% nvram_match("upnp_pinhole_enable", "0", "checked"); %>><#checkbox_No#>
++									<div style="color:#FFCC00;font-size:11px;margin-top:3px;">Lets IPv6 clients open a firewall hole straight to themselves. IPv4 port mapping and PCP are unaffected by this setting.</div>
+ 								</td>
+ 							</tr>
+ 							<tr id="upnp_secure_tr">
+@@ -2605,6 +2617,20 @@ function get_default_wan_name(){
+ 									<input type="radio" name="upnp_secure" class="input" value="0" <% nvram_match_x("", "upnp_secure", "0", "checked"); %>><#checkbox_No#>
+ 								</td>
+ 							</tr>
++							<!-- reaper 2026-08-11: VUPNP hooks nat/PREROUTING, which is evaluated
++							     before the routing decision, so a UPnP/PCP mapping on one of the
++							     router's OWN inbound ports takes that traffic away from the router
++							     entirely. secure_mode does not help - mapping the VPN port to
++							     yourself IS the attack. Default on; exposed so it can be turned off
++							     if someone deliberately wants a LAN host to take one of these over. -->
++							<tr id="upnp_protect_svc_tr">
++								<th>UPnP: Protect router service ports</th>
++								<td>
++									<input type="radio" name="upnp_protect_svc" class="input" value="1" <% nvram_match_x("", "upnp_protect_svc", "1", "checked"); %>><#checkbox_Yes#>
++									<input type="radio" name="upnp_protect_svc" class="input" value="0" <% nvram_match_x("", "upnp_protect_svc", "0", "checked"); %>><#checkbox_No#>
++									<div style="color:#FFCC00;font-size:11px;margin-top:3px;">Refuses UPnP/PCP requests for the ports this router listens on itself &mdash; OpenVPN, WireGuard, IPSec, SSH and web admin &mdash; so a LAN device cannot intercept inbound traffic meant for the router.</div>
++								</td>
++							</tr>
+ 							<tr id="upnp_range_int">
+ 								<th>UPNP: Allowed internal port range</th>
+ 									<td>
+-- 
+2.25.1
+

@@ -1,0 +1,1153 @@
+From 7ca10cd8fda67f9ecfea7d925ada2078208df79e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 21:28:50 -0400
+Subject: [PATCH] reaper v2.3.5: nvram defaults and dictionaries for this rung
+
+Groundwork for the four changes that follow, kept in one commit because the
+defaults table and the 25 dictionaries are shared by all of them.
+
+nvram:
+  rwarden_stats_save  1     persist Warden block statistics to /jffs
+  rwarden_reset       off   retention window: off | 24h | 7d | 30d | 90d
+  upnp_protect_svc    1     refuse UPnP/PCP mappings on the router's own ports
+  upnp_min_port_ext   1024  was 1 - see the UPnP commit; the code's own comment
+                            already promised 1024 but the branch was unreachable
+  reaper_fbdone       0     operator escape hatch for the first-boot gate
+
+i18n: RWDN_56..68 + RDST_64 (Warden statistics card, retention picker, the
+"counting since" line, and the Storage page's not-saved state), RFB_15/16
+(first-boot step 2), all translated across the 24 languages rather than
+English-seeded. RWDN_46 and RDST_20 are rewritten - their old text described
+the pre-fix behaviour and would have been actively wrong. Dicts stay lockstep
+at 6312 lines; reaper_langcheck reports 0 breakers.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c | 21 ++++++++++++++++++++-
+ release/src/router/www/BR.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/CN.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/CZ.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/DA.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/DE.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/EN.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/ES.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/FI.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/FR.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/HU.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/IT.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/JP.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/KR.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/MS.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/NL.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/NO.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/PL.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/RO.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/RU.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/SL.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/SV.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/TH.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/TR.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/TW.dict       | 20 ++++++++++++++++++--
+ release/src/router/www/UK.dict       | 20 ++++++++++++++++++--
+ 26 files changed, 470 insertions(+), 51 deletions(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index c01686bce6..8ada03b810 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3188,6 +3188,13 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "rwarden_log", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = LOG (prefix "REAPER-WARDEN ") before DROP */
+ 	{ "rwarden_sched", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* cron schedule for feed refresh; empty = default 30 4 * * * */
+ 	{ "rwarden_lastupd", "", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* epoch of last successful feed update (set by updater) */
++	/* reaper 2026-08-11: escape hatch for the server-side first-boot gate (httpd.c
++	   reaper_firstboot_pending). The gate opens on its own once the live conditions
++	   clear - this is NOT written by the wizard. It exists so an operator who gets
++	   wedged can free the GUI over SSH: nvram set reaper_fbdone=1 && nvram commit */
++	{ "reaper_fbdone", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "rwarden_stats_save", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = persist block statistics to /jffs/rwarden/counters across reboot/reflash */
++	{ "rwarden_reset", "off", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* block-statistics retention window: off | 24h | 7d | 30d | 90d */
+ 	/* reaper v1.8.8: rwatch - WAN/DNS/Warden/accelerator watchdog (rc/rwatch.c). Cron probe, no daemon; first-hop only (no phone-home); syslog transitions + /jffs/rwatch incident dumps. */
+ 	{ "rwatch_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (default ON - diagnostics only, no data-path effect) */
+ 	{ "rwatch_iv", "5", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* probe interval, minutes (1-30) */
+@@ -4138,7 +4145,11 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 	{ "upnp_min_port_int", "1024", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "upnp_max_port_int", "65535", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "upnp_min_port_ext", "1", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* reaper 2026-08-11: was "1", which made start_upnp() emit "allow 1-65535" and let any
++	   LAN host claim a privileged external port. The else-branch in start_upnp() that says
++	   "by default allow only redirection of ports above 1024" was unreachable because all
++	   four of these nvrams are non-zero, so the documented safe default never applied. */
++	{ "upnp_min_port_ext", "1024", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "upnp_max_port_ext", "65535", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "mfp_ip_monopoly", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #if defined(RTCONFIG_PPTPD) || defined(RTCONFIG_ACCEL_PPTPD)
+@@ -5196,7 +5207,15 @@ struct nvram_tuple router_defaults[] = {
+ // miniupnpd - PCP-related values
+ 	{ "upnp_min_lifetime", "120", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "upnp_max_lifetime", "86400", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* IPv6 firewall pinholes (IGD:2 WANIPv6FirewallControl) - selects the miniupnpd-igdv2
++	   binary. Since 2026-08-11 the plain binary is ALSO built --igd2, so this no longer
++	   silently decides whether you get IGD:2 on IPv4; it means only what its name says. */
+ 	{ "upnp_pinhole_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* reaper 2026-08-11: refuse UPnP/NAT-PMP/PCP mappings on ports the router itself
++	   listens on for inbound WAN traffic (OpenVPN, WireGuard, IPSec, SSH, web admin).
++	   VUPNP hooks nat/PREROUTING, ahead of the routing decision, so such a mapping
++	   intercepts traffic meant for the router. Default on; 0 restores stock behaviour. */
++	{ "upnp_protect_svc", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ #ifdef RTCONFIG_BCMARM
+ 	{ "qos_overhead", "0", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, // Overhead, in bytes
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 646e5a0562..85dcf364cc 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Ajustes
+ RWDN_43=Protocolos
+ RWDN_44=Acessos bloqueados
+ RWDN_45=Principais países bloqueados
+-RWDN_46=Os países de origem mais ativos que o Warden descartou desde a última ativação. Os contadores são zerados quando as regras são reconstruídas ou o roteador é reiniciado.
++RWDN_46=Os países de origem mais ativos que o Warden bloqueou. As contagens são salvas na flash interna e persistem entre reconstruções de regras, reinicializações e atualizações de firmware.
+ RWDN_47=País
+ RWDN_48=Bloqueios
+ RWDN_49=Nenhum tráfego bloqueado registrado ainda.
+@@ -5957,7 +5957,7 @@ RDST_16=Histórico de qualidade de canal (rchqd)
+ RDST_17=Um snapshot por ciclo enquanto o monitor estiver ativado
+ RDST_18=Espelho do syslog
+ RDST_19=Novas linhas de log a cada ciclo, com rotação
+-RDST_20=Cache de feeds do Warden
++RDST_20=Cache de listas e contagens do Warden
+ RDST_21=Na atualização do feed
+ RDST_22=Fixo na flash interna (JFFS): precisa restaurar antes que o firewall arme, antes de qualquer montagem USB.
+ RDST_23=JFFS - fixo
+@@ -6294,3 +6294,19 @@ RFWU_30=O arquivo escolhido não parece ser uma imagem para este roteador (model
+ RFWU_31=Enviar e gravar esta imagem? O roteador vai verificá-la, gravá-la e reiniciar. Não desligue o roteador até ele voltar a ficar on-line.
+ RQOS_123=Estas regras classificam por bytes transferidos, portanto não podem usar a aceleração de fluxo por hardware e são reavaliadas a cada pacote; além disso, os fluxos longos acabam na classe errada (vídeo em streaming é HTTPS). Use porta, protocolo, IP ou MAC. Afetadas:
+ Reaper_c_dashboard=Painel
++RWDN_56=Estatísticas de bloqueio
++RWDN_57=Salvar estatísticas de bloqueio
++RWDN_58=O Warden conta cada pacote que descarta. Salvar mantém esses totais na memória flash interna para que sobrevivam a uma reinicialização, ao reinício do serviço e a uma atualização de firmware.
++RWDN_59=Intervalo de redefinição
++RWDN_60=Os totais e as contagens por país são gravados na flash interna (JFFS) e restaurados na inicialização. Desligado = contar apenas desde a última reconstrução das regras do firewall.
++RWDN_61=Limpar automaticamente as contagens salvas depois desse período e iniciar um novo período.
++RWDN_62=Nunca
++RWDN_63=24 horas
++RWDN_64=7 dias
++RWDN_65=1 mês
++RWDN_66=3 meses
++RWDN_67=Contando desde
++RWDN_68=Desde a última reconstrução do firewall
++RDST_64=Não salvo
++RFB_15=Defina a senha do Wi-Fi
++RFB_16=A rede sem fio ainda usa a senha de fábrica. Defina uma nova abaixo para concluir a configuração.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 54b6050c13..a0c2b67b1c 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=微调
+ RWDN_43=协议
+ RWDN_44=已拦截的访问
+ RWDN_45=被拦截最多的国家/地区
+-RWDN_46=自 Warden 上次启用以来丢弃流量最活跃的来源国家/地区。规则重建或路由器重启时计数器会重置。
++RWDN_46=Warden 拦截最多的来源国家/地区。计数保存在内部闪存中，可在规则重建、重启和固件升级后保留。
+ RWDN_47=国家/地区
+ RWDN_48=拦截次数
+ RWDN_49=尚未记录到被拦截的流量。
+@@ -5957,7 +5957,7 @@ RDST_16=信道质量历史（rchqd）
+ RDST_17=监控启用期间每个周期一份快照
+ RDST_18=系统日志镜像
+ RDST_19=每个周期新增日志行，并进行轮转
+-RDST_20=Warden 订阅源缓存
++RDST_20=Warden 列表缓存与拦截计数
+ RDST_21=订阅源更新时
+ RDST_22=固定使用内部闪存（JFFS）：必须在防火墙布防之前完成恢复，早于任何 USB 挂载。
+ RDST_23=JFFS——已锁定
+@@ -6294,3 +6294,19 @@ RFWU_30=所选文件似乎不是此路由器的镜像（型号或版本不匹配
+ RFWU_31=上传并写入此镜像？路由器将校验、写入并重启。在路由器重新上线之前，请勿断电。
+ RQOS_123=这些规则按传输字节数分类，因此无法使用硬件流加速，并且会对每个数据包重新判定；长连接也会落入错误的类别（流媒体视频使用 HTTPS）。请改用端口、协议、IP 或 MAC 进行匹配。受影响的规则：
+ Reaper_c_dashboard=仪表板
++RWDN_56=拦截统计
++RWDN_57=保存拦截统计
++RWDN_58=Warden 会统计它丢弃的每个数据包。启用保存后，这些计数将写入内部闪存，可在重启、服务重启和固件升级后保留。
++RWDN_59=重置周期
++RWDN_60=总数和各国家/地区的计数写入内部闪存 (JFFS)，并在启动时恢复。关闭 = 仅统计自防火墙上次重建规则以来的数据。
++RWDN_61=经过该时间后自动清除已保存的计数，并开始新的统计周期。
++RWDN_62=从不
++RWDN_63=24 小时
++RWDN_64=7 天
++RWDN_65=1 个月
++RWDN_66=3 个月
++RWDN_67=统计起始
++RWDN_68=自上次防火墙重建以来
++RDST_64=未保存
++RFB_15=设置 Wi-Fi 密码
++RFB_16=无线网络仍在使用出厂密码。请在下方设置新密码以完成设置。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 6f96973746..8e9e817fa5 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Vyladění
+ RWDN_43=Protokoly
+ RWDN_44=Blokované přístupy
+ RWDN_45=Nejčastěji blokované země
+-RWDN_46=Nejaktivnější zdrojové země, které Warden zahodil od posledního spuštění. Čítače se vynulují při přestavbě pravidel nebo restartu routeru.
++RWDN_46=Nejaktivnější zdrojové země, které Warden zahodil. Počty se ukládají do interní paměti flash a přetrvávají přes obnovy pravidel, restarty i aktualizace firmwaru.
+ RWDN_47=Země
+ RWDN_48=Blokování
+ RWDN_49=Zatím nebyl zaznamenán žádný blokovaný provoz.
+@@ -5957,7 +5957,7 @@ RDST_16=Historie kvality kanálu (rchqd)
+ RDST_17=Jeden snímek na tik, dokud je monitor zapnutý
+ RDST_18=Zrcadlo syslogu
+ RDST_19=Nové řádky protokolu při každém tiku, s rotací
+-RDST_20=Mezipaměť feedů Wardenu
++RDST_20=Mezipaměť seznamů a počty blokování Wardenu
+ RDST_21=Při aktualizaci feedu
+ RDST_22=Pevně vázáno na interní flash (JFFS): musí se obnovit dřív, než se aktivuje firewall, tedy dříve než jakékoli připojení USB.
+ RDST_23=JFFS - uzamčeno
+@@ -6294,3 +6294,19 @@ RFWU_30=Vybraný soubor nevypadá jako obraz pro tento router (nesouhlasí model
+ RFWU_31=Nahrát a zapsat tento obraz? Router jej ověří, zapíše a restartuje se. Nevypínejte router, dokud se znovu nepřipojí.
+ RQOS_123=Tato pravidla klasifikují podle přenesených bajtů, takže nemohou využít hardwarovou akceleraci toků a vyhodnocují se u každého paketu; dlouhé toky navíc skončí ve špatné třídě (streamované video jde přes HTTPS). Používejte raději port, protokol, IP nebo MAC. Týká se pravidel:
+ Reaper_c_dashboard=Nástěnka
++RWDN_56=Statistiky blokování
++RWDN_57=Ukládat statistiky blokování
++RWDN_58=Warden počítá každý zahozený paket. Ukládání zapisuje tyto součty do interní paměti flash, takže přežijí restart, restart služby i aktualizaci firmwaru.
++RWDN_59=Interval resetu
++RWDN_60=Součty a počty podle zemí se zapisují do interní paměti flash (JFFS) a obnovují se při startu. Vypnuto = počítat jen od poslední obnovy pravidel firewallu.
++RWDN_61=Po uplynutí této doby automaticky vymazat uložené počty a začít nové období.
++RWDN_62=Nikdy
++RWDN_63=24 hodin
++RWDN_64=7 dní
++RWDN_65=1 měsíc
++RWDN_66=3 měsíce
++RWDN_67=Počítáno od
++RWDN_68=Od poslední obnovy firewallu
++RDST_64=Neukládá se
++RFB_15=Nastavte heslo Wi-Fi
++RFB_16=Bezdrátová síť stále používá tovární heslo. Nastavte níže nové a dokončete nastavení.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 098b19be5b..7cdeedf4bb 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Justeringer
+ RWDN_43=Protokoller
+ RWDN_44=Blokerede henvendelser
+ RWDN_45=Mest blokerede lande
+-RWDN_46=De mest aktive kildelande, som Warden har kasseret siden sin seneste aktivering. Tællere nulstilles, når reglerne genopbygges, eller routeren genstarter.
++RWDN_46=De mest aktive kildelande, Warden har blokeret. Tallene gemmes i den interne flash og bevares på tværs af regelgenopbygninger, genstarter og firmwareopdateringer.
+ RWDN_47=Land
+ RWDN_48=Blokeringer
+ RWDN_49=Der er endnu ikke registreret blokeret trafik.
+@@ -5957,7 +5957,7 @@ RDST_16=Kanalkvalitetshistorik (rchqd)
+ RDST_17=Ét øjebliksbillede pr. tick, mens overvågningen er aktiveret
+ RDST_18=Syslog-spejl
+ RDST_19=Nye loglinjer hvert tick, roteres
+-RDST_20=Warden feed-cache
++RDST_20=Warden-feedcache og blokeringstal
+ RDST_21=Ved feed-opdatering
+ RDST_22=Låst til intern flash (JFFS): den skal genskabes, før firewallen aktiveres, tidligere end nogen USB-montering.
+ RDST_23=JFFS - låst
+@@ -6294,3 +6294,19 @@ RFWU_30=Den valgte fil ser ikke ud til at være et aftryk til denne router (mode
+ RFWU_31=Vil du uploade og skrive dette aftryk? Routeren kontrollerer det, skriver det og genstarter. Sluk ikke routeren, før den er online igen.
+ RQOS_123=Disse regler klassificerer efter overførte byte og kan derfor ikke bruge hardwareacceleration af flows; de vurderes igen for hver pakke, og lange flows havner desuden i den forkerte klasse (streamingvideo er HTTPS). Match i stedet på port, protokol, IP eller MAC. Berørte:
+ Reaper_c_dashboard=Oversigt
++RWDN_56=Blokeringsstatistik
++RWDN_57=Gem blokeringsstatistik
++RWDN_58=Warden tæller hver pakke, den kasserer. Gemning opbevarer disse totaler i den interne flash, så de overlever en genstart, en servicegenstart og en firmwareopdatering.
++RWDN_59=Nulstillingsinterval
++RWDN_60=Totaler og tal pr. land skrives til den interne flash (JFFS) og genskabes ved opstart. Fra = tæl kun siden firewallen sidst genopbyggede sine regler.
++RWDN_61=Ryd automatisk de gemte tal, når der er gået så lang tid, og start en ny periode.
++RWDN_62=Aldrig
++RWDN_63=24 timer
++RWDN_64=7 dage
++RWDN_65=1 måned
++RWDN_66=3 måneder
++RWDN_67=Tæller siden
++RWDN_68=Siden firewallen sidst blev genopbygget
++RDST_64=Ikke gemt
++RFB_15=Vælg din Wi-Fi-adgangskode
++RFB_16=Det trådløse netværk bruger stadig fabriksadgangskoden. Vælg en ny nedenfor for at afslutte opsætningen.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index aa928f3c4a..f8366174c3 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Anpassungen
+ RWDN_43=Protokolle
+ RWDN_44=Blockierte Zugriffe
+ RWDN_45=Am häufigsten gesperrte Länder
+-RWDN_46=Die aktivsten Herkunftsländer, die Warden seit der letzten Aktivierung verworfen hat. Die Zähler werden zurückgesetzt, wenn die Regeln neu erstellt werden oder der Router neu startet.
++RWDN_46=Die aktivsten Herkunftsländer, die Warden verworfen hat. Die Zähler werden im internen Flash gespeichert und bleiben über Regel-Neuaufbauten, Neustarts und Firmware-Updates erhalten.
+ RWDN_47=Land
+ RWDN_48=Sperren
+ RWDN_49=Noch kein blockierter Datenverkehr erfasst.
+@@ -5957,7 +5957,7 @@ RDST_16=Kanalqualitätsverlauf (rchqd)
+ RDST_17=Ein Schnappschuss pro Takt, solange der Monitor aktiviert ist
+ RDST_18=Syslog-Spiegel
+ RDST_19=Neue Protokollzeilen bei jedem Takt, rotierend
+-RDST_20=Warden-Feed-Cache
++RDST_20=Warden-Feed-Cache und Blockierzähler
+ RDST_21=Bei Feed-Aktualisierung
+ RDST_22=Fest an internen Flash-Speicher (JFFS) gebunden: Er muss wiederhergestellt sein, bevor die Firewall scharf geschaltet wird – früher als jede USB-Einbindung.
+ RDST_23=JFFS – gesperrt
+@@ -6294,3 +6294,19 @@ RFWU_30=Die gewählte Datei scheint kein Abbild für diesen Router zu sein (Mode
+ RFWU_31=Dieses Abbild hochladen und schreiben? Der Router prüft es, schreibt es und startet neu. Schalten Sie den Router nicht aus, bis er wieder online ist.
+ RQOS_123=Diese Regeln klassifizieren nach übertragenen Bytes und können daher die Hardware-Flow-Beschleunigung nicht nutzen; sie werden bei jedem Paket neu ausgewertet, und lange Verbindungen landen in der falschen Klasse (Streaming-Video ist HTTPS). Verwenden Sie stattdessen Port, Protokoll, IP oder MAC. Betroffen:
+ Reaper_c_dashboard=Dashboard
++RWDN_56=Blockierstatistik
++RWDN_57=Blockierstatistik speichern
++RWDN_58=Warden zählt jedes verworfene Paket. Beim Speichern werden diese Summen im internen Flash abgelegt und überstehen einen Neustart, einen Dienstneustart und ein Firmware-Update.
++RWDN_59=Zurücksetzintervall
++RWDN_60=Summen und Zähler pro Land werden in den internen Flash (JFFS) geschrieben und beim Start wiederhergestellt. Aus = nur seit dem letzten Regel-Neuaufbau der Firewall zählen.
++RWDN_61=Die gespeicherten Zähler nach Ablauf dieser Zeit automatisch löschen und einen neuen Zeitraum beginnen.
++RWDN_62=Nie
++RWDN_63=24 Stunden
++RWDN_64=7 Tage
++RWDN_65=1 Monat
++RWDN_66=3 Monate
++RWDN_67=Zählt seit
++RWDN_68=Seit dem letzten Firewall-Neuaufbau
++RDST_64=Nicht gespeichert
++RFB_15=WLAN-Passwort festlegen
++RFB_16=Das WLAN verwendet noch das Werkspasswort. Legen Sie unten ein neues fest, um die Einrichtung abzuschließen.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f1ec68a5d6..8b223f5284 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Tweaks
+ RWDN_43=Protocols
+ RWDN_44=Blocked hits
+ RWDN_45=Top blocked countries
+-RWDN_46=The most-active source countries Warden has dropped since it last armed. Counters reset when the rules rebuild or the router reboots.
++RWDN_46=The most-active source countries Warden has dropped. Counts are saved to internal flash and carry across rule rebuilds, reboots and firmware upgrades.
+ RWDN_47=Country
+ RWDN_48=Blocks
+ RWDN_49=No blocked traffic recorded yet.
+@@ -5957,7 +5957,7 @@ RDST_16=Channel-quality history (rchqd)
+ RDST_17=One snapshot per tick while the monitor is enabled
+ RDST_18=Syslog mirror
+ RDST_19=New log lines each tick, rotated
+-RDST_20=Warden feed cache
++RDST_20=Warden feed cache and block counts
+ RDST_21=On feed update
+ RDST_22=Locked to internal flash (JFFS): it must restore before the firewall arms, earlier than any USB mount.
+ RDST_23=JFFS - locked
+@@ -6294,3 +6294,19 @@ RFWU_30=The selected file does not look like an image for this router (model or
+ RFWU_31=Upload and flash this image? The router will verify it, flash it, and reboot. Do not power off the router until it comes back online.
+ RQOS_123=These rules classify by transferred bytes, so they cannot use hardware flow offload and are re-evaluated on every packet; long flows also land in the wrong class (streaming video is HTTPS). Match on port, protocol, IP or MAC instead. Affected:
+ Reaper_c_dashboard=Dashboard
++RWDN_56=Block statistics
++RWDN_57=Save block statistics
++RWDN_58=Warden counts every packet it drops. Saving keeps those totals on internal flash so they survive a reboot, a service restart and a firmware upgrade.
++RWDN_59=Reset interval
++RWDN_60=Totals and per-country counts are written to internal flash (JFFS) and restored on boot. Off = count only since the firewall last rebuilt its rules.
++RWDN_61=Clear the saved counts automatically once this much time has passed, then start a new period.
++RWDN_62=Never
++RWDN_63=24 Hours
++RWDN_64=7 Days
++RWDN_65=1 Month
++RWDN_66=3 Months
++RWDN_67=Counting since
++RWDN_68=Since the last firewall rebuild
++RDST_64=Not saved
++RFB_15=Set your Wi-Fi password
++RFB_16=The wireless network is still using its factory password. Set a new one below to finish setup.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 0659c2343e..5430cd2788 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Retoques
+ RWDN_43=Protocolos
+ RWDN_44=Accesos bloqueados
+ RWDN_45=Países más bloqueados
+-RWDN_46=Los países de origen más activos que Warden ha descartado desde su última activación. Los contadores se reinician cuando se reconstruyen las reglas o el router se reinicia.
++RWDN_46=Los países de origen más activos que Warden ha bloqueado. Los recuentos se guardan en la flash interna y se mantienen entre reconstrucciones de reglas, reinicios y actualizaciones de firmware.
+ RWDN_47=País
+ RWDN_48=Bloqueos
+ RWDN_49=Aún no se ha registrado tráfico bloqueado.
+@@ -5957,7 +5957,7 @@ RDST_16=Historial de calidad de canal (rchqd)
+ RDST_17=Una instantánea por ciclo mientras el monitor está activado
+ RDST_18=Espejo del syslog
+ RDST_19=Nuevas líneas de registro en cada ciclo, con rotación
+-RDST_20=Caché de feeds de Warden
++RDST_20=Caché de listas y recuentos de Warden
+ RDST_21=Al actualizar el feed
+ RDST_22=Fijado a la memoria flash interna (JFFS): debe restaurarse antes de que el firewall se arme, antes que cualquier montaje USB.
+ RDST_23=JFFS: bloqueado
+@@ -6294,3 +6294,19 @@ RFWU_30=El archivo elegido no parece una imagen para este router (el modelo o la
+ RFWU_31=¿Subir y grabar esta imagen? El router la verificará, la grabará y se reiniciará. No apague el router hasta que vuelva a estar en línea.
+ RQOS_123=Estas reglas clasifican por bytes transferidos, por lo que no pueden usar la aceleración hardware de flujos y se reevalúan en cada paquete; además, los flujos largos acaban en la clase equivocada (el vídeo en streaming es HTTPS). Use en su lugar el puerto, el protocolo, la IP o la MAC. Afectadas:
+ Reaper_c_dashboard=Panel
++RWDN_56=Estadísticas de bloqueo
++RWDN_57=Guardar estadísticas de bloqueo
++RWDN_58=Warden cuenta cada paquete que descarta. Al guardar, esos totales se escriben en la memoria flash interna y sobreviven a un reinicio, al reinicio del servicio y a una actualización de firmware.
++RWDN_59=Intervalo de restablecimiento
++RWDN_60=Los totales y los recuentos por país se escriben en la flash interna (JFFS) y se restauran al arrancar. Desactivado = contar solo desde la última reconstrucción de reglas del firewall.
++RWDN_61=Borrar automáticamente los recuentos guardados una vez transcurrido ese tiempo y comenzar un nuevo periodo.
++RWDN_62=Nunca
++RWDN_63=24 horas
++RWDN_64=7 días
++RWDN_65=1 mes
++RWDN_66=3 meses
++RWDN_67=Contando desde
++RWDN_68=Desde la última reconstrucción del firewall
++RDST_64=No guardado
++RFB_15=Establezca su contraseña Wi-Fi
++RFB_16=La red inalámbrica sigue usando la contraseña de fábrica. Establezca una nueva a continuación para finalizar la configuración.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 0c59117484..2a10870ece 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Hienosäädöt
+ RWDN_43=Protokollat
+ RWDN_44=Estetyt osumat
+ RWDN_45=Eniten estetyt maat
+-RWDN_46=Aktiivisimmat lähdemaat, joita Warden on pudottanut edellisestä käyttöönotosta lähtien. Laskurit nollautuvat, kun säännöt rakennetaan uudelleen tai reititin käynnistyy uudelleen.
++RWDN_46=Aktiivisimmat lähdemaat, joiden liikennettä Warden on hylännyt. Laskurit tallennetaan sisäiseen flash-muistiin ja säilyvät sääntöjen uudelleenrakennusten, uudelleenkäynnistysten ja laiteohjelmistopäivitysten yli.
+ RWDN_47=Maa
+ RWDN_48=Estot
+ RWDN_49=Estettyä liikennettä ei ole vielä kirjattu.
+@@ -5957,7 +5957,7 @@ RDST_16=Kanavan laatuhistoria (rchqd)
+ RDST_17=Yksi tilannevedos per jakso, kun valvonta on käytössä
+ RDST_18=Syslog-peilaus
+ RDST_19=Uudet lokirivit joka jaksolla, kierrätettynä
+-RDST_20=Wardenin syötevälimuisti
++RDST_20=Wardenin listavälimuisti ja estolaskurit
+ RDST_21=Syötteen päivityksen yhteydessä
+ RDST_22=Lukittu sisäiseen flash-muistiin (JFFS): sen on palauduttava ennen palomuurin aktivoitumista, ennen mitään USB-liitäntää.
+ RDST_23=JFFS - lukittu
+@@ -6294,3 +6294,19 @@ RFWU_30=Valittu tiedosto ei näytä tämän reitittimen levykuvalta (malli tai v
+ RFWU_31=Lähetetäänkö ja kirjoitetaanko tämä levykuva? Reititin tarkistaa sen, kirjoittaa sen ja käynnistyy uudelleen. Älä katkaise reitittimen virtaa ennen kuin se on taas verkossa.
+ RQOS_123=Nämä säännöt luokittelevat siirrettyjen tavujen perusteella, joten ne eivät voi käyttää laitteistokiihdytettyä vuonsiirtoa ja ne arvioidaan uudelleen jokaisella paketilla; lisäksi pitkät vuot päätyvät väärään luokkaan (suoratoistovideo on HTTPS). Käytä sen sijaan porttia, protokollaa, IP:tä tai MAC-osoitetta. Koskee sääntöjä:
+ Reaper_c_dashboard=Koontinäyttö
++RWDN_56=Estotilastot
++RWDN_57=Tallenna estotilastot
++RWDN_58=Warden laskee jokaisen hylkäämänsä paketin. Tallennus kirjoittaa summat sisäiseen flash-muistiin, joten ne säilyvät uudelleenkäynnistyksen, palvelun uudelleenkäynnistyksen ja laiteohjelmistopäivityksen yli.
++RWDN_59=Nollausväli
++RWDN_60=Kokonaismäärät ja maakohtaiset laskurit kirjoitetaan sisäiseen flash-muistiin (JFFS) ja palautetaan käynnistyksessä. Pois = lasketaan vain palomuurin viimeisimmästä sääntöjen uudelleenrakennuksesta.
++RWDN_61=Tyhjennä tallennetut laskurit automaattisesti tämän ajan kuluttua ja aloita uusi jakso.
++RWDN_62=Ei koskaan
++RWDN_63=24 tuntia
++RWDN_64=7 päivää
++RWDN_65=1 kuukausi
++RWDN_66=3 kuukautta
++RWDN_67=Lasketaan alkaen
++RWDN_68=Palomuurin viimeisimmästä uudelleenrakennuksesta
++RDST_64=Ei tallenneta
++RFB_15=Aseta Wi-Fi-salasana
++RFB_16=Langaton verkko käyttää yhä tehdasasetusten salasanaa. Aseta uusi alta viimeistelläksesi asennuksen.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 50050de025..143d2cf91a 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Ajustements
+ RWDN_43=Protocoles
+ RWDN_44=Accès bloqués
+ RWDN_45=Pays les plus bloqués
+-RWDN_46=Les pays sources les plus actifs que Warden a rejetés depuis sa dernière activation. Les compteurs sont réinitialisés lorsque les règles sont reconstruites ou que le routeur redémarre.
++RWDN_46=Les pays sources les plus actifs que Warden a rejetés. Les compteurs sont enregistrés dans la mémoire flash interne et sont conservés lors des reconstructions de règles, des redémarrages et des mises à jour du firmware.
+ RWDN_47=Pays
+ RWDN_48=Blocages
+ RWDN_49=Aucun trafic bloqué enregistré pour l'instant.
+@@ -5957,7 +5957,7 @@ RDST_16=Historique de la qualité des canaux (rchqd)
+ RDST_17=Un instantané par cycle tant que le moniteur est activé
+ RDST_18=Miroir syslog
+ RDST_19=Nouvelles lignes de journal à chaque cycle, avec rotation
+-RDST_20=Cache des flux Warden
++RDST_20=Cache des listes et compteurs de blocage Warden
+ RDST_21=À chaque mise à jour des flux
+ RDST_22=Verrouillé sur la mémoire flash interne (JFFS) : elle doit être restaurée avant l’activation du pare-feu, avant tout montage USB.
+ RDST_23=JFFS - verrouillé
+@@ -6294,3 +6294,19 @@ RFWU_30=Le fichier choisi ne semble pas être une image pour ce routeur (modèle
+ RFWU_31=Envoyer et écrire cette image ? Le routeur va la vérifier, l'écrire et redémarrer. N'éteignez pas le routeur avant son retour en ligne.
+ RQOS_123=Ces règles classifient selon les octets transférés : elles ne peuvent donc pas utiliser l'accélération matérielle des flux et sont réévaluées à chaque paquet ; de plus, les flux longs arrivent dans la mauvaise classe (la vidéo en streaming est en HTTPS). Utilisez plutôt le port, le protocole, l'IP ou la MAC. Concernées :
+ Reaper_c_dashboard=Tableau de bord
++RWDN_56=Statistiques de blocage
++RWDN_57=Enregistrer les statistiques de blocage
++RWDN_58=Warden compte chaque paquet qu'il rejette. L'enregistrement conserve ces totaux dans la mémoire flash interne : ils survivent à un redémarrage, au redémarrage du service et à une mise à jour du firmware.
++RWDN_59=Intervalle de réinitialisation
++RWDN_60=Les totaux et les compteurs par pays sont écrits dans la mémoire flash interne (JFFS) et restaurés au démarrage. Désactivé = compter uniquement depuis la dernière reconstruction des règles du pare-feu.
++RWDN_61=Effacer automatiquement les compteurs enregistrés une fois ce délai écoulé, puis démarrer une nouvelle période.
++RWDN_62=Jamais
++RWDN_63=24 heures
++RWDN_64=7 jours
++RWDN_65=1 mois
++RWDN_66=3 mois
++RWDN_67=Comptage depuis
++RWDN_68=Depuis la dernière reconstruction du pare-feu
++RDST_64=Non enregistré
++RFB_15=Définissez votre mot de passe Wi-Fi
++RFB_16=Le réseau sans fil utilise encore le mot de passe d'usine. Définissez-en un nouveau ci-dessous pour terminer la configuration.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 181db1df91..38fadc6fc1 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Finomhangolás
+ RWDN_43=Protokollok
+ RWDN_44=Blokkolt találatok
+ RWDN_45=Legtöbbet blokkolt országok
+-RWDN_46=A legaktívabb forrásországok, amelyeket a Warden eldobott a legutóbbi élesítés óta. A számlálók nullázódnak a szabályok újraépítésekor vagy a router újraindításakor.
++RWDN_46=A Warden által eldobott legaktívabb forrásországok. A számlálók a belső flash memóriába kerülnek, és megmaradnak a szabályok újraépítésén, az újraindításokon és a firmware-frissítéseken át.
+ RWDN_47=Ország
+ RWDN_48=Blokkolások
+ RWDN_49=Még nincs rögzített blokkolt forgalom.
+@@ -5957,7 +5957,7 @@ RDST_16=Csatornaminőség-előzmények (rchqd)
+ RDST_17=Egy pillanatkép ciklusonként, amíg a monitor engedélyezve van
+ RDST_18=Syslog tükrözés
+ RDST_19=Új naplósorok minden ciklusban, forgatva
+-RDST_20=Warden feed gyorsítótár
++RDST_20=Warden lista-gyorsítótár és blokkolásszámlálók
+ RDST_21=Feedfrissítéskor
+ RDST_22=A belső flash-hez (JFFS) rögzítve: ennek vissza kell állnia, mielőtt a tűzfal élesedik, még bármilyen USB csatlakoztatása előtt.
+ RDST_23=JFFS - rögzítve
+@@ -6294,3 +6294,19 @@ RFWU_30=A kiválasztott fájl nem tűnik ehhez a routerhez való lemezképnek (e
+ RFWU_31=Feltölti és kiírja ezt a lemezképet? A router ellenőrzi, kiírja, majd újraindul. Ne kapcsolja ki a routert, amíg újra elérhető nem lesz.
+ RQOS_123=Ezek a szabályok az átvitt bájtok alapján osztályoznak, ezért nem használhatják a hardveres folyamgyorsítást, és minden csomagnál újraértékelődnek; a hosszú folyamok ráadásul rossz osztályba kerülnek (a streamelt videó HTTPS). Használjon inkább portot, protokollt, IP- vagy MAC-címet. Érintett szabályok:
+ Reaper_c_dashboard=Irányítópult
++RWDN_56=Blokkolási statisztika
++RWDN_57=Blokkolási statisztika mentése
++RWDN_58=A Warden minden eldobott csomagot megszámol. A mentés ezeket az összegeket a belső flash memóriába írja, így túlélik az újraindítást, a szolgáltatás újraindítását és a firmware-frissítést is.
++RWDN_59=Nullázási időköz
++RWDN_60=Az összesítések és az országonkénti számlálók a belső flash memóriába (JFFS) kerülnek, és induláskor visszaállnak. Kikapcsolva = csak a tűzfalszabályok legutóbbi újraépítése óta számol.
++RWDN_61=A megadott idő letelte után automatikusan törli a mentett számlálókat, és új időszakot kezd.
++RWDN_62=Soha
++RWDN_63=24 óra
++RWDN_64=7 nap
++RWDN_65=1 hónap
++RWDN_66=3 hónap
++RWDN_67=Számlálás kezdete
++RWDN_68=A tűzfal legutóbbi újraépítése óta
++RDST_64=Nincs mentve
++RFB_15=Adja meg a Wi-Fi jelszavát
++RFB_16=A vezeték nélküli hálózat még a gyári jelszót használja. A beállítás befejezéséhez adjon meg egy újat alább.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index de316d5c83..c79c9ccc18 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Regolazioni
+ RWDN_43=Protocolli
+ RWDN_44=Accessi bloccati
+ RWDN_45=Principali Paesi bloccati
+-RWDN_46=I Paesi di origine più attivi che Warden ha scartato dall'ultima attivazione. I contatori si azzerano quando le regole vengono ricostruite o il router si riavvia.
++RWDN_46=I paesi di origine più attivi che Warden ha scartato. I conteggi vengono salvati nella flash interna e si conservano tra ricostruzioni delle regole, riavvii e aggiornamenti del firmware.
+ RWDN_47=Paese
+ RWDN_48=Blocchi
+ RWDN_49=Nessun traffico bloccato registrato finora.
+@@ -5957,7 +5957,7 @@ RDST_16=Cronologia qualità del canale (rchqd)
+ RDST_17=Uno snapshot per ciclo mentre il monitor è attivo
+ RDST_18=Mirror del syslog
+ RDST_19=Nuove righe di log ad ogni ciclo, con rotazione
+-RDST_20=Cache dei feed di Warden
++RDST_20=Cache degli elenchi e conteggi di blocco di Warden
+ RDST_21=Ad ogni aggiornamento del feed
+ RDST_22=Bloccato sulla flash interna (JFFS): deve essere ripristinato prima che il firewall si attivi, prima di qualsiasi mount USB.
+ RDST_23=JFFS - bloccato
+@@ -6294,3 +6294,19 @@ RFWU_30=Il file scelto non sembra un'immagine per questo router (modello o varia
+ RFWU_31=Caricare e scrivere questa immagine? Il router la verificherà, la scriverà e si riavvierà. Non spegnere il router finché non torna online.
+ RQOS_123=Queste regole classificano in base ai byte trasferiti, quindi non possono usare l'accelerazione hardware dei flussi e vengono rivalutate a ogni pacchetto; inoltre i flussi lunghi finiscono nella classe sbagliata (il video in streaming è HTTPS). Usa invece porta, protocollo, IP o MAC. Interessate:
+ Reaper_c_dashboard=Dashboard
++RWDN_56=Statistiche di blocco
++RWDN_57=Salva le statistiche di blocco
++RWDN_58=Warden conta ogni pacchetto che scarta. Il salvataggio conserva questi totali nella memoria flash interna, così sopravvivono a un riavvio, al riavvio del servizio e a un aggiornamento del firmware.
++RWDN_59=Intervallo di azzeramento
++RWDN_60=I totali e i conteggi per paese vengono scritti nella flash interna (JFFS) e ripristinati all'avvio. Disattivato = conta solo dall'ultima ricostruzione delle regole del firewall.
++RWDN_61=Azzera automaticamente i conteggi salvati trascorso questo tempo e avvia un nuovo periodo.
++RWDN_62=Mai
++RWDN_63=24 ore
++RWDN_64=7 giorni
++RWDN_65=1 mese
++RWDN_66=3 mesi
++RWDN_67=Conteggio dal
++RWDN_68=Dall'ultima ricostruzione del firewall
++RDST_64=Non salvato
++RFB_15=Imposta la password Wi-Fi
++RFB_16=La rete wireless usa ancora la password di fabbrica. Impostane una nuova qui sotto per completare la configurazione.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 7d3a20f67a..85e1119176 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=微調整
+ RWDN_43=プロトコル
+ RWDN_44=ブロックしたヒット
+ RWDN_45=ブロック上位の国
+-RWDN_46=前回の起動以降に Warden が破棄した、最も活発な送信元の国。カウンターはルールの再構築時またはルーターの再起動時にリセットされます。
++RWDN_46=Warden が最も多く遮断した送信元国。カウントは内部フラッシュに保存され、ルール再構築・再起動・ファームウェア更新後も引き継がれます。
+ RWDN_47=国
+ RWDN_48=ブロック数
+ RWDN_49=ブロックされた通信はまだ記録されていません。
+@@ -5957,7 +5957,7 @@ RDST_16=チャンネル品質履歴 (rchqd)
+ RDST_17=モニターが有効な間、ティックごとに1回のスナップショット
+ RDST_18=syslogミラー
+ RDST_19=ティックごとの新しいログ行(ローテーション)
+-RDST_20=Wardenフィードキャッシュ
++RDST_20=Warden フィードキャッシュとブロック件数
+ RDST_21=フィード更新時
+ RDST_22=内蔵フラッシュ (JFFS) に固定: ファイアウォールがアーミングされる前、つまりUSBのマウントより早く復元される必要があります。
+ RDST_23=JFFS - 固定
+@@ -6294,3 +6294,19 @@ RFWU_30=選択したファイルはこのルーター用のイメージではな
+ RFWU_31=このイメージをアップロードして書き込みますか? ルーターは検証して書き込み、再起動します。オンラインに戻るまでルーターの電源を切らないでください。
+ RQOS_123=これらのルールは転送バイト数で分類するため、ハードウェアのフローオフロードを利用できず、パケットごとに再評価されます。さらに、長時間の通信が誤ったクラスに入ります (ストリーミング動画は HTTPS です)。代わりにポート、プロトコル、IP、MAC で一致させてください。対象:
+ Reaper_c_dashboard=ダッシュボード
++RWDN_56=ブロック統計
++RWDN_57=ブロック統計を保存
++RWDN_58=Warden は破棄したパケットをすべて集計します。保存を有効にすると、その合計が内部フラッシュに書き込まれ、再起動・サービス再起動・ファームウェア更新後も保持されます。
++RWDN_59=リセット間隔
++RWDN_60=合計と国別カウントは内部フラッシュ (JFFS) に書き込まれ、起動時に復元されます。オフ = ファイアウォールが前回ルールを再構築して以降のみ集計します。
++RWDN_61=この時間が経過したら保存済みのカウントを自動的に消去し、新しい期間を開始します。
++RWDN_62=なし
++RWDN_63=24 時間
++RWDN_64=7 日間
++RWDN_65=1 か月
++RWDN_66=3 か月
++RWDN_67=集計開始
++RWDN_68=前回のファイアウォール再構築以降
++RDST_64=保存しない
++RFB_15=Wi-Fi パスワードを設定
++RFB_16=無線ネットワークは工場出荷時のパスワードのままです。下で新しいパスワードを設定して初期設定を完了してください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index beff2b66e7..da52436031 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=미세 조정
+ RWDN_43=프로토콜
+ RWDN_44=차단된 히트
+ RWDN_45=가장 많이 차단된 국가
+-RWDN_46=마지막으로 활성화된 이후 Warden 이 차단한 가장 활발한 출처 국가. 카운터는 규칙이 재구성되거나 라우터가 재부팅될 때 초기화됩니다.
++RWDN_46=Warden이 차단한 가장 활발한 출발 국가입니다. 횟수는 내부 플래시에 저장되어 규칙 재구성, 재부팅, 펌웨어 업그레이드 후에도 이어집니다.
+ RWDN_47=국가
+ RWDN_48=차단
+ RWDN_49=아직 기록된 차단 트래픽이 없습니다.
+@@ -5957,7 +5957,7 @@ RDST_16=채널 품질 기록 (rchqd)
+ RDST_17=모니터가 활성화된 동안 주기마다 스냅샷 1회
+ RDST_18=Syslog 미러
+ RDST_19=주기마다 새 로그 줄, 순환 기록
+-RDST_20=Warden 피드 캐시
++RDST_20=Warden 피드 캐시 및 차단 횟수
+ RDST_21=피드 업데이트 시
+ RDST_22=내부 플래시(JFFS)에 고정됩니다: 방화벽이 활성화되기 전에 복원되어야 하며, 이는 어떤 USB 마운트보다도 앞섭니다.
+ RDST_23=JFFS - 고정
+@@ -6294,3 +6294,19 @@ RFWU_30=선택한 파일은 이 라우터용 이미지가 아닌 것 같습니
+ RFWU_31=이 이미지를 업로드하여 기록할까요? 라우터가 검증하고 기록한 뒤 재부팅합니다. 라우터가 다시 온라인이 될 때까지 전원을 끄지 마세요.
+ RQOS_123=이 규칙들은 전송된 바이트 수로 분류하므로 하드웨어 플로 오프로드를 사용할 수 없고 패킷마다 다시 판정됩니다. 또한 오래 지속되는 흐름이 잘못된 클래스로 들어갑니다(스트리밍 영상은 HTTPS입니다). 대신 포트, 프로토콜, IP 또는 MAC으로 일치시키세요. 해당 규칙:
+ Reaper_c_dashboard=대시보드
++RWDN_56=차단 통계
++RWDN_57=차단 통계 저장
++RWDN_58=Warden은 차단한 모든 패킷을 집계합니다. 저장을 켜면 이 합계가 내부 플래시에 기록되어 재부팅, 서비스 재시작, 펌웨어 업그레이드 후에도 유지됩니다.
++RWDN_59=초기화 주기
++RWDN_60=총계와 국가별 횟수는 내부 플래시(JFFS)에 기록되고 부팅 시 복원됩니다. 끄면 방화벽이 마지막으로 규칙을 재구성한 이후만 집계합니다.
++RWDN_61=이 시간이 지나면 저장된 횟수를 자동으로 지우고 새 기간을 시작합니다.
++RWDN_62=안 함
++RWDN_63=24시간
++RWDN_64=7일
++RWDN_65=1개월
++RWDN_66=3개월
++RWDN_67=집계 시작
++RWDN_68=마지막 방화벽 재구성 이후
++RDST_64=저장 안 함
++RFB_15=Wi-Fi 비밀번호 설정
++RFB_16=무선 네트워크가 아직 공장 초기 비밀번호를 사용 중입니다. 아래에서 새 비밀번호를 설정해 설정을 완료하세요.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index f9909b7f32..6914bdee5c 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Penalaan
+ RWDN_43=Protokol
+ RWDN_44=Hentaman disekat
+ RWDN_45=Negara paling banyak disekat
+-RWDN_46=Negara sumber paling aktif yang telah disekat oleh Warden sejak ia terakhir bersedia. Pembilang ditetap semula apabila peraturan dibina semula atau penghala dibut semula.
++RWDN_46=Negara sumber paling aktif yang telah digugurkan oleh Warden. Kiraan disimpan dalam flash dalaman dan kekal merentasi pembinaan semula peraturan, but semula dan naik taraf perisian tegar.
+ RWDN_47=Negara
+ RWDN_48=Sekatan
+ RWDN_49=Belum ada trafik disekat direkodkan.
+@@ -5957,7 +5957,7 @@ RDST_16=Sejarah kualiti saluran (rchqd)
+ RDST_17=Satu snapshot setiap denyut semasa pemantau didayakan
+ RDST_18=Cermin Syslog
+ RDST_19=Baris log baharu setiap denyut, diputar
+-RDST_20=Cache suapan Warden
++RDST_20=Cache suapan dan kiraan sekatan Warden
+ RDST_21=Apabila suapan dikemas kini
+ RDST_22=Dikunci kepada flash dalaman (JFFS): ia mesti dipulihkan sebelum tembok api diaktifkan, lebih awal daripada sebarang pelekapan USB.
+ RDST_23=JFFS - dikunci
+@@ -6294,3 +6294,19 @@ RFWU_30=Fail yang dipilih nampaknya bukan imej untuk penghala ini (model atau va
+ RFWU_31=Muat naik dan tulis imej ini? Penghala akan mengesahkannya, menulisnya dan but semula. Jangan matikan kuasa penghala sehingga ia kembali dalam talian.
+ RQOS_123=Peraturan ini mengelaskan mengikut bait yang dipindahkan, jadi ia tidak boleh menggunakan pemecutan aliran perkakasan dan dinilai semula pada setiap paket; aliran panjang juga tersalah kelas (video strim menggunakan HTTPS). Sebaliknya, padankan mengikut port, protokol, IP atau MAC. Terjejas:
+ Reaper_c_dashboard=Papan Pemuka
++RWDN_56=Statistik sekatan
++RWDN_57=Simpan statistik sekatan
++RWDN_58=Warden mengira setiap paket yang digugurkannya. Penyimpanan menyimpan jumlah tersebut dalam flash dalaman supaya ia kekal selepas but semula, mula semula perkhidmatan dan naik taraf perisian tegar.
++RWDN_59=Selang tetapan semula
++RWDN_60=Jumlah dan kiraan mengikut negara ditulis ke flash dalaman (JFFS) dan dipulihkan semasa but. Mati = kira hanya sejak tembok api membina semula peraturannya kali terakhir.
++RWDN_61=Kosongkan kiraan yang disimpan secara automatik selepas tempoh ini, kemudian mulakan tempoh baharu.
++RWDN_62=Tidak pernah
++RWDN_63=24 Jam
++RWDN_64=7 Hari
++RWDN_65=1 Bulan
++RWDN_66=3 Bulan
++RWDN_67=Mengira sejak
++RWDN_68=Sejak binaan semula tembok api terakhir
++RDST_64=Tidak disimpan
++RFB_15=Tetapkan kata laluan Wi-Fi anda
++RFB_16=Rangkaian tanpa wayar masih menggunakan kata laluan kilang. Tetapkan yang baharu di bawah untuk menyelesaikan persediaan.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 6d5a4510ed..210c663807 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Aanpassingen
+ RWDN_43=Protocollen
+ RWDN_44=Geblokkeerde treffers
+ RWDN_45=Meest geblokkeerde landen
+-RWDN_46=De meest actieve bronlanden die Warden heeft geblokkeerd sinds het laatst is geactiveerd. Tellers worden gereset wanneer de regels opnieuw worden opgebouwd of de router opnieuw opstart.
++RWDN_46=De actiefste bronlanden die Warden heeft geblokkeerd. De tellers worden in het interne flashgeheugen opgeslagen en blijven behouden bij regelherbouw, herstarts en firmware-updates.
+ RWDN_47=Land
+ RWDN_48=Blokkeringen
+ RWDN_49=Nog geen geblokkeerd verkeer geregistreerd.
+@@ -5957,7 +5957,7 @@ RDST_16=Kanaalkwaliteitsgeschiedenis (rchqd)
+ RDST_17=Eén momentopname per tik zolang de monitor is ingeschakeld
+ RDST_18=Syslog-spiegel
+ RDST_19=Nieuwe logregels bij elke tik, geroteerd
+-RDST_20=Warden feed-cache
++RDST_20=Warden-feedcache en blokkeertellers
+ RDST_21=Bij feed-update
+ RDST_22=Vastgezet op interne flash (JFFS): dit moet worden hersteld voordat de firewall actief wordt, eerder dan enige USB-koppeling.
+ RDST_23=JFFS - vastgezet
+@@ -6294,3 +6294,19 @@ RFWU_30=Het gekozen bestand lijkt geen image voor deze router (model of variant
+ RFWU_31=Dit image uploaden en wegschrijven? De router controleert het, schrijft het weg en start opnieuw op. Schakel de router niet uit voordat hij weer online is.
+ RQOS_123=Deze regels classificeren op overgedragen bytes, waardoor ze de hardwareversnelling voor flows niet kunnen gebruiken en bij elk pakket opnieuw worden geëvalueerd; bovendien komen lange verbindingen in de verkeerde klasse terecht (streamingvideo is HTTPS). Gebruik in plaats daarvan poort, protocol, IP of MAC. Betreft:
+ Reaper_c_dashboard=Dashboard
++RWDN_56=Blokkeerstatistieken
++RWDN_57=Blokkeerstatistieken opslaan
++RWDN_58=Warden telt elk pakket dat het laat vallen. Opslaan bewaart deze totalen in het interne flashgeheugen, zodat ze een herstart, een herstart van de service en een firmware-update overleven.
++RWDN_59=Resetinterval
++RWDN_60=Totalen en tellers per land worden naar het interne flashgeheugen (JFFS) geschreven en bij het opstarten hersteld. Uit = alleen tellen sinds de firewall zijn regels voor het laatst opnieuw opbouwde.
++RWDN_61=Wis de opgeslagen tellers automatisch nadat deze tijd is verstreken en start een nieuwe periode.
++RWDN_62=Nooit
++RWDN_63=24 uur
++RWDN_64=7 dagen
++RWDN_65=1 maand
++RWDN_66=3 maanden
++RWDN_67=Telt sinds
++RWDN_68=Sinds de laatste firewall-herbouw
++RDST_64=Niet opgeslagen
++RFB_15=Stel uw wifi-wachtwoord in
++RFB_16=Het draadloze netwerk gebruikt nog het fabriekswachtwoord. Stel hieronder een nieuw wachtwoord in om de installatie te voltooien.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index d0517915e6..23a26f3c30 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Justeringer
+ RWDN_43=Protokoller
+ RWDN_44=Blokkerte treff
+ RWDN_45=Mest blokkerte land
+-RWDN_46=De mest aktive kildelandene Warden har forkastet siden den sist ble aktivert. Tellere nullstilles når reglene bygges på nytt eller ruteren startes på nytt.
++RWDN_46=De mest aktive kildelandene Warden har blokkert. Tallene lagres i intern flash og beholdes på tvers av regelgjenoppbygginger, omstarter og fastvareoppdateringer.
+ RWDN_47=Land
+ RWDN_48=Blokkeringer
+ RWDN_49=Ingen blokkert trafikk registrert ennå.
+@@ -5957,7 +5957,7 @@ RDST_16=Kanalkvalitetshistorikk (rchqd)
+ RDST_17=Ett øyeblikksbilde per tikk mens overvåkingen er aktivert
+ RDST_18=Syslog-speiling
+ RDST_19=Nye logglinjer hver tikk, rotert
+-RDST_20=Warden feed-cache
++RDST_20=Warden-feedbuffer og blokkeringstall
+ RDST_21=Ved feed-oppdatering
+ RDST_22=Låst til intern flash (JFFS): den må gjenopprettes før brannmuren aktiveres, tidligere enn noen USB-montering.
+ RDST_23=JFFS - låst
+@@ -6294,3 +6294,19 @@ RFWU_30=Den valgte filen ser ikke ut til å være et bilde for denne ruteren (mo
+ RFWU_31=Laste opp og skrive dette bildet? Ruteren kontrollerer det, skriver det og starter på nytt. Ikke slå av ruteren før den er tilkoblet igjen.
+ RQOS_123=Disse reglene klassifiserer etter overførte byte og kan derfor ikke bruke maskinvareakselererte flyter; de vurderes på nytt for hver pakke, og lange flyter havner i feil klasse (strømmevideo er HTTPS). Bruk heller port, protokoll, IP eller MAC. Berørte:
+ Reaper_c_dashboard=Oversikt
++RWDN_56=Blokkeringsstatistikk
++RWDN_57=Lagre blokkeringsstatistikk
++RWDN_58=Warden teller hver pakke den forkaster. Lagring beholder disse totalene i intern flash, slik at de overlever omstart, omstart av tjenesten og en fastvareoppdatering.
++RWDN_59=Nullstillingsintervall
++RWDN_60=Totaler og tall per land skrives til intern flash (JFFS) og gjenopprettes ved oppstart. Av = tell bare siden brannmuren sist bygde reglene på nytt.
++RWDN_61=Tøm de lagrede tallene automatisk når denne tiden har gått, og start en ny periode.
++RWDN_62=Aldri
++RWDN_63=24 timer
++RWDN_64=7 dager
++RWDN_65=1 måned
++RWDN_66=3 måneder
++RWDN_67=Teller siden
++RWDN_68=Siden forrige gjenoppbygging av brannmuren
++RDST_64=Ikke lagret
++RFB_15=Angi Wi-Fi-passordet ditt
++RFB_16=Det trådløse nettverket bruker fortsatt fabrikkpassordet. Angi et nytt nedenfor for å fullføre oppsettet.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index bf32da9c14..d9c80e9fca 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Dostrojenia
+ RWDN_43=Protokoły
+ RWDN_44=Zablokowane trafienia
+ RWDN_45=Najczęściej blokowane kraje
+-RWDN_46=Najbardziej aktywne kraje źródłowe, które Warden odrzucił od ostatniego uzbrojenia. Liczniki są zerowane przy przebudowie reguł lub ponownym uruchomieniu routera.
++RWDN_46=Najbardziej aktywne kraje źródłowe zablokowane przez Wardena. Liczniki są zapisywane w pamięci flash i zachowywane mimo przebudowy reguł, restartów i aktualizacji firmware'u.
+ RWDN_47=Kraj
+ RWDN_48=Blokady
+ RWDN_49=Nie zarejestrowano jeszcze zablokowanego ruchu.
+@@ -5957,7 +5957,7 @@ RDST_16=Historia jakości kanału (rchqd)
+ RDST_17=Jeden zrzut na cykl, gdy monitor jest włączony
+ RDST_18=Kopia dziennika systemowego
+ RDST_19=Nowe linie dziennika przy każdym cyklu, z rotacją
+-RDST_20=Pamięć podręczna kanałów Warden
++RDST_20=Pamięć list i liczniki blokad Wardena
+ RDST_21=Przy aktualizacji kanału
+ RDST_22=Zablokowane na wewnętrznej pamięci flash (JFFS): musi zostać przywrócone przed uzbrojeniem zapory sieciowej, wcześniej niż jakiekolwiek zamontowanie USB.
+ RDST_23=JFFS - zablokowane
+@@ -6294,3 +6294,19 @@ RFWU_30=Wybrany plik nie wygląda na obraz dla tego routera (niezgodny model lub
+ RFWU_31=Przesłać i zapisać ten obraz? Router zweryfikuje go, zapisze i uruchomi się ponownie. Nie wyłączaj routera, dopóki nie wróci do trybu online.
+ RQOS_123=Te reguły klasyfikują według przesłanych bajtów, więc nie mogą korzystać ze sprzętowego przyspieszania przepływów i są oceniane przy każdym pakiecie; długie połączenia trafiają też do niewłaściwej klasy (wideo strumieniowe to HTTPS). Zamiast tego dopasowuj po porcie, protokole, IP lub MAC. Dotyczy:
+ Reaper_c_dashboard=Pulpit
++RWDN_56=Statystyki blokowania
++RWDN_57=Zapisuj statystyki blokowania
++RWDN_58=Warden liczy każdy odrzucony pakiet. Zapis przechowuje te sumy w pamięci flash routera, dzięki czemu przetrwają restart, ponowne uruchomienie usługi i aktualizację firmware'u.
++RWDN_59=Interwał resetowania
++RWDN_60=Sumy i liczniki dla poszczególnych krajów są zapisywane w pamięci flash (JFFS) i przywracane przy starcie. Wyłączone = licz tylko od ostatniej przebudowy reguł zapory.
++RWDN_61=Automatycznie wyczyść zapisane liczniki po upływie tego czasu i rozpocznij nowy okres.
++RWDN_62=Nigdy
++RWDN_63=24 godziny
++RWDN_64=7 dni
++RWDN_65=1 miesiąc
++RWDN_66=3 miesiące
++RWDN_67=Liczone od
++RWDN_68=Od ostatniej przebudowy zapory
++RDST_64=Niezapisywane
++RFB_15=Ustaw hasło Wi-Fi
++RFB_16=Sieć bezprzewodowa nadal używa hasła fabrycznego. Ustaw nowe poniżej, aby zakończyć konfigurację.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index bbc3e9140e..d3c906356d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Ajustări
+ RWDN_43=Protocoale
+ RWDN_44=Accesări blocate
+ RWDN_45=Cele mai blocate țări
+-RWDN_46=Cele mai active țări sursă blocate de Warden de la ultima activare. Contoarele se resetează la reconstruirea regulilor sau la repornirea routerului.
++RWDN_46=Cele mai active țări sursă respinse de Warden. Contoarele sunt salvate în memoria flash internă și se păstrează la reconstrucții de reguli, reporniri și actualizări de firmware.
+ RWDN_47=Țară
+ RWDN_48=Blocări
+ RWDN_49=Încă nu a fost înregistrat trafic blocat.
+@@ -5957,7 +5957,7 @@ RDST_16=Istoric calitate canal (rchqd)
+ RDST_17=O captură per tick cât timp monitorul este activat
+ RDST_18=Oglindă syslog
+ RDST_19=Linii noi de jurnal la fiecare tick, rotite
+-RDST_20=Cache flux Warden
++RDST_20=Cache-ul listelor și contoarele de blocare Warden
+ RDST_21=La actualizarea fluxului
+ RDST_22=Blocată pe memoria flash internă (JFFS): trebuie restaurată înainte ca firewall-ul să se activeze, mai devreme decât orice montare USB.
+ RDST_23=JFFS - blocată
+@@ -6294,3 +6294,19 @@ RFWU_30=Fișierul ales nu pare a fi o imagine pentru acest router (modelul sau v
+ RFWU_31=Încărcați și scrieți această imagine? Routerul o va verifica, o va scrie și va reporni. Nu opriți routerul până nu revine online.
+ RQOS_123=Aceste reguli clasifică după octeții transferați, deci nu pot folosi accelerarea hardware a fluxurilor și sunt reevaluate la fiecare pachet; în plus, fluxurile lungi ajung în clasa greșită (videoclipurile în streaming folosesc HTTPS). Folosiți în schimb portul, protocolul, IP-ul sau MAC-ul. Reguli afectate:
+ Reaper_c_dashboard=Panou
++RWDN_56=Statistici de blocare
++RWDN_57=Salvează statisticile de blocare
++RWDN_58=Warden numără fiecare pachet pe care îl respinge. Salvarea păstrează aceste totaluri în memoria flash internă, astfel încât să supraviețuiască unei reporniri, repornirii serviciului și unei actualizări de firmware.
++RWDN_59=Interval de resetare
++RWDN_60=Totalurile și contoarele pe țară sunt scrise în memoria flash internă (JFFS) și restaurate la pornire. Dezactivat = numără doar de la ultima reconstrucție a regulilor firewallului.
++RWDN_61=Șterge automat contoarele salvate după acest interval și începe o perioadă nouă.
++RWDN_62=Niciodată
++RWDN_63=24 de ore
++RWDN_64=7 zile
++RWDN_65=1 lună
++RWDN_66=3 luni
++RWDN_67=Numărare din
++RWDN_68=De la ultima reconstrucție a firewallului
++RDST_64=Nesalvat
++RFB_15=Setați parola Wi-Fi
++RFB_16=Rețeaua wireless folosește încă parola din fabrică. Setați una nouă mai jos pentru a finaliza configurarea.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 65677b5d56..67423495a4 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Твики
+ RWDN_43=Протоколы
+ RWDN_44=Заблокированные обращения
+ RWDN_45=Наиболее блокируемые страны
+-RWDN_46=Наиболее активные страны-источники, которые Warden отбросил с последнего запуска. Счётчики сбрасываются при перестроении правил или перезагрузке роутера.
++RWDN_46=Наиболее активные страны-источники, трафик которых отбросил Warden. Счётчики сохраняются во внутренней флеш-памяти и переживают перестройку правил, перезагрузки и обновления прошивки.
+ RWDN_47=Страна
+ RWDN_48=Блокировок
+ RWDN_49=Заблокированный трафик ещё не зафиксирован.
+@@ -5957,7 +5957,7 @@ RDST_16=История качества канала (rchqd)
+ RDST_17=Один снимок за такт, пока монитор включён
+ RDST_18=Зеркало syslog
+ RDST_19=Новые строки журнала на каждом такте, с ротацией
+-RDST_20=Кэш фидов Warden
++RDST_20=Кэш списков и счётчики блокировок Warden
+ RDST_21=При обновлении фида
+ RDST_22=Жёстко привязано к встроенной флеш-памяти (JFFS): она должна восстановиться до активации брандмауэра, раньше любого монтирования USB.
+ RDST_23=JFFS - фиксировано
+@@ -6294,3 +6294,19 @@ RFWU_30=Выбранный файл не похож на образ для эт
+ RFWU_31=Отправить и записать этот образ? Роутер проверит его, запишет и перезагрузится. Не выключайте роутер, пока он снова не выйдет в сеть.
+ RQOS_123=Эти правила классифицируют трафик по объёму переданных байтов, поэтому не могут использовать аппаратное ускорение потоков и пересчитываются на каждом пакете; кроме того, длинные потоки попадают не в тот класс (потоковое видео идёт по HTTPS). Используйте вместо этого порт, протокол, IP или MAC. Затронуты:
+ Reaper_c_dashboard=Панель
++RWDN_56=Статистика блокировок
++RWDN_57=Сохранять статистику блокировок
++RWDN_58=Warden считает каждый отброшенный пакет. При сохранении эти суммы записываются во внутреннюю флеш-память и переживают перезагрузку, перезапуск службы и обновление прошивки.
++RWDN_59=Интервал сброса
++RWDN_60=Итоги и счётчики по странам записываются во внутреннюю флеш-память (JFFS) и восстанавливаются при загрузке. Выключено — считать только с момента последней перестройки правил брандмауэра.
++RWDN_61=Автоматически очищать сохранённые счётчики по истечении этого времени и начинать новый период.
++RWDN_62=Никогда
++RWDN_63=24 часа
++RWDN_64=7 дней
++RWDN_65=1 месяц
++RWDN_66=3 месяца
++RWDN_67=Подсчёт с
++RWDN_68=С последней перестройки брандмауэра
++RDST_64=Не сохраняется
++RFB_15=Задайте пароль Wi-Fi
++RFB_16=Беспроводная сеть всё ещё использует заводской пароль. Задайте новый ниже, чтобы завершить настройку.
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index c0ae7777c1..90d602d6cd 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Prilagoditve
+ RWDN_43=Protokoli
+ RWDN_44=Blokirani zadetki
+ RWDN_45=Najpogosteje blokirane države
+-RWDN_46=Najaktivnejše izvorne države, ki jih je Warden zavrgel od zadnje aktivacije. Števci se ponastavijo, ko se pravila znova zgradijo ali se usmerjevalnik znova zažene.
++RWDN_46=Najbolj dejavne izvorne države, ki jih je Warden zavrnil. Števci se shranijo v notranji pomnilnik flash in se ohranijo ob obnovitvah pravil, ponovnih zagonih in nadgradnjah vdelane programske opreme.
+ RWDN_47=Država
+ RWDN_48=Blokade
+ RWDN_49=Blokiranega prometa še ni zabeleženega.
+@@ -5957,7 +5957,7 @@ RDST_16=Zgodovina kakovosti kanala (rchqd)
+ RDST_17=En posnetek na utrip, dokler je nadzor omogočen
+ RDST_18=Zrcaljenje syslog dnevnika
+ RDST_19=Nove vrstice dnevnika ob vsakem utripu, z rotacijo
+-RDST_20=Predpomnilnik virov Warden
++RDST_20=Predpomnilnik seznamov in števci blokiranj Warden
+ RDST_21=Ob posodobitvi vira
+ RDST_22=Vezano na notranji pomnilnik flash (JFFS): mora se obnoviti, preden se aktivira požarni zid, torej pred kakršno koli priklopitvijo USB.
+ RDST_23=JFFS - zaklenjeno
+@@ -6294,3 +6294,19 @@ RFWU_30=Izbrana datoteka ni videti kot slika za ta usmerjevalnik (model ali razl
+ RFWU_31=Želite naložiti in zapisati to sliko? Usmerjevalnik jo bo preveril, zapisal in se znova zagnal. Usmerjevalnika ne izklapljajte, dokler ni spet povezan.
+ RQOS_123=Ta pravila razvrščajo po prenesenih bajtih, zato ne morejo uporabiti strojnega pospeševanja tokov in se ovrednotijo pri vsakem paketu; dolgi tokovi poleg tega pristanejo v napačnem razredu (pretočni video je HTTPS). Namesto tega se ujemajte po vratih, protokolu, naslovu IP ali MAC. Zadeva pravila:
+ Reaper_c_dashboard=Nadzorna plošča
++RWDN_56=Statistika blokiranja
++RWDN_57=Shrani statistiko blokiranja
++RWDN_58=Warden šteje vsak zavrnjen paket. Shranjevanje te vsote zapiše v notranji pomnilnik flash, zato preživijo ponovni zagon, ponovni zagon storitve in nadgradnjo vdelane programske opreme.
++RWDN_59=Interval ponastavitve
++RWDN_60=Skupne vrednosti in števci po državah se zapišejo v notranji pomnilnik flash (JFFS) in obnovijo ob zagonu. Izklopljeno = šteje samo od zadnje obnovitve pravil požarnega zidu.
++RWDN_61=Po preteku tega časa samodejno počisti shranjene števce in začni novo obdobje.
++RWDN_62=Nikoli
++RWDN_63=24 ur
++RWDN_64=7 dni
++RWDN_65=1 mesec
++RWDN_66=3 meseci
++RWDN_67=Šteto od
++RWDN_68=Od zadnje obnovitve požarnega zidu
++RDST_64=Ni shranjeno
++RFB_15=Nastavite geslo za Wi-Fi
++RFB_16=Brezžično omrežje še vedno uporablja tovarniško geslo. Spodaj nastavite novo in dokončajte nastavitev.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 1c22255e2a..0a826e99cd 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Justeringar
+ RWDN_43=Protokoll
+ RWDN_44=Blockerade träffar
+ RWDN_45=Mest blockerade länder
+-RWDN_46=De mest aktiva källänderna som Warden har släppt sedan den senast aktiverades. Räknarna nollställs när reglerna byggs om eller routern startas om.
++RWDN_46=De mest aktiva källänderna som Warden har blockerat. Räknarna sparas i det interna flashminnet och bevaras vid regelombyggnader, omstarter och firmwareuppdateringar.
+ RWDN_47=Land
+ RWDN_48=Blockeringar
+ RWDN_49=Ingen blockerad trafik har registrerats ännu.
+@@ -5957,7 +5957,7 @@ RDST_16=Kanalkvalitetshistorik (rchqd)
+ RDST_17=En ögonblicksbild per tick medan övervakningen är aktiverad
+ RDST_18=Syslog-spegling
+ RDST_19=Nya loggrader varje tick, roterade
+-RDST_20=Warden-flödescache
++RDST_20=Wardens listcache och blockeringsräknare
+ RDST_21=Vid flödesuppdatering
+ RDST_22=Låst till intern flash (JFFS): den måste återställas innan brandväggen aktiveras, tidigare än någon USB-inmontering.
+ RDST_23=JFFS - låst
+@@ -6294,3 +6294,19 @@ RFWU_30=Den valda filen verkar inte vara en avbildning för den här routern (mo
+ RFWU_31=Ladda upp och skriva den här avbildningen? Routern verifierar den, skriver den och startar om. Stäng inte av routern förrän den är online igen.
+ RQOS_123=De här reglerna klassificerar efter överförda byte och kan därför inte använda maskinvaruaccelererade flöden, utan omprövas för varje paket; långa flöden hamnar dessutom i fel klass (strömmande video är HTTPS). Matcha i stället på port, protokoll, IP eller MAC. Berörda:
+ Reaper_c_dashboard=Instrumentpanel
++RWDN_56=Blockeringsstatistik
++RWDN_57=Spara blockeringsstatistik
++RWDN_58=Warden räknar varje paket den kastar. Sparande behåller dessa summor i det interna flashminnet, så att de överlever en omstart, en omstart av tjänsten och en firmwareuppdatering.
++RWDN_59=Återställningsintervall
++RWDN_60=Summor och räknare per land skrivs till det interna flashminnet (JFFS) och återställs vid start. Av = räkna bara sedan brandväggen senast byggde om sina regler.
++RWDN_61=Rensa de sparade räknarna automatiskt när denna tid har gått och börja en ny period.
++RWDN_62=Aldrig
++RWDN_63=24 timmar
++RWDN_64=7 dagar
++RWDN_65=1 månad
++RWDN_66=3 månader
++RWDN_67=Räknar sedan
++RWDN_68=Sedan brandväggen senast byggdes om
++RDST_64=Sparas inte
++RFB_15=Ange ditt Wi-Fi-lösenord
++RFB_16=Det trådlösa nätverket använder fortfarande fabrikslösenordet. Ange ett nytt nedan för att slutföra installationen.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 972ef77aec..fc0b1e79b6 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=ปรับแต่ง
+ RWDN_43=โปรโตคอล
+ RWDN_44=การเข้าถึงที่ถูกบล็อก
+ RWDN_45=ประเทศที่ถูกบล็อกมากที่สุด
+-RWDN_46=ประเทศต้นทางที่มีการเคลื่อนไหวมากที่สุดที่ Warden ดรอปตั้งแต่การอาร์มครั้งล่าสุด ตัวนับจะรีเซ็ตเมื่อสร้างกฎใหม่หรือเราเตอร์รีบูต
++RWDN_46=ประเทศต้นทางที่ถูก Warden บล็อกมากที่สุด จำนวนจะถูกบันทึกในหน่วยความจำแฟลชภายในและคงอยู่ข้ามการสร้างกฎใหม่ การรีบูต และการอัปเกรดเฟิร์มแวร์
+ RWDN_47=ประเทศ
+ RWDN_48=การบล็อก
+ RWDN_49=ยังไม่มีการบันทึกทราฟฟิกที่ถูกบล็อก
+@@ -5957,7 +5957,7 @@ RDST_16=ประวัติคุณภาพช่องสัญญาณ (r
+ RDST_17=สแนปช็อตหนึ่งครั้งต่อรอบขณะที่เปิดใช้งานตัวตรวจสอบ
+ RDST_18=สำเนา Syslog
+ RDST_19=บรรทัดล็อกใหม่ในแต่ละรอบ มีการหมุนเวียนไฟล์
+-RDST_20=แคชฟีดของ Warden
++RDST_20=แคชฟีดและจำนวนการบล็อกของ Warden
+ RDST_21=เมื่อมีการอัปเดตฟีด
+ RDST_22=ล็อกไว้ที่แฟลชภายใน (JFFS): ต้องคืนค่าก่อนที่ไฟร์วอลล์จะเริ่มทำงาน ซึ่งเร็วกว่าการต่อเชื่อม USB ใดๆ
+ RDST_23=JFFS - ล็อกอยู่
+@@ -6294,3 +6294,19 @@ RFWU_30=ไฟล์ที่เลือกดูเหมือนจะไม
+ RFWU_31=อัปโหลดและเขียนอิมเมจนี้หรือไม่ เราเตอร์จะตรวจสอบ เขียน แล้วรีบูต อย่าปิดเครื่องจนกว่าเราเตอร์จะกลับมาออนไลน์
+ RQOS_123=กฎเหล่านี้จัดประเภทตามจำนวนไบต์ที่ถ่ายโอน จึงไม่สามารถใช้การเร่งความเร็วโฟลว์ด้วยฮาร์ดแวร์ และต้องประเมินใหม่ทุกแพ็กเก็ต อีกทั้งการเชื่อมต่อที่ยาวนานจะตกไปอยู่ผิดคลาส (วิดีโอสตรีมมิงใช้ HTTPS) ให้จับคู่ด้วยพอร์ต โปรโตคอล IP หรือ MAC แทน กฎที่ได้รับผลกระทบ:
+ Reaper_c_dashboard=แดชบอร์ด
++RWDN_56=สถิติการบล็อก
++RWDN_57=บันทึกสถิติการบล็อก
++RWDN_58=Warden จะนับทุกแพ็กเก็ตที่บล็อก การบันทึกจะเก็บยอดรวมเหล่านี้ไว้ในหน่วยความจำแฟลชภายใน จึงคงอยู่หลังการรีบูต การรีสตาร์ตบริการ และการอัปเกรดเฟิร์มแวร์
++RWDN_59=ช่วงเวลารีเซ็ต
++RWDN_60=ยอดรวมและจำนวนแยกตามประเทศจะถูกเขียนลงหน่วยความจำแฟลชภายใน (JFFS) และกู้คืนเมื่อบูต ปิด = นับเฉพาะตั้งแต่ไฟร์วอลล์สร้างกฎใหม่ครั้งล่าสุด
++RWDN_61=ล้างจำนวนที่บันทึกไว้โดยอัตโนมัติเมื่อครบระยะเวลานี้ แล้วเริ่มรอบใหม่
++RWDN_62=ไม่รีเซ็ต
++RWDN_63=24 ชั่วโมง
++RWDN_64=7 วัน
++RWDN_65=1 เดือน
++RWDN_66=3 เดือน
++RWDN_67=นับตั้งแต่
++RWDN_68=ตั้งแต่การสร้างไฟร์วอลล์ใหม่ครั้งล่าสุด
++RDST_64=ไม่บันทึก
++RFB_15=ตั้งรหัสผ่าน Wi-Fi
++RFB_16=เครือข่ายไร้สายยังใช้รหัสผ่านจากโรงงาน ตั้งรหัสผ่านใหม่ด้านล่างเพื่อจบการตั้งค่า
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 8abad3898d..747d77f78b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=İnce Ayarlar
+ RWDN_43=Protokoller
+ RWDN_44=Engellenen erişimler
+ RWDN_45=En çok engellenen ülkeler
+-RWDN_46=Warden son etkinleştirildiğinden bu yana düşürdüğü en aktif kaynak ülkeler. Sayaçlar, kurallar yeniden oluşturulduğunda veya yönlendirici yeniden başlatıldığında sıfırlanır.
++RWDN_46=Warden'ın engellediği en etkin kaynak ülkeler. Sayımlar dahili flash belleğe kaydedilir ve kural yeniden oluşturmaları, yeniden başlatmalar ve donanım yazılımı yükseltmeleri boyunca korunur.
+ RWDN_47=Ülke
+ RWDN_48=Engellemeler
+ RWDN_49=Henüz engellenen trafik kaydedilmedi.
+@@ -5957,7 +5957,7 @@ RDST_16=Kanal kalitesi geçmişi (rchqd)
+ RDST_17=İzleyici etkinken her döngüde bir anlık görüntü
+ RDST_18=Syslog yansıması
+ RDST_19=Her döngüde yeni günlük satırları, döndürülür
+-RDST_20=Warden feed önbelleği
++RDST_20=Warden liste önbelleği ve engelleme sayıları
+ RDST_21=Feed güncellemesinde
+ RDST_22=Dahili flash’a (JFFS) kilitlenmiştir: güvenlik duvarı devreye girmeden önce, herhangi bir USB bağlamasından daha erken geri yüklenmelidir.
+ RDST_23=JFFS - kilitli
+@@ -6294,3 +6294,19 @@ RFWU_30=Seçilen dosya bu yönlendiriciye ait bir imaj gibi görünmüyor (model
+ RFWU_31=Bu imaj yüklenip yazılsın mı? Yönlendirici doğrulayacak, yazacak ve yeniden başlayacak. Yönlendirici yeniden çevrimiçi olana kadar gücünü kesmeyin.
+ RQOS_123=Bu kurallar aktarılan bayta göre sınıflandırır; bu yüzden donanım akış hızlandırmasını kullanamaz ve her pakette yeniden değerlendirilir, ayrıca uzun akışlar yanlış sınıfa düşer (akış videosu HTTPS'tir). Bunun yerine bağlantı noktası, protokol, IP veya MAC ile eşleştirin. Etkilenenler:
+ Reaper_c_dashboard=Pano
++RWDN_56=Engelleme istatistikleri
++RWDN_57=Engelleme istatistiklerini kaydet
++RWDN_58=Warden düşürdüğü her paketi sayar. Kaydetme, bu toplamları dahili flash belleğe yazar; böylece yeniden başlatma, servis yeniden başlatması ve donanım yazılımı yükseltmesinden sonra da korunur.
++RWDN_59=Sıfırlama aralığı
++RWDN_60=Toplamlar ve ülke bazlı sayımlar dahili flash belleğe (JFFS) yazılır ve açılışta geri yüklenir. Kapalı = yalnızca güvenlik duvarının kurallarını son yeniden oluşturmasından beri sayar.
++RWDN_61=Bu süre dolduğunda kaydedilen sayımları otomatik olarak temizler ve yeni bir dönem başlatır.
++RWDN_62=Asla
++RWDN_63=24 Saat
++RWDN_64=7 Gün
++RWDN_65=1 Ay
++RWDN_66=3 Ay
++RWDN_67=Sayım başlangıcı
++RWDN_68=Son güvenlik duvarı yeniden oluşturmasından beri
++RDST_64=Kaydedilmiyor
++RFB_15=Wi-Fi parolanızı belirleyin
++RFB_16=Kablosuz ağ hâlâ fabrika parolasını kullanıyor. Kurulumu bitirmek için aşağıdan yeni bir parola belirleyin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index a87f2e73c1..6d68f00741 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=微調
+ RWDN_43=通訊協定
+ RWDN_44=已封鎖的命中
+ RWDN_45=最常被封鎖的國家
+-RWDN_46=Warden 自上次啟用以來丟棄最多的最活躍來源國家。計數器會在規則重建或路由器重新開機時重設。
++RWDN_46=Warden 攔截最多的來源國家/地區。計數會儲存於內部快閃記憶體，並在規則重建、重新開機與韌體升級後保留。
+ RWDN_47=國家
+ RWDN_48=封鎖次數
+ RWDN_49=尚未記錄任何已封鎖的流量。
+@@ -5957,7 +5957,7 @@ RDST_16=頻道品質歷史紀錄（rchqd）
+ RDST_17=監控啟用期間，每個週期產生一次快照
+ RDST_18=Syslog 鏡像
+ RDST_19=每個週期新增的紀錄行，並會輪替
+-RDST_20=Warden 資料源快取
++RDST_20=Warden 清單快取與攔截計數
+ RDST_21=於資料源更新時
+ RDST_22=鎖定使用內部快閃記憶體（JFFS）：必須在防火牆啟動前還原，比任何 USB 掛載都早。
+ RDST_23=JFFS — 已鎖定
+@@ -6294,3 +6294,19 @@ RFWU_30=所選檔案看起來不是此路由器的映像檔（型號或版本不
+ RFWU_31=要上傳並寫入此映像檔嗎？路由器將驗證、寫入並重新開機。在路由器重新上線之前，請勿關閉電源。
+ RQOS_123=這些規則依傳輸位元組數分類，因此無法使用硬體流量加速，而且每個封包都會重新判定；長連線也會落入錯誤的類別（串流影片使用 HTTPS）。請改用連接埠、通訊協定、IP 或 MAC 進行比對。受影響的規則：
+ Reaper_c_dashboard=儀表板
++RWDN_56=攔截統計
++RWDN_57=儲存攔截統計
++RWDN_58=Warden 會統計每個丟棄的封包。啟用儲存後，這些計數會寫入內部快閃記憶體，可在重新開機、服務重啟與韌體升級後保留。
++RWDN_59=重設週期
++RWDN_60=總數與各國計數會寫入內部快閃記憶體 (JFFS)，並於開機時還原。關閉 = 僅統計自防火牆上次重建規則以來的資料。
++RWDN_61=經過此時間後自動清除已儲存的計數，並開始新的統計期間。
++RWDN_62=永不
++RWDN_63=24 小時
++RWDN_64=7 天
++RWDN_65=1 個月
++RWDN_66=3 個月
++RWDN_67=統計起始
++RWDN_68=自上次防火牆重建以來
++RDST_64=未儲存
++RFB_15=設定 Wi-Fi 密碼
++RFB_16=無線網路仍使用出廠密碼。請在下方設定新密碼以完成設定。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 424a3b3bad..1122bc3417 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5851,7 +5851,7 @@ Reaper_c_tweaks=Твіки
+ RWDN_43=Протоколи
+ RWDN_44=Заблоковані звернення
+ RWDN_45=Найбільш заблоковані країни
+-RWDN_46=Найактивніші країни-джерела, які Warden відкинув з моменту останньої активації. Лічильники скидаються під час перебудови правил або перезавантаження маршрутизатора.
++RWDN_46=Найактивніші країни-джерела, трафік яких відкинув Warden. Лічильники зберігаються у внутрішній флеш-пам'яті й переживають перебудову правил, перезавантаження та оновлення прошивки.
+ RWDN_47=Країна
+ RWDN_48=Блокування
+ RWDN_49=Заблокованого трафіку ще не зафіксовано.
+@@ -5957,7 +5957,7 @@ RDST_16=Історія якості каналу (rchqd)
+ RDST_17=Один знімок за такт, поки монітор увімкнено
+ RDST_18=Дзеркало syslog
+ RDST_19=Нові рядки журналу на кожному такті, з ротацією
+-RDST_20=Кеш фідів Warden
++RDST_20=Кеш списків і лічильники блокувань Warden
+ RDST_21=При оновленні фіда
+ RDST_22=Прив’язано до внутрішньої флеш-пам’яті (JFFS): вона має відновитися до активації брандмауера, раніше за будь-яке монтування USB.
+ RDST_23=JFFS — заблоковано
+@@ -6294,3 +6294,19 @@ RFWU_30=Вибраний файл не схожий на образ для ць
+ RFWU_31=Надіслати та записати цей образ? Маршрутизатор перевірить його, запише та перезавантажиться. Не вимикайте маршрутизатор, доки він знову не з'явиться в мережі.
+ RQOS_123=Ці правила класифікують за переданими байтами, тому не можуть використовувати апаратне прискорення потоків і переоцінюються на кожному пакеті; крім того, довгі потоки потрапляють не в той клас (потокове відео йде через HTTPS). Використовуйте натомість порт, протокол, IP або MAC. Стосується правил:
+ Reaper_c_dashboard=Панель
++RWDN_56=Статистика блокувань
++RWDN_57=Зберігати статистику блокувань
++RWDN_58=Warden рахує кожен відкинутий пакет. Збереження записує ці підсумки у внутрішню флеш-пам'ять, тож вони переживають перезавантаження, перезапуск служби та оновлення прошивки.
++RWDN_59=Інтервал скидання
++RWDN_60=Підсумки та лічильники за країнами записуються у внутрішню флеш-пам'ять (JFFS) і відновлюються під час завантаження. Вимкнено — рахувати лише з моменту останньої перебудови правил брандмауера.
++RWDN_61=Автоматично очищати збережені лічильники після завершення цього часу та починати новий період.
++RWDN_62=Ніколи
++RWDN_63=24 години
++RWDN_64=7 днів
++RWDN_65=1 місяць
++RWDN_66=3 місяці
++RWDN_67=Підрахунок з
++RWDN_68=З останньої перебудови брандмауера
++RDST_64=Не зберігається
++RFB_15=Установіть пароль Wi-Fi
++RFB_16=Бездротова мережа досі використовує заводський пароль. Задайте новий нижче, щоб завершити налаштування.
+-- 
+2.25.1
+

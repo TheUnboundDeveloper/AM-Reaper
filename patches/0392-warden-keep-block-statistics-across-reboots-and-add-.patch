@@ -1,0 +1,530 @@
+From b757dbe207e1743c5d356c9a3e28573a5d0c88e4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 11 Aug 2026 21:28:51 -0400
+Subject: [PATCH] warden: keep block statistics across reboots, and add a
+ retention interval
+
+Field report: "Warden hit counts are still not persistent across reboots or
+firmware upgrades. It appears to be retaining the downloaded IP packages but
+NOT the hit count blocked per country."
+
+Three separate defects, not one:
+
+1. The only place the live iptables counters were banked was the top of
+   apply.sh - but start_rwarden() and stop_services() call rw_teardown_rules()
+   from C first, so on every reboot, every Save & Apply and every shutdown the
+   counters were destroyed before anything read them. Only a bare
+   restart_firewall, which runs apply.sh without the C teardown, ever banked
+   anything.
+
+2. The per-country counts had no persistence at all. stats.sh read the live
+   REAPER_WARDEN rule counters directly, and that chain is flushed and deleted
+   on every rebuild - which is exactly why the feed cache survived and the
+   counts did not.
+
+3. Nothing checkpointed on a timer, so an unclean reset lost everything
+   accumulated since the last arm.
+
+Fix: a generated fold.sh banks the total and the per-country counters into
+/jffs/rwarden/counters (SINCE / TOTAL / CC <XX> <n>) and zeroes what it banked,
+which makes it idempotent - so it can run from stop_rwarden() ahead of the
+teardown, from apply.sh for the restart_firewall path, and from a new
+15-minute rwarden_ck cron checkpoint. It writes the store before zeroing, so a
+failed /jffs write keeps the live counters and retries with a log line, and it
+skips /jffs entirely when nothing new was dropped. The old single-value
+blocked_base is migrated on first run.
+
+New settings on the Warden page: Save block statistics (default on) and Reset
+interval (Never / 24 Hours / 7 Days / 1 Month / 3 Months). The Storage page's
+Warden row no longer hardcodes an em-dash for size and date - it reports the
+real window start and on-disk size, which is what the "no date next to it"
+half of the report was looking at.
+
+Verified without a build: both generated scripts compile under -Wall and pass
+sh -n; a stub iptables/nvram harness drives the real scripts through the
+reported scenario (count, reboot, count again) - 20/20, including the
+per-country carry-over, no double-counting on repeated folds, idle folds not
+touching /jffs, retention expiry, and the opt-out path.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c            |  25 +++
+ release/src/router/rc/rwarden.c           | 213 ++++++++++++++++++----
+ release/src/router/www/Reaper_Storage.asp |  19 +-
+ release/src/router/www/Reaper_Warden.asp  |  42 ++++-
+ 4 files changed, 258 insertions(+), 41 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 217a75e26d..f30e8a0c01 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24299,6 +24299,31 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		websWrite(stream, "\"slog_bytes\":%lld,", (stat(path, &st) == 0) ? (long long)st.st_size : 0LL);
+ 		snprintf(path, sizeof(path), "%s/chqhist.log", base);
+ 		websWrite(stream, "\"chq_bytes\":%lld,", (stat(path, &st) == 0) ? (long long)st.st_size : 0LL);
++		/* 2026-08-11: the Warden row used to be a placeholder - a locked chip with
++		 * a hardcoded em-dash for both size and "collecting since", which is what
++		 * the field report ("no date next to it") was actually looking at. Warden's
++		 * store is deliberately NOT relocatable: the feed cache has to be readable
++		 * at boot, long before any USB volume is mounted, so it is pinned to /jffs.
++		 * Report its real facts from there instead: the block-statistics window
++		 * start (the SINCE record fold.sh maintains in /jffs/rwarden/counters), the
++		 * on-disk size of the two files, and whether persistence is opted in. */
++		{
++			long wsince = 0;
++			long long wbytes = 0;
++			FILE *wf = fopen("/jffs/rwarden/counters", "r");
++			if (wf) {
++				char ln[64];
++				while (fgets(ln, sizeof(ln), wf) != NULL) {
++					if (!strncmp(ln, "SINCE ", 6)) { wsince = atol(ln + 6); break; }
++				}
++				fclose(wf);
++			}
++			if (stat("/jffs/rwarden/counters", &st) == 0) wbytes += (long long)st.st_size;
++			if (stat("/jffs/rwarden/sets.ipset", &st) == 0) wbytes += (long long)st.st_size;
++			websWrite(stream, "\"ward_since\":%ld,\"ward_bytes\":%lld,\"ward_save\":%d,",
++				wsince, wbytes,
++				nvram_match("rwarden_stats_save", "0") ? 0 : 1);
++		}
+ 		websWrite(stream, "\"rchq_enable\":%d,\"gk_enable\":%d,\"rtraf_enable\":%d,",
+ 			nvram_match("rchq_enable", "1") ? 1 : 0,
+ 			nvram_match("gk_enable", "1") ? 1 : 0,
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 8cb0d8b895..87958d8b74 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -39,6 +39,7 @@
+  *
+  * nvram: rwarden_enable rwarden_feeds rwarden_geo rwarden_dir rwarden_ban
+  *        rwarden_allow rwarden_log rwarden_sched rwarden_lastupd
++ *        rwarden_stats_save rwarden_reset
+  */
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -54,8 +55,11 @@
+ #define RW_APPLY  "/tmp/rwarden/apply.sh"
+ #define RW_UPDATE "/tmp/rwarden/update.sh"
+ #define RW_STATS  "/tmp/rwarden/stats.sh"
++#define RW_FOLD   "/tmp/rwarden/fold.sh"	/* v2.3.5: banks the live packet counters into RW_CTRS, then zeroes them */
+ #define RW_CACHE  "/jffs/rwarden"
+-#define RW_BASE   RW_CACHE "/blocked_base"	/* cumulative block count; on /jffs so it survives reboot+reflash (2026-08-06 field fix) */
++#define RW_BASE   RW_CACHE "/blocked_base"	/* v2.2.1 single-value baseline; superseded by RW_CTRS, migrated on first fold */
++#define RW_CTRS   RW_CACHE "/counters"		/* v2.3.5 durable block-statistics store: SINCE / TOTAL / per-country */
++#define RW_CCTMP  "/tmp/rwarden/cc.live"	/* scratch: live per-country deltas being folded */
+ #define RW_SAVE   "/jffs/rwarden/sets.ipset"
+ 
+ /* Curated open IP/CIDR feeds. id must be [a-z0-9]; url is emitted only into a
+@@ -282,23 +286,24 @@ static void rw_gen_apply(void)
+ 	  "V6LEN=\"$(nvram get ipv6_prefix_length)\"\n"
+ 	  "[ -n \"$V6PFX\" ] && [ -n \"$V6LEN\" ] && V6LAN=\"${V6PFX}/${V6LEN}\" || V6LAN=\"\"\n");
+ 	/* reaper (v2.1.x, field: "block count doesn't track actual blocks"): the
+-	 * live RW_DROP packet counter is the ONLY source of "total blocked", but the
+-	 * teardown below flushes RW_DROP - and apply.sh re-runs on every
+-	 * restart_firewall - so the counter kept zeroing and the UI total never
+-	 * accumulated. Snapshot the counter about to be discarded into a persisted
+-	 * baseline (accumulating); stats.sh then reports baseline + live.
+-	 * 2026-08-06 field fix: the baseline now lives on /jffs (RW_BASE = RW_CACHE,
+-	 * the same dir the ipset cache is saved to), so the total survives a REBOOT
+-	 * and a REFLASH (a factory reset wipes /jffs, correctly zeroing it). To bound
+-	 * NAND writes we only rewrite when the count actually grew (a re-arm with no
+-	 * new drops writes nothing), and create the dir on demand. NOTE: it does NOT
+-	 * recover drops the HW flow-accelerator may offload without incrementing
+-	 * iptables - that potential undercount is a separate, metal-only question. */
++	 * live iptables packet counters are the ONLY source of "total blocked" and
++	 * "top blocked countries", but the teardown below destroys both chains - and
++	 * apply.sh re-runs on every restart_firewall - so the counters kept zeroing
++	 * and the UI never accumulated. Bank whatever is about to be discarded into
++	 * the durable store FIRST (fold.sh; see rw_gen_fold for the full rationale).
++	 * 2026-08-11 field fix: this used to be an inline fold of the RW_DROP total
++	 * only, which (a) had no per-country component at all, so the Top Blocked
++	 * Countries table reset on every rebuild, and (b) never ran on the paths that
++	 * matter - start_rwarden()/stop_services() call rw_teardown_rules() from C
++	 * BEFORE apply.sh runs, so by the time this line executed the counters were
++	 * already gone. fold.sh is now invoked from stop_rwarden() ahead of the
++	 * teardown, from a 15-minute cron checkpoint, and from here (the
++	 * restart_firewall path, which does not go through the C teardown). It is
++	 * idempotent - it zeroes the counters it banks - so all three are safe.
++	 * NOTE: this still does NOT recover drops the HW flow-accelerator may offload
++	 * without incrementing iptables - a separate, metal-only question. */
+ 	fprintf(f,
+-	  "_rwb=$(cat " RW_BASE " 2>/dev/null); [ -n \"$_rwb\" ] || _rwb=0\n"
+-	  "_rwc=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null; } | awk '/ DROP /{s+=$1} END{print s+0}')\n"
+-	  "_rwn=$((_rwb+_rwc))\n"
+-	  "if [ \"$_rwn\" != \"$_rwb\" ]; then [ -d " RW_CACHE " ] || mkdir -p " RW_CACHE " 2>/dev/null; echo \"$_rwn\" > " RW_BASE " 2>/dev/null; fi\n");
++	  "[ -x " RW_FOLD " ] && sh " RW_FOLD " 2>/dev/null\n");
+ 	/* ---- teardown ---- both stacks (dispatch chain before its RW_DROP dep) */
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+@@ -548,16 +553,119 @@ static void rw_gen_update(void)
+ 	fclose(f);
+ }
+ 
+-/* stats.sh: read live iptables/ip6tables counters -> JSON snapshot for the UI.
+- * total blocked = packets through RW_DROP (v4+v6); per-country = packets on each
+- * rw_g_<cc>/rw_g6_<cc> match rule, summed across stacks; then top 5 by count. */
++/* fold.sh: bank the live iptables/ip6tables packet counters into the durable
++ * Warden statistics store, then zero them - which makes this script IDEMPOTENT,
++ * so it can run from any path, any number of times, without double-counting.
++ *
++ * 2026-08-11 field fix ("Warden hit counts are still not persistent across
++ * reboots or firmware upgrades; it retains the downloaded IP packages but NOT
++ * the hit count blocked per country"). Three defects made the old scheme fail:
++ *   1. the only fold site was the top of apply.sh, but start_rwarden() and
++ *      stop_services() call rw_teardown_rules() from C FIRST - so on every
++ *      reboot, every Save & Apply and every shutdown the counters were flushed
++ *      before anything read them. Only a bare restart_firewall (which runs
++ *      apply.sh without the C teardown) ever banked anything;
++ *   2. there was no per-country baseline AT ALL - the Top Blocked Countries
++ *      table read the live REAPER_WARDEN rule counters directly, and that chain
++ *      is flushed and deleted on every single rebuild;
++ *   3. nothing checkpointed on a timer, so an unclean reset (power cut, HW
++ *      watchdog) lost everything accumulated since the last arm.
++ *
++ * Store format (RW_CTRS, plain text, one record per line):
++ *   SINCE <epoch>        start of the current retention window
++ *   TOTAL <n>            cumulative packets dropped by RW_DROP (v4 + v6)
++ *   CC <XX> <n>          cumulative packets dropped by that country's rules
++ *
++ * Writes are gated on rwarden_stats_save (user opt-in, default on) and skipped
++ * outright when there is nothing new to bank, to bound NAND wear on /jffs. */
++static void rw_gen_fold(void)
++{
++	FILE *f = fopen(RW_FOLD, "w");
++	if (!f) return;
++	fputs(
++	  "#!/bin/sh\n"
++	  "# generated by start_rwarden - do not edit; idempotent (banks, then zeroes)\n"
++	  "CTR=" RW_CTRS "\n"
++	  "DIR=" RW_CACHE "\n"
++	  "TMPCC=" RW_CCTMP "\n"
++	  "# opt-out: keep counting live in iptables, persist nothing\n"
++	  "[ \"$(nvram get rwarden_stats_save)\" = 0 ] && exit 0\n"
++	  "# not armed -> nothing to bank. This is the normal case at boot and right\n"
++	  "# after the C teardown, so it must be a silent no-op.\n"
++	  "iptables -nL RW_DROP >/dev/null 2>&1 || exit 0\n"
++	  "NOW=$(date +%s)\n"
++	  "mkdir -p \"$DIR\" 2>/dev/null\n"
++	  "{ [ -d \"$DIR\" ] && [ -w \"$DIR\" ]; } || exit 0\n"
++	  "# one-time migration from the v2.2.1 single-value baseline (no per-country\n"
++	  "# history existed then, and no window start - stamp the window as now)\n"
++	  "if [ ! -f \"$CTR\" ] && [ -f " RW_BASE " ]; then\n"
++	  "  _m=$(cat " RW_BASE " 2>/dev/null); case \"$_m\" in ''|*[!0-9]*) _m=0;; esac\n"
++	  "  { echo \"SINCE $NOW\"; echo \"TOTAL $_m\"; } > \"$CTR\" 2>/dev/null\n"
++	  "fi\n"
++	  "SINCE=$(awk '$1==\"SINCE\"{print $2+0; exit}' \"$CTR\" 2>/dev/null)\n"
++	  "case \"$SINCE\" in ''|0|*[!0-9]*) SINCE=$NOW;; esac\n"
++	  "# retention window (rwarden_reset): wipe the store and restart the window\n"
++	  "case \"$(nvram get rwarden_reset)\" in\n"
++	  "  24h) IV=86400;; 7d) IV=604800;; 30d) IV=2592000;; 90d) IV=7776000;; *) IV=0;;\n"
++	  "esac\n"
++	  "if [ \"$IV\" -gt 0 ] && [ $((NOW-SINCE)) -ge \"$IV\" ]; then\n"
++	  "  iptables -Z RW_DROP 2>/dev/null; ip6tables -Z RW_DROP 2>/dev/null\n"
++	  "  iptables -Z REAPER_WARDEN 2>/dev/null; ip6tables -Z REAPER_WARDEN 2>/dev/null\n"
++	  "  { echo \"SINCE $NOW\"; echo \"TOTAL 0\"; } > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null\n"
++	  "  rm -f \"$TMPCC\"\n"
++	  "  logger -t rwarden \"block statistics reset - retention interval reached\"\n"
++	  "  exit 0\n"
++	  "fi\n"
++	  "# Read the counters, WRITE the store, and only then zero what was banked.\n"
++	  "# Ordering matters both ways round:\n"
++	  "#  - zero-before-write would lose the delta if the /jffs write failed, and\n"
++	  "#    would briefly show a dipped total to the 30 s UI poll;\n"
++	  "#  - write-before-zero can only double-count if this script dies between\n"
++	  "#    the rename and the -Z while the box stays up, and a reboot zeroes the\n"
++	  "#    counters anyway - so that is the strictly safer order.\n"
++	  "# The read and the -Z are separate calls, so a packet arriving in the gap is\n"
++	  "# lost. That is deliberate: the atomic form (-L together with -Z) would close\n"
++	  "# the gap, but if it were ever rejected the counters would never clear and\n"
++	  "# every checkpoint would re-bank the same packets - a runaway OVER-count.\n"
++	  "LIVE=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null; } | awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  "{ iptables -nvxL REAPER_WARDEN 2>/dev/null; ip6tables -nvxL REAPER_WARDEN 2>/dev/null; } | awk '\n"
++	  "  { for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
++	  "  END{ for(k in c) if(c[k]>0) print k, c[k] }' > \"$TMPCC\" 2>/dev/null\n"
++	  "CCN=$(awk '{s+=$2} END{print s+0}' \"$TMPCC\" 2>/dev/null)\n"
++	  "# nothing new and the store already exists -> leave /jffs completely alone\n"
++	  "if [ \"$LIVE\" = 0 ] && [ \"$CCN\" = 0 ] && [ -f \"$CTR\" ]; then rm -f \"$TMPCC\"; exit 0; fi\n"
++	  "if {\n"
++	  "  echo \"SINCE $SINCE\"\n"
++	  "  echo \"TOTAL $( { awk '$1==\"TOTAL\"{print $2+0; exit}' \"$CTR\" 2>/dev/null; echo \"$LIVE\"; } | awk '{s+=$1} END{print s+0}')\"\n"
++	  "  { awk '$1==\"CC\" && $2 ~ /^[A-Z][A-Z]$/ {print $2, $3+0}' \"$CTR\" 2>/dev/null; cat \"$TMPCC\" 2>/dev/null; } |\n"
++	  "    awk '{c[$1]+=$2} END{for(k in c) if(c[k]>0) print \"CC\", k, c[k]}' | sort\n"
++	  "} > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null; then\n"
++	  "  iptables -Z RW_DROP 2>/dev/null; ip6tables -Z RW_DROP 2>/dev/null\n"
++	  "  iptables -Z REAPER_WARDEN 2>/dev/null; ip6tables -Z REAPER_WARDEN 2>/dev/null\n"
++	  "else\n"
++	  "  rm -f \"$CTR.tmp\"\n"
++	  "  logger -t rwarden \"block-statistics checkpoint could not write $CTR - live counters kept, will retry\"\n"
++	  "fi\n"
++	  "rm -f \"$TMPCC\"\n", f);
++	fclose(f);
++}
++
++/* stats.sh: durable store + live iptables/ip6tables counters -> JSON for the UI.
++ * total blocked = banked TOTAL + live RW_DROP packets (v4+v6); per-country =
++ * banked CC records merged with the live rw_g_<cc>/rw_g6_<cc> rule counters,
++ * summed across stacks, top 5 by count. Also reports the window start (since)
++ * so the page can say what period the numbers cover.
++ *
++ * This is a pure READ - it must never zero a counter. The page polls it every
++ * 30 s; if it zeroed, it would eat the deltas fold.sh exists to bank. */
+ static void rw_gen_stats(void)
+ {
+ 	FILE *f = fopen(RW_STATS, "w");
+ 	if (!f) return;
+-	fprintf(f, "%s",
++	fputs(
+ 	  "#!/bin/sh\n"
+-	  "# generated by start_rwarden - emit warden block stats as JSON\n"
++	  "# generated by start_rwarden - emit warden block stats as JSON (read-only)\n"
++	  "CTR=" RW_CTRS "\n"
+ 	  "EN=$(nvram get rwarden_enable); [ \"$EN\" = 1 ] || EN=0\n"
+ 	  "LU=$(nvram get rwarden_lastupd); [ -n \"$LU\" ] || LU=0\n"
+ 	  "ARMED=0; iptables -nL REAPER_WARDEN >/dev/null 2>&1 && ARMED=1\n"
+@@ -565,39 +673,62 @@ static void rw_gen_stats(void)
+ 	  "TN=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN\" ] || TN=0\n"
+ 	  "TN6=$(ipset -t list rw_threat6 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN6\" ] || TN6=0\n"
+ 	  "GN=$(ipset list -n 2>/dev/null | grep -c '^rw_g_')\n"
+-	  "# total blocked = persisted baseline (carried across firewall re-arms that\n"
+-	  "# flush RW_DROP) + the live RW_DROP packet counter\n"
+-	  "RWBASE=$(cat " RW_BASE " 2>/dev/null); [ -n \"$RWBASE\" ] || RWBASE=0\n"
++	  "SV=1; [ \"$(nvram get rwarden_stats_save)\" = 0 ] && SV=0\n"
++	  "RI=$(nvram get rwarden_reset)\n"
++	  "case \"$RI\" in 24h|7d|30d|90d) ;; *) RI=off;; esac\n"
++	  "BASE=0; SINCE=0\n"
++	  "if [ \"$SV\" = 1 ] && [ -f \"$CTR\" ]; then\n"
++	  "  BASE=$(awk '$1==\"TOTAL\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$BASE\" ] || BASE=0\n"
++	  "  SINCE=$(awk '$1==\"SINCE\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$SINCE\" ] || SINCE=0\n"
++	  "fi\n"
+ 	  "LIVE=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null; } "
+ 	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
+-	  "TOTAL=$((RWBASE+LIVE))\n"
+-	  "# per-country pkt sums across both stacks\n"
+-	  "TOP=$( { iptables -nvxL REAPER_WARDEN 2>/dev/null; ip6tables -nvxL REAPER_WARDEN 2>/dev/null; } | awk '\n"
+-	  "  { for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
+-	  "  END{ for(k in c) print c[k], k }' | sort -rn | head -5 | awk '\n"
++	  "TOTAL=$((BASE+LIVE))\n"
++	  "TOP=$( {\n"
++	  "  [ \"$SV\" = 1 ] && awk '$1==\"CC\" && $2 ~ /^[A-Z][A-Z]$/ {print $2, $3+0}' \"$CTR\" 2>/dev/null\n"
++	  "  { iptables -nvxL REAPER_WARDEN 2>/dev/null; ip6tables -nvxL REAPER_WARDEN 2>/dev/null; } | awk '\n"
++	  "    { for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
++	  "    END{ for(k in c) print k, c[k] }'\n"
++	  "  } | awk '{c[$1]+=$2} END{for(k in c) if(c[k]>0) print c[k], k}' | sort -rn | head -5 | awk '\n"
+ 	  "  { if(NR>1) printf \",\"; printf \"{\\\"cc\\\":\\\"%s\\\",\\\"n\\\":%d}\", $2, $1 }')\n"
+-	  "JP=0; [ -w /jffs ] && JP=1; printf '{\"enable\":%d,\"armed\":%d,\"v6\":%d,\"lastupd\":%d,\"threat_n\":%d,\"geo_n\":%d,\"blocked\":{\"total\":%d,\"top\":[%s]},\"jffs\":%d}\\n' "
+-	  "\"$EN\" \"$ARMED\" \"$V6\" \"$LU\" \"$((TN+TN6))\" \"$GN\" \"$TOTAL\" \"$TOP\" \"$JP\"\n");
++	  "JP=0; [ -w /jffs ] && JP=1\n"
++	  "printf '{\"enable\":%d,\"armed\":%d,\"v6\":%d,\"lastupd\":%d,\"threat_n\":%d,\"geo_n\":%d,"
++	  "\"blocked\":{\"total\":%d,\"since\":%d,\"top\":[%s]},\"save\":%d,\"reset\":\"%s\",\"jffs\":%d}\\n' "
++	  "\"$EN\" \"$ARMED\" \"$V6\" \"$LU\" \"$((TN+TN6))\" \"$GN\" \"$TOTAL\" \"$SINCE\" \"$TOP\" \"$SV\" \"$RI\" \"$JP\"\n", f);
+ 	fclose(f);
+ }
+ 
+ void stop_rwarden(void)
+ {
++	/* reaper 2026-08-11 field fix: bank the live packet counters BEFORE the
++	   chains that hold them are destroyed. This is THE fix for "hit counts are
++	   not persistent across reboots or firmware upgrades" - stop_rwarden() is
++	   the common ancestor of every path that loses the counters (start_rwarden()
++	   uses the stop-then-start idiom, and stop_services() runs it on shutdown),
++	   and it previously tore the chains down without reading them. fold.sh is
++	   idempotent and no-ops when nothing is armed, so this is safe to run here
++	   even when Warden was never up. */
++	if (f_exists(RW_FOLD))
++		system("sh " RW_FOLD " 2>/dev/null");
+ 	rw_teardown_rules();
+ 	eval("cru", "d", "rwarden");
++	eval("cru", "d", "rwarden_ck");
+ 	unlink(RW_APPLY);
+ 	unlink(RW_UPDATE);
+ 	unlink(RW_STATS);
++	unlink(RW_FOLD);
+ 	/* reaper v2.2.9 field fix (block count did not survive reboot/reflash): reset the
+-	   cumulative baseline ONLY on a genuine user-DISABLE. stop_rwarden() is also called
++	   cumulative store ONLY on a genuine user-DISABLE. stop_rwarden() is also called
+ 	   by start_rwarden() (the stop-then-start idiom) on every boot/restart AND by
+-	   stop_services() on shutdown, so unconditionally unlinking RW_BASE here wiped the
+-	   persisted /jffs baseline before Warden re-armed - silently defeating the v2.2.1
++	   stop_services() on shutdown, so unconditionally unlinking here wiped the
++	   persisted /jffs data before Warden re-armed - silently defeating the v2.2.1
+ 	   "survives reboot+reflash" fix. Keyed on the live enable flag: enabled -> preserve
+ 	   (the GUI sets rwarden_enable=0 before it restarts us on a disable, so a real
+ 	   disable still resets; a factory reset wipes /jffs which zeroes it anyway). */
+-	if (!nvram_match("rwarden_enable", "1"))
++	if (!nvram_match("rwarden_enable", "1")) {
+ 		unlink(RW_BASE);
++		unlink(RW_CTRS);
++	}
+ }
+ 
+ void start_rwarden(void)
+@@ -611,9 +742,11 @@ void start_rwarden(void)
+ 	rw_gen_apply();
+ 	rw_gen_update();
+ 	rw_gen_stats();
++	rw_gen_fold();
+ 	chmod(RW_APPLY, 0700);
+ 	chmod(RW_UPDATE, 0700);
+ 	chmod(RW_STATS, 0700);
++	chmod(RW_FOLD, 0700);
+ 	/* apply.sh exits non-zero when the LAN is not up yet (cold boot): expected,
+ 	 * not an error - the firewall hook re-runs the same script and arms the
+ 	 * moment the LAN appears (the Gatekeeper cold-boot deferral pattern). */
+@@ -629,4 +762,12 @@ void start_rwarden(void)
+ 		snprintf(line, sizeof(line), "%s sh %s", sched, RW_UPDATE);
+ 		eval("cru", "a", "rwarden", line);
+ 	}
++	/* reaper 2026-08-11: statistics checkpoint. Without it, everything counted
++	 * since the last arm is lost on an UNCLEAN reset (power cut, HW watchdog -
++	 * this box has a documented history of both), because only stop_rwarden()
++	 * banks the counters and an unclean reset never reaches it. Every 15 min,
++	 * and fold.sh writes nothing to /jffs when nothing new was dropped, so an
++	 * idle router costs no NAND wear. Also the carrier for the retention-window
++	 * (rwarden_reset) check. */
++	eval("cru", "a", "rwarden_ck", "*/15 * * * * sh " RW_FOLD);
+ }
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 55b3424adb..f3f4635425 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -210,10 +210,23 @@ function render(){
+   /* dataset rows */
+   var el = '';
+   DSETS.forEach(function(ds){
+-    var tog, since;
++    var tog, since, cap = ds.cap;
+     if(ds.locked){
++      /* 2026-08-11: this row used to hardcode an em-dash for both size and
++         "collecting since" - the field report ("Long-Term storage has no date
++         next to it") was looking at exactly that. Warden's store cannot move
++         off /jffs (the feed cache must restore before any USB is mounted), but
++         it does now have real facts to show: the block-statistics window start
++         and the on-disk size of the cache + counters. Persistence itself is
++         toggled on the Warden page (rwarden_stats_save), so reflect that state
++         here rather than pretending the row is inert. */
++      var wSave = !(S && S.ward_save === 0);
+       tog = '<span class="chip" title="' + esc(`<#RDST_22#>`) + '">' + esc(`<#RDST_23#>`) + '</span>';
+-      since = '&mdash;';   /* Warden cache is locked to /jffs; not tracked here */
++      cap = (S && S.ward_bytes) ? fmtBytes(S.ward_bytes) : '&mdash;';
++      since = wSave
++            ? ((S && S.ward_since) ? fmtDate(S.ward_since)
++                                   : '<span style="color:var(--steel)">&mdash;</span>')
++            : '<span style="color:var(--steel)">' + esc(`<#RDST_64#>`) + '</span>';
+     } else {
+       var on = !!dsOn[ds.k];
+       tog = '<span class="tg' + (on ? ' on' : '') + '" data-k="' + ds.k + '"></span>';
+@@ -228,7 +241,7 @@ function render(){
+       '<td>' + tog + '</td>' +
+       '<td class="dsname">' + ds.name + '</td>' +
+       '<td class="dswrite">' + ds.write + '</td>' +
+-      '<td class="dscap">' + ds.cap + '</td>' +
++      '<td class="dscap">' + cap + '</td>' +
+       '<td class="dssince">' + since + '</td></tr>';
+   });
+   document.getElementById('ds_rows').innerHTML = el;
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 5cd2756874..657b07f57e 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -50,6 +50,7 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
+ .stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
+ .stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.stat .sub{font-size:11px;color:var(--steel);margin-top:3px;min-height:1em}
+ .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
+ .card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
+ .card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:80ch}
+@@ -132,7 +133,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ </div>
+ 
+ <div class="stats">
+-  <div class="stat"><div class="n" id="s_blocked">&mdash;</div><div class="l"><#RWDN_44#></div></div>
++  <div class="stat"><div class="n" id="s_blocked">&mdash;</div><div class="l"><#RWDN_44#></div><div class="sub" id="s_since"></div></div>
+   <div class="stat"><div class="n" id="s_lastupd"><#RWDN_29#></div><div class="l"><#RWDN_24#></div></div>
+   <div class="stat"><div class="n" id="s_feeds">0</div><div class="l"><#RWDN_25#></div></div>
+   <div class="stat"><div class="n" id="s_geo">0</div><div class="l"><#RWDN_26#></div></div>
+@@ -178,6 +179,21 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+     <span class="tg" id="tglog" onclick="rwTg(this)"></span></div>
+ </div>
+ 
++<div class="card">
++  <h2><#RWDN_56#></h2>
++  <div class="desc"><#RWDN_58#></div>
++  <div class="setrow"><span class="sl"><#RWDN_57#><span class="sd"><#RWDN_60#></span></span>
++    <span class="tg" id="tgsave" onclick="rwTg(this)"></span></div>
++  <div class="setrow"><span class="sl"><#RWDN_59#><span class="sd"><#RWDN_61#></span></span>
++    <select class="setsel" id="reset">
++      <option value="off"><#RWDN_62#></option>
++      <option value="24h"><#RWDN_63#></option>
++      <option value="7d"><#RWDN_64#></option>
++      <option value="30d"><#RWDN_65#></option>
++      <option value="90d"><#RWDN_66#></option>
++    </select></div>
++</div>
++
+ <div class="duo">
+   <div class="card">
+     <h2><#RWDN_17#></h2>
+@@ -223,6 +239,8 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <input type="hidden" name="rwarden_ban" value="">
+   <input type="hidden" name="rwarden_allow" value="">
+   <input type="hidden" name="rwarden_log" value="">
++  <input type="hidden" name="rwarden_stats_save" value="">
++  <input type="hidden" name="rwarden_reset" value="">
+ </form>
+ 
+ <script>
+@@ -235,8 +253,12 @@ var NV = {
+   ban:    '<% nvram_get("rwarden_ban"); %>',
+   allow:  '<% nvram_get("rwarden_allow"); %>',
+   log:    '<% nvram_get("rwarden_log"); %>',
+-  lastupd:'<% nvram_get("rwarden_lastupd"); %>'
++  lastupd:'<% nvram_get("rwarden_lastupd"); %>',
++  save:   '<% nvram_get("rwarden_stats_save"); %>',
++  reset:  '<% nvram_get("rwarden_reset"); %>'
+ };
++/* retention windows the backend (fold.sh) understands; anything else = off */
++var RESET_IVS = ['off','24h','7d','30d','90d'];
+ var FEED_IDS = ['firehol1','feodo','spamhaus','dshield'];
+ /* ISO 3166-1 alpha-2 subset (common + commonly-blocked). Codes only ever leave
+    here as 2 ascii letters; the backend re-validates each as [A-Za-z]{2}. */
+@@ -298,6 +320,10 @@ function rwPaint(){
+   FEED_IDS.forEach(function(id){ var c = !!feeds[id]; document.getElementById('f_'+id).checked = c; if(c) nf++; });
+   document.getElementById('dir').value = (NV.dir === 'out' || NV.dir === 'both') ? NV.dir : 'in';
+   document.getElementById('tglog').className = 'tg' + (NV.log === '1' ? ' on' : '');
++  /* statistics persistence defaults ON (nvram default "1"); only an explicit
++     "0" turns it off, so an unset value must not read as off */
++  document.getElementById('tgsave').className = 'tg' + (NV.save === '0' ? '' : ' on');
++  document.getElementById('reset').value = (RESET_IVS.indexOf(NV.reset) >= 0) ? NV.reset : 'off';
+   document.getElementById('ban').value   = rwSplit(NV.ban).join('\n');
+   document.getElementById('allow').value = rwSplit(NV.allow).join('\n');
+   rwBuildGeo();
+@@ -395,6 +421,9 @@ function rwSave(updateNow){
+   f.rwarden_ban.value    = ban.ok;
+   f.rwarden_allow.value  = allow.ok;
+   f.rwarden_log.value    = (document.getElementById('tglog').className.indexOf('on') >= 0) ? '1' : '0';
++  f.rwarden_stats_save.value = (document.getElementById('tgsave').className.indexOf('on') >= 0) ? '1' : '0';
++  var riv = document.getElementById('reset').value;
++  f.rwarden_reset.value  = (RESET_IVS.indexOf(riv) >= 0) ? riv : 'off';
+ 
+   /* Save & Apply restarts the service (regenerates rules + updater). "Update
+      now" also regenerates first (so the fetch reflects current selections) then
+@@ -433,6 +462,15 @@ function rwStats(){
+     var b = j.blocked || {};
+     document.getElementById('s_blocked').textContent =
+       (typeof b.total === 'number') ? b.total.toLocaleString() : '—';
++    /* what period the number covers: the persisted window start when statistics
++       are being saved, otherwise "since the last firewall rebuild" - the counts
++       are then only whatever the live iptables counters hold */
++    var sc = document.getElementById('s_since');
++    if(sc){
++      if(j.save === 0){ sc.textContent = `<#RWDN_68#>`; }
++      else if(b.since > 0){ sc.textContent = `<#RWDN_67#>` + ' ' + new Date(b.since*1000).toLocaleDateString(); }
++      else { sc.textContent = ''; }
++    }
+     var top = (b.top || []).slice(0, 5);
+     var tb = document.getElementById('topbody');
+     if(j.armed){ pill.className = 'livepill'; } else { pill.className = 'livepill stale'; }
+-- 
+2.25.1
+

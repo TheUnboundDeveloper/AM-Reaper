@@ -60,6 +60,31 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log. [Requires_Reaserch]
 
+- **[P2] Firewall engine master switch takes no action — most importantly it does not turn OFF.**
+  Found on metal 2026-08-13 (v2.3.9, first time the engine ever ran). `reaper_fw.cgi?action=opts`
+  is what the page's engine toggle calls (`Reaper_Firewall.asp` ~1148); it does
+  `nvram_set("reaper_fw_enable", en)` and returns. There is no `notify_rc`, so nothing starts or
+  stops.
+
+  - **The OFF direction is the real bug.** `stop_reaper_fw()` is never reached, so disabling the
+    engine leaves REAPER_FWI/FWF/FWO hooked and enforcing until a reboot or an unrelated apply. A
+    master switch that does not disable is the wrong failure direction for a firewall.
+  - The ON direction is merely confusing: the flag is set, no chains appear, and the engine looks
+    broken. That is exactly how this was found — `reaper_fw_enable=1` + `service restart_firewall`
+    produced `iptables: No chain/target/match by that name`. The re-apply hook in `firewall.c` only
+    *runs* `/tmp/reaper_fw/apply.sh` **if it already exists**; it never generates it. `apply.sh` is
+    written by `start_reaper_fw()`, and `/tmp` is tmpfs — so after a reboot with the engine
+    disabled, nothing has ever written it and `restart_firewall` has nothing to run. The working
+    verb is `service restart_reaper_fw`.
+  - **Also check while fixing:** `opts` uses `nvram_set` with no `nvram_commit`, so a toggle that is
+    never followed by an Apply/Confirm is lost on a power cut. That may be deliberate (the
+    commit-confirm design deliberately holds the six editable lists in RAM and commits only on
+    confirm) but `enable`/`confirm` are settings rather than staged drafts, so confirm the intent
+    rather than assuming.
+  - Fix shape: have `opts` call `notify_rc("restart_reaper_fw")` when `enable` actually changes
+    value (both directions), which routes to the existing `stop_reaper_fw()`/`start_reaper_fw()`
+    pair already wired at `services.c` ~21884.
+
 - **[P3] Firmware flash overlay does not lock the page behind it.** Reported on metal 2026-08-13
   (v2.3.8, flashing v2.3.9). While the "Uploading image" curtain is up on `Reaper_Firmware.asp`, the
   page underneath is still scrollable, so the sticky header slides out from behind the dim layer:

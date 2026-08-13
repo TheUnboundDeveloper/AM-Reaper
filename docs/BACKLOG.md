@@ -17,59 +17,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Open bugs / under investigation
 
-- **[P1] VPN speedtest hang → `sched: RT throttling activated` → wireless-only drop —
-  ROOT-CAUSED at source; a decisive on-box diagnostic is the next step before any fix.**
-  (Field 2026-08-04, BE96U: built-in Ookla test over an active VPN, QoS off, 4 Gbps ISP —
-  hung at ~1.1 Gbps; syslog `sched: RT throttling activated`; wireless clients dropped,
-  wired stayed up.)
-
-  - **Cause chain (stock-inherent, not Reaper):** the platform boots with
-    `sched_rt_runtime_us=99000/100000` and `CONFIG_RT_GROUP_SCHED` off, so blowing the
-    99 ms/100 ms RT budget on a CPU throttles **every** RT task on that core. Broadcom's
-    `rtpolicy` promotes **ksoftirqd to SCHED_RR prio 5** and pins `bcmsw_rx`/`spu_rx`/`pdc_rx`
-    (RR/5) to CPU0. VPN crypto is not runner-accelerated → runs in softirq → RT-promoted
-    ksoftirqd saturates a core at ~1.1 Gbps → throttle fires → the Wi-Fi driver kthreads (RT,
-    policy set inside the closed `wl.ko`) freeze with it → wireless drops; wired survives
-    because it is runner-offloaded. Reaper daemons request no RT priority (verified).
-
-  - **Decisive diagnostic (no build):** on-box, demote ksoftirqd to normal scheduling —
-    `chrt -o -p 0 <pid of ksoftirqd/N>` per thread (or `echo -1 > /proc/sys/kernel/sched_rt_runtime_us`)
-    — then rerun the same VPN speedtest. Hang + wireless drop gone ⇒ confirms the chain. Record
-    **which VPN engine** was active (WireGuard/OpenVPN ⇒ ksoftirqd path; IPSec ⇒ the SPU
-    `spu_rx`/`pdc_rx` RR/5 threads on CPU0 instead).
-
-  - **Candidate fix (after the diagnostic confirms):** remove ksoftirqd's RT promotion in
-    `rtpolicy/scripts/rt_settings_kthreads.txt` (restores the mainline default, keeps the RT
-    throttle as a safety valve); optionally + affinity separation and RPS spread for tunnel
-    softirq. `sched_rt_runtime_us=-1` rejected as the primary fix (removes the safety valve).
-
-- **[P1] BE98 Speed Test crashes/freezes with class-based QoS enabled.** Field reports that with
-  QoS enabled on the BE98, the speed test crashes — not everyone is affected (config-dependent).
-  Owner also observes a **momentary freeze on the built-in speed test in HW Classful mode
-  (`qos_type=11`, the 8-queue WRR scheduler) but NOT in the HW Classless modes**.
-
-  - *Re-check 2026-08-12 — partly superseded, needs re-confirmation before more work:* **v2.2.6**
-    (`80fc8bfa88`) fixed a *different* speed-test freeze — `internet_speed.html` polled the result
-    buffer with a **synchronous** `hookGet` every 200 ms, so while the ookla binary pegged the CPU
-    each blocking XHR stalled the browser main thread ("page unresponsive"). That one hit everyone
-    regardless of QoS, and the original "crashes" field reports predate the fix, so they may already
-    be resolved. The classful-only *momentary* freeze below is a separate, QoS-mode-dependent
-    observation and still stands. **Re-confirm on a v2.2.6+ image before spending metal time.**
-
-  - **Source trace (blob/metal-bound):** the built-in Ookla test is **router-originated** traffic;
-    its WAN egress traverses `QOSO` at `POSTROUTING`, so in type-11 it is CONNMARK'd into the
-    default class → default egress queue and is subject to that queue's PI2 shaper + the WRR
-    schedule + the **aggregate port shaper** (`setportshaper=qos_obw`). type-10 has none of these
-    (qid0 shaper only) — which is why the freeze is classful-only. Both `ookla_exec` and the rdpa
-    runner are **blobs** — not safely fixable from the auditable source.
-
-  - **Metal diagnostics to split it:** run the built-in test on type-11 while capturing
-    `/tmp/syslog.log`+`dmesg`+`fc status`+`tmctl getqstats` (**not `logread`** — syslogd always runs
-    with `-O <file>` and never `-C`, so `logread` returns empty on every unit); repeat on type-10 (control); run an
-    **external/LAN-client** test under type-11 (if it does NOT freeze, the router-local path is the
-    confound); set `qos_pshaper=0` or raise `qos_obw` to line rate → re-run. **Interim workaround:**
-    run the built-in test with QoS on a classless mode or off, or use a LAN-client/external test.
-
 - **[P2] AI Mesh Search — "Search for node" finds no new node.** Pre-existing meshes keep working
   after flashing to Reaper; only *new-node discovery* is affected. Reported on GT-BE98/PRO, but
   **do not assume it is BE98-specific**: the only add-node metal test *ever* was BE96U v1.5.0e
@@ -112,6 +59,26 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   Secondary WAN (2.5 Gbps, DHCP, its own NextDNS profile) is active; the future primary (10 Gbps,
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log. [Requires_Reaserch]
+
+- **[P3] Firmware flash overlay does not lock the page behind it.** Reported on metal 2026-08-13
+  (v2.3.8, flashing v2.3.9). While the "Uploading image" curtain is up on `Reaper_Firmware.asp`, the
+  page underneath is still scrollable, so the sticky header slides out from behind the dim layer:
+  the screenshot shows the VARIANT / AI Advisor / MCP chips, "INSTALLED VERSION Reaper v2.3.8" and
+  "BASE BUILD 3.0.0.6.102.8" rendering *over* the faded header, on top of the curtain. Cosmetic —
+  the flash itself completed normally — but it appears during the one operation where the page also
+  says "DO NOT POWER OFF OR RESTART THE ROUTER", so anything that looks like the UI misbehaving is
+  worth more than its severity suggests.
+
+  - Two things to fix, and they are separate: **(a)** scroll is not locked while the overlay is
+    shown — lock it on show and restore the prior offset on hide (a naive `overflow:hidden` on
+    `body` jumps the page to the top on restore, so preserve and re-apply `scrollY`); **(b)** the
+    header is winning the stacking contest against the curtain, so it needs to sit below the
+    overlay's layer, or the overlay needs to be raised into a top-level stacking context.
+  - **Touch carefully — this area has a regression history.** The overlays were re-anchored in
+    v2.3.3 (`1d9d58a2be` fixed a field regression where the re-anchor inflated the framed doc by
+    460 px and clipped QoS/Traffic), and the post-flash "frozen browser" trap on this same page was
+    doubled poll chains rather than the veil itself. Verify against the mock router in both the
+    framed (shell) and direct-URL cases before believing it fixed.
 
 ## UI / UX polish
 
@@ -164,59 +131,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   Rearange the nav menu and add logic to deal with addon nav menu selections. [Requires_Research]
 
 ## Features to add
-
-- **[P3] Research: IDS/IPS (Suricata/Snort) or eBPF traffic analysis — RESEARCHED 2026-08-12,
-  conclusion: DO NOT ship in-firmware.** Findings kept here rather than in a separate document:
-
-  - **Throughput: ~90–98 % loss on the inspected path.** Forwarding is done by the Runner
-    (`CONFIG_BCM_RUNNER_MAX_FLOWS=16384`); accelerated packets never reach the Linux stack.
-    Inspection requires pulling flows *out* of the accelerator, so the cost is losing hardware
-    forwarding, not the detection engine. Anchor: the open `[P1] VPN speedtest` item measured this
-    platform's software path saturating a core at **~1.1 Gbps** — with a workload *cheaper per
-    packet* than IDS. NFQUEUE inline adds a userspace copy per packet on top.
-  - **It would re-create an open P1 defect.** Softirq saturation here triggers RT throttling, which
-    freezes the Wi-Fi kthreads inside `wl.ko` and **drops wireless clients while wired survives** —
-    precisely the P1 symptom above. That, not the throughput number, is the strongest objection.
-  - **eBPF is blocked outright:** `# CONFIG_BPF_SYSCALL is not set` in the shipped 4.19.294 kernel —
-    no `bpf()` syscall, so no programs, maps or XDP. Enabling it via `EXTRA_KERNEL_CONFIGS` is
-    possible (BE88U jumbo-frame precedent) but 4.19 eBPF is pre-BTF/CO-RE, **and** generic XDP/`tc`
-    only sees packets that already lost acceleration — the fastest flows are invisible to it.
-  - **Plumbing is present** should a narrow design ever be wanted: `libpcap` and
-    `libnetfilter_queue` are in-tree, `NETFILTER_NETLINK_QUEUE` + `XT_TARGET_NFQUEUE` + conntrack +
-    `XT_MATCH_STRING` are all `y`. Capability is not the objection; cost is.
-  - **Security is a trade, not a win:** a WAN-facing C parser running with `CAP_NET_ADMIN` turns a
-    decoder bug into pre-auth RCE on the gateway; rule feeds re-introduce the phone-home the
-    de-cloud gate exists to prevent; rulesets are a continuous third-party supply-chain input; and
-    IPS false positives are an anti-lockout hazard. Image is ~74 MB — rules alone (30–80 MB) rule
-    out shipping them.
-  - **Recommended instead:** scope any inline inspection to narrow low-volume traffic (inbound to
-    exposed ports, DNS) as an extension of the native firewall suite; prefer flow-*metadata* anomaly
-    detection, which costs nothing because it reads the accelerator's own counters (as the Traffic
-    Analyzer already does); and if a full IDS is wanted, document an **opt-in Entware/USB install**
-    rather than shipping it.
-
-  - **"Sentinel" flow-metadata page: BUILT then REMOVED on the same day — owner decision
-    2026-08-12. DO NOT REBUILD.** A native page (`Reaper_Sentinel.asp`) was built under Traffic
-    Analyzer showing per-host fan-out / port-sweep / uncommon-port / not-accelerated signals from
-    the `reaper_conn.cgi` flow feed. It worked and cost nothing, but it was **rejected on
-    presentation grounds, which the mockup made obvious**: it renders *inferred* signals with the
-    visual authority of measured fact. A media box hitting many CDN edges was flagged `warn`
-    identically to a device actually scanning the internet. Users cannot tell those apart from the
-    output, so the page would teach people to mistrust normal traffic — or worse, to trust the
-    verdict. **A confident-looking UI over heuristic data is a liability, not a feature.**
-    - Fully reverted: page deleted, `reaper_inject.c` / `menuTree.js` / dashboard rail unwired, all
-      22 `RSEN_` tokens removed from all 25 dicts (verified: zero mentions tree-wide, dicts back to
-      6321 lines uniform, the three wiring files diff-clean against HEAD).
-    - **The wider lesson applies to any successor:** flow metadata can say *what shape* traffic has,
-      never *what it means*. Anything built on it must either present raw measurements without a
-      verdict, or not ship.
-
-  - **Not built, and now unlikely to be:** (i) narrow NFQUEUE inspection scoped to inbound/DNS —
-    belongs with the native firewall suite, which is still mock-ups; (ii) DNS-layer controls, the
-    one remaining direction with *true* data rather than inference (`dnsmasq` + Merlin's DNSFilter
-    are already in-tree) though DoH/DoT increasingly bypasses it; (iii) an opt-in Entware/USB
-    install note for users who want full Suricata — **unverified whether Entware even packages
-    Suricata for aarch64**; check before documenting it. [researched — no build]
 
 - **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
   Owner-approved (2026-08-08) design: a native

@@ -190,6 +190,30 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Features to add
 
+- **[P3] Devices page — export the client inventory (name, MAC, IP) as HTML, CSV or JSON.** Owner
+  request 2026-08-13. A button on `Reaper_Devices.asp` that offers the three formats and downloads
+  the current device list.
+
+  - **Should need no C at all.** `reaper_dev.cgi?action=status` already returns the full list the
+    table renders from, so the data is in the browser; build the file client-side (`Blob` +
+    `<a download>`) rather than adding a server endpoint. There is no outbound file-serving path in
+    httpd to reuse anyway — every `Content-Disposition` hit in `web.c` is *inbound* multipart upload
+    parsing — and `reaper_dev.cgi*` is registered in `mime_handlers[]` as `application/json`, so a
+    server-side download would mean a new handler and a new mime row for no benefit. Same
+    conclusion the Mesh Nodes card reached.
+  - **Name source is `custom_clientlist`**, which is the naming master (see the Device Identity
+    Manager work) — export what the user actually sees on the page, not the raw DHCP hostname, or
+    the file will disagree with the UI for every renamed device.
+  - Suggested shapes: CSV with a header row (`name,mac,ip`) for spreadsheets; JSON as an array of
+    objects for scripting; HTML as a standalone styled table for handing to someone. Include the
+    router model and a generated-at timestamp in the HTML and JSON headers so an old file is
+    identifiable later.
+  - **PII note — say it in the UI.** Unlike `reaper_diag`, which sanitizes and carries a
+    withheld-items ledger precisely because raw dumps are unsafe to post, this export is
+    deliberately UNsanitized: it is the user's own inventory and its whole purpose is real names and
+    addresses. It is therefore not safe to paste into a forum or a bug report. A one-line caution
+    next to the button costs nothing and prevents the obvious mistake.
+
 - **[P3] Firewall rule tracer (FIREWALL-PLAN Phase 3, the last unbuilt piece of it).** "Given a
   packet like *this*, which rule would match?" — a simulator that walks the committed config in C
   and reports the first match, rather than shelling out to iptables. Deferred from v2.4.0 as the

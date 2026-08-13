@@ -101,9 +101,17 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     commit-confirm design deliberately holds the six editable lists in RAM and commits only on
     confirm) but `enable`/`confirm` are settings rather than staged drafts, so confirm the intent
     rather than assuming.
-  - Fix shape: have `opts` call `notify_rc("restart_reaper_fw")` when `enable` actually changes
-    value (both directions), which routes to the existing `stop_reaper_fw()`/`start_reaper_fw()`
-    pair already wired at `services.c` ~21884.
+  - **FIXED in v2.4.0 (`b3589185e6`) — metal re-test owed.** `opts` now calls
+    `notify_rc("restart_reaper_fw")`, but only when `enable` actually CHANGES value — the same
+    action saves the commit-confirm timer, and rebuilding the ruleset every time that number is
+    edited would be pointless work. **Deliberately still no `nvram_commit()`**: that call flushes
+    the whole of nvram and would persist the six editable lists while they are an unconfirmed draft
+    in RAM, which is exactly what S3 forbids. The flag persists on the next confirm, the only path
+    meant to write flash — so the open question in the bullet above is now answered: the missing
+    commit is correct, not an oversight.
+  - **Re-test both directions on metal:** enable → chains appear without a reboot; disable → chains
+    are gone (`iptables -S REAPER_FWF` returns "No chain/target/match by that name"). The OFF
+    direction is the one that mattered.
 
 - **[P3] Firmware flash overlay does not lock the page behind it.** Reported on metal 2026-08-13
   (v2.3.8, flashing v2.3.9). While the "Uploading image" curtain is up on `Reaper_Firmware.asp`, the
@@ -114,16 +122,21 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   says "DO NOT POWER OFF OR RESTART THE ROUTER", so anything that looks like the UI misbehaving is
   worth more than its severity suggests.
 
-  - Two things to fix, and they are separate: **(a)** scroll is not locked while the overlay is
-    shown — lock it on show and restore the prior offset on hide (a naive `overflow:hidden` on
-    `body` jumps the page to the top on restore, so preserve and re-apply `scrollY`); **(b)** the
-    header is winning the stacking contest against the curtain, so it needs to sit below the
-    overlay's layer, or the overlay needs to be raised into a top-level stacking context.
-  - **Touch carefully — this area has a regression history.** The overlays were re-anchored in
-    v2.3.3 (`1d9d58a2be` fixed a field regression where the re-anchor inflated the framed doc by
+  - **FIXED in v2.4.0 (`b3589185e6`) — metal re-test owed.** The cause was neither of the two I
+    first guessed. The veil lives *inside* the iframe and can never paint over shell chrome (that
+    is what `chromeLock()` → `shellChromeLock()` exists for), and the shell already dimmed and
+    disabled the header and rail. What it did not do was stop the *wheel*: `pointerEvents:none`
+    blocks clicks only, so the operator could still scroll the shell and slide the dimmed header up
+    out from behind the frame. Fixed in `shellChromeLock()` so it covers every page that raises a
+    veil, using `overflow:hidden` (not `position:fixed`) so `scrollTop` is preserved and there is no
+    jump-to-top when the lock lifts, on both `documentElement` and `body`, guarded to stay
+    idempotent because `reaperWait`/`Done` and the `#Loading` observer can both fire for one
+    operation.
+  - **Still verify carefully — this area has a regression history.** The overlays were re-anchored
+    in v2.3.3 (`1d9d58a2be` fixed a field regression where the re-anchor inflated the framed doc by
     460 px and clipped QoS/Traffic), and the post-flash "frozen browser" trap on this same page was
-    doubled poll chains rather than the veil itself. Verify against the mock router in both the
-    framed (shell) and direct-URL cases before believing it fixed.
+    doubled poll chains rather than the veil itself. Re-test in both the framed (shell) and
+    direct-URL cases.
 
 ## UI / UX polish
 
@@ -176,6 +189,29 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   Rearange the nav menu and add logic to deal with addon nav menu selections. [Requires_Research]
 
 ## Features to add
+
+- **[P3] Firewall rule tracer (FIREWALL-PLAN Phase 3, the last unbuilt piece of it).** "Given a
+  packet like *this*, which rule would match?" — a simulator that walks the committed config in C
+  and reports the first match, rather than shelling out to iptables. Deferred from v2.4.0 as the
+  cheapest thing to leave: it is a diagnostic aid, not a control, so nothing is unusable without it.
+  Everything else in Phases 2 and 3 shipped in v2.4.0 (`a103b59d6d` engine, `fa1e5d634f` Egress and
+  Forwards tabs + backup/restore).
+
+- **[P3] dnsmasq `ipset=` for FQDN objects (FIREWALL-PLAN Phase 2 upgrade) — BLOCKED, and not for
+  the reason the plan recorded.** The plan assumed the obstacle was that `/etc/dnsmasq.conf` is
+  regenerated wholesale on every `restart_dnsmasq` with `dnsmasq.postconf` belonging to the
+  operator. That part is surmountable: `rc` owns the generator and can emit its own lines just
+  before `append_custom_config("dnsmasq.conf", fp)` (services.c ~2353), without touching the
+  operator's hook at all.
+
+  - **The real blocker: this dnsmasq is compiled WITHOUT ipset support.** `dnsmasq/src/config.h`
+    defines *both* `HAVE_IPSET` and `NO_IPSET`, and resolves it at ~line 365 as
+    `#if defined(NO_IPSET) → #undef HAVE_IPSET`. The shipped binary contains no `ipset` option
+    string at all, so emitting `ipset=` lines today would just make dnsmasq reject its own config.
+  - Enabling it means rebuilding dnsmasq with `HAVE_IPSET` — a change to the most critical service
+    on the box, so it wants its own rung and its own metal pass rather than riding someone else's.
+  - Until then FQDN objects resolve on the 10-minute `cru` timer (`rfw_gen_resolve()`), which is the
+    documented trade-off: a host behind a large rotating CDN pool lags until the next refresh.
 
 - **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
   Owner-approved (2026-08-08) design: a native

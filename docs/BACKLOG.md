@@ -60,6 +60,26 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log. [Requires_Reaserch]
 
+- **[P3] Wi-Fi Professional: ~15 s first load after a firmware upgrade, fast on every load after.**
+  Reported on metal 2026-08-13 (v2.3.9). Only the FIRST load following an upgrade is slow; once it
+  has been pulled once the page is responsive, so this is a cold-state cost, not steady-state.
+
+  - **Note the history before re-investigating:** the known slow-first-load cause was found and
+    fixed for v2.3.7 (patches 0401/0404) — 116 server-side `nvram_get` calls collapsed into a single
+    `wl_ifnames`-driven ej call. That fix IS in this build, and its timing was never measured on
+    metal ("UNCOMPILED, timing unmeasured"). So this is either a residual second cause or evidence
+    the collapse did not deliver what it promised. Do not re-find the nvram_get issue and call it
+    solved.
+  - **Most likely candidate is not the page at all:** an upgrade ends in a reboot, and the Pro page
+    makes per-radio driver calls (`wl`) while the wireless stack is still settling — ACS/DFS
+    selection on 5 GHz/6 GHz can block ioctls for tens of seconds after boot. That would explain
+    "first load only" precisely, and would mean the page is a victim rather than the cause.
+  - **Cheap way to separate the two:** load the page ~10 minutes after a reboot with no other
+    change. Still slow → it is a genuine cold-cache/first-generation cost in the page. Fast → it is
+    boot-time driver settling, and the fix is to show a loading state rather than to optimise
+    anything. Timing `curl -o /dev/null -w '%{time_total}'` against the ASP separates server-side ej
+    time from browser-side rendering.
+
 - **[P2] Firewall engine master switch takes no action — most importantly it does not turn OFF.**
   Found on metal 2026-08-13 (v2.3.9, first time the engine ever ran). `reaper_fw.cgi?action=opts`
   is what the page's engine toggle calls (`Reaper_Firewall.asp` ~1148); it does

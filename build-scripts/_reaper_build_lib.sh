@@ -52,7 +52,18 @@ _rb_variant() {   # $1 = MCP|noMCP
   fi
 
   cd "$P" || return 9
-  rm -f .config "config_${TARGET}" "$R"/release/src/router/zlib/stamp-h1
+  # 2026-08-13: "config_${TARGET}" was RELATIVE here, and we have just cd'd to
+  # $P - but the generated model profile lives in release/src/router/, so that
+  # argument matched nothing and the rm had been a silent no-op since the script
+  # was written. (The zlib stamp on the same line was already absolute, which is
+  # what makes the inconsistency easy to miss.) Nothing broke, because deleting
+  # .config alone is enough to force the regen; the profile is rewritten every
+  # pass regardless. Fixed so the code does what its comment claims, which
+  # matters in a model-switch failure - the stale-profile MODEL NAME MISMATCH
+  # this line is supposed to prevent is exactly the situation where someone
+  # would read it and believe the protection was already in place.
+  rm -f .config "$R/release/src/router/config_${TARGET}" \
+        "$R"/release/src/router/zlib/stamp-h1
   echo "=== [$label] make $TARGET pass1 (regen; may die at setprofile, -j${REAPER_JOBS}) $(date) ==="
   # Pass 1 is silenced because it is EXPECTED to die at setprofile. On a cold
   # tree that is a problem: the samba crypto chain (zlib/gmp/nettle/gnutls) is

@@ -122,16 +122,23 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   says "DO NOT POWER OFF OR RESTART THE ROUTER", so anything that looks like the UI misbehaving is
   worth more than its severity suggests.
 
-  - **FIXED in v2.4.0 (`b3589185e6`) — metal re-test owed.** The cause was neither of the two I
-    first guessed. The veil lives *inside* the iframe and can never paint over shell chrome (that
-    is what `chromeLock()` → `shellChromeLock()` exists for), and the shell already dimmed and
-    disabled the header and rail. What it did not do was stop the *wheel*: `pointerEvents:none`
-    blocks clicks only, so the operator could still scroll the shell and slide the dimmed header up
-    out from behind the frame. Fixed in `shellChromeLock()` so it covers every page that raises a
-    veil, using `overflow:hidden` (not `position:fixed`) so `scrollTop` is preserved and there is no
-    jump-to-top when the lock lifts, on both `documentElement` and `body`, guarded to stay
-    idempotent because `reaperWait`/`Done` and the `#Loading` observer can both fire for one
-    operation.
+  - **FIXED in v2.4.0 (`b3589185e6` + `49d61be6df`) — metal re-test owed. The cause was NOT what
+    this entry first recorded**, and the owner's original description was the accurate one: the page
+    behind the header comes forward over it. `.top` is `position:sticky; top:0; z-index:300` with an
+    **opaque** `background:#040405`, and `#page_frame` is `scrolling="no"` — so the shell scrolls
+    while the header stays put and page content slides underneath it, which is normal and invisible.
+    But `shellChromeLock()` dimmed the header with **`opacity:.45`**, and opacity does not merely
+    fade an element, it makes it **translucent** — so the content passing beneath showed straight
+    *through* it. The header never moved and never lost a stacking contest; it just stopped being
+    opaque at exactly the moment content was underneath.
+    Fixed with `filter:brightness(.45)`, which dims identically while leaving the element fully
+    opaque (any inline `opacity` is cleared on the same line so an upgraded image cannot keep a
+    stale value). A scroll freeze is kept as a second line of defence and now scrolls to the top
+    before locking: with nothing under the header there is nothing to bleed through even if a future
+    style reintroduces translucency, and it puts the veil's message in view rather than leaving the
+    operator parked halfway down a page that has stopped responding.
+    **Lesson worth keeping: `opacity` to "dim" any element that overlaps scrolling content will do
+    this again. Use `filter:brightness()` for chrome that must stay opaque.**
   - **Still verify carefully — this area has a regression history.** The overlays were re-anchored
     in v2.3.3 (`1d9d58a2be` fixed a field regression where the re-anchor inflated the framed doc by
     460 px and clipped QoS/Traffic), and the post-flash "frozen browser" trap on this same page was
@@ -139,6 +146,9 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     direct-URL cases.
 
 ## UI / UX polish
+
+- **Quick List** Items int he "Security Posture" panel on the dashboard should be linked so when 
+  clicked it takes the user to the page and view of where the item can be modified.
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
   blocking during an apply/reboot is done (v2.2.5, refined v2.3.0); the overlays are now anchored to

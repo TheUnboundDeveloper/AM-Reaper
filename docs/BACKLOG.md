@@ -55,6 +55,35 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     new log lines say which. Run it on the BE96U too — that splits a Reaper regression from a
     BE98-port issue.
 
+- **[P2] Wireless Quality Auto Scan pins the winner by itself; it should not.** Owner 2026-08-13:
+  a scan should rank and report, and pinning should be the separate **Pin best** button
+  (`scanpin` / `scanPin()`) that already exists. Today a clean sweep commits the winner without
+  being asked.
+
+  - **Where:** `web.c` ~22563-22575. On `!aborted && n > 0` the worker does
+    `nvram_set(wlN_chanspec, r[order[0]].cs)` + `wlN_bw`, then `nvram_commit()` and
+    `notify_rc("restart_wireless")`. Only an aborted/stopped sweep restores `orig_cs`/`orig_bw`.
+  - **This reverses a deliberate v2.3.7 decision** ("winner auto-locked+committed"), so it is a
+    change of mind, not an oversight — do not "fix" it back later without reading this.
+  - **The source already contradicts itself about it.** `Reaper_Wireless.asp` ~480 states the worker
+    "ranks them, and RESTORES the original channel. This page only polls results and, on the user's
+    click, pins the winner." That is what the owner expects and what the button implies — but it is
+    not what `web.c` does. Whichever way this is settled, **one of those two comments must change**;
+    leaving both is how the next person loses an afternoon.
+  - **Why it matters beyond preference:** pinning sets `wlN_chanspec` to a fixed value, and a radio
+    only joins `acs_ifnames` while that is `"0"` — so an auto-pin silently turns **auto-channel
+    selection off** for that radio until someone sets Control Channel back to Auto. A user who ran a
+    scan just to *look* comes away with a changed, committed configuration.
+  - **Verify while fixing — the two pin paths may not agree.** `scanPin()` applies
+    `pinTarget(...)`, i.e. the wider block CONTAINING the winner, whereas the auto-pin applies
+    `r[order[0]].cs` verbatim with `bw` derived from it. If the sweep samples narrower than the
+    radio runs, the auto-pin could leave the radio at the swept width. The `scanPin()` comment says
+    5 GHz is "swept at bw=20", but the v2.3.7 rework claims 5 GHz now sweeps 80 MHz blocks so
+    "ranked==applied" — so that comment may simply be stale. Confirm which is true before trusting
+    either.
+  - **Fix shape:** take the `!aborted` branch out, i.e. always restore `orig_cs`/`orig_bw` after a
+    sweep, and leave every pin to `scanPin()`. Then correct whichever comment is left lying.
+
 - **[P2] Dual-WAN failover: both NextDNS profiles receive DNS logs though only one WAN is live.**
   Secondary WAN (2.5 Gbps, DHCP, its own NextDNS profile) is active; the future primary (10 Gbps,
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;

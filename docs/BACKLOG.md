@@ -92,12 +92,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## UI / UX polish
 
-- **Warden Count** Warden sometimes shows a block count total but no country count that are matching 
-  the total counts.
-
-- **Instructions** Add usage instructions and examples to the firewall pages to assit the user 
-  in understanding the tooling.
-
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
   blocking during an apply/reboot is done (v2.2.5, refined v2.3.0); the overlays are now anchored to
   the browser viewport rather than the framed document — the shell publishes the frame's visible slice
@@ -148,28 +142,26 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Features to add
 
+- **Warden Plus** Requests have been made for custom feeds input by the user.
+
+- **[P3] Warden: decide whether country rules should be evaluated BEFORE the threat feeds.**
+  Left as an explicit owner decision by the 2026-08-14 block-count work, not an oversight. Both rule
+  families jump to the same drop target, so the order is purely **attribution** — it changes which
+  counter increments, never whether a packet is dropped. Today the feed rule runs first, and because
+  the large feeds overlap heavily with the countries people block, the feed absorbs the hit and the
+  per-country counters barely move; that is the whole reason the total and the country table looked
+  unrelated. Putting geo first would give real country attribution at zero enforcement cost.
+  **Why it was not just done:** it silently changes the meaning of a statistic users have been
+  accumulating — banked country counts would suddenly grow much faster and the feed count would
+  flatten, with no way to explain the discontinuity after the fact. The breakdown shipped in the
+  unreleased rung makes both numbers visible, so this is now a free choice rather than a fix.
+
 - **[P3] Firewall rule tracer (FIREWALL-PLAN Phase 3, the last unbuilt piece of it).** "Given a
   packet like *this*, which rule would match?" — a simulator that walks the committed config in C
   and reports the first match, rather than shelling out to iptables. Deferred from the firewall rung as
   the cheapest thing to leave: it is a diagnostic aid, not a control, so nothing is unusable without it.
   Everything else in Phases 2 and 3 shipped in v2.4.1 (`a103b59d6d` engine, `fa1e5d634f` Egress and
   Forwards tabs + backup/restore).
-
-- **[P3] dnsmasq `ipset=` for FQDN objects (FIREWALL-PLAN Phase 2 upgrade) — BLOCKED, and not for
-  the reason the plan recorded.** The plan assumed the obstacle was that `/etc/dnsmasq.conf` is
-  regenerated wholesale on every `restart_dnsmasq` with `dnsmasq.postconf` belonging to the
-  operator. That part is surmountable: `rc` owns the generator and can emit its own lines just
-  before `append_custom_config("dnsmasq.conf", fp)` (services.c ~2353), without touching the
-  operator's hook at all.
-
-  - **The real blocker: this dnsmasq is compiled WITHOUT ipset support.** `dnsmasq/src/config.h`
-    defines *both* `HAVE_IPSET` and `NO_IPSET`, and resolves it at ~line 365 as
-    `#if defined(NO_IPSET) → #undef HAVE_IPSET`. The shipped binary contains no `ipset` option
-    string at all, so emitting `ipset=` lines today would just make dnsmasq reject its own config.
-  - Enabling it means rebuilding dnsmasq with `HAVE_IPSET` — a change to the most critical service
-    on the box, so it wants its own rung and its own metal pass rather than riding someone else's.
-  - Until then FQDN objects resolve on the 10-minute `cru` timer (`rfw_gen_resolve()`), which is the
-    documented trade-off: a host behind a large rotating CDN pool lags until the next refresh.
 
 - **[P2] NATIVE FIREWALL SUITE — the remaining pieces.** The suite itself **shipped in v2.4.1**
   (engine, hub, Status posture view, Phase 2 egress defaults, Phase 3 hardened forwards, their
@@ -186,7 +178,10 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     `www/Main_ReaperDash.asp` and `www/reaper_shell.asp`, which all four per-model overlays also
     carry, so `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98_PRO` cannot take this series until those
     overlays are rebuilt against it. Everything else in the rung is model-neutral.
-  - Rule tracer and the dnsmasq `ipset=` upgrade are tracked as their own entries above.
+  - The rule tracer is tracked as its own entry above. *(The dnsmasq `ipset=` upgrade is no longer
+    listed here — it was implemented 2026-08-14 and is in the unreleased rung; the "dnsmasq is
+    compiled without ipset" blocker this file used to record was a misreading and must not be
+    re-raised. See [`CHANGELOG.md`](CHANGELOG.md).)*
 
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the
@@ -237,6 +232,22 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   cream-vs-red divergence, both of which need per-page CSS **usage** rewrites (visual-regression risk).
   [owed — to migration]
 
+- **[P3] Translations owed for the 2026-08-14 rung (27 keys, English-seeded in all 25 packs).**
+  `RWDN_69`–`RWDN_72` (Warden's router-self filter: toggle label, description, and the two-part
+  risk warning), `RWDN_73`–`RWDN_76` (the block-count breakdown labels), and `RFW_229`–`RFW_251`
+  (the firewall page's per-tab explainers, examples, and the help-button label). The packs are in
+  lockstep at 6583 lines so nothing renders as a raw `<#KEY#>`; the non-English packs simply carry
+  the English text until translated. **`RFW_229` is used as an HTML attribute value** (`title` /
+  `aria-label`), so its translations must not contain a double quote.
+
+- **[P3] Two pre-existing rule-29 single-quote contexts on `Reaper_Firewall.asp`.** `RFW_36`
+  ("Time") and `RFW_37` ("Action") are interpolated into a single-quoted JavaScript string in the
+  log-table header builder. **Latent only** — every pack still carries the untranslated English, so
+  nothing breaks today — but the standing rule exists because a translation containing an apostrophe
+  turns this into a syntax error for that language alone, which is how the v1.8.6a EU breakage
+  happened. Convert both to backticks next time that code is touched. Verified 2026-08-14 that the
+  per-tab help work introduced no new such contexts; these two predate it.
+
 - **[P3] `do_reaper_dev_cgi` function-local `static` snapshot arrays aren't re-entrant.** Latent only
   (httpd serialises these requests); a malloc refactor of the multi-return CGI would add leak risk to
   fix a can't-happen case. [shelved]
@@ -284,6 +295,15 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
       at v2.1.2 — it had not been updated for eight rungs. Counts corrected to 424 / v2.4.1, sections
       written for `0311`–`0424`, and the fact that no per-rung note was written for `0375`–`0406` is
       now recorded rather than papered over.
+  - **A third instance, 2026-08-14 — and one of a different kind.** Two more version-drift finds:
+    `docs/RELEASE-NOTES.md` §8 still called **v2.3.1** "current head" (true until 2026-08-08), and
+    the file now states the head in exactly one place, at the top. More usefully, this round also
+    found the failure mode the automation above would *not* have caught: both `CHANGELOG.md` and
+    `RELEASE-NOTES.md` recorded a **technical justification that was simply false** — that this
+    router's dnsmasq is compiled without ipset support, which it never was. A version number is
+    mechanical and can be generated; a reason is written by hand and can only be checked by someone
+    re-deriving it. Both are now annotated in place rather than rewritten, so the record shows what
+    was believed and when it was corrected.
   - **Remaining [P3]:** decide whether `cut_rung`/the publish path should write image hashes into the
     manifest automatically, so this cannot drift again. The three finds above argue the wider point:
     every doc that restates a version or a count is a copy that can rot, and `cut_rung` already knows
@@ -302,7 +322,11 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 - **[P3]** Document the non-functional retained features (the firmware update-check UI's stock pieces,
   the removed security-check UI) that are kept only for potential future use.
 - **[P3]** Annotate the system defaults.
-- **[P3]** Write a user guide for other users.
+- **[P3]** Write a user guide for other users. *(Started 2026-08-14:
+  [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) covers the eleven firewall tabs — what each is for, how
+  best to use it, a worked example, and the non-obvious traps — and every tab's **?** button links
+  to its section. **Those links 404 until this repo is pushed.** The same treatment is owed for
+  Warden, Gatekeeper, QoS, Traffic and the Devices pages.)*
 
 ## Known issues (cannot remediate — closed-source blob)
 

@@ -176,7 +176,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## UI / UX polish
 
-- **Quick List** Items int he "Security Posture" panel on the dashboard should be linked so when 
+- **Quick List** Items in the "Security Posture" panel on the dashboard should be linked so when 
   clicked it takes the user to the page and view of where the item can be modified.
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
@@ -358,12 +358,25 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     `cut_rung` writes each entry as source-only and image hashes are added when a build ships, so
     on that evidence nothing after v2.3.1 has shipped. That contradicts the working record, which
     has v2.3.2 published via CI and v2.3.3 built and metal-passed.
-  - So either those builds shipped and the manifest was never refreshed with their hashes, or they
-    did not ship. **Resolve against the actual GitHub Releases**, then fix both docs to match and
-    decide whether "current version" means *newest published image* or *newest source rung* — the
-    two have been six rungs apart and the docs do not say which they mean.
-  - `docs/CI-PUBLIC-BUILD.md` also states a stale pin (`Reaper_v2.3.2 … patch series 0001–0378`);
-    the pin is now `Reaper_v2.3.7` with 406 patches. Refresh once the above is settled.
+  - **RESOLVED 2026-08-13 against the GitHub Releases API — the builds DID ship and the manifest was
+    simply never refreshed.** Published releases, all five models with 3 assets each: **v2.3.0,
+    v2.3.1, v2.3.2, v2.3.4, v2.3.7**. Newest published is **v2.3.7** (2026-08-13). v2.3.3, v2.3.5 and
+    v2.3.6 are source rungs that were never published, which is why the two numbers drift.
+  - **`provenance/manifest.json` is NOT a reliable "did it ship" signal — do not use it as one.**
+    Image hashes are populated only for v2.1.0–v2.1.5 and v2.3.1; **every** v2.0.x and v1.x rung is
+    zero too, including ones known to have shipped. Reading absence of a sporadically-populated
+    field as evidence of non-release is what produced the contradiction above. Either populate it on
+    every publish or stop treating it as a release record.
+  - **"Current version" now means the newest PUBLISHED release** — the newest image a user can
+    download — and both docs now say so explicitly rather than leaving it to inference. Fixed:
+    `README.md` (v2.3.1 → v2.3.7, plus the "built + shipped at v2.3.1" model-scope claim),
+    `docs/INSTALL-AND-ROLLBACK.md` (v2.3.2 → v2.3.7, dropped the stale "v2.3.3 is RT-BE96U-only"),
+    `docs/CI-PUBLIC-BUILD.md` (pin `Reaper_v2.3.2`/`0001–0378` → `Reaper_v2.3.7`/`0001–0406`,
+    verified against the workflow and a 406-file `patches/`), and **a third stale reference the
+    original entry missed**: the comment at `public-build.yml:483` still said the pin was
+    `Reaper_v2.3.1`.
+  - **Remaining [P3]:** decide whether `cut_rung`/the publish path should write image hashes into the
+    manifest automatically, so this cannot drift again.
 
 - **[P3]** Document the non-functional retained features (the firmware update-check UI's stock pieces,
   the removed security-check UI) that are kept only for potential future use.

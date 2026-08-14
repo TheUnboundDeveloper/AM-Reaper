@@ -72,20 +72,19 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 379 patches (through v2.3.3).
+#   fails without it. This applies all 424 patches (through v2.4.1).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
-#   expected after all 374 patches (v2.3.1):
-#                         f45570426e350a29bba9245ee1b11ffab41ecd1a
+#   expected after all 424 patches (v2.4.1):
+#                         1db8fe150ac99c2adc17041d696666cf0dc299c6
 #   (this value is releases[].source_tree_from_series["release/src/router"])
 #
-#   v2.3.3 (all 379 patches) build-commit tree:
-#                         18c5fc0eefa28393cdf038eeb2adb3a411fb6876
-#   Its source_tree_from_series counterpart is recorded at publish time; the two
-#   differ only by the three openssh-sftp *.md files described just below. The
-#   379-patch replay was verified clean on 2026-08-10 — `git am --keep-cr`
-#   returned 0 and the only diff was exactly those three files.
+#   For the newest PUBLISHED release, v2.3.7, apply the first 406 instead:
+#                         7f48393d768d564fe8dbb5722fcfa26a8e6f6181
+#   The 424-patch replay was verified clean on 2026-08-13 — `git am --keep-cr`
+#   returned 0 and the only diff against the build commit was vendored *.md
+#   files, exactly as described below.
 #
 #   Two hashes are recorded per release. source_tree is the tree of the commit
 #   the firmware was built from; source_tree_from_series is what this replay
@@ -95,6 +94,7 @@ git rev-parse HEAD:release/src/router
 #   release/src-rt is identical. Compare against source_tree_from_series.
 #
 #   To check an EARLIER release instead, apply only its patch_count patches:
+#     ls patches/[0-9]*.patch | head -406 | xargs git am --keep-cr   # v2.3.7
 #     ls patches/[0-9]*.patch | head -325 | xargs git am --keep-cr   # v2.1.5
 
 # --- (d) Confirm the image you downloaded is the published one ----------------
@@ -107,9 +107,15 @@ If **(d)** matches, the image you hold is the one that was built. That is the fu
 chain: **base → patches → source tree → image.**
 
 To verify an **earlier** release, apply only its first *N* patches
-(`patch_count` in the manifest) — e.g. `0001`–`0289` for v2.1.0 — and compare to
+(`patch_count` in the manifest) — e.g. `0001`–`0292` for v2.1.0 — and compare to
 that release's tree hash. The series is strictly additive, so each release is a
 prefix of the next.
+
+> **Use the `patch_count` from the manifest, not a number remembered from an older
+> copy of this document.** The 2026-08-09 series repair restored three commits that
+> had never been extracted and renumbered everything after `0245` by +3, so
+> pre-repair figures (`0289` for v2.1.0, `0310` for v2.1.2, `0322` for v2.1.5) now
+> point at the wrong patch and will produce a tree hash that does not match.
 
 ---
 
@@ -190,16 +196,33 @@ The authoritative, machine-readable list is
 [`../provenance/manifest.json`](../provenance/manifest.json). For quick reference
 (RT-BE96U, the primary model):
 
-| Release | Base | Patches | `release/src/router` tree hash |
-|---|---|---|---|
-| v2.1.5 | `a7ebfa133a` | `0001`–`0322` | `9c98f7483f8eb3f8c0d1b5250b8bf3d38803f63c` |
-| v2.1.4 | `a7ebfa133a` | `0001`–`0318` | `066a89ce574f3bdccbdb1af40d354f6ded822574` |
-| v2.1.3 | `a7ebfa133a` | `0001`–`0315` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` |
-| v2.1.2 | `a7ebfa133a` | `0001`–`0310` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` |
-| v2.1.1 | `a7ebfa133a` | `0001`–`0290` | `3ae0d9144034bfc3a62fb5814d798a45b7db3ac6` |
-| v2.1.0 | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` |
+**These are `source_tree_from_series` — the tree your replay produces.** The
+manifest also records `source_tree`, the build commit's own tree, which is a
+different value: it additionally contains the vendored `*.md` files the doc-hunk
+exclusion strips. Compare your replay against this column, never against
+`source_tree`.
 
-The image SHA-256s for each release are in the manifest and in the release's
-`SHA256SUMS-*.txt`. (The last full-fleet build is **v2.3.2**, published through the
-clean-room CI pipeline. **v2.3.3** is exported to patches (`0379`) and built for the
-RT-BE96U only; its manifest entry and image hashes are added at publish time.)
+| Release | Base | Patches | `release/src/router` tree hash (from the series) | Published |
+|---|---|---|---|---|
+| v2.4.1 | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | not yet |
+| v2.3.7 | `a7ebfa133a` | `0001`–`0406` | `7f48393d768d564fe8dbb5722fcfa26a8e6f6181` | ✅ all five models |
+| v2.3.6 | `a7ebfa133a` | `0001`–`0399` | `3740a7192671ec39854d96f8383e202b46599e90` | no |
+| v2.3.5 | `a7ebfa133a` | `0001`–`0397` | `a8b2d10782a78668a5fba30f53b61d5f0735ccec` | no |
+| v2.3.4 | `a7ebfa133a` | `0001`–`0390` | `ee23af634aaf311de2323c777de33530613b2ecc` | ✅ all five models |
+| v2.3.3 | `a7ebfa133a` | `0001`–`0388` | `b034902b6905c04ab6d2934121fe15dc0619e840` | no |
+| v2.3.2 | `a7ebfa133a` | `0001`–`0378` | `1357bd3456802b1f063009e64b6ebbc12e0e45be` | ✅ all five models |
+| v2.3.1 | `a7ebfa133a` | `0001`–`0374` | `f45570426e350a29bba9245ee1b11ffab41ecd1a` | ✅ |
+| v2.1.5 | `a7ebfa133a` | `0001`–`0325` | `ebbed045f4841b89a8c8d1eacce74961518445b9` | ✅ |
+| v2.1.4 | `a7ebfa133a` | `0001`–`0321` | `e2c1828901d08089a951e14ec982212fcf337923` | ✅ |
+| v2.1.3 | `a7ebfa133a` | `0001`–`0318` | `d89a6bec8ca5ca5189b723efa0f7b17ffa4bfecf` | ✅ |
+| v2.1.2 | `a7ebfa133a` | `0001`–`0313` | `08bfbd2870471409144fdb51d9999cd87b44899a` | ✅ |
+| v2.1.1 | `a7ebfa133a` | `0001`–`0293` | `7d0c3e2fbe4fd3ce7672c9026b6cb43e635e5cd5` | ✅ |
+| v2.1.0 | `a7ebfa133a` | `0001`–`0292` | `0a1eb6136cdacca581a95eac7f6aeba0ca08b740` | ✅ |
+
+The image SHA-256s are in the release's `SHA256SUMS-*.txt`. They are **also**
+supposed to be in the manifest, but in practice are populated only for
+v2.1.0–v2.1.5 and v2.3.1 — so treat the `SHA256SUMS` file attached to a release as
+the authoritative image record, and do not infer from an empty `images` list that a
+release never shipped. The newest published release is **v2.3.7** (all five models);
+**v2.4.1** is built for the RT-BE96U only and its image hashes are added at publish
+time.

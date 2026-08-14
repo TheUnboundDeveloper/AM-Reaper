@@ -1,0 +1,759 @@
+From 24673cac2e635dea0e2fcbac606e7e945ebb1552 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 19:28:05 -0400
+Subject: [PATCH] firewall: report engine on/off from a measured signal, and
+ fix the backup box
+
+THE TOGGLE HAD NO FEEDBACK AT ALL - the click fired action=opts with an empty
+callback and the page said nothing, so a working toggle and a dead one looked
+identical. Owner asked for progress text that ends in "complete".
+
+It cannot simply announce success when the request returns. opts calls
+notify_rc(), which returns as soon as rc has been SIGNALLED; the chains change
+afterwards in another process, and may not change at all - the "LAN not ready at
+boot" deferral is a real path where the engine is enabled and no chain exists.
+Reporting an accepted request as a finished job is the inferred-signal-as-fact
+mistake, which is exactly what Sentinel was rejected for. Polling reaper_fw_enable
+would be no better: that is the flag opts just wrote, so it would read back
+"enabled" instantly whatever rc did.
+
+So the completion signal is now MEASURED. start_reaper_fw()/stop_reaper_fw() set
+a new runtime nvram, reaper_fw_active, as their LAST act - and start sets it only
+when the generated script actually RAN, not merely when it was written, so the
+deferred path reports inactive rather than claiming success quietly. cfg reports
+it; the page shows an animated "Working..." immediately, polls until active
+matches what was asked, then states the result. If it has not converged in ~15 s
+it says so and does NOT auto-hide - an operator who believes a firewall is live
+when it is not is worse off than one who knows something went wrong. Success
+auto-hides through the existing showSaved(), so no new styling.
+
+reaper_fw_active is deliberately distinct from reaper_fw_enable: enable is what
+was asked for, active is what is true. They differ while a restart is in flight.
+
+ALSO, from the same review pass:
+
+- The backup/restore textarea rendered BLINDING WHITE. The rule beside it is
+  `input.fld,select.fld` and never matched a TEXTAREA, so it fell through to the
+  browser default in the middle of a dark page. Given its own rule rather than
+  bolted onto that selector, because the shared one carries max-width:520px and
+  this box wants the full card width. Same --panel-3 as the inputs next to it
+  with --bone text, so the JSON stays legible.
+
+- The box is empty on a first visit and nothing said why. The note above it now
+  tells the operator to click Export first, and a placeholder repeats it inside
+  the empty box where it is actually needed. RFW_218 was REPLACED IN PLACE (same
+  line, so no token index moves) and RFW_228 appended; all 25 packs, lockstep at
+  6549 lines.
+
+Verified without a build: the generator harness still compiles reaper_fw.c and
+produces a correct ruleset (no cross-chain leaks, no duplicates, the four invalid
+forwards still refused); every id the JS touches exists; all page tokens resolve;
+reaper_langcheck 0 breakers; 125 script blocks parse in all 25 languages.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             |  7 ++-
+ release/src/router/rc/reaper_fw.c          | 20 +++++++-
+ release/src/router/shared/defaults.c       |  7 +++
+ release/src/router/www/BR.dict             |  7 ++-
+ release/src/router/www/CN.dict             |  7 ++-
+ release/src/router/www/CZ.dict             |  7 ++-
+ release/src/router/www/DA.dict             |  7 ++-
+ release/src/router/www/DE.dict             |  7 ++-
+ release/src/router/www/EN.dict             |  7 ++-
+ release/src/router/www/ES.dict             |  7 ++-
+ release/src/router/www/FI.dict             |  7 ++-
+ release/src/router/www/FR.dict             |  7 ++-
+ release/src/router/www/HU.dict             |  7 ++-
+ release/src/router/www/IT.dict             |  7 ++-
+ release/src/router/www/JP.dict             |  7 ++-
+ release/src/router/www/KR.dict             |  7 ++-
+ release/src/router/www/MS.dict             |  7 ++-
+ release/src/router/www/NL.dict             |  7 ++-
+ release/src/router/www/NO.dict             |  7 ++-
+ release/src/router/www/PL.dict             |  7 ++-
+ release/src/router/www/RO.dict             |  7 ++-
+ release/src/router/www/RU.dict             |  7 ++-
+ release/src/router/www/Reaper_Firewall.asp | 55 +++++++++++++++++++++-
+ release/src/router/www/SL.dict             |  7 ++-
+ release/src/router/www/SV.dict             |  7 ++-
+ release/src/router/www/TH.dict             |  7 ++-
+ release/src/router/www/TR.dict             |  7 ++-
+ release/src/router/www/TW.dict             |  7 ++-
+ release/src/router/www/UK.dict             |  7 ++-
+ 29 files changed, 235 insertions(+), 29 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 0b1c185420..0015d75a3a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23656,7 +23656,12 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			left = dl - (long)time(NULL);
+ 			if (left < 0) left = 0;
+ 		}
+-		websWrite(stream, "{\"ok\":1,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld",
++		/* `active` is what the page polls after toggling the engine: `enable` is
++		 * what was ASKED for and flips the instant opts writes it, whereas
++		 * `active` is written by start/stop_reaper_fw() once the chains have
++		 * actually changed. Reporting the first as the second would be guessing. */
++		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld",
++			nvram_match("reaper_fw_active", "1") ? 1 : 0,
+ 			nvram_match("reaper_fw_enable", "1") ? 1 : 0,
+ 			nvram_get_int("reaper_fw_confirm"),
+ 			nvram_match("reaper_fw_armed", "1") ? 1 : 0,
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 5fc5bc5dee..b2c4a076d2 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -1690,6 +1690,13 @@ void stop_reaper_fw(void)
+ 	rmdir(RFW_ARMED);
+ 	unlink(RFW_DEADLINE);
+ 	nvram_set("reaper_fw_armed", "0");
++	/* reaper 2026-08-13: completion marker, written LAST and only by the code
++	 * that did the work. The GUI toggle fires notify_rc(), which returns as soon
++	 * as rc has been signalled - so the page has no way to tell "the request was
++	 * accepted" from "the chains actually changed". Reporting the former as the
++	 * latter is the inferred-signal-as-measured-fact mistake, so the page polls
++	 * for THIS instead. Runtime state: deliberately not committed. */
++	nvram_set("reaper_fw_active", "0");
+ }
+ 
+ /* Apply the COMMITTED ruleset. Boot, restart_firewall re-hook, and the enable
+@@ -1698,11 +1705,14 @@ void start_reaper_fw(void)
+ {
+ 	rfw_cfg_t c;
+ 	int lock;
++	int applied = 0;
+ 
+ 	if (!is_routing_enabled()) return;
+ 	if (!nvram_match("reaper_fw_enable", "1")) {
+ 		if (f_exists(RFW_APPLY) || nvram_match("reaper_fw_armed", "1"))
+-			stop_reaper_fw();
++			stop_reaper_fw();          /* clears reaper_fw_active itself */
++		else
++			nvram_set("reaper_fw_active", "0");  /* nothing to tear down, but say so */
+ 		return;
+ 	}
+ 	if (!rfw_cfg_load(&c, 0)) return;
+@@ -1720,10 +1730,18 @@ void start_reaper_fw(void)
+ 		chmod(RFW_APPLY, 0700);
+ 		if (system("sh " RFW_APPLY) != 0)
+ 			logmessage("reaper_fw", "LAN not ready at boot - rules deferred, re-arm on the firewall hook");
++		else
++			applied = 1;
+ 	}
+ 	file_unlock(lock);
+ 	rfw_gen_resolve(&c);
+ 	rfw_cfg_free(&c);
++	/* See the note in stop_reaper_fw(). Set only when the generated script
++	 * actually RAN - writing it is not the same as applying it, and the deferred
++	 * "LAN not ready" path above is precisely a case where the engine is enabled
++	 * but no chain exists yet. Claiming active there would be the same lie in a
++	 * quieter form. */
++	nvram_set("reaper_fw_active", applied ? "1" : "0");
+ }
+ 
+ /* Apply the DRAFT (already in nvram RAM, not committed) and arm the revert. */
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index cd1de6bd2b..8639ce0965 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3234,6 +3234,13 @@ struct nvram_tuple router_defaults[] = {
+ 	 * is deliberately volatile-by-convention (reset to 0 on every stop/confirm)
+ 	 * so a reboot mid-window can never leave the box believing it is still armed. */
+ 	{ "reaper_fw_armed", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = a change is awaiting confirmation */
++	/* 1 = the generated ruleset actually RAN and our chains are installed. Written last by
++	   start_reaper_fw()/stop_reaper_fw(), i.e. by the code that did the work - the GUI toggle
++	   fires notify_rc(), which returns as soon as rc is signalled, so the page cannot otherwise
++	   distinguish "request accepted" from "chains changed". NOT the same as reaper_fw_enable:
++	   enable is what the operator asked for, active is what is true. They differ while a restart
++	   is in flight, and on the deferred "LAN not ready at boot" path. */
++	{ "reaper_fw_active", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "reaper_fw_err", "", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* last refusal reason, surfaced by the page */
+ 	/* reaper v1.9.1: Device Identity Manager Rung B - unified long-term storage
+ 	 * (Reaper_Storage.asp, System Log group). reaper_store = durable location for
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 5e4899d16b..06af42af16 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 53d2519d69..5b18f23fa5 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index e04a54efa0..689e3efc87 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 838b9ccfcc..afdcce70d8 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 8dcf1cb9a2..4f71febefe 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 0cbeb210ec..02cdcf59bd 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 47cf755066..fe38b2deef 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 77862844d2..ca1134421d 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index f6c5389078..9d3157506e 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 6fe7668816..8c237b6bf1 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index c90430137d..368e32f852 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 80a2316999..06d3a64f82 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index bc4d71462e..45f8d5d206 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index cdced29d49..12c6e45245 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index a20d4817d0..b9155d1d20 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index e50deed356..8c931cd208 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 7c05a6bfc3..5fa0dba046 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 81e166f04b..4693e73145 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 5426df3697..2f54d01f7f 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 376236fa68..22b8185eda 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -61,6 +61,16 @@ input.fld,select.fld{width:100%;max-width:520px;background:var(--panel-3);border
+ input.fld.s{max-width:180px}
+ input.fld:focus,select.fld:focus{outline:2px solid rgba(225,6,0,.4);outline-offset:1px;border-color:var(--crimson-deep)}
+ .fld.mono{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;letter-spacing:.02em}
++/* reaper 2026-08-13: the rule above is `input.fld,select.fld` and never matched a
++   TEXTAREA, so the backup/restore box rendered with the browser default white -
++   a blinding panel in the middle of a dark page. Given its own rule rather than
++   added to that selector, because the shared one carries max-width:520px and this
++   box wants the full card width. Same --panel-3 as the inputs beside it, so it
++   reads as part of the same form; --bone text keeps the JSON legible. */
++textarea.fld{width:100%;background:var(--panel-3);border:1px solid var(--line-mid);border-radius:7px;
++  color:var(--bone);font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:11.5px;
++  line-height:1.5;padding:8px 11px;resize:vertical}
++textarea.fld:focus{outline:2px solid rgba(225,6,0,.4);outline-offset:1px;border-color:var(--crimson-deep)}
+ .suffix{font-size:12px;color:var(--steel)}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border:1px solid transparent;border-radius:8px;padding:9px 18px;cursor:pointer}
+ .btn.ghost{background:transparent;border:1px solid var(--line-mid);color:var(--bone-dim)}
+@@ -383,7 +393,7 @@ table.ipt td.hit{color:var(--amber)}
+   <div class="card">
+     <h2><#RFW_217#></h2>
+     <p class="note"><#RFW_218#></p>
+-    <textarea class="fld" id="io_txt" rows="6" style="width:100%;font:11.5px/1.5 monospace" spellcheck="false"></textarea>
++    <textarea class="fld" id="io_txt" rows="6" spellcheck="false" placeholder="<#RFW_228#>"></textarea>
+     <div class="row" style="margin-top:12px">
+       <button class="btn ghost sm" id="io_exp"><#RFW_219#></button>
+       <button class="btn ghost sm" id="io_imp"><#RFW_220#></button>
+@@ -1274,9 +1284,50 @@ function initRfw(){
+     rfwReorder();
+   };
+ 
++  /* Engine on/off had NO feedback at all: the click fired action=opts with an
++     empty callback and the page said nothing, so the operator could not tell a
++     working toggle from a dead one.
++
++     It cannot simply report success when the request returns. opts calls
++     notify_rc(), which returns as soon as rc has been SIGNALLED - the chains
++     change afterwards, in another process, and may not change at all (the
++     "LAN not ready" deferral is a real case). Announcing completion there would
++     be reporting an accepted request as a finished job.
++
++     So: show progress immediately, then poll for reaper_fw_active, which
++     start_reaper_fw()/stop_reaper_fw() write LAST, after the generated script
++     has actually run. Success is only claimed once that matches what was asked.
++     If it never does, say so plainly rather than time out into a green tick -
++     an operator who believes a firewall is live when it is not is worse off
++     than one who knows something went wrong. */
++  var rfEnBusy=null, rfEnDots=null;
++  function rfEnStop(){
++    if(rfEnDots){clearInterval(rfEnDots);rfEnDots=null;}
++    if(rfEnBusy){clearInterval(rfEnBusy);rfEnBusy=null;}
++  }
+   $('rf_en').onclick=function(){
++    if(rfEnBusy)return;                       /* one in flight is enough */
+     $('rf_en').classList.toggle('on');
+-    fwcgi('action=opts&enable='+tgGet($('rf_en')),function(){});
++    var want=tgGet($('rf_en')), el=$('rf_saved'), n=0, tries=0;
++    el.className='saved'; el.classList.remove('hidden');
++    el.textContent=`<#RFW_224#>`;
++    rfEnDots=setInterval(function(){ n=(n+1)%4; el.textContent=`<#RFW_224#>`+Array(n+1).join('.'); },400);
++    fwcgi('action=opts&enable='+want,function(){
++      /* poll the measured marker; ~15s ceiling at 700ms */
++      rfEnBusy=setInterval(function(){
++        if(++tries>21){ rfEnStop(); el.className='saved err'; el.classList.remove('hidden');
++                        el.textContent=`<#RFW_227#>`; return; }   /* deliberately no auto-hide */
++        /* action=cfg, not status: `active` is emitted there alongside the other
++           engine state, and status reports the STOCK firewall posture. */
++        fwcgi('action=cfg',function(j){
++          if(!j||!j.ok)return;
++          if((j.active?1:0)!==((want==='1')?1:0))return;
++          rfEnStop();
++          showSaved(el,true,(want==='1')?`<#RFW_225#>`:`<#RFW_226#>`);
++          rfwLoad();                          /* pick up whatever else moved */
++        });
++      },700);
++    });
+   };
+   $('rf_confirm').onchange=function(){
+     fwcgi('action=opts&confirm='+encodeURIComponent($('rf_confirm').value),function(j){
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index a8f75de6cf..4ef688b96c 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index ef26528ccd..07a0e94c3f 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index be77d90945..d9986d72fd 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 503b1d4052..6978dd91a9 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index a2ea81b4c6..2281d87871 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 508f14873a..3a3df82aea 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6536,9 +6536,14 @@ RFW_214=Internal port
+ RFW_215=Limit source
+ RFW_216=Anywhere
+ RFW_217=Backup and restore
+-RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_218=Click Export to fill the box with your current configuration, then copy it somewhere safe. To restore, paste a saved copy into the box and click Import.
+ RFW_219=Export
+ RFW_220=Import
+ RFW_221=Configuration exported.
+ RFW_222=Imported. Review the tabs, then Apply to make it live.
+ RFW_223=That is not a valid Reaper firewall export.
++RFW_224=Working
++RFW_225=Firewall engine enabled
++RFW_226=Firewall engine disabled
++RFW_227=Still working. Check the System Log if this persists.
++RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
+-- 
+2.25.1
+

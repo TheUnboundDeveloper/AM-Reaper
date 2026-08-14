@@ -1,0 +1,692 @@
+From f0e1cb0052436b10aa096c1bba9b8a010fbbdbe3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 08:25:30 -0400
+Subject: [PATCH] dashboard: WAN enable/disable switch and a USB disk selector
+
+Two controls the stock Network Map carried, brought over to the dashboard that
+replaced it (standing rule 39 retired index.asp; nothing had taken these over).
+
+Internet card, upper right: a WAN enable/disable switch bound to the PRIMARY
+unit. It posts wan_unit + wan_enable to /start_apply.htm with
+action_script=restart_wan_if, which is the same path device-map/internet.asp
+used - validate_apply() rewrites wan_enable to wanN_enable once it has seen
+wan_unit (web.c:4379/4540), the action_script picks the unit back up
+(web.c:6202), and start_wan_if() then returns at its wanN_enable check
+(rc/wan.c:1351). The state is therefore persistent across a reboot rather than
+a session-only disconnect. wan_unit is emitted BEFORE wan_enable because
+validate_apply walks the posted vars in order.
+
+The switch is neutral grey per standing rule 11; only OFF, the abnormal state,
+borrows a colour. Turning the internet off asks for confirmation first, turning
+it back on does not. It is hidden outside router/WISP modes, where wanN_enable
+has no meaning, and the live poll now also reads wanN_enable so the control
+stays honest if the WAN is changed from another tab, the CLI or a failover.
+
+Storage card: a device selector appears once two or more USB disks are
+attached, replacing the old "+N more disk attached" line - selecting a disk
+repoints the ring, name and capacity at it. get_usb_info() reports storage only
+(ej_get_usb_info hardcodes deviceType "storage"), so every entry is something
+the ring can describe; a disk with nothing mounted reads "Not mounted" rather
+than a misleading 0%. The option list is rebuilt only when the attached set
+actually changes, because the boot poll re-renders every 5s and a blind rebuild
+would shut an open dropdown under the user. The selection is keyed on node +
+name so it survives that re-render.
+
+Also fixes a pre-existing defect in the Internet poll that this feature would
+have tripped: it scheduled the next tick only after a 200, so a single failed
+request killed the chain for the rest of the session - and a WAN restart is
+exactly what takes httpd's answers away. Rewritten with the standing rule 34
+one-shot guard so every completion path reschedules exactly once, without
+touching the UI on a failure.
+
+i18n: RDSH_87-89 appended to all 25 packs (English pending translation);
+everything else reuses existing keys. Tokens are in backticks or double-quoted
+attributes per standing rule 29.
+
+Verified without a build: reaper_langcheck 0 breakers; 100 inline script blocks
+parse clean under node in all 25 languages; ASCII-only; mock-router render plus
+CDP drive of both controls (dropdown repoints the ring across mounted and
+unmounted disks, first click opens the dialog without submitting, cancel
+applies nothing, confirm posts wan_unit=0 wan_enable=0 restart_wan_if).
+Metal validation owed.
+---
+ release/src/router/www/BR.dict             |   3 +
+ release/src/router/www/CN.dict             |   3 +
+ release/src/router/www/CZ.dict             |   3 +
+ release/src/router/www/DA.dict             |   3 +
+ release/src/router/www/DE.dict             |   3 +
+ release/src/router/www/EN.dict             |   3 +
+ release/src/router/www/ES.dict             |   3 +
+ release/src/router/www/FI.dict             |   3 +
+ release/src/router/www/FR.dict             |   3 +
+ release/src/router/www/HU.dict             |   3 +
+ release/src/router/www/IT.dict             |   3 +
+ release/src/router/www/JP.dict             |   3 +
+ release/src/router/www/KR.dict             |   3 +
+ release/src/router/www/MS.dict             |   3 +
+ release/src/router/www/Main_ReaperDash.asp | 252 ++++++++++++++++++---
+ release/src/router/www/NL.dict             |   3 +
+ release/src/router/www/NO.dict             |   3 +
+ release/src/router/www/PL.dict             |   3 +
+ release/src/router/www/RO.dict             |   3 +
+ release/src/router/www/RU.dict             |   3 +
+ release/src/router/www/SL.dict             |   3 +
+ release/src/router/www/SV.dict             |   3 +
+ release/src/router/www/TH.dict             |   3 +
+ release/src/router/www/TR.dict             |   3 +
+ release/src/router/www/TW.dict             |   3 +
+ release/src/router/www/UK.dict             |   3 +
+ 26 files changed, 295 insertions(+), 32 deletions(-)
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index c9caab3fd8..c9f2cb6faa 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Desde a última reconstrução do firewall
+ RDST_64=Não salvo
+ RFB_15=Defina a senha do Wi-Fi
+ RFB_16=A rede sem fio ainda usa a senha de fábrica. Defina uma nova abaixo para concluir a configuração.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index ff820a6c58..929b5bf853 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=自上次防火墙重建以来
+ RDST_64=未保存
+ RFB_15=设置 Wi-Fi 密码
+ RFB_16=无线网络仍在使用出厂密码。请在下方设置新密码以完成设置。
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 5004f6d3ae..bb8aff3934 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Od poslední obnovy firewallu
+ RDST_64=Neukládá se
+ RFB_15=Nastavte heslo Wi-Fi
+ RFB_16=Bezdrátová síť stále používá tovární heslo. Nastavte níže nové a dokončete nastavení.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 7de27f2d6b..6ed3d45861 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Siden firewallen sidst blev genopbygget
+ RDST_64=Ikke gemt
+ RFB_15=Vælg din Wi-Fi-adgangskode
+ RFB_16=Det trådløse netværk bruger stadig fabriksadgangskoden. Vælg en ny nedenfor for at afslutte opsætningen.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 1360b3eae3..64ca24bb5d 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Seit dem letzten Firewall-Neuaufbau
+ RDST_64=Nicht gespeichert
+ RFB_15=WLAN-Passwort festlegen
+ RFB_16=Das WLAN verwendet noch das Werkspasswort. Legen Sie unten ein neues fest, um die Einrichtung abzuschließen.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index fb799d840c..5f5bf925dd 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Since the last firewall rebuild
+ RDST_64=Not saved
+ RFB_15=Set your Wi-Fi password
+ RFB_16=The wireless network is still using its factory password. Set a new one below to finish setup.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index d936f340ef..d7f4496fb4 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Desde la última reconstrucción del firewall
+ RDST_64=No guardado
+ RFB_15=Establezca su contraseña Wi-Fi
+ RFB_16=La red inalámbrica sigue usando la contraseña de fábrica. Establezca una nueva a continuación para finalizar la configuración.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index a1bd420fca..550404f68c 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Palomuurin viimeisimmästä uudelleenrakennuksesta
+ RDST_64=Ei tallenneta
+ RFB_15=Aseta Wi-Fi-salasana
+ RFB_16=Langaton verkko käyttää yhä tehdasasetusten salasanaa. Aseta uusi alta viimeistelläksesi asennuksen.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 63c2840e20..72ac6a70c2 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Depuis la dernière reconstruction du pare-feu
+ RDST_64=Non enregistré
+ RFB_15=Définissez votre mot de passe Wi-Fi
+ RFB_16=Le réseau sans fil utilise encore le mot de passe d'usine. Définissez-en un nouveau ci-dessous pour terminer la configuration.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 78489bbb8a..06b7f06aea 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=A tűzfal legutóbbi újraépítése óta
+ RDST_64=Nincs mentve
+ RFB_15=Adja meg a Wi-Fi jelszavát
+ RFB_16=A vezeték nélküli hálózat még a gyári jelszót használja. A beállítás befejezéséhez adjon meg egy újat alább.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4c13931f47..bdc05dd9f9 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Dall'ultima ricostruzione del firewall
+ RDST_64=Non salvato
+ RFB_15=Imposta la password Wi-Fi
+ RFB_16=La rete wireless usa ancora la password di fabbrica. Impostane una nuova qui sotto per completare la configurazione.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 1fb0faca0a..a977b877d1 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=前回のファイアウォール再構築以降
+ RDST_64=保存しない
+ RFB_15=Wi-Fi パスワードを設定
+ RFB_16=無線ネットワークは工場出荷時のパスワードのままです。下で新しいパスワードを設定して初期設定を完了してください。
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index a0b3966027..b3afdee110 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=마지막 방화벽 재구성 이후
+ RDST_64=저장 안 함
+ RFB_15=Wi-Fi 비밀번호 설정
+ RFB_16=무선 네트워크가 아직 공장 초기 비밀번호를 사용 중입니다. 아래에서 새 비밀번호를 설정해 설정을 완료하세요.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 0809f8bd70..5953e7788d 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Sejak binaan semula tembok api terakhir
+ RDST_64=Tidak disimpan
+ RFB_15=Tetapkan kata laluan Wi-Fi anda
+ RFB_16=Rangkaian tanpa wayar masih menggunakan kata laluan kilang. Tetapkan yang baharu di bawah untuk menyelesaikan persediaan.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 688f8de5f6..e9772b9845 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -151,6 +151,33 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .chip{font-family:var(--hdr);font-size:10px;font-weight:600;letter-spacing:.14em;padding:4px 9px;border-radius:6px;text-transform:uppercase;white-space:nowrap}
+ .chip.up{color:var(--jade);border:1px solid rgba(79,178,134,.35);background:rgba(79,178,134,.08)}
+ .chip.off{color:var(--steel);border:1px solid var(--line-soft);background:rgba(255,255,255,.015)}
++/* WAN enable/disable switch, upper right of the Internet card. Neutral grey per the
++   standing toggle rule - an ON toggle in brand red reads as an alert - so only OFF,
++   the abnormal state, borrows a colour. */
++.hact{display:flex;align-items:center;gap:12px;flex:0 0 auto}
++.wsw{display:flex;align-items:center;gap:8px;background:none;border:0;padding:0;cursor:pointer;font-family:var(--hdr)}
++.wsw .wsl{font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--bone)}
++.wsw .wtr{position:relative;flex:0 0 38px;width:38px;height:20px;border-radius:11px;transition:.18s;
++  background:rgba(236,231,219,.22);border:1px solid rgba(236,231,219,.30)}
++.wsw .wtr i{position:absolute;top:2px;left:20px;width:14px;height:14px;border-radius:50%;background:var(--bone);transition:.18s}
++.wsw[aria-checked="false"] .wsl{color:var(--danger)}
++.wsw[aria-checked="false"] .wtr{background:rgba(255,255,255,.06);border-color:var(--line-soft)}
++.wsw[aria-checked="false"] .wtr i{left:2px;background:var(--steel)}
++.wsw[disabled]{cursor:default;opacity:.5}
++.wsw:focus-visible{outline:1px solid var(--line);outline-offset:4px}
++/* confirm dialog. This page carries its own chrome (it is never framed by
++   reaper_shell.asp), so a fixed backdrop is anchored to the viewport already. */
++.ask{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(440px,88vw);
++  background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line);
++  border-radius:14px;padding:22px;text-align:left}
++.ask .t{font-family:var(--hdr);font-size:17px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--bone)}
++.ask .b{margin-top:10px;font-size:12.5px;line-height:1.6;color:var(--bone-dim)}
++.ask .a{margin-top:20px;display:flex;gap:10px;justify-content:flex-end}
++/* storage device selector - rendered only when two or more disks are attached */
++.stgsel{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.06em;color:var(--bone);
++  background:#000;border:1px solid var(--line-soft);border-radius:7px;padding:5px 8px;outline:none;
++  max-width:170px;cursor:pointer}
++.stgsel:focus{border-color:var(--line)}
+ .v6line{display:none;align-items:baseline;gap:8px;margin-top:8px;flex-wrap:wrap}
+ .v6line .k{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--steel);flex:0 0 auto}
+ .v6line .v{font-family:var(--hdr);font-weight:600;color:var(--bone);font-size:14px;letter-spacing:.02em;word-break:break-all;line-height:1.3}
+@@ -390,7 +417,10 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         <!-- INTERNET -->
+         <section class="card col4">
+           <div class="head"><h3><#Internet#></h3>
+-            <div class="stacks"><span class="chip off" id="chip4">IPv4</span><span class="chip off" id="chip6">IPv6</span></div>
++            <div class="hact">
++              <div class="stacks"><span class="chip off" id="chip4">IPv4</span><span class="chip off" id="chip6">IPv6</span></div>
++              <button type="button" class="wsw" id="wan_sw" role="switch" aria-checked="true" title="<#menu5_3_1#>" style="display:none"><span class="wsl" id="wan_sw_l"><#btn_Enabled#></span><span class="wtr"><i></i></span></button>
++            </div>
+           </div>
+           <div>
+             <div class="state"><span class="dot" id="i_dot"></span><span class="lbl" id="i_state">&mdash;</span></div>
+@@ -432,13 +462,14 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+         <!-- STORAGE -->
+         <section class="card col4">
+-          <div class="head"><h3><#AiMesh_NodeLocation21#></h3></div>
++          <div class="head"><h3><#AiMesh_NodeLocation21#></h3>
++            <select class="stgsel" id="st_sel" style="display:none" title="<#RDSH_89#>"></select>
++          </div>
+           <div class="stg">
+             <div class="ring" id="st_ring" style="--v:0"><b class="mono" id="st_pct">&mdash;</b></div>
+             <div class="d">
+               <div class="t" id="st_name"><#RDSH_07#></div>
+               <div class="s" id="st_sub">&mdash;</div>
+-              <div class="s" id="st_extra" style="color:var(--jade);margin-top:6px;display:none"></div>
+             </div>
+           </div>
+         </section>
+@@ -540,6 +571,33 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="<% get_default_reboot_time(); %>">
+ </form>
++<!-- WAN enable/disable plumbing - the mechanism the retired Network Map used.
++     wan_unit MUST come before wan_enable: validate_apply() walks the posted vars in
++     order and only rewrites a wan_* name to wanN_* once it has seen wan_unit
++     (web.c:4379/4540). action_script "restart_wan_if" picks the same unit back up
++     (web.c:6202) and issues "restart_wan_if <unit>"; start_wan_if() then returns at
++     its wanN_enable check (rc/wan.c:1351), so the state is persistent, not a
++     session-only disconnect. -->
++<form method="post" name="wanForm" id="wanForm" action="/start_apply.htm" target="hidden_frame" style="display:none">
++  <input type="hidden" name="current_page" value="Main_ReaperDash.asp">
++  <input type="hidden" name="next_page" value="Main_ReaperDash.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_wan_if">
++  <input type="hidden" name="action_wait" value="3">
++  <input type="hidden" name="flag" value="background">
++  <input type="hidden" name="wan_unit" value="<% get_wan_unit(); %>">
++  <input type="hidden" name="wan_enable" value="">
++</form>
++<div id="wan_overlay" style="display:none;position:fixed;inset:0;z-index:99;background:rgba(4,4,5,.92);backdrop-filter:blur(3px)">
++  <div class="ask" role="dialog" aria-modal="true" aria-labelledby="wan_ask_t">
++    <div class="t" id="wan_ask_t"><#RDSH_87#></div>
++    <div class="b"><#RDSH_88#></div>
++    <div class="a">
++      <button type="button" class="btn" id="wan_no"><#CTL_Cancel#></button>
++      <button type="button" class="btn crit" id="wan_yes"><#btn_disable#></button>
++    </div>
++  </div>
++</div>
+ <!-- language selector plumbing (mirrors reaper_shell.asp): titleForm carries the apply
+      fields; shown_language_css emits the localized code/name list; JS builds the topbar
+      <select>. Self-contained (no stock-banner showLoading dependency). -->
+@@ -575,6 +633,11 @@ var SSI = {
+   gw:       decodeURIComponent('<% nvram_char_to_ascii("", "wan0_gateway"); %>'),
+   dns:      decodeURIComponent('<% nvram_char_to_ascii("", "wan0_dns"); %>'),
+   wan_state:'<% nvram_get("wan0_state_t"); %>',
++  /* the WAN switch binds to the PRIMARY unit; both enables are emitted so a
++     dual-WAN box picks the right one client-side without a second round trip */
++  wan_unit: '<% get_wan_unit(); %>',
++  wan0_en:  '<% nvram_get("wan0_enable"); %>',
++  wan1_en:  '<% nvram_get("wan1_enable"); %>',
+   ddns_en:  '<% nvram_get("ddns_enable_x"); %>',
+   ddns_host:decodeURIComponent('<% nvram_char_to_ascii("", "ddns_hostname_x"); %>'),
+   fw4:      '<% nvram_get("fw_enable_x"); %>',
+@@ -830,18 +893,41 @@ function v6Up(){
+     if(v4) setTxt('i_wanip', ip);
+     return any;
+   }
++  /* also read the primary unit's enable flag, so the header switch stays honest if
++     the WAN is turned off from another tab, the CLI, or a failover */
++  var ENK='wan'+((SSI.wan_unit==='1')?'1':'0')+'_enable';
++  var HOOK='/appGet.cgi?hook=nvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)%3bnvram_get('+ENK+')';
++  var timer=null;
++  function schedule(ms){ if(timer) clearTimeout(timer); timer=setTimeout(tick, ms); }
+   function tick(){
+-    var x=new XMLHttpRequest();
+-    x.open('GET','/appGet.cgi?hook=nvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)&_='+(new Date()).getTime(),true);
+-    x.onreadystatechange=function(){
+-      if(x.readyState!==4||x.status!==200) return;
+-      var st='',ip=''; try{ var j=JSON.parse(x.responseText); st=j.wan0_state_t||''; ip=j.wan0_ipaddr||''; }catch(e){ return; }
+-      var up=apply(st,ip);
+-      setTimeout(tick, up?SLOW:FAST);
+-    };
++    var x=new XMLHttpRequest(), done=false;
++    /* ONE completion path per request (standing rule 34): a failed request fires
++       readystatechange(4, status 0) AND error, so rescheduling from both would
++       double the chain every round. The previous version scheduled only from
++       readystatechange but bailed before doing so on a non-200 - which killed the
++       poll outright for the rest of the session. That is exactly the window a WAN
++       restart opens, so failures now reschedule without touching the UI. */
++    function fin(ok){
++      if(done) return; done=true;
++      var up=false;
++      if(ok){
++        try{
++          var j=JSON.parse(x.responseText);
++          up=apply(j.wan0_state_t||'', j.wan0_ipaddr||'');
++          if(window.wanSetEnable) window.wanSetEnable(j[ENK]);
++        }catch(e){}
++      }
++      schedule(up?SLOW:FAST);
++    }
++    x.open('GET', HOOK+'&_='+(new Date()).getTime(), true);
++    x.timeout=8000;
++    x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
++    x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
+     x.send();
+   }
+-  setTimeout(tick, FAST);
++  /* let the WAN switch pull the next reading forward once its apply has landed */
++  window.wanPollNow=function(){ schedule(200); };
++  schedule(FAST);
+ })();
+ 
+ /* ---- live CPU / RAM via /cpu_ram_status.asp ---- */
+@@ -979,6 +1065,65 @@ pollTemp(); setInterval(pollTemp, 5000);
+   });
+ })();
+ 
++/* ---- WAN enable / disable, Internet card header ----
++   The control the stock Network Map carried on its WAN icon, brought over to the
++   dashboard that replaced it: set the primary unit's wanN_enable and fire
++   restart_wan_if for that unit. Persistent - a disabled WAN stays disabled across a
++   reboot until it is switched back on. The GUI is served on the LAN, so turning the
++   WAN off never locks anyone out of the router. */
++(function(){
++  var sw=$id('wan_sw'), lbl=$id('wan_sw_l'), ov=$id('wan_overlay');
++  if(!sw) return;
++  /* AP, repeater and media-bridge modes run no WAN of their own - wanN_enable is
++     meaningless there, so the control stays hidden rather than lying */
++  if(OPMODE && OPMODE!=='rt' && OPMODE!=='wisp') return;
++  var unit=(SSI.wan_unit==='1')?'1':'0';
++  /* wanN_enable is unset on a factory-clean box and defaults to on, so only a
++     literal "0" counts as disabled */
++  var on=((unit==='1'?SSI.wan1_en:SSI.wan0_en)!=='0'), busy=false;
++  var TXT_ON=`<#btn_Enabled#>`, TXT_OFF=`<#btn_Disabled#>`, TXT_BUSY=`<#Reaper_c_applying#>`;
++  function paint(){
++    sw.setAttribute('aria-checked', on?'true':'false');
++    if(lbl) lbl.textContent = busy?TXT_BUSY:(on?TXT_ON:TXT_OFF);
++    sw.disabled=busy;
++  }
++  sw.style.display='flex';
++  paint();
++  function closeAsk(){ if(ov) ov.style.display='none'; }
++  function apply(next){
++    var f=document.wanForm; if(!f) return;
++    f.wan_unit.value=unit;
++    f.wan_enable.value=next?'1':'0';
++    f.submit();
++    on=next; busy=true; paint();
++    /* action_wait is 3s and the interface teardown/bring-up trails it; hold the
++       control until then, then hand the state back to the live poll, which reads
++       wanN_enable straight out of nvram */
++    setTimeout(function(){ busy=false; paint(); if(window.wanPollNow) window.wanPollNow(); }, 6000);
++  }
++  sw.addEventListener('click', function(){
++    if(busy) return;
++    /* switching the internet OFF takes the whole network down - ask first.
++       Switching it back on needs no confirmation. */
++    if(on){ if(ov) ov.style.display='block'; }
++    else apply(true);
++  });
++  var no=$id('wan_no'), yes=$id('wan_yes');
++  if(no) no.addEventListener('click', closeAsk);
++  if(yes) yes.addEventListener('click', function(){ closeAsk(); apply(false); });
++  if(ov) ov.addEventListener('click', function(e){ if(e.target===ov) closeAsk(); });
++  document.addEventListener('keydown', function(e){
++    if(e.key==='Escape' && ov && ov.style.display==='block') closeAsk();
++  });
++  /* the live poll owns the truth once it has run: reflect an enable state changed
++     from another tab, the CLI or a failover without needing a reload */
++  window.wanSetEnable=function(v){
++    if(busy || v===undefined || v==='') return;
++    var next=(v!=='0');
++    if(next!==on){ on=next; paint(); }
++  };
++})();
++
+ /* ---- live clients via /appGet.cgi?hook=get_clientlist() (networkmap data) ----
+    isWL is band-coded: 0 wired \u00b7 1 2.4G \u00b7 2/3 5G \u00b7 4/5 6G */
+ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+@@ -1160,10 +1305,44 @@ pollPorts(); setInterval(pollPorts, 5000);
+ /* USB tiles + storage ring, wrapped so the boot poll below can re-render. USB
+    mounts ~40-50s into boot, after the dashboard's first paint, so the initial
+    server-side get_usb_info() is usually empty on a fresh boot. */
++function dname(d){ try{ return decodeURIComponent(String((d&&d.deviceName)||'')); }catch(_){ return String((d&&d.deviceName)||''); } }
++/* stable per-disk key. The boot poll below re-renders every 5s, so the storage
++   card's selection has to survive a re-render, and deviceIndex is only an array
++   position that shifts the moment a stick is pulled. */
++function dkey(d){ return String((d&&d.node)||'')+'|'+dname(d); }
++var ST_PICK=null, ST_SIG='';   /* selected disk key, and a signature of the attached set */
++/* paint the storage ring for ONE disk (null = nothing attached) */
++function paintDisk(d){
++  var ring=$id('st_ring'), pe=$id('st_pct'), ne=$id('st_name'), se=$id('st_sub');
++  if(ring) ring.style.setProperty('--v', 0);
++  if(!d){
++    if(pe) pe.innerHTML='&mdash;';
++    if(ne) ne.textContent=`<#RDSH_07#>`;
++    if(se) se.innerHTML='&mdash;';
++    return;
++  }
++  var parts=d.partition||[], size=0, used=0, fmt='';
++  for(var p=0;p<parts.length;p++){
++    if(parts[p].status==='unmounted') continue;
++    size+=Number(parts[p].size_int||0); used+=Number(parts[p].used_int||0);
++    if(!fmt && parts[p].format && parts[p].format!=='unknown') fmt=parts[p].format;
++  }
++  if(ne) ne.textContent = dname(d) || `<#RDSH_81#>`;
++  if(size>0){
++    var pct=Math.max(0,Math.min(100,Math.round(used/size*100)));
++    if(ring) ring.style.setProperty('--v', pct);
++    if(pe) pe.textContent=pct+'%';
++    var freeGB=(size-used)/1048576, totGB=size/1048576;
++    if(se) se.textContent = freeGB.toFixed(freeGB<10?1:0)+` GB <#RDSH_82#> / `+totGB.toFixed(totGB<10?1:0)+' GB'+(fmt?(' \u00b7 '+fmt):'');
++  } else {
++    /* attached but nothing mounted - an unformatted, busy or failed disk */
++    if(pe) pe.innerHTML='&mdash;';
++    if(se) se.textContent=`<#RDSH_67#>`;
++  }
++}
+ function renderUsb(USBINFO){
+   (function(){
+     function usbLabel(spd,dflt){ return spd==='5000'?'USB 3.0':(spd==='480'?'USB 2.0':dflt); }
+-    function dname(d){ try{ return decodeURIComponent(String(d.deviceName||'')); }catch(_){ return String(d.deviceName||''); } }
+     var byPort={'1':[],'2':[]};
+     (USBINFO||[]).forEach(function(d){ if(!d||!d.deviceName) return; var p=String(d.usbPath||'').charAt(0); if(byPort[p]) byPort[p].push(d); });
+     var defs=[{key:'1',v:SSI.usb1,s:SSI.usb1_spd,d:'USB 3.0'},{key:'2',v:SSI.usb2,s:SSI.usb2_spd,d:'USB 2.0'}];
+@@ -1176,29 +1355,38 @@ function renderUsb(USBINFO){
+     }
+     var box=$id('usb_ports'); if(box) box.innerHTML=h;
+   })();
++  /* Storage card. One disk paints straight in; two or more get a selector in the
++     card header, exactly as the stock Network Map offered when more than one USB
++     device was attached. get_usb_info() reports storage only - ej_get_usb_info
++     hardcodes deviceType "storage" and walks read_disk_data() - so every entry
++     here is something the ring can actually describe. */
+   (function(){
+     try{
+-      var disks=USBINFO||[], size=0, used=0, name='', fmt='', n=0;
+-      for(var i=0;i<disks.length;i++){
+-        var d=disks[i]; if(parseInt(d.mountNumber||'0',10)<1) continue;
+-        n++;
+-        if(!name){ try{ name=decodeURIComponent(String(d.deviceName||'')); }catch(_){ name=String(d.deviceName||''); } }
+-        var parts=d.partition||[];
+-        for(var p=0;p<parts.length;p++){
+-          if(parts[p].status==='unmounted') continue;
+-          size+=Number(parts[p].size_int||0); used+=Number(parts[p].used_int||0);
+-          if(!fmt && parts[p].format && parts[p].format!=='unknown') fmt=parts[p].format;
+-        }
++      var disks=(USBINFO||[]).filter(function(d){ return d && d.deviceName; });
++      var sel=$id('st_sel');
++      if(disks.length<2){
++        if(sel){ sel.style.display='none'; sel.innerHTML=''; sel.onchange=null; }
++        ST_PICK=null; ST_SIG='';
++        paintDisk(disks[0]||null);
++        return;
+       }
+-      if(n>0 && size>0){
+-        var pct=Math.max(0,Math.min(100,Math.round(used/size*100)));
+-        var ring=$id('st_ring'); if(ring) ring.style.setProperty('--v',pct);
+-        setTxt('st_pct',pct+'%');
+-        setTxt('st_name',name||`<#RDSH_81#>`);
+-        var freeGB=(size-used)/1048576, totGB=size/1048576;
+-        setTxt('st_sub', freeGB.toFixed(freeGB<10?1:0)+` GB <#RDSH_82#> / `+totGB.toFixed(totGB<10?1:0)+' GB'+(fmt?(' \u00b7 '+fmt):''));
+-        if(n>1){ var ex=$id('st_extra'); if(ex){ ex.style.display='block'; ex.textContent=(n-1)+` <#RDSH_83#>`+(n>2?'s':'')+` <#RDSH_84#>`; } }
++      var keys=disks.map(dkey), sig=keys.join('||');
++      var cur=keys.indexOf(ST_PICK);
++      if(cur<0){ cur=0; ST_PICK=keys[0]; }   /* first run, or the pick was unplugged */
++      if(sel){
++        /* rebuild the options only when the attached set actually changed - this
++           runs every 5s during the boot poll and a blind rebuild would shut an
++           open dropdown under the user */
++        if(sig!==ST_SIG){
++          var h='';
++          for(var i=0;i<disks.length;i++) h+='<option value="'+i+'">'+esc(dname(disks[i]))+'</option>';
++          sel.innerHTML=h; ST_SIG=sig;
++        }
++        sel.selectedIndex=cur;
++        sel.style.display='';
++        sel.onchange=function(){ var d=disks[this.selectedIndex]; ST_PICK=dkey(d); paintDisk(d); };
+       }
++      paintDisk(disks[cur]);
+     }catch(e){}
+   })();
+ }
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 8ee7377cb5..0251c6e33f 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Sinds de laatste firewall-herbouw
+ RDST_64=Niet opgeslagen
+ RFB_15=Stel uw wifi-wachtwoord in
+ RFB_16=Het draadloze netwerk gebruikt nog het fabriekswachtwoord. Stel hieronder een nieuw wachtwoord in om de installatie te voltooien.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index bd856474e8..873c406398 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Siden forrige gjenoppbygging av brannmuren
+ RDST_64=Ikke lagret
+ RFB_15=Angi Wi-Fi-passordet ditt
+ RFB_16=Det trådløse nettverket bruker fortsatt fabrikkpassordet. Angi et nytt nedenfor for å fullføre oppsettet.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index fde73a3d7b..923c3d00df 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Od ostatniej przebudowy zapory
+ RDST_64=Niezapisywane
+ RFB_15=Ustaw hasło Wi-Fi
+ RFB_16=Sieć bezprzewodowa nadal używa hasła fabrycznego. Ustaw nowe poniżej, aby zakończyć konfigurację.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index ed643f283e..bc36c29ae7 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=De la ultima reconstrucție a firewallului
+ RDST_64=Nesalvat
+ RFB_15=Setați parola Wi-Fi
+ RFB_16=Rețeaua wireless folosește încă parola din fabrică. Setați una nouă mai jos pentru a finaliza configurarea.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 7b2f942d04..c6091217d6 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=С последней перестройки брандмауэра
+ RDST_64=Не сохраняется
+ RFB_15=Задайте пароль Wi-Fi
+ RFB_16=Беспроводная сеть всё ещё использует заводской пароль. Задайте новый ниже, чтобы завершить настройку.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 48d0dec521..c22966932c 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Od zadnje obnovitve požarnega zidu
+ RDST_64=Ni shranjeno
+ RFB_15=Nastavite geslo za Wi-Fi
+ RFB_16=Brezžično omrežje še vedno uporablja tovarniško geslo. Spodaj nastavite novo in dokončajte nastavitev.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index e5e92a28aa..fd97b0e080 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Sedan brandväggen senast byggdes om
+ RDST_64=Sparas inte
+ RFB_15=Ange ditt Wi-Fi-lösenord
+ RFB_16=Det trådlösa nätverket använder fortfarande fabrikslösenordet. Ange ett nytt nedan för att slutföra installationen.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index d51b9591dc..7987186e89 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=ตั้งแต่การสร้างไฟร์วอลล์
+ RDST_64=ไม่บันทึก
+ RFB_15=ตั้งรหัสผ่าน Wi-Fi
+ RFB_16=เครือข่ายไร้สายยังใช้รหัสผ่านจากโรงงาน ตั้งรหัสผ่านใหม่ด้านล่างเพื่อจบการตั้งค่า
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index f41709d8de..fcd384dd6b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=Son güvenlik duvarı yeniden oluşturmasından beri
+ RDST_64=Kaydedilmiyor
+ RFB_15=Wi-Fi parolanızı belirleyin
+ RFB_16=Kablosuz ağ hâlâ fabrika parolasını kullanıyor. Kurulumu bitirmek için aşağıdan yeni bir parola belirleyin.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 887f8b2330..cbec3bcc11 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=自上次防火牆重建以來
+ RDST_64=未儲存
+ RFB_15=設定 Wi-Fi 密碼
+ RFB_16=無線網路仍使用出廠密碼。請在下方設定新密碼以完成設定。
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index ee855c7d8c..1f8a4e70a0 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6319,3 +6319,6 @@ RWDN_68=З останньої перебудови брандмауера
+ RDST_64=Не зберігається
+ RFB_15=Установіть пароль Wi-Fi
+ RFB_16=Бездротова мережа досі використовує заводський пароль. Задайте новий нижче, щоб завершити налаштування.
++RDSH_87=Disable the internet connection?
++RDSH_88=Every device on the network loses internet access until it is switched back on. The router web interface stays reachable over the LAN.
++RDSH_89=USB storage device
+-- 
+2.25.1
+

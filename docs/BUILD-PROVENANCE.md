@@ -69,18 +69,38 @@ If step 4 matches, the image you hold is the one that was built. CI does steps
 
 ## Per-release record (RT-BE96U, the primary model)
 
-| Version | Base | Patches | `release/src/router` tree | Source reproducible in CI |
-|---|---|---|---|---|
-| **v2.3.3** | `a7ebfa133a` | `0001`–`0379` | `18c5fc0eefa28393cdf038eeb2adb3a411fb6876` | ⏳ pending publish |
-| **v2.3.2** | `a7ebfa133a` | `0001`–`0378` | `c24138c41233a6a1cec7ee2496518cddc2cc4950` | ✅ yes |
-| **v2.3.1** | `a7ebfa133a` | `0001`–`0374` | `45fed7610e4d1316f4fabd664f56e37d88cd47a5` | ✅ yes |
-| **v2.1.5** | `a7ebfa133a` | `0001`–`0322` | `9c98f7483f8eb3f8c0d1b5250b8bf3d38803f63c` | ✅ yes |
-| **v2.1.4** | `a7ebfa133a` | `0001`–`0318` | `066a89ce574f3bdccbdb1af40d354f6ded822574` | ✅ yes |
-| **v2.1.3** | `a7ebfa133a` | `0001`–`0315` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` | ✅ yes |
-| **v2.1.2** | `a7ebfa133a` | `0001`–`0310` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` | ✅ yes |
-| **v2.1.1** | `a7ebfa133a` | `0001`–`0290` | `3ae0d9144034bfc3a62fb5814d798a45b7db3ac6` | ✅ yes |
-| **v2.1.0** | `a7ebfa133a` | `0001`–`0289` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` | ✅ yes |
-| *(base)* | — | none | `91ac46a9fde7714dbed651d02c04898b4e134be0` | — |
+**Read the right column.** Two tree hashes are recorded per release and they are
+**not** the same value. `source_tree_from_series` is what applying the published
+patches to the pinned base actually yields — that is the one CI compares
+(`verify-provenance.yml` prefers it and only falls back to `source_tree`), and the
+one to check your own replay against. `source_tree` is the build commit's tree in
+the private build clone, which additionally contains the vendored `*.md` files the
+doc-hunk exclusion strips from the series. Comparing a replay against the
+build-commit column will never match, by design.
+
+| Version | Base | Patches | `release/src/router` **from the series** (what CI compares) | build-commit tree | Release |
+|---|---|---|---|---|---|
+| **v2.4.1** | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | `545e459661262bf79a3c2ed0aa597005f87e550a` | source rung — not yet published |
+| **v2.3.7** | `a7ebfa133a` | `0001`–`0406` | `7f48393d768d564fe8dbb5722fcfa26a8e6f6181` | `f1e0db6373976ae8740a2484f74bb577ed3efbaf` | ✅ published (all five models) |
+| **v2.3.6** | `a7ebfa133a` | `0001`–`0399` | `3740a7192671ec39854d96f8383e202b46599e90` | `e9cc24c92d938b3abb4c62d06d7da50993c88c99` | source rung — never published |
+| **v2.3.5** | `a7ebfa133a` | `0001`–`0397` | `a8b2d10782a78668a5fba30f53b61d5f0735ccec` | `5743597446a3c32eaeeed681d91473a8dfbf4e68` | source rung — never published |
+| **v2.3.4** | `a7ebfa133a` | `0001`–`0390` | `ee23af634aaf311de2323c777de33530613b2ecc` | `a884fdee5db402c128b238056b654034d9857dba` | ✅ published (all five models) |
+| **v2.3.3** | `a7ebfa133a` | `0001`–`0388` | `b034902b6905c04ab6d2934121fe15dc0619e840` | `24334ae677710d59615fcfecf1f317fe5a40325d` | source rung — never published |
+| **v2.3.2** | `a7ebfa133a` | `0001`–`0378` | `1357bd3456802b1f063009e64b6ebbc12e0e45be` | `c24138c41233a6a1cec7ee2496518cddc2cc4950` | ✅ published (all five models) |
+| **v2.3.1** | `a7ebfa133a` | `0001`–`0374` | `f45570426e350a29bba9245ee1b11ffab41ecd1a` | `45fed7610e4d1316f4fabd664f56e37d88cd47a5` | ✅ published |
+| **v2.1.5** | `a7ebfa133a` | `0001`–`0325` | `ebbed045f4841b89a8c8d1eacce74961518445b9` | `9c98f7483f8eb3f8c0d1b5250b8bf3d38803f63c` | ✅ published |
+| **v2.1.4** | `a7ebfa133a` | `0001`–`0321` | `e2c1828901d08089a951e14ec982212fcf337923` | `066a89ce574f3bdccbdb1af40d354f6ded822574` | ✅ published |
+| **v2.1.3** | `a7ebfa133a` | `0001`–`0318` | `d89a6bec8ca5ca5189b723efa0f7b17ffa4bfecf` | `6ac67c56c668efbb85ae80fd550350a0f7d6b012` | ✅ published |
+| **v2.1.2** | `a7ebfa133a` | `0001`–`0313` | `08bfbd2870471409144fdb51d9999cd87b44899a` | `b2c357fa4a340d51a1cd6ef8777693781db92c56` | ✅ published |
+| **v2.1.1** | `a7ebfa133a` | `0001`–`0293` | `7d0c3e2fbe4fd3ce7672c9026b6cb43e635e5cd5` | `3ae0d9144034bfc3a62fb5814d798a45b7db3ac6` | ✅ published |
+| **v2.1.0** | `a7ebfa133a` | `0001`–`0292` | `0a1eb6136cdacca581a95eac7f6aeba0ca08b740` | `96e3ea406837de4d26558c2a9f411eeeb17cb105` | ✅ published |
+| *(base)* | — | none | — | `91ac46a9fde7714dbed651d02c04898b4e134be0` | upstream |
+
+> Generated from [`../provenance/manifest.json`](../provenance/manifest.json) rather than
+> transcribed. Note the patch ranges for **v2.1.0 – v2.1.5** are the **post-repair** numbers: the
+> 2026-08-09 series repair restored three never-extracted commits and shifted everything after
+> `0245` by +3, so an older copy of this table showing `0289`/`0310`/`0322` was describing the same
+> releases under the pre-repair numbering.
 
 Every shipped RT-BE96U image through v2.1.5 is reproducible from the published
 patches: patches `0290`–`0322` (the v2.1.1 changes, the v2.1.2 Merlin 3006.102.8
@@ -91,10 +111,10 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 `066a89ce…` (v2.1.4), and `0001`–`0322` yields `9c98f748…` (v2.1.5). The
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
-every tree on each run. **The exported series now leads the fleet:** the
-series runs to `0379` (v2.3.3, RT-BE96U-only), while the last full-fleet build is
-v2.3.2. The RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro images (current at v2.3.2) are produced by
+every tree on each run. **The exported series leads the fleet:** the series runs
+to `0424` (v2.4.1, RT-BE96U-only), while the newest **published** release is
+v2.3.7. The RT-BE86U /
+RT-BE88U / GT-BE98 / GT-BE98 Pro images (current at v2.3.7) are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob
 overlay); the patch series is RT-BE96U-only, so the tree hash above is the
 RT-BE96U reference and the siblings are not independently patch-reproducible
@@ -115,15 +135,24 @@ are attached to the corresponding GitHub Release.
 Provenance is recorded for the **RT-BE96U** — the primary development platform.
 The [manifest](../provenance/manifest.json) covers it back to **v1.8.6**:
 
-- **v2.1.0 – v2.1.5**, **v2.3.1** and **v2.3.2** carry the full record and are
-  **reproducible in CI** (`verifiable: true`): source-tree hash, image SHA-256s, and
-  logs, with the published patch series proven to reproduce the tree. **v2.3.2** is
-  the first rung built and published end-to-end by the public clean-room pipeline.
-- **v2.3.3** is exported to patches (`0379`) and its source-tree hash is recorded
-  above, but it is **not yet published**, so `provenance/manifest.json` has no entry
-  for it and the CI verifier does not cover it yet. The 379-patch series was
-  replay-verified on 2026-08-10 (`git am --keep-cr` → 0, tree reproduced except the
-  three excluded `openssh-sftp` `*.md` files).
+- **Every rung in the table above is `verifiable: true`** — source-tree fingerprint,
+  patch count and logs recorded, with the published series proven to reproduce the
+  tree. **v2.3.2** was the first rung built and published end-to-end by the public
+  clean-room pipeline.
+- **`verifiable` means the source is reproducible, NOT that the release shipped.**
+  These are independent facts and the manifest only tracks the first one reliably.
+  Image SHA-256s are populated only for **v2.1.0–v2.1.5** and **v2.3.1**; every other
+  rung — including v2.3.2, v2.3.4 and v2.3.7, which are all published on all five
+  models — carries an empty `images` list simply because nothing refreshed it after
+  the build shipped. **Do not read an empty `images` as "never released"**; that
+  inference is what produced a documented contradiction on 2026-08-12. The
+  authoritative record of what shipped is the
+  [Releases page](https://github.com/TheUnboundDeveloper/AM-Reaper/releases).
+- **v2.3.3, v2.3.5, v2.3.6 and v2.3.8 – v2.4.1 are source rungs that published no
+  images.** They are still exported, replay-verified and CI-covered; they simply
+  never became a download. v2.3.8, v2.3.9 and v2.4.0 in particular were the
+  intermediate steps of the native-firewall work and were folded into the single
+  v2.4.1 rung (`0407`–`0424`).
 - **v2.1.6 – v2.3.0** are shipped rungs with no per-release row here; the series and
   provenance were regenerated forward rather than backfilled per rung.
 - **v1.8.6 – v2.0.8** are **historical** entries (`verifiable: false`): the build

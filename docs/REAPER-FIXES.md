@@ -417,7 +417,7 @@ vulnerable objects remain on disk until that removal lands.
 
 ---
 
-## Stored XSS in the client-picker dropdown (2026-08-11, `e88ffc4d16` — NOT BUILT)
+## Stored XSS in the client-picker dropdown (2026-08-11, `e88ffc4d16` — shipped in v2.3.3, published from v2.3.4)
 
 Stock ASUS/Merlin code, shared source, so the same flaw is expected on other
 Broadcom HND models running stock firmware. Found while closing a `[P3]` backlog
@@ -439,3 +439,30 @@ handler. Worth remembering as a PoC-design trap.
 the apostrophe (`&#39;` is in the default entity set), and the `vendor` /
 `deviceTypeName` tooltips flagged by the backlog were already encoded in v2.2.0 —
 that half of the item needed no change.
+
+---
+
+## UPnP redirect table applied to all traffic — carried upstream defect (2026-08-13, `968ab0e348`, v2.4.1)
+
+**Inherited, not Reaper-authored.** The 3006.102.8 base carries `a1ce74be78`
+("fix UPnP rules when port forwarding is not enabled", a patch from ASUS) whose
+first hunk emits an unqualified jump. Reported by the upstream engineers during
+the UPnP/console triage and confirmed here from the tree; ASUS resolved it
+internally and Merlin is reverting it for 102.8_4.
+
+| ID | Severity | Component | Issue | Fix | Commit |
+|---|---|---|---|---|---|
+| U1 | **Medium** (LAN traffic redirection; requires an active UPnP mapping) | `rc/firewall.c` `nat_setting()` | `-A PREROUTING -j VUPNP` is emitted **with no qualifier**. `VUPNP` holds miniupnpd's DNAT redirects and is meant to be entered only via `-A VSERVER -j VUPNP`, where `VSERVER` is itself reached as `-A PREROUTING -d <wan_ip> -j VSERVER` — i.e. only for packets addressed to this router's WAN address. Unqualified, **every** packet crossing `nat/PREROUTING` is tested against the UPnP redirects, **outbound traffic included**: a mapping on port *N* rewrites a LAN client's own outgoing connection to a remote server on port *N*. Any LAN device can create a mapping when UPnP is on, so a device can redirect other clients' outbound connections to itself. Field symptom: a console that cannot reach the game server at all while UPnP is enabled. | Revert **the first hunk only**. The patch's other hunk (`-A FORWARD -j FUPNP`) is deliberately **kept**: it is the sole hook into `FUPNP`, carries filter-table ACCEPTs, and cannot DNAT anything — dropping it would leave UPnP forwards translated and then dropped in `FORWARD`. The `char tmp[32]` the patch added goes with the reverted hunk. | `968ab0e348` |
+
+**The patch was also unnecessary on this path**, which is why reverting it costs
+nothing: the `VSERVER` jump is emitted whether or not port forwarding is enabled,
+and `-A VSERVER -j VUPNP` is gated on `upnp_enable` rather than `vts_enable_x`, so
+the UPnP redirects were already reachable. The problem the patch set out to fix
+does not exist in this tree.
+
+**Distinct from the IGD:1/IGD:2 description issue** fixed in the same release
+(`ac485cfd4a`) — the upstream engineers were explicit that the two are unrelated.
+That one is a compatibility fault, not a security one: an IGD:2 device
+description left a PS5 unable to match any service type, so it could not create a
+mapping at all. Both were reported together as "UPnP breaks Call of Duty", which
+is worth recording as a reminder that one symptom had two independent causes.

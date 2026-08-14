@@ -109,8 +109,8 @@ Publishing is gated **twice**: `github.ref == 'refs/heads/main'` *and* the
 `publish` input, which defaults to off. A dispatch on main with the box clear
 builds and verifies without shipping.
 
-Releases are **per-model** so models can version independently (RT-BE96U at
-v2.3.3 while siblings catch up on the fan-out).
+Releases are **per-model** so models can version independently (e.g. RT-BE96U at
+v2.4.1 while the siblings catch up on the fan-out).
 
 ### Traps that have actually bitten
 

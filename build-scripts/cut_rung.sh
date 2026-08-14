@@ -242,13 +242,35 @@ fi
 step "9. hygiene"
 p1='[A-Za-z0-9._%+-]+@gm''ail\.com'
 p2="$OLDHOME"
-if grep -rIlE "$p1|$p2" "$LEAN/patches"/[0-9]*.patch >/dev/null 2>&1; then
-  echo "  ! PII pattern hit inside patches/:"
-  grep -rIlE "$p1|$p2" "$LEAN/patches"/[0-9]*.patch | sed 's/^/    /'
+# The allowlist has to be applied HERE, not just reported on below. Four patches
+# (0103/0222/0223/0294) carry third-party upstream author addresses in vendored
+# changelogs and have been allowlisted for exactly that reason since 2026-08-09 -
+# so an allowlist-blind grep prints the same four names on every single cut. That
+# is how a genuine leak gets lost: the operator learns the warning is always there
+# and stops reading it. Allowlisted hits are counted, not listed; anything NOT on
+# the list is the thing worth stopping for.
+# (no trap here: the script already owns an EXIT trap for $STAGE, and this temp
+# file is removed explicitly a few lines down.)
+allowed=$(mktemp)
+grep -vE '^\s*(#|$)' "$LEAN/.github/pii-allowlist.txt" > "$allowed"
+new_hits=0; old_hits=0
+while IFS= read -r f; do
+  rel="patches/$(basename "$f")"
+  if grep -qxF "$rel" "$allowed"; then
+    old_hits=$((old_hits + 1))
+  else
+    [ "$new_hits" -eq 0 ] && echo "  ! PII pattern hit in a NOT-allowlisted patch:"
+    new_hits=$((new_hits + 1))
+    echo "    $rel"
+  fi
+done < <(grep -rIlE "$p1|$p2" "$LEAN/patches"/[0-9]*.patch 2>/dev/null)
+if [ "$new_hits" -gt 0 ]; then
   echo "    fix the source commit message - do NOT just add it to the allowlist"
 else
-  echo "  no PII-pattern hits in patches/"
+  echo "  no un-allowlisted PII-pattern hits in patches/"
 fi
+[ "$old_hits" -gt 0 ] && echo "  ($old_hits allowlisted third-party hit(s), expected - see .github/pii-allowlist.txt)"
+rm -f "$allowed"
 missing=0
 while IFS= read -r line; do
   case "$line" in ''|'#'*) continue ;; esac

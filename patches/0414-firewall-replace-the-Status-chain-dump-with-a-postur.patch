@@ -1,0 +1,1502 @@
+From e31161e27946e82912da7d37a490ff4036abd779 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 16:20:25 -0400
+Subject: [PATCH] firewall: replace the Status chain dump with a posture
+ summary
+
+Owner report: the Status page is "WAY too busy - most won't even know how to
+read it and use it".
+
+It was rendering `iptables -nvxL` AND `ip6tables -nvxL` in full - every chain as
+a card, every rule as a pkts/bytes/target/prot/in/out/src/dst row. On a live box
+that is 40-odd chains and several hundred rows of raw netfilter, re-fetched every
+10 seconds by the auto-refresh. It was a packet-filter debugger wearing the name
+of a status page: unreadable without prior iptables knowledge, and the chain text
+dwarfed everything actually useful on the page.
+
+Status now answers "what is switched on, and how is it set". Five groups:
+
+  Core          firewall, DoS, WAN ping, WAN->LAN filter, IPv6 firewall, logging
+  Rules engine  engine state, rule/object/group/service/zone/policy counts,
+                commit-confirm window, armed state, last error
+  Companions    Gatekeeper, Warden (+ countries, direction, logging)
+  Filters       network services (mode + count), URL, keyword
+  Exposure      NAT, port forwards, port triggering, DMZ, UPnP (+ pinholes,
+                port protection, advertised IGD version), remote web admin
+                port, SSH from WAN
+
+The exposure group is the part a non-expert actually needs: it answers "what of
+mine is reachable from the internet right now". That information was technically
+present in the chain dump before, and functionally unreachable.
+
+The CGI no longer shells out to iptables at all - both popen() calls and their
+98 KB / 64 KB buffers are gone from action=status, which also makes the 10s
+auto-refresh cheap. Counts are computed server-side (fw_list_count) rather than
+shipping the rulelists to the browser. Raw chains remain available over the
+shell for anyone who wants them; nothing else consumed that payload.
+
+RFW_167..RFW_203 seeded English into all 25 packs, lockstep at 6519 lines. The
+tokens the chain view used (RFW_12/13/14/15/16, 25-31, 39/40) are now unreferenced
+but INTENTIONALLY LEFT IN PLACE - dict indices are line-based, so removing a line
+renumbers every token after it.
+
+Verified without a build: all 181 page tokens resolve against EN.dict (the
+token-first trap that bit this page during Phase 1); reaper_langcheck 0 breakers;
+all 25 inline script blocks parse under node in all 25 languages with 0
+unresolved tokens; ASCII-clean; no dead references to the removed renderer.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             |  99 +++++++++++++-
+ release/src/router/www/BR.dict             |  37 +++++
+ release/src/router/www/CN.dict             |  37 +++++
+ release/src/router/www/CZ.dict             |  37 +++++
+ release/src/router/www/DA.dict             |  37 +++++
+ release/src/router/www/DE.dict             |  37 +++++
+ release/src/router/www/EN.dict             |  37 +++++
+ release/src/router/www/ES.dict             |  37 +++++
+ release/src/router/www/FI.dict             |  37 +++++
+ release/src/router/www/FR.dict             |  37 +++++
+ release/src/router/www/HU.dict             |  37 +++++
+ release/src/router/www/IT.dict             |  37 +++++
+ release/src/router/www/JP.dict             |  37 +++++
+ release/src/router/www/KR.dict             |  37 +++++
+ release/src/router/www/MS.dict             |  37 +++++
+ release/src/router/www/NL.dict             |  37 +++++
+ release/src/router/www/NO.dict             |  37 +++++
+ release/src/router/www/PL.dict             |  37 +++++
+ release/src/router/www/RO.dict             |  37 +++++
+ release/src/router/www/RU.dict             |  37 +++++
+ release/src/router/www/Reaper_Firewall.asp | 152 +++++++++++----------
+ release/src/router/www/SL.dict             |  37 +++++
+ release/src/router/www/SV.dict             |  37 +++++
+ release/src/router/www/TH.dict             |  37 +++++
+ release/src/router/www/TR.dict             |  37 +++++
+ release/src/router/www/TW.dict             |  37 +++++
+ release/src/router/www/UK.dict             |  37 +++++
+ 27 files changed, 1099 insertions(+), 77 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index a2450fbd6e..6835689c04 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23471,6 +23471,31 @@ fw_scan_syslog(const char *path, char *ring, int *head, int *count)
+ 	fclose(f);
+ }
+ 
++/* reaper 2026-08-13: number of records in an ASUS '<'-separated rulelist.
++ * Every such list is "<f>f>f<f>f>f", i.e. one leading '<' per record, so
++ * counting '<' counts records. Used by the Status view, which reports HOW MANY
++ * rules each filter holds rather than shipping the lists themselves. */
++static int fw_list_count(const char *s)
++{
++	int n = 0;
++	if (!s) return 0;
++	for (; *s; s++)
++		if (*s == '<') n++;
++	return n;
++}
++
++/* reaper 2026-08-13: the remote-admin port actually in use. http_enable:
++ * 0 = HTTP only, 1 = HTTPS only, 2 = both - report the TLS port whenever TLS
++ * answers, since that is the one an operator would be reaching. */
++static int fw_remote_admin_port(void)
++{
++#ifdef RTCONFIG_HTTPS
++	if (nvram_get_int("http_enable") != 0)
++		return nvram_get_int("misc_httpsport_x") ? : 8443;
++#endif
++	return nvram_get_int("misc_httpport_x") ? : 8080;
++}
++
+ static void
+ do_reaper_fw_cgi(char *url, FILE *stream)
+ {
+@@ -23511,11 +23536,75 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			nvram_match("rwarden_enable", "1") ? 1 : 0,
+ 			nvram_match("rwarden_log", "1") ? 1 : 0);
+ 		gk_json_esc(stream, nvram_safe_get("fw_log_x"));
+-		websWrite(stream, "},\"v4\":");
+-		fw_emit_cmd(stream, "iptables -nvxL 2>/dev/null", 98304);
+-		websWrite(stream, ",\"v6\":");
+-		fw_emit_cmd(stream, "ip6tables -nvxL 2>/dev/null", 65536);
+-		websWrite(stream, "}");
++
++		/* reaper 2026-08-13: Status was a raw `iptables -nvxL` dump of EVERY
++		 * chain, v4 and v6, re-fetched every 10s by the auto-refresh. That is a
++		 * packet-filter debugger, not a status page: unreadable to anyone who
++		 * does not already speak iptables, and it shipped ~160 KB of chain text
++		 * per poll for the privilege. It now reports the POSTURE instead - which
++		 * features are on and what they are set to - so the two popen() calls
++		 * and their buffers are gone with it. Raw chains remain available over
++		 * the shell for anyone who actually wants them. */
++
++		/* the Reaper rules engine */
++		websWrite(stream,
++			",\"fwen\":%d,\"fwconfirm\":%d,\"fwarmed\":%d,"
++			"\"nrules\":%d,\"nobj\":%d,\"ngrp\":%d,\"nsvc\":%d,"
++			"\"nzone\":%d,\"nzpol\":%d",
++			nvram_match("reaper_fw_enable", "1") ? 1 : 0,
++			nvram_get_int("reaper_fw_confirm"),
++			nvram_match("reaper_fw_armed", "1") ? 1 : 0,
++			fw_list_count(nvram_safe_get("reaper_fw_rules")),
++			fw_list_count(nvram_safe_get("reaper_fw_obj")),
++			fw_list_count(nvram_safe_get("reaper_fw_grp")),
++			fw_list_count(nvram_safe_get("reaper_fw_svc")),
++			fw_list_count(nvram_safe_get("reaper_fw_zone")),
++			fw_list_count(nvram_safe_get("reaper_fw_zpol")));
++		websWrite(stream, ",\"fwerr\":");
++		gk_json_esc(stream, nvram_safe_get("reaper_fw_err"));
++
++		/* Warden detail (geo list + which direction it filters) */
++		websWrite(stream, ",\"wgeo\":");
++		gk_json_esc(stream, nvram_safe_get("rwarden_geo"));
++		websWrite(stream, ",\"wdir\":");
++		gk_json_esc(stream, nvram_safe_get("rwarden_dir"));
++
++		/* content filters: mode + how many rules each holds */
++		websWrite(stream, ",\"lwmode\":");
++		gk_json_esc(stream, nvram_safe_get("filter_lw_default_x"));
++		websWrite(stream, ",\"nlw\":%d,\"urlmode\":",
++			fw_list_count(nvram_safe_get("filter_lwlist")));
++		gk_json_esc(stream, nvram_safe_get("url_mode_x"));
++		websWrite(stream, ",\"nurl\":%d,\"nkw\":%d",
++			fw_list_count(nvram_safe_get("url_rulelist")),
++			fw_list_count(nvram_safe_get("keyword_rulelist")));
++
++		/* inbound exposure - what of this box is reachable from the WAN.
++		 * upnp: the MASTER key is what the GUI edits, but wan<N>_upnp_enable is
++		 * what actually starts the daemon (start_upnp gates on it), so report
++		 * both rather than let them disagree silently. */
++		websWrite(stream,
++			",\"nat\":%d,\"vts\":%d,\"nvts\":%d,\"autofw\":%d,\"nautofw\":%d",
++			nvram_match("wan0_nat_x", "1") ? 1 : 0,
++			nvram_match("vts_enable_x", "1") ? 1 : 0,
++			fw_list_count(nvram_safe_get("vts_rulelist")),
++			nvram_match("autofw_enable_x", "1") ? 1 : 0,
++			fw_list_count(nvram_safe_get("autofw_rulelist")));
++		websWrite(stream, ",\"dmz\":");
++		gk_json_esc(stream, nvram_safe_get("dmz_ip"));
++		websWrite(stream,
++			",\"upnp\":%d,\"upnpwan\":%d,\"upnppin\":%d,\"upnpprot\":%d,"
++			"\"upnpigd2\":%d,\"remadmin\":%d,\"remport\":%d,"
++			"\"sshwan\":%d,\"sshport\":%d}}",
++			nvram_match("upnp_enable", "1") ? 1 : 0,
++			nvram_match("wan0_upnp_enable", "1") ? 1 : 0,
++			nvram_match("upnp_pinhole_enable", "1") ? 1 : 0,
++			nvram_match("upnp_protect_svc", "0") ? 0 : 1,
++			nvram_match("upnp_igd2_desc", "1") ? 1 : 0,
++			nvram_get_int("misc_http_x") ? 1 : 0,
++			fw_remote_admin_port(),
++			(nvram_get_int("sshd_enable") == 1) ? 1 : 0,
++			nvram_get_int("sshd_port") ? : 22);
+ 		return;
+ 	}
+ 
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index ac83e8bcf1..d208a77181 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 1430f2f1c4..c2752208a2 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index e871622200..670e6bbeba 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 8eb5255faf..922c72f2ed 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index f91535b6fc..76ebf6f4b0 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index dd4640752e..f70b99f336 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 986dfdccdc..3274e026c4 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index fa108b33d3..1eec41b2fc 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 7d2b4e182e..a5997f3e3d 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 420f144c5b..d0c8253182 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index f22b95eae3..379f5cbd8b 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 1461bda771..c60fd191c0 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 1fc4bf7d11..11807e9d41 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 7e9ebe2f36..f63b1716d9 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index c1d6c2990f..71ee0a216f 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 853af75eea..154af6da05 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 63cfcd2d08..9e972a10a4 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 46e213e941..f6a4f19c4f 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 8f61c88ea0..ff025a66fa 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 69073b30ad..a99ee316d1 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -144,19 +144,19 @@ table.ipt td.hit{color:var(--amber)}
+ <div class="tab" id="tab_status">
+   <div class="card">
+     <h2><#RFW_2#><span class="hint" id="st_hint">&nbsp;</span></h2>
+-    <div class="statgrid" id="st_grid"><div class="spin"><#RFW_89#></div></div>
++    <div class="statgrid" id="st_core"><div class="spin"><#RFW_89#></div></div>
+     <div class="row" style="margin-top:14px">
+       <button class="btn ghost sm" id="st_refresh"><#RFW_19#></button>
+       <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+         <span class="tg" id="st_auto"></span><span class="suffix"><#RFW_20#></span></label>
+     </div>
+-    <p class="note"><#RFW_18#></p>
+-    <p class="note"><#RFW_24#></p>
+-  </div>
+-  <div class="cols2">
+-    <div class="card" style="max-width:none"><h2><#RFW_12#></h2><div id="st_v4"><div class="spin"><#RFW_89#></div></div></div>
+-    <div class="card" style="max-width:none"><h2><#RFW_13#></h2><div id="st_v6"><div class="spin"><#RFW_89#></div></div></div>
++    <p class="note"><#RFW_201#></p>
+   </div>
++  <div class="card"><h2><#RFW_167#></h2><div class="statgrid" id="st_engine"></div></div>
++  <div class="card"><h2><#RFW_168#></h2><div class="statgrid" id="st_comp"></div></div>
++  <div class="card"><h2><#RFW_169#></h2><div class="statgrid" id="st_filters"></div></div>
++  <div class="card"><h2><#RFW_170#></h2><div class="statgrid" id="st_exposure"></div>
++    <p class="note"><#RFW_202#></p></div>
+ </div>
+ 
+ <!-- ============================= GENERAL ============================= -->
+@@ -830,74 +830,82 @@ function initTab(){
+ }
+ 
+ /* =================== STATUS view =================== */
+-var OWN=[
+-  {re:/^(REAPER_WARDEN|RW_DROP|RW_)/,c:'warden',n:`<#RFW_11#>`},
+-  {re:/^(REAPER_GK)/,c:'gk',n:`<#RFW_10#>`},
+-  {re:/^(WGS|WGC|OVPNS|OVPNC|GRE|VPNC|IPSEC)/,c:'vpn',n:`<#RFW_27#>`},
+-  {re:/^(MTWAN)/,c:'other',n:`<#RFW_28#>`},
+-  {re:/^(URLF|NWFF|SDN_)/,c:'sdn',n:`<#RFW_29#>`},
+-  {re:/^(IControls|PControls|WGNPControls|TIME_QUOTA|DNSFILTER)/,c:'ctrl',n:`<#RFW_26#>`},
+-  {re:/^(PTCSRV|HNS-UFWD)/,c:'other',n:`<#RFW_30#>`},
+-  {re:/^(INPUT|OUTPUT|FORWARD|SECURITY|logdrop|logaccept|INPUT_PING|INPUT_ICMP|FUPNP|ACCESS_RESTRICTION|ICMP_V6|UPNP|default_block)/,c:'core',n:`<#RFW_25#>`}
+-];
+-function ownerOf(name){for(var i=0;i<OWN.length;i++){if(OWN[i].re.test(name))return OWN[i];}return {c:'other',n:`<#RFW_31#>`};}
+-/* parse `iptables -nvxL` text into chains */
+-function parseIpt(txt){
+-  var chains=[],cur=null,lines=(txt||'').split('\n');
+-  for(var i=0;i<lines.length;i++){
+-    var ln=lines[i];
+-    var m=ln.match(/^Chain\s+(\S+)\s+\((.*)\)/);
+-    if(m){cur={name:m[1],meta:m[2],rows:[]};chains.push(cur);continue;}
+-    if(!cur)continue;
+-    if(/^\s*pkts\s+bytes\s+target/.test(ln))continue;
+-    var t=ln.replace(/^\s+/,'');
+-    if(t==='')continue;
+-    var parts=t.split(/\s+/);
+-    if(parts.length<3||!/^\d+$/.test(parts[0]))continue;
+-    cur.rows.push({pkts:parts[0],bytes:parts[1],rest:parts.slice(2)});
+-  }
+-  return chains;
+-}
+-function fmtNum(n){n=parseInt(n,10)||0;return n.toLocaleString?n.toLocaleString():''+n;}
+-function renderChains(txt,into){
+-  var chains=parseIpt(txt);
+-  if(!chains.length){into.innerHTML='<div class="note muted">'+esc(`<#RFW_23#>`)+'</div>';return;}
+-  var h='';
+-  chains.forEach(function(c){
+-    var o=ownerOf(c.name);
+-    h+='<div class="chaincard"><div class="ch"><span class="nm">'+esc(c.name)+'</span><span class="pol">'+esc(c.meta)+'</span><span class="owner '+o.c+'">'+esc(o.n)+'</span></div>';
+-    if(c.rows.length){
+-      h+='<table class="ipt"><thead><tr><th><#RFW_14#></th><th><#RFW_15#></th><th><#RFW_16#></th><th>prot</th><th>in</th><th>out</th><th><#RFW_39#></th><th><#RFW_40#></th></tr></thead><tbody>';
+-      c.rows.forEach(function(r){
+-        var tgt=r.rest[0]||'',prot=r.rest[1]||'',din=r.rest[3]||'',dout=r.rest[4]||'',src=r.rest[5]||'',dst=r.rest[6]||'';
+-        var hit=parseInt(r.pkts,10)>0?' hit':'';
+-        h+='<tr><td class="n'+hit+'">'+esc(fmtNum(r.pkts))+'</td><td class="n">'+esc(fmtNum(r.bytes))+'</td><td>'+esc(tgt)+'</td><td>'+esc(prot)+'</td><td>'+esc(din)+'</td><td>'+esc(dout)+'</td><td>'+esc(src)+'</td><td>'+esc(dst)+'</td></tr>';
+-      });
+-      h+='</tbody></table>';
+-    }
+-    h+='</div>';
+-  });
+-  into.innerHTML=h;
+-}
++/* reaper 2026-08-13: this used to parse `iptables -nvxL` and render EVERY chain,
++   v4 and v6, as a card full of pkts/bytes/target rows - 40-odd chains and several
++   hundred rows of raw netfilter on a live box, re-fetched every 10s by the
++   auto-refresh. It was a packet-filter debugger, unreadable to anyone who did not
++   already speak iptables, and the chain text dwarfed everything else on the wire.
++   Status now reports POSTURE: which features are on and how they are set. The CGI
++   no longer shells out to iptables at all. */
++var ON_T=`<#RFW_98#>`,OFF_T=`<#RFW_99#>`,NONE_T=`<#RFW_100#>`,UNSET_T=`<#RFW_198#>`,CFG_T=`<#RFW_203#>`;
++function kvRow(k,cls,txt){return '<div class="kv"><span class="k">'+esc(k)+'</span><span class="v '+cls+'">'+esc(txt)+'</span></div>';}
++function kvOn(k,on){return kvRow(k,on?'on':'off',on?ON_T:OFF_T);}
++/* a count reads better as "12 configured" / "None" than as a bare 0 */
++function kvCount(k,n){n=parseInt(n,10)||0;return kvRow(k,n>0?'on':'off',n>0?(n+' '+CFG_T):NONE_T);}
+ function loadStatus(){
+   xhr('/reaper_fw.cgi?action=status&http_id='+encodeURIComponent(REAPER_HTTPID),function(j){
+-    if(!j||!j.ok){$('st_grid').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';return;}
+-    var f=j.fw;
+-    function kv(k,on,txt){return '<div class="kv"><span class="k">'+esc(k)+'</span><span class="v '+(on?'on':'off')+'">'+esc(txt)+'</span></div>';}
+-    var onT=`<#RFW_98#>`,offT=`<#RFW_99#>`;
+-    var g='';
+-    g+=kv(`<#RFW_4#>`,f.enable,f.enable?onT:offT);
+-    g+=kv(`<#RFW_5#>`,f.dos,f.dos?onT:offT);
+-    g+=kv(`<#RFW_6#>`,f.ping,f.ping?onT:offT);
+-    g+=kv(`<#RFW_7#>`,f.wl,f.wl?onT:offT);
+-    g+=kv(`<#RFW_8#>`,f.v6fw,f.v6up?(f.v6fw?onT:offT):`<#RFW_23#>`);
+-    g+=kv(`<#RFW_10#>`,f.gk,f.gk?onT:offT);
+-    g+=kv(`<#RFW_11#>`,f.warden,f.warden?onT:offT);
+-    g+=kv(`<#RFW_9#>`,f.log&&f.log!=='none',f.log==='none'?`<#RFW_100#>`:f.log);
+-    $('st_grid').innerHTML=g;
++    if(!j||!j.ok){$('st_core').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';return;}
++    var f=j.fw,g;
++
++    /* --- core firewall --- */
++    g =kvOn(`<#RFW_4#>`,f.enable);
++    g+=kvOn(`<#RFW_5#>`,f.dos);
++    g+=kvOn(`<#RFW_6#>`,f.ping);
++    g+=kvOn(`<#RFW_7#>`,f.wl);
++    /* with IPv6 down the v6 firewall setting is not meaningful either way */
++    g+=f.v6up?kvOn(`<#RFW_8#>`,f.v6fw):kvRow(`<#RFW_8#>`,'off',`<#RFW_23#>`);
++    g+=kvRow(`<#RFW_9#>`,(f.log&&f.log!=='none')?'on':'off',(!f.log||f.log==='none')?NONE_T:f.log);
++    $('st_core').innerHTML=g;
+     setPill(f.enable);
+-    renderChains(j.v4,$('st_v4'));
+-    renderChains(j.v6,$('st_v6'));
++
++    /* --- reaper rules engine --- */
++    g =kvOn(`<#RFW_171#>`,f.fwen);
++    g+=kvCount(`<#RFW_172#>`,f.nrules);
++    g+=kvCount(`<#RFW_173#>`,f.nobj);
++    g+=kvCount(`<#RFW_174#>`,f.ngrp);
++    g+=kvCount(`<#RFW_175#>`,f.nsvc);
++    g+=kvCount(`<#RFW_176#>`,f.nzone);
++    g+=kvCount(`<#RFW_177#>`,f.nzpol);
++    g+=kvRow(`<#RFW_178#>`,f.fwconfirm>0?'on':'off',f.fwconfirm>0?(f.fwconfirm+'s'):OFF_T);
++    if(f.fwarmed)g+=kvRow(`<#RFW_179#>`,'on',ON_T);
++    if(f.fwerr)  g+=kvRow(`<#RFW_180#>`,'off',f.fwerr);
++    $('st_engine').innerHTML=g;
++
++    /* --- companions (Gatekeeper / Warden) --- */
++    g =kvOn(`<#RFW_10#>`,f.gk);
++    g+=kvOn(`<#RFW_11#>`,f.warden);
++    g+=kvRow(`<#RFW_181#>`,f.wgeo?'on':'off',f.wgeo||NONE_T);
++    g+=kvRow(`<#RFW_182#>`,f.wdir?'on':'off',f.wdir||NONE_T);
++    g+=kvOn(`<#RFW_183#>`,f.wlog);
++    $('st_comp').innerHTML=g;
++
++    /* --- content filters --- */
++    g =kvOn(`<#RFW_184#>`,f.lw);
++    g+=kvRow(`<#RFW_185#>`,'off',(f.lwmode==='1')?`<#RFW_199#>`:`<#RFW_200#>`);
++    g+=kvCount(`<#RFW_172#>`,f.nlw);
++    g+=kvOn(`<#RFW_186#>`,f.url);
++    g+=kvCount(`<#RFW_186#>`,f.nurl);
++    g+=kvOn(`<#RFW_187#>`,f.kw);
++    g+=kvCount(`<#RFW_187#>`,f.nkw);
++    $('st_filters').innerHTML=g;
++
++    /* --- inbound exposure: what of this box the internet can reach.
++       Colour follows the page convention (on = enabled), and the note under the
++       card carries the judgement - a green "on" here is not a good thing. --- */
++    g =kvOn(`<#RFW_188#>`,f.nat);
++    g+=kvRow(`<#RFW_189#>`,f.vts?'on':'off',f.vts?((parseInt(f.nvts,10)||0)+' '+CFG_T):OFF_T);
++    g+=kvRow(`<#RFW_190#>`,f.autofw?'on':'off',f.autofw?((parseInt(f.nautofw,10)||0)+' '+CFG_T):OFF_T);
++    g+=kvRow(`<#RFW_191#>`,f.dmz?'on':'off',f.dmz||UNSET_T);
++    g+=kvOn(`<#RFW_192#>`,f.upnpwan);
++    if(f.upnpwan){
++      g+=kvOn(`<#RFW_193#>`,f.upnppin);
++      g+=kvOn(`<#RFW_194#>`,f.upnpprot);
++      /* pinholes need an IGD:2 description, so they imply it regardless of the key */
++      g+=kvRow(`<#RFW_195#>`,'off',(f.upnpigd2||f.upnppin)?'IGD:2':'IGD:1');
++    }
++    g+=kvRow(`<#RFW_196#>`,f.remadmin?'on':'off',f.remadmin?(''+f.remport):OFF_T);
++    g+=kvRow(`<#RFW_197#>`,f.sshwan?'on':'off',f.sshwan?(''+f.sshport):OFF_T);
++    $('st_exposure').innerHTML=g;
+   });
+ }
+ function setPill(on){var p=$('pill');p.textContent=on?`<#RFW_98#>`:`<#RFW_99#>`;p.className='statuspill'+(on?'':' off');}
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index c720349bd7..ce52c16cc7 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 36b195653a..bebcf882cb 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ab97baff6c..0dd62873c4 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 6a30fed0bc..1a232cecb3 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index ec2f586138..0c09818673 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 4de7346c07..1e86cecfba 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6480,3 +6480,40 @@ RFW_163=To zone
+ RFW_164=These rules are added on top of the stock firewall rather than replacing it. Express a default-deny with a zone policy.
+ RFW_165=A zone is a named set of interfaces, for example br0 for the LAN or tun+ for every VPN tunnel.
+ RFW_166=The default action between two zones, applied after the individual rules have had their say.
++RFW_167=Rules engine
++RFW_168=Companion protection
++RFW_169=Content filters
++RFW_170=Inbound exposure
++RFW_171=Engine
++RFW_172=Rules
++RFW_173=Address objects
++RFW_174=Groups
++RFW_175=Services
++RFW_176=Zones
++RFW_177=Zone policies
++RFW_178=Commit-confirm
++RFW_179=Awaiting confirmation
++RFW_180=Last error
++RFW_181=Warden countries
++RFW_182=Warden direction
++RFW_183=Warden logging
++RFW_184=Network services filter
++RFW_185=Filter mode
++RFW_186=URL filter
++RFW_187=Keyword filter
++RFW_188=NAT
++RFW_189=Port forwarding
++RFW_190=Port triggering
++RFW_191=DMZ host
++RFW_192=UPnP
++RFW_193=UPnP IPv6 pinholes
++RFW_194=UPnP port protection
++RFW_195=Advertised UPnP version
++RFW_196=Remote web access
++RFW_197=SSH from the internet
++RFW_198=Not set
++RFW_199=Allow list
++RFW_200=Deny list
++RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
++RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
++RFW_203=configured
+-- 
+2.25.1
+

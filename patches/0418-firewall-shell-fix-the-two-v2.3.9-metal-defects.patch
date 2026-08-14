@@ -1,0 +1,150 @@
+From b3589185e69b5a2da0a6cd427cceb7c5767f7457 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 18:15:36 -0400
+Subject: [PATCH] firewall/shell: fix the two v2.3.9 metal defects
+
+Both found on the owner's RT-BE96U on 2026-08-13, the first time v2.3.9 ran.
+
+1. FIREWALL ENGINE MASTER SWITCH TOOK NO ACTION (P2). reaper_fw.cgi action=opts
+   set reaper_fw_enable in nvram and returned - no notify_rc - so neither
+   start_reaper_fw() nor stop_reaper_fw() ever ran.
+
+   The OFF direction was the real defect: the engine's chains stayed hooked and
+   ENFORCING after the operator disabled it, coming down only on the next
+   reboot. A master switch that does not disable is the wrong failure direction
+   for a firewall. The ON direction merely looked broken, and is how this
+   surfaced: enabling the engine and running `service restart_firewall` produced
+   "iptables: No chain/target/match by that name", because start_firewall()'s
+   re-apply hook only RUNS /tmp/reaper_fw/apply.sh if it already exists and
+   never generates it - and /tmp is a tmpfs, so with the engine off at boot
+   nothing had ever written it.
+
+   opts now calls notify_rc("restart_reaper_fw"), but only when `enable`
+   actually CHANGES value: the same action saves the commit-confirm timer, and
+   rebuilding the ruleset every time that timer is edited would be pointless
+   work. Routes to the stop/start pair already wired at services.c ~21884.
+
+   Deliberately NO nvram_commit() here. nvram_commit() flushes the whole of
+   nvram, which would persist the six editable lists while they are still an
+   unconfirmed draft held in RAM - exactly what the S3 commit-confirm design
+   forbids. The flag persists on the next confirm, the only path meant to write
+   flash.
+
+2. FIRMWARE FLASH OVERLAY DID NOT FREEZE THE PAGE BEHIND IT (P3). Disabling
+   pointer events on the shell header and rail stops clicks but not the wheel,
+   so during a flash the operator could still scroll the shell - sliding the
+   dimmed header up out from behind the frame's veil until the version chips
+   painted OVER the curtain. The veil lives inside the iframe and can never
+   cover shell chrome, so the shell has to hold still instead.
+
+   shellChromeLock() now also freezes scroll. overflow:hidden rather than
+   position:fixed on purpose: it pins the page without changing scrollTop, so
+   there is no jump-to-top when the lock lifts. Applied to BOTH documentElement
+   and body since either can be the scrolling element, guarded so repeated
+   lock(true) calls are idempotent (reaperWait/Done and the #Loading
+   MutationObserver can both fire for one operation), and the saved offset is
+   restored as a belt-and-braces measure. Fixing it in the shell covers every
+   page that raises a veil, not just the firmware page.
+
+Verified without a build: 125 inline script blocks across reaper_shell,
+Reaper_Firmware, Reaper_Firewall and Reaper_WiFiPro parse under node in all 25
+languages with 0 unresolved tokens; reaper_langcheck 0 breakers; the shell diff
+is purely additive (29 insertions, 0 deletions).
+
+NOT FIXED HERE - Wi-Fi Professional's ~15 s first load after an upgrade. The
+path is now understood (the page renders entirely from inline <% wlpro_nvram %>
+/ <% wl_nband_info %> ej calls with ZERO async fetches, so a slow driver blocks
+page DELIVERY and the page's own spinner cannot help - the HTML has not arrived
+yet), but the fix differs completely depending on whether the cost is the page
+or post-reboot driver settling, and that needs one measurement on metal. Left in
+the backlog with the experiment rather than guessed at.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c          | 28 +++++++++++++++++++++++-
+ release/src/router/www/reaper_shell.asp | 29 +++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 7f2655019d..80a1da7141 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23726,8 +23726,34 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 	 * the engine - the page must never be able to post a 0. */
+ 	if (strcmp(action, "opts") == 0) {
+ 		char *en = get_cgi("enable"), *cf = get_cgi("confirm");
+-		if (en && (!strcmp(en, "0") || !strcmp(en, "1")))
++		/* reaper 2026-08-13 (field, v2.3.9): this used to set the nvram flag and
++		 * stop, so the master switch took NO action in either direction.
++		 *
++		 * The OFF direction was the real defect: stop_reaper_fw() never ran, so
++		 * REAPER_FWI/FWF/FWO stayed hooked and enforcing after the operator had
++		 * "disabled" the engine - it only came down on the next reboot. A master
++		 * switch that does not disable is the wrong failure direction for a
++		 * firewall. ON merely looked broken: the flag flipped, no chains
++		 * appeared, because start_firewall()'s re-apply hook only RUNS
++		 * /tmp/reaper_fw/apply.sh if it already exists and never generates it -
++		 * and /tmp is a tmpfs, so with the engine off at boot nothing had ever
++		 * written it.
++		 *
++		 * Fire only on an ACTUAL change: this action is also used to save the
++		 * commit-confirm timer, and restarting the engine every time the timer
++		 * is edited would rebuild the ruleset for no reason.
++		 *
++		 * Deliberately NO nvram_commit() here. nvram_commit() flushes the WHOLE
++		 * of nvram, which would persist the six editable lists while they are
++		 * still an unconfirmed draft held in RAM - that is exactly what S3's
++		 * commit-confirm design forbids. The flag persists on the next confirm,
++		 * which is the only path that is supposed to write flash. */
++		if (en && (!strcmp(en, "0") || !strcmp(en, "1"))) {
++			int changed = (strcmp(nvram_safe_get("reaper_fw_enable"), en) != 0);
+ 			nvram_set("reaper_fw_enable", en);
++			if (changed)
++				notify_rc("restart_reaper_fw");
++		}
+ 		if (cf) {
+ 			int n = atoi(cf);
+ 			char b[12];
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 112c07e2a9..0437998cd6 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -226,6 +226,35 @@ window.shellChromeLock = function(on){
+   var t=document.querySelector('.top'), r=document.getElementById('rail');
+   if(t){ t.style.pointerEvents=on?'none':''; t.style.opacity=on?'.45':''; }
+   if(r){ r.style.pointerEvents=on?'none':''; r.style.opacity=on?'.45':''; }
++  /* reaper 2026-08-13 (field, v2.3.9): ALSO freeze the shell's scroll position.
++     Disabling pointer events stops clicks but not the wheel, so during a
++     firmware flash the operator could still scroll the shell - which slid the
++     dimmed header up out from behind the frame's veil and left the version
++     chips painted OVER the curtain. The veil lives inside the iframe and can
++     never cover shell chrome (see chromeLock() in Reaper_Firmware.asp), so the
++     shell has to hold still instead.
++
++     overflow:hidden rather than position:fixed on purpose - it pins the page
++     without changing scrollTop, so there is no jump-to-top when it lifts. Set
++     on BOTH documentElement and body because either can be the scrolling
++     element depending on doctype/CSS. The saved offset is restored anyway as a
++     belt-and-braces measure, and the guard makes repeated lock(true) calls
++     idempotent - reaperWait/Done and the #Loading MutationObserver below can
++     both fire for the same operation. */
++  var de=document.documentElement, bd=document.body;
++  if(on){
++    if(!window.__reaperScrollLock){
++      window.__reaperScrollLock = { y: window.pageYOffset || de.scrollTop || 0 };
++      if(de) de.style.overflow='hidden';
++      if(bd) bd.style.overflow='hidden';
++    }
++  } else if(window.__reaperScrollLock){
++    var _y = window.__reaperScrollLock.y;
++    window.__reaperScrollLock = null;
++    if(de) de.style.overflow='';
++    if(bd) bd.style.overflow='';
++    try{ window.scrollTo(0, _y); }catch(e){}
++  }
+ };
+ window.reaperWait = function(msg){
+   var o=document.getElementById('reaper_wait'); if(!o) return;
+-- 
+2.25.1
+

@@ -1,0 +1,585 @@
+From d69d48d89f751b9d7f34b938382446ff4c4065a2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 21:59:41 -0400
+Subject: [PATCH] devices: export the client inventory; dashboard: make
+ Security Posture rows links
+
+DEVICES - export name / MAC / IP as CSV, JSON or HTML.
+Built entirely in the browser from D.devices, which action=status has already
+delivered: no CGI action, no new mime row, nothing added to httpd. There is no
+outbound file-serving path in httpd to reuse in any case - every
+Content-Disposition in web.c is INBOUND multipart upload parsing - so a
+server-side download would have meant new plumbing for data the page is already
+holding.
+
+The name follows what the table shows: d.name (custom_clientlist, the naming
+master) then the DHCP hostname. Exporting the raw hostname instead would make
+the file disagree with the UI for exactly the devices the operator bothered to
+rename. CSV quotes per RFC 4180; JSON and HTML carry the model and a timestamp
+so an old file is identifiable later. Exports EVERY device rather than the
+filtered view - this is an inventory, and a filter left set from an earlier
+glance silently truncating it is what makes an export untrustworthy.
+
+A caution sits under the button: unlike reaper_diag, which sanitizes and keeps a
+withheld-items ledger precisely because raw dumps are unsafe to share, this file
+is deliberately unsanitized - real names and addresses are the point - so it is
+not safe to post in a forum or attach to a bug report.
+
+DASHBOARD - every Security Posture row now takes you to the page that owns the
+setting it reports. The rows stated a fact and left the operator to work out
+which page could change it. All 14 wired; the two firewall rows deep-link to the
+tab that owns them (Reaper_Firewall.asp?t=general, which initTab() already
+supports) rather than dropping the user on Status to hunt - the ask was the page
+AND the view.
+
+The dashboard is top-level rather than framed (standing rule 39), so navigation
+is location.href to the shell with the page in the hash, the same form this
+page's own rail links already use. One delegated listener rather than 14
+handlers, so a row added later needs only the attribute; tabindex/role are set
+from JS so a row that loses its data-go stops being focusable automatically. The
+hover/focus affordance is bound to [data-go], not .srow, so a row without a
+destination never looks clickable.
+
+RDEV_88..90 seeded English into all 25 packs, lockstep at 6552.
+
+Verified without a build: 250 inline script blocks across six reaper pages parse
+under node in all 25 languages, 0 unresolved tokens; reaper_langcheck 0 breakers;
+every id the new JS touches exists; all 14 data-go targets resolve to pages that
+exist (MLO.asp via the SDN sysdep overlay); ASCII-clean.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/BR.dict             |  3 +
+ release/src/router/www/CN.dict             |  3 +
+ release/src/router/www/CZ.dict             |  3 +
+ release/src/router/www/DA.dict             |  3 +
+ release/src/router/www/DE.dict             |  3 +
+ release/src/router/www/EN.dict             |  3 +
+ release/src/router/www/ES.dict             |  3 +
+ release/src/router/www/FI.dict             |  3 +
+ release/src/router/www/FR.dict             |  3 +
+ release/src/router/www/HU.dict             |  3 +
+ release/src/router/www/IT.dict             |  3 +
+ release/src/router/www/JP.dict             |  3 +
+ release/src/router/www/KR.dict             |  3 +
+ release/src/router/www/MS.dict             |  3 +
+ release/src/router/www/Main_ReaperDash.asp | 76 +++++++++++++++----
+ release/src/router/www/NL.dict             |  3 +
+ release/src/router/www/NO.dict             |  3 +
+ release/src/router/www/PL.dict             |  3 +
+ release/src/router/www/RO.dict             |  3 +
+ release/src/router/www/RU.dict             |  3 +
+ release/src/router/www/Reaper_Devices.asp  | 88 +++++++++++++++++++++-
+ release/src/router/www/SL.dict             |  3 +
+ release/src/router/www/SV.dict             |  3 +
+ release/src/router/www/TH.dict             |  3 +
+ release/src/router/www/TR.dict             |  3 +
+ release/src/router/www/TW.dict             |  3 +
+ release/src/router/www/UK.dict             |  3 +
+ 27 files changed, 223 insertions(+), 16 deletions(-)
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 06af42af16..9143fd0720 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 5b18f23fa5..93c6be2d5a 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 689e3efc87..259b6c7050 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index afdcce70d8..54a4cd427b 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 4f71febefe..5e493fed20 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 02cdcf59bd..81b6b37310 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index fe38b2deef..1aa3da4b42 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index ca1134421d..ded775dbdf 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 9d3157506e..5b16c3517f 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 8c237b6bf1..d9dcebdc6c 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 368e32f852..9d2b8a19ef 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 06d3a64f82..b7321c85f7 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 45f8d5d206..bb07b13427 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 12c6e45245..736b1fda31 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 9d77ff40dc..4c78d3af2c 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -225,6 +225,14 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .tag.ok{color:var(--jade);border:1px solid rgba(79,178,134,.35);background:rgba(79,178,134,.08)}
+ .tag.warn{color:var(--amber);border:1px solid rgba(224,169,59,.35);background:rgba(224,169,59,.08)}
+ .tag.danger{color:#fff;border:1px solid var(--danger);background:rgba(255,59,48,.18)}
++/* reaper 2026-08-13: a posture row now takes you to the page that owns the
++   setting it reports. Only rows carrying data-go are interactive, so the
++   affordance is attached to that attribute rather than to .srow - a row without
++   a destination must not look clickable. */
++.srow[data-go]{cursor:pointer;border-radius:8px;transition:background .12s}
++.srow[data-go]:hover{background:rgba(255,255,255,.045)}
++.srow[data-go]:focus{outline:none;background:rgba(255,255,255,.045)}
++.srow[data-go]:focus-visible{outline:2px solid rgba(225,6,0,.45);outline-offset:2px}
+ .posture .score{font-family:var(--hdr);font-weight:700;font-size:13px;letter-spacing:.12em;padding:5px 12px;border-radius:7px;text-transform:uppercase}
+ .posture .hardened{color:var(--jade);border:1px solid rgba(79,178,134,.45);background:rgba(79,178,134,.10)}
+ .legend{margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft);display:flex;flex-direction:row;flex-wrap:wrap;gap:8px 22px;font-size:11px;color:var(--steel)}
+@@ -478,33 +486,33 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         <section class="card col8">
+           <div class="head"><h3><#Reaper_c_security_posture#></h3></div>
+           <div class="rows two">
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></div>
++            <div class="srow" data-go="Advanced_Wireless_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></div>
+               <div><div class="name"><#RDSH_08#></div><div class="sub2" id="s_wifi_sub">&mdash;</div></div></div><span class="tag ok" id="s_wifi_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/></svg></div>
++            <div class="srow" data-go="Reaper_Firewall.asp?t=general"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/></svg></div>
+               <div><div class="name"><#RDSH_09#></div><div class="sub2" id="s_fw_sub">&mdash;</div></div></div><span class="tag ok" id="s_fw_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
++            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+               <div><div class="name"><#RDSH_10#></div><div class="sub2" id="s_rc_sub">&mdash;</div></div></div><span class="tag ok" id="s_rc_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg></div>
++            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg></div>
+               <div><div class="name"><#RDSH_11#></div><div class="sub2" id="s_adm_sub">&mdash;</div></div></div><span class="tag ok" id="s_adm_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg></div>
++            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg></div>
+               <div><div class="name"><#RDSH_12#></div><div class="sub2" id="s_jffs_sub">&mdash;</div></div></div><span class="tag ok" id="s_jffs_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
++            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
+               <div><div class="name"><#RDSH_13#></div><div class="sub2" id="s_ssh_sub">&mdash;</div></div></div><span class="tag ok" id="s_ssh_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
++            <div class="srow" data-go="Advanced_WAN_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
+               <div><div class="name">UPnP</div><div class="sub2" id="s_upnp_sub">&mdash;</div></div></div><span class="tag ok" id="s_upnp_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
++            <div class="srow" data-go="Advanced_WWPS_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
+               <div><div class="name">WPS</div><div class="sub2" id="s_wps_sub">&mdash;</div></div></div><span class="tag ok" id="s_wps_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></div>
++            <div class="srow" data-go="Reaper_QoS.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></div>
+               <div><div class="name"><#EzQoS_type_QoS#></div><div class="sub2" id="s_qos_sub">&mdash;</div></div></div><span class="tag ok" id="s_qos_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12h6"/></svg></div>
++            <div class="srow" data-go="Reaper_Firewall.asp?t=general"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12h6"/></svg></div>
+               <div><div class="name"><#RDSH_14#></div><div class="sub2" id="s_dos_sub">&mdash;</div></div></div><span class="tag ok" id="s_dos_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
++            <div class="srow" data-go="MLO.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
+               <div><div class="name"><#RDSH_15#></div><div class="sub2" id="s_mlo_sub">&mdash;</div></div></div><span class="tag ok" id="s_mlo_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
++            <div class="srow" data-go="Advanced_WAN_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
+               <div><div class="name"><#RDSH_16#></div><div class="sub2" id="s_dnsr_sub">&mdash;</div></div></div><span class="tag ok" id="s_dnsr_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M12 15v2"/></svg></div>
++            <div class="srow" data-go="Reaper_GK.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M12 15v2"/></svg></div>
+               <div><div class="name"><#RGK_00#></div><div class="sub2" id="s_gk_sub">&mdash;</div></div></div><span class="tag ok" id="s_gk_tag">&mdash;</span></div>
+-            <div class="srow"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg></div>
++            <div class="srow" data-go="Reaper_Warden.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg></div>
+               <div><div class="name"><#RWDN_00#></div><div class="sub2" id="s_wdn_sub">&mdash;</div></div></div><span class="tag ok" id="s_wdn_tag">&mdash;</span></div>
+           </div>
+         </section>
+@@ -1417,6 +1425,46 @@ function reaperTips(){
+ }
+ window.addEventListener('load', reaperTips);
+ window.addEventListener('resize', function(){ reaperTips(); });
++
++/* ---- Security Posture rows are links ------------------------------------
++ * Each row reports a setting but gave no way to reach it; the operator had to
++ * know which page owned it. Every row now carries data-go with its destination,
++ * and the two firewall rows deep-link to the tab that owns them
++ * (Reaper_Firewall.asp?t=general) rather than dropping the user on Status to
++ * hunt - the ask was "the page AND view".
++ *
++ * The dashboard is TOP-LEVEL, not framed (standing rule 39), so navigating means
++ * pointing at the shell with the page in the hash - the same form the rail links
++ * on this page already use. One delegated listener rather than 14 handlers, so a
++ * row added later only needs the attribute.
++ *
++ * tabindex/role are set here rather than in the markup: it keeps the 14 rows
++ * free of boilerplate, and a row that loses its data-go stops being focusable
++ * automatically. */
++(function(){
++  function go(el){
++    var p = el && el.getAttribute('data-go');
++    if (p) location.href = '/reaper_shell.asp#' + p;
++  }
++  function rowOf(t){
++    while (t && t !== document) {
++      if (t.classList && t.classList.contains('srow') && t.hasAttribute('data-go')) return t;
++      t = t.parentNode;
++    }
++    return null;
++  }
++  var rows = document.querySelectorAll('.srow[data-go]'), i;
++  for (i = 0; i < rows.length; i++) {
++    rows[i].setAttribute('tabindex', '0');
++    rows[i].setAttribute('role', 'link');
++  }
++  document.addEventListener('click', function(e){ go(rowOf(e.target)); });
++  document.addEventListener('keydown', function(e){
++    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
++    var r = rowOf(e.target);
++    if (r) { e.preventDefault(); go(r); }
++  });
++})();
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index b9155d1d20..3a49e3be75 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 8c931cd208..ae0fed550f 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 5fa0dba046..c09ee67646 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 4693e73145..f552e81b20 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 2f54d01f7f..29578cc711 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index a25f759eca..7f392e37d1 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -164,6 +164,16 @@ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-ra
+       <tbody id="rows"></tbody>
+     </table>
+   </div>
++  <div class="tblbar" style="margin-top:14px;align-items:center">
++    <span style="font-family:var(--hdr);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim)"><#RDEV_88#></span>
++    <select id="exp_fmt" class="fld" style="max-width:150px">
++      <option value="csv">CSV</option>
++      <option value="json">JSON</option>
++      <option value="html">HTML</option>
++    </select>
++    <button class="btng btnsm" id="exp_go"><#RDEV_89#></button>
++  </div>
++  <p class="note" style="margin-top:8px"><#RDEV_90#></p>
+ </div>
+ 
+ <p class="foot"><b><#RDEV_60#></b> <#RDEV_61#></p>
+@@ -185,6 +195,75 @@ var DERR = {
+   RDEVE_13:`<#RDEVE_13#>`
+ };
+ function errText(j){ return (j && j.ek && DERR[j.ek]) || (j && j.error) || 'error'; }
++
++/* ---- client inventory export (name / MAC / IP) --------------------------
++ * Built entirely in the browser from D.devices, which action=status has
++ * already delivered - no CGI action, no new mime row, nothing added to httpd.
++ * There is no outbound file-serving path in httpd to reuse anyway (every
++ * Content-Disposition there is INBOUND multipart upload parsing), so a
++ * server-side download would have meant new plumbing for data the page is
++ * already holding.
++ *
++ * The name follows what the table shows - d.name (custom_clientlist, the naming
++ * master) first, then the DHCP hostname. Exporting the raw hostname instead
++ * would make the file disagree with the UI for exactly the devices the operator
++ * bothered to rename.
++ *
++ * Exports EVERY device, not the filtered view: this is an inventory file, and a
++ * filter left set from a previous glance silently truncating it is the kind of
++ * surprise that makes an export untrustworthy. */
++var PRODID = `<% nvram_get("productid"); %>`;
++
++function expRows(){
++  return ((D && D.devices) ? D.devices : []).map(function(d){
++    return { name: (d.name || d.host || ''), mac: (d.mac || ''), ip: (d.ip || '') };
++  });
++}
++function csvCell(s){
++  s = String(s == null ? '' : s);
++  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;   /* RFC 4180 */
++}
++function expBuild(fmt, rows, stamp){
++  var i, out;
++  if (fmt === 'csv') {
++    out = 'name,mac,ip\r\n';
++    for (i = 0; i < rows.length; i++)
++      out += csvCell(rows[i].name) + ',' + csvCell(rows[i].mac) + ',' + csvCell(rows[i].ip) + '\r\n';
++    return { text: out, mime: 'text/csv', ext: 'csv' };
++  }
++  if (fmt === 'json') {
++    return { text: JSON.stringify({ model: PRODID, generated: stamp, count: rows.length, devices: rows }, null, 2),
++             mime: 'application/json', ext: 'json' };
++  }
++  /* standalone HTML - readable on its own, no external CSS, dark like the UI */
++  out = '<!doctype html><meta charset="utf-8"><title>' + esc(PRODID) + ' devices</title>' +
++        '<style>body{font:13px system-ui,sans-serif;background:#0f0f12;color:#ECE7DB;padding:24px}' +
++        'h1{font-size:17px;margin:0 0 4px}p{color:#B7B1A4;margin:0 0 16px;font-size:12px}' +
++        'table{border-collapse:collapse;width:100%;max-width:900px}' +
++        'th,td{border-bottom:1px solid rgba(255,255,255,.12);padding:7px 10px;text-align:left}' +
++        'th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#B7B1A4}' +
++        'td.m{font-family:ui-monospace,Consolas,monospace;font-size:11.5px}</style>' +
++        '<h1>' + esc(PRODID) + '</h1><p>' + esc(stamp) + ' &middot; ' + rows.length + '</p>' +
++        '<table><thead><tr><th>Name</th><th>MAC</th><th>IP</th></tr></thead><tbody>';
++  for (i = 0; i < rows.length; i++)
++    out += '<tr><td>' + esc(rows[i].name) + '</td><td class="m">' + esc(rows[i].mac) +
++           '</td><td class="m">' + esc(rows[i].ip) + '</td></tr>';
++  return { text: out + '</tbody></table>', mime: 'text/html', ext: 'html' };
++}
++function expGo(){
++  var rows = expRows();
++  if (!rows.length) return;
++  var stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
++  var f = expBuild(document.getElementById('exp_fmt').value, rows, stamp);
++  var name = (PRODID || 'router') + '-devices-' +
++             stamp.replace(/[: ]/g, '-').slice(0, 16) + '.' + f.ext;
++  var blob = new Blob([f.text], { type: f.mime + ';charset=utf-8' });
++  var url = URL.createObjectURL(blob), a = document.createElement('a');
++  a.href = url; a.download = name; document.body.appendChild(a); a.click();
++  /* revoke on a tick, not immediately - some browsers have not started the
++     download by the time the click handler returns */
++  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
++}
+ /* dict strings for JS use: each value is resolved server-side from the dict
+    (backticks per the sq-token rule); plain ASCII so esc() over them is a no-op */
+ var L = {
+@@ -532,8 +611,13 @@ function fixIssue(iss, act){
+   });
+ }
+ 
+-if(document.readyState !== 'loading') loadAll();
+-else document.addEventListener('DOMContentLoaded', loadAll);
++function devBoot(){
++  var b = document.getElementById('exp_go');
++  if (b) b.onclick = expGo;
++  loadAll();
++}
++if(document.readyState !== 'loading') devBoot();
++else document.addEventListener('DOMContentLoaded', devBoot);
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 4ef688b96c..2f146f3fcc 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 07a0e94c3f..8e40bdb099 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index d9986d72fd..27cd505f6b 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 6978dd91a9..ffd76f6733 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 2281d87871..e60adddc7d 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 3a3df82aea..a056338562 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6547,3 +6547,6 @@ RFW_225=Firewall engine enabled
+ RFW_226=Firewall engine disabled
+ RFW_227=Still working. Check the System Log if this persists.
+ RFW_228=Empty until you click Export, or paste a saved configuration here to restore it.
++RDEV_88=Export list
++RDEV_89=Export
++RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
+-- 
+2.25.1
+

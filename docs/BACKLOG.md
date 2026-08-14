@@ -40,8 +40,9 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     Gate 2 was not named in the original investigation and is the better suspect, because a node can
     be discovered perfectly and still never reach the wizard.
 
-  - **Instrumentation is now cut into the v2.3.7 rung (patch 0401) — still UNCOMPILED and
-    never exercised.** Three
+  - **Instrumentation is compiled and shipped** — cut into the v2.3.7 rung as patch `0401`, and
+    v2.3.7 published images on all five models, so it is in the field. It has still **never been
+    exercised**, because that needs a failed search on a live mesh. Three
     `logmessage("aimesh", …)` lines on the failure paths of both gates, naming the MAC and exactly
     which keys were absent. No behaviour change. This exists because the triage has been blocked
     since July on a runtime capture nobody can conveniently take — with this in, the *next* failed
@@ -89,26 +90,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log. [Requires_Reaserch]
 
-- **[P3] Wi-Fi Professional: ~15 s first load after a firmware upgrade, fast on every load after.**
-  Reported on metal 2026-08-13 (v2.3.9). Only the FIRST load following an upgrade is slow; once it
-  has been pulled once the page is responsive, so this is a cold-state cost, not steady-state.
-
-  - **Note the history before re-investigating:** the known slow-first-load cause was found and
-    fixed for v2.3.7 (patches 0401/0404) — 116 server-side `nvram_get` calls collapsed into a single
-    `wl_ifnames`-driven ej call. That fix IS in this build, and its timing was never measured on
-    metal ("UNCOMPILED, timing unmeasured"). So this is either a residual second cause or evidence
-    the collapse did not deliver what it promised. Do not re-find the nvram_get issue and call it
-    solved.
-  - **Most likely candidate is not the page at all:** an upgrade ends in a reboot, and the Pro page
-    makes per-radio driver calls (`wl`) while the wireless stack is still settling — ACS/DFS
-    selection on 5 GHz/6 GHz can block ioctls for tens of seconds after boot. That would explain
-    "first load only" precisely, and would mean the page is a victim rather than the cause.
-  - **Cheap way to separate the two:** load the page ~10 minutes after a reboot with no other
-    change. Still slow → it is a genuine cold-cache/first-generation cost in the page. Fast → it is
-    boot-time driver settling, and the fix is to show a loading state rather than to optimise
-    anything. Timing `curl -o /dev/null -w '%{time_total}'` against the ASP separates server-side ej
-    time from browser-side rendering.
-
 - **[P2] Firewall engine master switch takes no action — most importantly it does not turn OFF.**
   Found on metal 2026-08-13 (v2.3.9, first time the engine ever ran). `reaper_fw.cgi?action=opts`
   is what the page's engine toggle calls (`Reaper_Firewall.asp` ~1148); it does
@@ -130,7 +111,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     commit-confirm design deliberately holds the six editable lists in RAM and commits only on
     confirm) but `enable`/`confirm` are settings rather than staged drafts, so confirm the intent
     rather than assuming.
-  - **FIXED in v2.4.0 (`b3589185e6`) — metal re-test owed.** `opts` now calls
+  - **FIXED in v2.4.1 (`b3589185e6`) — metal re-test owed.** `opts` now calls
     `notify_rc("restart_reaper_fw")`, but only when `enable` actually CHANGES value — the same
     action saves the commit-confirm timer, and rebuilding the ruleset every time that number is
     edited would be pointless work. **Deliberately still no `nvram_commit()`**: that call flushes
@@ -151,7 +132,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   says "DO NOT POWER OFF OR RESTART THE ROUTER", so anything that looks like the UI misbehaving is
   worth more than its severity suggests.
 
-  - **FIXED in v2.4.0 (`b3589185e6` + `49d61be6df`) — metal re-test owed. The cause was NOT what
+  - **FIXED in v2.4.1 (`b3589185e6` + `49d61be6df`) — metal re-test owed. The cause was NOT what
     this entry first recorded**, and the owner's original description was the accurate one: the page
     behind the header comes forward over it. `.top` is `position:sticky; top:0; z-index:300` with an
     **opaque** `background:#040405`, and `#page_frame` is `scrolling="no"` — so the shell scrolls
@@ -176,8 +157,18 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## UI / UX polish
 
-- **Quick List** Items in the "Security Posture" panel on the dashboard should be linked so when 
-  clicked it takes the user to the page and view of where the item can be modified.
+- ~~**Quick List** Items in the "Security Posture" panel on the dashboard should be linked so when
+  clicked it takes the user to the page and view of where the item can be modified.~~
+  - **DONE in v2.4.1 (`d69d48d89f`).** All 14 rows carry a `data-go` target and navigate on click or
+    Enter/Space. The two firewall rows deep-link to the tab that owns the setting
+    (`Reaper_Firewall.asp?t=general`, which `initTab()` already supported) rather than dropping the
+    user on Status to hunt — the ask was the page *and* the view. One delegated listener rather than
+    14 handlers, so a row added later needs only the attribute; `tabindex`/`role` are set from JS, so
+    a row that loses its target stops being focusable automatically, and the hover/focus affordance is
+    bound to `[data-go]` so a row without a destination never looks clickable.
+
+- **Instructions** Add usage instructions and examples to the firewall pages to assit the user 
+  in understanding the tooling.
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
   blocking during an apply/reboot is done (v2.2.5, refined v2.3.0); the overlays are now anchored to
@@ -229,9 +220,16 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Features to add
 
-- **[P3] Devices page — export the client inventory (name, MAC, IP) as HTML, CSV or JSON.** Owner
+- ~~**[P3] Devices page — export the client inventory (name, MAC, IP) as HTML, CSV or JSON.**~~ Owner
   request 2026-08-13. A button on `Reaper_Devices.asp` that offers the three formats and downloads
   the current device list.
+
+  - **DONE in v2.4.1 (`d69d48d89f`).** Built exactly as scoped below — client-side from `D.devices`,
+    no CGI action, no mime row, names from `custom_clientlist`, CSV quoted per RFC 4180, model +
+    timestamp in the JSON and HTML, and the PII caution under the button. One decision worth
+    recording that the notes below did not cover: it exports **every** device rather than the
+    filtered view, because a filter left set from an earlier glance silently truncating an inventory
+    is what makes an export untrustworthy. Tokens `RDEV_88`–`90`, all 25 packs lockstep.
 
   - **Should need no C at all.** `reaper_dev.cgi?action=status` already returns the full list the
     table renders from, so the data is in the browser; build the file client-side (`Blob` +
@@ -255,9 +253,9 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 - **[P3] Firewall rule tracer (FIREWALL-PLAN Phase 3, the last unbuilt piece of it).** "Given a
   packet like *this*, which rule would match?" — a simulator that walks the committed config in C
-  and reports the first match, rather than shelling out to iptables. Deferred from v2.4.0 as the
-  cheapest thing to leave: it is a diagnostic aid, not a control, so nothing is unusable without it.
-  Everything else in Phases 2 and 3 shipped in v2.4.0 (`a103b59d6d` engine, `fa1e5d634f` Egress and
+  and reports the first match, rather than shelling out to iptables. Deferred from the firewall rung as
+  the cheapest thing to leave: it is a diagnostic aid, not a control, so nothing is unusable without it.
+  Everything else in Phases 2 and 3 shipped in v2.4.1 (`a103b59d6d` engine, `fa1e5d634f` Egress and
   Forwards tabs + backup/restore).
 
 - **[P3] dnsmasq `ipset=` for FQDN objects (FIREWALL-PLAN Phase 2 upgrade) — BLOCKED, and not for
@@ -292,6 +290,15 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     references `Reaper_Firewall`, so the page is unreachable in a running image — deliberately so.
     **Do not read presence in the source ladder as delivery.** Design approved, live inspection done,
     build not started. [owed — build]
+  - **BUILT in v2.4.1.** Phase 1 engine + hub wiring (`b0617e5a43`), Status rewritten as a posture
+    summary rather than the planned chain dump (`e31161e279` — the live-chain design was built first
+    and rejected on sight: 40-odd chains and several hundred counter rows, unreadable without prior
+    `iptables` knowledge), Phase 2 egress defaults + Phase 3 hardened forwards (`a103b59d6d`), their
+    authoring tabs and backup/restore (`fa1e5d634f`), and a **measured** engine-active signal
+    (`24673cac2e`) so the switch reports what is true rather than what was asked for. Ships with
+    `reaper_fw_enable=0`. **Still owed:** the rule tracer and the dnsmasq `ipset=` upgrade (both
+    tracked as their own entries above), on-metal validation, and the fleet fan-out — which needs the
+    four per-model overlays regenerated first, since the rung touches two files they carry.
 
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the
@@ -375,8 +382,34 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     verified against the workflow and a 406-file `patches/`), and **a third stale reference the
     original entry missed**: the comment at `public-build.yml:483` still said the pin was
     `Reaper_v2.3.1`.
+  - **The same class of drift found again on 2026-08-13, in three more places, while cutting v2.4.1** —
+    the fix above corrected the files it named, not the pattern:
+    - `docs/RELEASE-NOTES.md` header claimed *"`Reaper_v2.3.5` — current head, source rung only: not
+      built"* while the document's own lead section was v2.3.7, and separately claimed *"v2.3.2 is
+      built + shipped on all five models"*. Both corrected, and "current head" is now stated
+      alongside "newest PUBLISHED release" so the two cannot be confused again.
+    - `docs/RELEASE-NOTES.md` also had a **`**Firmware:** …` line spliced into the middle of a
+      sentence** in the v2.0.0 bullet ("A comprehensive security review of **Firmware:** … inherited
+      ASUS/Merlin open source Reaper ships"), evidently from an earlier automated header update that
+      matched the wrong line. Removed.
+    - `patches/README.md` still advertised **374 patches, v1.0 → v2.3.1** with a section list ending
+      at v2.1.2 — it had not been updated for eight rungs. Counts corrected to 424 / v2.4.1, sections
+      written for `0311`–`0424`, and the fact that no per-rung note was written for `0375`–`0406` is
+      now recorded rather than papered over.
   - **Remaining [P3]:** decide whether `cut_rung`/the publish path should write image hashes into the
-    manifest automatically, so this cannot drift again.
+    manifest automatically, so this cannot drift again. The three finds above argue the wider point:
+    every doc that restates a version or a count is a copy that can rot, and `cut_rung` already knows
+    the true values at cut time. Candidates it could own outright: the `patches/README.md` header
+    count, the `docs/CI-PUBLIC-BUILD.md` pin row, and the `RELEASE-NOTES.md` "current head" line.
+
+- **[P3] Decide whether two internal docs should be published here.** `docs/BACKLOG.md` and
+  `docs/CHANGELOG.md` each referred readers to a document that does not exist in this repo —
+  `GUESTPRO-2.5G-VLAN-PLAN.md` and `CODE-AUDIT-2026-08-05.md`. Both live in the private working tree
+  (`asuswrt-merlin.ng/docs/`) and were never copied across, so the links were dead for every public
+  reader. Found 2026-08-13 by a relative-link sweep of the repo (211 links, these the only two
+  broken). **De-linked for now**, with the text kept and the docs named as unpublished — publishing
+  them is an owner decision, not a cleanup, since neither has been through a PII/scope review.
+  Either copy them in or leave the prose as-is; what should not persist is a link that 404s.
 
 - **[P3]** Document the non-functional retained features (the firmware update-check UI's stock pieces,
   the removed security-check UI) that are kept only for potential future use.
@@ -397,4 +430,5 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   neither a source fix nor a runtime correction hook is possible. **Workarounds:** keep Guest Pro off
   the 2.5G-1 port, move the device to another LAN port, or tag it VID-52; or avoid pairing a manual WAN
   VLAN with Guest Pro on that port. Almost certainly present on stock ASUS too (same blob). Full
-  investigation: [`GUESTPRO-2.5G-VLAN-PLAN.md`](GUESTPRO-2.5G-VLAN-PLAN.md). [blocked — blob; risk-accepted]
+  investigation: `GUESTPRO-2.5G-VLAN-PLAN.md` — **not published in this repo**; it lives in the private
+  working tree. (Was a link here, which was dead for every public reader.) [blocked — blob; risk-accepted]

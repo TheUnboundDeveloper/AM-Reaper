@@ -1,0 +1,1018 @@
+From fa1e5d634f851ad241c389207840b1b8c9fed44d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 18:29:14 -0400
+Subject: [PATCH] firewall: Egress and Forwards tabs, plus backup/restore
+
+The Phase 2 and Phase 3 engines shipped in a103b59d6d with no way to author
+anything for them - both lists were nvram-only, and their record formats are
+'>'-delimited strings whose malformed entries are silently DROPPED by design
+(S2 never emits a half-formed rule). A control that can look set and do nothing
+is the failure class this project keeps hunting, so hand-editing was never an
+acceptable long-term answer.
+
+EGRESS tab (reaper_fw_edef): pick a device object or group, choose Deny / Reject
+/ Allow, optionally schedule it. The note says plainly that LAN traffic is never
+affected, because "no internet for this device" and "cut this device off the
+network" are very different requests and the -o $WANIF anchor only does the
+first.
+
+FORWARDS tab (reaper_fw_nat): protocol, external port, internal address and
+port, an optional source restriction (any address object - including a geo
+object, which resolves to Warden's country set) and an optional schedule. The
+add handler mirrors the generator's own refusals - IPv4 literal required, no
+comma list for the internal port - so an operator hears about it at the form
+rather than finding a dropped record in syslog later.
+
+BACKUP / RESTORE: a new read-only `export` CGI action returns the eight editable
+lists. There is deliberately NO matching import action. Restore replays the
+ordinary per-list `save`, so an imported configuration passes exactly the same
+length and charset checks an interactive edit does; a bespoke import path would
+be a second, less-travelled way into the same nvram, and the point of S2 is that
+there is only one. Import lands in the DRAFT, so commit-confirm still gates it
+going live.
+
+RFW_204..RFW_223 seeded English into all 25 packs, lockstep at 6544 lines.
+
+Verified without a build: every id the new JS touches exists in the markup; both
+new tabs have a strip entry, a content div and a TABS[] entry; all page tokens
+resolve against EN.dict; reaper_langcheck 0 breakers; 125 inline script blocks
+across four reaper pages parse under node in all 25 languages; ASCII-clean.
+
+STILL NOT BUILT from the Phase 2/3 plan, and neither is a wiring job:
+ - Rule tracer. A config-walking simulator in C; a diagnostic aid rather than a
+   control, so it is the least costly thing to defer.
+ - dnsmasq ipset= for FQDN objects. BLOCKED, and not for the reason the plan
+   assumed: it is not that dnsmasq.conf is regenerated wholesale (rc owns that
+   file and can emit its own lines before the operator's hook) - it is that this
+   dnsmasq is COMPILED WITHOUT ipset support. config.h defines both HAVE_IPSET
+   and NO_IPSET and resolves it as `#if defined(NO_IPSET) -> #undef HAVE_IPSET`,
+   and the shipped binary contains no ipset option string at all. Enabling it
+   means rebuilding dnsmasq with HAVE_IPSET, which is a change to the most
+   critical service on the box and wants its own rung and its own metal pass.
+   FQDN objects continue to resolve on the 10-minute cru timer meanwhile.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             |  23 ++++
+ release/src/router/www/BR.dict             |  20 +++
+ release/src/router/www/CN.dict             |  20 +++
+ release/src/router/www/CZ.dict             |  20 +++
+ release/src/router/www/DA.dict             |  20 +++
+ release/src/router/www/DE.dict             |  20 +++
+ release/src/router/www/EN.dict             |  20 +++
+ release/src/router/www/ES.dict             |  20 +++
+ release/src/router/www/FI.dict             |  20 +++
+ release/src/router/www/FR.dict             |  20 +++
+ release/src/router/www/HU.dict             |  20 +++
+ release/src/router/www/IT.dict             |  20 +++
+ release/src/router/www/JP.dict             |  20 +++
+ release/src/router/www/KR.dict             |  20 +++
+ release/src/router/www/MS.dict             |  20 +++
+ release/src/router/www/NL.dict             |  20 +++
+ release/src/router/www/NO.dict             |  20 +++
+ release/src/router/www/PL.dict             |  20 +++
+ release/src/router/www/RO.dict             |  20 +++
+ release/src/router/www/RU.dict             |  20 +++
+ release/src/router/www/Reaper_Firewall.asp | 135 ++++++++++++++++++++-
+ release/src/router/www/SL.dict             |  20 +++
+ release/src/router/www/SV.dict             |  20 +++
+ release/src/router/www/TH.dict             |  20 +++
+ release/src/router/www/TR.dict             |  20 +++
+ release/src/router/www/TW.dict             |  20 +++
+ release/src/router/www/UK.dict             |  20 +++
+ 27 files changed, 656 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 80a1da7141..0b1c185420 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23724,6 +23724,29 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 	/* the master switch and the revert timer are ordinary settings, but the
+ 	 * timer is load-bearing (S3) so the floor is enforced here as well as in
+ 	 * the engine - the page must never be able to post a 0. */
++	/* reaper 2026-08-13 (v2.4.0): backup / restore.
++	 *
++	 * Export is read-only and returns the eight editable lists verbatim. There
++	 * is deliberately NO matching "import" action: the page restores by replaying
++	 * the ordinary per-list `save`, so an imported configuration passes exactly
++	 * the same length and charset checks an interactive edit does. A bespoke
++	 * import path would be a second, less-travelled way into the same nvram - and
++	 * the whole point of S2 is that there is only one. It also means an import
++	 * lands in the DRAFT, so commit-confirm still gates it becoming live. */
++	if (strcmp(action, "export") == 0) {
++		static const char *keys[] = { "obj", "grp", "svc", "zone", "zpol", "rules", "edef", "nat" };
++		char nv[32];
++		int i;
++		websWrite(stream, "{\"ok\":1,\"cfg\":{");
++		for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++) {
++			snprintf(nv, sizeof(nv), "reaper_fw_%s", keys[i]);
++			websWrite(stream, "%s\"%s\":", i ? "," : "", keys[i]);
++			gk_json_esc(stream, nvram_safe_get(nv));
++		}
++		websWrite(stream, "}}");
++		return;
++	}
++
+ 	if (strcmp(action, "opts") == 0) {
+ 		char *en = get_cgi("enable"), *cf = get_cgi("confirm");
+ 		/* reaper 2026-08-13 (field, v2.3.9): this used to set the nvram flag and
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index d66418de61..5e4899d16b 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 087a163423..53d2519d69 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index f3b6deeedb..e04a54efa0 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 6700658c78..838b9ccfcc 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 8d550a93de..8dcf1cb9a2 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 02dfa4b264..0cbeb210ec 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 2dc0051959..47cf755066 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index e7920b315e..77862844d2 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 06e99f1378..f6c5389078 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 51975062af..6fe7668816 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 1cdfabb924..c90430137d 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index fd5d949862..80a2316999 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 3890f34f98..bc4d71462e 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 7addbcc1c2..cdced29d49 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index dbbe228352..a20d4817d0 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 347d47eada..e50deed356 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 677c3f1183..7c05a6bfc3 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index d8916abe44..81e166f04b 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 6a673446c8..5426df3697 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index a99ee316d1..376236fa68 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -134,6 +134,8 @@ table.ipt td.hit{color:var(--amber)}
+   <div class="win" data-t="rules"><#RFW_103#></div>
+   <div class="win" data-t="objects"><#RFW_101#></div>
+   <div class="win" data-t="zones"><#RFW_102#></div>
++  <div class="win" data-t="egress"><#RFW_204#></div>
++  <div class="win" data-t="nat"><#RFW_205#></div>
+   <div class="win" data-t="netsvc"><#menu5_5_4#></div>
+   <div class="win" data-t="url"><#menu5_5_2#></div>
+   <div class="win" data-t="keyword"><#menu5_5_5#></div>
+@@ -342,6 +344,54 @@ table.ipt td.hit{color:var(--amber)}
+   </div>
+ </div>
+ 
++<!-- ============================= EGRESS (Phase 2) ============================= -->
++<div class="tab" id="tab_egress">
++  <div class="card">
++    <h2><#RFW_206#></h2>
++    <p class="note"><#RFW_207#></p>
++    <table class="rt" id="eg_tbl"><thead><tr><th><#RFW_208#></th><th><#RFW_209#></th><th><#RFW_130#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_208#></span><select class="fld s" id="eg_obj"></select></div>
++      <div class="fg"><span class="fl"><#RFW_209#></span>
++        <select class="fld s" id="eg_act"><option value="drop"><#RFW_139#></option><option value="reject"><#RFW_140#></option><option value="accept"><#RFW_138#></option></select></div>
++      <div class="fg"><span class="fl"><#RFW_130#></span><input class="fld s" id="eg_sched" maxlength="90" placeholder="Mon,Tue 09:00-17:00"></div>
++      <button class="btn ghost sm" id="eg_add"><#RFW_59#></button>
++    </div>
++  </div>
++</div>
++
++<!-- ============================= FORWARDS (Phase 3) ============================= -->
++<div class="tab" id="tab_nat">
++  <div class="card">
++    <h2><#RFW_210#></h2>
++    <p class="note"><#RFW_211#></p>
++    <table class="rt" id="nt_tbl"><thead><tr>
++      <th><#RFW_129#></th><th><#RFW_212#></th><th><#RFW_213#></th><th><#RFW_214#></th>
++      <th><#RFW_215#></th><th><#RFW_130#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_129#></span>
++        <select class="fld s" id="nt_proto"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="both">TCP+UDP</option></select></div>
++      <div class="fg"><span class="fl"><#RFW_212#></span><input class="fld s" id="nt_ep" maxlength="24" placeholder="8443"></div>
++      <div class="fg"><span class="fl"><#RFW_213#></span><input class="fld s" id="nt_ip" maxlength="40" placeholder="192.168.50.80"></div>
++      <div class="fg"><span class="fl"><#RFW_214#></span><input class="fld s" id="nt_ipt" maxlength="24" placeholder="443"></div>
++      <div class="fg"><span class="fl"><#RFW_215#></span><select class="fld s" id="nt_src"></select></div>
++      <div class="fg"><span class="fl"><#RFW_130#></span><input class="fld s" id="nt_sched" maxlength="90"></div>
++      <button class="btn ghost sm" id="nt_add"><#RFW_59#></button>
++    </div>
++  </div>
++
++  <div class="card">
++    <h2><#RFW_217#></h2>
++    <p class="note"><#RFW_218#></p>
++    <textarea class="fld" id="io_txt" rows="6" style="width:100%;font:11.5px/1.5 monospace" spellcheck="false"></textarea>
++    <div class="row" style="margin-top:12px">
++      <button class="btn ghost sm" id="io_exp"><#RFW_219#></button>
++      <button class="btn ghost sm" id="io_imp"><#RFW_220#></button>
++      <span class="saved" id="io_saved"></span>
++    </div>
++  </div>
++</div>
++
+ <div class="tab" id="tab_netsvc">
+   <div class="card">
+     <h2><#menu5_5_4#></h2>
+@@ -663,7 +713,7 @@ function kwrender(){
+    matching rc/reaper_fw.c exactly - the generator is the single source of truth
+    for what a record means, so nothing here re-implements validation beyond what
+    is needed to give immediate feedback. */
+-var RFW={obj:[],grp:[],svc:[],zone:[],zpol:[],rules:[],armed:0,left:0,warden:0,wgeo:''};
++var RFW={obj:[],grp:[],svc:[],zone:[],zpol:[],rules:[],edef:[],nat:[],armed:0,left:0,warden:0,wgeo:''};
+ var rfwTimer=null;
+ 
+ function rfwSplit(s){var o=[],a=String(s||'').split('<'),i;for(i=0;i<a.length;i++)if(a[i]!=='')o.push(a[i].split('>'));return o;}
+@@ -676,6 +726,7 @@ function rfwLoad(cb){
+     if(!j||!j.ok){if(cb)cb(false);return;}
+     RFW.obj=rfwSplit(j.obj); RFW.grp=rfwSplit(j.grp); RFW.svc=rfwSplit(j.svc);
+     RFW.zone=rfwSplit(j.zone); RFW.zpol=rfwSplit(j.zpol); RFW.rules=rfwSplit(j.rules);
++    RFW.edef=rfwSplit(j.edef); RFW.nat=rfwSplit(j.nat);
+     RFW.armed=j.armed?1:0; RFW.left=j.left||0;
+     RFW.warden=j.warden?1:0; RFW.wgeo=j.wgeo||'';
+     tgSet($('rf_en'),j.enable);
+@@ -696,8 +747,30 @@ function rfwSave(key,rows,el){
+ function rfwRenderAll(){
+   rfwRenderObj(); rfwRenderGrp(); rfwRenderSvc();
+   rfwRenderZone(); rfwRenderZpol(); rfwRenderRules();
++  rfwRenderEdef(); rfwRenderNat();
+   rfwFillSelects();
+ }
++/* Phase 2 egress defaults: en>object>action>sched */
++function rfwRenderEdef(){
++  var tb=$('eg_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!RFW.edef.length){rtEmpty(tb,4);return;}
++  RFW.edef.forEach(function(r,i){
++    tb.appendChild(rtRow([r[1]||'',r[2]||'',rfwDash(r[3])],function(){
++      RFW.edef.splice(i,1);rfwRenderEdef();rfwSave('edef',RFW.edef,$('rf_saved'));}));
++  });
++}
++/* Phase 3 forwards: en>proto>extport>intip>intport>srcobj>log>sched */
++function rfwRenderNat(){
++  var tb=$('nt_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!RFW.nat.length){rtEmpty(tb,7);return;}
++  RFW.nat.forEach(function(r,i){
++    tb.appendChild(rtRow([
++      r[1]||'', r[2]||'', r[3]||'', r[4]||'',
++      (r[5]?r[5]:`<#RFW_216#>`), rfwDash(r[7])
++    ],function(){
++      RFW.nat.splice(i,1);rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));}));
++  });
++}
+ function rfwRenderObj(){
+   var tb=$('ob_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.obj.length){rtEmpty(tb,5);return;}
+@@ -785,6 +858,9 @@ function rfwFillSelects(){
+   fill('rf_szone',zones,true); fill('rf_dzone',zones,true);
+   fill('rf_svc',svcs,true);
+   fill('zp_src',zones,false); fill('zp_dst',zones,false);
++  /* Phase 2/3: the egress default names a device object or group; the forward's
++     source restriction is optional, so it gets the blank "anywhere" entry. */
++  fill('eg_obj',addr,false); fill('nt_src',addr,true);
+ }
+ 
+ /* commit-confirm banner + countdown. The deadline is owned by the router (a cru
+@@ -808,7 +884,7 @@ function rfwPoll(){
+ }
+ 
+ /* =================== tab switching =================== */
+-var TABS=['status','general','rules','objects','zones','netsvc','url','keyword','logging'];
++var TABS=['status','general','rules','objects','zones','egress','nat','netsvc','url','keyword','logging'];
+ var stTimer=null;
+ function showTab(t){
+   if(TABS.indexOf(t)<0)t='status';
+@@ -1123,6 +1199,61 @@ function initRfw(){
+     $('zn_name').value='';$('zn_if').value='';$('zn_cmt').value='';
+     rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,S);
+   };
++  /* ---- Phase 2: egress defaults (en>object>action>sched) ---- */
++  $('eg_add').onclick=function(){
++    var o=$('eg_obj').value,a=$('eg_act').value,sc=$('eg_sched').value.trim();
++    if(!o)return bad(`<#RFW_66#>`);
++    if(RFW.edef.some(function(r){return r[1]===o;}))return bad(`<#RFW_65#>`);
++    RFW.edef.push(['1',o,a,sc.replace(/[<>]/g,'')]);
++    $('eg_sched').value='';
++    rfwRenderEdef();rfwSave('edef',RFW.edef,S);
++  };
++  /* ---- Phase 3: hardened forwards (en>proto>ext>ip>int>src>log>sched) ---- */
++  $('nt_add').onclick=function(){
++    var p=$('nt_proto').value, ep=$('nt_ep').value.trim(), ip=$('nt_ip').value.trim(),
++        ipt=$('nt_ipt').value.trim(), src=$('nt_src').value, sc=$('nt_sched').value.trim();
++    if(!ep||!ip||!ipt)return bad(`<#RFW_66#>`);
++    /* mirror the generator's refusals so the operator hears about it here rather
++       than finding a silently dropped record in syslog: the engine cannot map a
++       comma list to a DNAT target, and an IPv4 literal is required. */
++    if(!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip))return bad(`<#RFW_67#>`);
++    if(ipt.indexOf(',')>=0)return bad(`<#RFW_67#>`);
++    if(!/^[0-9:,-]+$/.test(ep)||!/^[0-9:-]+$/.test(ipt))return bad(`<#RFW_67#>`);
++    if(RFW.nat.some(function(r){return r[1]===p&&r[2]===ep;}))return bad(`<#RFW_65#>`);
++    RFW.nat.push(['1',p,ep,ip,ipt,src,'0',sc.replace(/[<>]/g,'')]);
++    $('nt_ep').value='';$('nt_ip').value='';$('nt_ipt').value='';$('nt_sched').value='';
++    rfwRenderNat();rfwSave('nat',RFW.nat,S);
++  };
++  /* ---- backup / restore ----
++     Export is the eight draft lists as JSON. Import writes them back through the
++     same per-list save path the tabs use, so every list goes through the CGI's
++     length and charset checks - an import can never smuggle a record past the
++     validation an interactive edit has to pass. It lands in the DRAFT, so the
++     operator still has to Apply (and confirm) before anything becomes live. */
++  $('io_exp').onclick=function(){
++    fwcgi('action=export',function(j){
++      if(!j||!j.ok){showSaved($('io_saved'),false,(j&&j.error)||`<#RFW_155#>`);return;}
++      $('io_txt').value=JSON.stringify(j.cfg);
++      showSaved($('io_saved'),true,`<#RFW_221#>`);
++    });
++  };
++  $('io_imp').onclick=function(){
++    var o;
++    try{ o=JSON.parse($('io_txt').value); }catch(e){ o=null; }
++    if(!o||typeof o!=='object'||!('obj' in o)||!('rules' in o))
++      return showSaved($('io_saved'),false,`<#RFW_223#>`);
++    var keys=['obj','grp','svc','zone','zpol','rules','edef','nat'],pending=keys.length,bad_=0;
++    keys.forEach(function(k){
++      var v=(typeof o[k]==='string')?o[k]:'';
++      fwcgi('action=save&k='+k+'&v='+encodeURIComponent(v),function(j){
++        if(!j||!j.ok)bad_++;
++        if(--pending===0){
++          if(bad_)showSaved($('io_saved'),false,`<#RFW_155#>`);
++          else{ showSaved($('io_saved'),true,`<#RFW_222#>`); rfwLoad(); }
++        }
++      });
++    });
++  };
+   $('zp_add').onclick=function(){
+     var s=$('zp_src').value,d=$('zp_dst').value,a=$('zp_act').value;
+     if(!s||!d)return bad(`<#RFW_66#>`);
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index ab9dadeff2..a8f75de6cf 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 018e327fa3..ef26528ccd 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index d58b637e43..be77d90945 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 14afed6fd5..503b1d4052 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index ad0eaba937..a2ea81b4c6 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index f955ec3c30..508f14873a 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6522,3 +6522,23 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFW_204=Egress
++RFW_205=Forwards
++RFW_206=Per-device egress defaults
++RFW_207=A device set to Deny reaches the internet only where a rule above already allows it. Traffic inside your own network is never affected.
++RFW_208=Device or group
++RFW_209=Default
++RFW_210=Hardened inbound forwards
++RFW_211=Unlike stock port forwarding these can be limited to a source and to a schedule. IPv4 only.
++RFW_212=External port
++RFW_213=Internal address
++RFW_214=Internal port
++RFW_215=Limit source
++RFW_216=Anywhere
++RFW_217=Backup and restore
++RFW_218=Copy the text below to keep a backup of every object, zone, service and rule. Paste one back to restore it.
++RFW_219=Export
++RFW_220=Import
++RFW_221=Configuration exported.
++RFW_222=Imported. Review the tabs, then Apply to make it live.
++RFW_223=That is not a valid Reaper firewall export.
+-- 
+2.25.1
+

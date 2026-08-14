@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**374 patches, v1.0 → v2.3.1**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**424 patches, v1.0 → v2.4.1**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,9 +20,11 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (374 patches, v1.0 → v2.3.1)
+## What the series contains (424 patches, v1.0 → v2.4.1)
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
+
+> ⚠ **Numbering: the section headings from `v1.8.6a` down to `v2.1.2` predate the 2026-08-09 series repair and do NOT match the filenames on disk.** That repair restored three commits that had never been extracted, shifting everything after them: old `0246`–`0249` → `0248`–`0251`, and old `0250` and later → **+3**. So the heading that reads "v2.1.2 (`0291`–`0310`)" is on disk as `0294`–`0313`. Headings from **v2.1.3 onward are current** — they were written after the repair and match the files directly. The full account is in [Notes](#notes) below; it is repeated here because a reader matching a heading to a filename gets a wrong answer for roughly 180 patches otherwise.
 
 ### v1.0 — hardening + QoS + UI baseline (`0001`–`0087`)
 - `0001`–`0021` — **Hardening round 1** (IPsec/rc command injection, httpd pre-auth overflow, snmpd/nvparse/usb/shared memory safety, format strings, temp-file races, perms).
@@ -382,17 +384,93 @@ et al.) rather than the Reaper identity — they are upstream work, carried forw
 - `0308`–`0309` — webui/rc: restart mastiff when toggling the Asusnat tunnel; DDNS sets the IPv6 flag.
 - `0310` — **v2.1.2**: version bump (Reaper-authored).
 
+---
+
+**From here on the numbers are the ones on disk** (post-repair). The v2.1.2 carry-forward above ends at `0313`.
+
+### v2.1.3 → v2.1.5 — XSS escape, first-boot dead-ends, PPPoE MTU, rtrafd persistence (`0314`–`0325`)
+- `0314` — **apostrophe XSS** in the client device-name attribute (the injection path the v2.3.3 client-picker fix later closed properly).
+- `0315`–`0317` — WiFiPro nvram names + Advisor polish; RFC 4638 baby-jumbo PPPoE MTU (1500–1508); Connections **Quick Look** view.
+- `0319`–`0320` — first-boot: kill the dual-credential surface and its dead end on a factory-reset box; VPN peer-row edit toggle unclipped.
+- `0322`–`0324` — the PPPoE MTU allowance carried into `MULTISERVICE_WAN`; `Reaper_FirstBoot` made self-recovering; `rtrafd` history persistence (late store attach).
+- `0318`, `0321`, `0325` — version bumps (v2.1.3, v2.1.4, v2.1.5).
+
+### v2.1.6 → v2.1.9 — update check, device-name unification, MTU rollback, audit batch (`0326`–`0340`)
+- `0326` — **Reaper GitHub-hosted update check** (replaces the Merlin/ASUS notification path).
+- `0327`–`0331` — WiFiPro B/G-protection row removed (non-functional); Warden live block-count reset + feed dedup; i18n raw-entity artifacts in menu labels; `rwatch` no longer false-alarms on `wan_gw` when the first hop does not answer; the dashboard shows the br0 **global** IPv6, never the link-local.
+- `0333`–`0335` — `rtrafd` survives firmware flashes (phantom-mount guard); USB disk panel on Long-Term Storage; **device-name unification** — `custom_clientlist` becomes the naming master.
+- `0337` — the 1280–1508 WAN-MTU GUI allowance **rolled back** (kept only where it was proven).
+- `0339` — the 2026-08-05 code-audit fix batch (inject list, QoS, CSRF).
+- `0332`, `0336`, `0338`, `0340` — version bumps (v2.1.6 → v2.1.9).
+
+### v2.2.0 → v2.2.1 — first-boot loop, Gatekeeper, de-cloud, Warden persistence (`0341`–`0351`)
+- `0341`–`0343` — 2.4 GHz Preamble locked while 802.11ax is on; USB disk utilities moved to their own **USB Apps** page; Gatekeeper lets internet-only guest devices reach a LAN service.
+- `0344`–`0345` — the **post-credential login refresh loop** killed; the stock policy machinery stubbed and two more cloud callbacks dropped.
+- `0347`–`0350` — Warden's total blocked count persists across reboots; "collecting since" shown for every dataset; the USB health-scan result stays on screen; the stock TrendMicro security-update row removed from the firmware page.
+- `0346`, `0351` — version bumps (v2.2.0, v2.2.1).
+
+### v2.2.2 → v2.2.7 — connection-health metrics, analytics export, speed-test fix, shared front-end (`0352`–`0359`)
+- `0352`–`0353` — the USB health scanner actually scans ext4; **v2.2.2**: per-device connection-health metrics + the analytics export.
+- `0354`–`0355` — `rtrafd` O(1) `cli_slot` index (the Traffic Analyzer stutter after the 64→192 device-cap bump); health-probe loop hardening.
+- `0356`–`0357` — the privacy/polish batch (Wi-Fi key masked on the SDN card, the last ASUS-CDN icon fetches removed); the pre-release review fix (probe releases the conntrack fd when disabled mid-scan).
+- `0358` — **Internet Speed Test** result polling made async, so the tab no longer freezes mid-run.
+- `0359` — shared `ReaperNames` device-name resolver + unified byte formatting across the Reaper pages.
+
+### v2.2.8 → v2.3.0 — chrome lock, animated header, standalone health probe (`0360`–`0372`)
+- `0360`, `0363` — overlays raised above the navbar; the shell locks header + nav during a framed apply.
+- `0361`–`0362` — `auto_firmware_check_merlin` → `_reaper`; Warden stops wiping its persisted block count on every arm.
+- `0364`–`0367` — the animated model header on the login / set-password / logout screens. The `.mp4` route was blocked by the pre-auth login-page extension allowlist, so the mp4 httpd handler is added (`0365`–`0366`) and then **reverted** in favour of a play-once **APNG** (`0367`) — the pre-auth surface nets out unchanged, and a faithful replay reproduces the final APNG state.
+- `0368`–`0372` — standalone health-probe toggle (independent of export); "Store only" four-mode retain/send control; `rtrafd` MAC/IP one-row-per-device dedup + the phantom-slot sweep; the pre-distribution review fixes.
+
+### v2.3.1 → v2.3.2 — native firmware page, flash-overlay escape, QoS defects (`0373`–`0378`)
+- `0373` — **Phase 2 native `Reaper_Firmware.asp`** + the update-check path fix.
+- `0375` — the flash overlay could trap the user with no way out (Close + Esc, elapsed-time heartbeat).
+- `0376`–`0377` — the QoS end-to-end review defects; four small confirmed backlog items.
+- `0374`, `0378` — version bumps (v2.3.1, v2.3.2).
+
+### v2.3.3 → v2.3.4 — the browser de-cloud, the post-flash freeze, classful QoS, page sizing (`0379`–`0390`)
+- `0379` — **v2.3.3**: the browser-facing de-cloud (FAQ index, DNS/SDN/ISP/IPTV lists, model + node-icon tables, the Open NAT game database and its 27 artwork URLs), plus the QoS `imq0` ingress-redirect gate.
+- `0380`–`0381` — the **post-flash frozen browser**: every poll round scheduled *two* successors, so the chain doubled each round during the reboot; framed overlays anchored to the visible viewport.
+- `0382`–`0383` — the owner-measured classful QoS profile shipped as the default; preset rules stop classifying by transferred bytes.
+- `0385`–`0388` — firmware / Data Export / USB storage strings translated across all 24 non-English packs; the **stored XSS in the client-picker dropdown**; the Network Map retired in favour of the dashboard; `rtrafd` accounts from conntrack rather than the accelerator flow table.
+- `0389` — **v2.3.4**: the overlay re-anchor had dragged the parked FAQ panel into the same rule, inflating page width; that and the unscrollable content area fixed.
+- `0384`, `0390` — AiMesh node-name centring; version bump (v2.3.4).
+
+### v2.3.5 → v2.3.7 — Warden statistics, UPnP recovery, the first-boot gate, the nvram freeze (`0391`–`0406`)
+- `0391`–`0392` — nvram defaults + dictionaries for the rung; Warden keeps block statistics across reboots and gains a retention interval.
+- `0393` — **UPnP mappings restored after a firewall rebuild**, and the IGD:2 default (both later revisited — see `0410`–`0412`).
+- `0394`–`0396` — DHCP-lease device names resolved from `custom_clientlist`; the Smart Connect columns explained and an unclosed cell fixed; the **first-boot credential + Wi-Fi gate enforced in httpd** so every page is covered.
+- `0398` — the **`wlcsm` netlink port-allocation workaround** for the Broadcom `libnvram.so` socket leak that can permanently freeze saving settings (ships **off**; `wlcsm_bindfix=1`).
+- `0400`–`0405` — Auto Scan + Mesh Nodes strings seeded; AiMesh onboarding diagnostics; Auto Scan pins the chanspec it actually ranked; the firmware page lists AiMesh nodes; WiFiPro reads its settings in one call instead of 116; the model-specific 6 GHz sentence dropped.
+- `0397`, `0399`, `0406` — version bumps (v2.3.5, v2.3.6, v2.3.7).
+
+### v2.3.8 → v2.4.1 — the native firewall, the UPnP/console fixes, mesh updates (`0407`–`0424`)
+- `0407` — dashboard: WAN enable/disable switch + the USB disk selector (the two controls the retired Network Map carried).
+- `0408` — **the native rules engine completed and wired up** (Phase 1): objects/groups/services/zones compiled into `REAPER_FWI/FWF/FWO`, ipset-backed and dual-stack, with commit-confirm rollback driven by a durable `cru` watcher.
+- `0410`–`0412` — **UPnP advertises IGD:1 again** (the PS5 / Call of Duty failure), the first-run Wi-Fi page themed via a new CSS-only injection mode, the served description version + User-Agent logged, and IPv6 pinholes made to force IGD:2 since the v1 description hides that service.
+- `0414` — the firewall **Status** chain dump replaced by a posture summary (no more `iptables` from the CGI).
+- `0415` — **revert the carried 102.8 `PREROUTING -j VUPNP` jump** that tested all traffic, outbound included, against the UPnP redirects.
+- `0416` — **Phase 2** per-device egress defaults + **Phase 3** hardened forwards (`REAPER_FWN` in the nat table).
+- `0417` — the mesh node list fixed (the router was listing itself) + a push-update button.
+- `0418`, `0421` — the two v2.3.9 metal defects: the engine master switch took no action, and the flash overlay let the page bleed through the dimmed header (`opacity` → `filter:brightness`).
+- `0420` — Egress and Forwards tabs, plus configuration backup/restore.
+- `0422`–`0423` — engine on/off reported from a **measured** signal (`reaper_fw_active`) rather than the intent flag, the backup box restyled; the Devices inventory export (CSV/JSON/HTML) and the clickable dashboard Security Posture rows.
+- `0409`, `0413`, `0419`, `0424` — version bumps (v2.3.8, v2.3.9, v2.4.0, v2.4.1). **v2.3.8, v2.3.9 and v2.4.0 published no images** — the firewall work spanned all three and v2.4.1 is the first release that carries the finished engine.
+
 > **Reproduction is CI-enforced.** [`../.github/workflows/verify-provenance.yml`](../.github/workflows/verify-provenance.yml)
 > applies this series onto a fresh `a7ebfa133a` and asserts, per release, that `git rev-parse
 > HEAD:release/src/router` equals the tree hash in [`../provenance/manifest.json`](../provenance/manifest.json).
 > The `0290`–`0310` checkpoints were validated to reproduce `3ae0d914…` (v2.1.1) and `b2c357fa…`
 > (v2.1.2); see [`../docs/BUILD-PROVENANCE.md`](../docs/BUILD-PROVENANCE.md).
 
-> **Model scope:** the v1.8.7 → v2.0.x rungs above were developed + shipped RT-BE96U-first; the
-> RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings have since been brought to the current **v2.1.9** on their
-> own per-model branches (built + shipped, both variants, all passing the verify gate — 19 checks since v2.1.7). This
-> published series is the RT-BE96U line; the siblings build from the same shared source via
+> **Model scope:** this published series is the **RT-BE96U** line throughout. The siblings
+> (RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro) build from the same shared source via
 > `port_sibling_v2` (full-diff shared sync + per-model identity overlay + a dict lockstep sync).
+> The newest **published** release is **v2.3.7**, on all five models; v2.3.8, v2.3.9, v2.4.0 and
+> v2.4.1 have not published, and the sibling fan-out for them is owed. For **v2.4.1** specifically, two files in
+> the rung — `www/Main_ReaperDash.asp` and `www/reaper_shell.asp` — are also carried by the per-model
+> overlays, so those four overlays must be **regenerated against this series** before a fleet run;
+> the rest of the rung is model-neutral and the siblings pick it up unchanged.
 
 ## Notes
 
@@ -417,3 +495,5 @@ et al.) rather than the Reaper identity — they are upstream work, carried forw
 - **Why the gap landed there.** `v1.8.6` was the fleet fan-out where an automated port copied the RT-BE96U canon files verbatim onto the four sibling branches, overwriting each sibling's own identity (banner, `BUILD_NAME`, headers) — effectively turning every sibling into a BE96U. It took three corrective iterations to unwind (`v1.8.6a`, `b`, `c`), plus a fourth (`v1.8.6d`) for GT-BE98, whose different base GPL drop needed its own fix. The per-rung `git format-patch` appends across that churn are where the three commits were dropped. The clobber itself never reached the published series — this file is the **RT-BE96U** line, and the guarded `port_sibling_v2.sh` + `reaper_verify.sh` banner/`BUILD_NAME`/shared-parity checks exist precisely to make that failure un-shippable now.
 - **Numbering note.** Restoring those three commits shifted everything from the old `0246` onward: old `0246`–`0249` → `0248`–`0251`, and old `0250`+ → `+3`. The bullets above this one use the pre-repair numbering they were written with. Recorded `patch_count` values in [`../provenance/manifest.json`](../provenance/manifest.json) were shifted to match.
 - **Verified (2026-08-09).** All **374** patches apply with `git am --keep-cr` onto a fresh `a7ebfa133a` worktree; the result carries `EXTENDNO=Reaper_v2.3.1`, `release/src-rt` matches the build commit `eb0234214f` **exactly**, and `release/src/router` differs only by the three vendored `openssh-sftp` documentation files (`README.md`, `SECURITY.md`, `.github/ci-status.md`) that the `*.md` doc-hunk exclusion strips — **no source or code file differs**. Both trees are recorded per release in the manifest: `source_tree` (the build commit) and `source_tree_from_series` (what the published patches yield, which is what CI checks). **Series is contiguous, no gaps (0001–0374).**
+- **Extended v2.3.2 → v2.3.7: patches `0375`–`0406`** — cut rung by rung between 2026-08-09 and 2026-08-13 by [`../build-scripts/cut_rung.sh`](../build-scripts/cut_rung.sh), which replays and provenance-records every cut. **No per-rung note was written here for any of them**, which is why this log appears to jump from v2.3.1 to v2.4.1; the omission is recorded rather than back-filled from memory. What each rung contains is in the sections above and in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md), and each one's replay is attested by its `source_tree_from_series` entry in [`../provenance/manifest.json`](../provenance/manifest.json).
+- **Extended through v2.4.1 (2026-08-13): patches `0407`–`0424`**, exported by `cut_rung.sh` from the v2.3.7 tip (`638de5e47e` == `0406`) through the v2.4.1 bump (`da542db44d`), same author normalization and doc-hunk exclusion. **This one rung spans four version bumps** — v2.3.8, v2.3.9, v2.4.0 and v2.4.1 — because the native firewall was built across all four and none of the first three published an image; cutting them together keeps the series aligned with the published *releases* rather than with every intermediate bump. **Replay-verified as part of the cut:** the full `0001`–`0424` series applies with `git am --keep-cr` onto the pinned `a7ebfa133a` base, yields `EXTENDNO=Reaper_v2.4.1`, and the resulting tree differs from the build commit only in vendored `*.md` files the doc-hunk exclusion strips — no source file differs. Both hashes are recorded in the manifest as `source_tree` (build commit) and `source_tree_from_series` (what these patches yield, which is what CI checks). **Series is contiguous, no gaps (0001–0424).**

@@ -1,0 +1,104 @@
+From 968ab0e3480d93aee8698d7cbf727abf721f2a41 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 16:43:46 -0400
+Subject: [PATCH] rc: revert the 102.8 PREROUTING->VUPNP jump that DNATs all
+ traffic
+
+Reported by the upstream engineers while we were triaging the UPnP/console
+failure, and confirmed here from the tree: 3006.102.8 carries a1ce74be78
+("fix UPnP rules when port forwarding is not enabled", patch from Asus) whose
+first hunk emits
+
+    -A PREROUTING -j VUPNP
+
+with no qualifier at all. VUPNP holds miniupnpd's DNAT redirects and is meant
+to be entered only via "-A VSERVER -j VUPNP", where VSERVER is itself reached
+as "-A PREROUTING -d <wan_ip> -j VSERVER" - i.e. only for packets addressed to
+this router's WAN address. Unqualified, every packet crossing nat/PREROUTING is
+tested against the UPnP redirects, OUTBOUND traffic included: a mapping on port
+N rewrites a LAN client's own outgoing connection to a remote server on port N.
+The field symptom is a console that cannot reach the game server at all while
+UPnP is on. Asus resolved this internally and Merlin is reverting the patch for
+102.8_4.
+
+It was also unnecessary on this path. The VSERVER jump is emitted whether or not
+port forwarding is enabled, and "-A VSERVER -j VUPNP" is gated on upnp_enable
+rather than vts_enable_x, so UPnP redirects were already reachable - the problem
+the patch set out to fix does not exist here.
+
+Reverting the first hunk ONLY. The patch's other hunk ("-A FORWARD -j FUPNP")
+is KEPT deliberately: it is the sole hook into FUPNP, it carries filter-table
+ACCEPTs, and it cannot DNAT anything - dropping it would leave UPnP forwards
+translated and then dropped in FORWARD. The `char tmp[32]` the patch added to
+nat_setting() goes with the reverted hunk, since nothing else in that function
+used it and it would now warn.
+
+This is a DIFFERENT bug from the IGD:1/IGD:2 description issue fixed in
+ac485cfd4a - the engineers were explicit that the two are unrelated, and also
+confirmed the IGD:2 diagnosis independently: "IGDv2 compatibility is indeed
+broken in a lot of clients, including Windows itself... People should stick
+with V1 unless they need IPv6 pinhole support." That is exactly the shape
+already shipped here (V1 default, pinholes force V2).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/firewall.c | 36 +++++++++++++++++++++++++++-----
+ 1 file changed, 31 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 54ff5bef8b..0b0d3bd9a8 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -1689,7 +1689,9 @@ void nat_setting(char *wan_if, char *wan_ip, char *wanx_if, char *wanx_ip, char
+ 	FILE *fp;
+ 	char lan_class[32];
+ 	char name[PATH_MAX];
+-	char tmp[32];
++	/* char tmp[32]; - came in with a1ce74be78 for the PREROUTING->VUPNP jump
++	 * reverted below; nothing else in this function used it, so it would now be
++	 * an unused-variable warning. */
+ 	int wan_unit;
+ #ifdef RTCONFIG_MULTIWAN_CFG
+ 	int wanx_rules = 0;
+@@ -1800,10 +1802,34 @@ void nat_setting(char *wan_if, char *wan_ip, char *wanx_if, char *wanx_ip, char
+ #endif
+ #endif
+ 
+-	/* Add rule to jump to VUPNP chain when UPNP is enabled*/
+-	snprintf(tmp, sizeof(tmp), "wan%d_upnp_enable", wan_primary_ifunit());
+-	if (nvram_get_int(tmp) == 1)
+-		fprintf(fp, "-A PREROUTING -j VUPNP\n");
++	/* reaper 2026-08-13: REVERTED - this is the 3006.102.8 "all traffic gets
++	 * DNAT" bug. Upstream (Asus, then Merlin) reverted the same patch; it is
++	 * due back out in 102.8_4. The stock line here was:
++	 *
++	 *     snprintf(tmp, sizeof(tmp), "wan%d_upnp_enable", wan_primary_ifunit());
++	 *     if (nvram_get_int(tmp) == 1)
++	 *             fprintf(fp, "-A PREROUTING -j VUPNP\n");
++	 *
++	 * added by a1ce74be78 ("fix UPnP rules when port forwarding is not
++	 * enabled", patch from Asus). VUPNP holds miniupnpd's DNAT rules and is
++	 * meant to be reached ONLY via "-A VSERVER -j VUPNP", where VSERVER is
++	 * itself entered as "-A PREROUTING -d <wan_ip> -j VSERVER" - i.e. only for
++	 * packets actually addressed to this router's WAN address. This jump had NO
++	 * destination qualifier, so every packet crossing nat/PREROUTING was tested
++	 * against the UPnP redirects, OUTBOUND traffic included: a mapping on port
++	 * N would rewrite a LAN client's own outgoing connection to a remote server
++	 * on port N. Field symptom was a console that could not reach the game
++	 * server at all while UPnP was on.
++	 *
++	 * It was also redundant. The VSERVER jump is emitted whether or not port
++	 * forwarding is enabled, and "-A VSERVER -j VUPNP" is gated on upnp_enable
++	 * rather than on vts_enable_x, so UPnP redirects were already reachable -
++	 * the problem the patch set out to solve did not exist on this path.
++	 *
++	 * The patch's OTHER hunk ("-A FORWARD -j FUPNP", further down) is KEPT: it
++	 * is the only hook into FUPNP, it carries filter-table ACCEPTs, and it
++	 * cannot DNAT anything. Dropping it would leave UPnP forwards translated
++	 * and then dropped in FORWARD. */
+ 
+ 	/* VSERVER chain */
+ 	if (inet_addr_(wan_ip)) {
+-- 
+2.25.1
+

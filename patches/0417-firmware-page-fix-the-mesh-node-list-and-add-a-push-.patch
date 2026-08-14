@@ -1,0 +1,479 @@
+From e3aabdb9ca45fe66b68293ee52078cac05c3b0b6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 16:48:51 -0400
+Subject: [PATCH] firmware page: fix the mesh node list and add a push-update
+ button
+
+Field report: AiMesh nodes do not appear on the firmware page for some models
+while they do for others (the BE98 was named as one that works).
+
+ONE DEFECT IS PROVABLE FROM THE SOURCE, and it is ours. renderNodes() filtered
+the controller out of the list with
+
+    if(String(nd.level || '') === '0') continue;   /* level 0 is the CAP */
+
+but ej_get_cfg_clientlist() emits no "level" key at all - the string does not
+appear anywhere in web.c's output. The test therefore never matched and THIS
+ROUTER was rendered as one of its own mesh nodes. The stock page filters by
+ARRAY INDEX instead ("if(idx == "0") continue;//filter CAP"), because entry 0
+being the controller is the contract of that hook. Matched to stock.
+
+That defect inflates the list rather than emptying it, so it does not by itself
+explain a missing-nodes report. The rest of what is observable without a live
+mesh is that the two empty outcomes were indistinguishable: a failed/unparseable
+hook response and a genuinely empty client table both produced one generic
+message. They are different faults - the second means cfg_server has not synced
+or this router is not a controller - so they now say different things. That
+turns "some models show nodes, some do not" into something a report can pin
+down.
+
+Also adds the push-update button that was asked for. It calls
+"/apply.cgi?action_mode=firmware_upgrade", which is exactly what stock's own
+AiMesh upgrade button does (cfgsync_firmware_upgrade in
+Advanced_FirmwareUpgrade_Content.asp): cfg_server distributes the firmware to
+every connected node. Being a cfgsync operation it needs no per-node URL, so
+unlike opening a node's own page it does not depend on that node advertising
+local_access - which is the mechanism most likely behind the per-model
+difference in the first place.
+
+NOT FIXED, and stated rather than guessed: the existing per-node "open" button
+builds its URL without stock's aimesh_get_node_capability(...).local_access
+check, so for a node that does not advertise local access it can produce the
+wrong scheme/port. Confirming that needs a live multi-node mesh, which is also
+what any remaining root cause for the missing-nodes report needs.
+
+RFWU_40..44 seeded English into all 25 packs, lockstep at 6524 lines. All page
+tokens resolve; reaper_langcheck 0 breakers; both reaper pages parse under node
+in all 25 languages.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/BR.dict             |  5 +++
+ release/src/router/www/CN.dict             |  5 +++
+ release/src/router/www/CZ.dict             |  5 +++
+ release/src/router/www/DA.dict             |  5 +++
+ release/src/router/www/DE.dict             |  5 +++
+ release/src/router/www/EN.dict             |  5 +++
+ release/src/router/www/ES.dict             |  5 +++
+ release/src/router/www/FI.dict             |  5 +++
+ release/src/router/www/FR.dict             |  5 +++
+ release/src/router/www/HU.dict             |  5 +++
+ release/src/router/www/IT.dict             |  5 +++
+ release/src/router/www/JP.dict             |  5 +++
+ release/src/router/www/KR.dict             |  5 +++
+ release/src/router/www/MS.dict             |  5 +++
+ release/src/router/www/NL.dict             |  5 +++
+ release/src/router/www/NO.dict             |  5 +++
+ release/src/router/www/PL.dict             |  5 +++
+ release/src/router/www/RO.dict             |  5 +++
+ release/src/router/www/RU.dict             |  5 +++
+ release/src/router/www/Reaper_Firmware.asp | 48 ++++++++++++++++++++--
+ release/src/router/www/SL.dict             |  5 +++
+ release/src/router/www/SV.dict             |  5 +++
+ release/src/router/www/TH.dict             |  5 +++
+ release/src/router/www/TR.dict             |  5 +++
+ release/src/router/www/TW.dict             |  5 +++
+ release/src/router/www/UK.dict             |  5 +++
+ 26 files changed, 169 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index d208a77181..d66418de61 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index c2752208a2..087a163423 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 670e6bbeba..f3b6deeedb 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 922c72f2ed..6700658c78 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 76ebf6f4b0..8d550a93de 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f70b99f336..02dfa4b264 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 3274e026c4..2dc0051959 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 1eec41b2fc..e7920b315e 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index a5997f3e3d..06e99f1378 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index d0c8253182..51975062af 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 379f5cbd8b..1cdfabb924 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index c60fd191c0..fd5d949862 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 11807e9d41..3890f34f98 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index f63b1716d9..7addbcc1c2 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 71ee0a216f..dbbe228352 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 154af6da05..347d47eada 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 9e972a10a4..677c3f1183 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index f6a4f19c4f..d8916abe44 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index ff025a66fa..6a673446c8 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 2559641f26..0ae1c9e147 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -130,6 +130,7 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+   <h2><#RFWU_32#></h2>
+   <div id="nodeBox"></div>
+   <div class="stat" id="nodeStat"><#RFWU_33#></div>
++  <button class="btn2" id="nodeUpd" style="display:none" onclick="upgradeNodes(this)"><#RFWU_44#></button>
+   <p class="note"><#RFWU_34#></p>
+ </div>
+ 
+@@ -207,8 +208,12 @@ function renderNodes(list){
+   var mine = prettyVer(EXTENDNO);
+   for(i = 0; i < list.length; i++){
+     var nd = list[i];
+-    /* level 0 is this router (the CAP); its version is in the card above */
+-    if(String(nd.level || '') === '0') continue;
++    /* reaper 2026-08-13: entry 0 IS the CAP - that is the contract of
++       get_cfg_clientlist, and it is how the stock page filters it
++       ("if(idx == "0") continue;//filter CAP"). The previous test here looked
++       at nd.level, and ej_get_cfg_clientlist emits no "level" key at all, so it
++       never matched and this router was listed as one of its own mesh nodes. */
++    if(i === 0) continue;
+     var ip = String(nd.ip || '');
+     var name = nd.ui_model_name || nd.model_name || nd.mac || '';
+     var fw = String(nd.fwver || '');
+@@ -224,8 +229,43 @@ function renderNodes(list){
+             '</div></div>';
+   }
+   box.innerHTML = html;
+-  stat.innerHTML = shown ? '' : '<#RFWU_35#>';
+-  stat.style.display = shown ? 'none' : '';
++  /* reaper 2026-08-13: distinguish the empty cases. "No nodes" and "the node
++     table could not be read" are different problems, and reporting both as one
++     message is what made the field reports ("some models show nodes, some do
++     not") impossible to act on. list.length of 0 means the shared client table
++     was empty - cfg_server has not synced, or this router is not a CAP. */
++  if(shown){
++    stat.innerHTML = '';
++    stat.style.display = 'none';
++  } else {
++    stat.innerHTML = list.length ? '<#RFWU_35#>' : '<#RFWU_40#>';
++    stat.style.display = '';
++  }
++  /* the push-update button is only meaningful with at least one node present */
++  var ub = $id('nodeUpd');
++  if(ub) ub.style.display = shown ? '' : 'none';
++}
++
++/* reaper 2026-08-13: push the firmware to every node, the way stock's own
++   AiMesh button does - "/apply.cgi?action_mode=firmware_upgrade" hands the job
++   to cfg_server, which distributes to all connected nodes. Model-independent,
++   and it needs no per-node URL (unlike opening a node's own page, which depends
++   on that node advertising local_access). */
++function upgradeNodes(btn){
++  if(!confirm('<#RFWU_41#>')) return;
++  btn.disabled = true;
++  var x = new XMLHttpRequest();
++  x.open('GET', '/apply.cgi?action_mode=firmware_upgrade&_=' + Date.now(), true);
++  x.timeout = 15000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    $id('nodeStat').innerHTML = (x.status === 200) ? '<#RFWU_42#>' : '<#RFWU_43#>';
++    $id('nodeStat').style.display = '';
++    btn.disabled = false;
++    setTimeout(loadNodes, 5000);
++  };
++  x.ontimeout = function(){ btn.disabled = false; };
++  x.send();
+ }
+ 
+ function loadNodes(){
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index ce52c16cc7..ab9dadeff2 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index bebcf882cb..018e327fa3 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 0dd62873c4..d58b637e43 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 1a232cecb3..14afed6fd5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 0c09818673..ad0eaba937 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 1e86cecfba..f955ec3c30 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6517,3 +6517,8 @@ RFW_200=Deny list
+ RFW_201=Everything on this page is read-only. Change any of it from the tab that owns it.
+ RFW_202=Anything listed here is reachable from the internet. Turn off what you do not use.
+ RFW_203=configured
++RFWU_40=No AiMesh nodes were reported. If this router is the main router, its nodes may still be syncing.
++RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once it has finished flashing.
++RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
++RFWU_43=The router would not accept the update request.
++RFWU_44=Update all nodes
+-- 
+2.25.1
+

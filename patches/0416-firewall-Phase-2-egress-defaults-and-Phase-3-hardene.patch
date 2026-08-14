@@ -1,0 +1,442 @@
+From a103b59d6da03fe81f5e0567a7fa2d9964183a00 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 16:43:47 -0400
+Subject: [PATCH] firewall: Phase 2 egress defaults and Phase 3 hardened
+ forwards
+
+PHASE 2 - per-device egress defaults (reaper_fw_edef).
+Zone policy already expresses "this network may not reach that network", but
+zones are sets of INTERFACES, so it cannot say "this laptop gets no internet
+unless a rule allows it" - every LAN device shares br0. Record is
+enable>object>action>schedule, emitted into REAPER_FWF after the explicit rules
+and before the zone policy, so precedence reads:
+
+    protective head > explicit rules > per-device default > zone policy
+
+An explicit allow therefore still beats that device's default deny, which is the
+point of a default. Anchored to "-o $WANIF": a default-deny that also severed
+the device from the LAN printer and the NAS would be a support call, not a
+security control.
+
+PHASE 3 - hardened inbound forwards (reaper_fw_nat), a new chain REAPER_FWN in
+the NAT table hooked into PREROUTING. Unlike stock port forwarding these can be
+restricted to a source object - including a geo object, which resolves to
+Warden's country set - and scheduled. Each forward emits its DNAT and the
+companion FORWARD ACCEPT together, because a DNAT into a default-deny FORWARD
+path translates the packet and then drops it. IPv4 only, deliberately: DNAT is a
+v4 NAT construct and the v6 way to publish a service is an ordinary ACCEPT rule,
+which this engine already has.
+
+Both lists join rfw_keys[], so the loader, the lastgood snapshot and the
+rollback script pick them up and commit-confirm covers them with no extra work.
+The nat table needs its own teardown - the filter-table loop cannot reach it,
+and a REAPER_FWN left behind would keep DNATing after a disable or rollback.
+$WANIF is resolved at run time like every other interface value and every
+consumer is guarded with [ -n "$WANIF" ], so a box with no WAN emits no
+egress/forward lines rather than unanchored ones.
+
+DEFECT FOUND BY THE GENERATOR HARNESS, and it was latent in Phase 1:
+rfw_emit_one_set() deliberately creates no v6 set for a MAC object (hash:mac has
+no address family), but rfw_obj_set() still returned rwfw6_<name> on the v6 pass.
+rfw_emit_rule() guards a DIRECT mac reference - a mac reached through a GROUP
+never passed that check, so a group mixing a laptop and a phone-by-MAC emitted an
+ip6tables rule matching a set that was never created. Fixed centrally in
+rfw_obj_set(), which fixes rules, the new egress defaults and anything added
+later at once; callers already treat "resolved to nothing" as "do not emit"
+rather than "emit without the match", so the failure mode is a missing rule and
+never an unrestricted one.
+
+Harness-verified: correct precedence, group expansion, family-correct REJECT,
+DNAT paired with its FORWARD ACCEPT, geo source resolving to rw_g_ru, four
+deliberately-invalid forwards refused with reasons, zero cross-chain leaks and
+zero duplicate lines.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c       |   4 +
+ release/src/router/rc/reaper_fw.c    | 255 ++++++++++++++++++++++++++-
+ release/src/router/shared/defaults.c |  10 ++
+ 3 files changed, 265 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 6835689c04..7f2655019d 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23672,6 +23672,8 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		websWrite(stream, ",\"zone\":");  gk_json_esc(stream, nvram_safe_get("reaper_fw_zone"));
+ 		websWrite(stream, ",\"zpol\":");  gk_json_esc(stream, nvram_safe_get("reaper_fw_zpol"));
+ 		websWrite(stream, ",\"rules\":"); gk_json_esc(stream, nvram_safe_get("reaper_fw_rules"));
++		websWrite(stream, ",\"edef\":");  gk_json_esc(stream, nvram_safe_get("reaper_fw_edef"));
++		websWrite(stream, ",\"nat\":");   gk_json_esc(stream, nvram_safe_get("reaper_fw_nat"));
+ 		websWrite(stream, "}");
+ 		return;
+ 	}
+@@ -23689,6 +23691,8 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			{ "zone",  "reaper_fw_zone",  2048 },
+ 			{ "zpol",  "reaper_fw_zpol",  2048 },
+ 			{ "rules", "reaper_fw_rules", RFW_LIST_MAX },
++			{ "edef",  "reaper_fw_edef",  2048 },	/* Phase 2: per-device egress defaults */
++			{ "nat",   "reaper_fw_nat",   2048 },	/* Phase 3: hardened inbound forwards */
+ 		};
+ 		char *k = get_cgi("k"), *v = get_cgi("v");
+ 		const char *p;
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 665ec948b5..5fc5bc5dee 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -142,6 +142,13 @@
+ #define RFW_CHAIN_IN   "REAPER_FWI"
+ #define RFW_CHAIN_FWD  "REAPER_FWF"
+ #define RFW_CHAIN_OUT  "REAPER_FWO"
++/* Phase 3: our nat-table chain, hooked into PREROUTING for hardened inbound
++ * forwards. It is a SEPARATE table, so S4 ("we touch only what we own") needs
++ * the teardown to cover nat as well - the filter-table sweep would not. */
++#define RFW_CHAIN_NAT  "REAPER_FWN"
++
++#define RFW_MAX_EDEF        64    /* per-device egress defaults (Phase 2) */
++#define RFW_MAX_NAT         64    /* hardened forwards (Phase 3) */
+ 
+ /* ---------------------------------------------------------------------------
+  * S2 validators. Structural, not charset-only. Adapted from rc/rwarden.c's
+@@ -434,6 +441,10 @@ static int rfw_valid_rate(const char *s)
+ 
+ typedef struct {
+ 	char *enable, *confirm, *obj, *grp, *svc, *zone, *zpol, *rules;
++	/* Phase 2 (egress) and Phase 3 (NAT). Both are ordinary '<'-separated
++	 * lists carried through the same loader / lastgood / rollback path as the
++	 * originals, so commit-confirm covers them for free. */
++	char *edef, *nat;
+ } rfw_cfg_t;
+ 
+ static char *rfw_slurp(const char *path)
+@@ -454,8 +465,9 @@ static char *rfw_slurp(const char *path)
+ 	return b;
+ }
+ 
+-/* the 6 editable keys, in one place: the loader, the lastgood writer and the
+- * rollback script all walk this table so they can never drift apart. */
++/* the editable keys, in one place: the loader, the lastgood writer and the
++ * rollback script all walk this table so they can never drift apart. Adding a
++ * list here is all that is needed to bring it under commit-confirm. */
+ static const struct { const char *nv; const char *file; size_t off; } rfw_keys[] = {
+ 	{ "reaper_fw_obj",   "obj",   offsetof(rfw_cfg_t, obj)   },
+ 	{ "reaper_fw_grp",   "grp",   offsetof(rfw_cfg_t, grp)   },
+@@ -463,6 +475,8 @@ static const struct { const char *nv; const char *file; size_t off; } rfw_keys[]
+ 	{ "reaper_fw_zone",  "zone",  offsetof(rfw_cfg_t, zone)  },
+ 	{ "reaper_fw_zpol",  "zpol",  offsetof(rfw_cfg_t, zpol)  },
+ 	{ "reaper_fw_rules", "rules", offsetof(rfw_cfg_t, rules) },
++	{ "reaper_fw_edef",  "edef",  offsetof(rfw_cfg_t, edef)  },
++	{ "reaper_fw_nat",   "nat",   offsetof(rfw_cfg_t, nat)   },
+ };
+ #define RFW_NKEYS ((int)(sizeof(rfw_keys) / sizeof(rfw_keys[0])))
+ 
+@@ -589,6 +603,24 @@ static int rfw_obj_set(const rfw_cfg_t *c, const char *name, int v6,
+ 		snprintf(out, ol, "rw_g%s_%s", v6 ? "6" : "", cc);
+ 		return 1;
+ 	}
++	/* A MAC object has NO IPv6 representation. hash:mac carries no address
++	 * family, so rfw_emit_one_set() creates the v4 set only - and a rule that
++	 * matched rwfw6_<name> would reference a set that was never created, which
++	 * fails at load and leaves the operator believing the rule is active.
++	 *
++	 * rfw_emit_rule() already refuses a DIRECT mac reference on the v6 pass,
++	 * but a mac reached through a GROUP never passed that check, so a group
++	 * mixing a laptop and a phone-by-MAC silently emitted a broken ip6tables
++	 * line. Saying it here instead fixes every caller at once - rules, the
++	 * Phase 2 egress defaults and anything added later - and callers already
++	 * treat "resolved to nothing" as "do not emit" rather than "emit without
++	 * the match" (rfw_emit_rule: `if (sobj[0] && nss == 0) return;`), so the
++	 * failure mode is a missing rule, never an unrestricted one.
++	 *
++	 * Found by the generator harness on the Phase 2 work; the group case was
++	 * latent in Phase 1. */
++	if (v6 && !strcmp(type, "mac")) return 0;
++
+ 	/* a MAC set only has meaning on the source side of an ingress path; the
+ 	 * emitter enforces that. Here it is just our own set. */
+ 	snprintf(out, ol, "%s%s", v6 ? RFW_SET6 : RFW_SET4, name);
+@@ -1113,6 +1145,184 @@ static void rfw_emit_zpol(FILE *f, const rfw_cfg_t *c, int v6)
+ 	free(dup);
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * PHASE 2 - per-device egress defaults.
++ *
++ * Zone policy already expresses "this network may not reach that network", but
++ * zones are sets of INTERFACES, so it cannot say "this laptop gets no internet
++ * unless a rule allows it" - every LAN device shares br0. That is the shape
++ * people actually want for a default-deny egress posture, so it gets its own
++ * list rather than being faked with a per-device zone.
++ *
++ * Record: enable > object > action > schedule
++ *   object   an address object or group (the DEVICE side)
++ *   action   drop | reject | accept
++ *
++ * Emitted into REAPER_FWF AFTER the user rules and BEFORE the zone policy, so
++ * the precedence reads the way an operator expects:
++ *      protective head  >  explicit rules  >  per-device default  >  zone policy
++ * An explicit allow therefore still wins over that device's default deny, which
++ * is the whole point of a default.
++ *
++ * Matched on egress to the WAN interface only ("-o $WANIF"), never LAN-to-LAN:
++ * a default-deny that also severed the device from the printer and the NAS
++ * would be a support call, not a security control.
++ * ------------------------------------------------------------------------- */
++static void rfw_emit_edef(FILE *f, const rfw_cfg_t *c, int v6)
++{
++	const char *ipt = v6 ? "ip6tables" : "iptables";
++	char *dup, *tok, *save = NULL;
++	int n = 0;
++
++	if (!c->edef || !*c->edef) return;
++	if (!(dup = strdup(c->edef))) return;
++
++	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
++		char en[4], obj[RFW_NAME_MAX + 2], act[12], sched[96], schedfrag[160];
++		rfw_setname_t sets[RFW_MAX_SETS];
++		int ns, i;
++
++		if (++n > RFW_MAX_EDEF) {
++			if (!v6) logmessage("reaper_fw", "more than %d egress defaults - the rest are IGNORED", RFW_MAX_EDEF);
++			break;
++		}
++		if (!rfw_field(tok, 0, en, sizeof(en)) || strcmp(en, "1") != 0) continue;
++		if (!rfw_field(tok, 1, obj, sizeof(obj)) || !rfw_valid_name(obj)) continue;
++		if (!rfw_field(tok, 2, act, sizeof(act)) || !rfw_valid_zpol_action(act)) continue;
++		if (!rfw_field(tok, 3, sched, sizeof(sched))) sched[0] = 0;
++		if (!rfw_valid_sched(sched)) {
++			if (!v6) logmessage("reaper_fw", "egress default for %s: invalid schedule - DROPPED", obj);
++			continue;
++		}
++		/* A MAC object is fine here - this is a source match on a forward path.
++		 * On the v6 pass rfw_obj_set() drops MAC members, so a mac-only object
++		 * or group resolves to nothing and is skipped rather than emitting a
++		 * match against a set that hash:mac never created. */
++		ns = rfw_resolve(c, obj, v6, sets, RFW_MAX_SETS);
++		if (!ns) continue;
++
++		rfw_sched_frag(sched, schedfrag, sizeof(schedfrag));
++
++		for (i = 0; i < ns; i++) {
++			if (!strcmp(act, "reject"))
++				fprintf(f, "[ -n \"$WANIF\" ] && %s -A %s -o \"$WANIF\" "
++				           "-m set --match-set %s src%s -j REJECT --reject-with %s\n",
++				        ipt, RFW_CHAIN_FWD, sets[i].name, schedfrag,
++				        v6 ? "icmp6-adm-prohibited" : "icmp-admin-prohibited");
++			else
++				fprintf(f, "[ -n \"$WANIF\" ] && %s -A %s -o \"$WANIF\" "
++				           "-m set --match-set %s src%s -j %s\n",
++				        ipt, RFW_CHAIN_FWD, sets[i].name, schedfrag,
++				        !strcmp(act, "drop") ? "DROP" : "ACCEPT");
++		}
++	}
++	free(dup);
++}
++
++/* ---------------------------------------------------------------------------
++ * PHASE 3 - hardened inbound forwards (nat table).
++ *
++ * Stock port forwarding (VSERVER) publishes a port to the entire internet. This
++ * adds forwards that can be restricted to a source object - including a geo
++ * object, which resolves to Warden's country set - and scheduled.
++ *
++ * Record: enable > proto > extport > intip > intport > srcobj > log > desc
++ *
++ * IPv4 only, deliberately. DNAT is a v4 NAT construct; the v6 equivalent of
++ * "publish a service" is a filter ACCEPT to a global address, which this engine
++ * already expresses as an ordinary in/fwd rule. Emitting a v6 DNAT would be
++ * both unusual and, on a box whose v6 firewall is a separate toggle, misleading.
++ *
++ * Two lines per forward: the DNAT in nat/PREROUTING, and a matching ACCEPT in
++ * our FORWARD chain. Without the second, a DNAT into a default-deny FORWARD
++ * path translates the packet and then drops it - the classic "port forward does
++ * nothing" bug. They are emitted together so they cannot drift apart.
++ * ------------------------------------------------------------------------- */
++static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
++{
++	char *dup, *tok, *save = NULL;
++	int n = 0;
++
++	if (!c->nat || !*c->nat) return;
++	if (!(dup = strdup(c->nat))) return;
++
++	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
++		char en[4], proto[12], eport[24], iip[64], iport[24];
++		char sobj[RFW_NAME_MAX + 2], logf[4], sched[96], schedfrag[160];
++		char srcfrag[128] = "";
++		rfw_setname_t sets[RFW_MAX_SETS];
++		int ns = 0, pv;
++		const char *protos[2]; int nproto = 1;
++
++		if (++n > RFW_MAX_NAT) {
++			logmessage("reaper_fw", "more than %d forwards - the rest are IGNORED", RFW_MAX_NAT);
++			break;
++		}
++		if (!rfw_field(tok, 0, en, sizeof(en)) || strcmp(en, "1") != 0) continue;
++		if (!rfw_field(tok, 1, proto, sizeof(proto)) || !rfw_valid_proto(proto)) continue;
++		if (!rfw_field(tok, 2, eport, sizeof(eport)) || !rfw_valid_ports(eport)) continue;
++		if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip)) continue;
++		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) continue;
++		if (!rfw_field(tok, 5, sobj, sizeof(sobj))) sobj[0] = 0;
++		if (!rfw_field(tok, 6, logf, sizeof(logf))) logf[0] = 0;
++		if (!rfw_field(tok, 7, sched, sizeof(sched))) sched[0] = 0;
++		if (!rfw_valid_sched(sched)) {
++			logmessage("reaper_fw", "forward %s: invalid schedule - DROPPED", eport);
++			continue;
++		}
++		/* an internal port must be a single port or a contiguous range - DNAT
++		 * cannot map a comma list to a target */
++		if (strchr(iport, ',')) {
++			logmessage("reaper_fw", "forward %s: internal port cannot be a list - DROPPED", eport);
++			continue;
++		}
++		if (sobj[0]) {
++			if (!rfw_valid_name(sobj)) continue;
++			if (rfw_ref_is_mac(c, sobj)) {
++				/* a MAC never survives a routed hop, so it can never match on
++				 * traffic arriving from the WAN */
++				logmessage("reaper_fw", "forward %s: MAC source cannot match WAN traffic - DROPPED", eport);
++				continue;
++			}
++			ns = rfw_resolve(c, sobj, 0, sets, RFW_MAX_SETS);
++			if (!ns) {
++				logmessage("reaper_fw", "forward %s: source object %s did not resolve - DROPPED", eport, sobj);
++				continue;
++			}
++		}
++		rfw_sched_frag(sched, schedfrag, sizeof(schedfrag));
++
++		if (!strcmp(proto, "both")) { protos[0] = "tcp"; protos[1] = "udp"; nproto = 2; }
++		else                        { protos[0] = proto; }
++
++		for (pv = 0; pv < nproto; pv++) {
++			int si, lim = ns ? ns : 1;
++			for (si = 0; si < lim; si++) {
++				srcfrag[0] = 0;
++				if (ns)
++					snprintf(srcfrag, sizeof(srcfrag), " -m set --match-set %s src", sets[si].name);
++
++				if (logf[0] == '1')
++					fprintf(f, "[ -n \"$WANIF\" ] && iptables -t nat -A " RFW_CHAIN_NAT
++					           " -i \"$WANIF\" -p %s --dport %s%s%s"
++					           " -j LOG --log-prefix \"REAPER-FWD \" --log-level 6\n",
++					        protos[pv], eport, srcfrag, schedfrag);
++
++				fprintf(f, "[ -n \"$WANIF\" ] && iptables -t nat -A " RFW_CHAIN_NAT
++				           " -i \"$WANIF\" -p %s --dport %s%s%s"
++				           " -j DNAT --to-destination %s:%s\n",
++				        protos[pv], eport, srcfrag, schedfrag, iip, iport);
++
++				/* the companion filter ACCEPT - see the header comment */
++				fprintf(f, "[ -n \"$WANIF\" ] && iptables -A " RFW_CHAIN_FWD
++				           " -i \"$WANIF\" -p %s -d %s --dport %s%s%s -j ACCEPT\n",
++				        protos[pv], iip, iport, srcfrag, schedfrag);
++			}
++		}
++	}
++	free(dup);
++}
++
+ /* ---------------------------------------------------------------------------
+  * The generator.
+  * ------------------------------------------------------------------------- */
+@@ -1183,6 +1393,15 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "  255.0.0.0)     LANNET=\"$(echo \"$LANIP\" | cut -d. -f1).0.0.0/8\";;\n"
+ 	  "  *)             LANNET=\"${LANIP%%.*}.0/24\";;\n"
+ 	  "esac\n"
++	  /* Phase 2/3: the egress defaults and the hardened forwards are both
++	   * anchored to the WAN interface, resolved at RUN time like every other
++	   * interface value here (a WAN reconnect can rename it). Every consumer is
++	   * guarded with [ -n "$WANIF" ], so a box whose WAN is not up simply emits
++	   * no egress/forward lines rather than emitting unanchored ones - an
++	   * unanchored "-o ''" would match LAN-to-LAN traffic too. */
++	  "WANIF=\"$(nvram get wan0_ifname)\"\n"
++	  "[ -z \"$WANIF\" ] && WANIF=\"$(nvram get wan_ifname)\"\n"
++	  "case \"$WANIF\" in *[!A-Za-z0-9._-]*) WANIF=\"\";; esac\n"
+ 	  /* the arming session's address, written by the CGI (S1/S3) */
+ 	  "ADM=\"\"; ADMV6=0\n"
+ 	  "[ -f " RFW_ADMIN " ] && ADM=\"$(cat " RFW_ADMIN " 2>/dev/null)\"\n"
+@@ -1206,7 +1425,13 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "    $T -F \"$C\" 2>/dev/null\n"
+ 	  "    $T -X \"$C\" 2>/dev/null\n"
+ 	  "  done\n"
+-	  "done\n");
++	  "done\n"
++	  /* Phase 3: nat is a DIFFERENT table - the filter loop above cannot reach
++	   * it, and a REAPER_FWN left behind would keep DNATing traffic after the
++	   * engine was disabled or rolled back. v4 only, matching the emitter. */
++	  "while iptables -t nat -D PREROUTING -j " RFW_CHAIN_NAT " 2>/dev/null; do :; done\n"
++	  "iptables -t nat -F " RFW_CHAIN_NAT " 2>/dev/null\n"
++	  "iptables -t nat -X " RFW_CHAIN_NAT " 2>/dev/null\n");
+ 
+ 	if (teardown_only || !c->enable || strcmp(c->enable, "1") != 0) {
+ 		/* disabled: teardown only. Leaves the base firewall untouched (S4). */
+@@ -1232,6 +1457,16 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	rfw_emit_sets(f, c, keep, sizeof(keep));
+ 	fprintf(f, "\n");
+ 
++	/* Phase 3: create our nat chain BEFORE the direction loop - rfw_emit_nat()
++	 * runs inside the FORWARD/v4 pass (it emits the companion filter ACCEPTs
++	 * alongside each DNAT) and would otherwise append into a chain that does
++	 * not exist yet. That exact mistake - emitting into a not-yet-created chain
++	 * - is what the Phase 1 generator harness caught, so it is worth being
++	 * explicit about the ordering rather than relying on it. */
++	if (c->nat && *c->nat)
++		fprintf(f, "iptables -t nat -N " RFW_CHAIN_NAT " 2>/dev/null; "
++		           "iptables -t nat -F " RFW_CHAIN_NAT "\n\n");
++
+ 	for (d = RFW_D_IN; d <= RFW_D_OUT; d++) {
+ 		int v6;
+ 		for (v6 = 0; v6 <= 1; v6++) {
+@@ -1240,7 +1475,14 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 			fprintf(f, "%s -N %s 2>/dev/null; %s -F %s\n", ipt, ch, ipt, ch);
+ 			rfw_emit_head(f, v6, d);
+ 			rfw_emit_rules(f, c, v6, d);
+-			if (d == RFW_D_FWD) rfw_emit_zpol(f, c, v6);
++			if (d == RFW_D_FWD) {
++				/* precedence: explicit rules, then the per-device egress
++				 * default, then the broad zone policy. A device default must
++				 * lose to an explicit allow and beat the zone default. */
++				rfw_emit_edef(f, c, v6);
++				if (!v6) rfw_emit_nat(f, c);   /* its companion FORWARD accepts */
++				rfw_emit_zpol(f, c, v6);
++			}
+ 			/* No final default: the chain RETURNs and the base firewall still
+ 			 * gets its say. This engine ADDS policy, it does not replace the
+ 			 * stock one - a "default deny" is expressed with a zone policy. */
+@@ -1248,6 +1490,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 		}
+ 	}
+ 
++	/* Phase 3: hook the nat chain only after it is fully populated, so a
++	 * PREROUTING jump never exists while the chain is half-built. */
++	if (c->nat && *c->nat)
++		fprintf(f, "iptables -t nat -I PREROUTING -j " RFW_CHAIN_NAT "\n\n");
++
+ 	/* ---- sweep sets belonging to objects that no longer exist ----
+ 	 * after the chains are rebuilt, so nothing still in use is destroyed. */
+ 	fprintf(f,
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 54a12f00f7..cd1de6bd2b 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3218,6 +3218,16 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_fw_zone", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zones: <name>iface,iface,...>comment (br0, vlanN, tun+, wgc+, eth0=WAN...) */
+ 	{ "reaper_fw_zpol", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zone default-policy matrix: <srczone>dstzone>action (action=accept|drop|reject) */
+ 	{ "reaper_fw_rules", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* committed policy: <en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment (dir=in|out|fwd) */
++	/* Phase 2: per-device egress defaults. Zones are interface-based, so they cannot say
++	   "this laptop gets no internet unless allowed" - every LAN device shares br0. Applied
++	   in REAPER_FWF after the explicit rules and before the zone policy, and anchored to
++	   -o $WANIF so a default-deny never severs the device from the LAN printer or NAS. */
++	{ "reaper_fw_edef", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* egress defaults: <en>object>action>sched (action=accept|drop|reject) */
++	/* Phase 3: hardened inbound forwards. Unlike stock port forwarding these can be
++	   restricted to a source object (including a geo object, which resolves to Warden's
++	   country set) and scheduled. IPv4 only - DNAT is a v4 NAT construct; the v6 way to
++	   publish a service is an ordinary in/fwd ACCEPT rule, which this engine already has. */
++	{ "reaper_fw_nat", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* forwards: <en>proto>extport>intip>intport>srcobj>log>sched */
+ 	/* runtime state, not settings. reaper_fw_armed is what the page polls to show
+ 	 * the commit-confirm countdown and what the firewall re-apply hook reads to
+ 	 * decide whether the candidate or the committed ruleset is the live one; it
+-- 
+2.25.1
+

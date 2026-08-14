@@ -1,0 +1,81 @@
+From c967349fb1fe28e78ad832863e7c6d8628537a7e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 16:02:15 -0400
+Subject: [PATCH] upnp: let IPv6 pinholes force an IGD:2 description, since v1
+ hides the service
+
+Defect introduced by ac485cfd4a, found while confirming what the pinhole slider
+actually controls.
+
+force_igd_desc_v1 does not merely renumber the advertised version. genXML()
+(upnpdescgen.c) skips the entire child element for WANIPv6FirewallControl - and
+DeviceProtection - when force_igd1 is set, because neither service exists in
+IGD:1. Since ac485cfd4a made a v1 description the default for every client, a
+user who enabled upnp_pinhole_enable got the pinhole-capable daemon
+(miniupnpd-igdv2, built --ipv6 --igd2) running while the description we served
+omitted the one service that exposes pinholes. Working daemon, undiscoverable
+feature: the same silent-no-op shape this change set exists to remove.
+
+Reachable only with IPv6 enabled AND the pinhole toggle on - both off by
+default - but both are GUI-selectable, so it is a real state, not a corner case.
+
+Enabling pinholes is an explicit opt-in to an IGD:2-only service, so it now
+implies an IGD:2 description. upnp_igd2_desc still governs the default for
+everyone else, and the console fix is unaffected: pinholes off (the default)
+still yields IGD:1.
+
+This also makes the two settings mean something coherent - the pinhole toggle
+selects the IPv6 firewall service and, necessarily, the version that can carry
+it, while upnp_igd2_desc decides what a plain IPv4 setup advertises.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c     | 15 +++++++++++++--
+ release/src/router/shared/defaults.c |  5 ++++-
+ 2 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index bec800e89a..3188c7e11a 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7991,8 +7991,19 @@ void start_upnp(void)
+ 				 * configure flag is unconditional in the router Makefile, so keying
+ 				 * this off RTCONFIG_IGD2 would miss exactly the builds that need it,
+ 				 * and an option an IGD:1 binary does not know is non-fatal (it only
+-				 * logs "Unknown option in file", it does not return 1). */
+-				if (!nvram_get_int("upnp_igd2_desc"))
++				 * logs "Unknown option in file", it does not return 1).
++				 *
++				 * PINHOLES OVERRIDE THIS. Forcing a v1 description does not merely
++				 * renumber the version: upnpdescgen.c skips the whole
++				 * WANIPv6FirewallControl (and DeviceProtection) child element when
++				 * force_igd1 is set, because neither service exists in IGD:1. So
++				 * advertising v1 while upnp_pinhole_enable=1 would run the
++				 * pinhole-capable daemon and then hide the one service that exposes
++				 * pinholes - working daemon, undiscoverable feature, exactly the
++				 * silent-no-op shape this whole change set exists to remove.
++				 * Enabling pinholes is an explicit opt-in to an IGD:2-only service,
++				 * so it implies an IGD:2 description. */
++				if (!nvram_get_int("upnp_igd2_desc") && !nvram_get_int("upnp_pinhole_enable"))
+ 					fprintf(f, "force_igd_desc_v1=yes\n");
+ 
+ 				if (nvram_get_int("upnp_clean")) {
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index a3ec80164b..54a12f00f7 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5238,7 +5238,10 @@ struct nvram_tuple router_defaults[] = {
+ 	   with pinholes on or off. Default 0 = advertise IGD:1 (what shipped up to
+ 	   v2.3.4, and what upstream already forces for Xbox); 1 = advertise IGD:2 and
+ 	   regain AddAnyPortMapping / GetListOfPortMappings at the cost of such clients.
+-	   This is DESCRIPTION-ONLY: the daemon still implements the IGD:2 actions. */
++	   This is DESCRIPTION-ONLY: the daemon still implements the IGD:2 actions.
++	   OVERRIDDEN by upnp_pinhole_enable=1: a v1 description omits the
++	   WANIPv6FirewallControl service entirely, so pinholes require IGD:2 to be
++	   advertised and turning them on implies it (see start_upnp in rc/services.c). */
+ 	{ "upnp_igd2_desc", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ #ifdef RTCONFIG_BCMARM
+-- 
+2.25.1
+

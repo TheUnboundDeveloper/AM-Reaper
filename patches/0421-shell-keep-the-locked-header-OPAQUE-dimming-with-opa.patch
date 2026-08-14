@@ -1,0 +1,108 @@
+From 49d61be6dfc5cc4b10d4be4504f948ebba91c928 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 13 Aug 2026 19:09:50 -0400
+Subject: [PATCH] shell: keep the locked header OPAQUE - dimming with opacity
+ let the page bleed through
+
+Corrects the cause I filed for the flash-overlay report. It was neither of my
+first two guesses (a missing scroll lock, or the header losing a stacking
+contest). The owner's description was the accurate one: the page behind the
+header comes forward over it.
+
+What actually happens: .top is position:sticky, top:0, z-index:300, with an
+OPAQUE background:#040405, and #page_frame is scrolling="no" - so the shell
+scrolls while the header stays put and page content slides underneath it. That
+is normal and invisible. But shellChromeLock() dimmed the header with
+`opacity:.45`, and opacity does not merely fade an element, it makes it
+TRANSLUCENT - so at 45% the content sliding under the header showed straight
+THROUGH it. Hence VARIANT / INSTALLED VERSION / BASE BUILD appearing superimposed
+on the logo and chips during a flash. The header never moved and never lost the
+z-order contest; it just stopped being opaque at exactly the moment content was
+passing beneath it.
+
+filter:brightness(.45) dims identically and leaves the element fully opaque, so
+nothing beneath can bleed through. Any inline opacity is cleared on the same line
+so an image upgraded from the previous build cannot keep a stale value.
+
+The scroll freeze from the previous commit is KEPT, and now scrolls to the top
+before locking rather than pinning wherever the operator happened to be. It
+defends a different failure: with nothing under the header there is nothing to
+bleed through even if some future style reintroduces translucency, and it puts
+the veil's own message in view instead of leaving the operator parked halfway
+down a page that has stopped responding. The prior offset is restored on unlock
+so a routine apply does not lose their place.
+
+Also rewrote the stale comment block that still carried the earlier wrong
+explanation - two contradictory accounts of the same behaviour in one function is
+worse than none.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 45 ++++++++++++++++---------
+ 1 file changed, 30 insertions(+), 15 deletions(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 0437998cd6..c233320c03 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -224,27 +224,42 @@ var DEFAULT_PAGE = 'index.asp';
+    watcher attached on every iframe load below. */
+ window.shellChromeLock = function(on){
+   var t=document.querySelector('.top'), r=document.getElementById('rail');
+-  if(t){ t.style.pointerEvents=on?'none':''; t.style.opacity=on?'.45':''; }
+-  if(r){ r.style.pointerEvents=on?'none':''; r.style.opacity=on?'.45':''; }
+-  /* reaper 2026-08-13 (field, v2.3.9): ALSO freeze the shell's scroll position.
+-     Disabling pointer events stops clicks but not the wheel, so during a
+-     firmware flash the operator could still scroll the shell - which slid the
+-     dimmed header up out from behind the frame's veil and left the version
+-     chips painted OVER the curtain. The veil lives inside the iframe and can
+-     never cover shell chrome (see chromeLock() in Reaper_Firmware.asp), so the
+-     shell has to hold still instead.
++  /* reaper 2026-08-13 (field, v2.3.9) - THE CAUSE, corrected after a first wrong
++     diagnosis. These used to dim with `opacity:.45`, and opacity does not just
++     fade an element, it makes it TRANSLUCENT. .top is position:sticky with an
++     opaque background:#040405 and z-index:300, and #page_frame is
++     scrolling="no" - so the SHELL scrolls while the header stays put and page
++     content slides underneath it. At 45% opacity that content showed straight
++     THROUGH the header, which is what looked like the page painting on top of
++     it. The header never moved and never lost the stacking contest.
+ 
+-     overflow:hidden rather than position:fixed on purpose - it pins the page
+-     without changing scrollTop, so there is no jump-to-top when it lifts. Set
+-     on BOTH documentElement and body because either can be the scrolling
+-     element depending on doctype/CSS. The saved offset is restored anyway as a
+-     belt-and-braces measure, and the guard makes repeated lock(true) calls
++     filter:brightness() dims the same way but leaves the element fully opaque,
++     so nothing beneath can bleed through. */
++  if(t){ t.style.pointerEvents=on?'none':''; t.style.filter=on?'brightness(.45)':''; t.style.opacity=''; }
++  if(r){ r.style.pointerEvents=on?'none':''; r.style.filter=on?'brightness(.45)':''; r.style.opacity=''; }
++  /* ALSO freeze the shell's scroll position while the chrome is locked.
++     pointerEvents:none stops clicks but not the wheel, so the operator could
++     still scroll a page that has deliberately stopped responding - and the
++     scrolling is what put content under the header in the first place. The veil
++     lives inside the iframe and can never cover shell chrome (see chromeLock()
++     in Reaper_Firmware.asp), so the shell has to hold still itself.
++
++     Set on BOTH documentElement and body because either can be the scrolling
++     element depending on doctype/CSS. The guard keeps repeated lock(true) calls
+      idempotent - reaperWait/Done and the #Loading MutationObserver below can
+-     both fire for the same operation. */
++     both fire for one operation - and the saved offset is restored on unlock so
++     a routine apply does not lose the operator's place. */
+   var de=document.documentElement, bd=document.body;
+   if(on){
+     if(!window.__reaperScrollLock){
+       window.__reaperScrollLock = { y: window.pageYOffset || de.scrollTop || 0 };
++      /* Belt and braces alongside the opaque-header fix above: return to the top
++         BEFORE freezing, so there is nothing sitting under the header to bleed
++         through even if some future style reintroduces translucency. It also
++         puts the veil's own message in view rather than leaving the operator
++         parked halfway down a page that has stopped responding. The offset is
++         restored on unlock so a normal apply does not lose their place. */
++      try{ window.scrollTo(0, 0); }catch(e){}
+       if(de) de.style.overflow='hidden';
+       if(bd) bd.style.overflow='hidden';
+     }
+-- 
+2.25.1
+

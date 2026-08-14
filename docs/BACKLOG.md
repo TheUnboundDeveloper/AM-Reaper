@@ -90,82 +90,10 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log. [Requires_Reaserch]
 
-- **[P2] Firewall engine master switch takes no action — most importantly it does not turn OFF.**
-  Found on metal 2026-08-13 (v2.3.9, first time the engine ever ran). `reaper_fw.cgi?action=opts`
-  is what the page's engine toggle calls (`Reaper_Firewall.asp` ~1148); it does
-  `nvram_set("reaper_fw_enable", en)` and returns. There is no `notify_rc`, so nothing starts or
-  stops.
-
-  - **The OFF direction is the real bug.** `stop_reaper_fw()` is never reached, so disabling the
-    engine leaves REAPER_FWI/FWF/FWO hooked and enforcing until a reboot or an unrelated apply. A
-    master switch that does not disable is the wrong failure direction for a firewall.
-  - The ON direction is merely confusing: the flag is set, no chains appear, and the engine looks
-    broken. That is exactly how this was found — `reaper_fw_enable=1` + `service restart_firewall`
-    produced `iptables: No chain/target/match by that name`. The re-apply hook in `firewall.c` only
-    *runs* `/tmp/reaper_fw/apply.sh` **if it already exists**; it never generates it. `apply.sh` is
-    written by `start_reaper_fw()`, and `/tmp` is tmpfs — so after a reboot with the engine
-    disabled, nothing has ever written it and `restart_firewall` has nothing to run. The working
-    verb is `service restart_reaper_fw`.
-  - **Also check while fixing:** `opts` uses `nvram_set` with no `nvram_commit`, so a toggle that is
-    never followed by an Apply/Confirm is lost on a power cut. That may be deliberate (the
-    commit-confirm design deliberately holds the six editable lists in RAM and commits only on
-    confirm) but `enable`/`confirm` are settings rather than staged drafts, so confirm the intent
-    rather than assuming.
-  - **FIXED in v2.4.1 (`b3589185e6`) — metal re-test owed.** `opts` now calls
-    `notify_rc("restart_reaper_fw")`, but only when `enable` actually CHANGES value — the same
-    action saves the commit-confirm timer, and rebuilding the ruleset every time that number is
-    edited would be pointless work. **Deliberately still no `nvram_commit()`**: that call flushes
-    the whole of nvram and would persist the six editable lists while they are an unconfirmed draft
-    in RAM, which is exactly what S3 forbids. The flag persists on the next confirm, the only path
-    meant to write flash — so the open question in the bullet above is now answered: the missing
-    commit is correct, not an oversight.
-  - **Re-test both directions on metal:** enable → chains appear without a reboot; disable → chains
-    are gone (`iptables -S REAPER_FWF` returns "No chain/target/match by that name"). The OFF
-    direction is the one that mattered.
-
-- **[P3] Firmware flash overlay does not lock the page behind it.** Reported on metal 2026-08-13
-  (v2.3.8, flashing v2.3.9). While the "Uploading image" curtain is up on `Reaper_Firmware.asp`, the
-  page underneath is still scrollable, so the sticky header slides out from behind the dim layer:
-  the screenshot shows the VARIANT / AI Advisor / MCP chips, "INSTALLED VERSION Reaper v2.3.8" and
-  "BASE BUILD 3.0.0.6.102.8" rendering *over* the faded header, on top of the curtain. Cosmetic —
-  the flash itself completed normally — but it appears during the one operation where the page also
-  says "DO NOT POWER OFF OR RESTART THE ROUTER", so anything that looks like the UI misbehaving is
-  worth more than its severity suggests.
-
-  - **FIXED in v2.4.1 (`b3589185e6` + `49d61be6df`) — metal re-test owed. The cause was NOT what
-    this entry first recorded**, and the owner's original description was the accurate one: the page
-    behind the header comes forward over it. `.top` is `position:sticky; top:0; z-index:300` with an
-    **opaque** `background:#040405`, and `#page_frame` is `scrolling="no"` — so the shell scrolls
-    while the header stays put and page content slides underneath it, which is normal and invisible.
-    But `shellChromeLock()` dimmed the header with **`opacity:.45`**, and opacity does not merely
-    fade an element, it makes it **translucent** — so the content passing beneath showed straight
-    *through* it. The header never moved and never lost a stacking contest; it just stopped being
-    opaque at exactly the moment content was underneath.
-    Fixed with `filter:brightness(.45)`, which dims identically while leaving the element fully
-    opaque (any inline `opacity` is cleared on the same line so an upgraded image cannot keep a
-    stale value). A scroll freeze is kept as a second line of defence and now scrolls to the top
-    before locking: with nothing under the header there is nothing to bleed through even if a future
-    style reintroduces translucency, and it puts the veil's message in view rather than leaving the
-    operator parked halfway down a page that has stopped responding.
-    **Lesson worth keeping: `opacity` to "dim" any element that overlaps scrolling content will do
-    this again. Use `filter:brightness()` for chrome that must stay opaque.**
-  - **Still verify carefully — this area has a regression history.** The overlays were re-anchored
-    in v2.3.3 (`1d9d58a2be` fixed a field regression where the re-anchor inflated the framed doc by
-    460 px and clipped QoS/Traffic), and the post-flash "frozen browser" trap on this same page was
-    doubled poll chains rather than the veil itself. Re-test in both the framed (shell) and
-    direct-URL cases.
-
 ## UI / UX polish
 
-- ~~**Quick List** Items in the "Security Posture" panel on the dashboard should be linked so when
-  clicked it takes the user to the page and view of where the item can be modified.~~
-  - **DONE in v2.4.1 (`d69d48d89f`).** All 14 rows carry a `data-go` target and navigate on click or
-    Enter/Space. The two firewall rows deep-link to the tab that owns the setting
-    (`Reaper_Firewall.asp?t=general`, which `initTab()` already supported) rather than dropping the
-    user on Status to hunt — the ask was the page *and* the view. One delegated listener rather than
-    14 handlers, so a row added later needs only the attribute; `tabindex`/`role` are set from JS, so
-    a row that loses its target stops being focusable automatically, and the hover/focus affordance is
-    bound to `[data-go]` so a row without a destination never looks clickable.
+- **Warden Count** Warden sometimes shows a block count total but no country count that are matching 
+  the total counts.
 
 - **Instructions** Add usage instructions and examples to the firewall pages to assit the user 
   in understanding the tooling.
@@ -220,37 +148,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Features to add
 
-- ~~**[P3] Devices page — export the client inventory (name, MAC, IP) as HTML, CSV or JSON.**~~ Owner
-  request 2026-08-13. A button on `Reaper_Devices.asp` that offers the three formats and downloads
-  the current device list.
-
-  - **DONE in v2.4.1 (`d69d48d89f`).** Built exactly as scoped below — client-side from `D.devices`,
-    no CGI action, no mime row, names from `custom_clientlist`, CSV quoted per RFC 4180, model +
-    timestamp in the JSON and HTML, and the PII caution under the button. One decision worth
-    recording that the notes below did not cover: it exports **every** device rather than the
-    filtered view, because a filter left set from an earlier glance silently truncating an inventory
-    is what makes an export untrustworthy. Tokens `RDEV_88`–`90`, all 25 packs lockstep.
-
-  - **Should need no C at all.** `reaper_dev.cgi?action=status` already returns the full list the
-    table renders from, so the data is in the browser; build the file client-side (`Blob` +
-    `<a download>`) rather than adding a server endpoint. There is no outbound file-serving path in
-    httpd to reuse anyway — every `Content-Disposition` hit in `web.c` is *inbound* multipart upload
-    parsing — and `reaper_dev.cgi*` is registered in `mime_handlers[]` as `application/json`, so a
-    server-side download would mean a new handler and a new mime row for no benefit. Same
-    conclusion the Mesh Nodes card reached.
-  - **Name source is `custom_clientlist`**, which is the naming master (see the Device Identity
-    Manager work) — export what the user actually sees on the page, not the raw DHCP hostname, or
-    the file will disagree with the UI for every renamed device.
-  - Suggested shapes: CSV with a header row (`name,mac,ip`) for spreadsheets; JSON as an array of
-    objects for scripting; HTML as a standalone styled table for handing to someone. Include the
-    router model and a generated-at timestamp in the HTML and JSON headers so an old file is
-    identifiable later.
-  - **PII note — say it in the UI.** Unlike `reaper_diag`, which sanitizes and carries a
-    withheld-items ledger precisely because raw dumps are unsafe to post, this export is
-    deliberately UNsanitized: it is the user's own inventory and its whole purpose is real names and
-    addresses. It is therefore not safe to paste into a forum or a bug report. A one-line caution
-    next to the button costs nothing and prevents the obvious mistake.
-
 - **[P3] Firewall rule tracer (FIREWALL-PLAN Phase 3, the last unbuilt piece of it).** "Given a
   packet like *this*, which rule would match?" — a simulator that walks the committed config in C
   and reports the first match, rather than shelling out to iptables. Deferred from the firewall rung as
@@ -274,31 +171,22 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   - Until then FQDN objects resolve on the 10-minute `cru` timer (`rfw_gen_resolve()`), which is the
     documented trade-off: a host behind a large rotating CDN pool lags until the next refresh.
 
-- **[P2] NATIVE FIREWALL SUITE — replace the stock Firewall menu with Reaper-native pages + add engineer features.**
-  Owner-approved (2026-08-08) design: a native
-  `Reaper_Firewall.asp` hub replacing all four stock tabs (General / Network Services / URL /
-  Keyword) plus new tabs — **Status** (live v4+v6 chains + hit counters), **custom Rules** engine
-  (Basic form + Advanced DSL, dual-stack, `rc/reaper_fw.c` + `reaper_fw.cgi`, re-apply hook),
-  **Egress** control (IoT containment, outbound geo), **Logging** viewer — all with
-  **commit-confirm auto-rollback** and anti-lockout invariants. Backend stays iptables/ipset.
-  Phased 0→3; each phase build + on-metal (rmcpd lab MCP as the test harness) + fleet fan-out.
+- **[P2] NATIVE FIREWALL SUITE — the remaining pieces.** The suite itself **shipped in v2.4.1**
+  (engine, hub, Status posture view, Phase 2 egress defaults, Phase 3 hardened forwards, their
+  authoring tabs, backup/restore, and a measured engine-active signal); see
+  [`CHANGELOG.md`](CHANGELOG.md). What is left:
 
-  - *Checked 2026-08-12 — **NOT shipped; still in planning**.* Files exist in the tree
-    (`www/Reaper_Firewall.asp` 42 KB, tabs `general`/`netsvc`/`url`/`keyword`/`status`/`logging`;
-    `rc/reaper_fw.c` 14.7 KB) and were committed under the v2.3.3 rung (`c2162344cc`), but these are
-    **mock-ups from the design phase, not a working feature**. Nothing in any menu or nav file
-    references `Reaper_Firewall`, so the page is unreachable in a running image — deliberately so.
-    **Do not read presence in the source ladder as delivery.** Design approved, live inspection done,
-    build not started. [owed — build]
-  - **BUILT in v2.4.1.** Phase 1 engine + hub wiring (`b0617e5a43`), Status rewritten as a posture
-    summary rather than the planned chain dump (`e31161e279` — the live-chain design was built first
-    and rejected on sight: 40-odd chains and several hundred counter rows, unreadable without prior
-    `iptables` knowledge), Phase 2 egress defaults + Phase 3 hardened forwards (`a103b59d6d`), their
-    authoring tabs and backup/restore (`fa1e5d634f`), and a **measured** engine-active signal
-    (`24673cac2e`) so the switch reports what is true rather than what was asked for. Ships with
-    `reaper_fw_enable=0`. **Still owed:** the rule tracer and the dnsmasq `ipset=` upgrade (both
-    tracked as their own entries above), on-metal validation, and the fleet fan-out — which needs the
-    four per-model overlays regenerated first, since the rung touches two files they carry.
+  - **Advanced DSL for the Rules tab** — the approved 2026-08-08 design called for a Basic form
+    *and* an advanced text syntax; only the Basic form was built (`grep -ci 'dsl\|advanced'` on
+    `Reaper_Firewall.asp` = 0). Decide whether it is still wanted: the Basic form plus the compile
+    preview may already cover the need the DSL was meant to serve.
+    *(The Logging viewer tab from that design IS built — `tab_logging` + `loadDrops()` + the `fw_log`
+    CGI path — so do not re-raise it as missing.)*
+  - **Fleet fan-out — BLOCKED until the overlays are regenerated.** The rung touches
+    `www/Main_ReaperDash.asp` and `www/reaper_shell.asp`, which all four per-model overlays also
+    carry, so `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98_PRO` cannot take this series until those
+    overlays are rebuilt against it. Everything else in the rung is model-neutral.
+  - Rule tracer and the dnsmasq `ipset=` upgrade are tracked as their own entries above.
 
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the

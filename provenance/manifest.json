@@ -21,6 +21,33 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v2.4.2",
+      "firmware": "3006.102.8_Reaper_v2.4.2",
+      "build_commit": "1a41dcbe65",
+      "source_tree": {
+        "release/src/router": "60e0a1e57e53b1562d01b4e484fcb6c797976864",
+        "release/src-rt": "f637c079224be511c51c76f52611c5ccd53b3fea"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "1c8c908a0a7c14b12419a3720f9d5b2007b068a7",
+        "release/src-rt": "f637c079224be511c51c76f52611c5ccd53b3fea"
+      },
+      "images": [],
+      "patch_count": 426,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-08-14",
+      "parent": "v2.4.1",
+      "summary": "Warden enforcement, firewall usability, and two field reports.\n\nWarden: direction out/both had never blocked anything. The whitelist was tested before the destination rules, and every outbound packet carries a LAN host as its source, so any whitelist entry covering that host - including the <lan>/24 entry this feature's own lockout guidance tells operators to keep - returned out of the chain before a single destination rule ran. Inbound blocking of the same addresses was unaffected, which is the asymmetry the report described. The destination group now lives in its own RW_OUT chain reached ahead of any source RETURN, and carries the loopback/LAN/own-WAN exemptions the destination side never had.\n\nWarden also gains an opt-in RW_SELF chain on OUTPUT (nvram rwarden_self, default 0) so a compromised router cannot beacon to a flagged address; drops go to RW_SDROP, which always logs, and dnsmasq's upstream resolvers plus NTP are exempted so a poisoned set cannot present as a whole-network outage. It cannot lock an operator out: management is INPUT and the replies carry a LAN destination. rwatch reports self-drops.\n\nThe Warden block total and the country table could never reconcile - the total counts every drop while the table only ever counted the geo rules, and the feed rule is evaluated first (same drop target, so the order is attribution, not enforcement). THREAT and BAN are now banked alongside TOTAL/CC and the page shows the split.\n\nFirewall: FQDN objects populate from dnsmasq's ipset= directive. The blocker previously recorded against this - that the router's dnsmasq is compiled without ipset support - was a misreading of a stock MIPS binary from a different model; the shipped ARM binary has had it throughout and no rebuild was required. The ten-minute resolver timer stays as the floor, since this only sees lookups the router itself answers. Every firewall tab also gains an explainer and a help link into a new docs/FIREWALL-GUIDE.md.\n\nField reports: the Traffic per-network view labelled raw bridge names, which do not match the VLAN numbers an operator configures; each series is now labelled with its SDN name and VLAN alongside the bridge, published as a side table so the persisted history key is unchanged. And Wi-Fi clients connected through an AiMesh node reported as Wired, because neither the local assoclists nor the bridge forwarding table can see them and the backhaul port decided the answer; the mesh client list is now consulted, narrowed so first-hand radio data always wins.",
+      "models_note": "Overlay-overlap check (cut step 7): this rung overlaps NONE of the overlays/<MODEL>.patch identity overlays, so all four siblings pick the changes up from the patch series. The sibling branches were nevertheless ported and their overlays regenerated in the same cut (rt-be86u, rt-be88u, gt-be98, gt-be98-pro each committed at EXTENDNO=Reaper_v2.4.2 with 25 dictionaries in lockstep), and all four regenerated overlays pass the identity gate as identity-only. Built and verified locally on RT-BE96U MCP only (reaper_verify 20 pass / 0 warn / 0 FAIL); the noMCP variant and the four siblings are unbuilt here and are for CI. NOTHING IN THIS RUNG HAS RUN ON HARDWARE.",
+      "logs": {
+        "build": "provenance/logs/v2.4.2/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v2.4.2/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
       "version": "v2.4.1",
       "firmware": "3006.102.8_Reaper_v2.4.1",
       "build_commit": "da542db44d",

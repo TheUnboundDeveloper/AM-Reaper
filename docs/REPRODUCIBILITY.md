@@ -72,17 +72,17 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 424 patches (through v2.4.1).
+#   fails without it. This applies all 428 patches (through v2.4.3).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
-#   expected after all 424 patches (v2.4.1):
-#                         1db8fe150ac99c2adc17041d696666cf0dc299c6
+#   expected after all 428 patches (v2.4.3):
+#                         81025000fb194ea9b9a289418f07028a691a5fb1
 #   (this value is releases[].source_tree_from_series["release/src/router"])
 #
 #   For the newest PUBLISHED release, v2.3.7, apply the first 406 instead:
 #                         7f48393d768d564fe8dbb5722fcfa26a8e6f6181
-#   The 424-patch replay was verified clean on 2026-08-13 — `git am --keep-cr`
+#   The 428-patch replay was verified clean on 2026-08-14 — `git am --keep-cr`
 #   returned 0 and the only diff against the build commit was vendored *.md
 #   files, exactly as described below.
 #
@@ -204,6 +204,8 @@ exclusion strips. Compare your replay against this column, never against
 
 | Release | Base | Patches | `release/src/router` tree hash (from the series) | Published |
 |---|---|---|---|---|
+| v2.4.3 | `a7ebfa133a` | `0001`–`0428` | `81025000fb194ea9b9a289418f07028a691a5fb1` | not yet |
+| v2.4.2 | `a7ebfa133a` | `0001`–`0426` | `1c8c908a0a7c14b12419a3720f9d5b2007b068a7` | no — folded into v2.4.3 |
 | v2.4.1 | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | not yet |
 | v2.3.7 | `a7ebfa133a` | `0001`–`0406` | `7f48393d768d564fe8dbb5722fcfa26a8e6f6181` | ✅ all five models |
 | v2.3.6 | `a7ebfa133a` | `0001`–`0399` | `3740a7192671ec39854d96f8383e202b46599e90` | no |
@@ -221,8 +223,10 @@ exclusion strips. Compare your replay against this column, never against
 
 The image SHA-256s are in the release's `SHA256SUMS-*.txt`. They are **also**
 supposed to be in the manifest, but in practice are populated only for
-v2.1.0–v2.1.5 and v2.3.1 — so treat the `SHA256SUMS` file attached to a release as
-the authoritative image record, and do not infer from an empty `images` list that a
-release never shipped. The newest published release is **v2.3.7** (all five models);
-**v2.4.1** is built for the RT-BE96U only and its image hashes are added at publish
-time.
+v2.1.0–v2.1.5, v2.3.1 and v2.4.3 — so treat the `SHA256SUMS` file attached to a
+release as the authoritative image record, and do not infer from an empty `images`
+list that a release never shipped. The newest published release is **v2.3.7** (all
+five models); **v2.4.3** is built for the RT-BE96U only, both variants, and its four
+image hashes ARE recorded in the manifest — but those are the locally built
+artifacts, not published downloads. The published images come from the CI
+clean-room run and get their own `SHA256SUMS-*.txt` per model at publish time.

@@ -1,0 +1,322 @@
+From f13fe92257d379102c59bf7d8152fae26eae5113 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 14 Aug 2026 11:48:23 -0400
+Subject: [PATCH] reaper v2.4.3: security-audit remediation on the v2.4.2 rung
+
+A five-agent audit of everything v2.4.2 added - the generated root shell,
+the dnsmasq config path, the httpd JSON parse, the www changes and the
+rtrafd payload - found six defects. Every one is in code this rung
+introduced. Each was re-verified against the source by hand before being
+accepted; three further agent claims did not survive that check and are
+not acted on here.
+
+Clean on the surfaces that mattered most: no command injection reachable
+in the generated scripts, no dnsmasq config injection, no XSS in the new
+pages, no new socket/daemon/setuid/system()/popen(), CSRF correct on the
+state-changing endpoints, and the new dict tokens safe in all 25 packs.
+
+A. httpd/web.c - rdev_amesh_is_wired() type-guarded levels 2 and 3 of the
+   walk but not level 1. json_object_object_foreach expands to
+   json_object_get_object(o)->head and that call returns NULL for a
+   non-object, so a well-formed but non-object /tmp/allwclientlist.json -
+   a bare [] parses fine - dereferences NULL inside a root process.
+   json_object_from_file only reports PARSE failure, so nothing upstream
+   catches it. Guarded at both the function entry and the caller.
+
+B. rc/services.c - the reader was char[512] against a producer that could
+   emit ~838. Truncation here is not a lost tail: fgets returns a partial
+   line, the loop writes it, and dnsmasq gets a directive whose set list
+   was cut - either naming a set that does not exist, so an FQDN block
+   rule silently never matches, or ending on a bare '/', which dnsmasq
+   rejects and then refuses to start, taking LAN DNS and DHCP with it.
+   Fixed at both ends: the producer builds the line in a bounded buffer
+   (RFW_DNSMASQ_LINE_MAX 800, whole line <= 805) and logs any names it had
+   to omit, and the reader is 1024 and discards any chunk arriving without
+   a trailing newline rather than emitting half a directive.
+
+C. rc/rwarden.c - stats.sh used a fixed scratch path and httpd popen()s it
+   on every 30-second Warden poll with no lock, so two open tabs truncated
+   each other's chain listing and banked zeros - the exact reconciliation
+   confusion the breakdown was added to fix. fold.sh had the same shape
+   from apply.sh / stop_rwarden / the cron checkpoint. All three scratch
+   paths are now per-process.
+
+D. rc/reaper_fw.c - rfw_gen_dnsmasq ignored RFW_MAX_OBJ, which
+   rfw_emit_sets honours, so past the cap it emitted ipset= lines naming
+   sets that are never created and dnsmasq logged an add failure on every
+   answer. Cap applied, omission logged.
+
+E. rc/reaper_fw.c - the dnsmasq fragment was the only reaper_fw artifact
+   written with no explicit mode, and rc runs umask(0), so it landed 0666
+   world-writable. chmod 0600 before the rename publishes it.
+
+F. rtrafd/rtrafd.c - two SDNs on one bridge (the IoT profile shares br0
+   with the default LAN) emitted a duplicate JSON key. It parses, last one
+   wins, and the main LAN series gets relabelled with the IoT network's
+   name - worse than showing the bare bridge. First writer wins.
+
+Two hardening items taken at the same time: $LANNET is quoted in the
+generated destination-exemption rule, and resolver addresses read out of
+/tmp/resolv.dnsmasq now pass a VALUE gate before reaching iptables. The
+second is not a shell-safety fix - awk already guarantees no whitespace -
+but `nameserver 0.0.0.0/0` would be ACCEPTED as a RETURN at the head of
+RW_SELF and silently neuter the entire self-filter, with no error for the
+|| logger fallback to catch.
+
+Not fixed, deliberately: /tmp is mounted 0777 with no sticky bit, which is
+what makes A reachable at all. That is stock ASUS/Merlin behaviour
+affecting every subsystem including the closed blobs, so it wants its own
+rung and its own metal pass; it is recorded in the backlog with two
+candidate fix shapes.
+
+Verified: C syntax clean on all five files; all four direction/self
+permutations of the generated apply.sh parse under sh -n; the resolver
+gate accepts 1.1.1.1, ::1 and 2001:db8::1 and rejects 0.0.0.0/0,
+evil;reboot and example.com; the line bound is proven at 805 < 1024.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c     | 11 +++++++
+ release/src/router/rc/reaper_fw.c  | 50 +++++++++++++++++++++++++++---
+ release/src/router/rc/rwarden.c    | 25 ++++++++++++---
+ release/src/router/rc/services.c   | 26 ++++++++++++++--
+ release/src/router/rtrafd/rtrafd.c | 10 ++++++
+ 5 files changed, 112 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 752cad66df..5248249b5a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24127,6 +24127,14 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+  * cfg_mnt lists are not guaranteed to agree on MAC case. */
+ static int rdev_amesh_is_wired(json_object *wired, const char *mac)
+ {
++	/* The TOP level needs the same type guard the levels below it get. The
++	 * json_object_object_foreach macro expands to
++	 * `json_object_get_object(obj)->head`, and json_object_get_object()
++	 * returns NULL for anything that is not an object - so a well-formed but
++	 * non-object document ([] or "x" or 3) dereferences NULL inside httpd,
++	 * which runs as root. json_object_from_file() only reports a PARSE
++	 * failure; a valid array parses fine and reaches here. */
++	if (!json_object_is_type(wired, json_type_object)) return 0;
+ 	json_object_object_foreach(wired, nodemac, macs) {
+ 		(void)nodemac;
+ 		if (!json_object_is_type(macs, json_type_object)) continue;
+@@ -24146,7 +24154,10 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ 	lock = file_lock(ALLWEVENT_FILE_LOCK);
+ 	wl = json_object_from_file(ALLWCLIENT_LIST_JSON_PATH);
+ 	file_unlock(lock);
++	/* NULL = parse failure; a valid NON-OBJECT would crash the foreach below
++	 * (see the note in rdev_amesh_is_wired). Both are rejected here. */
+ 	if (!wl) return;
++	if (!json_object_is_type(wl, json_type_object)) { json_object_put(wl); return; }
+ 
+ 	lock = file_lock(WIREDCLIENTLIST_FILE_LOCK);
+ 	wired = json_object_from_file(WIRED_CLIENT_LIST_JSON_PATH);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 273b9dc02b..6b7df23ec8 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -108,6 +108,13 @@
+ #define RFW_RESOLVE  RFW_DIR "/resolve.sh"        /* periodic fqdn -> ipset refresh (the floor) */
+ /* RFW_DNSMASQ_CONF (rc.h) is the dnsmasq ipset= fragment - the accelerator. */
+ #define RFW_FQDN_TTL 3600                         /* fqdn set expiry, seconds; must stay >> the resolver cron interval */
++/* Size of the buffer rfw_gen_dnsmasq builds one directive's DOMAIN LIST in.
++ * The emitted line is "ipset=" + that body + "/<v4set>,<v6set>\n", and the
++ * per-name check reserves the tail, so the whole line cannot exceed
++ * 6 + (this - 1) = 805 bytes. That MUST stay under the reader's buffer in
++ * services.c (1024) - see the note there for what a truncated directive does
++ * to dnsmasq. Change one and re-check the other. */
++#define RFW_DNSMASQ_LINE_MAX 800
+ #define RFW_PREVIEW  RFW_DIR "/preview.txt"       /* compile-preview output (never executed) */
+ 
+ #define RFW_CONFIRM_MIN  15                       /* commit-confirm floor, seconds (S3: never 0) */
+@@ -823,28 +830,63 @@ static void rfw_gen_dnsmasq(const rfw_cfg_t *c)
+ 
+ 	if (c->enable && !strcmp(c->enable, "1") && c->obj && *c->obj &&
+ 	    (dup = strdup(c->obj)) != NULL) {
++		int nobj = 0;
+ 		for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+ 			char name[RFW_NAME_MAX + 2], type[16], val[768], *d2, *t2, *s2 = NULL;
+-			int n = 0;
++			char line[RFW_DNSMASQ_LINE_MAX];
++			size_t used;
++			int n = 0, dropped = 0;
+ 			if (!rfw_field(tok, 0, name, sizeof(name)) ||
+ 			    !rfw_field(tok, 1, type, sizeof(type)) ||
+ 			    !rfw_field(tok, 2, val,  sizeof(val))) continue;
+ 			if (strcmp(type, "fqdn") || !rfw_valid_name(name)) continue;
++			/* Same cap rfw_emit_sets() applies. Without it this emitted
++			 * ipset= lines for objects past the limit whose sets are never
++			 * created, so dnsmasq logged an add failure on every answer. */
++			if (++nobj > RFW_MAX_OBJ) {
++				logmessage("reaper_fw", "more than %d objects - no dnsmasq directives "
++				           "for the rest", RFW_MAX_OBJ);
++				break;
++			}
+ 			if (!(d2 = strdup(val))) continue;
++			/* Build the line in a bounded buffer instead of streaming it, so
++			 * its length is known BEFORE anything is written. The reader in
++			 * services.c refuses a line with no newline, so an over-long line
++			 * would be dropped whole - losing every name on it silently. Cap
++			 * the names instead, and say so in the log. Reserve room for the
++			 * "/rwfw_<name>,rwfw6_<name>\n" tail. */
++			used = 0;
++			line[0] = 0;
+ 			for (t2 = strtok_r(d2, ",", &s2); t2; t2 = strtok_r(NULL, ",", &s2)) {
++				size_t need, tail;
+ 				/* S2: rfw_valid_fqdn constrains this to letters, digits,
+ 				 * hyphen and dot - it cannot terminate the directive or
+ 				 * introduce another one. */
+ 				if (!rfw_valid_fqdn(t2)) continue;
+-				if (n++ == 0) fprintf(f, "ipset=");
+-				fprintf(f, "/%s", t2);
++				need = 1 + strlen(t2);                       /* "/name" */
++				tail = 1 + sizeof(RFW_SET4) - 1 + strlen(name)
++				         + 1 + sizeof(RFW_SET6) - 1 + strlen(name) + 2;
++				if (used + need + tail >= sizeof(line)) { dropped++; continue; }
++				used += (size_t)snprintf(line + used, sizeof(line) - used, "/%s", t2);
++				n++;
+ 			}
+ 			free(d2);
+-			if (n) fprintf(f, "/%s%s,%s%s\n", RFW_SET4, name, RFW_SET6, name);
++			if (dropped)
++				logmessage("reaper_fw", "object %s: %d domain name(s) OMITTED from the "
++				           "dnsmasq directive - the line would have been too long",
++				           name, dropped);
++			if (n)
++				fprintf(f, "ipset=%s/%s%s,%s%s\n", line,
++				        RFW_SET4, name, RFW_SET6, name);
+ 		}
+ 		free(dup);
+ 	}
+ 	fclose(f);
++	/* rc runs with umask(0), so without this the fragment lands 0666 - every
++	 * other reaper_fw artifact is given an explicit mode. The content is
++	 * spliced into a root-parsed config, so make it root-only BEFORE the
++	 * rename publishes it. */
++	chmod(tmp, 0600);
+ 	rename(tmp, RFW_DNSMASQ_CONF);
+ }
+ 
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 321f30b6b9..6f9000ad9e 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -298,7 +298,7 @@ static void rw_emit_local_dst(FILE *f, const char *ipt, const char *chain, int v
+ 	if (!v6)
+ 		fprintf(f,
+ 		  "%s -A %s -d 127.0.0.0/8 -j RETURN\n"
+-		  "%s -A %s -d $LANNET -j RETURN\n"
++		  "%s -A %s -d \"$LANNET\" -j RETURN\n"
+ 		  "for w in $WANIPS; do case \"$w\" in ''|0.0.0.0) ;; *) "
+ 		  "%s -A %s -d \"$w\" -j RETURN;; esac; done\n",
+ 		  ipt, chain, ipt, chain, ipt, chain);
+@@ -367,6 +367,14 @@ static void rw_emit_self_chain(FILE *f, const char *ipt, int v6)
+ 	fprintf(f,
+ 	  "if [ -f /tmp/resolv.dnsmasq ]; then\n"
+ 	  "  awk '/^nameserver/{print $2}' /tmp/resolv.dnsmasq | while read -r d; do\n"
++	  /* Value gate, not a shell-safety one: awk already guarantees no
++	   * whitespace and both uses are quoted. A prefix here would be ACCEPTED
++	   * by iptables - `nameserver 0.0.0.0/0` becomes a RETURN for everything
++	   * at the head of the chain and silently neuters the whole self-filter,
++	   * with no error for the `|| logger` fallback to catch. Bare addresses
++	   * only. Also keeps a non-IP token from making iptables do a blocking DNS
++	   * lookup while the chain is being built. */
++	  "    case \"$d\" in *[!0-9a-fA-F.:]*|*/*) continue;; esac\n"
+ 	  "    case \"$d\" in *:*) %s;; *) %s;; esac\n"
+ 	  "    %s -A RW_SELF -d \"$d\" -j RETURN 2>/dev/null || "
+ 	  "logger -t rwarden \"self-filter: upstream DNS exemption REJECTED for $d\"\n"
+@@ -771,8 +779,12 @@ static void rw_gen_fold(void)
+ 	  "# generated by start_rwarden - do not edit; idempotent (banks, then zeroes)\n"
+ 	  "CTR=" RW_CTRS "\n"
+ 	  "DIR=" RW_CACHE "\n"
+-	  "TMPCC=" RW_CCTMP "\n"
+-	  "TMPCH=" RW_CHTMP "\n"
++	  /* Per-PROCESS scratch. fold.sh runs from apply.sh, from stop_rwarden and
++	   * from the 15-minute cron checkpoint, so two copies can overlap (a
++	   * restart_firewall landing on a cron tick); a shared path lets one
++	   * truncate the other's listing mid-read and bank a zero. */
++	  "TMPCC=" RW_CCTMP ".$$\n"
++	  "TMPCH=" RW_CHTMP ".$$\n"
+ 	  "# opt-out: keep counting live in iptables, persist nothing\n"
+ 	  "[ \"$(nvram get rwarden_stats_save)\" = 0 ] && exit 0\n"
+ 	  "# not armed -> nothing to bank. This is the normal case at boot and right\n"
+@@ -899,7 +911,12 @@ static void rw_gen_stats(void)
+ 	  /* One listing, read by every bucket below - a second `iptables -nvxL` a
+ 	   * moment later would let the buckets disagree with each other and with
+ 	   * TOTAL, which is precisely the confusion being fixed here. */
+-	  "CH=/tmp/rwarden/ch.stats\n"
++	  /* Per-PROCESS: httpd popen()s stats.sh on every 30 s Warden poll with no
++	   * lock, so two open tabs (or two admin sessions) ran concurrently and
++	   * truncated each other's chain listing - which read back as zero geo /
++	   * threat / ban. That is precisely the reconciliation confusion the
++	   * breakdown was added to fix, so a shared path here defeats the feature. */
++	  "CH=/tmp/rwarden/ch.stats.$$\n"
+ 	  "{ for C in REAPER_WARDEN RW_OUT RW_SELF; do\n"
+ 	  "    iptables -nvxL \"$C\" 2>/dev/null; ip6tables -nvxL \"$C\" 2>/dev/null\n"
+ 	  "  done; } > \"$CH\" 2>/dev/null\n"
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index f184eb929c..aafb90971b 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2359,10 +2359,32 @@ void start_dnsmasq(void)
+ 	{
+ 		FILE *rf = fopen(RFW_DNSMASQ_CONF, "r");
+ 		if (rf) {
+-			char line[512];
+-			while (fgets(line, sizeof(line), rf))
++			/* Must exceed the longest line rfw_gen_dnsmasq can emit, which is
++			 * bounded there by RFW_DNSMASQ_LINE_MAX. A short buffer here does
++			 * not just drop the tail: fgets would hand back a partial line
++			 * with no newline, this loop would write it, and dnsmasq would
++			 * read a directive whose set list had been cut - either naming a
++			 * set that does not exist (the rule silently never matches) or
++			 * ending on a bare '/', which dnsmasq rejects outright and then
++			 * REFUSES TO START, taking LAN DNS and DHCP with it. */
++			char line[1024];
++			while (fgets(line, sizeof(line), rf)) {
++				size_t l = strlen(line);
++				/* A chunk with no trailing newline is a truncated line (or an
++				 * unterminated final line). Never emit a partial directive -
++				 * skip to the end of it and drop the whole thing. */
++				if (l && line[l - 1] != '\n') {
++					int c;
++					while ((c = fgetc(rf)) != EOF && c != '\n')
++						;
++					logmessage("reaper_fw", "dnsmasq fragment: over-long line DROPPED "
++					           "(>%d bytes) - an fqdn object has too many names",
++					           (int)sizeof(line) - 1);
++					continue;
++				}
+ 				if (!strncmp(line, "ipset=/", 7))
+ 					fputs(line, fp);
++			}
+ 			fclose(rf);
+ 		}
+ 	}
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index c0ebfba1c3..8098526f56 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -246,7 +246,17 @@ static void netlbl_refresh(void)
+ 	if (get_mtlan(pmtl, &sz)) {
+ 		nnetlbl = 0;
+ 		for (i = 0; i < sz && nnetlbl < NNETLBL; i++) {
++			int k, dup = 0;
+ 			if (!pmtl[i].nw_t.br_ifname[0]) continue;
++			/* FIRST WRITER WINS. More than one SDN can share a bridge - the
++			 * IoT profile is placed on br0 alongside the default LAN - and a
++			 * second entry for the same bridge would emit a duplicate JSON
++			 * key. That parses (the last one wins) but relabels the main LAN
++			 * series with the IoT network's name, which is worse than showing
++			 * the bare bridge. The default LAN comes first in the list. */
++			for (k = 0; k < nnetlbl; k++)
++				if (!strcmp(netlbl[k].br, pmtl[i].nw_t.br_ifname)) { dup = 1; break; }
++			if (dup) continue;
+ 			strlcpy(netlbl[nnetlbl].br, pmtl[i].nw_t.br_ifname,
+ 				sizeof(netlbl[0].br));
+ 			netlbl[nnetlbl].vid = pmtl[i].vid;
+-- 
+2.25.1
+

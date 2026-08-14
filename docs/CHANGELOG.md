@@ -24,6 +24,25 @@ node, not only on the primary router.
 
 ---
 
+## v2.4.3 — the v2.4.2 work, audited before it went anywhere
+*This release carries everything in the v2.4.2 section below, which published no images, plus the remediation of a security audit run against it. Nothing here is a fix to code any user has ever installed.*
+
+Before publishing the v2.4.2 rung, everything it added was audited: the shell scripts the router generates and runs as root, the new lines spliced into the DNS service's configuration, the JSON the web interface parses, the new pages, and the traffic daemon's output. That audit found six defects, all of them in code v2.4.2 introduced, and all six are fixed here. It also came back clean on the things that would have mattered most — no way found to inject a command into the generated scripts or a directive into the DNS configuration, no cross-site scripting in the new pages, no new listening service, and the cross-site request protections correct on every control that changes settings.
+
+Three of the six could have been felt by someone running v2.4.2:
+
+- **The web interface could be crashed by a malformed mesh-client file.** The code that decides whether a device is wired reads a file the mesh service writes, and checked the shape of that file at two of its three levels. A file that was valid but the wrong shape at the top would have crashed the web server — which runs with full privileges — rather than being rejected. Reaching it requires the ability to write into the router's temporary directory first, which nothing on a default system grants; it is a latent flaw rather than a live one, and it is now checked at both the entry point and the caller.
+- **A website-name block rule with many names could have stopped DNS and DHCP for the whole network.** The new feature that turns a list of website names into a live block list writes a line into the DNS service's configuration, and the code reading that line back used a smaller buffer than the code writing it. A long enough list would have been cut in half — leaving either a rule that silently never matched, or a broken directive that makes the DNS service refuse to start, which on this router takes DHCP with it. Both ends are fixed: the writer now measures the line and says in the log if it had to leave names out, and the reader refuses a partial line outright rather than passing on half of one.
+- **Warden's new block breakdown could read as zero with two browser tabs open.** The statistics are gathered by a script the web interface runs every thirty seconds, and it used one fixed working file, so two tabs — or two people signed in — overwrote each other's work and banked zeros. That is exactly the "the numbers don't add up" confusion the breakdown was added to solve. Each run now uses its own working file.
+
+The other three are smaller: a limit on the number of block objects was applied in one place and not the matching one, so past that limit the router asked the DNS service to fill lists it had never created; the DNS configuration fragment was the one file the firewall engine wrote without setting its permissions, so it landed readable and writable by anyone; and two networks sharing one bridge (the guest IoT network sits on the main bridge) made the traffic graph label the main network with the guest network's name.
+
+Two further hardening changes were taken at the same time. The most interesting one is not a leak but a silent-failure mode: the router-self filter exempts your DNS servers automatically, and it read those addresses straight out of the resolver file. An address written there with a prefix — `0.0.0.0/0` — is *accepted* by the firewall as "allow everything", at the top of the chain, which would have quietly turned the entire self-filter off while every status indicator continued to report it as on. Those values are now checked before use.
+
+**Deliberately not fixed here:** the router's temporary directory is writable by every account with no restriction on deleting other accounts' files, which is what makes the first defect above reachable at all. That is stock ASUS/Merlin behaviour, it affects every part of the system including the closed-source components, and changing it is not something to do in a release whose purpose is to fix six specific things. It is recorded, with two candidate approaches, and gets its own release and its own round of hardware testing.
+
+---
+
 ## v2.4.2 — Warden's outbound direction actually blocks, the firewall pages explain themselves, and two field reports about numbers that did not add up
 *Built on RT-BE96U (MCP), 20/20 on the staged-image gate, and **run on hardware**. Everything below is additionally verified by construction (generated scripts parsed, emitters compiled against stubs, ipset commands run against a real ipset, page helpers executed in a browser engine). The four sibling models are ported but not yet built.*
 

@@ -80,6 +80,8 @@ build-commit column will never match, by design.
 
 | Version | Base | Patches | `release/src/router` **from the series** (what CI compares) | build-commit tree | Release |
 |---|---|---|---|---|---|
+| **v2.4.3** | `a7ebfa133a` | `0001`–`0428` | `81025000fb194ea9b9a289418f07028a691a5fb1` | `e8742938df2766337b2d4c27cb1df4fb047cb6fd` | source rung — not yet published |
+| **v2.4.2** | `a7ebfa133a` | `0001`–`0426` | `1c8c908a0a7c14b12419a3720f9d5b2007b068a7` | `60e0a1e57e53b1562d01b4e484fcb6c797976864` | source rung — no images; folded into v2.4.3 |
 | **v2.4.1** | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | `545e459661262bf79a3c2ed0aa597005f87e550a` | source rung — not yet published |
 | **v2.3.7** | `a7ebfa133a` | `0001`–`0406` | `7f48393d768d564fe8dbb5722fcfa26a8e6f6181` | `f1e0db6373976ae8740a2484f74bb577ed3efbaf` | ✅ published (all five models) |
 | **v2.3.6** | `a7ebfa133a` | `0001`–`0399` | `3740a7192671ec39854d96f8383e202b46599e90` | `e9cc24c92d938b3abb4c62d06d7da50993c88c99` | source rung — never published |
@@ -112,7 +114,7 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0424` (v2.4.1, RT-BE96U-only), while the newest **published** release is
+to `0428` (v2.4.3, RT-BE96U-only), while the newest **published** release is
 v2.3.7. The RT-BE86U /
 RT-BE88U / GT-BE98 / GT-BE98 Pro images (current at v2.3.7) are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob
@@ -148,11 +150,16 @@ The [manifest](../provenance/manifest.json) covers it back to **v1.8.6**:
   inference is what produced a documented contradiction on 2026-08-12. The
   authoritative record of what shipped is the
   [Releases page](https://github.com/TheUnboundDeveloper/AM-Reaper/releases).
-- **v2.3.3, v2.3.5, v2.3.6 and v2.3.8 – v2.4.1 are source rungs that published no
+- **v2.3.3, v2.3.5, v2.3.6 and v2.3.8 – v2.4.3 are source rungs that published no
   images.** They are still exported, replay-verified and CI-covered; they simply
   never became a download. v2.3.8, v2.3.9 and v2.4.0 in particular were the
   intermediate steps of the native-firewall work and were folded into the single
-  v2.4.1 rung (`0407`–`0424`).
+  v2.4.1 rung (`0407`–`0424`). v2.4.2 (`0425`–`0426`) is likewise folded into
+  **v2.4.3** (`0427`–`0428`): a security audit of the v2.4.2 rung found six defects
+  in the code it had just added, so the remediation was cut as its own rung rather
+  than published under a version whose images already existed on the test ladder.
+  **v2.4.3 is the first rung since v2.4.1 to carry image SHA-256s**, for both
+  RT-BE96U variants.
 - **v2.1.6 – v2.3.0** are shipped rungs with no per-release row here; the series and
   provenance were regenerated forward rather than backfilled per rung.
 - **v1.8.6 – v2.0.8** are **historical** entries (`verifiable: false`): the build

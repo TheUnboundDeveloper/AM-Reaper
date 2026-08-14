@@ -21,6 +21,58 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v2.4.3",
+      "firmware": "3006.102.8_Reaper_v2.4.3",
+      "build_commit": "e54acdb3af",
+      "source_tree": {
+        "release/src/router": "e8742938df2766337b2d4c27cb1df4fb047cb6fd",
+        "release/src-rt": "2eeda099e5c7b4f602ebc3d584e2f1f73febece8"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "81025000fb194ea9b9a289418f07028a691a5fb1",
+        "release/src-rt": "2eeda099e5c7b4f602ebc3d584e2f1f73febece8"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.3_nand_squashfs.pkgtb",
+          "sha256": "7db94075fd4b5114b3293164067773ea7669a6606c3ceeaa34759d8567b71e4a"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.3_nand_squashfs_loader.pkgtb",
+          "sha256": "ce7a1dbcdb6dfe4c1cec8982a9aaf9efa26b42f77f10a06335c29590480cdb61"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "noMCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.3_noMCP_nand_squashfs.pkgtb",
+          "sha256": "eb7bd93257eb22bb995488699caa2c3c8bcd7ed9f37e386abc627257c54bd5b5"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "noMCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.3_noMCP_nand_squashfs_loader.pkgtb",
+          "sha256": "29fb7da83100bd58af25168b3f054e37fd2fdf0f3861bd6078b322c6f79a34f6"
+        }
+      ],
+      "patch_count": 428,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-08-14",
+      "parent": "v2.4.2",
+      "summary": "Security-audit remediation on the v2.4.2 rung, plus the v2.4.2 work itself, which published no images.\n\nBefore publishing v2.4.2 every surface it added was audited: the shell scripts rc generates and runs as root, the lines spliced into dnsmasq.conf, the JSON httpd parses, the new www pages and the rtrafd payload. Clean on the surfaces that mattered most - no command injection reachable in the generated scripts, no dnsmasq config injection, no XSS in the new pages, no new socket/daemon/setuid/system()/popen(), CSRF correct on the state-changing endpoints, and the new dict tokens safe in all 25 packs. Six defects were found, every one in code v2.4.2 introduced, and all six are fixed here. Each finding was re-verified against the source by hand before being accepted; three further claims did not survive that check and are not acted on.\n\nhttpd/web.c: rdev_amesh_is_wired() type-guarded levels 2 and 3 of its walk but not level 1. json_object_object_foreach expands to json_object_get_object(o)->head and that call returns NULL for a non-object, so a well-formed but non-object /tmp/allwclientlist.json - a bare [] parses fine - dereferences NULL inside a root process. json_object_from_file only reports PARSE failure, so nothing upstream catches it. Guarded at the function entry and at the caller. Latent: it first requires the ability to write into /tmp.\n\nrc/services.c and rc/reaper_fw.c: the reader was char[512] against a producer that could emit ~838 bytes. Truncation is not a lost tail - fgets returns a partial line, the loop writes it, and dnsmasq gets a directive whose set list was cut, either naming a set that does not exist (an fqdn block rule silently never matches) or ending on a bare '/', which dnsmasq rejects and then refuses to start, taking LAN DNS and DHCP with it. Fixed at both ends: the producer builds the line in a bounded buffer (RFW_DNSMASQ_LINE_MAX 800, whole line <= 805) and logs any names omitted; the reader is 1024 and discards any chunk arriving without a trailing newline rather than emitting half a directive.\n\nrc/rwarden.c: stats.sh used a fixed scratch path and httpd popen()s it on every 30-second Warden poll with no lock, so two open tabs truncated each other's chain listing and banked zeros - precisely the reconciliation confusion the v2.4.2 breakdown was added to fix. fold.sh had the same shape from apply.sh, stop_rwarden and the cron checkpoint. All three scratch paths are now per-process.\n\nThree smaller ones: rfw_gen_dnsmasq ignored RFW_MAX_OBJ, which rfw_emit_sets honours, so past the cap it emitted ipset= lines naming sets that are never created and dnsmasq logged an add failure on every answer; the dnsmasq fragment was the only reaper_fw artifact written with no explicit mode, and rc runs umask(0), so it landed 0666 (now chmod 0600 before the rename publishes it); and two SDNs sharing one bridge - the IoT profile sits on br0 with the default LAN - emitted a duplicate JSON key in rtrafd, which parses with last-one-wins and relabels the main LAN series with the IoT network's name, so first writer now wins.\n\nTwo hardening items taken alongside: $LANNET is quoted in the generated destination-exemption rule, and resolver addresses read from /tmp/resolv.dnsmasq pass a VALUE gate before reaching iptables. The second is not a shell-safety fix - awk already guarantees no whitespace and both uses are quoted - but `nameserver 0.0.0.0/0` would be ACCEPTED as a RETURN at the head of RW_SELF, silently neutering the entire self-filter with no error for the `|| logger` fallback to catch, while every indicator continued to report it active.\n\nDeliberately not fixed: /tmp is mounted 0777 with no sticky bit (rc/init.c, no S_ISVTX anywhere in the tree), which is what makes the httpd defect reachable at all. That is stock ASUS/Merlin behaviour affecting every subsystem including the closed blobs, so it wants its own rung and its own metal pass; it is recorded in docs/BACKLOG.md with two candidate fix shapes.",
+      "models_note": "Overlay-overlap check (cut step 7): this rung touches 6 files and overlaps NONE of the overlays/<MODEL>.patch identity overlays, so all four siblings pick the changes up from the patch series unchanged. release/src-rt/version.conf is not carried by any overlay either, so the siblings take EXTENDNO=Reaper_v2.4.3 from the series as well. The four sibling branches were therefore NOT re-ported for this rung and the overlays were NOT regenerated - both would have been no-ops, and regenerating an overlay against un-ported siblings is the failure mode that produced the 2026-08-10 rung-reverting overlays. The sibling branches remain committed at Reaper_v2.4.2 in the private clone; they are not CI inputs.\n\nBuilt and verified locally on RT-BE96U, BOTH variants: MAKE_EXIT=0 and reaper_verify 20 pass / 0 warn / 0 FAIL each, built-vs-shipped SHA-256 match on all four artifacts. The four sibling models are unbuilt here and are for CI.",
+      "logs": {
+        "build": "provenance/logs/v2.4.3/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v2.4.3/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
       "version": "v2.4.2",
       "firmware": "3006.102.8_Reaper_v2.4.2",
       "build_commit": "1a41dcbe65",
@@ -41,7 +93,7 @@
       "date": "2026-08-14",
       "parent": "v2.4.1",
       "summary": "Warden enforcement, firewall usability, and two field reports.\n\nWarden: direction out/both had never blocked anything. The whitelist was tested before the destination rules, and every outbound packet carries a LAN host as its source, so any whitelist entry covering that host - including the <lan>/24 entry this feature's own lockout guidance tells operators to keep - returned out of the chain before a single destination rule ran. Inbound blocking of the same addresses was unaffected, which is the asymmetry the report described. The destination group now lives in its own RW_OUT chain reached ahead of any source RETURN, and carries the loopback/LAN/own-WAN exemptions the destination side never had.\n\nWarden also gains an opt-in RW_SELF chain on OUTPUT (nvram rwarden_self, default 0) so a compromised router cannot beacon to a flagged address; drops go to RW_SDROP, which always logs, and dnsmasq's upstream resolvers plus NTP are exempted so a poisoned set cannot present as a whole-network outage. It cannot lock an operator out: management is INPUT and the replies carry a LAN destination. rwatch reports self-drops.\n\nThe Warden block total and the country table could never reconcile - the total counts every drop while the table only ever counted the geo rules, and the feed rule is evaluated first (same drop target, so the order is attribution, not enforcement). THREAT and BAN are now banked alongside TOTAL/CC and the page shows the split.\n\nFirewall: FQDN objects populate from dnsmasq's ipset= directive. The blocker previously recorded against this - that the router's dnsmasq is compiled without ipset support - was a misreading of a stock MIPS binary from a different model; the shipped ARM binary has had it throughout and no rebuild was required. The ten-minute resolver timer stays as the floor, since this only sees lookups the router itself answers. Every firewall tab also gains an explainer and a help link into a new docs/FIREWALL-GUIDE.md.\n\nField reports: the Traffic per-network view labelled raw bridge names, which do not match the VLAN numbers an operator configures; each series is now labelled with its SDN name and VLAN alongside the bridge, published as a side table so the persisted history key is unchanged. And Wi-Fi clients connected through an AiMesh node reported as Wired, because neither the local assoclists nor the bridge forwarding table can see them and the backhaul port decided the answer; the mesh client list is now consulted, narrowed so first-hand radio data always wins.",
-      "models_note": "Overlay-overlap check (cut step 7): this rung overlaps NONE of the overlays/<MODEL>.patch identity overlays, so all four siblings pick the changes up from the patch series. The sibling branches were nevertheless ported and their overlays regenerated in the same cut (rt-be86u, rt-be88u, gt-be98, gt-be98-pro each committed at EXTENDNO=Reaper_v2.4.2 with 25 dictionaries in lockstep), and all four regenerated overlays pass the identity gate as identity-only. Built and verified locally on RT-BE96U MCP only (reaper_verify 20 pass / 0 warn / 0 FAIL); the noMCP variant and the four siblings are unbuilt here and are for CI. NOTHING IN THIS RUNG HAS RUN ON HARDWARE.",
+      "models_note": "Overlay-overlap check (cut step 7): this rung overlaps NONE of the overlays/<MODEL>.patch identity overlays, so all four siblings pick the changes up from the patch series. The sibling branches were nevertheless ported and their overlays regenerated in the same cut (rt-be86u, rt-be88u, gt-be98, gt-be98-pro each committed at EXTENDNO=Reaper_v2.4.2 with 25 dictionaries in lockstep), and all four regenerated overlays pass the identity gate as identity-only. Built and verified locally on RT-BE96U MCP only (reaper_verify 20 pass / 0 warn / 0 FAIL); the noMCP variant and the four siblings are unbuilt here and are for CI. This rung was run on RT-BE96U hardware; it published no images and is folded into v2.4.3.",
       "logs": {
         "build": "provenance/logs/v2.4.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.4.2/reaper_verify-rt-be96u.log"

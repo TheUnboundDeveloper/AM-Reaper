@@ -276,6 +276,40 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Code quality / deferred (with reason)
 
+- **[P2] `/tmp` is `0777` with NO sticky bit — it turns any unprivileged foothold into root.**
+  Found 2026-08-14 by the v2.4.2 security audit, which kept arriving at it from three unrelated
+  directions. `rc/init.c:25601` does `chmod("/tmp", 0777)` and nothing anywhere in `rc/` or
+  `shared/` ever sets `S_ISVTX` (grepped). The sticky bit is what normally stops one uid from
+  unlinking or renaming another's entry in a shared directory; without it, **any non-root process
+  can delete a root-owned file in `/tmp` and recreate it with its own content**, or substitute a
+  whole directory before root creates it.
+
+  This is stock ASUS/Merlin behaviour, not a Reaper regression — which is exactly why it is easy to
+  keep walking past. Three live consumers found in one afternoon:
+  - `httpd` (root) parses `/tmp/allwclientlist.json` and `/tmp/wiredclientlist.json` on a
+    **CSRF-exempt** endpoint (`reaper_dev.cgi?action=status`). The v2.4.2 fix hardened the parser
+    against a hostile document, but the write primitive is still there.
+  - `rc` writes and then executes `/tmp/rwarden/{apply,fold,stats}.sh` **as root**, on a cron tick
+    and on every UI poll. `mkdir(RW_DIR, 0700)` ignores `EEXIST` and never checks owner or mode, so
+    a directory pre-created by another uid is used as-is.
+  - `reaper_fw` has the same unchecked `mkdir` for `/tmp/reaper_fw`, and on a default box that
+    directory does not exist until the firewall engine is first enabled — a wide pre-creation
+    window. Its `dnsmasq.ipset` fragment is spliced into a **root-parsed** config.
+
+  **Reachability today is LATENT**, and that is the only reason this is not P1: nearly everything on
+  this firmware runs as root. The privilege-dropping services found were dnsmasq (`user=nobody`) and
+  `in.tftpd -u nobody`, plus any jffs/Entware addon that drops privilege. So it needs a prior
+  non-root code-execution bug — but it converts one into root across several subsystems at once.
+
+  **Deferred deliberately, not overlooked:** setting the sticky bit changes behaviour for every
+  program on the box, including closed ASUS blobs that may rely on cross-uid unlink in `/tmp`. It
+  deserves its own rung and its own on-hardware pass rather than riding a feature release. Two
+  candidate shapes: (a) `chmod("/tmp", 01777)` in `init.c` — one line, broad blast radius; or
+  (b) leave `/tmp` alone and move the root-executed scratch to a root-only parent
+  (`/var/run/rwarden`, `/var/run/reaper_fw`), plus `lstat` the directory and refuse it if it is not
+  a root-owned `0700`, and open scratch files `O_CREAT|O_EXCL|O_NOFOLLOW`. (b) is narrower and
+  fixes the cases we actually own; (a) fixes the class. Doing (b) first is the safer order.
+
 - **[P3] `poll_fcache` O(n²)→hash pairing** (`rtrafd.c`). Bounded to ≤1536 flows every 5 s in the
   metal-validated per-client accounting path — a rewrite of a millisecond-scale loop isn't worth the
   regression risk. Revisit only if a flow-heavy box shows real cost. [shelved]

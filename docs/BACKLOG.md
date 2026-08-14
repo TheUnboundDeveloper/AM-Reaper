@@ -92,6 +92,30 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## UI / UX polish
 
+- **Display Refresh** Investigate Traffic Analyzer for potential visual display rate increase to 
+  make streaming graph data to display in a less choppy manner.
+
+- **[P3] Dashboard linking — rows that land on the wrong page.** The Security Posture panel became
+  clickable in v2.4.1 (all fourteen rows carry a destination). Corrections as they are found:
+
+  - **Wi-Fi Encryption should go to `/reaper_shell.asp#SDN.asp`** (owner, 2026-08-14). It currently
+    carries `data-go="Advanced_Wireless_Content.asp"` (`Main_ReaperDash.asp` ~489), which is the
+    stock per-radio Wireless page. On this MULTILAN_MWL build that is the wrong place to send
+    someone: the user's main SSID and its security live in the **SDN MAINFH profile**, which is what
+    the Network section of the menu already points at (standing rules 4 and 6). The row *reads* the
+    right thing — `wlX_auth_mode_x` at radio level is correct, and that is what `encInfo()` reports —
+    it just offers a page that cannot change it.
+    - **Fix is one token, and do NOT paste the full URL in.** The click handler
+      (`Main_ReaperDash.asp` ~1447) already does `location.href = '/reaper_shell.asp#' + p`, so the
+      value must be the bare page name: `data-go="SDN.asp"`. Writing the whole path would produce
+      `/reaper_shell.asp#/reaper_shell.asp#SDN.asp`.
+    - **Check the fan-out before shipping it.** `SDN.asp` is not in base `www/` — it ships from the
+      `sysdep/FUNCTION/SDN` overlay, and the menu reaches it conditionally:
+      `isSupport("mtlancfg") ? "SDN.asp" : "Guest_network.asp"` (`menuTrees/menuTree.js:63`). A
+      hardcoded `SDN.asp` dead-ends on any model or build where `mtlancfg` is not supported, and the
+      dashboard rail is shared across all five models. Mirror the menu's conditional rather than
+      hardcoding, or confirm every shipped model asserts `mtlancfg`.
+
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
   blocking during an apply/reboot is done (v2.2.5, refined v2.3.0); the overlays are now anchored to
   the browser viewport rather than the framed document — the shell publishes the frame's visible slice
@@ -109,6 +133,39 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   the UI and re-anchor the ones still centring on the shell viewport; (ii) replace **every stock
   overlay** with a Reaper-themed equivalent — none should survive in stock styling; (iii) confirm the
   anchoring **on the router** with the real pages, not just headless. [owed]
+
+- **[P2] Flash overlay: hide the poll heartbeat, and remove the Close button while an install is
+  running.** Owner, 2026-08-14, seen live while flashing v2.4.2. The overlay reads
+  `0:58 &middot; pollUpBack &middot; 3` and offers a **CLOSE** button beneath it. Three changes wanted:
+
+  - **`pollUpBack` must not be on screen.** It is the literal name of the internal polling function,
+    passed to `veilBeat('pollUpBack')` and rendered by `veilTick()` into `#veilTick` as
+    `mm:ss · <phase> · <pollcount>` (`Reaper_Firmware.asp` ~470). It reads as a leaked debug string.
+  - **The poll count must go with it.** Same line, `veilPolls`.
+  - **No Close button during an install, and the overlay must persist until the poll succeeds.**
+    Today `#veilAct` is revealed unconditionally by a timer — `VEIL_ESCAPE_MS = 25000` (~line 462) —
+    so it appears about 25 s in whether or not the flash is progressing normally, which is why it is
+    on screen at 0:58. `veilDismiss()` only removes the overlay; it cannot stop a flash already
+    running, so dismissing it mid-flash leaves a user looking at a live page while the router is
+    mid-write.
+
+  **This reverses a deliberate v2.3.2 decision — read this before putting it back.** The Close
+  button, Esc handler and the heartbeat were added *together* in v2.3.2 so that "a stalled flash can
+  no longer look like a frozen browser". The reason they were needed has since been removed: the tab
+  was not stalling, it was **locking up**, because every failed poll round scheduled two successors
+  and the chain doubled every two seconds until the tab died (standing rule 34, fixed in
+  `a0c115dc45` — the changelog for that release says outright that "v2.3.2's Close button treated the
+  symptom; this is the cause"). With the cause fixed, the escape hatch is now mostly a way to
+  dismiss a *working* flash. That is the justification for removing it, and it is why this is a
+  change of mind rather than an oversight.
+
+  **Decide while implementing — do not silently drop it:** `veilFail()` reveals the same button on a
+  *terminal* state (a flash that genuinely failed, a rejected image). Removing the button everywhere
+  would trap the user on a dead overlay with no way back. The ask is specifically about the install
+  path, so the likely shape is: no timer-based reveal at all, no button while polling, and the
+  button still offered on terminal failure — plus keeping the elapsed `mm:ss`, which is the part of
+  the heartbeat that is useful to a person rather than to a developer. The Esc handler
+  (~line 500) is gated on the button being visible and follows it automatically.
 
 - **[P3] Loader z-index raise is class-wide (watch-item).** The z-index bump was applied to the shared
   `.popup_bg` class, so it also raises `#hiddenMask` (the confirm-dialog backdrop) — benign/positive.

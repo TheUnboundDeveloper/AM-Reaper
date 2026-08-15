@@ -59,6 +59,70 @@ BUILD_SCRIPTS="$REAPER_HOME/reaper_build"
 hr() { echo "============================================================"; }
 
 # ============================================================================
+# PHASE TIMING (plan item C0) -- OPT-IN, and inert unless asked for.
+# ----------------------------------------------------------------------------
+# 96.8% of a build job is this one script: 4629s of a 4782s job (run #26,
+# RT-BE96U MCP). The runner prologue is fully measured -- disk reclaim 96s,
+# checkout 10s, toolchain restore 12s, binfmt 15s -- and everything inside here
+# is a single opaque block. Every CI optimisation proposal (ccache, caching the
+# base clone, caching apt archives, merging variants) is guesswork until that
+# block is broken down, which is why this lands before any of them.
+#
+# GATED ON PURPOSE. With REAPER_CI_TIMING unset every function below is a no-op
+# and this file behaves exactly as it did before, so public-build.yml -- the
+# release path -- is provably unaffected. public-build-instrumented.yml sets the
+# flag. That is the rollback story: stop dispatching the instrumented workflow.
+#
+# Timings also go to a file so they ride the evidence artifact and can be diffed
+# between runs, rather than living only in a job log that expires.
+_PH_FILE="${OUT_DIR:-/tmp}/ci-phase-timings-${MODEL:-unknown}-${VARIANT:-unknown}.txt"
+_PH_CUR=""
+_PH_T0=0
+# Part 1 runs as root and re-execs as reaper. runuser --preserve-environment
+# carries these across, so the wall-clock total spans both halves rather than
+# restarting at the re-exec. The file itself survives regardless (it is on disk
+# inside OUT_DIR, which part 1 chowns to reaper before handing over).
+: "${_PH_RUN0:=$(date +%s)}"
+export _PH_RUN0 _PH_FILE
+
+_ph() {   # $1 = phase to open; closes the one before it. _ph "" closes the last.
+  [ "${REAPER_CI_TIMING:-0}" = "1" ] || return 0
+  local now; now=$(date +%s)
+  if [ -n "$_PH_CUR" ]; then
+    local d=$(( now - _PH_T0 ))
+    printf '[ci-timing] phase=%-22s seconds=%s\n' "$_PH_CUR" "$d"
+    printf '%s\t%s\n' "$_PH_CUR" "$d" >> "$_PH_FILE" 2>/dev/null || true
+  fi
+  _PH_CUR="${1:-}"
+  _PH_T0=$now
+  [ -n "$_PH_CUR" ] && echo "[ci-timing] --> $_PH_CUR"
+  return 0
+}
+
+_ph_summary() {
+  [ "${REAPER_CI_TIMING:-0}" = "1" ] || return 0
+  _ph ""                                   # close whatever is open
+  local total=$(( $(date +%s) - _PH_RUN0 ))
+  hr; echo " Phase timings -- $MODEL / $VARIANT"; hr
+  if [ -s "$_PH_FILE" ]; then
+    awk -F'\t' -v tot="$total" '
+      { t[NR]=$1; s[NR]=$2; sum+=$2 }
+      END {
+        for (i=1;i<=NR;i++)
+          printf("  %-24s %5ds  %5.1f%%  %s\n", t[i], s[i], (tot?100*s[i]/tot:0),
+                 substr("########################################", 1, int((tot?40*s[i]/tot:0))+1))
+        printf("  %-24s %5ds\n", "MEASURED", sum)
+        printf("  %-24s %5ds\n", "TOTAL (script wall)", tot)
+        printf("  %-24s %5ds  <- gap = work outside any named phase\n", "UNATTRIBUTED", tot-sum)
+      }' "$_PH_FILE"
+    printf 'TOTAL\t%s\n' "$total" >> "$_PH_FILE"
+  else
+    echo "  (no phases recorded)"
+  fi
+  hr
+}
+
+# ============================================================================
 # PART 1 -- root: environment preparation
 # ============================================================================
 if [ "$(id -u)" = 0 ]; then
@@ -69,6 +133,7 @@ if [ "$(id -u)" = 0 ]; then
   # --- host packages ------------------------------------------------------
   # Bulk install first; on failure fall back to one-by-one so a single
   # unavailable package reports itself instead of killing a 3-hour job.
+  _ph apt-install
   apt-get update -qq
   apt-get install -y -qq software-properties-common ca-certificates \
                          git curl wget sudo >/dev/null
@@ -100,6 +165,7 @@ if [ "$(id -u)" = 0 ]; then
     [ -n "$missing" ] && echo "::warning::packages unavailable:$missing"
   fi
 
+  _ph env-locale
   # Documented Merlin build requirements.
   ln -sf bash /bin/sh
   update-alternatives --install /usr/bin/python python /usr/bin/python2 1 >/dev/null
@@ -137,6 +203,7 @@ if [ "$(id -u)" = 0 ]; then
   mkdir -p "$REAPER_HOME" "$BUILD_SCRIPTS" "$OUT_DIR" "$SRC_DIR"
 
   # --- pinned toolchains --------------------------------------------------
+  _ph toolchain-setup
   hr; echo " Pinned Asuswrt-Merlin toolchains"; hr
   [ -d /opt/am-toolchains/.git ] || { echo "ERROR: toolchain cache not mounted at /opt/am-toolchains"; exit 1; }
   # Bind-mounted from the host, so git's ownership check needs an exemption.
@@ -163,6 +230,7 @@ if [ "$(id -u)" = 0 ]; then
   fi
 
   # --- this repo's build scripts, verbatim --------------------------------
+  _ph stage-build-scripts
   cp -a "$REPO_DIR/build-scripts/." "$BUILD_SCRIPTS/"
   chmod +x "$BUILD_SCRIPTS"/*.sh "$BUILD_SCRIPTS"/ci/*.sh 2>/dev/null || true
   chown -R reaper:reaper "$REAPER_HOME" "$OUT_DIR" "$SRC_DIR" 2>/dev/null || true
@@ -183,6 +251,7 @@ export HOME="$REAPER_HOME"
 cd "$SRC_DIR"
 
 # --- pinned upstream base ---------------------------------------------------
+_ph base-clone
 hr; echo " Fetching pinned Asuswrt-Merlin base ($BASE_TAG)"; hr
 git init -q
 git remote add origin "$UPSTREAM_REPO"
@@ -199,6 +268,7 @@ df -h "$SRC_DIR" | tail -1
 # --- the published patch series --------------------------------------------
 # --keep-cr is REQUIRED: several third-party files (lltdc) are CRLF and the
 # series fails at qospktio.c without it.
+_ph patch-replay
 hr; echo " Applying the published Reaper patch series"; hr
 mapfile -t PATCHES < <(ls "$REPO_DIR"/patches/[0-9]*.patch | sort)
 PATCH_COUNT="${#PATCHES[@]}"
@@ -222,6 +292,7 @@ echo "   applied cleanly -> $SOURCE_COMMIT"
 # published overlay. GT-BE98 additionally needs the platform tree that the
 # pinned upstream does not carry (its ASUS GPL drop is a different release);
 # that ships here as a hash-pinned archive so no external download is needed.
+_ph overlay-and-blobs
 if [ "$MODEL" != "RT-BE96U" ]; then
   hr; echo " Applying the $MODEL identity overlay"; hr
 
@@ -331,6 +402,7 @@ echo "   version: $VER (matches EXPECTED_VERSION)"
 # a given patch count. When the series length matches a recorded release, the
 # hash MUST match -- that is an exact, timestamp-free proof that this CI source
 # is the same source the published firmware was built from.
+_ph provenance
 hr; echo " Source provenance"; hr
 python3 - "$REPO_DIR/provenance/manifest.json" "$PATCH_COUNT" "$ROUTER_TREE" <<'PY'
 import json, sys
@@ -380,6 +452,7 @@ EOF
 cat "$OUT_DIR/source-${MODEL}-${VARIANT}.env" | sed 's/^/   /'
 
 # --- the build ---------------------------------------------------------------
+_ph BUILD
 hr; echo " Building $MODEL $VER ($VARIANT)"; hr
 echo "   started $(date -u +%FT%TZ)"
 BUILD_RC=0
@@ -388,6 +461,7 @@ echo "   finished $(date -u +%FT%TZ) (reaper_build rc=$BUILD_RC)"
 [ "$BUILD_RC" -eq 0 ] || { echo "::error::build/verify failed (rc=$BUILD_RC)"; exit "$BUILD_RC"; }
 
 # --- collect -----------------------------------------------------------------
+_ph collect-artifacts
 hr; echo " Collecting artifacts"; hr
 TARGET_DIR="$SRC_DIR/release/src-rt-5.04behnd.4916/targets/96813GW"
 tag=""; [ "$VARIANT" = "noMCP" ] && tag="_noMCP"
@@ -408,6 +482,7 @@ BLOG="$REAPER_HOME/build_$(echo "$MODEL" | tr 'A-Z' 'a-z')_${VER}.log"
 # across builds even when the CONTENT is identical. This digest hashes the
 # staged rootfs instead (path, type, mode, symlink target, file content) and is
 # the artifact to compare between a CI build and a local build. Deterministic.
+_ph stagedfs-digest
 FS="$TARGET_DIR/fs"
 if [ -d "$FS" ]; then
   ( cd "$FS" && find . \( -type f -o -type l -o -type d \) -printf '%y %m %p %l\n' | LC_ALL=C sort ) \
@@ -427,6 +502,7 @@ fi
 # Informational, NOT a gate: a raw .pkgtb hash match would mean bit-identical
 # reproduction (squashfs timestamps make that unlikely); a mismatch alone proves
 # nothing. The staged-fs digest above is the meaningful comparison.
+_ph repro-compare
 hr; echo " Reproducibility comparison"; hr
 # releases/ uses short model dirs: BE96U, BE86U, BE88U, BE98, BE98Pro
 REL_DIR="$REPO_DIR/releases/$(echo "$MODEL" | sed 's/^GT-BE98_PRO$/BE98Pro/; s/^RT-//; s/^GT-//')"
@@ -481,5 +557,6 @@ echo "REPRODUCIBILITY=$REPRO" >> "$OUT_DIR/source-${MODEL}-${VARIANT}.env"
 } > "$OUT_DIR/build-provenance-${MODEL}-${VARIANT}.txt"
 cat "$OUT_DIR/build-provenance-${MODEL}-${VARIANT}.txt"
 
+_ph_summary
 hr; echo " Done"; hr
 ls -lh "$OUT_DIR"

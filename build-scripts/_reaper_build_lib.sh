@@ -36,6 +36,33 @@ TDIR=$P/targets/96813GW
 # once. Do not raise this default again without fixing the vendor Makefile
 # ordering.
 : "${REAPER_JOBS:=1}"
+
+# REAPER_SINGLE_PASS: skip pass 2 when pass 1 already produced the image.
+#   auto  (default) skip only on positive evidence -- see the decision below
+#   off             always run both passes (the pre-2026-08-15 behaviour)
+#   force           never run pass 2 -- DIAGNOSTIC ONLY, never a shipping mode
+#
+# WHY. The two-pass structure exists because a fresh clone dies at setprofile in
+# pass 1. That stopped happening locally: `pass1_exit=0` in every rung from
+# v2.3.8 to v2.4.4, i.e. pass 1 ran to completion and wrote the .pkgtb, and
+# pass 2 then rebuilt what already existed. The likely cause is FORCE=1 (added
+# 2026-07-27), which skips profile_saved_check -- the very check that made pass 1
+# fail. Nobody removed pass 2 afterwards.
+#
+# MEASURED (build-lab session ab-20260815-155150, RT-BE96U MCP, warm tree):
+#   two-pass 12:04 -> single-pass 6:28  (-46%), and the candidate ran FIRST on
+#   the colder tree so the figure is conservative. Content EQUIVALENT: 3328 of
+#   3333 staged files hash-identical, 0 structural differences, reaper_verify
+#   20/20. The 5 files that differ are the build's own irreproducibility -- they
+#   differ between two IDENTICAL-config builds as well (three timestamps, an
+#   unsorted depmod output, and libshared.so's compiled-in build stamp).
+#   Replicated over 6 more variant builds in session ab-20260815-163332.
+#
+# COLD TREES ARE UNAFFECTED BY CONSTRUCTION. There pass 1 genuinely dies, so the
+# rc test below fails and both passes run exactly as before. That is the CI case,
+# which is why this default does not change the release path's behaviour.
+: "${REAPER_SINGLE_PASS:=auto}"
+
 _rb_variant() {   # $1 = MCP|noMCP
   local label="$1"
 
@@ -73,7 +100,8 @@ _rb_variant() {   # $1 = MCP|noMCP
   # with no build output anywhere in the log to explain it -- which is exactly
   # how the first two clean-room CI runs failed undiagnosably.
   # Local builds keep the quiet default; set REAPER_PASS1_LOG=<path> to capture.
-  local _p1rc
+  local _p1rc _p1start
+  _p1start=$(date +%s)
   if [ -n "${REAPER_PASS1_LOG:-}" ]; then
     nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}" >"$REAPER_PASS1_LOG" 2>&1; _p1rc=$?
   else
@@ -108,12 +136,48 @@ _rb_variant() {   # $1 = MCP|noMCP
     echo "[$label] cold-tree guard: not needed -- crypto chain complete after pass1 (libgnutls.so.30 staged)"
   fi
 
-  echo "=== [$label] make $TARGET pass2 (-j${REAPER_JOBS}) $(date) ==="
-  local _p2rc
-  nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}"; _p2rc=$?
-  echo "[$label] MAKE_EXIT=$_p2rc"
-  [ "$_p2rc" -eq 0 ] || _rb_crypto_postmortem "$label"
+  # --- pass 2, or the evidence-backed decision to skip it -------------------
+  # Skip ONLY on all three of:
+  #   (a) pass 1 returned 0;
+  #   (b) every expected image for this variant exists;
+  #   (c) each is not older than the moment pass 1 started.
+  # (c) is the one that matters. Without it a stale image left by a PREVIOUS
+  # build of the same version satisfies (b) and pass 2 gets skipped over work
+  # that never happened. The filename proves nothing; the mtime does.
+  local _p2rc=0 _skip=no _decide _st _img
+  case "$REAPER_SINGLE_PASS" in
+    force) _decide="skip (FORCED -- diagnostic mode, not for shipping)";;
+    off)   _decide="two-pass (REAPER_SINGLE_PASS=off)";;
+    auto)
+      if [ "$_p1rc" -ne 0 ]; then
+        _decide="two-pass (pass1 rc=$_p1rc -- cold tree or a real failure)"
+      else
+        _decide="skip (pass1 rc=0, images fresh)"
+        for _st in ${STORAGE:-nand}; do
+          _img="$TDIR/${PREFIX}_3006_102.8_${VER}$([ "$label" = noMCP ] && echo _noMCP)_${_st}_squashfs.pkgtb"
+          if [ ! -f "$_img" ]; then
+            _decide="two-pass (no $_st image after pass1)"; break
+          elif [ "$(stat -c %Y "$_img" 2>/dev/null || echo 0)" -lt "$_p1start" ]; then
+            _decide="two-pass ($_st image predates pass1 -- stale, not built by this pass)"; break
+          fi
+        done
+      fi;;
+    *) _decide="two-pass (unrecognised REAPER_SINGLE_PASS='$REAPER_SINGLE_PASS')";;
+  esac
+  echo "[$label] pass2 decision: $_decide"
+
+  if [ "${_decide#skip}" != "$_decide" ]; then
+    _skip=yes
+    echo "[$label] MAKE_EXIT=0 (pass2 skipped -- pass1 produced the image)"
+  else
+    echo "=== [$label] make $TARGET pass2 (-j${REAPER_JOBS}) $(date) ==="
+    nice make "$TARGET" FORCE=1 -j"${REAPER_JOBS}"; _p2rc=$?
+    echo "[$label] MAKE_EXIT=$_p2rc"
+    [ "$_p2rc" -eq 0 ] || _rb_crypto_postmortem "$label"
+  fi
+  echo "[$label] pass2_skipped=$_skip"
   cd "$R" || return 1
+  return "$_p2rc"
 }
 
 # Called only when pass 2 failed. The samba crypto chain is the one part of the
@@ -202,6 +266,15 @@ reaper_build() {
   exec > >(tee "$LOG") 2>&1
   echo "############ $PREFIX $VER  ($BRANCH -> $TARGET)  $(date) ############"
   echo "head: $(git rev-parse --short HEAD)   variants:[$VARIANTS]   storage:[$STORAGE]"
+  # ENGINE IDENTITY IN EVERY LOG. Two copies of this file exist -- this one and
+  # /home/reaper/reaper_build/ -- and on 2026-08-15 they were found to have
+  # diverged: v2.4.3 built with the guards present, v2.4.4 the next day without
+  # them, and nothing in either log said so. Recording the path and hash makes
+  # that visible at a glance in any log, forever, instead of requiring an
+  # archaeology session to notice.
+  echo "engine: ${BASH_SOURCE[0]}"
+  echo "engine_sha256: $(sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | cut -d' ' -f1)"
+  echo "single_pass: $REAPER_SINGLE_PASS   jobs: $REAPER_JOBS"
 
   # baseline / toolchain / autotools-mtime normalize (proven recipe, unchanged)
   git checkout -- release/src/router/config_base release/src-rt/version.conf 2>/dev/null

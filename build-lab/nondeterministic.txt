@@ -1,0 +1,45 @@
+# Staged-rootfs paths that differ between ANY two builds of identical source.
+#
+# Established empirically on 2026-08-15 by comparing two builds with the SAME
+# configuration (the discarded warm-up against arm A). These five, and only
+# these five, differed. Anything outside this list differing between two builds
+# is a real divergence and must fail the comparison.
+#
+# Format: one path per line, relative to the staged fs root, shell-glob allowed.
+# Lines starting with # are comments. EVERY entry must carry its reason -- an
+# unexplained exclusion is a place to hide a defect.
+#
+# Adding to this list is a significant act. It shrinks what the equality proof
+# covers. Do it only with evidence that the file differs between two builds of
+# identical source and identical configuration, and record that evidence here.
+
+# ---- pure timestamps: content IS the build clock -----------------------------
+# "Sat Aug 15 16:22:19 EDT 2026" -- nothing else in the file.
+./rom/etc/build_time
+
+# "ASUSWRT-Merlin RT-BE96U 3006.102.8_Reaper_v2.4.4 Sat Aug 15 20:17:11 UTC 2026"
+./rom/etc/motd
+
+# "5044p3GW2271622(BSPv1W13)" -- the trailing digits encode day-of-year + time.
+./rom/etc/image_version
+
+# ---- filesystem ordering -----------------------------------------------------
+# depmod output. VERIFIED unsorted (`LC_ALL=C sort -c` fails on line 3), so the
+# emission order follows readdir and varies between builds on the same source.
+# Content is equivalent; only line order moves.
+./lib/modules/*/modules.dep
+
+# ---- binaries carrying an embedded build stamp -------------------------------
+# `strings` shows "Sat Aug 15 20:17:11 UTC 2026 root@7428362" compiled in.
+#
+# NOTE, and it matters: excluding a real binary means the digest no longer
+# covers its code. That is a genuine narrowing of the proof. It is acceptable
+# here only because this file differs between two builds of IDENTICAL config,
+# which means its presence in any comparison carries no information about the
+# change under test. The noise-floor control -- not this exclusion -- is what
+# makes the comparison sound.
+#
+# ab_compare.sh applies a compensating structural check to every binary listed
+# below (ELF section headers + symbol table + size), which a real code change
+# would almost certainly move even though an embedded date string does not.
+./usr/lib/libshared.so

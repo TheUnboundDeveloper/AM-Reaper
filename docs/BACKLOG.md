@@ -199,6 +199,24 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Features to add
 
+- **[P2] [owed] Metal-validate the v2.4.4 IPv6 per-device attribution on a box that actually has
+  IPv6.** The maintainer's RT-BE96U runs `wan_proto=dhcp` with no IPv6 up, so it cannot exercise the
+  new path at all — which is precisely why the gap survived to a field report. The reporting
+  **RT-BE88U** has native IPv6 with a delegated /56 and is the natural test box. What to check with a
+  large download running: the device's row tracks the WAN line rather than showing only its ACK
+  stream; a dual-stack device stays **one** row rather than splitting; and the neighbour table the
+  collector reads (`nd_n`) agrees with `ip -6 neigh show dev br0`. The netlink reader was tested
+  against seeded bridge and non-bridge neighbours on the host, and the code cross-compiles with zero
+  new warnings, but neither proves behaviour on real traffic.
+
+- **[P3] A v6-only device shows a blank address label (v2.4.4).** Attribution is keyed on the
+  hardware address, so such a device is counted correctly and merges properly — only the display
+  label is empty until the network map names it. `cli_t.ip` is a 16-byte IPv4 field living inside the
+  persisted `dbhdr_t`, so widening it to hold a v6 literal would change the on-disk layout and
+  discard every saved history file (the `DB_VER` 1→2 precedent). Options if it ever matters: show the
+  hardware address as the fallback label, or carry a separate display field outside the persisted
+  header. Not worth a history-invalidating format bump on its own.
+
 - **Warden Plus** Requests have been made for custom feeds input by the user.
 
 - **[P3] Warden: decide whether country rules should be evaluated BEFORE the threat feeds.**
@@ -344,6 +362,16 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   fix a can't-happen case. [shelved]
 
 ## Documentation
+
+- **[P2] [owed] Retranslate the three Traffic Analyzer accounting strings (v2.4.4).** `RTRF_45`
+  (where the per-device numbers come from) was rewritten in all 25 packs and its 24 non-English
+  translations were **deliberately discarded**: the old text said the numbers come from the
+  accelerator table (untrue since v2.3.3) and that IPv6 is "not yet split per-device" (now the
+  opposite of what the code does), so leaving the translations would have had 24 languages
+  asserting the reverse of the truth. `RTRF_75` / `RTRF_76` (the "Upload only" badge and its
+  tooltip) are new and English-seeded. All three read in English outside EN until a translation
+  pass. Precedent for why this matters: the DE.dict `RQOS_117` drift left non-English users
+  double-derating their download cap.
 
 - **[P2] "Current version" is stated inconsistently across docs, and nobody can tell which release
   actually shipped.** Found 2026-08-12 while updating docs for the v2.3.7 rung; deliberately **not**

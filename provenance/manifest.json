@@ -21,6 +21,58 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v2.4.4",
+      "firmware": "3006.102.8_Reaper_v2.4.4",
+      "build_commit": "7428362b78",
+      "source_tree": {
+        "release/src/router": "d52f9b34ea211a2a486d001306349743469b10f0",
+        "release/src-rt": "58c7d0543964be092655db3ef50b1bbb99ace809"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "6dde3f0f8399a9fcf9928a867cc026b71ffe0a41",
+        "release/src-rt": "58c7d0543964be092655db3ef50b1bbb99ace809"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.4_nand_squashfs.pkgtb",
+          "sha256": "1f6adcbff431eed8407bc567670f01d4db0fcbe8667924037309bc85de3b5550"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.4_nand_squashfs_loader.pkgtb",
+          "sha256": "8e3d83a51e48b15ab099e491c719431f2374c3e8f2af8646546354f64ee5b742"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "noMCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.4_noMCP_nand_squashfs.pkgtb",
+          "sha256": "7faa2a3698e3474ce9a90061a0a5ea9ba0d7593910d7b3d8fe8a02483a4c0146"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "noMCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v2.4.4_noMCP_nand_squashfs_loader.pkgtb",
+          "sha256": "8a924db4846d3254825ad5b6c0f0799b2337762f3cb2090d6e6ed00f6347b1b8"
+        }
+      ],
+      "patch_count": 430,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-08-14",
+      "parent": "v2.4.3",
+      "summary": "Hot fix: IPv6 traffic is now counted per device in the Traffic Analyzer.\n\nrtrafd's poll_conntrack() skipped every non-ipv4 line in /proc/net/nf_conntrack (`if (strncmp(line, \"ipv4\", 4) != 0) continue;`), so a client's IPv6 traffic reached the WAN and per-interface totals but was attributed to no device. On a box with a delegated prefix that is most of a modern client's traffic. Field report, RT-BE88U v2.4.3: 978.4 Mb/s on the WAN line against 521 kb/s shown for the device actually pulling it, while the window totals for an IPv4-heavy device looked correct - which is why it read as a per-device bug rather than an address-family gap.\n\nThe v4 path finds the device by looking the LAN source up in /proc/net/arp. IPv6 has no such file and no NAT, so either end of a flow may be the local device. Both ends are now resolved against the kernel's IPv6 neighbour cache via a netlink RTM_GETNEIGH dump (fork-free, mirroring arp_refresh()), restricted to neighbours on a BRIDGE - a neighbour on ppp0/eth0 is the ISP's router, not a client. Addresses are held and compared as 16 binary bytes, so nothing depends on conntrack's %pI6c text form matching inet_ntop's. Attribution keys on the MAC, the same key the v4 path uses, so a dual-stack device is ONE row. Router-sourced v6 goes to the Router bucket via the addresses in /proc/net/if_inet6. Per-network rings pick v6 up for free, so br0 and the guest bridges reconcile with the WAN line too.\n\nThe flow key and the byte deltas stay on the RAW conntrack tuple; only the presentation is swapped when the device is the reply side. This is deliberate: if the key tracked the credited end, a neighbour entry expiring would change it, the fl->key test would miss, and the flow's whole cumulative counter would be credited as a single delta - a multi-GB spike on one sample.\n\ncli_t.ip is deliberately NOT widened. It is a 16-byte IPv4 field inside the persisted dbhdr_t, so making room for a v6 literal would change the on-disk layout and invalidate every saved history file (the DB_VER 1->2 precedent). A dual-stack device keeps its v4 address as the label; a v6-only device keeps whatever the network map gives it. top_t.src IS widened to 46 - top talkers are not persisted.\n\nAlso in this rung: the Analyzer's \"By QoS class\" panel now carries an Upload only badge (RTRF_75/76, English-seeded in all 25 packs). That engine shapes the upload direction only, so the chart can never show a streaming device's download, and the caveat had been buried in a FAQ answer. RTRF_45 is rewritten in all 25 packs: it still described the pre-v2.3.3 accelerator-table source AND told users IPv6 was not split per-device, which is now the opposite of what the code does. The 24 non-English translations of the old text were discarded rather than left asserting the opposite; retranslation is owed and is recorded in docs/BACKLOG.md.",
+      "models_note": "Overlay-overlap check: this rung touches 28 files and overlaps NONE of the overlays/<MODEL>.patch identity overlays, verified by intersecting the changed-file list against each overlay's own file set (RT-BE86U 14 files, RT-BE88U 24, GT-BE98 21, GT-BE98_PRO 28; zero .dict in any of them, which is what keeps the 25 packs in lockstep on CI siblings). release/src-rt/version.conf is not carried by any overlay either, so the siblings take EXTENDNO=Reaper_v2.4.4 from the series as well. The overlays were therefore NOT regenerated - doing so against un-ported siblings is the failure mode that produced the 2026-08-10 rung-reverting overlays.\n\nBuilt and verified locally on RT-BE96U, BOTH variants: MAKE_EXIT=0 and reaper_verify 20 pass / 0 warn / 0 FAIL each. Both images were additionally decomposed (FIT carve at the offset the DTB header declares, confirmed by the hsqs magic landing exactly there) and the payload verified from inside the squashfs rather than from the staged tree: bin/rtrafd rebuilt and carrying the v6 code, the badge markup in the minified page, the rewritten RTRF_45 present with the old text at zero occurrences, and all 25 dicts in lockstep at 6433 lines. noMCP purity re-confirmed from the image - no rmcpd binary, no Reaper_Advisor.asp, nothing reachable; the rmcpd/Advisor FILENAMES that do appear are the variant-detection guard in webs_update.sh/webs_upgrade.sh, which must name them to prevent a cross-variant flash. The four sibling models are unbuilt here and are for CI.\n\nFull-series replay verified: git am --keep-cr of all 430 patches onto the pinned base applies cleanly and reproduces this tree, with release/src-rt byte-identical and release/src/router differing only by the three vendored openssh-sftp documentation files the series' *.md exclusion strips.",
+      "logs": {
+        "build": "provenance/logs/v2.4.4/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v2.4.4/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
       "version": "v2.4.3",
       "firmware": "3006.102.8_Reaper_v2.4.3",
       "build_commit": "e54acdb3af",

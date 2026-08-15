@@ -24,6 +24,24 @@ node, not only on the primary router.
 
 ---
 
+## v2.4.4 — hot fix: IPv6 traffic is now counted per device in the Traffic Analyzer
+*A field report on an RT-BE88U: the WAN line showed 978 Mb/s while the device actually pulling that download showed 521 kb/s. The totals were right; the device list was not.*
+
+**The Traffic Analyzer counted IPv4 only, per device.** The collector reads the kernel's connection-tracking table to work out which device each byte belongs to, and it skipped every IPv6 connection outright. Those bytes still reached the WAN figure and the per-network figures — which is why the totals always looked correct — but they were credited to no device at all. On a router handing out IPv6, that is most of a modern client's traffic: an iPhone downloading from a service that prefers IPv6 could show a few hundred kb/s against a saturated internet connection. The reporter's own reading of it was exactly right — the total was correct, the device listing was not.
+
+**Why IPv6 needed new work rather than a one-line change.** For IPv4 the router finds the device by looking the connection's local address up in its ARP table. IPv6 has no equivalent file, and because IPv6 is not translated the way IPv4 is, either end of a connection may be the local device — a subnet test cannot tell them apart. The collector now asks the kernel directly for its IPv6 neighbour table and checks both ends against it, keeping only neighbours that sit behind one of the router's own bridges: a neighbour reached over the internet connection is your ISP's router, not a device of yours, and giving it a row would be wrong. Devices are matched on their **hardware address**, the same key the IPv4 side uses, so a device using both IPv4 and IPv6 appears as **one row** rather than two. The router's own IPv6 traffic goes to the "Router" row. Per-network figures pick IPv6 up as well, so the per-bridge numbers now reconcile with the WAN line too.
+
+A device with no IPv4 traffic at all will show a blank address until the network map names it — the row counts correctly regardless, because it is keyed on the hardware address.
+
+**Two related corrections in the same release:**
+
+- **The "By QoS class" chart now says "Upload only".** The hardware QoS engine shapes the upload direction only, so that chart can never show a streaming device's download — a genuine and reasonable source of confusion, since several devices streaming video will barely register. The caveat existed but was buried at the end of a FAQ answer; it is now a badge on the chart itself, with the reason on hover.
+- **The Analyzer's FAQ answer about where the numbers come from was wrong on two counts.** It still described the accelerator-table source that v2.3.3 replaced with connection tracking, and it told users IPv6 was "not yet split per-device" — now the opposite of what the router does. Rewritten. The non-English translations of the old text were discarded rather than left saying the reverse of the truth, so that answer reads in English in the other 24 languages until it is retranslated.
+
+*Built on RT-BE96U, both variants. The four sibling models are ported and are for CI.*
+
+---
+
 ## v2.4.3 — the v2.4.2 work, audited before it went anywhere
 *This release carries everything in the v2.4.2 section below, which published no images, plus the remediation of a security audit run against it. Nothing here is a fix to code any user has ever installed.*
 

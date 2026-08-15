@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.4.3** — `3006.102.8_Reaper_v2.4.3`, 428 patches (replay-verified), built on RT-BE96U in both variants (20 pass / 0 warn / 0 FAIL each). **No image published from it yet.** It touches no per-model overlay, so the four siblings take it from the patch series unchanged. |
+| **Current rung** | **v2.4.4** — `3006.102.8_Reaper_v2.4.4`, 430 patches (replay-verified), built on RT-BE96U in both variants (20 pass / 0 warn / 0 FAIL each). **No image published from it yet.** It touches no per-model overlay, so the four siblings take it from the patch series unchanged. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2 and v2.4.3. v2.4.1 and v2.4.2 are built on RT-BE96U, both variants. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3 and v2.4.4. v2.4.1, v2.4.2, v2.4.3 and v2.4.4 are built on RT-BE96U, both variants. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,60 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## Hot fix — v2.4.4: IPv6 traffic is now counted per device in the Traffic Analyzer
+
+**A field report on an RT-BE88U:** the WAN line showed **978 Mb/s** while the device
+actually pulling that download showed **521 kb/s**. The totals were right; the device
+list was not. The reporter's own reading was exactly correct.
+
+**The Analyzer counted IPv4 only, per device.** The collector reads the kernel's
+connection-tracking table to decide which device each byte belongs to, and it skipped
+every IPv6 connection outright. Those bytes still reached the WAN figure and the
+per-network figures — which is why the totals always looked right — but they were
+credited to **no device at all**. On a router handing out IPv6 that is most of a modern
+client's traffic, and it is worst for exactly the devices people notice: a phone pulling
+from a service that prefers IPv6 barely registers against a saturated line.
+
+### Why this needed real work rather than a one-line change
+
+For IPv4 the router finds the device by looking the connection's local address up in its
+ARP table. IPv6 has no equivalent file, and because IPv6 is not translated the way IPv4
+is, **either end of a connection may be the local device** — a subnet test cannot tell
+them apart. The collector now asks the kernel directly for its IPv6 neighbour table and
+checks both ends against it, keeping only neighbours behind one of the router's own
+bridges: a neighbour reached over the internet connection is your ISP's router, not a
+device of yours, and giving it a row would be wrong.
+
+Devices are matched on their **hardware address** — the same key the IPv4 side already
+uses — so a device using both IPv4 and IPv6 appears as **one row**, not two. The router's
+own IPv6 traffic goes to the "Router" row, and the per-network figures pick IPv6 up as
+well, so the per-bridge numbers now reconcile with the WAN line too.
+
+*Known edge:* a device with **no** IPv4 traffic at all shows a blank address until the
+network map names it. The row still counts correctly — it is keyed on the hardware
+address, not on either of the device's addresses.
+
+### Two related corrections in the same release
+
+- **The "By QoS class" chart now says "Upload only".** The hardware QoS engine shapes the
+  upload direction only, so that chart can never show a streaming device's *download* —
+  a fair source of confusion, since several devices streaming video barely register on
+  it. The caveat existed but sat at the end of a FAQ answer; it is now a badge on the
+  chart, with the reason on hover.
+- **The FAQ answer about where the numbers come from was wrong twice over.** It still
+  described the accelerator-table source that v2.3.3 replaced with connection tracking,
+  *and* it told users IPv6 was "not yet split per-device" — now the opposite of what the
+  router does. Rewritten. The non-English translations of the old text were discarded
+  rather than left asserting the reverse of the truth, so that one answer reads in
+  English in the other 24 languages until it is retranslated.
+
+**Validation:** built on RT-BE96U, both variants (20 pass / 0 warn / 0 FAIL each), and
+both images decomposed to confirm the payload from inside the filesystem rather than from
+the build tree. The four siblings are ported and are for CI. Per-item detail in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -109,7 +163,7 @@ that includes it.
 
 Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
-- **v2.4.3 — the v2.4.2 work, audited before it went anywhere.** Six defects found and fixed, all in code v2.4.2 introduced; see the summary at the top of this document.
+- **v2.4.3 — the v2.4.2 work, audited before it went anywhere.** Six defects found and fixed, all in code v2.4.2 introduced, so none of them is a fix to code any user had installed; see the "What's new in v2.4.3" section above.
 - **v2.4.2 — Warden's outbound direction actually blocks, and the firewall pages explain themselves.**
   - **"Outbound" and "both" were blocking nothing.** The whitelist was checked before the outbound rules, and every outgoing connection has one of your own devices as its source — so any whitelist entry covering that device, including the "whitelist your own network" entry this feature's own lockout guidance tells you to keep, skipped the destination checks entirely. Inbound blocking of the same addresses worked perfectly. Destination checks now run first, in a chain of their own, with the loopback / LAN / own-address exemptions the outbound side never had.
   - **Warden can now filter what the router itself sends** (opt-in, off by default) — a compromised router is where a threat feed earns its keep. It cannot lock you out (the web interface and SSH stay reachable from your network), DNS resolvers and time servers are exempted automatically, and every block here is logged whether or not general Warden logging is on. The ceiling: malware with full control of the router can remove these rules, so this is a speed bump and mainly a **detection signal**.

@@ -1,0 +1,918 @@
+From 9f6b64aba05ce8851a44aeebb65f17c046e5bc52 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 14 Aug 2026 19:35:04 -0400
+Subject: [PATCH] rtrafd: attribute IPv6 flows per device; label the
+ upload-only class chart
+
+poll_conntrack() skipped every non-ipv4 conntrack line, so a client's IPv6
+traffic reached the WAN and per-network totals but no device row. On a box with
+a delegated prefix that is most of a modern client's traffic: a field RT-BE88U
+showed 978 Mb/s on the WAN line and 521 kb/s against the device pulling it.
+
+v4 finds the device by looking the LAN source up in /proc/net/arp. v6 has no
+such file and no NAT, so either end of a flow may be the local device. Both are
+now resolved against the kernel's IPv6 neighbour cache (netlink RTM_GETNEIGH,
+bridge ports only - a neighbour on ppp0 is the ISP's router, not a client) and
+credited to the MAC, the same key the v4 path uses, so a dual-stack device is
+one row rather than two. Router-sourced v6 goes to the Router bucket via the
+addresses in /proc/net/if_inet6. Per-network rings pick up v6 for free.
+
+The flow key and the byte deltas stay on the RAW conntrack tuple; only the
+presentation is swapped when the device is the reply side. If the key tracked
+the credited end, a neighbour entry expiring would change it, the fl->key test
+would miss, and the flow's whole cumulative counter would be credited as a
+single delta.
+
+cli_t.ip is left alone: it is a 16-byte IPv4 field inside the persisted
+dbhdr_t, so widening it for a v6 literal would change the on-disk layout and
+discard every saved history file (the DB_VER 1->2 precedent). A dual-stack
+device keeps its v4 label. top_t.src is widened - top talkers are not
+persisted.
+
+Also: the "By QoS class" panel on the Analyzer now carries an "Upload only"
+badge (RTRF_75/76, English-seeded in all 25 packs). That engine shapes the
+upload direction only, so the chart can never show a streaming device's
+download, and the caveat was buried in a FAQ answer.
+
+RTRF_45 rewritten in all 25 packs: it still described the pre-v2.3.3
+accelerator-table source and told users IPv6 was not split per-device, which is
+now the opposite of what the code does. The 24 translations of the old text are
+discarded rather than left wrong; retranslation owed.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c        | 251 ++++++++++++++++++++--
+ release/src/router/www/BR.dict            |   4 +-
+ release/src/router/www/CN.dict            |   4 +-
+ release/src/router/www/CZ.dict            |   4 +-
+ release/src/router/www/DA.dict            |   4 +-
+ release/src/router/www/DE.dict            |   4 +-
+ release/src/router/www/EN.dict            |   4 +-
+ release/src/router/www/ES.dict            |   4 +-
+ release/src/router/www/FI.dict            |   4 +-
+ release/src/router/www/FR.dict            |   4 +-
+ release/src/router/www/HU.dict            |   4 +-
+ release/src/router/www/IT.dict            |   4 +-
+ release/src/router/www/JP.dict            |   4 +-
+ release/src/router/www/KR.dict            |   4 +-
+ release/src/router/www/MS.dict            |   4 +-
+ release/src/router/www/NL.dict            |   4 +-
+ release/src/router/www/NO.dict            |   4 +-
+ release/src/router/www/PL.dict            |   4 +-
+ release/src/router/www/RO.dict            |   4 +-
+ release/src/router/www/RU.dict            |   4 +-
+ release/src/router/www/Reaper_Traffic.asp |   3 +-
+ release/src/router/www/SL.dict            |   4 +-
+ release/src/router/www/SV.dict            |   4 +-
+ release/src/router/www/TH.dict            |   4 +-
+ release/src/router/www/TR.dict            |   4 +-
+ release/src/router/www/TW.dict            |   4 +-
+ release/src/router/www/UK.dict            |   4 +-
+ 27 files changed, 305 insertions(+), 49 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 8098526f56..f71590f333 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -21,8 +21,17 @@
+  *
+  * Accounting caveats (documented in the UI FAQ): per-client numbers come from
+  * conntrack, which the flow accelerator syncs periodically - short flows that
+- * die between polls may undercount slightly. IPv6 flows count toward interface
+- * totals but are not client-attributed in v1.
++ * die between polls may undercount slightly.
++ *
++ * IPv6 is attributed per-device as of v2.4.4. v4 finds the device by looking the
++ * LAN source up in /proc/net/arp; v6 has no such file and no NAT, so the client
++ * may be either end of the flow - both are resolved against the kernel's IPv6
++ * neighbour cache (netlink RTM_GETNEIGH, bridge ports only) and credited to the
++ * MAC, which is the same key the v4 path uses. A dual-stack device therefore
++ * lands in ONE row. Before this, a v6 flow counted toward the WAN and interface
++ * totals but no device, so a client whose traffic was mostly v6 - an iPhone on
++ * an IPv6-first CDN, say - could show a few hundred kb/s against a saturated
++ * WAN line.
+  */
+ 
+ #include <stdio.h>
+@@ -45,6 +54,9 @@
+ #include <netinet/ip_icmp.h>
+ #include <sys/ioctl.h>
+ #include <net/if.h>
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++#include <linux/neighbour.h>
+ 
+ #include <bcmnvram.h>
+ #include <shutils.h>
+@@ -318,7 +330,7 @@ static uint64_t lv_net_rx[NNET], lv_net_tx[NNET];	/* per-network rate (fcache ti
+ 
+ /* current live snapshot (for live.json) */
+ typedef struct {
+-	char src[16], dst[46];
++	char src[46], dst[46];	/* src widened for a v6 client (v2.4.4) */
+ 	int dport, proto;	/* proto: 6/17/other */
+ 	uint64_t rate;		/* bytes/sec both dirs */
+ 	uint64_t up, dn;	/* delta bytes this poll */
+@@ -502,6 +514,19 @@ static int cli_index_get(const char *key)
+ 	return -1;
+ }
+ 
++/* v2.4.4: claim a MAC-keyed slot WITHOUT touching its display label. cli_t.ip
++ * is a 16-byte IPv4 field living inside the persisted dbhdr_t, so a v6 literal
++ * neither fits nor can be made to fit without changing the on-disk layout and
++ * discarding every saved history file (the DB_VER 1->2 precedent). A dual-stack
++ * device keeps its v4 address as the label; a v6-only device keeps whatever the
++ * network map gives it. The row is keyed on the MAC either way. */
++static int cli_slot(const char *key, const char *ip);
++static int cli_slot_keep(const char *key)
++{
++	int i = cli_index_get(key);
++	return cli_slot(key, i >= 0 ? cli[i].ip : "");
++}
++
+ static int cli_slot(const char *key, const char *ip)
+ {
+ 	int i, oldest = 0;
+@@ -586,6 +611,135 @@ static int arp_mac(const char *ip, char *mac, size_t maclen)
+ 	return 0;
+ }
+ 
++/* IPv6 neighbour cache (v2.4.4). /proc/net/arp has no IPv6 counterpart, so a
++ * netlink dump is the only fork-free way to turn a LAN IPv6 address into the
++ * MAC the device rows are keyed on. Addresses are held in BINARY and compared
++ * with memcmp: conntrack prints %pI6c and inet_ntop would agree today, but
++ * comparing the 16 bytes removes any dependence on textual form.
++ * Only neighbours on a BRIDGE are kept - a neighbour on ppp0/eth0 is the ISP's
++ * router, not a client, and giving it a device row would be wrong. NND is sized
++ * for NCLI devices holding several addresses each (SLAAC + privacy + link-local). */
++#define NND	768
++static struct { unsigned char ip[16]; char mac[24]; char br[16]; } nd_tbl[NND];
++static int nd_n = 0;
++
++/* Any failure here leaves the table empty. That degrades to the pre-v2.4.4
++ * behaviour - v6 simply unattributed - never to a wrong attribution. */
++static void nd_refresh(void)
++{
++	struct { struct nlmsghdr nh; struct ndmsg nd; } req;
++	struct timeval tv;
++	char buf[16384];
++	int fd, len;
++
++	nd_n = 0;
++	if ((fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)) < 0) return;
++	tv.tv_sec = 1; tv.tv_usec = 0;
++	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++
++	memset(&req, 0, sizeof(req));
++	req.nh.nlmsg_len   = NLMSG_LENGTH(sizeof(struct ndmsg));
++	req.nh.nlmsg_type  = RTM_GETNEIGH;
++	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
++	req.nh.nlmsg_seq   = 1;
++	req.nd.ndm_family  = AF_INET6;
++	if (send(fd, &req, req.nh.nlmsg_len, 0) < 0) { close(fd); return; }
++
++	while ((len = recv(fd, buf, sizeof(buf), 0)) > 0) {
++		struct nlmsghdr *nh = (struct nlmsghdr *)buf;
++		for (; NLMSG_OK(nh, (unsigned int)len); nh = NLMSG_NEXT(nh, len)) {
++			struct ndmsg *ndm;
++			struct rtattr *rta;
++			const unsigned char *dst = NULL, *lla = NULL;
++			char ifn[IF_NAMESIZE];
++			int rlen, llalen = 0;
++
++			if (nh->nlmsg_type == NLMSG_DONE || nh->nlmsg_type == NLMSG_ERROR)
++				goto done;
++			if (nh->nlmsg_type != RTM_NEWNEIGH) continue;
++			ndm = (struct ndmsg *)NLMSG_DATA(nh);
++			if (ndm->ndm_family != AF_INET6) continue;
++			/* FAILED/INCOMPLETE carry no usable link address */
++			if (!(ndm->ndm_state & (NUD_REACHABLE | NUD_STALE | NUD_DELAY |
++						NUD_PROBE | NUD_PERMANENT)))
++				continue;
++			if (!if_indextoname(ndm->ndm_ifindex, ifn)) continue;
++			if (strncmp(ifn, "br", 2) != 0) continue;	/* LAN side only */
++
++			rta  = (struct rtattr *)((char *)ndm + NLMSG_ALIGN(sizeof(*ndm)));
++			rlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ndm));
++			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
++				if (rta->rta_type == NDA_DST && RTA_PAYLOAD(rta) == 16)
++					dst = RTA_DATA(rta);
++				else if (rta->rta_type == NDA_LLADDR) {
++					lla = RTA_DATA(rta);
++					llalen = RTA_PAYLOAD(rta);
++				}
++			}
++			if (!dst || !lla || llalen != 6) continue;
++			if (nd_n >= NND) goto done;
++			memcpy(nd_tbl[nd_n].ip, dst, 16);
++			snprintf(nd_tbl[nd_n].mac, sizeof(nd_tbl[0].mac),
++				 "%02x:%02x:%02x:%02x:%02x:%02x",
++				 lla[0], lla[1], lla[2], lla[3], lla[4], lla[5]);
++			strlcpy(nd_tbl[nd_n].br, ifn, sizeof(nd_tbl[0].br));
++			nd_n++;
++		}
++	}
++done:
++	close(fd);
++}
++
++/* v6 address -> MAC + the bridge it sits behind (linear scan, as arp_mac) */
++static int nd_lookup(const unsigned char *ip6, char *mac, size_t maclen,
++		     const char **br)
++{
++	int i;
++	for (i = 0; i < nd_n; i++)
++		if (memcmp(nd_tbl[i].ip, ip6, 16) == 0) {
++			strlcpy(mac, nd_tbl[i].mac, maclen);
++			if (br) *br = nd_tbl[i].br;
++			return 1;
++		}
++	return 0;
++}
++
++/* The router's own IPv6 addresses, so router-sourced v6 lands in the Router
++ * bucket instead of a client row - the v6 counterpart of the lan_ip test. */
++#define NSELF6	32
++static unsigned char self6_tbl[NSELF6][16];
++static int self6_n = 0;
++
++static void self6_refresh(void)
++{
++	FILE *f = fopen("/proc/net/if_inet6", "r");
++	char line[192], hex[48];
++	self6_n = 0;
++	if (!f) return;
++	while (fgets(line, sizeof(line), f) && self6_n < NSELF6) {
++		int i;
++		if (sscanf(line, "%47s", hex) != 1) continue;
++		if (strlen(hex) != 32) continue;	/* 16 bytes, no colons */
++		for (i = 0; i < 16; i++) {
++			unsigned int b;
++			char t[3];
++			t[0] = hex[i * 2]; t[1] = hex[i * 2 + 1]; t[2] = '\0';
++			if (sscanf(t, "%2x", &b) != 1) break;
++			self6_tbl[self6_n][i] = (unsigned char)b;
++		}
++		if (i == 16) self6_n++;
++	}
++	fclose(f);
++}
++
++static int is_self6(const unsigned char *ip6)
++{
++	int i;
++	for (i = 0; i < self6_n; i++)
++		if (memcmp(self6_tbl[i], ip6, 16) == 0) return 1;
++	return 0;
++}
++
+ /* ---------- pollers ---------- */
+ 
+ /* Read a single unsigned counter out of a sysfs file, holding the fd open across
+@@ -664,7 +818,7 @@ static void poll_classes(const char *wanif)
+ }
+ 
+ static void top_note(const char *src, const char *dst, int dport, int proto,
+-		     uint64_t up, uint64_t dn)
++		     uint64_t up, uint64_t dn, const char *smac)
+ {
+ 	/* top_note is only called from poll_fcache, whose deltas span one flow-cache
+ 	 * sample interval (FCACHE_SECS), not one base tick - divide by that. */
+@@ -685,7 +839,9 @@ put:
+ 	 * poll_fcache and poll_conntrack call arp_refresh() before their top_note
+ 	 * loop). write_live() then just prints it, instead of re-scanning the whole
+ 	 * ARP table for every top row on every 10 Hz live write. */
+-	if (!arp_mac(src, top[i].smac, sizeof(top[0].smac)))
++	if (smac && *smac)
++		strlcpy(top[i].smac, smac, sizeof(top[0].smac));	/* v6: resolved from nd_tbl */
++	else if (!arp_mac(src, top[i].smac, sizeof(top[0].smac)))
+ 		top[i].smac[0] = '\0';
+ }
+ 
+@@ -922,16 +1078,21 @@ static void poll_conntrack(void)
+ 	flowgen++;
+ 	ntop = 0;
+ 	arp_refresh();		/* load /proc/net/arp ONCE per poll, not per flow */
++	nd_refresh();		/* ...and the v6 neighbour cache, same deal */
++	self6_refresh();
+ 	brsub_refresh();	/* bridges can appear when a guest network is created */
+ 	netlbl_refresh();	/* ...and their VLAN/SDN identity with them (cached 30 s) */
+ 	while (fgets(line, sizeof(line), f)) {
+ 		char proto[16] = "", src[64] = "", dst[64] = "";
+ 		char rsrc[64] = "";
+ 		unsigned long long ob = 0, rb = 0;
+-		int sport = 0, dport = 0, pnum = 0;
++		int sport = 0, dport = 0, pnum = 0, v6;
+ 		char *p;
+ 
+-		if (strncmp(line, "ipv4", 4) != 0) continue;	/* v1: v4 attribution only */
++		if (strncmp(line, "ipv4", 4) == 0)      v6 = 0;
++		else if (strncmp(line, "ipv6", 4) == 0) v6 = 1;
++		else continue;
++		/* the family word and its number are skipped, so one scan serves both */
+ 		if (sscanf(line, "%*s %*d %15s %d", proto, &pnum) != 2) continue;
+ 
+ 		/* original direction: first src=/dst=/sport=/dport=/bytes= */
+@@ -960,17 +1121,41 @@ static void poll_conntrack(void)
+ 
+ 			uint32_t sip;
+ 			const char *br;
+-
+-			if (inet_aton(src, &a) == 0) continue;
+-			sip = ntohl(a.s_addr);
+-			/* any LAN bridge, not just br0 - guest/SDN clients live on their
+-			   own subnets and used to be dropped here entirely */
+-			if ((br = ip_bridge(sip)) == NULL) continue;
+-			/* the router's own LAN address is not a client. It reaches here via
+-			   the health probe and any router-sourced LAN traffic; crediting it
+-			   as a device is the "router appears as a device row" backlog item.
+-			   Bucket it with the router instead. */
+-			if (lan_ip && sip == lan_ip) br = NULL;
++			int cli_dst = 0;	/* the device is the REPLY side of the flow */
++
++			mac[0] = '\0';
++			if (!v6) {
++				if (inet_aton(src, &a) == 0) continue;
++				sip = ntohl(a.s_addr);
++				/* any LAN bridge, not just br0 - guest/SDN clients live on their
++				   own subnets and used to be dropped here entirely */
++				if ((br = ip_bridge(sip)) == NULL) continue;
++				/* the router's own LAN address is not a client. It reaches here via
++				   the health probe and any router-sourced LAN traffic; crediting it
++				   as a device is the "router appears as a device row" backlog item.
++				   Bucket it with the router instead. */
++				if (lan_ip && sip == lan_ip) br = NULL;
++			} else {
++				/* v6 is not translated, so both ends are routable and either
++				   may be the local device - a subnet test cannot tell them
++				   apart the way ip_bridge() does for v4. The neighbour cache
++				   is the authority on "this address is a client of mine"; a
++				   flow with neither end in it is the router's own or transit. */
++				unsigned char s6[16], d6[16];
++
++				if (inet_pton(AF_INET6, src, s6) != 1) continue;
++				if (inet_pton(AF_INET6, dst, d6) != 1) continue;
++				if (s6[0] == 0xff || d6[0] == 0xff) continue;	/* multicast */
++				if (nd_lookup(s6, mac, sizeof(mac), &br)) {
++					/* device originated: orig=upload, reply=download */
++				} else if (nd_lookup(d6, mac, sizeof(mac), &br)) {
++					cli_dst = 1;
++				} else if (is_self6(s6) || is_self6(d6)) {
++					br = NULL;		/* the router's own */
++				} else {
++					continue;		/* not attributable */
++				}
++			}
+ 
+ 			snprintf(kbuf, sizeof(kbuf), "%d/%s/%s/%d/%d", pnum, src, dst, sport, dport);
+ 			key = fnv64(kbuf);
+@@ -1008,6 +1193,17 @@ static void poll_conntrack(void)
+ 
+ 			if (dob == 0 && drb == 0) continue;
+ 
++			/* The key and the deltas above are built from the RAW conntrack
++			 * tuple and stay that way whichever end we credit. That is
++			 * deliberate: if the key tracked the credited end, a neighbour
++			 * entry expiring would change it, the `fl->key == key` test would
++			 * miss, and the flow's WHOLE cumulative byte count would be
++			 * credited as a single delta - a 100 GB spike on one sample.
++			 * Only the presentation is swapped, and only here. */
++			if (cli_dst) {
++				uint64_t t = dob; dob = drb; drb = t;
++			}
++
+ 			/* per-network (br0 / guest bridges / Router), from the same complete
+ 			   source as the per-device numbers - so br0 now reconciles with the
+ 			   WAN line instead of showing accelerated flows only */
+@@ -1024,18 +1220,27 @@ static void poll_conntrack(void)
+ 				ring_add(r_cli[ci], drb, dob);
+ 				lv_cli_rx[ci] += drb * 8 / FCACHE_SECS;
+ 				lv_cli_tx[ci] += dob * 8 / FCACHE_SECS;
+-				top_note(src, dst, dport, pnum, dob, drb);
++				top_note(src, dst, dport, pnum, dob, drb, NULL);
+ 				continue;
+ 			}
+-			if (!arp_mac(src, mac, sizeof(mac)))
+-				strlcpy(mac, src, sizeof(mac));
+-			ci = cli_slot(mac, src);
++			if (!v6) {
++				if (!arp_mac(src, mac, sizeof(mac)))
++					strlcpy(mac, src, sizeof(mac));
++				ci = cli_slot(mac, src);
++			} else {
++				/* mac came from the neighbour cache above; keep the label */
++				ci = cli_slot_keep(mac);
++			}
+ 			ring_add(r_cli[ci], drb, dob);	/* rx=download(reply), tx=upload(orig) */
+ 			/* live per-device rates, same bits/sec convention as the rings.
+ 			 * The caller zeroes the lv_* accumulators before this pass. */
+ 			lv_cli_rx[ci] += drb * 8 / FCACHE_SECS;
+ 			lv_cli_tx[ci] += dob * 8 / FCACHE_SECS;
+-			top_note(src, dst, dport, pnum, dob, drb);
++			/* show the DEVICE end as the row's source, and the port that names
++			 * the service, whichever direction the flow was opened from */
++			top_note(cli_dst ? dst : src, cli_dst ? src : dst,
++				 cli_dst ? sport : dport, pnum, dob, drb,
++				 v6 ? mac : NULL);
+ 		}
+ 	}
+ 	fclose(f);
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 04b046ee41..021030580d 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Guia do Analisador de Tráfego
+ RTRF_42=Onde meu histórico é armazenado?
+ RTRF_43=Escolha em Configurações: <b>RAM</b> (padrão, limpo ao reiniciar), <b>JFFS</b> (flash interna, sobrevive à reinicialização) ou <b>USB</b> (um disco conectado, mais espaço). Qualquer coisa mais longa que a visão ao vivo precisa de JFFS ou USB se você quiser que sobreviva a uma reinicialização. O coletor grava um snapshot a cada hora, então um desligamento abrupto perde no máximo a última hora.
+ RTRF_44=Quão precisos são os números por dispositivo?
+-RTRF_45=Eles vêm da tabela do <b>acelerador de fluxo por hardware</b> do roteador &mdash; o mesmo motor que encaminha seu tráfego &mdash; então fluxos descarregados (a maior parte da taxa de transferência neste roteador) são contados com precisão, não perdidos. Os totais são exatos dentro de um intervalo de sondagem; um fluxo muito curto que abre e fecha entre sondagens pode ser subcontado ligeiramente. Dispositivos aparecem como um IP puro até que o mapa de rede os nomeie. IPv6 conta para o total da WAN mas ainda não é dividido por dispositivo.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Por que o gráfico por classe está vazio?
+ RTRF_47=Dados por classe só existem enquanto o <b>QoS HW Classful</b> (Traffic Manager) for o motor ativo &mdash; é isso que cria as cinco filas de upload que este lê. Em qualquer outro modo de QoS o gráfico de classe fica em branco; todo o resto continua funcionando.
+ RTRF_48=O que são ”maiores consumidores”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 34212ea4f7..2a2681d470 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=流量分析器指南
+ RTRF_42=我的历史存储在哪里？
+ RTRF_43=在设置中选择：<b>RAM</b>（默认，重启清除）、<b>JFFS</b>（内部闪存，重启保留）或 <b>USB</b>（插入的磁盘，空间最大）。任何超过实时视图的内容，若你希望它跨越重启存续，需要 JFFS 或 USB。采集器每小时写一次快照，因此非正常关机最多丢失最后一小时。
+ RTRF_44=每设备数字有多准确？
+-RTRF_45=它们来自路由器的<b>硬件流加速器</b>表 &mdash; 就是转发你流量的同一引擎 &mdash; 因此卸载的流量（本路由器上大部分吞吐量）被准确计入，而非遗漏。总计在一个轮询间隔内精确；在轮询之间开启并关闭的极短流量可能略微少计。设备在网络地图为其命名前显示为纯 IP。IPv6 计入 WAN 总量，但尚未按设备拆分。
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=为什么每类别图表是空的？
+ RTRF_47=每类别数据仅在 <b>硬件 QoS 分类式</b>（流量管理器）为活动引擎时存在 &mdash; 那才是创建此处读取的五个上传队列的机制。在任何其他 QoS 模式下类别图表保持空白；其他一切仍工作。
+ RTRF_48=”顶级流量源”是什么？
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 951320e073..01a8b4bad9 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Průvodce analyzátorem provozu
+ RTRF_42=Kde se ukládá moje historie?
+ RTRF_43=Zvolte v Nastavení: <b>RAM</b> (výchozí, smaže se při restartu), <b>JFFS</b> (interní flash, přežije restart) nebo <b>USB</b> (připojený disk, nejvíce místa). Cokoli delšího než živý pohled potřebuje JFFS nebo USB, pokud to má přežít restart. Kolektor zapisuje snímek každou hodinu, takže nečisté vypnutí ztratí nanejvýš poslední hodinu.
+ RTRF_44=Jak přesná jsou čísla po zařízeních?
+-RTRF_45=Pocházejí z tabulky <b>hardwarového akcelerátoru toku</b> routeru &mdash; téhož enginu, který přeposílá váš provoz &mdash; takže offloadované toky (většina propustnosti na tomto routeru) jsou počítány přesně, ne vynechány. Součty jsou přesné na interval dotazování; velmi krátký tok, který se otevře a zavře mezi dotazy, může být mírně podhodnocen. Zařízení se zobrazují jako holá IP, dokud je mapa sítě nepojmenuje. IPv6 se počítá do celkového WAN, ale zatím není rozděleno po zařízeních.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Proč je graf po třídách prázdný?
+ RTRF_47=Data po třídách existují pouze, když je aktivním enginem <b>HW QoS třídní</b> (Traffic Manager) &mdash; to je to, co vytváří pět uploadových front, ze kterých se čte. Při jakémkoli jiném režimu QoS zůstává graf tříd prázdný; vše ostatní stále funguje.
+ RTRF_48=Co jsou ”nejaktivnější komunikace”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index e86297f767..899015e5ac 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Traffic Analyzer-vejledning
+ RTRF_42=Hvor gemmes min historik?
+ RTRF_43=Vælg i Indstillinger: <b>RAM</b> (standard, ryddes ved genstart), <b>JFFS</b> (intern flash, overlever genstart) eller <b>USB</b> (en tilsluttet disk, mest plads). Alt længere end live-visningen kræver JFFS eller USB, hvis det skal overleve en genstart. Indsamleren skriver et øjebliksbillede i timen, så en uren nedlukning taber højst den seneste time.
+ RTRF_44=Hvor nøjagtige er tallene pr. enhed?
+-RTRF_45=De kommer fra routerens <b>hardware-flow-accelerator</b>-tabel &mdash; den samme motor, der videresender din trafik &mdash; så offloadede flows (hovedparten af gennemløbet på denne router) tælles nøjagtigt, ikke overset. Totaler er præcise inden for et poll-interval; et meget kort flow, der åbner og lukker mellem polls, kan undertælle en smule. Enheder vises som en bar IP, indtil netværkskortet navngiver dem. IPv6 tæller med i WAN-totalen, men er endnu ikke opdelt pr. enhed.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Hvorfor er diagrammet pr. klasse tomt?
+ RTRF_47=Data pr. klasse findes kun, mens <b>HW-QoS klassebaseret</b> (Traffic Manager) er den aktive motor &mdash; det er den, der opretter de fem upload-køer, dette læser. På enhver anden QoS-tilstand forbliver klassediagrammet tomt; alt andet virker stadig.
+ RTRF_48=Hvad er ”topforbrugere”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index d6f8a0450c..823a8b651b 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Traffic-Analyzer-Leitfaden
+ RTRF_42=Wo wird mein Verlauf gespeichert?
+ RTRF_43=Wählen Sie in den Einstellungen: <b>RAM</b> (Standard, beim Neustart gelöscht), <b>JFFS</b> (interner Flash, übersteht Neustart) oder <b>USB</b> (ein eingesteckter Datenträger, meister Platz). Alles über die Live-Ansicht hinaus braucht JFFS oder USB, wenn es einen Neustart überdauern soll. Der Kollektor schreibt stündlich einen Snapshot, sodass ein unsauberes Herunterfahren höchstens die letzte Stunde verliert.
+ RTRF_44=Wie genau sind die Werte pro Gerät?
+-RTRF_45=Sie stammen aus der Tabelle des <b>Hardware-Flow-Beschleunigers</b> des Routers &mdash; derselben Engine, die Ihren Traffic weiterleitet &mdash; sodass ausgelagerte Flows (der Großteil des Durchsatzes auf diesem Router) genau gezählt und nicht übersehen werden. Summen sind bis auf ein Abfrageintervall genau; ein sehr kurzer Flow, der zwischen zwei Abfragen öffnet und schließt, kann leicht unterzählt werden. Geräte erscheinen als nackte IP, bis die Netzwerkübersicht sie benennt. IPv6 zählt zur WAN-Summe, ist aber noch nicht pro Gerät aufgeteilt.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Warum ist das Diagramm pro Klasse leer?
+ RTRF_47=Daten pro Klasse existieren nur, solange <b>HW-QoS mit Klassen</b> (Traffic Manager) die aktive Engine ist &mdash; das erzeugt die fünf Upload-Queues, die hier gelesen werden. In jedem anderen QoS-Modus bleibt das Klassendiagramm leer; alles Übrige funktioniert weiter.
+ RTRF_48=Was sind ”Top-Verursacher”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index ef95e580ec..16a598ca4b 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Traffic Analyzer Guide
+ RTRF_42=Where is my history stored?
+ RTRF_43=Choose in Settings: <b>RAM</b> (default, cleared on reboot), <b>JFFS</b> (internal flash, survives reboot), or <b>USB</b> (a plugged-in disk, most space). Anything longer than the live view needs JFFS or USB if you want it to outlast a reboot. The collector writes a snapshot hourly, so an unclean shutdown loses at most the last hour.
+ RTRF_44=How accurate are the per-device numbers?
+-RTRF_45=They come from the router's <b>hardware flow accelerator</b> table &mdash; the same engine that forwards your traffic &mdash; so offloaded flows (the bulk of throughput on this router) are counted accurately, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. IPv6 counts toward the WAN total but is not yet split per-device.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Why is the per-class chart empty?
+ RTRF_47=Per-class data only exists while <b>HW QoS Classful</b> (Traffic Manager) is the active engine &mdash; that is what creates the five upload queues this reads. On any other QoS mode the class chart stays blank; everything else still works.
+ RTRF_48=What are "top talkers"?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 6dde2cde04..f275cea4ae 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Guía del Analizador de tráfico
+ RTRF_42=¿Dónde se almacena mi historial?
+ RTRF_43=Elige en Ajustes: <b>RAM</b> (por defecto, se borra al reiniciar), <b>JFFS</b> (flash interna, sobrevive al reinicio) o <b>USB</b> (un disco conectado, más espacio). Cualquier cosa más larga que la vista en vivo necesita JFFS o USB si quieres que sobreviva a un reinicio. El colector escribe una instantánea cada hora, así que un apagado no limpio pierde a lo sumo la última hora.
+ RTRF_44=¿Qué precisión tienen las cifras por dispositivo?
+-RTRF_45=Provienen de la tabla del <b>acelerador de flujos por hardware</b> del router &mdash; el mismo motor que reenvía tu tráfico &mdash; así que los flujos descargados (la mayor parte del rendimiento en este router) se cuentan con precisión, no se omiten. Los totales son exactos hasta un intervalo de sondeo; un flujo muy corto que se abre y cierra entre sondeos puede quedar ligeramente subcontado. Los dispositivos aparecen como una IP simple hasta que el mapa de red les da nombre. IPv6 cuenta para el total WAN pero aún no se divide por dispositivo.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=¿Por qué está vacío el gráfico por clase?
+ RTRF_47=Los datos por clase solo existen mientras <b>QoS HW con clases</b> (Gestor de tráfico) es el motor activo &mdash; eso es lo que crea las cinco colas de subida que esto lee. En cualquier otro modo de QoS, el gráfico de clases permanece en blanco; todo lo demás sigue funcionando.
+ RTRF_48=¿Qué son los ”mayores consumidores”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 00a95f20ff..5b5d53af66 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Liikenneanalysaattorin opas
+ RTRF_42=Mihin historiani tallennetaan?
+ RTRF_43=Valitse Asetuksista: <b>RAM</b> (oletus, tyhjenee uudelleenkäynnistyksessä), <b>JFFS</b> (sisäinen flash, säilyy uudelleenkäynnistyksen yli) tai <b>USB</b> (kytketty levy, eniten tilaa). Kaikki live-näkymää pidempi vaatii JFFS:n tai USB:n, jos haluat sen säilyvän uudelleenkäynnistyksen yli. Kerääjä kirjoittaa tilannevedoksen tunneittain, joten epäsiisti sammutus menettää enintään viimeisen tunnin.
+ RTRF_44=Kuinka tarkkoja laitekohtaiset luvut ovat?
+-RTRF_45=Ne tulevat reitittimen <b>laitteiston vuokiihdyttimen</b> taulusta &mdash; samasta moottorista, joka välittää liikenteesi &mdash; joten purkatut virrat (suurin osa tämän reitittimen läpäisystä) lasketaan tarkasti, ei ohiteta. Summat ovat tarkkoja pollausvälin sisällä; hyvin lyhyt virta, joka avautuu ja sulkeutuu pollausten välissä, voi jäädä hieman alilaskettuna. Laitteet näkyvät pelkkänä IP:nä, kunnes verkkokartta nimeää ne. IPv6 lasketaan WAN-kokonaisuuteen mutta sitä ei ole vielä jaettu laitekohtaisesti.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Miksi luokkakohtainen kaavio on tyhjä?
+ RTRF_47=Luokkakohtaista dataa on olemassa vain, kun <b>HW QoS luokiteltu</b> (Traffic Manager) on aktiivinen moottori &mdash; se luo nämä viisi lähetysjonoa, joita tämä lukee. Missä tahansa muussa QoS-tilassa luokkakaavio pysyy tyhjänä; kaikki muu toimii yhä.
+ RTRF_48=Mitä ovat ”suurimmat käyttäjät”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e26af77e8a..5a1cb61c65 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Guide de l’analyseur de trafic
+ RTRF_42=Où mon historique est-il stocké ?
+ RTRF_43=Choisissez dans les Réglages : <b>RAM</b> (défaut, effacé au redémarrage), <b>JFFS</b> (flash interne, survit au redémarrage), ou <b>USB</b> (un disque branché, plus d'espace). Tout ce qui dépasse la vue en direct nécessite JFFS ou USB si vous voulez qu'il survive à un redémarrage. Le collecteur écrit un instantané toutes les heures, donc un arrêt brutal perd au plus la dernière heure.
+ RTRF_44=Quelle est la précision des chiffres par appareil ?
+-RTRF_45=Ils proviennent de la table de l'<b>accélérateur de flux matériel</b> du routeur &mdash; le même moteur qui achemine votre trafic &mdash; donc les flux déchargés (l'essentiel du débit sur ce routeur) sont comptés avec précision, pas oubliés. Les totaux sont exacts à un intervalle de sondage près ; un flux très court qui s'ouvre et se ferme entre deux sondages peut être légèrement sous-compté. Les appareils s'affichent en simple IP jusqu'à ce que la carte réseau les nomme. L'IPv6 compte dans le total WAN mais n'est pas encore réparti par appareil.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Pourquoi le graphique par classe est-il vide ?
+ RTRF_47=Les données par classe n'existent que tant que la <b>QoS matérielle avec classes</b> (Gestionnaire de trafic) est le moteur actif &mdash; c'est ce qui crée les cinq files d'upload que ceci lit. Dans tout autre mode QoS, le graphique par classe reste vide ; tout le reste fonctionne toujours.
+ RTRF_48=Que sont les « principaux consommateurs » ?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index b8d57f1baf..9a9697f882 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Forgalomelemző útmutató
+ RTRF_42=Hol tárolódnak az előzményeim?
+ RTRF_43=Válasszon a Beállításokban: <b>RAM</b> (alapértelmezett, újraindításkor törlődik), <b>JFFS</b> (belső flash, túléli az újraindítást), vagy <b>USB</b> (bedugott lemez, legtöbb hely). Bármi, ami hosszabb az élő nézetnél, JFFS-t vagy USB-t igényel, ha túl akarja élni egy újraindítást. A gyűjtő óránként ír pillanatképet, így egy nem tiszta leállás legfeljebb az utolsó órát veszíti el.
+ RTRF_44=Mennyire pontosak az eszközönkénti számok?
+-RTRF_45=A router <b>hardveres folyamgyorsító</b> táblájából származnak &mdash; ugyanaz a motor, amely a forgalmát továbbítja &mdash; így a leterhelt folyamok (az áteresztőképesség java ezen a routeren) pontosan számolódnak, nem maradnak ki. Az összegek egy lekérdezési intervallumon belül pontosak; egy nagyon rövid folyam, amely lekérdezések között nyílik és zárul, kissé alábecsülhet. Az eszközök csupasz IP-ként jelennek meg, amíg a hálózati térkép el nem nevezi őket. Az IPv6 beleszámít a WAN összegbe, de még nincs eszközönként bontva.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Miért üres az osztályonkénti diagram?
+ RTRF_47=Osztályonkénti adat csak akkor létezik, amikor a <b>HW QoS osztályos</b> (Forgalomkezelő) az aktív motor &mdash; ez hozza létre az öt feltöltési sort, amit ez olvas. Bármely más QoS módban az osztálydiagram üres marad; minden más továbbra is működik.
+ RTRF_48=Mik a ”legaktívabb kapcsolatok”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4e60753d90..147eabd2d2 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Guida al Traffic Analyzer
+ RTRF_42=Dove è archiviata la mia cronologia?
+ RTRF_43=Scegli nelle Impostazioni: <b>RAM</b> (predefinita, cancellata al riavvio), <b>JFFS</b> (flash interna, sopravvive al riavvio), o <b>USB</b> (un disco collegato, più spazio). Qualsiasi cosa più lunga della vista live necessita di JFFS o USB se vuoi che sopravviva a un riavvio. Il collettore scrive uno snapshot ogni ora, quindi uno spegnimento non pulito perde al massimo l'ultima ora.
+ RTRF_44=Quanto sono accurati i numeri per dispositivo?
+-RTRF_45=Provengono dalla tabella dell'<b>acceleratore di flusso hardware</b> del router &mdash; lo stesso motore che inoltra il tuo traffico &mdash; quindi i flussi offloaded (la maggior parte del throughput su questo router) sono conteggiati accuratamente, non mancati. I totali sono esatti entro un intervallo di polling; un flusso molto breve che si apre e chiude tra i polling può contare leggermente in difetto. I dispositivi appaiono come un semplice IP finché la mappa di rete non li nomina. L'IPv6 conta nel totale WAN ma non è ancora suddiviso per dispositivo.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Perché il grafico per classe è vuoto?
+ RTRF_47=I dati per classe esistono solo mentre <b>QoS HW Classful</b> (Traffic Manager) è il motore attivo &mdash; è ciò che crea le cinque code di upload che questo legge. Con qualsiasi altra modalità QoS il grafico delle classi resta vuoto; tutto il resto funziona comunque.
+ RTRF_48=Cosa sono i ”top talker”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 143d55221a..c9ab0eac4e 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=トラフィックアナライザーガイド
+ RTRF_42=履歴はどこに保存される？
+ RTRF_43=設定で選択します: <b>RAM</b>（既定、再起動で消去）、<b>JFFS</b>（内蔵フラッシュ、再起動後も維持）、または<b>USB</b>（接続したディスク、最大容量）。ライブビューより長いものを再起動後も残したい場合はJFFSまたはUSBが必要です。コレクターは1時間ごとにスナップショットを書き込むため、不正なシャットダウンで失われるのは最大で直近1時間分です。
+ RTRF_44=デバイスごとの数値はどれくらい正確？
+-RTRF_45=ルーターの<b>ハードウェアフローアクセラレーター</b>テーブルから取得されます &mdash; トラフィックを転送するのと同じエンジンです &mdash; そのためオフロードされたフロー（このルーターのスループットの大半）は見落とされず正確にカウントされます。合計はポーリング間隔内で正確です。ポーリングの合間に開いて閉じる非常に短いフローはわずかに過少カウントされることがあります。デバイスはネットワークマップが名前を付けるまで素のIPで表示されます。IPv6はWAN合計にカウントされますが、まだデバイスごとには分割されていません。
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=クラス別チャートが空なのはなぜ？
+ RTRF_47=クラス別データは<b>HW QoS クラスフル</b>（トラフィックマネージャー）がアクティブなエンジンのときのみ存在します &mdash; これがこれの読む5つのアップロードキューを作ります。他のQoSモードではクラスチャートは空白のままですが、それ以外はすべて動作します。
+ RTRF_48=「上位トーカー」とは？
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 866ee1b4ce..cea11d29f4 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=트래픽 분석기 가이드
+ RTRF_42=내 기록은 어디에 저장되나요?
+ RTRF_43=설정에서 선택하세요: <b>RAM</b>(기본값, 재부팅 시 삭제), <b>JFFS</b>(내부 플래시, 재부팅 후 유지), 또는 <b>USB</b>(연결된 디스크, 최대 공간). 실시간 뷰보다 긴 것을 재부팅 후에도 유지하려면 JFFS나 USB가 필요합니다. 수집기는 매시간 스냅샷을 기록하므로 비정상 종료 시 최대 최근 한 시간만 손실됩니다.
+ RTRF_44=장치별 수치는 얼마나 정확한가요?
+-RTRF_45=라우터의 <b>하드웨어 플로우 가속기</b> 테이블에서 나옵니다 &mdash; 트래픽을 전달하는 바로 그 엔진 &mdash; 따라서 오프로드된 플로우(이 라우터 처리량의 대부분)가 누락되지 않고 정확하게 집계됩니다. 합계는 폴링 간격 이내로 정확하며, 폴 사이에 열리고 닫히는 아주 짧은 플로우는 약간 적게 집계될 수 있습니다. 네트워크 맵이 이름을 붙이기 전까지 장치는 IP만 표시됩니다. IPv6는 WAN 합계에 포함되지만 아직 장치별로 분리되지 않습니다.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=클래스별 차트가 왜 비어 있나요?
+ RTRF_47=클래스별 데이터는 <b>HW QoS 클래스풀</b>(Traffic Manager)이 활성 엔진일 때만 존재합니다 &mdash; 이것이 이 차트가 읽는 다섯 개의 업로드 큐를 만듭니다. 다른 QoS 모드에서는 클래스 차트가 비어 있고, 나머지는 모두 작동합니다.
+ RTRF_48=”상위 토커”란 무엇인가요?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 111601ff2a..c2fad16369 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Panduan Penganalisis Trafik
+ RTRF_42=Di mana sejarah saya disimpan?
+ RTRF_43=Pilih dalam Tetapan: <b>RAM</b> (lalai, dikosongkan semasa but semula), <b>JFFS</b> (flash dalaman, kekal selepas but semula), atau <b>USB</b> (cakera dipasang, paling banyak ruang). Apa-apa lebih panjang daripada paparan langsung perlukan JFFS atau USB jika anda mahu ia bertahan melebihi but semula. Pengumpul menulis syot kilat setiap jam, jadi penutupan tidak bersih kehilangan paling banyak jam terakhir.
+ RTRF_44=Betapa tepat nombor setiap peranti?
+-RTRF_45=Ia datang daripada jadual <b>pemecut aliran perkakasan</b> penghala &mdash; enjin sama yang memajukan trafik anda &mdash; jadi aliran dipunggah (kebanyakan truput pada penghala ini) dikira dengan tepat, tidak terlepas. Jumlah adalah tepat dalam satu selang tinjau; aliran sangat pendek yang buka dan tutup antara tinjauan boleh terkira kurang sedikit. Peranti muncul sebagai IP kosong sehingga peta rangkaian menamakannya. IPv6 dikira ke arah jumlah WAN tetapi belum dibahagi setiap peranti.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Mengapa carta setiap kelas kosong?
+ RTRF_47=Data setiap kelas hanya wujud semasa <b>HW QoS Classful</b> (Traffic Manager) ialah enjin aktif &mdash; itulah yang mencipta lima baris gilir muat naik yang ini baca. Pada mana-mana mod QoS lain carta kelas kekal kosong; segala yang lain masih berfungsi.
+ RTRF_48=Apa itu ”pengguna teratas”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index ca22c5f1f2..c411e120e8 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Verkeersanalyzer-gids
+ RTRF_42=Waar wordt mijn geschiedenis opgeslagen?
+ RTRF_43=Kies in Instellingen: <b>RAM</b> (standaard, gewist bij herstart), <b>JFFS</b> (interne flash, overleeft herstart), of <b>USB</b> (een aangesloten schijf, meeste ruimte). Alles langer dan de live-weergave heeft JFFS of USB nodig als u wilt dat het een herstart overleeft. De collector schrijft elk uur een snapshot, dus een onreine afsluiting verliest hoogstens het laatste uur.
+ RTRF_44=Hoe nauwkeurig zijn de cijfers per apparaat?
+-RTRF_45=Ze komen uit de <b>hardware-flow-accelerator</b>-tabel van de router &mdash; dezelfde engine die uw verkeer doorstuurt &mdash; dus offloaded stromen (het grootste deel van de doorvoer op deze router) worden nauwkeurig geteld, niet gemist. Totalen zijn exact tot op een poll-interval; een zeer korte stroom die tussen polls opent en sluit kan iets te weinig tellen. Apparaten verschijnen als een kaal IP totdat de netwerkkaart ze een naam geeft. IPv6 telt mee in het WAN-totaal maar wordt nog niet per apparaat gesplitst.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Waarom is de grafiek per klasse leeg?
+ RTRF_47=Data per klasse bestaat alleen terwijl <b>HW QoS Classful</b> (Traffic Manager) de actieve engine is &mdash; dat is wat de vijf uploadwachtrijen creëert die dit uitleest. Bij elke andere QoS-modus blijft de klassegrafiek leeg; al het andere werkt nog.
+ RTRF_48=Wat zijn ”topgebruikers”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 69b0fa44bf..355d523def 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Trafikkanalysator-guide
+ RTRF_42=Hvor lagres historikken min?
+ RTRF_43=Velg i Innstillinger: <b>RAM</b> (standard, tømmes ved omstart), <b>JFFS</b> (intern flash, overlever omstart), eller <b>USB</b> (en tilkoblet disk, mest plass). Alt lengre enn live-visningen trenger JFFS eller USB hvis du vil at det skal vare utover en omstart. Innsamleren skriver et øyeblikksbilde hver time, så en uren avslutning mister høyst den siste timen.
+ RTRF_44=Hvor nøyaktige er tallene per enhet?
+-RTRF_45=De kommer fra ruterens <b>maskinvare-flytakselerator</b>-tabell &mdash; den samme motoren som videresender trafikken din &mdash; så avlastede flyter (mesteparten av gjennomstrømningen på denne ruteren) telles nøyaktig, ikke oversett. Totaler er eksakte innenfor et pollingintervall; en veldig kort flyt som åpner og lukker mellom pollinger kan telle litt for lavt. Enheter vises som en naken IP til nettverkskartet navngir dem. IPv6 teller mot WAN-totalen, men er ennå ikke delt opp per enhet.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Hvorfor er diagrammet per klasse tomt?
+ RTRF_47=Data per klasse finnes bare mens <b>HW QoS Classful</b> (Traffic Manager) er den aktive motoren &mdash; det er det som lager de fem opplastingskøene dette leser. På enhver annen QoS-modus forblir klassediagrammet tomt; alt annet virker fortsatt.
+ RTRF_48=Hva er ”toppsnakkere”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 02dc7b0c35..de4b106f9b 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Przewodnik Analizatora ruchu
+ RTRF_42=Gdzie przechowywana jest moja historia?
+ RTRF_43=Wybierz w Ustawieniach: <b>RAM</b> (domyślne, czyszczone przy restarcie), <b>JFFS</b> (wewnętrzny flash, przetrwa restart) lub <b>USB</b> (podłączony dysk, najwięcej miejsca). Cokolwiek dłuższego niż widok na żywo wymaga JFFS lub USB, jeśli ma przetrwać restart. Kolektor zapisuje migawkę co godzinę, więc nieczyste zamknięcie traci co najwyżej ostatnią godzinę.
+ RTRF_44=Jak dokładne są liczby na urządzenie?
+-RTRF_45=Pochodzą z tablicy <b>sprzętowego akceleratora przepływów</b> routera &mdash; tego samego silnika, który przekazuje Twój ruch &mdash; więc przepływy odciążone (większość przepustowości na tym routerze) są liczone dokładnie, nie pomijane. Sumy są dokładne do interwału odpytywania; bardzo krótki przepływ, który otwiera się i zamyka między odpytaniami, może być nieco niedoszacowany. Urządzenia wyświetlają się jako sam IP, dopóki mapa sieci nie nada im nazw. IPv6 wlicza się do sumy WAN, ale nie jest jeszcze dzielony na urządzenia.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Dlaczego wykres na klasę jest pusty?
+ RTRF_47=Dane na klasę istnieją tylko, gdy <b>Sprzętowy QoS klasowy</b> (Menedżer ruchu) jest aktywnym silnikiem &mdash; to on tworzy pięć kolejek wysyłania, które są tu odczytywane. W dowolnym innym trybie QoS wykres klas pozostaje pusty; wszystko inne nadal działa.
+ RTRF_48=Czym są ”najaktywniejsze połączenia”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 7f0110cc0b..22e9c5bc42 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Ghid Analizor de trafic
+ RTRF_42=Unde este stocat istoricul meu?
+ RTRF_43=Alege în Setări: <b>RAM</b> (implicit, șters la repornire), <b>JFFS</b> (flash intern, supraviețuiește repornirii) sau <b>USB</b> (un disc conectat, cel mai mult spațiu). Orice mai lung decât vizualizarea live are nevoie de JFFS sau USB dacă vrei să supraviețuiască unei reporniri. Colectorul scrie un instantaneu orar, deci o oprire nesigură pierde cel mult ultima oră.
+ RTRF_44=Cât de exacte sunt cifrele per dispozitiv?
+-RTRF_45=Provin din tabelul <b>acceleratorului hardware de flux</b> al routerului &mdash; același motor care îți redirecționează traficul &mdash; deci fluxurile descărcate (majoritatea debitului pe acest router) sunt numărate exact, nu ratate. Totalurile sunt exacte până la un interval de interogare; un flux foarte scurt care se deschide și se închide între interogări poate subestima ușor. Dispozitivele apar ca un simplu IP până când harta rețelei le denumește. IPv6 contează în totalul WAN dar nu este încă împărțit per dispozitiv.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=De ce este graficul per clasă gol?
+ RTRF_47=Datele per clasă există doar cât timp <b>QoS HW cu clase</b> (Manager de trafic) este motorul activ &mdash; asta creează cele cinci cozi de încărcare pe care le citește. Pe orice alt mod QoS graficul de clase rămâne gol; restul funcționează în continuare.
+ RTRF_48=Ce sunt ”cei mai activi”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index d5629ad7a5..68b2928e44 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Руководство по анализатору трафика
+ RTRF_42=Где хранится моя история?
+ RTRF_43=Выберите в настройках: <b>RAM</b> (по умолчанию, очищается при перезагрузке), <b>JFFS</b> (внутренняя флеш, переживает перезагрузку) или <b>USB</b> (подключённый диск, больше всего места). Всё, что дольше живого вида, требует JFFS или USB, если хотите пережить перезагрузку. Коллектор пишет снимок раз в час, так что некорректное выключение теряет максимум последний час.
+ RTRF_44=Насколько точны цифры по устройствам?
+-RTRF_45=Они берутся из таблицы <b>аппаратного ускорителя потоков</b> роутера &mdash; того же движка, что пересылает ваш трафик &mdash; так что разгруженные потоки (основная часть трафика на этом роутере) учитываются точно, а не пропускаются. Итоги точны с точностью до интервала опроса; очень короткий поток, открывшийся и закрывшийся между опросами, может немного недоучитываться. Устройства показываются как голый IP, пока карта сети не даст им имена. IPv6 учитывается в итоге WAN, но пока не разбивается по устройствам.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Почему график по классам пуст?
+ RTRF_47=Данные по классам существуют только пока <b>Аппаратный QoS с классами</b> (Менеджер трафика) &mdash; активный движок &mdash; именно он создаёт пять очередей выгрузки, которые это читает. В любом другом режиме QoS график классов остаётся пустым; всё остальное работает.
+ RTRF_48=Что такое ”топ источников”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 5df4d4d503..d2b6bfc68d 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -93,6 +93,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+ .tname{color:var(--bone);font-weight:500}
+ .tsub{color:var(--steel);font-size:11px;margin-top:1px}
+ .badge{font-family:var(--hdr);font-size:9.5px;letter-spacing:.08em;border:1px solid var(--line-soft);border-radius:5px;padding:2px 6px;color:var(--steel)}
++.badge.updonly{margin-left:9px;vertical-align:2px;text-transform:none;letter-spacing:.06em;cursor:help}
+ 
+ /* quota meter */
+ .meter{height:12px;border-radius:7px;background:rgba(255,255,255,.05);overflow:hidden;margin:10px 0 6px}
+@@ -180,7 +181,7 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+ 
+ <div class="grid">
+   <div class="panel">
+-    <h2><#RTRF_15#></h2>
++    <h2><#RTRF_15#> <span class="badge updonly" title="<#RTRF_76#>"><#RTRF_75#></span></h2>
+     <div class="sub"><#RTRF_16#></div>
+     <div id="clsgate" style="display:none;padding:22px 4px;font-size:13px;color:var(--amber);line-height:1.6"></div>
+     <div id="clsbody">
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index d1ba8a146e..eae6d5b39a 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Vodnik za analizator prometa
+ RTRF_42=Kje je shranjena moja zgodovina?
+ RTRF_43=Izberite v Nastavitvah: <b>RAM</b> (privzeto, počiščeno ob ponovnem zagonu), <b>JFFS</b> (notranji flash, preživi ponovni zagon) ali <b>USB</b> (priklopljen disk, največ prostora). Vse, kar je daljše od pogleda v živo, potrebuje JFFS ali USB, če želite, da preživi ponovni zagon. Zbiralnik zapiše posnetek vsako uro, tako da nečist izklop izgubi kvečjemu zadnjo uro.
+ RTRF_44=Kako natančne so številke na napravo?
+-RTRF_45=Prihajajo iz tabele <b>strojnega pospeševalnika toka</b> usmerjevalnika &mdash; istega motorja, ki posreduje vaš promet &mdash; tako da so razbremenjeni tokovi (večina prepustnosti na tem usmerjevalniku) natančno šteti, ne spregledani. Vsote so točne do enega intervala poizvedbe; zelo kratek tok, ki se odpre in zapre med poizvedbama, lahko rahlo podceni. Naprave se prikažejo kot goli IP, dokler jih omrežni zemljevid ne poimenuje. IPv6 šteje v WAN vsoto, a še ni razdeljen na napravo.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Zakaj je graf po razredih prazen?
+ RTRF_47=Podatki po razredih obstajajo le, dokler je aktivni motor <b>Strojni QoS z razredi</b> (Traffic Manager) &mdash; ta ustvari pet vrst nalaganja, ki jih to bere. V vsakem drugem načinu QoS graf razredov ostane prazen; vse drugo še vedno deluje.
+ RTRF_48=Kaj so ”najbolj obremenjeni”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 299273e8cc..979c8beb4b 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Guide för Trafikanalysator
+ RTRF_42=Var lagras min historik?
+ RTRF_43=Välj i Inställningar: <b>RAM</b> (standard, rensas vid omstart), <b>JFFS</b> (internt flash, överlever omstart), eller <b>USB</b> (en isatt disk, mest utrymme). Allt längre än livevyn behöver JFFS eller USB om du vill att det ska överleva en omstart. Insamlaren skriver en ögonblicksbild varje timme, så en oren avstängning förlorar som mest den senaste timmen.
+ RTRF_44=Hur exakta är siffrorna per enhet?
+-RTRF_45=De kommer från routerns <b>hårdvaruflödesaccelerator</b>-tabell &mdash; samma motor som vidarebefordrar din trafik &mdash; så avlastade flöden (huvuddelen av genomströmningen på denna router) räknas exakt, inte missas. Totaler är exakta inom ett pollningsintervall; ett mycket kort flöde som öppnas och stängs mellan pollningar kan underräkna något. Enheter visas som en naken IP tills nätverkskartan namnger dem. IPv6 räknas mot WAN-totalen men delas ännu inte per enhet.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Varför är diagrammet per klass tomt?
+ RTRF_47=Data per klass finns endast medan <b>HW QoS Klassindelad</b> (Trafikhanterare) är den aktiva motorn &mdash; det är det som skapar de fem uppladdningsköer detta läser. I något annat QoS-läge förblir klassdiagrammet tomt; allt annat fungerar fortfarande.
+ RTRF_48=Vad är ”toppratare”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 1d02f8bf1f..2020e992e2 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=คู่มือตัววิเคราะห์ทราฟฟิ
+ RTRF_42=ประวัติของฉันเก็บที่ไหน
+ RTRF_43=เลือกในการตั้งค่า: <b>RAM</b> (ค่าเริ่มต้น ล้างเมื่อรีบูต), <b>JFFS</b> (แฟลชภายใน คงอยู่หลังรีบูต) หรือ <b>USB</b> (ดิสก์ที่เสียบ พื้นที่มากสุด) อะไรที่นานกว่ามุมมองสดต้องใช้ JFFS หรือ USB หากต้องการให้อยู่ข้ามการรีบูต ตัวเก็บข้อมูลเขียนภาพสแนปช็อตทุกชั่วโมง การปิดเครื่องไม่สมบูรณ์จึงเสียมากสุดชั่วโมงล่าสุด
+ RTRF_44=ตัวเลขต่ออุปกรณ์แม่นยำแค่ไหน
+-RTRF_45=มาจากตาราง<b>ตัวเร่งการไหลฮาร์ดแวร์</b>ของเราเตอร์ &mdash; เอนจินเดียวกันที่ส่งต่อทราฟฟิกของคุณ &mdash; ดังนั้นโฟลว์ที่ออฟโหลด (ส่วนใหญ่ของ throughput บนเราเตอร์นี้) ถูกนับอย่างแม่นยำ ไม่ตกหล่น ยอดรวมแม่นยำภายในช่วงโพล โฟลว์สั้นมากที่เปิดและปิดระหว่างการโพลอาจนับต่ำกว่าเล็กน้อย อุปกรณ์แสดงเป็น IP เปล่าจนกว่าแผนที่เครือข่ายจะตั้งชื่อ IPv6 นับรวมใน WAN แต่ยังไม่แยกต่ออุปกรณ์
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=ทำไมแผนภูมิต่อคลาสว่างเปล่า
+ RTRF_47=ข้อมูลต่อคลาสมีเฉพาะเมื่อ <b>HW QoS Classful</b> (Traffic Manager) เป็นเอนจินที่ทำงาน &mdash; นั่นคือสิ่งที่สร้างคิวอัปโหลดห้าคิวที่อ่านนี้ ในโหมด QoS อื่นแผนภูมิคลาสจะว่าง ทุกอย่างอื่นยังทำงาน
+ RTRF_48=”ตัวส่งข้อมูลสูงสุด” คืออะไร
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index d13e7929ca..bebfd6e720 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Trafik Çözümleyici Kılavuzu
+ RTRF_42=Geçmişim nerede saklanır?
+ RTRF_43=Ayarlar'da seçin: <b>RAM</b> (varsayılan, yeniden başlatmada silinir), <b>JFFS</b> (dahili flash, yeniden başlatmayı atlatır) veya <b>USB</b> (takılı bir disk, en fazla alan). Canlı görünümden daha uzun herhangi bir şey, bir yeniden başlatmayı atlatmasını istiyorsanız JFFS veya USB gerektirir. Toplayıcı saatlik bir anlık görüntü yazar, bu nedenle temiz olmayan bir kapatma en fazla son bir saati kaybeder.
+ RTRF_44=Cihaz başına sayılar ne kadar doğru?
+-RTRF_45=Yönlendiricinin <b>donanım akış hızlandırıcısı</b> tablosundan gelirler &mdash; trafiğinizi ileten aynı motor &mdash; bu nedenle boşaltılmış akışlar (bu yönlendiricideki verimin büyük kısmı) kaçırılmaz, doğru sayılır. Toplamlar bir yoklama aralığı içinde tamdır; yoklamalar arasında açılıp kapanan çok kısa bir akış hafifçe eksik sayılabilir. Cihazlar ağ haritası onları adlandırana kadar çıplak bir IP olarak görünür. IPv6 WAN toplamına dahildir ancak henüz cihaz başına ayrılmamıştır.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Sınıf başına grafik neden boş?
+ RTRF_47=Sınıf başına veri yalnızca <b>HW QoS Sınıflı</b> (Trafik Yöneticisi) etkin motorken vardır &mdash; bunun okuduğu beş yükleme kuyruğunu oluşturan budur. Başka herhangi bir QoS modunda sınıf grafiği boş kalır; diğer her şey yine çalışır.
+ RTRF_48=”En çok konuşanlar” nedir?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index c4cb529b87..38d1df8cbf 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=流量分析器指南
+ RTRF_42=我的歷史儲存在哪裡？
+ RTRF_43=在設定中選擇：<b>RAM</b>（預設，重新啟動時清除）、<b>JFFS</b>（內部快閃記憶體，重新啟動後保留）或 <b>USB</b>（插入的磁碟，空間最大）。任何長於即時檢視的資料，若要撐過重新啟動就需要 JFFS 或 USB。收集器每小時寫入一次快照，因此非正常關機最多損失最近一小時。
+ RTRF_44=每裝置數字有多準確？
+-RTRF_45=它們來自路由器的<b>硬體流量加速器</b>表 &mdash; 與轉送您流量的引擎相同 &mdash; 因此卸載的流（此路由器上大部分吞吐量）會被準確計算，不會遺漏。總計在一個輪詢間隔內精確；在輪詢之間開啟並關閉的極短流可能略微低估。裝置在網路地圖命名前會顯示為純 IP。IPv6 計入 WAN 總量，但尚未按裝置分拆。
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=為何每類別圖表是空的？
+ RTRF_47=每類別資料僅在 <b>硬體 QoS 分類</b>（流量管理器）為作用中引擎時存在 &mdash; 那才會建立此處讀取的五個上傳佇列。在任何其他 QoS 模式下，類別圖表維持空白；其餘一切仍運作。
+ RTRF_48=什麼是「熱門流量」？
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index f40c1d42f5..7eda833110 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5550,7 +5550,7 @@ RTRF_41=Посібник аналізатора трафіку
+ RTRF_42=Де зберігається моя історія?
+ RTRF_43=Виберіть у Налаштуваннях: <b>RAM</b> (за замовчуванням, очищається при перезавантаженні), <b>JFFS</b> (внутрішня флеш-пам'ять, переживає перезавантаження) або <b>USB</b> (підключений диск, найбільше місця). Будь-що довше за вигляд наживо потребує JFFS чи USB, якщо ви хочете, щоб воно пережило перезавантаження. Збирач записує знімок щогодини, тож некоректне вимкнення втрачає щонайбільше останню годину.
+ RTRF_44=Наскільки точні числа на пристрій?
+-RTRF_45=Вони беруться з таблиці <b>апаратного прискорювача потоків</b> маршрутизатора &mdash; того самого двигуна, що пересилає ваш трафік &mdash; тож розвантажені потоки (основна частина пропускності на цьому маршрутизаторі) обліковуються точно, а не пропускаються. Підсумки точні з точністю до інтервалу опитування; дуже короткий потік, що відкривається й закривається між опитуваннями, може дещо занижуватися. Пристрої показуються як голий IP, доки карта мережі не назве їх. IPv6 враховується в загальний підсумок WAN, але поки не розбивається на пристрої.
++RTRF_45=They come from the kernel's <b>connection tracking</b> table, which on this router already includes the bytes the hardware accelerator forwarded &mdash; so offloaded flows (the bulk of throughput here) are counted, not missed. Totals are exact to within a poll interval; a very short flow that opens and closes between polls can undercount slightly. Devices show as a bare IP until the network map names them. <b>IPv4 and IPv6 are both counted per-device</b>: a dual-stack device is one row, matched on its MAC address rather than on either of its addresses.
+ RTRF_46=Чому діаграма за класом порожня?
+ RTRF_47=Дані за класом існують лише поки активним двигуном є <b>Апаратний QoS з класами</b> (Менеджер трафіку) &mdash; саме він створює п'ять черг вивантаження, які тут зчитуються. У будь-якому іншому режимі QoS діаграма класів лишається порожньою; решта досі працює.
+ RTRF_48=Що таке ”топ активності”?
+@@ -6581,3 +6581,5 @@ RFW_251=Example: a device cannot reach a service and you do not know which rule
+ RDEV_88=Export list
+ RDEV_89=Export
+ RDEV_90=The file contains real device names, MAC and IP addresses. Keep it somewhere private - it is not safe to post in a forum or attach to a bug report.
++RTRF_75=Upload only
++RTRF_76=The QoS engine classifies and shapes the upload direction only, so download traffic never reaches these queues and does not appear in this chart.
+-- 
+2.25.1
+

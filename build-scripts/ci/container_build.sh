@@ -451,6 +451,14 @@ TOOLCHAIN_COMMIT=$TOOLCHAIN_COMMIT
 EOF
 cat "$OUT_DIR/source-${MODEL}-${VARIANT}.env" | sed 's/^/   /'
 
+# --- stamp the build's own provenance into the web UI ------------------------
+# Must run BEFORE the build: the vendor www install copies release/src/router/www
+# into the image, so the file has to exist by then. Everything it needs is
+# already resolved above - PATCH_COUNT from the applied series, BASE_COMMIT from
+# the pinned env, the version from version.conf. Output is gitignored.
+_ph provenance-stamp
+"$BUILD_SCRIPTS/gen_provenance.sh" "$SRC_DIR" "$PATCH_COUNT" "$BASE_COMMIT"
+
 # --- the build ---------------------------------------------------------------
 _ph BUILD
 hr; echo " Building $MODEL $VER ($VARIANT)"; hr

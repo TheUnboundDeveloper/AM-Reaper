@@ -313,6 +313,61 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Features to add
 
+- **[P3] `Reaper_About.asp` — credits, provenance and support page. DESIGNED AND MOCKED, NOT
+  BUILT.** Owner request 2026-08-16. Reached from a themed signet at the **foot of the rail**, not
+  the nav list and explicitly **not the topbar** — that row is a nowrap flex line whose intrinsic
+  width floors the whole document, which is the overflow bug v2.4.5 just fixed (standing rule 44).
+  Mock renders in `scratchpad/about_v2.html`; glyph candidates in `scratchpad/glyphs.html`.
+
+  **Content, supplied by the owner:** credits to RMerlin (Asuswrt-Merlin, the base), ExtremeFireTop,
+  RollOn51, Ripshod, Dave14305, Marchcat2008 & Unisoft, jb68, and the SNBForums testers collectively;
+  notes to ASUS and Broadcom; links to the GitHub repo, unbounded-engineering.com and the SNBForums
+  thread; Stripe and PayPal donation links; GPLv2 + vendor-blob + no-affiliation legal footer.
+  A **"where this build came from"** block (patch count, base pin, and the three commands to
+  reproduce the image) sits directly above the donation ask — the project can prove its claims and
+  that is the strongest thing on the page.
+
+  **Open before it can be built:** pick the signet (candidate **B**, the scythe, is the
+  recommendation — a first attempt enclosing it in a ring read as a *prohibition* sign and was
+  discarded); and decide where the provenance figures come from. **Hardcoding them means the page
+  confidently displays the wrong patch count one release later** — the build should stamp a small
+  provenance file into the image instead.
+
+  **Implementation checklist beyond the HTML:** register the page in `reaper_inject.c`
+  `reaper_native[]` or it gets stock CSS injected (the v2.1.9 audit bug class); mint `RABT_*` dict
+  keys across all 25 packs in lockstep (rule 24) with tokens in backticks (rule 29); add the signet
+  to **both** chrome pages, `reaper_shell.asp` and `Main_ReaperDash.asp`; keep the page left-aligned
+  and filling the iframe with no `100vw` (rule 32); ASCII-only (rule 1).
+
+- **[P3] [blocked] Route the About page's donation link through `unbounded-engineering.com/donate`
+  rather than hardcoding the payment endpoints.** Blocked on the website expansion — there is
+  nothing to redirect to yet (owner, 2026-08-16).
+
+  **Why an indirection rather than the obvious two options.** Hardcoded payment links are immutable:
+  an image ships once and cannot be recalled, so changing processor, adding an option or killing a
+  link would need a firmware release on every installed router. The alternative that was tried and
+  **deliberately reverted** was fetching the links from the update manifest — it worked, and its
+  validation held against all 24 hostile cases including the `https://paypal.me@evil.com/x` userinfo
+  spoof, but it turned a static page into one whose links a remote file controls. Two gates that
+  hold today are still two gates that have to keep holding, on firmware, for the sake of swapping a
+  Stripe URL.
+
+  A redirect through our own domain gets the mutability with none of that: the redirect happens **in
+  the visitor's browser after they click**, so the router never fetches, parses or validates
+  anything. Zero runtime input, fully changeable destination.
+
+  **The trade, stated plainly: it makes the domain load-bearing.** It already is — it is on the page
+  either way — so this goes from three immutable destinations to one that must be kept alive. Keep
+  `unbounded-engineering.com` on auto-renew, registrar-locked, with a long expiry. **A lapsed domain
+  is the worst outcome on this page**: a squatter would inherit traffic from every Reaper router's
+  About page with our own UI vouching for the link, which is materially worse than a dead donate
+  button.
+
+  **Verify before shipping either way:** whether PayPal recycles a released `paypal.me` handle. If
+  it does, a hardcoded `paypal.me/TheUnboundDeveloper` in firmware is a long-dated liability and the
+  indirection stops being a convenience. Stripe is not exposed this way — `donate.stripe.com/<id>`
+  is bound to the account and simply stops working when deactivated.
+
 - **[P2] [owed] Metal-validate the v2.4.4 IPv6 per-device attribution on a box that actually has
   IPv6.** The maintainer's RT-BE96U runs `wan_proto=dhcp` with no IPv6 up, so it cannot exercise the
   new path at all — which is precisely why the gap survived to a field report. The reporting

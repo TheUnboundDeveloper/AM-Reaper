@@ -25,6 +25,16 @@ sibling branches at once, and neither is on GitHub.
 - [ ] `.github/workflows/public-build.yml` is **writable** — a stray Windows
       read-only attribute makes the `EXPECTED_VERSION` pin fail silently.
       `cut_fleet.sh` checks this in preflight.
+- [ ] **Nothing else under `.github/workflows/` is about to change.** Land any
+      workflow edit — including a *deletion* — **before** the cut or **after** the
+      publish, never between. The Actions token can neither create nor update a
+      file in that directory, and the `tag` job pushes a tag at the SHA the run was
+      *dispatched from*: if main has since gained or lost a workflow file, that
+      tag's tree disagrees with main and the push is refused with
+      `refusing to allow a GitHub App to create or update workflow …`. Cost is
+      the whole publish leg. There is no `permissions:` key that grants this —
+      only a human credential can push a workflow change. (Bit v2.4.5:
+      `public-build-instrumented.yml` was deleted between the cut and the build.)
 
 ---
 
@@ -199,6 +209,7 @@ Watch for:
 | Phase 1 aborts "not an ancestor" | Phase 5 was skipped last time — push the branches to the hub, or reconcile by hand. |
 | Build aborts on the version assertion | The pin and the series disagree. The series sets `EXTENDNO`; fix the pin, not the series. |
 | `repo-hygiene` PII hit inside `patches/` | Fix the **source commit message** and re-export. Do not add the path to the allowlist. |
+| `tag` job fails: *refusing to allow a GitHub App to create or update workflow …* | A `.github/workflows/**` file changed on main after the run was dispatched, so the tag's tree disagrees with main in that directory. The Actions token can never push a workflow change. **Do not re-run** — the SHA is baked in. Either create the tag yourself (`git tag -a vX.Y.Z-<MODEL> <main-sha> -m …; git push origin <tag>`, one per model) and then dispatch `release.yml` with the green run's `run_id` to publish without rebuilding, or re-dispatch `public-build.yml` from current main and pay for the rebuild. Prevent it with the phase-1 precondition. |
 | Wrong firmware published | Cut a point release (`vX.Y.Za`). Moving a tag works but point releases are safer. |
 | Assets missing from a Release | Re-dispatch `release.yml` with the tag — it re-uploads with `--clobber`. |
 

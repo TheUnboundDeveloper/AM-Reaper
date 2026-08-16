@@ -42,9 +42,12 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `get_result_time - test_start_time >= test_timeout`, so a genuinely stalled test still ends;
   this only stops a *stall* being reported as an *error* ten seconds in.
 
-  **Not done in v2.4.5 on purpose** — it changes how a run is bounded, not just when a counter is
-  cleared, and the rung was already cut. Needs a multi-run on-metal session to confirm either way;
-  one pass proves nothing.
+  **Owner decision 2026-08-16: deferred to v2.4.6.** Not done in v2.4.5 on purpose — it changes how
+  a run is bounded, not just when a counter is cleared, and by the time it was found the rung was
+  cut *and pushed*, so adding a patch would have put `patch_count` out of agreement with the
+  published provenance entry. Deferring also buys the thing it actually needs: a **multi-run**
+  on-metal session. One pass proves nothing here — the whole failure signature is "it depends how
+  many tests you have run and whether the output stalls."
 
   **Related, same counter, lower priority:** `level_err_cnt` is cumulative across a run and resets
   only on completion (line ~574), never on progress. Even with per-entry counting, 50 scattered

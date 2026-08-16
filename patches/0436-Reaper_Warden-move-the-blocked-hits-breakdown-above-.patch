@@ -1,0 +1,158 @@
+From 904a7cd85f9c4e7439180964ffe9b0953358a345 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 06:00:12 -0400
+Subject: [PATCH] Reaper_Warden: move the blocked-hits breakdown above the
+ country table
+
+.stats is repeat(auto-fit,minmax(150px,1fr)), so a stat card floors at ~150px.
+The block split was appended as two 11px .sub lines inside that cell: with
+realistic feed-dominated numbers it wrapped to three lines and broke
+mid-separator, leaving a dangling pipe at a line end, and the extra height made
+that one card taller than the other four.
+
+The card now holds only the number and its label, and the counts render as one
+label/value strip above the country table - inside the card whose numbers they
+reconcile against. The counting-window note is the last item, pushed to the far
+end only when it has something to be pushed away from. Zero buckets stay
+suppressed and the strip stays hidden until it has content.
+
+Styled so it cannot read as a continuation of the explanatory text above it:
+label style from .toptbl th, value style from .stat .n, on a --panel-2 chip with
+the crimson-tinted --line border. Built as DOM nodes with textContent, not
+innerHTML - these labels are dict values.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Warden.asp | 74 ++++++++++++++++--------
+ 1 file changed, 51 insertions(+), 23 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 8ee8ef2033..61feab619e 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -50,7 +50,6 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
+ .stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
+ .stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
+-.stat .sub{font-size:11px;color:var(--steel);margin-top:3px;min-height:1em}
+ .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
+ .card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
+ .card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:80ch}
+@@ -96,6 +95,11 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ .topcard h2{display:flex;align-items:center;gap:10px}
+ .livepill{font-family:var(--hdr);font-weight:600;font-size:9.5px;letter-spacing:.12em;color:var(--jade);border:1px solid rgba(79,178,134,.4);border-radius:20px;padding:2px 8px}
+ .livepill.stale{color:var(--steel);border-color:var(--line-soft)}
++.bdown{display:none;flex-wrap:wrap;align-items:baseline;gap:7px 20px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:0 0 12px}
++.bdown .bd{display:flex;align-items:baseline;gap:7px}
++.bdown .bk{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);white-space:nowrap}
++.bdown .bv{font-family:var(--hdr);font-weight:700;font-size:14px;line-height:1;color:var(--bone);font-variant-numeric:tabular-nums}
++.bdown .bd.win:not(:first-child){margin-left:auto}
+ .toptbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+ .toptbl th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
+ .toptbl td{padding:9px 8px;border-bottom:1px solid var(--line-soft);color:var(--bone);vertical-align:middle}
+@@ -133,7 +137,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ </div>
+ 
+ <div class="stats">
+-  <div class="stat"><div class="n" id="s_blocked">&mdash;</div><div class="l"><#RWDN_44#></div><div class="sub" id="s_since"></div><div class="sub" id="s_split"></div></div>
++  <div class="stat"><div class="n" id="s_blocked">&mdash;</div><div class="l"><#RWDN_44#></div></div>
+   <div class="stat"><div class="n" id="s_lastupd"><#RWDN_29#></div><div class="l"><#RWDN_24#></div></div>
+   <div class="stat"><div class="n" id="s_feeds">0</div><div class="l"><#RWDN_25#></div></div>
+   <div class="stat"><div class="n" id="s_geo">0</div><div class="l"><#RWDN_26#></div></div>
+@@ -143,6 +147,13 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ <div class="card topcard" id="topcard">
+   <h2><#RWDN_45#> <span class="livepill stale" id="livepill">&#9679; <#RWDN_50#></span></h2>
+   <div class="desc"><#RWDN_46#></div>
++
++  <!-- Breakdown of the "Blocked hits" total, plus the window it covers.
++       Filled by rwRenderBreakdown(); stays hidden until there is something
++       to show. Sits here because these numbers reconcile against the table
++       below, not against the big total in the stat card. -->
++  <div class="bdown" id="s_bdown"></div>
++
+   <table class="toptbl" id="toptbl">
+     <thead><tr><th style="width:44px">#</th><th><#RWDN_47#></th><th class="cnt"><#RWDN_48#></th></tr></thead>
+     <tbody id="topbody"><tr><td colspan="3" class="empty"><#RWDN_49#></td></tr></tbody>
+@@ -354,6 +365,25 @@ function rwAgo(ep){
+   return Math.floor(d/86400) + ` <#RGK_48#>`;
+ }
+ 
++/* One label/value pair for the breakdown strip above the country table.
++   Built as DOM nodes with textContent, never innerHTML: these labels are dict
++   values, and a translation is not a place to trust for markup safety. */
++function rwBdItem(label, value, isWindow){
++  var d = document.createElement('div');
++  d.className = isWindow ? 'bd win' : 'bd';
++  var k = document.createElement('span');
++  k.className = 'bk';
++  k.textContent = label;
++  d.appendChild(k);
++  if(value !== ''){
++    var v = document.createElement('span');
++    v.className = 'bv';
++    v.textContent = value;
++    d.appendChild(v);
++  }
++  return d;
++}
++
+ function rwToggleMaster(){
+   var el = document.getElementById('tgmaster');
+   var on = el.className.indexOf('on') >= 0;
+@@ -483,34 +513,32 @@ function rwStats(){
+     var b = j.blocked || {};
+     document.getElementById('s_blocked').textContent =
+       (typeof b.total === 'number') ? b.total.toLocaleString() : '\u2014';
+-    /* what period the number covers: the persisted window start when statistics
+-       are being saved, otherwise "since the last firewall rebuild" - the counts
+-       are then only whatever the live iptables counters hold */
+-    var sc = document.getElementById('s_since');
+-    if(sc){
+-      if(j.save === 0){ sc.textContent = `<#RWDN_68#>`; }
+-      else if(b.since > 0){ sc.textContent = `<#RWDN_67#>` + ' ' + new Date(b.since*1000).toLocaleDateString(); }
+-      else { sc.textContent = ''; }
+-    }
+     /* 2026-08-14 field report: "a block count total but no country count
+        matching the total". The total is every drop; the country table only ever
+        covered the geo rules, and the feed rule is evaluated first (both drop, so
+        this is an attribution order, not an enforcement one) - so on a box with
+        feeds enabled the feed absorbs most hits and the countries stay near zero.
+        Spell the split out so the two numbers can be reconciled instead of
+-       looking broken. Rendered only when the backend supplies it. */
+-    var sp = document.getElementById('s_split');
+-    if(sp){
++       looking broken. Rendered only when the backend supplies it.
++       The trailing item is the WINDOW the counts cover: the persisted start when
++       statistics are being saved, otherwise "since the last firewall rebuild" -
++       the counts are then only whatever the live iptables counters hold. */
++    var bd = document.getElementById('s_bdown');
++    if(bd){
++      var pairs = [];
+       if(typeof b.geo === 'number'){
+-        var parts = [];
+-        parts.push(`<#RWDN_73#>` + ' ' + Number(b.geo||0).toLocaleString());
+-        parts.push(`<#RWDN_74#>` + ' ' + Number(b.threat||0).toLocaleString());
+-        if(b.ban  > 0) parts.push(`<#RWDN_75#>` + ' ' + Number(b.ban).toLocaleString());
+-        if(b.uncl > 0) parts.push(`<#RWDN_76#>` + ' ' + Number(b.uncl).toLocaleString());
+-        /* ASCII separator (standing rule 1) - this is textContent, so an
+-           HTML entity would render literally. */
+-        sp.textContent = parts.join('  |  ');
+-      } else sp.textContent = '';
++        pairs.push([`<#RWDN_73#>`, Number(b.geo||0).toLocaleString(), 0]);
++        pairs.push([`<#RWDN_74#>`, Number(b.threat||0).toLocaleString(), 0]);
++        if(b.ban  > 0) pairs.push([`<#RWDN_75#>`, Number(b.ban).toLocaleString(), 0]);
++        if(b.uncl > 0) pairs.push([`<#RWDN_76#>`, Number(b.uncl).toLocaleString(), 0]);
++      }
++      if(j.save === 0) pairs.push([`<#RWDN_68#>`, '', 1]);
++      else if(b.since > 0) pairs.push([`<#RWDN_67#>`,
++        new Date(b.since*1000).toLocaleDateString(), 1]);
++      while(bd.firstChild) bd.removeChild(bd.firstChild);
++      for(var q = 0; q < pairs.length; q++)
++        bd.appendChild(rwBdItem(pairs[q][0], pairs[q][1], pairs[q][2]));
++      bd.style.display = pairs.length ? 'flex' : 'none';
+     }
+     var top = (b.top || []).slice(0, 5);
+     var tb = document.getElementById('topbody');
+-- 
+2.25.1
+

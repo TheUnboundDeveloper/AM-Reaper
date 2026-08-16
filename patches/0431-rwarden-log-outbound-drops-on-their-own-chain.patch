@@ -1,0 +1,191 @@
+From f8e72777f6b658dab6fbcf348320307ef1392857 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 05:59:06 -0400
+Subject: [PATCH] rwarden: log outbound drops on their own chain
+
+Outbound blocks were indistinguishable from inbound in the system log: RW_OUT
+jumped straight to the shared RW_DROP, so every hit carried the inbound
+REAPER-WARDEN prefix and no field report could tell the two directions apart.
+
+Add RW_ODROP, an outbound-only terminal chain carrying its own
+REAPER-WARDEN-OUT log prefix, and point the RW_OUT destination match at it.
+Teardown (shell and rw_teardown_rules), both LIVE sums, both -Z zero loops in
+fold.sh/stats.sh and the status JSON all learn the new chain, so the outbound
+count is reported as "out"/"out_n" rather than folded into the inbound total.
+
+Gated on the direction actually including outbound - a box with dir=in emits
+nothing new.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c | 72 ++++++++++++++++++++++++++++-----
+ 1 file changed, 61 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 6f9000ad9e..a5feaae17d 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -31,12 +31,20 @@
+  *   Default OFF (opt-in) given lockout risk.
+  * CHAIN RW_OUT (dir=out/both only, reached by jump from REAPER_WARDEN): the
+  *   destination-side group - loopback/LAN/own-WAN dst -> RETURN; allow dst ->
+- *   RETURN; ban/threat/per-country dst -> RW_DROP. It is a separate chain so a
++ *   RETURN; ban/threat/per-country dst -> RW_ODROP. It is a separate chain so a
+  *   local-destination exemption returns to REAPER_WARDEN and still faces the
+  *   src drops. Reached BEFORE `allow src`: every outbound packet has a LAN host
+  *   as its source, so a whitelist entry covering the LAN used to return out of
+  *   the chain before any dst rule ran - which is why "out" blocked nothing
+  *   while "in" worked (field report 2026-08-14).
++ * CHAIN RW_ODROP (dir=out/both only): the outbound drop target. Identical to
++ *   RW_DROP - same rwarden_log gate, same DROP - and separate ONLY so the log
++ *   line reads "REAPER-WARDEN-OUT " instead of "REAPER-WARDEN ". Outbound drops
++ *   previously shared RW_DROP and were therefore indistinguishable from inbound
++ *   ones in syslog, which read to an operator as "outbound is not being logged"
++ *   (field report 2026-08-15). Its hits are counted in the same TOTAL as every
++ *   other drop chain - see the LIVE sums in fold.sh/stats.sh, which must list
++ *   every drop target or blocks go both uncounted AND unzeroed.
+  * CHAIN RW_SELF (OUTPUT, rwarden_self=1 only, default OFF): the same dst logic
+  *   applied to traffic the ROUTER originates, so a compromised router cannot
+  *   beacon to a flagged C2 address. Drops go to RW_SDROP, which ALWAYS logs.
+@@ -246,6 +254,8 @@ void rw_teardown_rules(void)
+ 		doSystem("%s -X RW_OUT 2>/dev/null", ipt[i]);
+ 		doSystem("%s -F RW_SDROP 2>/dev/null", ipt[i]);
+ 		doSystem("%s -X RW_SDROP 2>/dev/null", ipt[i]);
++		doSystem("%s -F RW_ODROP 2>/dev/null", ipt[i]);
++		doSystem("%s -X RW_ODROP 2>/dev/null", ipt[i]);
+ 		doSystem("%s -F RW_DROP 2>/dev/null", ipt[i]);
+ 		doSystem("%s -X RW_DROP 2>/dev/null", ipt[i]);
+ 	}
+@@ -454,6 +464,7 @@ static void rw_gen_apply(void)
+ 	  "  $T -F RW_SELF 2>/dev/null; $T -X RW_SELF 2>/dev/null\n"
+ 	  "  $T -F RW_OUT 2>/dev/null; $T -X RW_OUT 2>/dev/null\n"
+ 	  "  $T -F RW_SDROP 2>/dev/null; $T -X RW_SDROP 2>/dev/null\n"
++	  "  $T -F RW_ODROP 2>/dev/null; $T -X RW_ODROP 2>/dev/null\n"
+ 	  "  $T -F RW_DROP 2>/dev/null; $T -X RW_DROP 2>/dev/null\n"
+ 	  "done\n");
+ 	/* base sets (idempotent create) - v4 hash:net, v6 hash:net family inet6 */
+@@ -517,10 +528,29 @@ static void rw_gen_apply(void)
+ 	 * its own rather than inline rules because its local-destination exemptions
+ 	 * must skip only the dst drops - a RETURN in REAPER_WARDEN would exit the
+ 	 * whole chain and take the src drops with it. */
++	/* RW_ODROP: the OUTBOUND drop target. Structurally identical to RW_DROP -
++	 * same rwarden_log gate, same DROP - and exists only so the log line carries
++	 * a different prefix.
++	 *
++	 * 2026-08-15 field report ("Warden OUTBOUND blocks are not being logged").
++	 * They were: RW_OUT's dst drops jumped to the shared RW_DROP, which logs
++	 * "REAPER-WARDEN " - the same prefix inbound uses. So an operator grepping
++	 * syslog for evidence that direction=out was doing anything saw only lines
++	 * indistinguishable from the inbound ones they already knew about, and
++	 * reasonably concluded nothing was being logged. RW_SELF had already been
++	 * given its own prefix for exactly this reason; the out path never was.
++	 *
++	 * A separate chain rather than a LOG inside RW_OUT: the drops there are
++	 * jumps, so a LOG placed before them would log every packet that reached
++	 * that point, not the ones actually dropped. */
+ 	if (do_out) {
++		fprintf(f, "iptables -N RW_ODROP; iptables -F RW_ODROP\n");
++		if (nvram_match("rwarden_log", "1"))
++			fprintf(f, "iptables -A RW_ODROP -j LOG --log-prefix \"REAPER-WARDEN-OUT \" --log-level 4\n");
++		fprintf(f, "iptables -A RW_ODROP -j DROP\n");
+ 		fprintf(f, "iptables -N RW_OUT; iptables -F RW_OUT\n");
+ 		rw_emit_local_dst(f, "iptables", "RW_OUT", 0);
+-		rw_emit_dst_group(f, "iptables", "RW_OUT", "RW_DROP", 0);
++		rw_emit_dst_group(f, "iptables", "RW_OUT", "RW_ODROP", 0);
+ 	}
+ 	if (do_self)
+ 		rw_emit_self_chain(f, "iptables", 0);
+@@ -553,9 +583,13 @@ static void rw_gen_apply(void)
+ 	 * --dst-type LOCAL`, which this kernel's ip6tables has no guaranteed match
+ 	 * for - a rejected rule would silently leave the exemption out. */
+ 	if (do_out) {
++		fprintf(f, "ip6tables -N RW_ODROP; ip6tables -F RW_ODROP\n");
++		if (nvram_match("rwarden_log", "1"))
++			fprintf(f, "ip6tables -A RW_ODROP -j LOG --log-prefix \"REAPER-WARDEN-OUT \" --log-level 4\n");
++		fprintf(f, "ip6tables -A RW_ODROP -j DROP\n");
+ 		fprintf(f, "ip6tables -N RW_OUT; ip6tables -F RW_OUT\n");
+ 		rw_emit_local_dst(f, "ip6tables", "RW_OUT", 1);
+-		rw_emit_dst_group(f, "ip6tables", "RW_OUT", "RW_DROP", 1);
++		rw_emit_dst_group(f, "ip6tables", "RW_OUT", "RW_ODROP", 1);
+ 	}
+ 	if (do_self)
+ 		rw_emit_self_chain(f, "ip6tables", 1);
+@@ -806,7 +840,7 @@ static void rw_gen_fold(void)
+ 	  "  24h) IV=86400;; 7d) IV=604800;; 30d) IV=2592000;; 90d) IV=7776000;; *) IV=0;;\n"
+ 	  "esac\n"
+ 	  "if [ \"$IV\" -gt 0 ] && [ $((NOW-SINCE)) -ge \"$IV\" ]; then\n"
+-	  "  for C in RW_DROP RW_SDROP REAPER_WARDEN RW_OUT RW_SELF; do\n"
++	  "  for C in RW_DROP RW_SDROP RW_ODROP REAPER_WARDEN RW_OUT RW_SELF; do\n"
+ 	  "    iptables -Z \"$C\" 2>/dev/null; ip6tables -Z \"$C\" 2>/dev/null\n"
+ 	  "  done\n"
+ 	  "  { echo \"SINCE $NOW\"; echo \"TOTAL 0\"; } > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null\n"
+@@ -825,10 +859,14 @@ static void rw_gen_fold(void)
+ 	  "# lost. That is deliberate: the atomic form (-L together with -Z) would close\n"
+ 	  "# the gap, but if it were ever rejected the counters would never clear and\n"
+ 	  "# every checkpoint would re-bank the same packets - a runaway OVER-count.\n"
+-	  "# RW_SDROP is the router's-own-traffic drop target (rwarden_self); its hits\n"
+-	  "# are real blocks and belong in the same total.\n"
++	  "# RW_SDROP is the router's-own-traffic drop target (rwarden_self) and\n"
++	  "# RW_ODROP the outbound one (direction=out/both); hits in both are real\n"
++	  "# blocks and belong in the same total. MISSING EITHER HERE SILENTLY LOSES\n"
++	  "# THOSE BLOCKS FROM THE COUNT - and, because the -Z loop below would then\n"
++	  "# not zero them either, re-banks the same packets on every checkpoint.\n"
+ 	  "LIVE=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null;\n"
+-	  "          iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null; }"
++	  "          iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null;\n"
++	  "          iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; }"
+ 	  " | awk '/ DROP /{s+=$1} END{print s+0}')\n"
+ 	  "# RW_OUT and RW_SELF carry the per-country DESTINATION rules (direction\n"
+ 	  "# out/both, and router-originated respectively) - list them too or those\n"
+@@ -858,7 +896,7 @@ static void rw_gen_fold(void)
+ 	  "  { awk '$1==\"CC\" && $2 ~ /^[A-Z][A-Z]$/ {print $2, $3+0}' \"$CTR\" 2>/dev/null; cat \"$TMPCC\" 2>/dev/null; } |\n"
+ 	  "    awk '{c[$1]+=$2} END{for(k in c) if(c[k]>0) print \"CC\", k, c[k]}' | sort\n"
+ 	  "} > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null; then\n"
+-	  "  for C in RW_DROP RW_SDROP REAPER_WARDEN RW_OUT RW_SELF; do\n"
++	  "  for C in RW_DROP RW_SDROP RW_ODROP REAPER_WARDEN RW_OUT RW_SELF; do\n"
+ 	  "    iptables -Z \"$C\" 2>/dev/null; ip6tables -Z \"$C\" 2>/dev/null\n"
+ 	  "  done\n"
+ 	  "else\n"
+@@ -901,13 +939,20 @@ static void rw_gen_stats(void)
+ 	  "  SINCE=$(awk '$1==\"SINCE\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$SINCE\" ] || SINCE=0\n"
+ 	  "fi\n"
+ 	  "LIVE=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null;\n"
+-	  "          iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null; } "
++	  "          iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null;\n"
++	  "          iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
+ 	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
+ 	  "TOTAL=$((BASE+LIVE))\n"
+ 	  "# router's-own-traffic filter: armed, and how many of its drops are live\n"
+ 	  "SELF=0; iptables -nL RW_SELF >/dev/null 2>&1 && SELF=1\n"
+ 	  "SELFN=$( { iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null; } "
+ 	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  /* Outbound drops, reported separately for the same reason SELFN is: the
++	   * field question "is direction=out actually doing anything?" cannot be
++	   * answered from a single blended total. */
++	  "OUTA=0; iptables -nL RW_OUT >/dev/null 2>&1 && OUTA=1\n"
++	  "OUTN=$( { iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
++	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
+ 	  /* One listing, read by every bucket below - a second `iptables -nvxL` a
+ 	   * moment later would let the buckets disagree with each other and with
+ 	   * TOTAL, which is precisely the confusion being fixed here. */
+@@ -953,10 +998,15 @@ static void rw_gen_stats(void)
+ 	  "\"blocked\":{\"total\":%d,\"since\":%d,\"top\":[%s],"
+ 	  "\"geo\":%d,\"threat\":%d,\"ban\":%d,\"uncl\":%d},"
+ 	  "\"save\":%d,\"reset\":\"%s\",\"jffs\":%d,"
+-	  "\"self\":%d,\"self_n\":%d}\\n' "
++	  /* "out"/"out_n" mirror "self"/"self_n": armed, and how many drops are live.
++	   * Added with RW_ODROP so the page can answer "is direction=out doing
++	   * anything?" without the operator reading iptables counters by hand - the
++	   * question behind the 2026-08-15 field report. Appending keys is safe: the
++	   * page reads named fields, so an older UI simply ignores them. */
++	  "\"self\":%d,\"self_n\":%d,\"out\":%d,\"out_n\":%d}\\n' "
+ 	  "\"$EN\" \"$ARMED\" \"$V6\" \"$LU\" \"$((TN+TN6))\" \"$GN\" \"$TOTAL\" \"$SINCE\" \"$TOP\" "
+ 	  "\"$GEO\" \"$THREAT\" \"$BAN\" \"$UNCL\" \"$SV\" \"$RI\" \"$JP\" "
+-	  "\"$SELF\" \"$SELFN\"\n", f);
++	  "\"$SELF\" \"$SELFN\" \"$OUTA\" \"$OUTN\"\n", f);
+ 	fclose(f);
+ }
+ 
+-- 
+2.25.1
+

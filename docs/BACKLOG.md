@@ -167,6 +167,51 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## UI / UX polish
 
+- **[P3] Two more live charts still step by index and want the v2.4.5 Traffic Analyzer treatment —
+  QoS Diagnostics and the Sysinfo temperature graph.** Owner request 2026-08-16. Same root cause
+  each time: **x is derived from a sample's position in the buffer, not from when it arrived**, so
+  every new reading shifts the whole trace by one slot and the chart only ever exists at
+  `1/poll` positions per second. `Reaper_Traffic.asp` (v2.4.5, `liveFrame()`/`startLive()`) is the
+  reference implementation. **The two pages need genuinely different work — do not assume the
+  Traffic patch ports.**
+
+  **`Reaper_QoSDiag.asp` — hand-rolled Canvas, closest to the Traffic case.** Two charts:
+  `drawOcc()` → `#occcv` (multi-series, one line per queue from `state.occHist[q.qid]`) and
+  `drawDrops()` → `#dropcv` (single series plus gradient fill, from `state.dropHist`). Both place
+  points with `var X = i/(HIST-1)*c.w` — the exact shape of Traffic's old
+  `x = 44+(W-44)*i/(n-1)`. `HIST = 45`; poll is `setInterval(fetchOnce, ms)` with the rate selector
+  offering 250 ms / 500 ms (default) / 4 s, so at the slow setting the trace jumps **1/44 of the
+  width, once every four seconds** — far more visible than the 0.84 % Traffic was showing.
+  `drawDrops()` also recomputes `Math.max(6, Math.max.apply(null, a))` every draw: that is the same
+  raw per-poll maximum that was Traffic's *second, independent* source of jumpiness, so it needs
+  the snapped-and-eased scale with a hold before shrinking. `drawOcc()` does not — its y axis is a
+  fixed 0–100 %.
+
+  Two things that do **not** carry over: the charts are **Canvas, not SVG**, so the "persistent
+  nodes, attribute-only updates instead of an `innerHTML` rebuild" half of the Traffic fix is
+  irrelevant — Canvas already redraws wholesale. And **`setupCanvas()` calls
+  `getBoundingClientRect()` and `setTransform()` on every single draw.** At the current 2 Hz that
+  costs nothing; under `requestAnimationFrame` it is a forced layout per frame per canvas and would
+  make the page *worse* than it is now. Cache the size and recompute only on resize as part of the
+  same change, not afterwards.
+
+  **`Tools_Sysinfo.asp` — a STOCK page driving Chart.js v3.9.1; a completely different fix.**
+  `draw_temps_charts()` builds `cputempGraph` from `cpudata` / `wifi24data` / `wifi51data` /
+  `wifi52data` / `wifi6data` / `wifi62data`, each capped at 20 samples by `.shift()`, refreshed by
+  `update_temperatures()` on a **3-second** `setTimeout` loop. The x scale is a hardcoded category
+  array `labels: [0,3,6,…,57]` — 20 fixed slots, one per sample — and the chart is created with
+  **`animation: false`**. So every three seconds `.shift()` drops the oldest reading and the whole
+  trace snaps sideways by **1/19 of the width, about 5.3 %**, with no tween at all. That is the
+  largest step of any chart in the build.
+
+  There is no rAF loop to write here — Chart.js owns its own. The cheap fix is to stop disabling
+  animation and give it a duration matched to the poll, which converts the snap into a glide in one
+  line. The better fix is to move x off the fixed category labels onto a linear/time scale keyed on
+  each sample's arrival time, so an irregular poll stops distorting the spacing. **Rule 33 checked:
+  no `sysdep/FUNCTION` variant of `Tools_Sysinfo.asp` exists and the `www` Makefile does not mention
+  it, so an edit to the base file genuinely ships** — but it is stock code, so keep the change
+  minimal and revertable.
+
 - **[P3] Dashboard linking — rows that land on the wrong page.** The Security Posture panel became
   clickable in v2.4.1 (all fourteen rows carry a destination). Corrections as they are found:
 

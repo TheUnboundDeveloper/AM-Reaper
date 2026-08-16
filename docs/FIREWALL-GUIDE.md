@@ -73,9 +73,42 @@ zone-wide deny.
 action `Drop`, source object `tv` (the TV's address), destination zone `wan`, schedule
 `Mon,Tue,Wed,Thu,Fri|09:00|17:00`. Leave the service empty so it covers every protocol.
 
-**Worth knowing.** Rate limiting needs a kernel module that is not always present. If it is missing,
-rules that use a rate limit are skipped rather than silently applied without the limit, and a line
-saying so is written to the system log.
+### Allowing only certain destinations, and blocking everything else
+
+This is the most common thing people ask for, and it does not need a "not" or "invert" setting.
+**Leaving a source or destination empty means "anything"**, so an allowlist is two rules in the right
+order:
+
+| # | direction | action | source | destination | meaning |
+|---|---|---|---|---|---|
+| 1 | Forward | Accept | `iot-devices` | `vendor-cloud` | the traffic you want to permit |
+| 2 | Forward | Drop | `iot-devices` | *(leave empty)* | everything else from those devices |
+
+First match wins, so rule 1 must sit above rule 2. Add more allow rules above the drop as you need
+them. The same shape works for a single device, a group, or a whole zone.
+
+Three ways to express "deny by default" exist, and they differ in scope rather than in strength —
+pick the narrowest one that covers what you mean:
+
+- **an ordered pair of rules**, as above — best when the exceptions are specific and you want them
+  visible next to the block;
+- **an Egress default** on the Egress tab — best for "this device gets nothing outbound unless
+  listed", because it is anchored to the internet interface and so never cuts the device off from
+  the printer or the NAS;
+- **a Zone policy** on the Zones tab — best for a broad posture such as "guest may not reach lan".
+
+Because an explicit rule beats an Egress default, which beats a Zone policy, you can set a strict
+default at the bottom layer and open specific holes at the top without editing the default again.
+
+**Worth knowing.**
+
+- Rate limiting needs a kernel module that is not always present. If it is missing, rules that use a
+  rate limit are skipped rather than silently applied without the limit, and a line saying so is
+  written to the system log.
+- **An empty source or destination means "anything". A named object that currently resolves to
+  nothing is not the same thing** — that rule is left out entirely rather than becoming a rule that
+  matches everything. A domain object that has not resolved yet, or an emptied group, therefore
+  fails to a missing rule, never to an unintended block.
 
 ---
 

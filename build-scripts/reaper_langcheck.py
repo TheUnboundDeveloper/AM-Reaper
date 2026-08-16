@@ -15,8 +15,19 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        'Reaper_GK.asp', 'Reaper_Warden.asp', 'Reaper_Advisor.asp', 'Reaper_Diag.asp',
        'Reaper_Wireless.asp', 'Reaper_FirstBoot.asp', 'Reaper_Devices.asp',
        'Reaper_Storage.asp', 'Reaper_WiFiPro.asp', 'Reaper_QoSDiag.asp',
-       'Reaper_Conn.asp', 'Reaper_WiFiAccel.asp',
-       'Reaper_USB.asp', 'Reaper_Analytics.asp', 'Reaper_Firmware.asp']
+       'Reaper_Conn.asp',
+       'Reaper_USB.asp', 'Reaper_Analytics.asp', 'Reaper_Firmware.asp',
+       # Added 2026-08-15. Reaper_Firewall.asp shipped in v2.4.1 with 11 tabs and
+       # 158 RFW_* tokens and was never listed here, so the largest and newest
+       # Reaper page was outside the i18n gate entirely - neither the rule-29
+       # breakage scan nor the density warning ever looked at it.
+       'Reaper_Firewall.asp']
+
+# Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is
+# shelved and the file is not in the tree, so the entry only ever hit the
+# `if not p.exists(): continue` line. A list that silently skips its own
+# entries cannot be read as a statement of coverage - which is exactly how the
+# Firewall omission went unnoticed. See the coverage assertion below.
 
 BT = re.compile(r'`([^`]*)`', re.S)
 SQ = re.compile(r"'((?:[^'\\\n]|\\[^\n])*)'")
@@ -73,5 +84,23 @@ for f in OUR:
     if ntok < LOW:
         print(f'LANGDENSITY WARN {f}: only {ntok} dict tokens - likely hardcoded English (rule 24)')
 
-print(f'reaper_langcheck: {bad} breakers')
+# COVERAGE ASSERTION (added 2026-08-15). Every check above iterates OUR and
+# skips anything absent, so a Reaper page that was never added to the list is
+# indistinguishable from one that passed. Reaper_Firewall.asp sat outside the
+# gate from v2.4.1 until this was noticed by a manual audit - eleven tabs and
+# 158 tokens that nothing checked.
+#
+# Fails rather than warns: the fix is one line in OUR, the message says which
+# file, and a warning here would be as easy to walk past as the original gap.
+staged = sorted(p.name for p in W.glob('*.asp')
+                if re.match(r'(Reaper_|Main_Reaper|reaper_shell)', p.name))
+unlisted = [f for f in staged if f not in OUR]
+for f in unlisted:
+    print(f'LANGCOVERAGE {f}: Reaper page is not in OUR[] - nothing checked it. Add it.')
+    bad += 1
+stale = [f for f in OUR if not (W/f).exists()]
+for f in stale:
+    print(f'LANGCOVERAGE WARN {f}: listed in OUR[] but not staged - stale entry, remove it')
+
+print(f'reaper_langcheck: {bad} breakers, {len(staged)} Reaper pages checked')
 sys.exit(1 if bad else 0)

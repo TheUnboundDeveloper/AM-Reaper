@@ -21,7 +21,10 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # 158 RFW_* tokens and was never listed here, so the largest and newest
        # Reaper page was outside the i18n gate entirely - neither the rule-29
        # breakage scan nor the density warning ever looked at it.
-       'Reaper_Firewall.asp']
+       'Reaper_Firewall.asp',
+       # Added 2026-08-16 with the page itself - caught by this file's own
+       # LANGCOVERAGE assertion on the very first run, which is what it is for.
+       'Reaper_About.asp']
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is
 # shelved and the file is not in the tree, so the entry only ever hit the

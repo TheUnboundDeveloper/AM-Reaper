@@ -1,0 +1,35 @@
+Reaper v2.4.5
+
+Six field reports and one thing found while fixing them. Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series. Images come from the clean-room CI build.
+
+> Fixed: the Traffic Analyzer's live graphs moved in visible steps rather than flowing
+
+The cause was not the update rate, which is why turning it up would never have helped. Each point was placed by its position in the list rather than by when it arrived, so every new reading shoved the whole trace sideways by exactly one slot — a jump of just under 1% of the graph width, once per poll and never in between. Even polling as fast as the router can answer, the graph would still only exist at ten positions a second. The graphs are now drawn on the display's own refresh, with each reading placed by the time it arrived, so how often the data comes in and how often the picture is drawn are no longer the same thing — and an update arriving slightly late becomes a smooth glide instead of a stutter. The vertical scale was a second, independent source of jumpiness: it was recalculated from scratch every poll, so the instant a peak scrolled off the left edge, every point on screen moved. It now steps between sensible round values and waits before shrinking. Returning from a history window no longer draws a long ramp across the gap that never happened.
+
+> Fixed: on some screens the dashboard ran off the right edge and cut off the Logout button — and on smaller windows the "new firmware" notice vanished entirely
+
+Both came from the same place: the row of small status pills across the top of the dashboard cannot wrap, so its full width set a floor for the whole page. Adding the firmware-update badge to that row pushed the page wider than the window on screens in a particular band — a 1920 monitor at 110% scaling lands squarely in it. Below that band the outcome was worse and much harder to notice: the dashboard's own rule for dropping pills on narrow windows counted the update badge as a pill, so the notice that a new version was available quietly disappeared on any window narrower than about 1700 pixels. The page can now shrink properly, so the pill row clips as it was always meant to, and the firmware notice has moved out of it into a full-width banner at the top of the dashboard — where it wraps instead of pushing, and is visible at every window size.
+
+> New: installed addons now appear in the dashboard's menu
+
+If you run amtm, Diversion, scMerlin or similar, their entries showed up on every page except the one you land on. Every other page is drawn inside the app frame, which builds its menu from the same file addons add themselves to; the dashboard is the one page with its own menu, and that menu was fixed at build time. It now reads the same file the rest of the interface does. Because that file belongs to third-party software, everything it offers is treated as untrusted: only plain links to pages on the router itself are accepted, anything else is dropped rather than cleaned up, and nothing from the file is ever executed. If it cannot be read or makes no sense, the menu stays exactly as it ships.
+
+> Fixed: Warden's outbound blocks could not be told apart from inbound ones in the system log
+
+Both directions ended at the same place, so every entry carried the same label and there was no way to answer "is it blocking what my devices are reaching?" from the log. Outbound blocks now have their own label, their own counter, and are reported separately rather than folded into the inbound total.
+
+> Fixed: Warden's breakdown of what it blocked was crammed into a card too narrow to hold it
+
+The figures that let you reconcile the big "blocked hits" total — countries, threat feeds, manual blocks — were tucked under that number in a box about 150 pixels wide, where they wrapped across three lines and broke mid-way through a separator. They now sit on one line directly above the country table they explain, styled as readings rather than prose so they are not mistaken for the paragraph above them. Those four labels were also still in English in all 24 non-English languages — unnoticed as small grey text, obvious once given a line of their own. They are now translated.
+
+> Fixed: a speed test could give up partway through, and the more tests you ran without reloading the page, the sooner it happened
+
+The page tolerates a number of error lines from the speed-test program before it declares a run failed. That tolerance was only ever reset when a run finished — never when one started — so every test in a session inherited whatever the earlier ones had used up, and after enough tests a run began with none left and gave up on the first error line it saw. Reloading the page cleared it, which is what made it look random rather than progressive. This is a narrower fix than it sounds, and it is worth being plain about the limits: it does not change why the speed-test program reports errors, and it is not what fixed the page freezing mid-test — that was the earlier change from synchronous to asynchronous polling. Deliberately not fixed here: that same tolerance is consumed once per poll, not once per error. The page re-reads the program's output every 200 ms and re-examines the same entry, so a single error sitting at the end of a stalled output burns the allowance at five per second and exhausts a nominal fifty in about ten seconds. That is the more likely explanation for a test that dies mid-run on the first attempt in a session, and it is a real change to how the run is bounded rather than a counter reset, so it is not being slipped into a release that is already cut.
+
+> Fixed: a handful of buttons and menu options were stuck in English regardless of your language setting
+
+The Drop/Accept/Both options on the firewall's logging selectors, the QoS diagnostics page title, and two buttons in the top bar were written as plain text rather than as translatable entries.
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

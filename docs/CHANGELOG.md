@@ -24,6 +24,14 @@ node, not only on the primary router.
 
 ---
 
+## v2.4.6 — An About page that can prove what it claims
+*In the source tree, **not yet cut or built**. This section accumulates as work lands; it becomes the release notes when the rung is cut.*
+
+- **New: an About page, reached from a small scythe mark at the bottom of the menu.** It carries the credits this project owes — RMerlin, whose Asuswrt-Merlin every line of Reaper is patched on top of, and the testers and bug reporters who have shaped more releases than they probably realise — along with the project links, the licence position, and a way to contribute for anyone who wants to. It opens from the same place on every page and is not a menu entry, so it costs nothing to anyone who is not looking for it.
+- **The page states its own provenance, and the build fills it in.** Above everything else it shows the number of patches applied, the exact upstream commit they were applied to, and the date the image was built — followed by the three commands that rebuild that image from scratch. Most router firmware asks to be trusted; this one can be checked, and the page hands you what you need to check it. **Those figures are written by the build itself**, not typed into the page, so they describe the image you are actually running rather than whatever was true when somebody last edited the file.
+
+---
+
 ## v2.4.5 — Smooth live graphs, an update notice that stops pushing the dashboard off screen, and your addons in the dashboard menu
 *Six field reports and one thing found while fixing them. Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series. Images come from the clean-room CI build.*
 

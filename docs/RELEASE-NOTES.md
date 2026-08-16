@@ -18,6 +18,34 @@
 
 ---
 
+## In the tree for v2.4.6 — not cut, not built, not published
+
+*Recorded here as it lands so the notes are written while the reasoning is fresh.
+Nothing in this section is installable yet.*
+
+### An About page that can prove what it claims
+
+Reached from a small scythe mark at the **bottom of the menu**, on every page. Not
+a menu entry — it costs nothing to anyone who is not looking for it.
+
+It carries the credits this project owes: **RMerlin**, whose Asuswrt-Merlin every
+line of Reaper is patched on top of, and the testers and bug reporters who have
+shaped more releases than they probably realise. Alongside those, the project
+links, the licence position, and a way to contribute for anyone who wants to.
+
+**Above all of it, the page states its own provenance** — the number of patches
+applied, the exact upstream commit they were applied to, the date the image was
+built, and the three commands that rebuild that image from scratch. Most router
+firmware asks to be trusted. This one can be checked, and the page hands you what
+you need in order to check it.
+
+Those figures are **written by the build**, not typed into the page. That is the
+difference between a claim and a fact: they describe the image actually running,
+not whatever was true when the file was last edited. A missing value renders as a
+dash rather than a stale number.
+
+---
+
 ## What's new in v2.4.5
 
 **Six field reports, and one thing found while fixing them.** Nothing in this rung

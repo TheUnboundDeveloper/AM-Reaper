@@ -455,27 +455,11 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      # Retry: see the build job's checkout comment. This one matters more than
-      # most -- it runs AFTER the full build matrix, so losing it to a transient
-      # promisor fetch throws away hours of compile.
-      - id: checkout
-        continue-on-error: true
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          filter: blob:none
-          sparse-checkout-cone-mode: false
-          sparse-checkout: /LICENSE
-
-      - name: Retry checkout
-        if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          filter: blob:none
-          sparse-checkout-cone-mode: false
-          sparse-checkout: /LICENSE
-
+      # NO CHECKOUT, deliberately. Everything below is a REST call against refs
+      # that already exist on the remote, so there is nothing to clone. That also
+      # removes the one thing that could throw away a whole build matrix: this
+      # job runs AFTER hours of compiling, and the fetch-depth:0 checkout it used
+      # to need was a transient-failure surface at exactly the worst moment.
       - name: Create per-model tags
         id: v
         env:
@@ -512,7 +496,7 @@ jobs:
             # Idempotent by design: a version can only auto-release once. Re-runs
             # and repeat dispatches are no-ops; deleting the tag is the explicit
             # way to re-release.
-            if git ls-remote --exit-code --tags origin "refs/tags/$T" >/dev/null 2>&1; then
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$T" >/dev/null 2>&1; then
               echo "  $T already exists -- skipping"
               continue
             fi

@@ -56,8 +56,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 - When I ping 8.8.8.8 or 1.1.1.1, I get a lot of request timeouts. This happens both right 
   after a firmware update and randomly throughout the day. The only solution is to reboot the 
-  ONT, and the connection becomes stable again. What could be causing this? Thanks a lot. I’m 
-  attaching a screenshot to prove it’s me.
+  ONT, and the connection becomes stable again. What could be causing this? 
 
 - **[P2] AI Mesh Search — "Search for node" finds no new node.** Pre-existing meshes keep working
   after flashing to Reaper; only *new-node discovery* is affected. Reported on GT-BE98/PRO, but
@@ -313,31 +312,14 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Features to add
 
-- **[P3] `Reaper_About.asp` — credits, provenance and support page. DESIGNED AND MOCKED, NOT
-  BUILT.** Owner request 2026-08-16. Reached from a themed signet at the **foot of the rail**, not
-  the nav list and explicitly **not the topbar** — that row is a nowrap flex line whose intrinsic
-  width floors the whole document, which is the overflow bug v2.4.5 just fixed (standing rule 44).
-  Mock renders in `scratchpad/about_v2.html`; glyph candidates in `scratchpad/glyphs.html`.
-
-  **Content, supplied by the owner:** credits to RMerlin (Asuswrt-Merlin, the base), ExtremeFireTop,
-  RollOn51, Ripshod, Dave14305, Marchcat2008 & Unisoft, jb68, and the SNBForums testers collectively;
-  notes to ASUS and Broadcom; links to the GitHub repo, unbounded-engineering.com and the SNBForums
-  thread; Stripe and PayPal donation links; GPLv2 + vendor-blob + no-affiliation legal footer.
-  A **"where this build came from"** block (patch count, base pin, and the three commands to
-  reproduce the image) sits directly above the donation ask — the project can prove its claims and
-  that is the strongest thing on the page.
-
-  **Open before it can be built:** pick the signet (candidate **B**, the scythe, is the
-  recommendation — a first attempt enclosing it in a ring read as a *prohibition* sign and was
-  discarded); and decide where the provenance figures come from. **Hardcoding them means the page
-  confidently displays the wrong patch count one release later** — the build should stamp a small
-  provenance file into the image instead.
-
-  **Implementation checklist beyond the HTML:** register the page in `reaper_inject.c`
-  `reaper_native[]` or it gets stock CSS injected (the v2.1.9 audit bug class); mint `RABT_*` dict
-  keys across all 25 packs in lockstep (rule 24) with tokens in backticks (rule 29); add the signet
-  to **both** chrome pages, `reaper_shell.asp` and `Main_ReaperDash.asp`; keep the page left-aligned
-  and filling the iframe with no `100vw` (rule 32); ASCII-only (rule 1).
+- **[P3] [owed] The local build path does not stamp the provenance file; only CI does.**
+  `build-scripts/gen_provenance.sh` writes `www/reaper_provenance.js` (patch count, base pin, build
+  date, variant) and is wired into `build-scripts/ci/container_build.sh` before the build. The local
+  engine — `_reaper_build_lib.sh` — has no equivalent call, so a **locally built image shows dashes
+  on the About page** where CI-built images show real figures. Harmless (a dash is honest, which is
+  why it is the fallback) but it makes a local image and a CI image differ visibly, which is exactly
+  the kind of difference the decompose-and-diff cross-check exists to notice. One call, same
+  arguments; the local engine already knows the version and can count `patches/`.
 
 - **[P3] [blocked] Route the About page's donation link through `unbounded-engineering.com/donate`
   rather than hardcoding the payment endpoints.** Blocked on the website expansion — there is
@@ -496,6 +478,12 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `aria-label`), so its translations must not contain a double quote; see also the two `RFW_36`/
   `RFW_37` single-quote contexts below.
 
+- **[P3] [owed] Translations for the About page — `RABT_00`–`RABT_40`, 41 keys.** Minted with the
+  page and English-seeded in all 25 packs (lockstep 6586 → 6627), so nothing renders as a raw
+  `<#KEY#>`; the non-English packs simply carry the English text. Most of it is prose rather than
+  labels — the credit lines in particular are written to land as jokes, so a mechanical translation
+  will flatten them and is worse than leaving them in English until someone can do it properly.
+
 - **[P3] Translations owed for the 2026-08-14 rung — Warden's router-self filter.** `RWDN_69`–
   `RWDN_72` (toggle label, description, and the two-part risk warning) are English-seeded in all 25
   packs. The packs stay in lockstep so nothing renders as a raw `<#KEY#>`; the non-English packs
@@ -538,8 +526,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   obvious fix breaks it, so the trap needs to be written down before someone tidies the page.
 
 - **[P3] [owed] One remaining hardcoded UI string needs a new key.** The 2026-08-15 audit scanned
-  all 19 Reaper pages for user-visible text without a `<#TOKEN#>`. **Four of the five findings are
-  now fixed** (see `CHANGELOG` when the rung is cut): `Drop`/`Accept` on the two firewall log-level
+  all 19 Reaper pages for user-visible text without a `<#TOKEN#>`. **Four of the five findings
+  shipped in v2.4.5**: `Drop`/`Accept` on the two firewall log-level
   selects reuse `RFW_139`/`RFW_138`; `QoS Diagnostics` reuses `RQD_00`, which already carried that
   exact wording and brings the page in line with every other Reaper `<title>`; the shell's brand
   link and content-iframe titles reuse `Reaper_c_dashboard` and `Settings`. Only **`RFW_252=Both`**

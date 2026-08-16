@@ -29,7 +29,7 @@ import json
 import sys
 import urllib.request
 
-TOK = os.environ["GH_TOKEN"]
+TOK = os.environ.get("GH_TOKEN", "")
 REPO = os.environ["GITHUB_REPOSITORY"]
 V = os.environ["V"]            # tag version, with the leading v (v2.3.2)
 VNUM = os.environ["VNUM"]      # numeric X.Y.Z the manifest compares (2.3.2)
@@ -43,7 +43,14 @@ SHORT = {"RT-BE96U": "BE96U", "RT-BE86U": "BE86U", "RT-BE88U": "BE88U",
 
 def api(url, octet=False):
     req = urllib.request.Request(url)
-    req.add_header("Authorization", "Bearer " + TOK)
+    # Authenticate only when a token is actually present. This repository is
+    # public, so a local recovery run -- refreshing the manifest by hand after a
+    # manual publish -- needs no PAT; an unconditional "Bearer " header 401s
+    # instead of falling back to anonymous. CI always sets GH_TOKEN, so the
+    # workflow path is unchanged. Anonymous is rate-limited to 60 requests/hour
+    # per IP; this script makes roughly one per model plus one listing.
+    if TOK:
+        req.add_header("Authorization", "Bearer " + TOK)
     req.add_header("Accept", "application/octet-stream" if octet
                    else "application/vnd.github+json")
     return urllib.request.urlopen(req, timeout=60).read()

@@ -51,6 +51,7 @@ cat > "$OUT" <<EOF
    Consumed by Reaper_About.asp. An empty string renders as a dash. */
 var REAPER_PROV = {
 	version: "$(clean "${VER#Reaper_}")",
+	variant: "$(clean "${VARIANT:-}")",
 	patches: "$(clean "$PC")",
 	base:    "$(clean "$BC")",
 	built:   "$(clean "$BUILT")"

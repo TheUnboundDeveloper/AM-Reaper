@@ -478,6 +478,8 @@ jobs:
 
       - name: Create per-model tags
         id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # EXPECTED_VERSION is e.g. "Reaper_v2.3.7"; tags are "v2.3.7-<MODEL>".
@@ -488,8 +490,23 @@ jobs:
           else
             MODELS="${{ inputs.model }}"
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # TAGS ARE CREATED THROUGH THE REST API, NEVER WITH `git push`.
+          #
+          # The Actions token may not create or update any file under
+          # .github/workflows/, and no `permissions:` key grants it -- `workflows`
+          # is a GitHub App permission, not a GITHUB_TOKEN scope. A `git push` of
+          # a TAG is judged on the workflow files in that tag's TREE, so if main
+          # gained or lost a workflow file after this run was dispatched,
+          # GITHUB_SHA disagrees with main and the push is refused with
+          # "refusing to allow a GitHub App to create or update workflow ...".
+          # That killed the v2.4.5 publish leg AFTER the whole matrix had built:
+          # public-build-instrumented.yml was deleted on main mid-cycle, so the
+          # tag's tree still carried a workflow file main no longer had, and the
+          # push read as the App CREATING one.
+          #
+          # Creating a ref that points at a commit ALREADY on the remote moves no
+          # objects and writes no tree, so that check does not apply. Two calls
+          # keep the tag ANNOTATED, exactly as `git tag -a` did.
           for M in $MODELS; do
             T="$V-$M"
             # Idempotent by design: a version can only auto-release once. Re-runs
@@ -497,11 +514,16 @@ jobs:
             # way to re-release.
             if git ls-remote --exit-code --tags origin "refs/tags/$T" >/dev/null 2>&1; then
               echo "  $T already exists -- skipping"
-            else
-              git tag -a "$T" -m "Reaper $V ($M) -- clean-room build ${{ github.run_id }}"
-              git push origin "$T"
-              echo "  $T created at ${GITHUB_SHA:0:12}"
+              continue
             fi
+            OBJ=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+                    -f tag="$T" \
+                    -f message="Reaper $V ($M) -- clean-room build ${{ github.run_id }}" \
+                    -f object="$GITHUB_SHA" \
+                    -f type=commit --jq .sha)
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+                    -f ref="refs/tags/$T" -f sha="$OBJ" >/dev/null
+            echo "  $T created at ${GITHUB_SHA:0:12} (annotated $OBJ)"
           done
 
   # Calls release.yml DIRECTLY rather than relying on the tag push to trigger it:

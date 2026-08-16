@@ -17,6 +17,40 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ## Open bugs / under investigation
 
+- **[P2] Speed test: `level_err_cnt` is consumed once per POLL, not once per error — this is
+  probably the real cause of a run dying mid-test.** Found 2026-08-16 while the owner pushed back
+  on the v2.4.5 changelog entry claiming the counter-leak fix addressed hanging/erroring speed
+  tests. It does not, and the entry was corrected.
+
+  **Mechanism** (`internet_speed.html`). `process_speedTest_result()` runs on every poll —
+  `setTimeout("get_speedTest_result();", 200)` keeps firing until a `type == "result"` entry
+  appears (`get_next = false`, line ~517). Each pass re-reads the WHOLE buffer from
+  `ookla_speedtest_get_result()` and tests `speedTest_result[speedTest_result.length - 2]`. If
+  that entry has `level == "error"`, `level_err_cnt++`. **There is no index or dedupe** — if the
+  buffer does not grow between polls, the SAME error entry is counted again 200 ms later. So
+  `LEVEL_ERR_MAX = 50` is not a tolerance of 50 errors; it is **10 seconds of a stalled tail**
+  (5/sec). A single persistent error at the end of the output ends the run.
+
+  **Why this fits the reports better than the leak.** The v2.4.5 fix (`fb606fcc3b`) only explains
+  *later* tests in a session failing sooner than earlier ones. It cannot explain the **first**
+  test of a session dying mid-run, which is what "hangs partway through" usually describes. This
+  can.
+
+  **Fix shape:** count an error entry once — track the buffer length (or the entry's index) at
+  which the last increment happened and only increment when it has moved. **The run stays bounded
+  either way:** `get_speedTest_result()` already returns `error_handling(ERR_TIMEOUT)` once
+  `get_result_time - test_start_time >= test_timeout`, so a genuinely stalled test still ends;
+  this only stops a *stall* being reported as an *error* ten seconds in.
+
+  **Not done in v2.4.5 on purpose** — it changes how a run is bounded, not just when a counter is
+  cleared, and the rung was already cut. Needs a multi-run on-metal session to confirm either way;
+  one pass proves nothing.
+
+  **Related, same counter, lower priority:** `level_err_cnt` is cumulative across a run and resets
+  only on completion (line ~574), never on progress. Even with per-entry counting, 50 scattered
+  non-fatal errors over a long run would terminate a test that is succeeding. Consecutive-error
+  semantics are the right shape.
+
 - When I ping 8.8.8.8 or 1.1.1.1, I get a lot of request timeouts. This happens both right 
   after a firmware update and randomly throughout the day. The only solution is to reboot the 
   ONT, and the connection becomes stable again. What could be causing this? Thanks a lot. I’m 

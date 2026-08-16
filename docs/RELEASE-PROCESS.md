@@ -109,6 +109,26 @@ Publishing is gated **twice**: `github.ref == 'refs/heads/main'` *and* the
 `publish` input, which defaults to off. A dispatch on main with the box clear
 builds and verifies without shipping.
 
+### Nothing is automatic on a push to `Dev`
+
+Worth being blunt about, because it is the natural assumption and it is wrong:
+**pushing to `Dev` fires no workflow at all.** `repo-hygiene` is filtered to
+`main` on both its push and pull_request triggers; `patch-apply-check` and
+`verify-provenance` have **no push trigger whatsoever** — they are
+`pull_request`-only, path-filtered on `patches/**` (plus
+`provenance/manifest.json` for provenance). `public-build.yml` is
+`workflow_dispatch`-only and never fires by itself.
+
+So the checks come from **opening a PR from `Dev` into `main`**, not from the
+push. That is the whole reason the checklist prefers the PR route for any rung
+touching `patches/`: pushing straight to `main` skips both of them silently.
+
+Nothing promotes `Dev` to `main`, and nothing builds on merge. The build is
+always a deliberate dispatch. A dispatch **from `Dev`** is the safe dry run —
+`overlays`, `toolchain` and `build` all run, while `tag`, `release` and
+`refresh_manifest` are branch-gated off, so it cannot publish even with
+`publish` ticked.
+
 Releases are **per-model** so models can version independently (e.g. RT-BE96U at
 v2.4.1 while the siblings catch up on the fan-out).
 
@@ -133,7 +153,7 @@ v2.4.1 while the siblings catch up on the fan-out).
 | `public-build.yml` | manual dispatch | Clean-room build, model × variant matrix. Applies `patches/`, asserts `EXPECTED_VERSION`, compares the series tree against `provenance/manifest.json`, runs the packaging gate, uploads artifacts, optionally hands off to `release.yml` |
 | ↳ `overlays` job | first, gates the matrix | Asserts each `overlays/<MODEL>.patch` carries **identity only** — in the seven banner-referencing files every changed line must be a banner swap, the banner must be that model's, and no `.dict` may appear. Seconds, no base clone. `git apply` cannot catch a stale overlay: one that reverts shared code still applies cleanly, which is how a fixed first-boot login loop was silently reintroduced in Aug 2026 |
 | `release.yml` | per-model tag `v*-*`, dispatch, or called | Parses `v<version>-<MODEL>`, verifies checksums, extracts CHANGELOG notes, creates/updates the per-model Release. Accepts a `run_id` to publish an existing green build with no rebuild |
-| `repo-hygiene.yml` | every push/PR | Series gapless; no disallowed `From:` identity; PII scan against `.github/pii-allowlist.txt`; no file at GitHub's 100 MB limit; staged checksums verify |
+| `repo-hygiene.yml` | push **to `main`**, or a PR **targeting `main`** | Series gapless; no disallowed `From:` identity; PII scan against `.github/pii-allowlist.txt`; no file at GitHub's 100 MB limit; staged checksums verify |
 | `verify-provenance.yml` | dispatch, or PR touching `patches/`/manifest | Lints the manifest and reproduces `verifiable` entries from the pinned base |
 | `patch-apply-check.yml` | manual, or PR touching `patches/` | Applies the whole series with `git am --keep-cr` — mechanical proof the corresponding source is complete |
 

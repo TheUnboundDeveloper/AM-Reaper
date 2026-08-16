@@ -88,13 +88,28 @@ exactly as it ships.
 - **Those four labels were still in English in all 24 non-English languages.** Unnoticeable
   as small grey text; obvious once given a line of their own. Now translated.
 
-### The speed test stops giving up partway through
+### The speed test: one cause fixed, a second one named
 
-The built-in test allows itself a few retries when the network hiccups. That allowance was
-reset when a run succeeded, and when it ran out — but **not** when a run failed with none
-left. The shortfall carried forward, so a later test could begin with no retries at all and
-abandon on the first small glitch. It got more likely the longer a session went on, which is
-exactly how it was reported. The allowance is now reset for every run.
+The page tolerates a number of error lines from the speed-test program before it declares a
+run failed. That tolerance was only ever reset when a run **finished** — never when one
+**started** — so every test in a session inherited whatever the earlier ones had used up.
+After enough tests a run began with none left and gave up on the first error line it saw.
+Reloading the page cleared it, which is what made it look random rather than progressive.
+
+**Be clear about what this does and does not fix.** It does not change *why* the speed-test
+program reports errors, and it is not what fixed the page freezing mid-test — that was the
+earlier change from synchronous to asynchronous result polling. It fixes exactly one thing:
+later tests in a session failing sooner than earlier ones.
+
+**Named but not fixed here — and it is probably the bigger one.** That same tolerance is
+consumed once per *poll*, not once per *error*. The page re-reads the program's output every
+200 ms and re-examines the same entry each time, so one error line sitting at the end of a
+stalled output burns the allowance at **five per second** — a nominal fifty is gone in about
+ten seconds. That fits a test dying mid-run on the *first* attempt of a session far better
+than the counter leak does. Changing it alters how a run is bounded rather than resetting a
+counter, so it is not being slipped into a rung that is already cut; it is recorded in
+[`BACKLOG.md`](BACKLOG.md) with the fix shape and the reason the existing overall timeout
+still bounds a genuinely stalled run.
 
 ### A few controls were stuck in English
 

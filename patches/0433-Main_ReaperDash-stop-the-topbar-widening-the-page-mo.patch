@@ -1,0 +1,128 @@
+From b596c4c46a15cec422eacf0add048de7aac8134d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 05:59:08 -0400
+Subject: [PATCH] Main_ReaperDash: stop the topbar widening the page; move the
+ update notice
+
+.app is a 236px+1fr grid and main is the 1fr item, so its default min-width:auto
+resolved to the topbar's min-content. .pills already carried min-width:0 and
+overflow:hidden, but that only zeroes the automatic minimum once the container
+width is definite - during intrinsic sizing the nowrap strip still contributed
+its full min-content, so the document grew instead of the strip clipping, and
+LOGOUT was cut off the right edge. Measured docSW 1784, i.e. overflow for any
+viewport 1701-1788 CSS px - a 1920 screen at 110% scaling lands in that band.
+
+Below 1700 it was worse but invisible: the responsive .pills nth-child rules
+counted the firmware badge as a pill, so the update notice silently disappeared
+entirely on any window under 1700px.
+
+Both halves are needed. main{min-width:0} lets the track shrink so the strip
+clips as designed, and the firmware notice moves out of the strip to a
+full-width .fwbar banner at the top of the content column, where it wraps
+instead of pushing and is visible at every width. Same id and same
+server-rendered reveal script; both tokens already ship in all 25 packs.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 64 ++++++++++++++--------
+ 1 file changed, 42 insertions(+), 22 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 4c78d3af2c..f6ff475b55 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -81,6 +81,9 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+ /* ---------- shell / always-expanded rail ---------- */
+ .app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
++/* grid item: without min-width:0 the 1fr track is floored at the topbar's
++   min-content width and the whole document overflows to the right */
++main{min-width:0}
+ .rail{background:linear-gradient(180deg,#0c0c0f,#08080a);border-right:1px solid var(--line-soft);
+   display:flex;flex-direction:column;padding:14px 12px 56px;gap:2px}
+ .railclock{padding:6px 6px 14px;text-align:center;line-height:1.05}
+@@ -117,9 +120,23 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .pill{display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--line-soft);border-radius:8px;background:var(--panel);font-size:11px;white-space:nowrap;flex:0 0 auto}
+ .pill .k{color:var(--steel);text-transform:uppercase;letter-spacing:.12em;font-size:9px}
+ .pill .v{color:var(--bone);font-family:var(--hdr);font-weight:600;letter-spacing:.03em}
+-.pill.fwupd{text-decoration:none;border-color:var(--crimson);background:rgba(225,6,0,.10);cursor:pointer;animation:fwpulse 2.4s ease-in-out infinite}
+-.pill.fwupd .dot{background:var(--crimson);box-shadow:0 0 0 3px rgba(225,6,0,.18)}
+-.pill.fwupd:hover{background:rgba(225,6,0,.18)}
++/* firmware-update banner: lives in the content column, NOT in the pill strip.
++   The strip is a nowrap flex row and its intrinsic width floors the 1fr grid
++   track, so a 7th pill widened the whole document past the right edge of the
++   viewport; the responsive nth-child rules also hid it below 1700px, which is
++   the worst possible outcome for an update notice. A block-level bar wraps
++   instead of pushing and is visible at every width. */
++.fwbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 16px;padding:11px 15px;
++  border:1px solid var(--crimson);border-radius:12px;text-decoration:none;
++  background:linear-gradient(90deg,rgba(225,6,0,.16),rgba(225,6,0,.05) 55%,transparent);
++  animation:fwpulse 2.4s ease-in-out infinite}
++.fwbar:hover{background:linear-gradient(90deg,rgba(225,6,0,.24),rgba(225,6,0,.08) 55%,transparent)}
++.fwbar .dot{background:var(--crimson);box-shadow:0 0 0 3px rgba(225,6,0,.18)}
++.fwbar .k{font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.14em;font-size:11.5px;color:var(--bone)}
++.fwbar .v{font-family:var(--hdr);font-weight:700;letter-spacing:.04em;font-size:14px;color:var(--crimson)}
++.fwbar .go{margin-left:auto;font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.1em;
++  font-size:11px;color:var(--bone-dim);border:1px solid var(--line);border-radius:7px;padding:5px 10px;white-space:nowrap}
++.fwbar:hover .go{color:var(--bone);border-color:var(--crimson)}
+ @keyframes fwpulse{0%,100%{box-shadow:0 0 0 0 rgba(225,6,0,0)}50%{box-shadow:0 0 0 3px rgba(225,6,0,.14)}}
+ .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15);flex:0 0 auto}
+ .spacer{flex:1}
+@@ -394,25 +411,6 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+         <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span></div>
+         <div class="pill"><span class="k"><#Full_Clients#></span><span class="v mono" id="p_clients">&mdash;</span></div>
+         <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+-        <!-- reaper: firmware-update badge. Server-rendered from webs_state_flag so it
+-             costs nothing when there is no update (or the opt-in check is off); the flag
+-             is only ever 1 after reaper_webs_update.sh finds a newer Reaper release for
+-             this model+variant. Links to the firmware page. -->
+-        <a class="pill fwupd" id="fw_update_badge" href="/reaper_shell.asp#Reaper_Firmware.asp" style="display:none">
+-          <span class="dot"></span><span class="k"><#FW_new_firmware_available#></span><span class="v mono" id="p_fwnew">&mdash;</span></a>
+-        <script>(function(){
+-          /* reveal the update badge only when the opt-in check has flagged a newer
+-             Reaper release. All state is server-rendered - no fetch, no polling. */
+-          var flag='<% nvram_get("webs_state_flag"); %>';
+-          var info='<% nvram_get("webs_state_info"); %>';
+-          if(flag==='1'){
+-            var b=document.getElementById('fw_update_badge');
+-            var v=document.getElementById('p_fwnew');
+-            var m=(info||'').match(/Reaper_v([0-9.]+)/);
+-            if(v) v.textContent = m ? ('v'+m[1]) : (info||'');
+-            if(b) b.style.display='';
+-          }
+-        })();</script>
+       </div>
+       <div class="spacer"></div>
+       <button class="btn" id="btn_reboot"><#BTN_REBOOT#></button>
+@@ -420,6 +418,28 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+     </header>
+ 
+     <div class="wrap">
++
++      <!-- reaper: firmware-update banner. Server-rendered from webs_state_flag so it
++           costs nothing when there is no update (or the opt-in check is off); the flag
++           is only ever 1 after reaper_webs_update.sh finds a newer Reaper release for
++           this model+variant. Links to the firmware page. Deliberately NOT a topbar
++           pill - see the .fwbar rule for why. -->
++      <a class="fwbar" id="fw_update_badge" href="/reaper_shell.asp#Reaper_Firmware.asp" style="display:none">
++        <span class="dot"></span><span class="k"><#FW_new_firmware_available#></span><span class="v mono" id="p_fwnew">&mdash;</span><span class="go"><#menu5_6_3#> &rarr;</span></a>
++      <script>(function(){
++        /* reveal the update banner only when the opt-in check has flagged a newer
++           Reaper release. All state is server-rendered - no fetch, no polling. */
++        var flag='<% nvram_get("webs_state_flag"); %>';
++        var info='<% nvram_get("webs_state_info"); %>';
++        if(flag==='1'){
++          var b=document.getElementById('fw_update_badge');
++          var v=document.getElementById('p_fwnew');
++          var m=(info||'').match(/Reaper_v([0-9.]+)/);
++          if(v) v.textContent = m ? ('v'+m[1]) : (info||'');
++          if(b) b.style.display='';
++        }
++      })();</script>
++
+       <div class="grid">
+ 
+         <!-- INTERNET -->
+-- 
+2.25.1
+

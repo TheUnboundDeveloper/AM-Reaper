@@ -1,0 +1,281 @@
+From 4ed3f407b26ef39cc523fb08f7de1cd5b7cc8a1b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 06:00:11 -0400
+Subject: [PATCH] Reaper_Traffic: render live charts on a clock, not on
+ arrivals
+
+The choppiness was not the poll rate. Points were placed by INDEX, so with a
+full 120-slot buffer one arrival shifted the whole trace by exactly one slot -
+8.03 viewBox units, 0.84% of the plot width - and the chart only ever existed at
+1000/pollMs positions per second. Polling faster shrinks the step but cannot
+remove it, and it could not go above 10Hz anyway: rtrafd rewrites live.json
+every 100ms and httpd is single-threaded.
+
+Live charts now render on requestAnimationFrame with x as a function of each
+sample's arrival TIME, so data rate and frame rate are independent and poll
+jitter becomes interpolation rather than a stutter. Also here: a snapped and
+eased Y scale with a hold before it may shrink (the second, independent source
+of jumpiness - a raw per-poll max moved every point vertically the moment a peak
+scrolled off the left edge); persistent SVG nodes with attribute-only updates
+instead of an innerHTML rebuild per frame; interpolated clipping at both window
+edges; and trace-breaking across a discontinuity so returning from a history
+window does not draw a ramp that never happened.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Traffic.asp | 212 ++++++++++++++++++++--
+ 1 file changed, 195 insertions(+), 17 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index d2b6bfc68d..c0197b920f 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -422,8 +422,180 @@ function stackChart(id, layers, labels, colors){
+   svg.innerHTML=body;
+ }
+ 
++/* ---- live chart engine (v2.4.5) -------------------------------------------
++   The live charts now render on requestAnimationFrame, NOT on the poll callback.
++
++   Why: the poll can never deliver more than 10 frames/s - rtrafd rewrites
++   live.json every TICK_MS=100, so polling faster only re-reads identical frames
++   (and httpd is single-threaded, so it costs real contention). The old renderer
++   placed each point by its INDEX, so one sample shifted the entire trace
++   956/119 = ~8 viewBox units in a single jump. THAT is the choppiness: the chart
++   only ever existed at 10 discrete positions per second. Lowering the poll
++   interval shrinks the step but cannot remove it.
++
++   Here every sample carries its arrival time and x is a function of that time,
++   so the trace slides continuously at display refresh rate regardless of when -
++   or whether - a sample lands. Poll jitter and a skipped tick become
++   interpolation instead of a stutter. Data rate and frame rate are independent.
++   --------------------------------------------------------------------------- */
++var nowMs = (window.performance && performance.now)
++  ? function(){ return performance.now(); } : function(){ return Date.now(); };
++
++/* Render this far behind real time so there is always a sample PAST the right
++   edge to interpolate toward; without it the leading segment extrapolates and
++   whips on every arrival. ~1.5 poll intervals absorbs normal jitter and is not
++   perceptible as lag. */
++function lagMs(){ return Math.min(3000, Math.round(pollMs*1.5)); }
++/* Visible span. 120 samples' worth at the selected rate, which reproduces the
++   window the old WBUF=120 buffer gave (12 s at Live/100ms, ~2 min at 1 s). */
++function windowMs(){ return 120*pollMs; }
++
++/* Time-stamped sample rings: wan = [t, rx_bps, tx_bps], cls = [t, q1..q5]. */
++var wanSamp=[], clsSamp=[], SMAX=400, clsOn=false;
++function pushSamp(buf, rec){
++  /* Discontinuity: a history window only fetches live once per 30 s, so on
++     returning to Live the buffer holds samples far apart. Joining across that
++     draws a long straight ramp that never happened - start a new trace. */
++  if(buf.length && rec[0]-buf[buf.length-1][0] > Math.max(3*pollMs,1500)) buf.length=0;
++  buf.push(rec);
++  var cut=rec[0]-(windowMs()+lagMs()+2000);
++  while(buf.length && buf[0][0]<cut) buf.shift();
++  while(buf.length>SMAX) buf.shift();
++}
++/* Clip to [t0,t1], interpolating a synthetic sample at each edge so the trace
++   spans the full plot instead of growing in from the right / shrinking at the
++   left. vlen = value slots following the timestamp. */
++function clipSamples(buf, t0, t1, vlen){
++  var out=[], i, a, b, f, r, k;
++  for(i=0;i<buf.length;i++){
++    a=buf[i];
++    if(a[0]<t0){
++      b=buf[i+1];
++      if(b && b[0]>t0){ f=(t0-a[0])/(b[0]-a[0]); r=[t0];
++        for(k=1;k<=vlen;k++) r.push(a[k]+(b[k]-a[k])*f); out.push(r); }
++      continue;
++    }
++    if(a[0]>t1){
++      b=buf[i-1];
++      if(b && b[0]<t1){ f=(t1-b[0])/(a[0]-b[0]); r=[t1];
++        for(k=1;k<=vlen;k++) r.push(b[k]+(a[k]-b[k])*f); out.push(r); }
++      break;
++    }
++    out.push(a);
++  }
++  return out;
++}
++
++/* Y scale: snapped to a 1/2/5 x 10^n ladder and EASED toward its target, with a
++   hold before it is allowed to shrink. The old code took a raw max over the
++   buffer on every poll, so the moment the peak scrolled off the left edge every
++   point jumped vertically - the second, independent source of "jumpy". */
++function niceMax(v){
++  if(!(v>0)) return 1;
++  var e=Math.pow(10,Math.floor(Math.log(v)/Math.LN10)), m=v/e;
++  return (m<=1?1:m<=2?2:m<=5?5:10)*e;
++}
++function Scale(){ this.cur=1; this.tgt=1; this.lowSince=0; }
++Scale.prototype.step=function(raw, t, dt){
++  var want=niceMax(raw*1.08);            /* headroom so the peak is not glued to the top */
++  if(want>=this.tgt){ this.tgt=want; this.lowSince=0; }
++  else { if(!this.lowSince) this.lowSince=t;
++         if(t-this.lowSince>1500){ this.tgt=want; this.lowSince=0; } }
++  this.cur += (this.tgt-this.cur)*(1-Math.exp(-dt/250));   /* tau=250ms, frame-rate independent */
++  if(Math.abs(this.tgt-this.cur)/this.tgt < 0.001) this.cur=this.tgt;
++  return this.cur;
++};
++var wanScale=new Scale(), clsScale=new Scale();
++
++/* Persistent-node renderer: builds grid/labels/paths ONCE, then only sets
++   attributes. The old path rebuilt the subtree via innerHTML on every draw -
++   affordable at 10 Hz, not at display rate with five stacked layers. Rebuilds
++   itself when renderHist has replaced the element's contents (the history
++   windows share these same two svg elements). */
++var SVGNS='http://www.w3.org/2000/svg';
++function svgEl(n,a){ var e=document.createElementNS(SVGNS,n); for(var k in a) e.setAttribute(k,a[k]); return e; }
++function LiveChart(id, fills, lines){
++  this.svg=document.getElementById(id);
++  this.H=+this.svg.getAttribute('viewBox').split(' ')[3];
++  this.fills=fills||[]; this.lines=lines||[];
++  this.g=[]; this.t=[]; this.fp=[]; this.lp=[];
++}
++LiveChart.prototype.build=function(){
++  var s=this.svg, H=this.H, i, y;
++  while(s.firstChild) s.removeChild(s.firstChild);
++  this.g=[]; this.t=[]; this.fp=[]; this.lp=[];
++  for(i=0;i<=4;i++){ y=10+(H-24)*i/4;
++    this.g.push(s.appendChild(svgEl('line',{'class':'grid-l',x1:44,y1:y.toFixed(1),x2:W,y2:y.toFixed(1)})));
++    this.t.push(s.appendChild(svgEl('text',{'class':'axl',x:0,y:(y+3).toFixed(1)}))); }
++  for(i=0;i<this.fills.length;i++)
++    this.fp.push(s.appendChild(svgEl('path',{fill:this.fills[i],'fill-opacity':0.75,stroke:this.fills[i],'stroke-width':1,d:''})));
++  for(i=0;i<this.lines.length;i++)
++    this.lp.push(s.appendChild(svgEl('path',{fill:'none',stroke:this.lines[i],'stroke-width':2,d:''})));
++};
++LiveChart.prototype.ensure=function(){
++  if(!this.g.length || this.g[0].parentNode!==this.svg) this.build();
++};
++LiveChart.prototype.axis=function(maxv, unit){
++  for(var i=0;i<this.t.length;i++){ var s=unit(maxv*(1-i/4));
++    if(this.t[i].__v!==s){ this.t[i].__v=s; this.t[i].textContent=s; } }
++};
++var wanC=null, clsC=null;
++function xAt(t, t1, span){ return 44+(W-44)*(1-(t1-t)/span); }
++function yAt(v, mx, H){ return Math.max(10,Math.min(H-14, 10+(H-24)*(1-v/mx))).toFixed(1); }
++
++function drawWan(t1, span, dt){
++  if(!wanC) wanC=new LiveChart('wanchart',[],['var(--jade)','var(--crimson)']);
++  wanC.ensure();
++  var pts=clipSamples(wanSamp, t1-span, t1, 2), i, raw=0;
++  for(i=0;i<pts.length;i++){ if(pts[i][1]>raw)raw=pts[i][1]; if(pts[i][2]>raw)raw=pts[i][2]; }
++  var mx=wanScale.step(raw, t1, dt), H=wanC.H, d1='', d2='', x;
++  wanC.axis(mx, fmtBps);
++  /* 2 dp, not 1: at the 10 s / 30 s rates the trace advances well under 0.1
++     viewBox units per frame, and rounding to 1 dp would quantise that smooth
++     crawl back into visible steps - the exact artefact this rewrite removes. */
++  for(i=0;i<pts.length;i++){ x=xAt(pts[i][0],t1,span).toFixed(2);
++    d1+=(i?'L':'M')+x+' '+yAt(pts[i][1],mx,H)+' ';
++    d2+=(i?'L':'M')+x+' '+yAt(pts[i][2],mx,H)+' '; }
++  wanC.lp[0].setAttribute('d',d1); wanC.lp[1].setAttribute('d',d2);
++}
++function drawCls(t1, span, dt){
++  if(!clsC) clsC=new LiveChart('clschart',[CLSCOLOR[1],CLSCOLOR[2],CLSCOLOR[3],CLSCOLOR[4],CLSCOLOR[5]],[]);
++  clsC.ensure();
++  var pts=clipSamples(clsSamp, t1-span, t1, 5), i, s, raw=0, tot;
++  for(i=0;i<pts.length;i++){ tot=0; for(s=1;s<=5;s++) tot+=pts[i][s]; if(tot>raw)raw=tot; }
++  /* bits/sec (cls[c].tx_bps), so fmtBps - the shared stackChart labels the
++     history stack with fmtBytes because THOSE rings hold bytes-per-slot. The
++     live stack was borrowing that and reading out "1.2 GB" for a rate. */
++  var mx=clsScale.step(raw, t1, dt), H=clsC.H, acc=[], xs=[], up, dn;
++  clsC.axis(mx, fmtBps);
++  for(i=0;i<pts.length;i++){ acc.push(0); xs.push(xAt(pts[i][0],t1,span).toFixed(2)); }
++  for(s=0;s<5;s++){
++    up=''; dn='';
++    for(i=0;i<pts.length;i++) up+=(i?'L':'M')+xs[i]+' '+yAt(acc[i]+pts[i][s+1],mx,H)+' ';
++    for(i=pts.length-1;i>=0;i--) dn+='L'+xs[i]+' '+yAt(acc[i],mx,H)+' ';
++    clsC.fp[s].setAttribute('d', pts.length? up+dn+'Z' : '');
++    for(i=0;i<pts.length;i++) acc[i]+=pts[i][s+1];
++  }
++}
++
++/* The frame loop. rAF self-throttles to ~0 in a hidden tab, so a backgrounded
++   Live window costs nothing; the poll timer keeps its own cadence regardless.
++   No clamp on t1 when samples stop arriving: clipSamples simply has nothing to
++   emit past the newest sample, so the trace slides away to the left and leaves
++   the right edge empty. That is the honest read of a stalled collector (the
++   pill is already amber) - an invented flat tail would look like real data. */
++var rafId=null, lastFrame=0;
++function liveFrame(){
++  rafId=requestAnimationFrame(liveFrame);
++  var t=nowMs(), dt=lastFrame?Math.min(500,t-lastFrame):16; lastFrame=t;
++  var span=windowMs(), t1=t-lagMs();
++  drawWan(t1, span, dt);
++  if(clsOn) drawCls(t1, span, dt);
++}
++function startLive(){ if(rafId==null){ lastFrame=0; rafId=requestAnimationFrame(liveFrame); } }
++function stopLive(){ if(rafId!=null){ cancelAnimationFrame(rafId); rafId=null; } }
++
+ /* ---- render live ---- */
+-var WBUF=120, wanBuf=[], clsBuf=[];   /* rolling buffers: 120 points (12 s at Live/100ms, ~2 min at 1s) */
+ function renderLive(d){
+   netCache(d);
+   curStore = d.store?d.store.toUpperCase():'RAM'; setPill();
+@@ -446,24 +618,25 @@ function renderLive(d){
+ 
+   if(curWin!=='live') return;   /* rolling live charts only render in the Live window */
+ 
+-  /* rolling WAN throughput (appends a point per poll) */
+-  wanBuf.push([wan.rx_bps||0, wan.tx_bps||0]); if(wanBuf.length>WBUF) wanBuf.shift();
+-  var rx=wanBuf.map(function(p){return p[0];}), tx=wanBuf.map(function(p){return p[1];});
+-  var wmax=Math.max(1,Math.max.apply(null,rx),Math.max.apply(null,tx));
+-  lineChart('wanchart',[{data:rx,color:'var(--jade)'},{data:tx,color:'var(--crimson)'}],wmax,fmtBps);
++  /* INGEST ONLY - the rAF loop owns every live draw. Each sample is stamped with
++     its arrival time so the frame loop can place it, and interpolate between
++     arrivals, instead of shifting the trace one whole slot per poll. */
++  var st=nowMs();
++  pushSamp(wanSamp,[st, wan.rx_bps||0, wan.tx_bps||0]);
+   document.getElementById('lat_leg').style.display='none';
+   document.getElementById('probe_note').textContent="<#RTRF_64#>";
+ 
+-  /* rolling per-class stacked (gated on HW QoS Classful) */
+-  if(classGate()){
+-    var cls=d.class||[], row=[];
++  /* per-class stacked (gated on HW QoS Classful) */
++  clsOn=classGate();
++  if(clsOn){
++    var cls=d.class||[], row=[st];
+     for(var c=1;c<=5;c++) row.push(cls[c]?(cls[c].tx_bps||0):0);
+-    clsBuf.push(row); if(clsBuf.length>WBUF) clsBuf.shift();
+-    var lays=[], cols=[], leg='';
+-    for(var k=0;k<5;k++){ lays.push(clsBuf.map(function(r){return r[k];})); cols.push(CLSCOLOR[k+1]);
+-      leg+='<span><i style="background:'+CLSCOLOR[k+1]+'"></i>'+esc(CLSNAME[k]||('Q'+(k+1)))+'</span>'; }
+-    document.getElementById('clslegend').innerHTML=leg;
+-    stackChart('clschart',lays,null,cols);
++    pushSamp(clsSamp,row);
++    var leg='';
++    for(var k=0;k<5;k++)
++      leg+='<span><i style="background:'+CLSCOLOR[k+1]+'"></i>'+esc(CLSNAME[k]||('Q'+(k+1)))+'</span>';
++    /* legend is static per session - only touch the DOM when it actually changes */
++    if(renderLive.leg!==leg){ renderLive.leg=leg; document.getElementById('clslegend').innerHTML=leg; }
+   }
+ 
+   /* By network + Top devices: live rate bars/rows (from the last flow-cache sample).
+@@ -547,8 +720,12 @@ function renderHist(d){
+ /* ---- window switching ---- */
+ function loadWin(){
+   if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
++  stopLive();
+   if(curWin==='live'){
+-    wanBuf=[]; clsBuf=[];   /* fresh rolling window */
++    /* the sample rings are NOT cleared here any more: they are time-keyed, so
++       anything stale simply falls outside the visible span (and pushSamp breaks
++       the trace across the gap). Clearing also threw away good data on a mere
++       poll-rate change, which no longer invalidates a single sample. */
+     /* in-flight guard: at the 100ms Live rate a slow response must skip ticks,
+        not stack XHRs against the single-threaded httpd. The guard holds the XHR
+        + a start stamp: a request that outlives the XHR timeout is aborted here
+@@ -564,7 +741,8 @@ function loadWin(){
+       inflightAt=Date.now();
+       inflight=getJSON('live', function(d,ok){ inflight=null; setStalled(!ok); if(ok) renderLive(d); });
+     };
+-    tick(); liveTimer=setInterval(tick, pollMs);   /* live view refresh (user-selectable) */
++    tick(); liveTimer=setInterval(tick, pollMs);   /* data cadence (user-selectable) */
++    startLive();                                   /* draw cadence: display refresh, independent */
+   } else {
+     var histTick=function(){
+       getJSON(curWin, function(d,ok){ if(ok) renderHist(d); });
+-- 
+2.25.1
+

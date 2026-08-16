@@ -1,0 +1,145 @@
+From 7a7f3169429e2bbb412a373344ca7bd9be479222 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 06:00:10 -0400
+Subject: [PATCH] Main_ReaperDash: show installed addons in the rail
+
+reaper_shell.asp builds its rail at runtime from /require/modules/menuTree.js -
+the file Merlin addons bind-mount over - so every page rendered inside the shell
+inherits addon entries. The dashboard is the one top-level page with its own
+rail, that rail is static HTML, and it never loads menuTree.js: it was not
+failing to load the addon menu, it never had the mechanism.
+
+It cannot simply call the shell's code. menuTree.js is a require module needing
+globals state.js supplies, and this page deliberately loads neither - its
+first-boot credential gate is hand-rolled precisely so it does not depend on
+state.js, which is load-bearing history.
+
+So read the same file as TEXT, never evaluated. Third-party code owns it, so
+every value is treated as hostile: URLs must match a bare same-origin
+.asp/.htm/.html pattern and are dropped rather than sanitised, labels go through
+esc(). Degrades in three steps - real entries when they parse, a single link
+into the shell when an addon block exists but its tabs do not, and nothing at
+all when no addon block is present or the request fails, which leaves the rail
+exactly as it ships. No new dict keys: the group label is the file's own
+menuName, which is what the shell already displays.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 94 ++++++++++++++++++++++
+ 1 file changed, 94 insertions(+)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index f6ff475b55..724925e46a 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -398,6 +398,11 @@ main{min-width:0}
+       <a href="/reaper_shell.asp#Main_LogStatus_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M9 9h6M9 13h6M9 17h4"/></svg></span><span class="nl"><#System_Log#></span></a>
+       <a href="/reaper_shell.asp#Main_Analysis_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M14 7a3 3 0 0 0-4 4l-6 6 2 2 6-6a3 3 0 0 0 4-4l-2 2-2-2z"/></svg></span><span class="nl"><#Network_Tools#></span></a>
+     </nav>
++
++    <!-- Addons. Filled at runtime from the same menuTree.js the shell reads;
++         stays hidden and empty unless an addon is actually installed. -->
++    <div class="grp" id="addon_grp" style="display:none"></div>
++    <nav class="nav" id="addon_nav"></nav>
+   </aside>
+ 
+   <!-- MAIN -->
+@@ -1485,6 +1490,95 @@ window.addEventListener('resize', function(){ reaperTips(); });
+     if (r) { e.preventDefault(); go(r); }
+   });
+ })();
++
++  /* ---- Addons rail group ---------------------------------------------------
++     reaper_shell.asp builds its rail from /require/modules/menuTree.js, which is
++     the file Merlin addons (amtm, Diversion, scMerlin, uiScribe...) BIND-MOUNT
++     over. Every page inside the shell therefore inherits addon entries for free.
++     This dashboard is the one top-level page with its OWN rail, and that rail is
++     static HTML - so an addon has never been able to appear here at all.
++
++     It reads the same file, but as TEXT. menuTree.js is a require module needing
++     globals state.js supplies (isSupport, based_modelid, a dozen *_support
++     flags), and this page deliberately does not load state.js: its first-boot
++     credential gate is hand-rolled at the top of this file precisely so it does
++     not have to. Parsing text keeps that decision intact.
++
++     TRUST BOUNDARY: this file may have been rewritten by third-party addon code,
++     so every value out of it is treated as hostile - URLs must match a strict
++     same-origin page pattern, labels go through esc(), and nothing is evaluated.
++
++     Degrades in three steps: real entries when they parse; a single link into the
++     shell when an addon block exists but its tabs do not parse (the shell's rail
++     can render them); nothing at all when no addon block is present or the
++     request fails - which leaves the rail exactly as it ships. */
++  (function(){
++    var GRP = document.getElementById('addon_grp'),
++        NAV = document.getElementById('addon_nav');
++    if(!GRP || !NAV) return;
++
++    /* A page this rail may link to: bare same-origin .asp/.htm, no scheme, no
++       path traversal, no query string. Anything else is DROPPED, not sanitised. */
++    var SAFE = /^[A-Za-z0-9_.-]+\.(asp|htm|html)$/;
++
++    var ICON = '<span class="ni"><svg viewBox="0 0 24 24">'
++             + '<path d="M10 4h4v3a2 2 0 0 0 2 2h3v4h-3a2 2 0 0 0-2 2v3h-4v-3a2 2 0 0 0-2-2H5V9h3a2 2 0 0 0 2-2z"/>'
++             + '</svg></span>';
++
++    /* Balanced {...} around an offset, skipping string literals so a brace
++       inside a name cannot end the block early. Returns '' if unbalanced, which
++       the caller treats as "could not parse". */
++    function block(txt, at){
++      var s = txt.lastIndexOf('{', at), d = 0, q = '', i, c;
++      if(s < 0) return '';
++      for(i = s; i < txt.length; i++){
++        c = txt.charAt(i);
++        if(q){ if(c === q && txt.charAt(i-1) !== '\\') q = ''; continue; }
++        if(c === '"' || c === "'" || c === '`'){ q = c; continue; }
++        if(c === '{') d++;
++        else if(c === '}'){ d--; if(!d) return txt.slice(s, i + 1); }
++      }
++      return '';
++    }
++
++    function render(items, label){
++      var h = '', i;
++      for(i = 0; i < items.length; i++)
++        h += '<a href="/reaper_shell.asp#' + esc(items[i][0]) + '">' + ICON
++           + '<span class="nl">' + esc(items[i][1]) + '</span></a>';
++      if(!h)   /* addons present but unreadable: hand off to the shell's own rail */
++        h = '<a href="/reaper_shell.asp">' + ICON
++          + '<span class="nl">' + esc(label) + '</span></a>';
++      GRP.textContent = label;
++      GRP.style.display = '';
++      NAV.innerHTML = h;
++    }
++
++    var x = new XMLHttpRequest();
++    x.open('GET', '/require/modules/menuTree.js?_=' + (new Date()).getTime(), true);
++    x.timeout = 6000;
++    x.onreadystatechange = function(){
++      if(x.readyState !== 4 || x.status !== 200) return;
++      try{
++        var t = x.responseText || '', m, blk, name, tabs = [], re, r, u, n;
++        /* by menu index first, then by the addon page-name convention */
++        m = /index\s*:\s*["']menu_Addons["']/i.exec(t)
++         || /url\s*:\s*["']user\d*\.asp["']/i.exec(t);
++        if(!m) return;                       /* no addons installed - rail unchanged */
++        blk = block(t, m.index);
++        name = (blk && /menuName\s*:\s*["']([^"']*)["']/.exec(blk) || [])[1] || 'Addons';
++        re = /\{\s*url\s*:\s*["']([^"']*)["']\s*,\s*tabName\s*:\s*["']([^"']*)["']\s*\}/g;
++        while(blk && (r = re.exec(blk))){
++          u = r[1]; n = r[2];
++          if(!SAFE.test(u)) continue;        /* drops url:"NULL" and anything odd */
++          if(!n || n === '__HIDE__' || n === '__INHERIT__') continue;
++          tabs.push([u, n]);
++        }
++        render(tabs, name);
++      }catch(e){ /* leave the rail exactly as it shipped */ }
++    };
++    x.send();
++  })();
+ </script>
+ </body>
+ </html>
+-- 
+2.25.1
+

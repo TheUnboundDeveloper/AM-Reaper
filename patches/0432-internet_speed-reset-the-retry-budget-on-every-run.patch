@@ -1,0 +1,39 @@
+From fb606fcc3b4359b99e3c3b3293ce81f0700b0de0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 05:59:07 -0400
+Subject: [PATCH] internet_speed: reset the retry budget on every run
+
+level_err_cnt is reset on success, on tripping LEVEL_ERR_MAX and on the silent
+retry path - but NOT when a run fails with its budget already spent. The
+counter therefore leaked across runs within one session, so a later test could
+start with no retries left and abort partway through on the first transient
+error. It got worse the longer the tab stayed open, which is exactly how it was
+reported.
+
+Reset it per run alongside the other per-run state.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/internet_speed.html | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/release/src/router/www/internet_speed.html b/release/src/router/www/internet_speed.html
+index 9d8bc086da..2e053cdea3 100644
+--- a/release/src/router/www/internet_speed.html
++++ b/release/src/router/www/internet_speed.html
+@@ -383,6 +383,12 @@ function reset_speedTest_div(){
+ function start_speedTest(){
+ 	speedTest_retry_done = false;	/* reaper: fresh retry budget per user-initiated run */
+ 	speedTest_poll_inflight = false;	/* reaper: clear any stale in-flight poll guard */
++	level_err_cnt = 0;	/* reaper: per-run too. It is reset on success, on tripping
++			   LEVEL_ERR_MAX, and on the silent-retry path - but NOT when a run fails
++			   with its retry budget already spent, so the count leaked into the next
++			   run and later tests in a session aborted early on errors the earlier
++			   ones had accumulated. A page reload hid it, which is why it read as
++			   random. */
+ 	reset_speedTest_div();
+ 	change_speedTestBtn("testing");
+ 	if(!enable_auto_server && cur_server_id != "")
+-- 
+2.25.1
+

@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.4.4** — `3006.102.8_Reaper_v2.4.4`, 430 patches (replay-verified), built on RT-BE96U in both variants (20 pass / 0 warn / 0 FAIL each). **No image published from it yet.** It touches no per-model overlay, so the four siblings take it from the patch series unchanged. |
+| **Current rung** | **v2.4.5** — `3006.102.8_Reaper_v2.4.5`, 439 patches (replay-verified). **No image published from it yet.** It touches no per-model overlay, so the four siblings take it from the patch series unchanged; images come from the clean-room CI build. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3 and v2.4.4. v2.4.1, v2.4.2, v2.4.3 and v2.4.4 are built on RT-BE96U, both variants. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4 and v2.4.5. v2.4.1 through v2.4.4 are built on RT-BE96U, both variants. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,99 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.4.5
+
+**Six field reports, and one thing found while fixing them.** Nothing in this rung
+changes how the router forwards, filters or shapes traffic — it is display, logging and
+language work, plus one long-standing annoyance in the built-in speed test.
+
+### The live graphs move smoothly now
+
+The Traffic Analyzer's live graphs advanced in visible steps. **The update rate was not
+the cause,** which is why turning it up would never have fixed it: each point was placed
+by its *position in the list* rather than by *when it arrived*, so every new reading shoved
+the whole trace sideways by one slot — a jump of just under 1% of the graph width, once per
+update and never in between. Even polling as fast as the router can answer, the graph would
+still only exist at ten positions a second.
+
+Graphs are now drawn on the display's own refresh, with each reading placed by its arrival
+time, so **how often data comes in and how often the picture is drawn are no longer the same
+thing** — and a reading arriving slightly late becomes a smooth glide rather than a stutter.
+
+The vertical scale was a second and independent source of jumpiness: recalculated from
+scratch on every update, so the moment a peak scrolled off the left edge, *every* point on
+screen moved. It now steps between round values and waits before shrinking. Coming back
+from a history window no longer draws a long ramp across the gap that never happened.
+
+### The dashboard stops pushing itself off the screen
+
+On some screens the dashboard ran past the right edge and cut off the **Logout** button.
+On smaller windows something worse and much quieter happened: **the "new firmware
+available" notice disappeared entirely.**
+
+One cause behind both. The row of small status pills across the top cannot wrap, so its
+full width set a floor for the whole page; adding the firmware badge to that row pushed the
+page wider than the window on screens in a particular band — a 1920 monitor at 110% display
+scaling sits squarely in it. Below that band, the dashboard's own rule for dropping pills on
+narrow windows counted the update badge as a pill, so on any window narrower than about
+1700 pixels the update notice was simply hidden.
+
+The page can now shrink as intended, so the pill row clips instead of pushing, and the
+firmware notice has moved out of it into a **full-width banner at the top of the dashboard**
+— visible at every window size.
+
+### Your addons appear in the dashboard menu
+
+If you run amtm, Diversion, scMerlin or similar, their menu entries appeared on every page
+*except* the one you land on. Every other page is drawn inside the app frame, which builds
+its menu from the same file addons add themselves to; the dashboard is the one page with a
+menu of its own, and that menu was fixed at build time — it never had the mechanism.
+
+It now reads the same file the rest of the interface does. That file belongs to third-party
+software, so everything in it is treated as untrusted: only plain links to pages on the
+router itself are accepted, anything else is **dropped rather than cleaned up**, and nothing
+from the file is ever executed. If it cannot be read, or does not make sense, the menu stays
+exactly as it ships.
+
+### Warden: outbound blocks are now distinguishable, and the breakdown is readable
+
+- **Outbound blocks could not be told apart from inbound ones in the system log.** Both
+  directions ended at the same place, so every entry carried the same label — there was no
+  way to answer *"is it blocking what my devices are reaching?"* from the log. Outbound now
+  has its own label and its own counter, reported separately instead of folded into the
+  inbound total.
+- **The breakdown of what was blocked was crammed into a card too narrow to hold it.** The
+  figures that let you reconcile the big "blocked hits" total — countries, threat feeds,
+  manual blocks — sat under that number in a box about 150 pixels wide, wrapping across
+  three lines and breaking mid-separator. They now sit on one line directly above the
+  country table they explain, styled as readings rather than prose so they are not mistaken
+  for the paragraph above them.
+- **Those four labels were still in English in all 24 non-English languages.** Unnoticeable
+  as small grey text; obvious once given a line of their own. Now translated.
+
+### The speed test stops giving up partway through
+
+The built-in test allows itself a few retries when the network hiccups. That allowance was
+reset when a run succeeded, and when it ran out — but **not** when a run failed with none
+left. The shortfall carried forward, so a later test could begin with no retries at all and
+abandon on the first small glitch. It got more likely the longer a session went on, which is
+exactly how it was reported. The allowance is now reset for every run.
+
+### A few controls were stuck in English
+
+The Drop/Accept/Both options on the firewall's logging selectors, the QoS diagnostics page
+title, and two top-bar buttons were written as plain text rather than as translatable
+entries, so they ignored the language setting. **Known and not fixed here:** the firewall
+page's own vocabulary — 244 entries — has never had a translation pass, so that page reads
+in English in the other 24 languages. Translating one option of a selector whose other
+options are English would read worse than leaving the set consistent, so it is tracked as
+one job rather than done piecemeal.
+
+**Validation:** 439 patches, gapless, full-series replay verified against the pinned base.
+The four siblings are ported. Per-item detail in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 

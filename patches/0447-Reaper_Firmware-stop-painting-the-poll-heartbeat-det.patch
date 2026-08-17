@@ -1,0 +1,186 @@
+From 4c541f593975d47b1d4be536d8635874d2740924 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 21:37:16 -0400
+Subject: [PATCH] Reaper_Firmware: stop painting the poll heartbeat detail and
+ the mid-write Close
+
+Owner, seen live while flashing v2.4.2: the overlay read "0:58 . pollUpBack . 3"
+and offered a CLOSE button underneath it. Nothing here is removed - both are
+still tracked and still do their job; this is about what reaches the screen.
+
+  - veilTick() renders the elapsed mm:ss ONLY. veilPhase is the literal name of
+    the internal polling function and reads as a leaked debug string; veilPolls
+    means nothing to the person flashing a router. Both are published as
+    data-phase / data-polls on #veilTick instead, so devtools or a support
+    script can still tell a stalled poll chain from a working one.
+  - the 25 s timer-based reveal of the Close button no longer arms while the
+    router is being WRITTEN (new veilInstalling flag, set at the three install
+    hand-offs). veilDismiss() cannot stop a flash already running, so offering
+    it mid-write only hides that one is in flight and hands the user a
+    live-looking page over a router rewriting its own flash. Download and upload
+    keep the 25 s hatch.
+
+THIS REVERSES A DELIBERATE v2.3.2 DECISION, so read this before putting it back.
+The button, the Esc handler and the heartbeat were added together so "a stalled
+flash can no longer look like a frozen browser". The reason is gone: the tab was
+not stalling, it was LOCKING UP, because every failed poll round scheduled two
+successors and the chain doubled every two seconds until the tab died (standing
+rule 34, fixed in a0c115dc45). With the cause fixed, a timed reveal during a
+healthy flash is mostly a way to dismiss a working one.
+
+No path traps the user: veilFail() clears the flag and reveals the button at
+once, both poll chains give up at tries>450 into veilFail(), and the window
+'error' handler still reveals it if a chain dies. The Esc handler is gated on
+the button being visible and follows it automatically.
+
+The three comments this falsified were corrected in the same commit - the HTML
+heartbeat and escape-hatch comments and the block comment that claimed "even a
+healthy long-running flash exposes the hatch after 25 s". Leaving a stale
+comment next to changed behaviour is how the next person loses an afternoon.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Firmware.asp | 67 ++++++++++++++++++----
+ 1 file changed, 55 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 0ae1c9e147..86aff079c3 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -150,15 +150,19 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+     <div class="bar" id="veilBar"><i id="veilBarI"></i></div>
+     <div class="vs" id="veilS"></div>
+     <div class="vw"><#RFWU_26#></div>
+-    <!-- heartbeat: elapsed mm:ss, phase and poll count. Digits and a separator
+-         only, deliberately -- it needs no translation and it is how a stalled
+-         poll chain is told apart from a working one. -->
++    <!-- heartbeat: elapsed mm:ss ONLY. Digits and a colon, deliberately -- it
++         needs no translation. The phase and poll count are still tracked and
++         are still what tells a stalled poll chain apart from a working one, but
++         they are published as data-phase / data-polls on this element rather
++         than painted: 'pollUpBack' on screen reads as a leaked debug string. -->
+     <div class="vs" id="veilTick" style="opacity:.55"></div>
+     <!-- ESCAPE HATCH. The veil covers the viewport and eats every click, so
+-         there must always be a way out of it. Hidden while a flash is visibly
+-         progressing; revealed on any terminal state and, regardless, after
+-         VEIL_ESCAPE_MS. Dismissing only removes the overlay -- it cannot stop
+-         a flash already running on the router. -->
++         there must always be a way out of it. Revealed on any terminal state,
++         and after VEIL_ESCAPE_MS during download/upload -- but NOT while the
++         router is being written (veilInstalling), because dismissing cannot
++         stop a flash already running and only hides that one is in flight.
++         Terminal states still guarantee it: veilFail() reveals it at once and
++         both poll chains give up at tries>450. -->
+     <div id="veilAct" style="margin-top:18px;display:none">
+       <button type="button" class="btn2" id="veilBtn" onclick="veilDismiss()"><#CTL_close#></button>
+     </div>
+@@ -440,10 +444,37 @@ function pollNote(tries){
+    pollBack/pollUpBack raised it at tries>450 and returned -- so the page could
+    end up permanently unclickable with no way out but killing the browser.
+    Nothing below can leave the user trapped: veilFail() is escapable at once,
+-   and even a healthy long-running flash exposes the hatch after 25 s. */
++   the window 'error' handler exposes the hatch if a poll chain dies, and both
++   poll chains give up at tries>450 into veilFail(). The 25 s timed reveal now
++   applies to download/upload only -- see veilInstalling. */
+ var VEIL_ESCAPE_MS = 25000;
+ var veilT0 = 0, veilTickH = 0, veilEscH = 0, veilPhase = '', veilPolls = 0;
+ 
++/* Set once the router is actually being written (the install veils, and the
++   reboot polling that follows). While it is set the timer-based escape hatch is
++   NOT armed, because dismissing the overlay mid-write only hides the fact that
++   a flash is in flight -- veilDismiss() cannot stop it -- and hands the user a
++   live-looking page over a router that is rewriting its own flash.
++
++   The hatch itself is untouched and is still guaranteed on every terminal
++   state: veilFail() clears this flag and reveals the button at once (both poll
++   chains give up at tries>450, ~15 min), and the window 'error' handler still
++   reveals it if a poll chain dies. So there is no path that traps the user.
++
++   Why this is safe to change now: the escape hatch was added in v2.3.2 for a
++   tab that appeared frozen, and the actual cause of that -- each failed poll
++   round scheduling two successors, doubling the chain until the tab died -- was
++   fixed in a0c115dc45 (standing rule 34). With the cause gone, a timed reveal
++   during a healthy flash is mostly a way to dismiss a working one. */
++var veilInstalling = 0;
++function veilInstall(on){
++  veilInstalling = on ? 1 : 0;
++  if(on){
++    clearTimeout(veilEscH); veilEscH = 0;
++    veilEscape(false);   /* retract it if the download phase already exposed it */
++  }
++}
++
+ /* the shell owns the header + rail; dim and disable them while a flash runs so
+    the frame cannot be navigated away from at the worst possible moment (the
+    veil itself lives inside the frame and can never paint over them) */
+@@ -459,16 +490,23 @@ function veil(title, sub, showBar, phase){
+   chromeLock(true);
+   if(phase){ veilPhase = phase; veilPolls = 0; }
+   if(!veilT0){ veilT0 = Date.now(); veilTick(); }
+-  if(!veilEscH) veilEscH = setTimeout(function(){ veilEscape(true); }, VEIL_ESCAPE_MS);
++  if(!veilEscH && !veilInstalling) veilEscH = setTimeout(function(){ veilEscape(true); }, VEIL_ESCAPE_MS);
+ }
+ function veilTick(){
+   clearTimeout(veilTickH);
+   var n = $id('veilTick');
+   if(n && veilT0){
+     var s = Math.round((Date.now() - veilT0) / 1000);
+-    n.textContent = Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2)
+-                  + (veilPhase ? ' \u00b7 ' + veilPhase : '')
+-                  + (veilPolls ? ' \u00b7 ' + veilPolls : '');
++    /* Only the elapsed clock is rendered. The phase is the literal name of the
++       internal polling function ('pollUpBack') and reads as a leaked debug
++       string to anyone flashing a router; the poll count means nothing to them
++       either. Both are still TRACKED and are still what tells a stalled chain
++       apart from a working one -- they are published as data-* attributes,
++       readable in devtools or by a support script, just not painted on the
++       overlay. Nothing about the heartbeat itself was removed. */
++    n.textContent = Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
++    n.setAttribute('data-phase', veilPhase || '');
++    n.setAttribute('data-polls', veilPolls);
+   }
+   veilTickH = setTimeout(veilTick, 1000);
+ }
+@@ -481,6 +519,7 @@ function veilEscape(show){
+   if(a) a.style.display = show ? '' : 'none';
+ }
+ function veilFail(title, sub){   /* terminal state: always escapable, at once */
++  veilInstalling = 0;             /* terminal -- the write is over either way */
+   veil(title, sub, false);
+   veilEscape(true);
+ }
+@@ -492,6 +531,7 @@ function veilOff(){
+   veilEscape(false);
+   clearTimeout(veilTickH); clearTimeout(veilEscH);
+   veilTickH = 0; veilEscH = 0; veilT0 = 0; veilPhase = ''; veilPolls = 0;
++  veilInstalling = 0;
+ }
+ /* Esc leaves the overlay, but only once the hatch is offered -- so it cannot be
+    fumbled during the first seconds of a flash. */
+@@ -521,6 +561,7 @@ function pollInstall(tries){
+   var x = new XMLHttpRequest();
+   var gone = once(function(){
+     /* httpd going away while installing = the flash sequence took over */
++    veilInstall(1);
+     veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+     pollBack(0, 0);
+   });
+@@ -535,6 +576,7 @@ function pollInstall(tries){
+     var er = (t.match(/webs_state_error\s*=\s*'?(\d+)/) || [])[1] || '0';
+     var pc = (t.match(/fwdl_percent\s*=\s*"(\d+)%/) || [])[1];
+     if(up === '2'){
++      veilInstall(1);
+       veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+       setTimeout(function(){ pollBack(0, 0); }, 4000);
+       return;
+@@ -633,6 +675,7 @@ function doUpload(){
+      same thing here, so both endings share ONE guarded hand-off - load and
+      error can otherwise both fire and start two polling chains. */
+   var handed = once(function(){
++    veilInstall(1);
+     veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+     pollUpBack(0, 0);
+   });
+-- 
+2.25.1
+

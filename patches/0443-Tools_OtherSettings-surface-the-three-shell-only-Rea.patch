@@ -1,0 +1,597 @@
+From ef5078d35af558ce75ab9ccaa8af35c106f277b7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 15:09:16 -0400
+Subject: [PATCH] Tools_OtherSettings: surface the three shell-only Reaper
+ knobs
+
+A survey of Reaper's nvram found exactly three settings with no GUI path at all -
+everything else in the reaper_/rwarden_/rmcp_ namespaces is reachable, mostly
+through reaper_dev.cgi or reaper_fw.cgi with the key passed as a PARAMETER, which
+is why a name-search of the .asp files under-reports it badly. All three now have
+controls in a Reaper section on the stock Tweaks page.
+
+  reaper_inject   theme kill switch. No defaults.c entry on purpose: the code
+                  reads unset/nonzero as ON and only a literal "0" as off, so
+                  initial() must map empty to ON or the page would show a
+                  freshly flashed router as themeless. action_script gains
+                  restart_httpd, since that is when it takes effect.
+
+  wlcsm_bindfix   the WLCSM netlink bind() shim. DEFAULT FLIPPED 0 -> 1 per
+                  owner instruction. Needs a reboot, and the page says so.
+
+  rwarden_sched   Warden feed-refresh cron. The only rwarden_* setting that was
+                  never surfaced.
+
+Stock page, so it uses the stock idiom - .FormTable rows, plain selects, the
+page's existing submit path - rather than Reaper-native styling, which
+reaper_content.css would fight.
+
+rwarden_sched is charset-validated client-side to exactly what rw_valid_sched()
+accepts in rc/rwarden.c (digits, space, * / , -). That consumer already rejects
+anything else and falls back to 30 4 * * *, so the field cannot become an
+injection path even though the value reaches cru unquoted; the client check
+exists so the user is told rather than silently getting the default.
+
+The defaults.c comment was rewritten alongside the value. It previously explained
+at length why the shim was off, and leaving that next to "1" would have left the
+code contradicting itself - the same trap already recorded against the Wireless
+auto-scan item, where one of two disagreeing comments has to change.
+
+RTWK_00-RTWK_07 minted, English-seeded in all 25 packs, lockstep 6627 -> 6635.
+
+Checked: no sysdep/FUNCTION variant shadows this page, so the base file is the
+one that ships (rule 33). defaults.prep is untracked and gitignored - an artifact
+generated from defaults.c for calc_nvram, not a second source of truth. The one
+non-ASCII byte in the page is a pre-existing UTF-8 BOM, unchanged. Build gate
+clean, and all seven inline script blocks still parse in all 25 languages.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c          | 11 +++-
+ release/src/router/www/BR.dict                |  8 +++
+ release/src/router/www/CN.dict                |  8 +++
+ release/src/router/www/CZ.dict                |  8 +++
+ release/src/router/www/DA.dict                |  8 +++
+ release/src/router/www/DE.dict                |  8 +++
+ release/src/router/www/EN.dict                |  8 +++
+ release/src/router/www/ES.dict                |  8 +++
+ release/src/router/www/FI.dict                |  8 +++
+ release/src/router/www/FR.dict                |  8 +++
+ release/src/router/www/HU.dict                |  8 +++
+ release/src/router/www/IT.dict                |  8 +++
+ release/src/router/www/JP.dict                |  8 +++
+ release/src/router/www/KR.dict                |  8 +++
+ release/src/router/www/MS.dict                |  8 +++
+ release/src/router/www/NL.dict                |  8 +++
+ release/src/router/www/NO.dict                |  8 +++
+ release/src/router/www/PL.dict                |  8 +++
+ release/src/router/www/RO.dict                |  8 +++
+ release/src/router/www/RU.dict                |  8 +++
+ release/src/router/www/SL.dict                |  8 +++
+ release/src/router/www/SV.dict                |  8 +++
+ release/src/router/www/TH.dict                |  8 +++
+ release/src/router/www/TR.dict                |  8 +++
+ release/src/router/www/TW.dict                |  8 +++
+ .../src/router/www/Tools_OtherSettings.asp    | 62 ++++++++++++++++++-
+ release/src/router/www/UK.dict                |  8 +++
+ 27 files changed, 269 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index a4a26da45b..0c756d98dc 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3192,9 +3192,14 @@ struct nvram_tuple router_defaults[] = {
+ 	/* reaper 2026-08-12: activate the WLCSM netlink bind() shim (LD_PRELOAD of
+ 	   /lib/wlcsm_bindfix.so) that works around the Broadcom libnvram.so port-
+ 	   allocation defect - see start_wlcsm_bindfix() in rc/services.c.
+-	   DEFAULT OFF: /etc/ld.so.preload is global and this has not run on metal
+-	   yet. Enable with: nvram set wlcsm_bindfix=1 && nvram commit && reboot */
+-	{ "wlcsm_bindfix", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	   DEFAULT ON as of 2026-08-16 (owner decision), and exposed as a toggle on
++	   Tools_OtherSettings.asp so it can be turned off without a shell.
++	   UNDERSTAND WHAT THIS SHIPS: /etc/ld.so.preload is GLOBAL - every
++	   dynamically linked binary on the box loads the shim, init included. A
++	   MISSING .so degrades safely (start_wlcsm_bindfix logs and removes the
++	   preload), but a PRESENT-AND-BROKEN one has no such guard. Revert is this
++	   one literal back to "0"; a user can also clear the toggle and reboot. */
++	{ "wlcsm_bindfix", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* reaper 2026-08-11: escape hatch for the server-side first-boot gate (httpd.c
+ 	   reaper_firstboot_pending). The gate opens on its own once the live conditions
+ 	   clear - this is NOT written by the wizard. It exists so an operator who gets
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 28f3dd6fe0..3103f55c11 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index d7f6d8b94d..efab1eb901 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 246f21f124..0063f334b6 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 46c3de4484..e275d0165f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index eb32e43894..b76c162712 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 40405ad236..95ced6102d 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 723b4703c0..3f1e53f5c4 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 9781f1e4b1..a4554eac63 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 59cc1338fa..9908b62178 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 8c16ea8bc7..76215451c2 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index d71d3aadd4..eaa1a00bf1 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 9a606ac0a4..07e219bc80 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 9d018c06eb..f722ffce17 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 8f13fb8fc8..bddd8b65d9 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 04fa7aff68..658c40ee37 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index acaea308cb..97d32dc8db 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 9376de1704..20959cc696 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index d3b537c5f3..0e25b13623 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index fda1b38d5c..fdb6d54594 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 3d35aa93e6..eef7bad883 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 918875f2b8..4ef1ec43db 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 97824ec362..31a613dc23 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 5678f80482..ed5711336b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 48d5a42dd1..abfa8c4b6e 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+diff --git a/release/src/router/www/Tools_OtherSettings.asp b/release/src/router/www/Tools_OtherSettings.asp
+index 65d7718cf4..c69e924a28 100644
+--- a/release/src/router/www/Tools_OtherSettings.asp
++++ b/release/src/router/www/Tools_OtherSettings.asp
+@@ -21,6 +21,14 @@
+ <script>
+ 
+ function initial() {
++	/* reaper: reaper_inject is a kill switch with no defaults.c entry - unset or
++	   any non-zero value means ON, only a literal "0" disables it, so the empty
++	   case must select ON or opening this page would show it as off. */
++	var ri = '<% nvram_get("reaper_inject"); %>';
++	document.form.reaper_inject.value = (ri === '0') ? '0' : '1';
++	var wb = '<% nvram_get("wlcsm_bindfix"); %>';
++	document.form.wlcsm_bindfix.value = (wb === '0') ? '0' : '1';
++
+ 	show_menu();
+ 	initConntrackValues()
+ }
+@@ -60,6 +68,19 @@ function applyRule(){
+ 	    !validator.numberRange(document.form.udp_unreplied, 1, 86400))
+ 		return false;
+ 
++	/* reaper: same alphabet rc/rwarden.c rw_valid_sched() accepts (digits, space,
++	   * / , -). That consumer already rejects anything else and falls back to the
++	   default, so this cannot be an injection path - the check is here so the user
++	   is TOLD rather than silently getting 30 4 * * *. Empty is allowed and means
++	   "use the default". */
++	var sc = document.form.rwarden_sched.value.replace(/^\s+|\s+$/g, '');
++	if(sc !== '' && !/^[0-9 *\/,-]{1,64}$/.test(sc)){
++		alert('<#RTWK_07#>');
++		document.form.rwarden_sched.focus();
++		return false;
++	}
++	document.form.rwarden_sched.value = sc;
++
+ 	showLoading();
+ 
+ 	document.form.ct_tcp_timeout.value = "0 "+
+@@ -91,7 +112,7 @@ function applyRule(){
+ <input type="hidden" name="next_page" value="Tools_OtherSettings.asp">
+ <input type="hidden" name="modified" value="0">
+ <input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="restart_conntrack;restart_mastiff">
++<input type="hidden" name="action_script" value="restart_conntrack;restart_mastiff;restart_httpd">
+ <input type="hidden" name="action_wait" value="5">
+ <input type="hidden" name="first_time" value="">
+ <input type="hidden" name="SystemCmd" value="">
+@@ -119,6 +140,45 @@ function applyRule(){
+ 			<div>&nbsp;</div>
+ 			<div class="formfonttitle"><#menu5_6#> - Tweaks</div>
+ 			<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
++				<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3"  class="FormTable" style="margin-top:8px;">
++					<thead>
++						<tr>
++							<td colspan="2"><#RTWK_00#></td>
++						</tr>
++					</thead>
++
++					<tr>
++						<th><#RTWK_01#></th>
++						<td>
++							<select name="reaper_inject" class="input_option">
++								<option value="1"><#checkbox_Yes#></option>
++								<option value="0"><#checkbox_No#></option>
++							</select>
++							<span style="margin-left:8px"><#RTWK_02#></span>
++						</td>
++					</tr>
++
++					<tr>
++						<th><#RTWK_03#></th>
++						<td>
++							<select name="wlcsm_bindfix" class="input_option">
++								<option value="1"><#checkbox_Yes#></option>
++								<option value="0"><#checkbox_No#></option>
++							</select>
++							<span style="margin-left:8px"><#RTWK_04#></span>
++						</td>
++					</tr>
++
++					<tr>
++						<th><#RTWK_05#></th>
++						<td>
++							<input type="text" maxlength="64" class="input_25_table" name="rwarden_sched"
++							       value="<% nvram_get("rwarden_sched"); %>" placeholder="30 4 * * *">
++							<span style="margin-left:8px"><#RTWK_06#></span>
++						</td>
++					</tr>
++				</table>
++
+ 				<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3"  class="FormTable" style="margin-top:8px;">
+ 					<thead>
+ 						<tr>
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index bc8f02435f..0580912df8 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6625,3 +6625,11 @@ RABT_37=Vendor components.
+ RABT_38=This firmware includes proprietary components supplied by ASUS and Broadcom, redistributed unmodified under their own terms. They are not covered by the GPL grant above.
+ RABT_39=No warranty.
+ RABT_40=Provided as-is, with no warranty of any kind. Reaper is an independent project and is not affiliated with, endorsed by, or supported by ASUS or Broadcom. Installing third-party firmware is done at your own risk and may void your warranty.
++RTWK_00=Reaper
++RTWK_01=Reaper interface theme
++RTWK_02=Off serves the unmodified ASUS interface. Takes effect when the web server restarts, which this page does for you.
++RTWK_03=nvram netlink workaround
++RTWK_04=Works around a Broadcom defect that can leave settings unable to save until the router is restarted. Requires a reboot to take effect.
++RTWK_05=Warden feed update schedule
++RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
++RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
+-- 
+2.25.1
+

@@ -1,0 +1,87 @@
+From 466046b0aad824e161676811410e10bccf2bccc1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 15:16:08 -0400
+Subject: [PATCH] Tools_OtherSettings: apply only what changed, and actually
+ apply the schedule
+
+Two defects in the rows added a moment ago, both found by checking the apply
+path rather than the form.
+
+rwarden_sched SAVED BUT NEVER TOOK EFFECT. The cron line is written by
+start_rwarden() (rc/rwarden.c:1046) through cru, and the rc service is "rwarden".
+The page was sending restart_conntrack;restart_mastiff;restart_httpd - none of
+which touch Warden or cron - so the field would have looked like it worked and
+quietly not, until the next reboot or an unrelated Warden change. It now sends
+restart_rwarden, which is what Reaper_Warden.asp itself uses. No-op on a box with
+Warden disabled.
+
+restart_httpd WAS UNCONDITIONAL. Every save on this page - including one that
+only touched a TCP timeout - bounced the web server and dropped the user's own
+session, for a setting they had not changed.
+
+Both restarts are now driven off what actually changed: initial() records the
+values the page loaded with, and the submit appends only the restarts required.
+Stock rows keep exactly the stock action_script they always had.
+
+Gate clean; all seven inline blocks still parse in all 25 languages.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../src/router/www/Tools_OtherSettings.asp    | 20 ++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Tools_OtherSettings.asp b/release/src/router/www/Tools_OtherSettings.asp
+index c69e924a28..1b0048d221 100644
+--- a/release/src/router/www/Tools_OtherSettings.asp
++++ b/release/src/router/www/Tools_OtherSettings.asp
+@@ -20,6 +20,8 @@
+ <script language="JavaScript" type="text/javascript" src="/help.js"></script>
+ <script>
+ 
++var RTWK_ORIG = {};
++
+ function initial() {
+ 	/* reaper: reaper_inject is a kill switch with no defaults.c entry - unset or
+ 	   any non-zero value means ON, only a literal "0" disables it, so the empty
+@@ -28,6 +30,10 @@ function initial() {
+ 	document.form.reaper_inject.value = (ri === '0') ? '0' : '1';
+ 	var wb = '<% nvram_get("wlcsm_bindfix"); %>';
+ 	document.form.wlcsm_bindfix.value = (wb === '0') ? '0' : '1';
++	/* what we loaded with, so the submit can ask for ONLY the restarts the
++	   change actually needs - see the action_script assembly in applyRule(). */
++	RTWK_ORIG.inject = document.form.reaper_inject.value;
++	RTWK_ORIG.sched  = document.form.rwarden_sched.value;
+ 
+ 	show_menu();
+ 	initConntrackValues()
+@@ -81,6 +87,18 @@ function applyRule(){
+ 	}
+ 	document.form.rwarden_sched.value = sc;
+ 
++	/* Only ask for what the change needs. reaper_inject takes effect when httpd
++	   restarts - and that drops this very session, so do not do it for someone
++	   who only edited a TCP timeout. The Warden cron line is written by
++	   start_rwarden(), so a schedule change needs restart_rwarden or it saves to
++	   nvram and never reaches cron; no-op when Warden is disabled. */
++	var acts = document.form.action_script.value;
++	if(document.form.reaper_inject.value !== RTWK_ORIG.inject)
++		acts += ';restart_httpd';
++	if(sc !== RTWK_ORIG.sched)
++		acts += ';restart_rwarden';
++	document.form.action_script.value = acts;
++
+ 	showLoading();
+ 
+ 	document.form.ct_tcp_timeout.value = "0 "+
+@@ -112,7 +130,7 @@ function applyRule(){
+ <input type="hidden" name="next_page" value="Tools_OtherSettings.asp">
+ <input type="hidden" name="modified" value="0">
+ <input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="restart_conntrack;restart_mastiff;restart_httpd">
++<input type="hidden" name="action_script" value="restart_conntrack;restart_mastiff">
+ <input type="hidden" name="action_wait" value="5">
+ <input type="hidden" name="first_time" value="">
+ <input type="hidden" name="SystemCmd" value="">
+-- 
+2.25.1
+

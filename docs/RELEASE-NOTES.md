@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.4.5** — `3006.102.8_Reaper_v2.4.5`, 439 patches (replay-verified). **No image published from it yet.** It touches no per-model overlay, so the four siblings take it from the patch series unchanged; images come from the clean-room CI build. |
+| **Current rung** | **v2.4.6** — `3006.102.8_Reaper_v2.4.6`, 451 patches (replay-verified). **No image published from it yet.** Unlike v2.4.5 this rung *does* touch per-model overlay files, so all four siblings were ported first and every overlay was then regenerated and re-checked by the identity gate; images come from the clean-room CI build. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4 and v2.4.5. v2.4.1 through v2.4.4 are built on RT-BE96U, both variants. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5 and v2.4.6. v2.4.1 through v2.4.4 are built on RT-BE96U, both variants. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -18,10 +18,103 @@
 
 ---
 
-## In the tree for v2.4.6 — not cut, not built, not published
+## What's new in v2.4.6 — cut, not yet built or published
 
-*Recorded here as it lands so the notes are written while the reasoning is fresh.
-Nothing in this section is installable yet.*
+*The rung is cut and the four siblings are ported. No image exists from it yet;
+these notes are written while the reasoning is fresh.*
+
+**Two field reports drive this rung**, and they are unrelated to each other except
+that both had been resisting the obvious fixes for a while.
+
+### A games console could not use UPnP
+
+Reported repeatedly against Call of Duty — "Networking failed to start" — and it
+survived every restart-UPnP-and-delete-the-leases suggestion, because **the console
+was never getting as far as asking for a port.** Two separate causes, both fixed.
+
+**The router advertised a service it does not have.** It answered discovery requests
+for the old dial-up-era "PPP connection" service, which it has never implemented. A
+console that asked for that one first was told "yes, over here", followed the
+pointer, found nothing it recognised, and gave up — before requesting a single port
+forward. A dead end during introductions, not a refusal, which is exactly why it
+looked so unlike a port-forwarding problem and why clearing leases never helped.
+
+**And the router now introduces itself as the older, more widely understood kind of
+gateway again.** A newer description had been adopted to gain two conveniences,
+chiefly *"this port is taken, give me any free one"*. But that newer description is
+misread by real consoles, and the fix for that had already been to describe
+ourselves the old way to every client — which is precisely what withdraws those two
+conveniences. The build was paying the entire price and keeping the entire risk. The
+router now says one consistent thing about itself, in discovery and in its own
+description alike.
+
+**IPv6 pinholes are unaffected.** They can only exist under the newer description, so
+turning them on still switches the router to it — one coherent arrangement either
+way, chosen by that single setting. The separate "advertise the newer description"
+option has been removed: with this change there is nothing left for it to select, and
+a setting that cannot take effect is worse than no setting.
+
+**Being straight about what this does and does not prove:** both changes are
+correct and both remove real dead ends, but neither has yet been confirmed against
+the reporter's console. The router now logs which description it served and to
+whom, which is the evidence needed to close the report properly.
+
+### Flashing a mesh node left it showing a blank page
+
+An AiMesh node deliberately restricts its own web interface to a short list of
+pages. That is ASUS's design and it is right — a node is configured from the main
+router. Reaper's theming redirects each page to its own interface, and the node's
+interface is not on that list, so the node bounced the redirect back to where it came
+from, which redirected again. Neither side was wrong alone; together they had no
+exit. Because the redirect runs before the page draws, what you saw was a blank
+window with a cycling address bar rather than anything resembling an error, and the
+login page could never be reached. The node's own firmware-update page was caught the
+same way, so a node in that state could not be recovered through its own interface.
+
+Reaper's theming now stands aside completely on a node, which leaves the stock
+AiMesh node page — what a node is meant to show.
+
+**This is not the first-boot login loop fixed in v2.2.0.** Different cause entirely,
+and this one only ever affected mesh nodes.
+
+### Settings that only existed as hidden values now have controls
+
+Three of them, on **Tools → Other Settings**. The **workaround for a Broadcom defect
+that can leave settings unable to save until the router is restarted** is the
+significant one, and it is now **on by default** — previously it had to be switched
+on by hand, and almost nobody knew it was there. Alongside it, the **theme switch**
+for anyone who wants the stock interface back without reflashing, and the
+**schedule for Warden's threat-feed refresh**.
+
+Two defects in that page were fixed at the same time: the Warden schedule could be
+saved and would **never take effect** (the page restarted three services, none of
+them Warden or the scheduler), and **every save restarted the web server** and
+logged you out, including saves that changed only a connection timeout.
+
+A **"Disable Asusnat tunnel" switch was removed** — the daemon it offered to disable
+is not compiled into this firmware and no such program exists in the image, so it was
+an offer to turn off something that was never on.
+
+### Smoother graphs, a calmer flashing screen, and a diagnostic bundle that covers more
+
+The **QoS diagnostics and system-information graphs** had the defect the Traffic
+Analyzer shed in v2.4.5 — points placed by position in the list rather than by when
+they arrived, so each reading shoved the whole trace sideways in one jump. The
+temperature graph was the worst in the build. Both now place readings by time and
+redraw continuously.
+
+The **firmware flashing screen** no longer displays internal polling detail that had
+reached the screen by accident, and no longer offers a Close button *while the router
+is being written* — dismissing it cannot stop a flash, and it hands you a
+normal-looking page over a router rewriting its own storage. It still appears at once
+if something genuinely fails.
+
+The **diagnostic report** now captures the firewall and the dataplane accelerator. A
+connectivity report could not be answered from a bundle at all, because neither was
+collected. It also **redacts e-mail addresses**, which it previously did not — the
+redaction only examined settings whose name implied sensitivity, so an address in a
+log line went through untouched — and the finished report is re-scanned and marked
+either clean or "review before sharing".
 
 ### An About page that can prove what it claims
 

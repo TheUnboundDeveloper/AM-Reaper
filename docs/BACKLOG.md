@@ -31,6 +31,47 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ---
 
+- **[P2] The Call of Duty / UPnP report is not yet confirmed fixed.** v2.4.6 removed two real
+  dead ends — the phantom `WANPPPConnection` advertisement and the IGD:2 device description on
+  the default daemon — and both were verified in the build (preprocessor probe on each configure
+  line). **Neither has been confirmed against the reporter's console.** The decisive evidence is
+  one line, now emitted by both description versions:
+
+  ```
+  grep -i "IGD desc" /tmp/syslog.log
+  ```
+
+  → `IGD desc: served v<1|2> to <ip> (User-Agent: <string>)`. It answers three things at once:
+  whether the console reached the description fetch at all (no line = discovery never got that
+  far, which is what the `WANPPPConnection` fix addresses), which version it was served, and the
+  User-Agent — the string needed to give a specific client the same per-client downgrade upstream
+  hardcodes for Microsoft clients. **Do not use `logread`** — it returns empty on this platform by
+  design (see the note in the wlcsm/netlink material); read the file.
+
+  Also still to confirm: the reporter's `upnp_pinhole_enable`. With pinholes on, the router
+  legitimately serves the IGD:2 description, which is the configuration that broke the PS5
+  originally. **[owed]**
+
+- **[P2] `miniupnpd-igdv2` never received the User-Agent / IGD-description logging patch.**
+  The two daemons are separate source trees, and `8f15112975` touched only `miniupnpd/`. So the
+  moment a user enables IPv6 pinholes, the daemon that actually runs emits no `IGD desc:` line at
+  all — and that is the daemon serving the IGD:2 description, i.e. the riskier of the two and the
+  one whose clients most need diagnosing. Pre-existing divergence, not introduced by v2.4.6, but
+  it now matters more because the pinhole path is the only route to an IGD:2 description.
+  Fix is a straight copy of the patch (`upnphttp.c` UA capture + `upnphttp.h` field + the log
+  line). **[owed]**
+
+- **[P2] The AiMesh-node theming fix is build-verified only.** `bb580b6370` was reasoned from the
+  whitelist in `web.c` and the lockdown branch in `httpd.c`, and the change itself is a
+  three-line guard, but **no node has been flashed with it.** The recovery path also needs
+  confirming: a node already stuck in the loop cannot be reflashed through its own interface, so
+  it must be updated from the main router's AiMesh firmware flow. **[owed]**
+
+- **[P3] The Tweaks-page label for the bind shim reads "nvram netlink workaround".** Accurate
+  about the symptom, but it does not name the mechanism, and the owner refers to it as the socket
+  bind shim. Renaming costs a token change across all 25 dictionaries, so it is worth deciding
+  once rather than twice. **[cosmetic]**
+
 - **[P2] Speed test: `level_err_cnt` is consumed once per POLL, not once per error — this is
   probably the real cause of a run dying mid-test.** Found 2026-08-16 while the owner pushed back
   on the v2.4.5 changelog entry claiming the counter-leak fix addressed hanging/erroring speed

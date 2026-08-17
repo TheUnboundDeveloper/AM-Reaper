@@ -1,0 +1,395 @@
+From 53608bc0959e8dcd046b3e4523a7f6aa2cb0d6da Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 21:37:15 -0400
+Subject: [PATCH] QoSDiag + Sysinfo: place live chart x by arrival time, not
+ sample index
+
+Both pages still had the defect Reaper_Traffic.asp shed in v2.4.5: a point's x
+came from its INDEX in the ring, and the chart was only ever redrawn from the
+poll callback. One sample therefore shifted the whole trace in a single jump,
+and lowering the poll interval shrinks that step but cannot remove it.
+
+Reaper_QoSDiag.asp - occupancy and drops (hand-rolled Canvas):
+  - occHist/dropHist now hold [t, value] and are trimmed by AGE, not by a fixed
+    sample count; x = xAt(t, t1, span). At the 4 s rate the trace was jumping
+    1/44 of the width once every four seconds.
+  - drawing moved to requestAnimationFrame and out of render(), so the trace
+    keeps sliding between polls and a late poll interpolates instead of
+    stuttering. start()/stop() own the frame loop, so pause and tab-hide freeze
+    it properly.
+  - drops y-scale is snapped to a 1/2/5x10^n ladder and eased (tau=250ms) with a
+    1.5 s hold before it may shrink. The old raw per-draw Math.max meant every
+    point jumped vertically the instant the peak scrolled off the left edge -
+    the second, independent source of jumpiness. drawOcc keeps its fixed
+    0-100 % axis and needs none of this.
+  - setupCanvas() no longer calls getBoundingClientRect()+setTransform() per
+    draw. That was free at 2 Hz and a forced layout per frame per canvas under
+    rAF - it would have made the page WORSE. Size is cached and recomputed only
+    on resize or a devicePixelRatio change. Note cv.width resets the context
+    transform, so setTransform must follow the assignment.
+
+Tools_Sysinfo.asp - temperature graph (STOCK page, Chart.js v3.9.1):
+  - the x scale was a hardcoded 20-slot category array, so every 3 s .shift()
+    snapped the trace sideways by 1/19 of the width (~5.3 %, the largest step of
+    any chart in the build) AND an irregular poll still occupied exactly one
+    slot, distorting the spacing. x is now linear on the sample's real age via a
+    temp_times[] ring; range and tick spacing reproduce the old 0..57-by-3 axis
+    exactly, so a healthy 3 s poll looks identical to before.
+  - animation:false -> {duration:3000, easing:"linear"}. Chart.js owns its own
+    frame loop; there is no rAF to write here. A late poll simply finishes the
+    tween and holds - an honest read, not an invented sample.
+  - kept minimal and revertable per the stock-code rule: the series stay plain
+    numbers, so every push site and the `typeof ...[0] === "number"` dataset
+    guards are untouched. Projection reads through a __src reference instead.
+  - Rule 33 checked: no sysdep/FUNCTION variant of Tools_Sysinfo.asp exists and
+    the www Makefile does not mention it, so the base-file edit ships.
+
+No linear-scale date adapter is required, and no dict tokens were added.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_QoSDiag.asp | 150 +++++++++++++++++++---
+ release/src/router/www/Tools_Sysinfo.asp  |  73 +++++++++--
+ 2 files changed, 200 insertions(+), 23 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_QoSDiag.asp b/release/src/router/www/Reaper_QoSDiag.asp
+index d3665df00c..82354c598f 100644
+--- a/release/src/router/www/Reaper_QoSDiag.asp
++++ b/release/src/router/www/Reaper_QoSDiag.asp
+@@ -172,6 +172,81 @@ canvas{display:block;width:100%;height:120px}
+   var COLORS=["#4FB286","#7EA6C9","#E0A93B","#E10600","#C77DFF","#5AD1C4","#B7B1A4","#8894a0"];
+   var HIST=45, state={objs:[],selObj:null,selQ:null,qos:{},prev:{},occHist:{},dropHist:[]};
+ 
++  /* ---- live chart engine (v2.4.6) ---------------------------------------
++     Same treatment as Reaper_Traffic.asp got in v2.4.5, for the same reason.
++     Both canvases used to place a point by its INDEX in the ring
++     (X = i/(HIST-1)*w) and redraw only from the poll callback, so one sample
++     shifted the whole trace by 1/44 of the width in a single jump - once every
++     4 s at the slow rate. Here each sample carries the time it arrived and x is
++     a function of that time, drawn on requestAnimationFrame, so the trace
++     slides continuously and a late or skipped poll interpolates instead of
++     stuttering. Data rate and frame rate are now independent.
++
++     Note the charts are Canvas, not SVG: the "persistent nodes, attributes
++     only" half of the Traffic fix does not apply here - Canvas already redraws
++     wholesale. What DID have to change is setupCanvas(), which called
++     getBoundingClientRect() + setTransform() on every single draw. At 2 Hz that
++     was free; at display rate it is a forced layout per frame per canvas, so
++     the size is cached and recomputed only on resize.
++     ---------------------------------------------------------------------- */
++  var nowMs=(window.performance&&performance.now)
++    ? function(){ return performance.now(); } : function(){ return Date.now(); };
++  var SMAX=400;
++  /* Visible span = the same HIST samples' worth the ring used to hold, so the
++     "Last N s" tag keeps meaning what it says. Render slightly behind real time
++     so there is always a sample past the right edge to interpolate toward;
++     without it the leading segment extrapolates and whips on every arrival. */
++  function windowMs(){ return HIST*ms; }
++  function lagMs(){ return Math.min(3000, Math.round(ms*1.5)); }
++
++  function pushSamp(buf,t,v){
++    /* A pause, a hidden tab or a port change leaves samples far apart; joining
++       across that gap would draw a long ramp that never happened. */
++    if(buf.length && t-buf[buf.length-1][0] > Math.max(3*ms,1500)) buf.length=0;
++    buf.push([t,v]);
++    var cut=t-(windowMs()+lagMs()+2000);
++    while(buf.length && buf[0][0]<cut) buf.shift();
++    while(buf.length>SMAX) buf.shift();
++  }
++  /* Clip to [t0,t1], interpolating a synthetic sample at each edge so the trace
++     spans the full plot instead of growing in from the right. */
++  function clipSamples(buf,t0,t1){
++    var out=[],i,a,b,f;
++    for(i=0;i<buf.length;i++){
++      a=buf[i];
++      if(a[0]<t0){ b=buf[i+1];
++        if(b&&b[0]>t0){ f=(t0-a[0])/(b[0]-a[0]); out.push([t0,a[1]+(b[1]-a[1])*f]); }
++        continue; }
++      if(a[0]>t1){ b=buf[i-1];
++        if(b&&b[0]<t1){ f=(t1-b[0])/(a[0]-b[0]); out.push([t1,b[1]+(a[1]-b[1])*f]); }
++        break; }
++      out.push(a);
++    }
++    return out;
++  }
++  /* Drops y-scale: snapped to a 1/2/5x10^n ladder and eased toward its target,
++     with a hold before it may shrink. The old code took a raw max over the ring
++     on every draw, so the instant the peak scrolled off the left edge every
++     point jumped vertically - the second, independent source of jumpiness.
++     drawOcc needs none of this: its axis is a fixed 0-100 %. */
++  function niceMax(v){
++    if(!(v>0)) return 1;
++    var e=Math.pow(10,Math.floor(Math.log(v)/Math.LN10)), m=v/e;
++    return (m<=1?1:m<=2?2:m<=5?5:10)*e;
++  }
++  function Scale(){ this.cur=6; this.tgt=6; this.lowSince=0; }
++  Scale.prototype.step=function(raw,t,dt){
++    var want=Math.max(6,niceMax(raw*1.08));
++    if(want>=this.tgt){ this.tgt=want; this.lowSince=0; }
++    else { if(!this.lowSince) this.lowSince=t;
++           if(t-this.lowSince>1500){ this.tgt=want; this.lowSince=0; } }
++    this.cur += (this.tgt-this.cur)*(1-Math.exp(-dt/250));   /* tau=250ms, frame-rate independent */
++    if(Math.abs(this.tgt-this.cur)/this.tgt < 0.001) this.cur=this.tgt;
++    return this.cur;
++  };
++  var dropScale=new Scale();
++  function xAt(t,t1,span,w){ return w*(1-(t1-t)/span); }
++
+   // ---- parse the bs egress_tm dump (format: [[tm-queue-diag]]) ----
+   function field(s,re){ var m=s.match(re); return m?m[1]:null; }
+   function parseTM(tm){
+@@ -255,9 +330,11 @@ canvas{display:block;width:100%;height:120px}
+       q.delayMs=sb>0?(q.ob*8/sb*1000):null;
+     });
+     var np={ts:now}; o.queues.forEach(function(q){ np[q.qid]={txb:q.txb,dp:q.dp}; }); state.prev[key]=np;
+-    // history
+-    o.queues.forEach(function(q){ var h=state.occHist[q.qid]=state.occHist[q.qid]||[]; h.push(q.pct); if(h.length>HIST)h.shift(); });
+-    var td=0; o.queues.forEach(function(q){ td+=q.dropRate; }); state.dropHist.push(td); if(state.dropHist.length>HIST)state.dropHist.shift();
++    // history - time-stamped [t, value]; the frame loop places x from t, so the
++    // ring is trimmed by age rather than by a fixed sample count.
++    var tn=nowMs();
++    o.queues.forEach(function(q){ var h=state.occHist[q.qid]=state.occHist[q.qid]||[]; pushSamp(h,tn,q.pct||0); });
++    var td=0; o.queues.forEach(function(q){ td+=q.dropRate; }); pushSamp(state.dropHist,tn,td);
+   }
+   function cur(){ var s=state.selObj; return state.objs.filter(function(o){return o.index===s;})[0]||null; }
+   function curQ(){ var o=cur(); return o?o.queues.filter(function(q){return q.qid===state.selQ;})[0]:null; }
+@@ -321,7 +398,9 @@ canvas{display:block;width:100%;height:120px}
+         '<div class="brow"><div class="bl">SP '+`<#RQD_50#>`+'</div><div class="bchips">'+(sp.length?sp.map(function(q){return chip(q,qLabel(o,q).n,"P"+q.qid);}).join(""):'<span class="bchip">'+`<#RQD_51#>`+'</span>')+'</div></div>'+
+         '<div class="brow"><div class="bl">WRR '+`<#RQD_50#>`+'</div><div class="bchips">'+(wrr.length?wrr.map(function(q){return chip(q,qLabel(o,q).n,"w"+q.weight);}).join(""):'<span class="bchip">'+`<#RQD_52#>`+'</span>')+'</div></div></div>';
+ 
+-    renderDetail(o); drawOcc(qs); drawDrops();
++    /* charts are no longer drawn from the poll callback - the frame loop owns
++       them, so the trace keeps sliding between polls instead of jumping on one */
++    renderDetail(o);
+     document.getElementById("occnow").textContent=`<#RQD_53#>`+" "+Math.round(qs.reduce(function(a,q){return Math.max(a,q.pct||0);},0))+"%";
+     document.getElementById("dropnow").textContent=td.toFixed(1)+" /s";
+     document.getElementById("occleg").innerHTML=qs.filter(function(q){return q.txb>0||q.af>0;}).map(function(q){return '<span><i style="background:'+COLORS[q.qid%8]+'"></i>Q'+q.qid+' '+qLabel(o,q).n+'</span>';}).join("");
+@@ -349,22 +428,63 @@ canvas{display:block;width:100%;height:120px}
+   function drow(k,v){ return '<div class="row"><span>'+k+'</span><b>'+v+'</b></div>'; }
+   function meas(k,v,c){ return '<div class="m"><div class="k">'+k+'</div><div class="v '+c+'">'+v+'</div></div>'; }
+ 
+-  function setupCanvas(cv){ var d=window.devicePixelRatio||1,r=cv.getBoundingClientRect(); cv.width=r.width*d; cv.height=120*d; var x=cv.getContext("2d"); x.setTransform(d,0,0,d,0,0); return{x:x,w:r.width,h:120}; }
++  /* Size is cached: getBoundingClientRect() forces layout, and at display rate
++     that would cost a reflow per frame per canvas. Recomputed only when the
++     window resizes or the device pixel ratio changes (monitor swap / zoom).
++     Assigning cv.width also resets the context transform, so setTransform must
++     follow the assignment, not precede it. */
++  var cvCache={};
++  function setupCanvas(cv){
++    var d=window.devicePixelRatio||1, c=cvCache[cv.id];
++    if(!c || c.dirty || c.dpr!==d){
++      var r=cv.getBoundingClientRect();
++      cv.width=Math.max(1,Math.round(r.width*d)); cv.height=Math.round(120*d);
++      c=cvCache[cv.id]={x:cv.getContext("2d"),w:r.width,h:120,dpr:d,dirty:false};
++      c.x.setTransform(d,0,0,d,0,0);
++    }
++    return c;
++  }
++  window.addEventListener("resize",function(){ for(var k in cvCache) cvCache[k].dirty=true; });
+   function grid(x,w,h){ x.clearRect(0,0,w,h); x.strokeStyle="rgba(236,231,219,.06)"; x.lineWidth=1; for(var i=1;i<4;i++){var y=h*i/4;x.beginPath();x.moveTo(0,y);x.lineTo(w,y);x.stroke();} }
+-  function drawOcc(qs){ var c=setupCanvas(document.getElementById("occcv")); grid(c.x,c.w,c.h);
+-    qs.forEach(function(q){ var H=state.occHist[q.qid]; if(!H||H.length<2)return; c.x.beginPath();
+-      H.forEach(function(v,i){ var X=i/(HIST-1)*c.w,Y=c.h-(v/100)*c.h; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y); });
+-      c.x.strokeStyle=COLORS[q.qid%8]; c.x.lineWidth=q.qid===state.selQ?2.4:1.2; c.x.globalAlpha=q.qid===state.selQ?1:.6; c.x.stroke(); c.x.globalAlpha=1; }); }
+-  function drawDrops(){ var c=setupCanvas(document.getElementById("dropcv")); grid(c.x,c.w,c.h); var a=state.dropHist; if(a.length<2)return;
+-    var mx=Math.max(6,Math.max.apply(null,a));
+-    c.x.beginPath(); a.forEach(function(v,i){var X=i/(HIST-1)*c.w,Y=c.h-(v/mx)*c.h*.92; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y);}); c.x.lineTo(c.w,c.h); c.x.lineTo(0,c.h); c.x.closePath();
++
++  function drawOcc(t1,span){
++    var c=setupCanvas(document.getElementById("occcv")); grid(c.x,c.w,c.h);
++    var o=cur(); if(!o) return;
++    o.queues.slice().sort(function(a,b){return a.qid-b.qid;}).forEach(function(q){
++      var pts=clipSamples(state.occHist[q.qid]||[],t1-span,t1); if(pts.length<2)return;
++      c.x.beginPath();
++      pts.forEach(function(p,i){ var X=xAt(p[0],t1,span,c.w),Y=c.h-(p[1]/100)*c.h; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y); });
++      c.x.strokeStyle=COLORS[q.qid%8]; c.x.lineWidth=q.qid===state.selQ?2.4:1.2;
++      c.x.globalAlpha=q.qid===state.selQ?1:.6; c.x.stroke(); c.x.globalAlpha=1; });
++  }
++  function drawDrops(t1,span,dt){
++    var c=setupCanvas(document.getElementById("dropcv")); grid(c.x,c.w,c.h);
++    var pts=clipSamples(state.dropHist,t1-span,t1); if(pts.length<2)return;
++    var raw=0,i; for(i=0;i<pts.length;i++) if(pts[i][1]>raw) raw=pts[i][1];
++    var mx=dropScale.step(raw,t1,dt);
++    function trace(){ c.x.beginPath();
++      pts.forEach(function(p,i){ var X=xAt(p[0],t1,span,c.w),Y=c.h-(p[1]/mx)*c.h*.92; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y); }); }
++    trace(); c.x.lineTo(xAt(pts[pts.length-1][0],t1,span,c.w),c.h); c.x.lineTo(xAt(pts[0][0],t1,span,c.w),c.h); c.x.closePath();
+     var g=c.x.createLinearGradient(0,0,0,c.h); g.addColorStop(0,"rgba(225,6,0,.34)"); g.addColorStop(1,"rgba(225,6,0,0)"); c.x.fillStyle=g; c.x.fill();
+-    c.x.beginPath(); a.forEach(function(v,i){var X=i/(HIST-1)*c.w,Y=c.h-(v/mx)*c.h*.92; i?c.x.lineTo(X,Y):c.x.moveTo(X,Y);}); c.x.strokeStyle="#E10600"; c.x.lineWidth=1.6; c.x.stroke(); }
++    trace(); c.x.strokeStyle="#E10600"; c.x.lineWidth=1.6; c.x.stroke();
++  }
++
++  /* The frame loop. rAF self-throttles to ~0 in a hidden tab, so a backgrounded
++     page costs nothing; the poll timer keeps its own cadence regardless. */
++  var rafId=null,lastFrame=0;
++  function liveFrame(){
++    rafId=requestAnimationFrame(liveFrame);
++    var t=nowMs(), dt=lastFrame?Math.min(500,t-lastFrame):16; lastFrame=t;
++    var span=windowMs(), t1=t-lagMs();
++    drawOcc(t1,span); drawDrops(t1,span,dt);
++  }
++  function startDraw(){ if(rafId==null){ lastFrame=0; rafId=requestAnimationFrame(liveFrame); } }
++  function stopDraw(){ if(rafId!=null){ cancelAnimationFrame(rafId); rafId=null; } }
+ 
+   // ---- controls ----
+   var timer=null, ms=500, live=true;
+-  function start(){ stop(); if(live){ fetchOnce(); timer=setInterval(fetchOnce,ms); } document.getElementById("gtag").textContent=`<#RQD_08#>`+" "+Math.round(HIST*ms/1000)+" s"; }
+-  function stop(){ if(timer){clearInterval(timer);timer=null;} }
++  function start(){ stop(); if(live){ fetchOnce(); timer=setInterval(fetchOnce,ms); startDraw(); } document.getElementById("gtag").textContent=`<#RQD_08#>`+" "+Math.round(HIST*ms/1000)+" s"; }
++  function stop(){ if(timer){clearInterval(timer);timer=null;} stopDraw(); }
+   document.getElementById("rate").addEventListener("click",function(e){ var b=e.target.closest("button"); if(!b)return; ms=+b.getAttribute("data-ms"); document.querySelectorAll("#rate button").forEach(function(x){x.classList.toggle("on",x===b);}); start(); });
+   var lb=document.getElementById("livebtn");
+   lb.addEventListener("click",function(){ live=!live; lb.classList.toggle("paused",!live); lb.childNodes[1].textContent=live?`<#RQD_59#>`:`<#RQD_60#>`; live?start():stop(); });
+diff --git a/release/src/router/www/Tools_Sysinfo.asp b/release/src/router/www/Tools_Sysinfo.asp
+index ddcf36895f..6dcbc8b15e 100644
+--- a/release/src/router/www/Tools_Sysinfo.asp
++++ b/release/src/router/www/Tools_Sysinfo.asp
+@@ -277,7 +277,37 @@ function draw_mem_charts(){
+ }
+ 
+ 
++/* Sample arrival times, one per successful poll, capped alongside the data
++   rings. The x axis used to be a fixed 20-slot category array, so every poll
++   .shift()ed the whole trace sideways by 1/19 of the width (~5.3 %) with
++   animation disabled - the largest step of any chart in the build - and an
++   irregular poll still occupied exactly one slot, distorting the spacing.
++   temp_times[] lets x be the sample's real age instead of its index; see the
++   scales.x block below. Values stay plain numbers so every push site and the
++   `typeof ...[0] === "number"` dataset guards are untouched. */
++var temp_times = [];
++
++/* Series arrays are pushed together in update_temperatures() and capped
++   identically, so the newest entry of each lines up with the newest timestamp.
++   Aligning from the END keeps that true even for a band whose data started
++   late. Returns Chart.js {x,y} points, x = seconds ago (0 = oldest edge). */
++function temp_points(arr){
++	var pts = [], n = arr.length, m = temp_times.length, base = temp_times[m-1];
++	if (!m) return pts;
++	for (var i = 0; i < n; i++) {
++		var ti = m - n + i;
++		if (ti < 0) continue;
++		var age = (base - temp_times[ti]) / 1000;
++		pts.push({x: Math.max(0, TEMP_SPAN_S - age), y: arr[i]});
++	}
++	return pts;
++}
++var TEMP_SPAN_S = 57;   /* matches the old 20 slots x 3 s axis */
++
+ function draw_temps_charts(){
++	temp_times.push(Date.now());
++	if (temp_times.length > 20)
++		temp_times.shift();
+ 	if (cpudata.length > 20)
+ 		cpudata.shift();
+ 	if (wifi24data.length > 20)
+@@ -292,6 +322,12 @@ function draw_temps_charts(){
+ 		wifi62data.shift();
+ 
+         if (cputempGraph != undefined) {
++                /* re-project every series onto the new time origin, then let
++                   Chart.js tween from the previous positions - that tween IS
++                   the glide that replaced the old sideways snap */
++                cputempGraph.data.datasets.forEach(function(ds){
++                        if (ds.__src) ds.data = temp_points(ds.__src);
++                });
+                 cputempGraph.update();
+                 return;
+         }
+@@ -301,7 +337,8 @@ function draw_temps_charts(){
+ /* CPU */
+ 	datasets.push({
+ 		label: "CPU",
+-		data: cpudata,
++		data: temp_points(cpudata),
++		__src: cpudata,
+ 		backgroundColor: backgroundColorCPU,
+ 		borderColor: borderColorCPU,
+ 		borderWidth: "2",
+@@ -314,7 +351,8 @@ function draw_temps_charts(){
+ 	if (typeof wifi24data[0] === "number" && wifi24data[0] > 0) {
+ 		datasets.push({
+ 			label: "2.4 GHz",
+-			data: wifi24data,
++			data: temp_points(wifi24data),
++			__src: wifi24data,
+ 			backgroundColor: backgroundColor24GHZ,
+ 			borderColor: borderColor24GHZ,
+ 			borderWidth: "2",
+@@ -328,7 +366,8 @@ function draw_temps_charts(){
+ 	if (typeof wifi51data[0] === "number" && wifi51data[0] > 0) {
+ 		datasets.push({
+ 			label: "5 GHz",
+-			data: wifi51data,
++			data: temp_points(wifi51data),
++			__src: wifi51data,
+ 			backgroundColor: backgroundColor5GHZ,
+ 			borderColor: borderColor5GHZ,
+ 			borderWidth: "2",
+@@ -342,7 +381,8 @@ function draw_temps_charts(){
+ 	if (typeof wifi52data[0] === "number" && wifi52data[0] > 0) {
+ 		datasets.push({
+ 			label: "5 GHz-2",
+-			data: wifi52data,
++			data: temp_points(wifi52data),
++			__src: wifi52data,
+ 			backgroundColor: backgroundColor5GHZ2,
+ 			borderColor: borderColor5GHZ2,
+ 			borderWidth: "2",
+@@ -356,7 +396,8 @@ function draw_temps_charts(){
+ 	if (typeof wifi6data[0] === "number" && wifi6data[0] > 0) {
+ 		datasets.push({
+ 			label: (wl_info.band6g_2_support ? "6 GHz-1" :"6 GHz"),
+-			data: wifi6data,
++			data: temp_points(wifi6data),
++			__src: wifi6data,
+ 			backgroundColor: backgroundColor6GHZ,
+ 			borderColor: borderColor6GHZ,
+ 			borderWidth: "2",
+@@ -370,7 +411,8 @@ function draw_temps_charts(){
+ 	if (typeof wifi62data[0] === "number" && wifi62data[0] > 0) {
+ 		datasets.push({
+ 			label: "6 GHz-2",
+-			data: wifi62data,
++			data: temp_points(wifi62data),
++			__src: wifi62data,
+ 			backgroundColor: backgroundColor6GHZ2,
+ 			borderColor: borderColor6GHZ2,
+ 			borderWidth: "2",
+@@ -385,7 +427,13 @@ function draw_temps_charts(){
+ 		data: {datasets: datasets},
+ 		options: {
+ 			responsive: true,
+-			animation: false,
++			/* was `animation: false`, which is what made the 3 s re-project a
++			   hard sideways snap. Linear easing over exactly one poll interval
++			   turns it into a continuous crawl; Chart.js owns its own frame
++			   loop, so there is no rAF to write here. If a poll is late the
++			   tween simply finishes and the trace holds still until the next
++			   one - an honest read, not an invented sample. */
++			animation: {duration: 3000, easing: "linear"},
+ 			segmentShowStroke : false,
+ 			plugins: {
+ 				tooltip: {
+@@ -407,10 +455,19 @@ function draw_temps_charts(){
+ 				},
+ 			},
+ 			scales: {
++				/* linear, not category: a category axis spaces samples evenly
++				   whatever their real spacing, so a poll that arrived late still
++				   occupied one slot. x is now the sample's age in seconds, so an
++				   irregular poll lands where it actually belongs. Range and tick
++				   spacing reproduce the old 0..57-by-3 axis exactly. No date
++				   adapter is required for a linear scale. */
+ 				x: {
+-					labels: [0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45,48,51,54,57],
++					type: "linear",
++					min: 0,
++					max: TEMP_SPAN_S,
+ 					ticks: {
+ 						color: ticksColor,
++						stepSize: 3
+ 					}
+ 				},
+ 				y: {
+-- 
+2.25.1
+

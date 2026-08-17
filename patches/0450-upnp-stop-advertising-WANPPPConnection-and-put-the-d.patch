@@ -1,0 +1,295 @@
+From d10067577f4d011abc84ffa7cd2ef3cf0d7b42e4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 17 Aug 2026 13:55:42 -0400
+Subject: [PATCH] upnp: stop advertising WANPPPConnection, and put the default
+ daemon back to IGD:1
+
+Two changes to how this router presents itself over UPnP, both aimed at the
+standing "UPnP breaks Call of Duty" field reports.
+
+1. --disable-pppconn on BOTH daemons, adopting upstream Merlin b2bfafe1bd.
+
+   ADVERTISE_WANPPPCONN made minissdp.c answer M-SEARCH, and send unsolicited
+   NOTIFYs, for urn:schemas-upnp-org:service:WANPPPConnection:1 - but neither
+   daemon implements that service. The root description only ever carries
+   WANIPConnection, so a control point that probes for the PPP service first
+   got a hit, fetched rootDesc.xml, matched no serviceType, obtained no control
+   URL, and gave up BEFORE ever calling AddPortMapping. A discovery dead-end
+   rather than a mapping refusal - which is why restarting UPnP and clearing
+   the lease file changed nothing for the reporter.
+
+2. The default daemon is IGD:1 again: the --igd2 added by bdb0dd2024 is
+   reverted, restoring upstream Merlin's split.
+
+   That change wanted AddAnyPortMapping and GetListOfPortMappings for IPv4
+   clients. Two days later the PS5 report showed an IGD:2 rootDesc breaks real
+   control points, and the fix for THAT (ac485cfd4a) forced a v1 description on
+   every client - which is exactly what suppresses those two actions. So the
+   build was paying the full cost of IGD:1 while keeping every IGD:2 risk:
+   SSDP NOTIFYs still announced InternetGatewayDevice:2 / WANIPConnection:2
+   against a v1 description (the NOTIFY path has no SSDP_RESPOND_SAME_VERSION
+   echo, unlike M-SEARCH replies), and the pinhole toggle silently flipped
+   descriptions back to v2.
+
+   IPv6 pinholes are unaffected: they are already separated BY BINARY.
+   ENABLE_6FC_SERVICE is nested inside both #ifdef IGD_V2 and #ifdef
+   ENABLE_IPV6, and only miniupnpd-igdv2 is configured --ipv6, so the default
+   daemon could never serve a pinhole whatever its IGD version. Verified by
+   preprocessor probe on both configure lines:
+     miniupnpd       IGD_V2 off, 6FC off, UPNPPINHOLE off, WANPPPCONN off
+     miniupnpd-igdv2 IGD_V2 on,  6FC on,  UPNPPINHOLE on,  WANPPPCONN off
+
+   upnp_pinhole_enable now selects between two internally consistent worlds:
+   off -> IGD:1 binary, IGD:1 SSDP, IGD:1 description; on -> IGD:2 throughout.
+
+   upnp_igd2_desc is REMOVED along with the force_igd_desc_v1 line that used to
+   be written to /etc/upnp/config. With an IGD:1 binary there is no v2
+   description for it to select, and a setting that cannot take effect is worse
+   than no setting (same reasoning as ce08e56ddc's Asusnat toggle). Its
+   read-only "upnpigd2" field goes out of the firewall-posture feed with it;
+   the posture row now reads the pinhole key, which under the new split is
+   exactly equivalent.
+
+   sendXMLdesc()'s "IGD desc: served vN to <ip> (User-Agent: ...)" line was
+   inside #ifdef IGD_V2, so dropping --igd2 would have silently deleted the
+   diagnostic from the daemon that now runs by default. Moved outside the
+   guard: the User-Agent is the one fact still missing about a control point
+   that fails to map.
+
+NOTE for the next Makefile edit here: miniupnpd*/config.h is a generated,
+untracked artifact and the rule's only prerequisite is shared/version.h, so a
+stale config.h newer than version.h satisfies the rule and configure does NOT
+re-run. Both were deleted with this change; delete them again when editing
+those two configure lines or the flags are silently inert.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/Makefile                | 53 +++++++++++++++------
+ release/src/router/httpd/web.c             |  3 +-
+ release/src/router/miniupnpd/upnphttp.c    | 10 ++++
+ release/src/router/rc/services.c           | 54 +++++++---------------
+ release/src/router/shared/defaults.c       | 14 ------
+ release/src/router/www/Reaper_Firewall.asp |  2 +-
+ 6 files changed, 67 insertions(+), 69 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 3259dc0b7b..77323d9673 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -4586,22 +4586,47 @@ iptables-1.8.10-clean:
+ 	[ ! -f iptables-1.8.10/Makefile ] || $(MAKE) -C iptables-1.8.10 KERNEL_DIR=$(LINUX_INC_DIR) distclean
+ 	@rm -f iptables-1.8.10/Makefile
+ 
++# reaper 2026-08-17: --disable-pppconn on BOTH daemons, matching upstream Merlin
++# b2bfafe1bd ("miniupnpd: disable old legacy kludge for WANPPPConnection service
++# advertising"). ADVERTISE_WANPPPCONN made minissdp.c answer M-SEARCH, and send
++# unsolicited NOTIFYs, for urn:schemas-upnp-org:service:WANPPPConnection:1 - but
++# neither daemon implements that service. The root description only ever carries
++# WANIPConnection, so a control point that probes for the PPP service first got a
++# hit, fetched rootDesc.xml, matched no serviceType, obtained no control URL, and
++# gave up BEFORE ever calling AddPortMapping. A discovery dead-end, not a mapping
++# refusal - which is why restarting UPnP and clearing the lease file changed
++# nothing for the "Call of Duty: Networking failed to start" field report. We now
++# advertise only what we actually implement.
++#
++# NOTE: config.h is a generated, untracked artifact and this rule's only
++# prerequisite is shared/version.h. A stale config.h that is newer than
++# version.h therefore satisfies the rule and configure is NOT re-run, so a flag
++# change here does not reach the build. Delete miniupnpd*/config.h when editing
++# these two lines.
+ miniupnpd/config.h: shared/version.h
+ ifeq ($(RTCONFIG_IGD2),y)
+-	cd miniupnpd-igdv2 && ./configure --vendorcfg --leasefile $(if $(RTCONFIG_IPV6),--ipv6,) --igd2 --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
+-endif
+-	# reaper 2026-08-11: build the default daemon as an IGD:2 device too. IGD:2 and IPv6
+-	# pinholes are separable - in the generated config.h, ENABLE_6FC_SERVICE (the IPv6
+-	# firewall service) is nested inside BOTH "#ifdef IGD_V2" and "#ifdef ENABLE_IPV6",
+-	# and ENABLE_UPNPPINHOLE needs one of those - so --igd2 WITHOUT --ipv6 gives IGD:2
+-	# with every pinhole path compiled out. Previously --igd2 went only to the
+-	# miniupnpd-igdv2 build, so leaving IPv6 pinholes off (the default, and the sensible
+-	# setting for a hardened build) silently also dropped IPv4 clients to IGD:1 and cost
+-	# AddAnyPortMapping ("that port is taken, give me any free one" - the two-consoles /
+-	# two-torrent-clients collision) and GetListOfPortMappings. Backward compatibility is
+-	# safe: UPNP_STRICT is not set, so minissdp.c matches an M-SEARCH ST by prefix only
+-	# and answers IGD:1 searches with an IGD:1 ST, as UDA v1.1 requires.
+-	cd miniupnpd && ./configure --vendorcfg --leasefile --igd2 --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
++	cd miniupnpd-igdv2 && ./configure --vendorcfg --leasefile $(if $(RTCONFIG_IPV6),--ipv6,) --igd2 --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES) --disable-pppconn
++endif
++	# reaper 2026-08-17: the default daemon is IGD:1 again - the --igd2 added here on
++	# 2026-08-11 is REVERTED, restoring upstream Merlin's split. That change aimed to
++	# regain AddAnyPortMapping ("that port is taken, give me any free one") and
++	# GetListOfPortMappings for IPv4 clients, but the PS5 field report two days later
++	# showed an IGD:2 rootDesc breaks real control points, and the fix for THAT
++	# (ac485cfd4a) forced a v1 description on every client - which is precisely what
++	# suppresses the two IGD:2 actions. So the build was paying the full cost of IGD:1
++	# while keeping every IGD:2 risk: SSDP NOTIFYs still announced
++	# InternetGatewayDevice:2 / WANIPConnection:2 against a v1 description (the NOTIFY
++	# path has no SSDP_RESPOND_SAME_VERSION echo, unlike M-SEARCH replies), and the
++	# pinhole toggle silently flipped descriptions back to v2.
++	#
++	# IGD:2 and IPv6 pinholes are separable, and they are already separated BY BINARY:
++	# ENABLE_6FC_SERVICE is nested inside both "#ifdef IGD_V2" and "#ifdef ENABLE_IPV6",
++	# and only miniupnpd-igdv2 above is configured --ipv6, so this daemon could never
++	# serve a pinhole whatever its IGD version. rc/services.c picks between the two on
++	# upnp_pinhole_enable. Result: pinholes off -> IGD:1 binary, IGD:1 SSDP, IGD:1
++	# description; pinholes on -> IGD:2 throughout. Each daemon is now internally
++	# consistent and no runtime description-version override is needed.
++	cd miniupnpd && ./configure --vendorcfg --leasefile --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES) --disable-pppconn
+ 
+ miniupnpd: $(IPTABLES) e2fsprogs miniupnpd/config.h
+ 	@$(SEP)
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 5248249b5a..3f0d75d72c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23598,13 +23598,12 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		gk_json_esc(stream, nvram_safe_get("dmz_ip"));
+ 		websWrite(stream,
+ 			",\"upnp\":%d,\"upnpwan\":%d,\"upnppin\":%d,\"upnpprot\":%d,"
+-			"\"upnpigd2\":%d,\"remadmin\":%d,\"remport\":%d,"
++			"\"remadmin\":%d,\"remport\":%d,"
+ 			"\"sshwan\":%d,\"sshport\":%d}}",
+ 			nvram_match("upnp_enable", "1") ? 1 : 0,
+ 			nvram_match("wan0_upnp_enable", "1") ? 1 : 0,
+ 			nvram_match("upnp_pinhole_enable", "1") ? 1 : 0,
+ 			nvram_match("upnp_protect_svc", "0") ? 0 : 1,
+-			nvram_match("upnp_igd2_desc", "1") ? 1 : 0,
+ 			nvram_get_int("misc_http_x") ? 1 : 0,
+ 			fw_remote_admin_port(),
+ 			(nvram_get_int("sshd_enable") == 1) ? 1 : 0,
+diff --git a/release/src/router/miniupnpd/upnphttp.c b/release/src/router/miniupnpd/upnphttp.c
+index 7307fbaf56..27867a1ee0 100644
+--- a/release/src/router/miniupnpd/upnphttp.c
++++ b/release/src/router/miniupnpd/upnphttp.c
+@@ -493,6 +493,15 @@ sendXMLdesc(struct upnphttp * h, char * (f)(int *, int))
+ 	if(h->respflags & FLAG_MS_CLIENT)
+ 		syslog(LOG_DEBUG, "MS Client, forcing IGD v1");
+ #endif /* DEBUG */
++#else /* IGD_V2 */
++	/* reaper 2026-08-17: this daemon is configured without --igd2, so it holds no
++	 * IGD:2 description at all and v1 is the only thing it can serve. Kept as a
++	 * local purely so the log line below is identical in both builds: the
++	 * User-Agent it carries is the one fact we lack about a control point that
++	 * fails to map, and losing it on the DEFAULT daemon - which is now this one -
++	 * would gut the diagnostic exactly where it is most needed. */
++	const int force_v1 = 1;
++#endif /* IGD_V2 */
+ 	/* reaper 2026-08-13: record the version actually served, and to whom.
+ 	 * Root description only - sendXMLdesc() also serves the per-service SCPDs,
+ 	 * and logging all of them would multiply every discovery by four for no
+@@ -504,6 +513,7 @@ sendXMLdesc(struct upnphttp * h, char * (f)(int *, int))
+ 		syslog(LOG_INFO, "IGD desc: served v%d to %s (User-Agent: %s)",
+ 		       force_v1 ? 1 : 2, h->clientaddr_str,
+ 		       h->reaper_ua[0] ? h->reaper_ua : "(none sent)");
++#ifdef IGD_V2
+ 	desc = f(&len, force_v1);
+ #else
+ 	desc = f(&len, 0);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index aafb90971b..1c3fb76720 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -8005,46 +8005,24 @@ void start_upnp(void)
+ #endif
+ 					"/tmp/upnp.leases");
+ 
+-				/* reaper 2026-08-13 field fix (v2.3.7: "UPnP stops Call of Duty
+-				 * connecting on a PS5", with pinholes on OR off).
++				/* reaper 2026-08-17: the IGD description version is no longer a
++				 * runtime choice, so the force_igd_desc_v1 line that used to be
++				 * written here is gone, along with the upnp_igd2_desc knob.
+ 				 *
+-				 * Since 2026-08-11 BOTH daemons are configured --igd2, so IGD_V2 is
+-				 * defined and upnpurns.h advertises InternetGatewayDevice:2 /
+-				 * WANConnectionDevice:2 / WANIPConnection:2. That commit argued
+-				 * backward compatibility from minissdp.c alone - true for SSDP
+-				 * DISCOVERY (a non-strict M-SEARCH still gets an IGD:1 ST) but not
+-				 * for the DEVICE DESCRIPTION that the client fetches next.
+-				 * upnphttp.c generates the IGD:1 description only when
+-				 *     GETFLAG(FORCEIGDDESCV1MASK) || (h->respflags & FLAG_MS_CLIENT)
+-				 * i.e. upstream ALREADY force-downgrades the description for
+-				 * Microsoft clients, because IGD:2 descriptions break real ones.
+-				 * A PS5 is not an MS client: it received WANIPConnection:2 only,
+-				 * matched no service it knows, got no control URL, and could not
+-				 * create a mapping. Before v2.3.5 the plain daemon had no IGD_V2 at
+-				 * all, so this path shipped IGD:1 to everyone and worked.
++				 * The default daemon is built WITHOUT --igd2 again (router
++				 * Makefile), so it holds no IGD:2 description to serve and would
++				 * only log "Unknown option in file" for that setting. The pinhole
++				 * daemon (miniupnpd-igdv2, --igd2 --ipv6) MUST advertise IGD:2,
++				 * because upnpdescgen.c drops the whole WANIPv6FirewallControl
++				 * element from a v1 description. Neither daemon has a second
++				 * version it could be talked into, so upnp_pinhole_enable alone
++				 * now selects between two internally consistent worlds.
+ 				 *
+-				 * Default back to an IGD:1 description for everyone. This is purely
+-				 * what the rootDesc CLAIMS - the daemon still implements the IGD:2
+-				 * actions - so the only cost is that clients stop being offered
+-				 * AddAnyPortMapping / GetListOfPortMappings. Set upnp_igd2_desc=1 to
+-				 * advertise IGD:2 again. Emitted unguarded on purpose: the --igd2
+-				 * configure flag is unconditional in the router Makefile, so keying
+-				 * this off RTCONFIG_IGD2 would miss exactly the builds that need it,
+-				 * and an option an IGD:1 binary does not know is non-fatal (it only
+-				 * logs "Unknown option in file", it does not return 1).
+-				 *
+-				 * PINHOLES OVERRIDE THIS. Forcing a v1 description does not merely
+-				 * renumber the version: upnpdescgen.c skips the whole
+-				 * WANIPv6FirewallControl (and DeviceProtection) child element when
+-				 * force_igd1 is set, because neither service exists in IGD:1. So
+-				 * advertising v1 while upnp_pinhole_enable=1 would run the
+-				 * pinhole-capable daemon and then hide the one service that exposes
+-				 * pinholes - working daemon, undiscoverable feature, exactly the
+-				 * silent-no-op shape this whole change set exists to remove.
+-				 * Enabling pinholes is an explicit opt-in to an IGD:2-only service,
+-				 * so it implies an IGD:2 description. */
+-				if (!nvram_get_int("upnp_igd2_desc") && !nvram_get_int("upnp_pinhole_enable"))
+-					fprintf(f, "force_igd_desc_v1=yes\n");
++				 * History, should this need revisiting: bdb0dd2024 made the
++				 * default daemon --igd2, ac485cfd4a forced v1 descriptions after
++				 * the PS5/Call of Duty report, c967349fb1 carved pinholes back out
++				 * of that. Reverting the Makefile line collapses all three. */
++
+ 
+ 				if (nvram_get_int("upnp_clean")) {
+ 					int interval = nvram_get_int("upnp_clean_interval");
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 0c756d98dc..86b47b5ea7 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5252,20 +5252,6 @@ struct nvram_tuple router_defaults[] = {
+ 	   VUPNP hooks nat/PREROUTING, ahead of the routing decision, so such a mapping
+ 	   intercepts traffic meant for the router. Default on; 0 restores stock behaviour. */
+ 	{ "upnp_protect_svc", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	/* reaper 2026-08-13 field fix: which IGD version the DEVICE DESCRIPTION advertises.
+-	   Both daemons are built --igd2 since 2026-08-11, and miniupnpd then serves an
+-	   IGD:2 rootDesc (WANIPConnection:2) to every client except a detected Microsoft
+-	   one (upnphttp.c: FORCEIGDDESCV1MASK || FLAG_MS_CLIENT). A PS5 is not an MS
+-	   client, so it saw only WANIPConnection:2, found no control URL and could not
+-	   map at all - field-reported as "UPnP breaks Call of Duty on PS5", identically
+-	   with pinholes on or off. Default 0 = advertise IGD:1 (what shipped up to
+-	   v2.3.4, and what upstream already forces for Xbox); 1 = advertise IGD:2 and
+-	   regain AddAnyPortMapping / GetListOfPortMappings at the cost of such clients.
+-	   This is DESCRIPTION-ONLY: the daemon still implements the IGD:2 actions.
+-	   OVERRIDDEN by upnp_pinhole_enable=1: a v1 description omits the
+-	   WANIPv6FirewallControl service entirely, so pinholes require IGD:2 to be
+-	   advertised and turning them on implies it (see start_upnp in rc/services.c). */
+-	{ "upnp_igd2_desc", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ #ifdef RTCONFIG_BCMARM
+ 	{ "qos_overhead", "0", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, // Overhead, in bytes
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 602ec8b46d..6f192dc14e 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -1057,7 +1057,7 @@ function loadStatus(){
+       g+=kvOn(`<#RFW_193#>`,f.upnppin);
+       g+=kvOn(`<#RFW_194#>`,f.upnpprot);
+       /* pinholes need an IGD:2 description, so they imply it regardless of the key */
+-      g+=kvRow(`<#RFW_195#>`,'off',(f.upnpigd2||f.upnppin)?'IGD:2':'IGD:1');
++      g+=kvRow(`<#RFW_195#>`,'off',f.upnppin?'IGD:2':'IGD:1');
+     }
+     g+=kvRow(`<#RFW_196#>`,f.remadmin?'on':'off',f.remadmin?(''+f.remport):OFF_T);
+     g+=kvRow(`<#RFW_197#>`,f.sshwan?'on':'off',f.sshwan?(''+f.sshport):OFF_T);
+-- 
+2.25.1
+

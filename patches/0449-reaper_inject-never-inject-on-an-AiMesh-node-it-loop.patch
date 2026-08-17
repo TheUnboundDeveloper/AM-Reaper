@@ -1,0 +1,92 @@
+From bb580b6370405588b03ebea4858bd8fcb3da914e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 17 Aug 2026 13:55:41 -0400
+Subject: [PATCH] reaper_inject: never inject on an AiMesh node - it loops the
+ UI to a blank page
+
+Field report: flashing a NODE leaves its web UI a blank page whose URL cycles,
+with no way to reach the login page. Distinct from the factory-reset first-boot
+loop fixed in v2.2.0 (137d96338a) - different root cause, and this one only
+fires when the box is an AiMesh node.
+
+On a node httpd locks the UI down to a whitelist (httpd.c, the RTCONFIG_AMAS
+branch): with re_mode=1 (or disable_ui=1) and re_upgrade=0, every page outside
+AiMesh_whitelists[] (web.c) is answered with a meta-refresh to message.htm
+instead of the page. That check runs BEFORE auth_check, which is why the login
+page was never reached either.
+
+message.htm IS whitelisted, is served text/html through do_ej, and was not
+skip-listed here - so it took the normal bounce and replaced the top window
+with /reaper_shell.asp. The shell is NOT whitelisted; no Reaper page is, the
+list is stock ASUS. So httpd meta-refreshed it straight back to message.htm,
+which bounced again. message.htm <-> reaper_shell.asp with no exit. The
+injected block sits before </head>, so location.replace() ran during head parse
+and the body never painted: blank page, cycling URL bar.
+
+AiMesh_Node_FirmwareUpgrade.asp is whitelisted but equally unlisted here, so a
+node in this state could not even be re-flashed through its own UI.
+
+A node has no Reaper UI to reach in ANY state - shell, dashboard, first-boot
+gate and every native page are outside the whitelist by construction. Serve
+pristine stock instead, which is what an AiMesh node is meant to show.
+
+Deliberately NOT gated on re_upgrade, unlike httpd's own lockdown test. During
+a node upgrade httpd opens the whitelist back up, so the bounce would stop
+looping - but it would then swallow AiMesh_Node_FirmwareUpgrade.asp /
+Updating.asp into the shell iframe, where the progress page is not meant to
+live. No node state wants the bounce, so the guard is unconditional.
+
+Spelled with nvram_get()/nvram_match() rather than nvram_get_int(): the latter
+lives in shared.h, which this file deliberately does not pull in.
+
+Affects every model identically - sibling port owed.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c | 30 ++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 994ca27fb4..3bec66685a 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -253,6 +253,36 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 	if (v && *v && atoi(v) == 0)
+ 		return 0;
+ 
++	/* reaper 2026-08-17 field fix: "flashing a NODE gives a blank page whose URL
++	 * loops". On an AiMesh node httpd locks the web UI down to a whitelist
++	 * (httpd.c, the RTCONFIG_AMAS branch): with re_mode=1 (or disable_ui=1) and
++	 * re_upgrade=0, EVERY page outside AiMesh_whitelists[] (web.c) is answered
++	 * with "<meta http-equiv=refresh url=message.htm>" instead of the page.
++	 *
++	 * message.htm IS whitelisted, is served text/html through do_ej, and was not
++	 * skip-listed here - so it took the normal bounce and replaced the top window
++	 * with /reaper_shell.asp. The shell is NOT whitelisted (no Reaper page is),
++	 * so httpd meta-refreshed it straight back to message.htm, which bounced
++	 * again: message.htm <-> reaper_shell.asp with no exit. The injected block
++	 * sits before </head>, so location.replace() ran during head parse and the
++	 * body never painted - a blank page with a cycling URL bar, and no way to
++	 * reach the login page, which is exactly the field report.
++	 *
++	 * A node has no Reaper UI to reach in ANY state: the shell, the dashboard,
++	 * the first-boot gate and every native page are outside the whitelist by
++	 * construction. So there is nothing to inject and nowhere to bounce to -
++	 * serve pristine stock, which is what an AiMesh node is meant to show.
++	 *
++	 * Deliberately NOT gated on re_upgrade, unlike httpd's own lockdown test.
++	 * While a node upgrade is running httpd opens the whitelist back up, so the
++	 * bounce would stop looping - but it would then swallow
++	 * AiMesh_Node_FirmwareUpgrade.asp / Updating.asp into the shell iframe,
++	 * where the progress page is not meant to live. There is no node state in
++	 * which bouncing into the Reaper shell is the right answer, so the guard is
++	 * unconditional. */
++	if (nvram_match("re_mode", "1") || nvram_match("disable_ui", "1"))
++		return 0;
++
+ 	/* only text/html; this alone excludes state.js, **.js/json/xml/css */
+ 	if (!h || !h->mime_type || strncasecmp(h->mime_type, "text/html", 9) != 0)
+ 		return 0;
+-- 
+2.25.1
+

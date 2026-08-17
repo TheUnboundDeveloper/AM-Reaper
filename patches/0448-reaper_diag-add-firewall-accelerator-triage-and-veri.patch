@@ -1,0 +1,371 @@
+From 8c0705d656251162b2617e3775ffb3f39f17ce83 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 21:37:17 -0400
+Subject: [PATCH] reaper_diag: add firewall/accelerator triage, and verify the
+ sanitizer's output
+
+A connectivity field report could not be answered from a diag bundle: the
+collector captured no iptables output and no accelerator surfaces at all, so the
+commands that separate "Warden dropped it" from "the accelerator wedged" from
+"look upstream" could only be run by hand, live, on the box during an outage.
+That is why that class of report stalls.
+
+New sections (renumbered; nothing referenced the old numbers - checked both
+Reaper_Diag.asp and do_reaper_diag_cgi in web.c):
+
+  14. FIREWALL / WARDEN - rwarden_* config, packet/byte counters for all six
+      Warden chains, top-level chain policies, ipset SIZES, live membership
+      tests for three well-known resolvers, and drop-log volume by prefix.
+      A climbing RW_ODROP or an "IN SET" hit is the answer outright.
+  15. DATAPLANE ACCELERATOR - one-shot reads of /proc/gdx/skb_idx, /proc/gdx/
+      stats, /proc/fpm/status, /proc/bpm/status.
+  16. CONNECTIVITY PROBES - bounded pings to the default gateway and two named
+      public resolvers.
+  17. RWATCH - rwatch_* state and any /jffs/rwatch capture bundles.
+  18/19. the former kernel log and syslog tails, renumbered.
+
+SANITIZATION. One real gap closed and one guarantee added:
+
+  - e-mail addresses were passing through. The nvram classifier only catches
+    values whose KEY looks sensitive, so an address in a log line, a DDNS record
+    or an addon's output was never redacted. New [EMAIL-n] pass, ordered before
+    the MAC/IPv6/IPv4 passes so an addr@1.2.3.4 form is taken as one unit.
+  - POST-SANITIZE TRIPWIRE: the finished body is re-scanned for public-IPv4 /
+    MAC / e-mail shapes and the ledger prints CLEAN or REVIEW BEFORE SHARING.
+    COUNTS ONLY - printing an offending value would put the leak into the very
+    file being audited. It reuses the sanitizer's own privip() rules so the
+    private addresses kept on purpose are not counted as residue. This is what
+    stops "sanitized" degrading silently as sections are added later.
+
+Two rules are written into the header for whoever adds the next section: never
+emit a container's CONTENTS when its SIZE answers the question (ipset uses
+`list -t`, header-only - the members are the user's own address data), and never
+print a literal public address as a label (the sanitizer rewrites it to
+[EXT-IP-n] and the line stops meaning anything; print the target's NAME).
+
+BOUNDED ON PURPOSE. httpd is single-threaded and do_reaper_diag_cgi() popen()s
+this script, so the GUI is blocked for the whole run. ping is -c 3 -W 1, the
+/proc reads are head-limited, worst case is a few seconds inside the 180 s
+lockfile. Do not add an unbounded command here.
+
+The /proc/gdx reads are ONE-SHOT on operator demand and must never become a
+poller: rwatch's equivalent check is opt-in and default OFF because a periodic
+kernel-facing /proc reader produced two field reboot loops.
+
+Verified: busybox ash -n (the router's shell), dash and sh all parse; against
+crafted hostile input all 9 sensitive items are redacted - including a colonless
+MAC and both e-mail forms - while the 5 diagnostic-payload items (private IP,
+netmask, loopback, firmware version, ipset name) survive; the tripwire reads
+0/0/0 on a clean body and fires on a dirty one.
+
+Reaper_Diag.asp's ledger preview is extended to match. It stays literal English
+by design - the 2026-08-15 i18n audit recorded it as mirroring the .txt
+artifact, so no dict keys are needed.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 202 ++++++++++++++++++++++++-
+ release/src/router/www/Reaper_Diag.asp |  11 +-
+ 2 files changed, 208 insertions(+), 5 deletions(-)
+ mode change 100755 => 100644 release/src/router/others/reaper_diag
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+old mode 100755
+new mode 100644
+index d606ea820c..26d3ab1c0d
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -11,13 +11,33 @@
+ #    - usernames, DDNS/host names, SSID values (consistent [USER-n]/[SSID-n])
+ #    - any MAC address, router or client   (consistent MAC-n pseudonyms)
+ #    - any public IPv4 / any IPv6 address  (consistent [EXT-IP-n]/[IP6-n])
++#    - e-mail addresses                    (consistent [EMAIL-n])
+ #  RFC1918/loopback/link-local IPv4 and channel/RF/QoS numbers are kept -
+ #  they are the diagnostic payload and identify nothing.
+ #  Pseudonyms are stable WITHIN one report (cross-referencing works) and
+ #  meaningless across reports.
++#
++#  v1.2.0 adds a POST-SANITIZE TRIPWIRE: after the sanitizer runs, the finished
++#  body is re-scanned for anything still matching a public IPv4 / MAC / e-mail
++#  shape and the COUNTS (never the values) are printed in the ledger. A clean
++#  report says CLEAN; anything else says REVIEW BEFORE SHARING. This is what
++#  keeps "sanitized" from silently degrading as new sections are added.
++#
++#  TWO RULES FOR ANYONE ADDING A SECTION BELOW:
++#    1. Never emit a container's CONTENTS when its SIZE answers the question.
++#       ipset member lists are dumped with `ipset list -t` (header only) for
++#       exactly this reason - the members are the user's own address data.
++#    2. Never print a literal public address as a label. The sanitizer will
++#       rewrite it to [EXT-IP-n] and the line loses its meaning; print the
++#       NAME of the target instead ("Google-DNS"), as section 16 does.
++#
++#  COST NOTE: httpd is single-threaded and do_reaper_diag_cgi() popen()s this
++#  script, so the whole GUI is blocked while it runs. Everything added in
++#  v1.2.0 is bounded: the probes use short deadlines and the accelerator reads
++#  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.0.1"
++VER="REAPER-DIAG v1.2.0"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+ STAMP="$(date +%Y%m%d_%H%M%S)"
+@@ -34,6 +54,35 @@ sec() { echo ""; echo "#### $1 ####"; }
+ have() { type "$1" >/dev/null 2>&1; }  # v1.0.1: on-router busybox ash lacks "command -v"
+ setchk() { v="$(nvram get "$1" 2>/dev/null)"; [ -n "$v" ] && echo "  $1 : SET (redacted)" || echo "  $1 : EMPTY"; }
+ 
++# v1.2.0 helpers. Both take the target's NAME and its address separately and
++# print only the NAME: a literal public address in the output would be rewritten
++# to [EXT-IP-n] by the sanitizer and the line would stop meaning anything.
++
++# "Is this destination currently inside a Warden set?" - membership, not contents.
++# This is the single test that separates a Warden drop from an upstream fault,
++# and it is why a report can now answer that without the operator running
++# `ipset test` by hand during an outage.
++wprobe() {
++  _l="$1"; _a="$2"; _hit=""
++  have ipset || { echo "  $_l : ipset absent"; return; }
++  for _s in rw_threat rw_ban $(ipset list -n 2>/dev/null | grep -E '^rw_g_'); do
++    ipset test "$_s" "$_a" >/dev/null 2>&1 && _hit="$_hit $_s"
++  done
++  [ -n "$_hit" ] && echo "  $_l : IN SET ->$_hit" || echo "  $_l : not in any Warden set"
++}
++
++# Bounded reachability probe. httpd is single-threaded and blocked for the whole
++# run, so the packet count and per-packet timeout are deliberately small; worst
++# case is ~3 s per target and typical is well under 1 s.
++probe() {
++  _l="$1"; _a="$2"
++  have ping || { echo "  $_l : ping absent"; return; }
++  _o="$(ping -c 3 -W 1 "$_a" 2>/dev/null | tr '\n' ' ')"
++  _loss="$(echo "$_o" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)% packet loss.*/\1/p')"
++  _rtt="$(echo "$_o" | sed -n 's|.*= [0-9.]*/\([0-9.]*\)/.*|\1|p')"
++  echo "  $_l : loss=${_loss:-100}%  avg_rtt=${_rtt:-n/a}ms"
++}
++
+ # ---------------------------------------------------------------------------
+ # 1. Collect sensitive literals -> $SLIST as "CLASS<TAB>value" (never printed)
+ # ---------------------------------------------------------------------------
+@@ -71,7 +120,7 @@ BEGIN {
+     t = index(l, "\t"); if (t < 2) continue
+     n++; CLS[n] = substr(l, 1, t-1); VAL[n] = substr(l, t+1)
+   }
+-  cS=0; cU=0; cW=0; cH=0; cM=0; c6=0; c4=0
++  cS=0; cU=0; cW=0; cH=0; cM=0; c6=0; c4=0; cE=0
+ }
+ function toklit(cls, v) {
+   if (v in LMAP) return LMAP[v]
+@@ -100,6 +149,19 @@ function privip(ip,  a) {
+     while ((p = index(line, v)) > 0)
+       line = substr(line, 1, p-1) toklit(CLS[i], v) substr(line, p + length(v))
+   }
++  # pass 1b (v1.2.0): e-mail addresses -> [EMAIL-n]. The nvram key classifier
++  # above only catches values whose KEY looks sensitive; an address that turns
++  # up in a log line, a DDNS record or an addon's output was passing straight
++  # through. Runs before the MAC/IPv6/IPv4 passes so an addr@1.2.3.4 form is
++  # taken as one unit rather than half-tokenized.
++  out = ""
++  while (match(line, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/)) {
++    m = substr(line, RSTART, RLENGTH)
++    if (!(m in EMAP)) { cE++; EMAP[m] = "[EMAIL-" cE "]" }
++    out = out substr(line, 1, RSTART-1) EMAP[m]
++    line = substr(line, RSTART + RLENGTH)
++  }
++  line = out line
+   # pass 2: MAC addresses -> MAC-n
+   out = ""
+   while (match(line, /[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]/)) {
+@@ -154,6 +216,7 @@ END {
+   print "  MAC addresses pseudonymized: " cM   > "/dev/stderr"
+   print "  IPv6 addresses redacted    : " c6   > "/dev/stderr"
+   print "  public IPv4 redacted       : " c4   > "/dev/stderr"
++  print "  e-mail addresses redacted  : " cE   > "/dev/stderr"
+ }
+ AWKEOF
+ 
+@@ -324,10 +387,82 @@ echo "  jffs scripts: $(ls /jffs/scripts 2>/dev/null | tr '\n' ' ')"
+ echo "  entware: $( [ -d /opt/bin ] && echo present || echo absent )"
+ echo "  amtm-ish mounts: $(mount 2>/dev/null | grep -c /tmp/mnt)"
+ 
+-sec "14. KERNEL LOG (tail)"
++sec "14. FIREWALL / WARDEN (counters and set SIZES - contents never dumped)"
++nvram show 2>/dev/null | grep '^rwarden_' | sort | sed 's/^/  /'
++echo "  -- chain packet/byte counters --"
++# The counters are the whole point: a climbing RW_ODROP during a reported
++# outage says Warden dropped it, and a flat one says look upstream. Before
++# v1.2.0 this could only be read by hand, live, on the box.
++for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_ODROP RW_SDROP; do
++  if iptables -nvxL "$C" >/dev/null 2>&1; then
++    echo "  [$C]"; iptables -nvxL "$C" 2>/dev/null | sed 's/^/     /'
++  else
++    echo "  [$C] absent"
++  fi
++done
++echo "  -- top-level chains (policy + totals) --"
++for C in INPUT FORWARD OUTPUT; do
++  iptables -nvxL "$C" 2>/dev/null | head -2 | sed 's/^/     /'
++done
++echo "  -- ipset sizes: 'ipset list -t' is header-only, members are NEVER read --"
++if have ipset; then
++  for S in $(ipset list -n 2>/dev/null | grep '^rw_'); do
++    N="$(ipset list -t "$S" 2>/dev/null | awk -F': *' '/Number of entries/{print $2}')"
++    echo "     $S : ${N:-?} entries"
++  done
++else
++  echo "     ipset not present"
++fi
++echo "  -- is a well-known resolver currently inside a Warden set? --"
++wprobe "Cloudflare-DNS-v4 " 1.1.1.1
++wprobe "Google-DNS-v4     " 8.8.8.8
++wprobe "Quad9-DNS-v4      " 9.9.9.9
++echo "  -- Warden drop-log volume (counts only, no addresses) --"
++# grep -c prints 0 and exits 1 on no-match, but prints NOTHING on a missing
++# file - so capture first and default, rather than `|| echo 0` which would
++# emit a second 0 on the ordinary no-match case.
++for P in "REAPER-WARDEN " "REAPER-WARDEN-OUT " "REAPER-WARDEN-SELF "; do
++  WC="$(grep -c "$P" /tmp/syslog.log 2>/dev/null)"
++  echo "     '${P}' hits in syslog: ${WC:-0}"
++done
++
++sec "15. DATAPLANE ACCELERATOR (one-shot reads)"
++# ONE-SHOT, on operator demand only. rwatch's equivalent check is opt-in
++# (rwatch_gdx=1) and default OFF because a PERIODIC kernel-facing /proc reader
++# is what produced two field reboot loops. A single cat when someone asks for a
++# report is not that, and must never be turned into a poller here.
++for F in /proc/gdx/skb_idx /proc/gdx/stats /proc/fpm/status /proc/bpm/status; do
++  if [ -r "$F" ]; then
++    echo "  -- $F --"; head -16 "$F" 2>/dev/null | sed 's/^/     /'
++  else
++    echo "  $F : not present/readable"
++  fi
++done
++
++sec "16. CONNECTIVITY PROBES (targets named, addresses never printed)"
++# Separates "the router cannot reach the internet" from "a LAN client cannot",
++# and both from a Warden drop - read together with section 14.
++# These probes originate ON the router, so with rwarden_self=1 they traverse
++# RW_SELF and CAN be dropped by Warden itself. That is deliberate: a probe
++# showing 100% loss next to a section-14 "IN SET" hit for the same target is
++# the diagnosis, not a broken probe.
++GW="$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')"
++if [ -n "$GW" ]; then probe "default gateway   " "$GW"; else echo "  default gateway   : NONE in routing table"; fi
++probe "Cloudflare-DNS-v4 " 1.1.1.1
++probe "Google-DNS-v4     " 8.8.8.8
++
++sec "17. RWATCH (self-monitor state)"
++nvram show 2>/dev/null | grep '^rwatch_' | sort | sed 's/^/  /'
++if [ -d /jffs/rwatch ]; then
++  echo "  -- captured failure bundles --"; ls -l /jffs/rwatch 2>/dev/null | sed 's/^/     /'
++else
++  echo "  /jffs/rwatch : none"
++fi
++
++sec "18. KERNEL LOG (tail)"
+ dmesg 2>/dev/null | tail -120 | sed 's/^/  /'
+ 
+-sec "15. SYSLOG (tail)"
++sec "19. SYSLOG (tail)"
+ tail -150 /tmp/syslog.log 2>/dev/null | sed 's/^/  /'
+ 
+ echo ""; echo "#### END OF DIAG ####"
+@@ -338,15 +473,74 @@ echo ""; echo "#### END OF DIAG ####"
+ # ---------------------------------------------------------------------------
+ awk -v SFILE="$SLIST.s" -v FWVER="$(nvram get firmver 2>/dev/null)" -f "$AWKP" "$RAW" > "$BODY" 2> "$LEDG"
+ 
++# ---------------------------------------------------------------------------
++# 4b. POST-SANITIZE TRIPWIRE (v1.2.0)
++# Re-scan the FINISHED body for anything still shaped like a public IPv4, a MAC
++# or an e-mail. This is not a second sanitizer - it is the check that the first
++# one actually worked, so that adding a section can never quietly start leaking.
++# It prints COUNTS ONLY; printing an offending value would put the leak into the
++# very file being audited. Uses the same privip() rules as the sanitizer so the
++# private addresses that are kept on purpose are not counted as residue.
++# ---------------------------------------------------------------------------
++RESID="$(awk -v FWVER="$(nvram get firmver 2>/dev/null)" '
++  function privip(ip,  a) {
++    if (ip == FWVER) return 1
++    split(ip, a, ".")
++    if (a[1]>255||a[2]>255||a[3]>255||a[4]>255) return 1
++    if (a[1]==10 || a[1]==127 || a[1]==0) return 1
++    if (a[1]==192 && a[2]==168) return 1
++    if (a[1]==172 && a[2]>=16 && a[2]<=31) return 1
++    if (a[1]==169 && a[2]==254) return 1
++    if (a[1]>=224) return 1
++    return 0
++  }
++  {
++    line = $0
++    while (match(line, /[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/)) {
++      m = substr(line, RSTART, RLENGTH); if (!privip(m)) r4++
++      line = substr(line, RSTART + RLENGTH)
++    }
++    line = $0
++    while (match(line, /[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]/)) {
++      rM++; line = substr(line, RSTART + RLENGTH)
++    }
++    line = $0
++    while (match(line, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/)) {
++      rE++; line = substr(line, RSTART + RLENGTH)
++    }
++  }
++  END { printf "%d %d %d", r4+0, rM+0, rE+0 }' "$BODY")"
++# shellcheck disable=SC2086 - deliberate word splitting of the "n n n" triple
++set -- $RESID
++R4="${1:-0}"; RM="${2:-0}"; RE="${3:-0}"
++if [ "$R4" = "0" ] && [ "$RM" = "0" ] && [ "$RE" = "0" ]; then
++  VERDICT="CLEAN - no public IPv4, MAC or e-mail shape survived the sanitizer"
++else
++  VERDICT="REVIEW BEFORE SHARING - residue detected, see counts above"
++fi
++
+ {
+   echo "==================== $MODEL Reaper sanitized diag ===================="
+   echo " $VER | firmware: $EXTNO | generated: $(date)"
+   echo ""
+   echo "#### 0. SANITIZATION LEDGER (what was found and withheld) ####"
+   cat "$LEDG"
++  echo ""
++  echo "  -- post-sanitize verification (counts only; values never printed) --"
++  echo "  residual public IPv4 shapes : $R4"
++  echo "  residual MAC shapes         : $RM"
++  echo "  residual e-mail shapes      : $RE"
++  echo "  VERDICT: $VERDICT"
++  echo ""
+   echo "  NOTE: pseudonyms (MAC-n / [EXT-IP-n] / [SSID-n] ...) are consistent"
+   echo "  within this report only. No credentials, MACs, host/user names or"
+   echo "  external IPs are contained in this file. Safe to post publicly."
++  echo "  Set MEMBERS are never read - section 14 reports set SIZES only."
++  echo ""
++  echo "  Investigating a connectivity complaint? Read 14 (Warden counters +"
++  echo "  set membership) with 16 (probes): a climbing RW_ODROP or an IN SET"
++  echo "  hit means the router dropped it; flat counters with failing probes"
++  echo "  means look upstream."
+   cat "$BODY"
+   echo "==================== end diag $(date) ===================="
+ } > "$OUT"
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index e5e20dd8c4..57717e5b3f 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -117,8 +117,17 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+   SSID values redacted       : <span class="g">3</span>
+   MAC addresses pseudonymized: <span class="g">14</span>
+   public IPv4 redacted       : <span class="g">3</span>
++  e-mail addresses redacted  : <span class="g">0</span>
++
++  -- post-sanitize verification (counts only; values never printed) --
++  residual public IPv4 shapes : <span class="g">0</span>
++  residual MAC shapes         : <span class="g">0</span>
++  residual e-mail shapes      : <span class="g">0</span>
++  VERDICT: <span class="g">CLEAN</span> - no public IPv4, MAC or e-mail shape
++           survived the sanitizer
+   <span class="r">NOTE: no credentials, MACs, host/user names or external IPs
+-  are contained in this file. Safe to post publicly.</span></pre>
++  are contained in this file. Safe to post publicly.
++  Set MEMBERS are never read - firewall sizes only.</span></pre>
+   </div>
+   <div class="lg-r">
+     <button class="btn" id="dl" type="button"><#RDIAG_23#></button>
+-- 
+2.25.1
+

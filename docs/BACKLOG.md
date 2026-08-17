@@ -11,13 +11,17 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > Applied security fixes are tracked in [`REAPER-FIXES.md`](REAPER-FIXES.md); the
 > per-version history is in [`CHANGELOG.md`](CHANGELOG.md). Completed items are moved
 > to the changelog and removed from this file. **This backlog lists only work that is
-> not yet done** — on-hardware validation of already-shipped features is not tracked here.
+> not yet done** — which includes work that is *believed* done but unconfirmed: see
+> [Pending verification](#pending-verification). Routine on-hardware validation of a feature
+> nobody has questioned is still not tracked here; that section is for a specific change awaiting
+> a specific confirmation.
 
 ---
 
 ## Contents
 
 - [Open bugs / under investigation](#open-bugs--under-investigation)
+- [Pending verification](#pending-verification)
 - [UI / UX polish](#ui--ux-polish)
 - [Features to add](#features-to-add)
 - [Code quality / deferred (with reason)](#code-quality--deferred-with-reason)
@@ -30,47 +34,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 ## Open bugs / under investigation
 
 ---
-
-- **[P2] The Call of Duty / UPnP report is not yet confirmed fixed.** v2.4.6 removed two real
-  dead ends — the phantom `WANPPPConnection` advertisement and the IGD:2 device description on
-  the default daemon — and both were verified in the build (preprocessor probe on each configure
-  line). **Neither has been confirmed against the reporter's console.** The decisive evidence is
-  one line, now emitted by both description versions:
-
-  ```
-  grep -i "IGD desc" /tmp/syslog.log
-  ```
-
-  → `IGD desc: served v<1|2> to <ip> (User-Agent: <string>)`. It answers three things at once:
-  whether the console reached the description fetch at all (no line = discovery never got that
-  far, which is what the `WANPPPConnection` fix addresses), which version it was served, and the
-  User-Agent — the string needed to give a specific client the same per-client downgrade upstream
-  hardcodes for Microsoft clients. **Do not use `logread`** — it returns empty on this platform by
-  design (see the note in the wlcsm/netlink material); read the file.
-
-  Also still to confirm: the reporter's `upnp_pinhole_enable`. With pinholes on, the router
-  legitimately serves the IGD:2 description, which is the configuration that broke the PS5
-  originally. **[owed]**
-
-- **[P2] `miniupnpd-igdv2` never received the User-Agent / IGD-description logging patch.**
-  The two daemons are separate source trees, and `8f15112975` touched only `miniupnpd/`. So the
-  moment a user enables IPv6 pinholes, the daemon that actually runs emits no `IGD desc:` line at
-  all — and that is the daemon serving the IGD:2 description, i.e. the riskier of the two and the
-  one whose clients most need diagnosing. Pre-existing divergence, not introduced by v2.4.6, but
-  it now matters more because the pinhole path is the only route to an IGD:2 description.
-  Fix is a straight copy of the patch (`upnphttp.c` UA capture + `upnphttp.h` field + the log
-  line). **[owed]**
-
-- **[P2] The AiMesh-node theming fix is build-verified only.** `bb580b6370` was reasoned from the
-  whitelist in `web.c` and the lockdown branch in `httpd.c`, and the change itself is a
-  three-line guard, but **no node has been flashed with it.** The recovery path also needs
-  confirming: a node already stuck in the loop cannot be reflashed through its own interface, so
-  it must be updated from the main router's AiMesh firmware flow. **[owed]**
-
-- **[P3] The Tweaks-page label for the bind shim reads "nvram netlink workaround".** Accurate
-  about the symptom, but it does not name the mechanism, and the owner refers to it as the socket
-  bind shim. Renaming costs a token change across all 25 dictionaries, so it is worth deciding
-  once rather than twice. **[cosmetic]**
 
 - **[P2] Speed test: `level_err_cnt` is consumed once per POLL, not once per error — this is
   probably the real cause of a run dying mid-test.** Found 2026-08-16 while the owner pushed back
@@ -97,12 +60,17 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `get_result_time - test_start_time >= test_timeout`, so a genuinely stalled test still ends;
   this only stops a *stall* being reported as an *error* ten seconds in.
 
-  **Owner decision 2026-08-16: deferred to v2.4.6.** Not done in v2.4.5 on purpose — it changes how
-  a run is bounded, not just when a counter is cleared, and by the time it was found the rung was
-  cut *and pushed*, so adding a patch would have put `patch_count` out of agreement with the
-  published provenance entry. Deferring also buys the thing it actually needs: a **multi-run**
-  on-metal session. One pass proves nothing here — the whole failure signature is "it depends how
-  many tests you have run and whether the output stalls."
+  **Owner decision 2026-08-16: deferred to v2.4.6. NOT DONE — v2.4.6 was cut on 2026-08-17 without
+  it, so this now rolls to v2.4.7.** The original reasoning still holds and is why it keeps
+  slipping rather than being forgotten: it changes how a run is *bounded*, not just when a counter
+  is cleared, and it needs the one thing that is hard to schedule — a **multi-run on-metal
+  session**. One pass proves nothing, because the whole failure signature is "it depends how many
+  tests you have run and whether the output stalls."
+
+  **Do not defer it a third time on the same grounds.** Two rungs have now been cut around it. If
+  the metal session is the blocker, the honest move is either to book it or to mark this
+  **[blocked]** on that session — a fix that is always one rung away is not deferred, it is
+  quietly abandoned.
 
   **Related, same counter, lower priority:** `level_err_cnt` is cumulative across a run and resets
   only on completion (line ~574), never on progress. Even with per-entry counting, 50 scattered
@@ -225,89 +193,63 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ---
 
+## Pending verification
+
+*A change has been made and is believed to fix the problem. What is missing is **confirmation**,
+and only two things count as confirmation: a report back from the person who reported it, or
+on-hardware validation of a path the maintainer cannot exercise. Build-verified, replay-verified
+and gate-passed are none of these — they prove a change is **in** the image, not that it **works**.*
+
+*Every item names the evidence that would settle it, because "we think it's fixed" with no stated
+test is how something sits here for five rungs. Items leave in one of two directions: **confirmed**
+→ moved to the changelog and deleted from here; **not confirmed** → moved back to
+[Open bugs](#open-bugs--under-investigation) along with what the attempt ruled out, which is often
+worth more than the attempt itself.*
+
+> **Nothing in this section is done.** A fix shipped is not a fix proven.
+
+---
+
+- **[P2] The Call of Duty / UPnP report is not yet confirmed fixed.** v2.4.6 removed two real
+  dead ends — the phantom `WANPPPConnection` advertisement and the IGD:2 device description on
+  the default daemon — and both were verified in the build (preprocessor probe on each configure
+  line). **Neither has been confirmed against the reporter's console.** The decisive evidence is
+  one line, now emitted by both description versions:
+
+  ```
+  grep -i "IGD desc" /tmp/syslog.log
+  ```
+
+  → `IGD desc: served v<1|2> to <ip> (User-Agent: <string>)`. It answers three things at once:
+  whether the console reached the description fetch at all (no line = discovery never got that
+  far, which is what the `WANPPPConnection` fix addresses), which version it was served, and the
+  User-Agent — the string needed to give a specific client the same per-client downgrade upstream
+  hardcodes for Microsoft clients. **Do not use `logread`** — it returns empty on this platform by
+  design (see the note in the wlcsm/netlink material); read the file.
+
+  Also still to confirm: the reporter's `upnp_pinhole_enable`. With pinholes on, the router
+  legitimately serves the IGD:2 description, which is the configuration that broke the PS5
+  originally. **[owed]**
+
+- **[P2] The AiMesh-node theming fix is build-verified only.** `bb580b6370` was reasoned from the
+  whitelist in `web.c` and the lockdown branch in `httpd.c`, and the change itself is a
+  three-line guard, but **no node has been flashed with it.** The recovery path also needs
+  confirming: a node already stuck in the loop cannot be reflashed through its own interface, so
+  it must be updated from the main router's AiMesh firmware flow. **[owed]**
+
+- **[P2] Metal-validate the v2.4.4 IPv6 per-device attribution on a box that actually has
+  IPv6.** The maintainer's RT-BE96U runs `wan_proto=dhcp` with no IPv6 up, so it cannot exercise the
+  new path at all — which is precisely why the gap survived to a field report. The reporting
+  **RT-BE88U** has native IPv6 with a delegated /56 and is the natural test box. What to check with a
+  large download running: the device's row tracks the WAN line rather than showing only its ACK
+  stream; a dual-stack device stays **one** row rather than splitting; and the neighbour table the
+  collector reads (`nd_n`) agrees with `ip -6 neigh show dev br0`. The netlink reader was tested
+  against seeded bridge and non-bridge neighbours on the host, and the code cross-compiles with zero
+  new warnings, but neither proves behaviour on real traffic. **[owed]**
+
+---
+
 ## UI / UX polish
-
----
-
-- **[P2] Flash overlay: hide the poll heartbeat, and remove the Close button while an install is
-  running.** Owner, 2026-08-14, seen live while flashing v2.4.2. The overlay reads
-  `0:58 &middot; pollUpBack &middot; 3` and offers a **CLOSE** button beneath it. Three changes wanted:
-
-  - **`pollUpBack` must not be on screen.** It is the literal name of the internal polling function,
-    passed to `veilBeat('pollUpBack')` and rendered by `veilTick()` into `#veilTick` as
-    `mm:ss · <phase> · <pollcount>` (`Reaper_Firmware.asp` ~470). It reads as a leaked debug string.
-  - **The poll count must go with it.** Same line, `veilPolls`.
-  - **No Close button during an install, and the overlay must persist until the poll succeeds.**
-    Today `#veilAct` is revealed unconditionally by a timer — `VEIL_ESCAPE_MS = 25000` (~line 462) —
-    so it appears about 25 s in whether or not the flash is progressing normally, which is why it is
-    on screen at 0:58. `veilDismiss()` only removes the overlay; it cannot stop a flash already
-    running, so dismissing it mid-flash leaves a user looking at a live page while the router is
-    mid-write.
-
-  **This reverses a deliberate v2.3.2 decision — read this before putting it back.** The Close
-  button, Esc handler and the heartbeat were added *together* in v2.3.2 so that "a stalled flash can
-  no longer look like a frozen browser". The reason they were needed has since been removed: the tab
-  was not stalling, it was **locking up**, because every failed poll round scheduled two successors
-  and the chain doubled every two seconds until the tab died (standing rule 34, fixed in
-  `a0c115dc45` — the changelog for that release says outright that "v2.3.2's Close button treated the
-  symptom; this is the cause"). With the cause fixed, the escape hatch is now mostly a way to
-  dismiss a *working* flash. That is the justification for removing it, and it is why this is a
-  change of mind rather than an oversight.
-
-  **Decide while implementing — do not silently drop it:** `veilFail()` reveals the same button on a
-  *terminal* state (a flash that genuinely failed, a rejected image). Removing the button everywhere
-  would trap the user on a dead overlay with no way back. The ask is specifically about the install
-  path, so the likely shape is: no timer-based reveal at all, no button while polling, and the
-  button still offered on terminal failure — plus keeping the elapsed `mm:ss`, which is the part of
-  the heartbeat that is useful to a person rather than to a developer. The Esc handler
-  (~line 500) is gated on the button being visible and follows it automatically.
-
----
-
-- **[P3] Two more live charts still step by index and want the v2.4.5 Traffic Analyzer treatment —
-  QoS Diagnostics and the Sysinfo temperature graph.** Owner request 2026-08-16. Same root cause
-  each time: **x is derived from a sample's position in the buffer, not from when it arrived**, so
-  every new reading shifts the whole trace by one slot and the chart only ever exists at
-  `1/poll` positions per second. `Reaper_Traffic.asp` (v2.4.5, `liveFrame()`/`startLive()`) is the
-  reference implementation. **The two pages need genuinely different work — do not assume the
-  Traffic patch ports.**
-
-  **`Reaper_QoSDiag.asp` — hand-rolled Canvas, closest to the Traffic case.** Two charts:
-  `drawOcc()` → `#occcv` (multi-series, one line per queue from `state.occHist[q.qid]`) and
-  `drawDrops()` → `#dropcv` (single series plus gradient fill, from `state.dropHist`). Both place
-  points with `var X = i/(HIST-1)*c.w` — the exact shape of Traffic's old
-  `x = 44+(W-44)*i/(n-1)`. `HIST = 45`; poll is `setInterval(fetchOnce, ms)` with the rate selector
-  offering 250 ms / 500 ms (default) / 4 s, so at the slow setting the trace jumps **1/44 of the
-  width, once every four seconds** — far more visible than the 0.84 % Traffic was showing.
-  `drawDrops()` also recomputes `Math.max(6, Math.max.apply(null, a))` every draw: that is the same
-  raw per-poll maximum that was Traffic's *second, independent* source of jumpiness, so it needs
-  the snapped-and-eased scale with a hold before shrinking. `drawOcc()` does not — its y axis is a
-  fixed 0–100 %.
-
-  Two things that do **not** carry over: the charts are **Canvas, not SVG**, so the "persistent
-  nodes, attribute-only updates instead of an `innerHTML` rebuild" half of the Traffic fix is
-  irrelevant — Canvas already redraws wholesale. And **`setupCanvas()` calls
-  `getBoundingClientRect()` and `setTransform()` on every single draw.** At the current 2 Hz that
-  costs nothing; under `requestAnimationFrame` it is a forced layout per frame per canvas and would
-  make the page *worse* than it is now. Cache the size and recompute only on resize as part of the
-  same change, not afterwards.
-
-  **`Tools_Sysinfo.asp` — a STOCK page driving Chart.js v3.9.1; a completely different fix.**
-  `draw_temps_charts()` builds `cputempGraph` from `cpudata` / `wifi24data` / `wifi51data` /
-  `wifi52data` / `wifi6data` / `wifi62data`, each capped at 20 samples by `.shift()`, refreshed by
-  `update_temperatures()` on a **3-second** `setTimeout` loop. The x scale is a hardcoded category
-  array `labels: [0,3,6,…,57]` — 20 fixed slots, one per sample — and the chart is created with
-  **`animation: false`**. So every three seconds `.shift()` drops the oldest reading and the whole
-  trace snaps sideways by **1/19 of the width, about 5.3 %**, with no tween at all. That is the
-  largest step of any chart in the build.
-
-  There is no rAF loop to write here — Chart.js owns its own. The cheap fix is to stop disabling
-  animation and give it a duration matched to the poll, which converts the snap into a glide in one
-  line. The better fix is to move x off the fixed category labels onto a linear/time scale keyed on
-  each sample's arrival time, so an irregular poll stops distorting the spacing. **Rule 33 checked:
-  no `sysdep/FUNCTION` variant of `Tools_Sysinfo.asp` exists and the `www` Makefile does not mention
-  it, so an edit to the base file genuinely ships** — but it is stock code, so keep the change
-  minimal and revertable.
 
 ---
 
@@ -388,18 +330,6 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 ---
 
 ## Features to add
-
----
-
-- **[P2] [owed] Metal-validate the v2.4.4 IPv6 per-device attribution on a box that actually has
-  IPv6.** The maintainer's RT-BE96U runs `wan_proto=dhcp` with no IPv6 up, so it cannot exercise the
-  new path at all — which is precisely why the gap survived to a field report. The reporting
-  **RT-BE88U** has native IPv6 with a delegated /56 and is the natural test box. What to check with a
-  large download running: the device's row tracks the WAN line rather than showing only its ACK
-  stream; a dual-stack device stays **one** row rather than splitting; and the neighbour table the
-  collector reads (`nd_n`) agrees with `ip -6 neigh show dev br0`. The netlink reader was tested
-  against seeded bridge and non-bridge neighbours on the host, and the code cross-compiles with zero
-  new warnings, but neither proves behaviour on real traffic.
 
 ---
 
@@ -636,6 +566,28 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   will flatten them and is worse than leaving them in English until someone can do it properly.
 
 ---
+
+- **[P2] [owed] `cut_rung.sh` leaves `public-build.yml` read-only, so the NEXT cut aborts.** Hit on
+  the v2.4.7 cut, 2026-08-17, and it will recur on every rung until the script changes. Step 8 pins
+  `EXPECTED_VERSION` with `sed -i`, which on the Windows mount writes a temp file and renames it
+  over the target; it cannot carry the permissions across, logs
+  `sed: preserving permissions for '…/sedzXXXXX': Operation not permitted`, and leaves the result
+  with the Windows **ReadOnly** attribute set (`-r-xr-xr-x`). `cut_fleet.sh`'s own preflight then
+  correctly refuses to start — *"public-build.yml is not writable … the EXPECTED_VERSION pin would
+  silently not apply"* — so the failure is safe and loud rather than a silently unpinned workflow.
+  But it means **every cut breaks the next one**, and the fix is a manual
+  `Set-ItemProperty -Path <file> -Name IsReadOnly -Value $false` on the Windows side.
+
+  **Fix shape:** stop using `sed -i` on that path. Either write via a temp file in the same
+  directory and `cat > "$target"` (truncate-in-place preserves the existing permissions), or
+  `chmod +w` the file immediately after the sed. The `cat >` form is preferable — it never creates
+  a new inode, so the attribute cannot be lost in the first place. Same hazard applies to any
+  future `sed -i` the release scripts run against a file on `/mnt/c`.
+
+- **[P3] [owed] Translations for the renamed bind-shim labels — `RTWK_03` and `RTWK_04`.** Renamed
+  2026-08-17 ("Socket bind shim (nvram netlink)" plus an "On by default" note) and English-seeded
+  into all 25 packs, so the 24 non-English packs currently show English for these two keys. Small,
+  and it rides the next translation pass rather than needing one of its own.
 
 - **[P3] Translations owed for the 2026-08-14 rung — Warden's router-self filter.** `RWDN_69`–
   `RWDN_72` (toggle label, description, and the two-part risk warning) are English-seeded in all 25

@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.4.6** — `3006.102.8_Reaper_v2.4.6`, 451 patches (replay-verified). **No image published from it yet.** Unlike v2.4.5 this rung *does* touch per-model overlay files, so all four siblings were ported first and every overlay was then regenerated and re-checked by the identity gate; images come from the clean-room CI build. |
+| **Current rung** | **v2.4.7** — `3006.102.8_Reaper_v2.4.7`, 454 patches (replay-verified). **No image published from it yet.** Shared code only: all four overlays came back *unchanged* from regeneration, which independently confirms the rung touches no per-model identity; images come from the clean-room CI build. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5 and v2.4.6. v2.4.1 through v2.4.4 are built on RT-BE96U, both variants. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6 and v2.4.7. v2.4.1 through v2.4.4 are built on RT-BE96U, both variants. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,38 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.4.7 — cut, not yet built or published
+
+*A small rung: two things v2.4.6 left half-finished. No behaviour changes at all — one label and
+one log line.*
+
+### The "settings will not save" switch now says what it is
+
+On **Tools → Other Settings** it read *"nvram netlink workaround"*. That is accurate about the
+symptom and useless for finding it: the switch has existed since the previous rung and has been
+**on by default** since the day it was added, but nothing on the page identified it as the socket
+bind shim, and nothing said which way it was set out of the box. It was asked for twice as a
+missing feature — which is the clearest possible evidence that a setting you cannot recognise is,
+in practice, a setting you do not have.
+
+It now reads **"Socket bind shim (nvram netlink)"**, and the description states that it is on by
+default. Nothing about the behaviour changed.
+
+### Enabling IPv6 pinholes no longer switches off the UPnP diagnostic
+
+The router records which version of its gateway description it gave each device that asked, and
+what that device calls itself. That single line is the most useful evidence there is for working
+out why a games console will not open its ports.
+
+There are two UPnP programs, and the router runs one or the other depending on whether IPv6
+pinholes are switched on. The logging had only ever been added to one of them — so turning on
+pinholes moved you to the program without it. That was exactly the wrong way round: the pinhole
+program is the one that describes itself in the newer way consoles misread, so it is both the
+configuration most likely to need diagnosing and the one that could not be. Both now log
+identically.
 
 ---
 

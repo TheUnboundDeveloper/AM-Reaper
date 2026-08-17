@@ -24,6 +24,14 @@ node, not only on the primary router.
 
 ---
 
+## v2.4.7 — The save-fix switch says what it is, and the diagnostic no longer disappears when you enable pinholes
+*In the source tree, **not yet built or published**. A small rung: two corrections to things v2.4.6 left half-finished. Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series.*
+
+- **Changed: the switch on Tools → Other Settings for the "settings will not save" fix now says what it is, and says that it is already on.** It read *"nvram netlink workaround"* — accurate about the symptom, but it never named the thing it switches, so anyone looking for the socket bind shim could stare straight at it without recognising it. It now reads **"Socket bind shim (nvram netlink)"**, and the description states that it is **on by default**, which was the other half of the question and was not answered anywhere on the page. Nothing about the behaviour changed: the switch has existed since the previous rung and has been on by default since the day it was added. This is purely about being able to find it and know where it stands — a setting you cannot identify is, in practice, a setting you do not have.
+- **Fixed: switching on IPv6 pinholes silently switched off the UPnP diagnostic logging.** The router records which version of its gateway description it handed to each device that asked, along with what that device calls itself — the single most useful line for working out why a games console will not open its ports. There are two UPnP programs, and the router runs one or the other depending on whether IPv6 pinholes are enabled; the logging had only ever been added to one of them. So enabling pinholes moved you to the program without it. That was exactly backwards: the pinhole program is the one that describes itself in the newer way that consoles misread, so it is the configuration most likely to need diagnosing and the one that could not be. Both programs now log identically. No behaviour changes — this is a diagnostic gaining a blind spot it should never have had.
+
+---
+
 ## v2.4.6 — Consoles can use UPnP again, mesh nodes stop looping, and an About page that can prove what it claims
 *In the source tree, **not yet built or published**. Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series. Images come from the clean-room CI build.*
 

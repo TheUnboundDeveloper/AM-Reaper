@@ -1,0 +1,121 @@
+From 65d7db71201e38be0fa0f3e72985dc3b9bb0e733 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 17 Aug 2026 14:35:06 -0400
+Subject: [PATCH] miniupnpd-igdv2: carry the UA / IGD-description logging patch
+
+The two daemons are separate source trees and 8f15112975 touched only
+miniupnpd/, so the pinhole daemon has never emitted the "IGD desc:" line. That
+is the daemon that serves the IGD:2 description - the version that breaks real
+control points and the one whose clients most need diagnosing - so the
+diagnostic was absent from exactly the path where it matters most. Enabling
+IPv6 pinholes silently turned the logging off.
+
+Not introduced by v2.4.6, but v2.4.6 made it sharper: with the default daemon
+back to IGD:1, the pinhole daemon is now the ONLY route to an IGD:2
+description, so it is the only build that can answer "was this client served v2
+and did it then fail to map".
+
+Ported as the exact delta rather than a hand copy: 9cb5d563f4 (2.3.10-g91eeeae)
+is the last upstream commit to touch BOTH copies, and the igdv2 files were
+verified byte-identical to miniupnpd's at that commit before applying, so this
+cannot silently clobber a divergence. The two upnphttp.c and upnphttp.h are now
+byte-identical again, which is the property worth keeping - the reason this gap
+existed is that nothing enforced it.
+
+The #else IGD_V2 branch (const int force_v1 = 1) is inert here since this build
+defines IGD_V2; it is carried anyway so the files stay identical.
+
+Syntax-checked with the real cross-gcc against this build's own config.h
+(IGD_V2 confirmed active): rc=0, no warnings in the file.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/miniupnpd-igdv2/upnphttp.c | 44 ++++++++++++++++++-
+ release/src/router/miniupnpd-igdv2/upnphttp.h |  5 +++
+ 2 files changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/miniupnpd-igdv2/upnphttp.c b/release/src/router/miniupnpd-igdv2/upnphttp.c
+index 97bc4d8095..27867a1ee0 100644
+--- a/release/src/router/miniupnpd-igdv2/upnphttp.c
++++ b/release/src/router/miniupnpd-igdv2/upnphttp.c
+@@ -312,6 +312,26 @@ ParseHttpHeaders(struct upnphttp * h)
+ 				if(strcasestr(line + 11, "microsoft") != NULL || strstr(line + 11, "FDSSDP") != NULL) {
+ 					h->respflags |= FLAG_MS_CLIENT;
+ 				}
++				/* reaper 2026-08-13: keep the raw UA. The sniff above is the ONLY
++				 * per-client input to the IGD version decision in sendXMLdesc(),
++				 * and upstream never records what a client actually sent - so when
++				 * a non-Microsoft control point (a PS5, in the field report that
++				 * prompted this) fails against an IGD:2 description, there is no
++				 * way to learn the string that would let us give it the same
++				 * carve-out Microsoft clients get. Copy it out, bounded, stopping
++				 * at the first control character so CR/LF never reach the log. */
++				{
++					const char *ua = line + 11;
++					size_t i = 0;
++
++					while(*ua == ' ' || *ua == '\t')
++						ua++;
++					while(i < sizeof(h->reaper_ua) - 1 && ua[i] >= ' ') {
++						h->reaper_ua[i] = ua[i];
++						i++;
++					}
++					h->reaper_ua[i] = '\0';
++				}
+ 			}
+ #ifdef ENABLE_EVENTS
+ 			else if(strncasecmp(line, "Callback:", 9)==0)
+@@ -468,11 +488,33 @@ sendXMLdesc(struct upnphttp * h, char * (f)(int *, int))
+ 	char * desc;
+ 	int len;
+ #ifdef IGD_V2
++	int force_v1 = GETFLAG(FORCEIGDDESCV1MASK) || (h->respflags & FLAG_MS_CLIENT);
+ #ifdef DEBUG
+ 	if(h->respflags & FLAG_MS_CLIENT)
+ 		syslog(LOG_DEBUG, "MS Client, forcing IGD v1");
+ #endif /* DEBUG */
+-	desc = f(&len, GETFLAG(FORCEIGDDESCV1MASK) || (h->respflags & FLAG_MS_CLIENT));
++#else /* IGD_V2 */
++	/* reaper 2026-08-17: this daemon is configured without --igd2, so it holds no
++	 * IGD:2 description at all and v1 is the only thing it can serve. Kept as a
++	 * local purely so the log line below is identical in both builds: the
++	 * User-Agent it carries is the one fact we lack about a control point that
++	 * fails to map, and losing it on the DEFAULT daemon - which is now this one -
++	 * would gut the diagnostic exactly where it is most needed. */
++	const int force_v1 = 1;
++#endif /* IGD_V2 */
++	/* reaper 2026-08-13: record the version actually served, and to whom.
++	 * Root description only - sendXMLdesc() also serves the per-service SCPDs,
++	 * and logging all of them would multiply every discovery by four for no
++	 * extra information. This is the one line that tells us whether a control
++	 * point that later failed to map had been handed an IGD:2 description, and
++	 * what User-Agent it identifies itself by - the string needed to give it the
++	 * same per-client downgrade that upstream hardcodes for Microsoft clients. */
++	if(f == genRootDesc)
++		syslog(LOG_INFO, "IGD desc: served v%d to %s (User-Agent: %s)",
++		       force_v1 ? 1 : 2, h->clientaddr_str,
++		       h->reaper_ua[0] ? h->reaper_ua : "(none sent)");
++#ifdef IGD_V2
++	desc = f(&len, force_v1);
+ #else
+ 	desc = f(&len, 0);
+ #endif
+diff --git a/release/src/router/miniupnpd-igdv2/upnphttp.h b/release/src/router/miniupnpd-igdv2/upnphttp.h
+index 3bc7215c46..9b3416eed6 100644
+--- a/release/src/router/miniupnpd-igdv2/upnphttp.h
++++ b/release/src/router/miniupnpd-igdv2/upnphttp.h
+@@ -62,6 +62,11 @@ struct upnphttp {
+ 	/* request */
+ 	char * req_buf;
+ 	char accept_language[8];
++	/* reaper 2026-08-13: raw User-Agent of the requesting control point, kept so
++	   sendXMLdesc() can record WHICH IGD description version each client was
++	   served. miniupnpd otherwise never logs the UA, which left us unable to tell
++	   why a given console failed. Zeroed by the memset() in New_upnphttp(). */
++	char reaper_ua[96];
+ 	int req_buflen;
+ 	int req_contentlen;
+ 	int req_contentoff;     /* header length */
+-- 
+2.25.1
+

@@ -1,0 +1,59 @@
+From 70cf23a50aa9db7c4ad5de349d81e80e234dd57b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 14:42:53 -0400
+Subject: [PATCH] reaper_shell: put the About signet at the foot of the rail
+ and make it work
+
+Two defects, both found by checking the rendered result instead of trusting the
+markup.
+
+POSITION: the signet is static markup inside <aside id="rail">, but buildRail()
+does rail.insertAdjacentHTML("beforeend", h) and appends the entire nav AFTER
+it. In the shell it therefore rendered ABOVE the whole menu rather than at the
+foot. The dashboard rail is static, so it was correct there - which is exactly
+how this would have shipped unnoticed.
+
+DEAD CLICK: the framing handler binds only to a.item, and the signet is
+a.railabout with no data-page, so it fell through to the browser. From the
+dashboard that is harmless - a full navigation loads the shell, which reads the
+hash. From INSIDE the shell the URL differs only by #hash: no reload, no
+hashchange listener anywhere in the file, so clicking About did nothing at all.
+
+Both fixed at the end of buildRail: move the signet to the end of the rail so
+margin-top:auto can pin it, and route the click through loadPage() like any
+other rail target.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 04acc014c8..dc7da4eec6 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -476,6 +476,21 @@ function buildRail(menuTree){
+       loadPage(this.getAttribute('data-page'));
+     });
+   }
++  /* The About signet is static markup, but the insertAdjacentHTML above appends
++     the nav AFTER it - so move it back to the end, where margin-top:auto can pin
++     it to the foot of the rail. It is not an a.item, so the handler loop above
++     skips it; frame it here instead. Without this, clicking About from inside
++     the shell changes only the #hash: no reload, no hashchange listener, nothing
++     happens. */
++  var ab=rail.querySelector('a.railabout');
++  if(ab){
++    rail.appendChild(ab);
++    ab.addEventListener('click', function(ev){
++      ev.preventDefault();
++      loadPage('Reaper_About.asp');
++    });
++  }
++
+   var initial=(location.hash||'').replace('#','');
+   /* no target (e.g. post-login redirect to bare reaper_shell.asp - the #hash
+    * never reaches the server): land on the dashboard, not the network map */
+-- 
+2.25.1
+

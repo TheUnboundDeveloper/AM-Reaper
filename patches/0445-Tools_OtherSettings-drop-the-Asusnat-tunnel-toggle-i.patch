@@ -1,0 +1,69 @@
+From ce08e56ddcb56677450530899999898e7cc65910 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 16 Aug 2026 15:22:51 -0400
+Subject: [PATCH] Tools_OtherSettings: drop the Asusnat tunnel toggle - it is
+ provably inert
+
+"Disable Asusnat tunnel" (aae_disable_force) offered to disable a daemon this
+firmware does not contain:
+
+  - natnl_api.o is compiled only under `ifeq ($(RTCONFIG_TUNNEL),y)`
+    (rc/Makefile:1057), and .config carries `# RTCONFIG_TUNNEL is not set`, so
+    all three of its aae_disable_force checks are compiled out
+  - watchdog's mastiff_check() sits inside `#ifdef RTCONFIG_TUNNEL`, likewise out
+  - no mastiff, aaeuac or natnl binary exists anywhere in the staged image
+
+restart_mastiff goes with it: that service was in this page's action_script
+solely for this control, so every save was restarting something that is not
+there. The nvram entry stays in defaults.c - an unused key costs nothing and
+removing it would churn the table for no gain.
+
+THE OTHER ROW IS NOT INERT AND IS DELIBERATELY KEPT. "Redirect webui access"
+(http_dut_redir) has a complete, working, LAN-LOCAL implementation:
+Main_Login.asp fetches <Web_DOMAIN_NAME>:<port>/chdom.json, and that endpoint is
+served BY THE ROUTER - www/chdom.json exists, is registered in web.c
+mime_handlers, and is backed by ej_chdom(). It is a hostname-vs-IP convenience,
+not telemetry, and it is off by default. Removing it would delete a feature that
+works.
+
+Worth recording for the next de-cloud audit: reaper_verify check 17 greps the
+staged www for an ASUS host in a request-shaped position, and it cannot see this
+line - the host comes from the <#Web_DOMAIN_NAME#> dict token, not a literal, so
+the URL only exists after substitution. Check 17 passing is not evidence that a
+page makes no ASUS-hostname request.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Tools_OtherSettings.asp | 9 +--------
+ 1 file changed, 1 insertion(+), 8 deletions(-)
+
+diff --git a/release/src/router/www/Tools_OtherSettings.asp b/release/src/router/www/Tools_OtherSettings.asp
+index 1b0048d221..0d68a251ad 100644
+--- a/release/src/router/www/Tools_OtherSettings.asp
++++ b/release/src/router/www/Tools_OtherSettings.asp
+@@ -130,7 +130,7 @@ function applyRule(){
+ <input type="hidden" name="next_page" value="Tools_OtherSettings.asp">
+ <input type="hidden" name="modified" value="0">
+ <input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="restart_conntrack;restart_mastiff">
++<input type="hidden" name="action_script" value="restart_conntrack">
+ <input type="hidden" name="action_wait" value="5">
+ <input type="hidden" name="first_time" value="">
+ <input type="hidden" name="SystemCmd" value="">
+@@ -311,13 +311,6 @@ function applyRule(){
+ 							<input type="radio" name="ipv6_ns_drop" class="input" value="0" <% nvram_match_x("", "ipv6_ns_drop", "0", "checked"); %>><#checkbox_No#>
+ 						</td>
+ 					</tr>
+-					<tr>
+-						<th>Disable Asusnat tunnel</th>
+-						<td>
+-							<input type="radio" name="aae_disable_force" class="input" value="1" <% nvram_match_x("", "aae_disable_force", "1", "checked"); %>><#checkbox_Yes#>
+-							<input type="radio" name="aae_disable_force" class="input" value="0" <% nvram_match_x("", "aae_disable_force", "0", "checked"); %>><#checkbox_No#>
+-						</td>
+-					</tr>
+ 					<tr>
+ 						<th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50,21);">dhcpd: send empty WPAD with a carriage return</a></th>
+ 						<td>
+-- 
+2.25.1
+

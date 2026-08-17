@@ -15,7 +15,21 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ---
 
+## Contents
+
+- [Open bugs / under investigation](#open-bugs--under-investigation)
+- [UI / UX polish](#ui--ux-polish)
+- [Features to add](#features-to-add)
+- [Code quality / deferred (with reason)](#code-quality--deferred-with-reason)
+- [Documentation](#documentation)
+- [Known issues (cannot remediate — closed-source blob)](#known-issues-cannot-remediate--closed-source-blob)
+- [Reported, investigated, closed as working-as-designed](#reported-investigated-closed-as-working-as-designed)
+
+---
+
 ## Open bugs / under investigation
+
+---
 
 - **[P2] Speed test: `level_err_cnt` is consumed once per POLL, not once per error — this is
   probably the real cause of a run dying mid-test.** Found 2026-08-16 while the owner pushed back
@@ -54,9 +68,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   non-fatal errors over a long run would terminate a test that is succeeding. Consecutive-error
   semantics are the right shape.
 
-- When I ping 8.8.8.8 or 1.1.1.1, I get a lot of request timeouts. This happens both right 
-  after a firmware update and randomly throughout the day. The only solution is to reboot the 
-  ONT, and the connection becomes stable again. What could be causing this? 
+---
 
 - **[P2] AI Mesh Search — "Search for node" finds no new node.** Pre-existing meshes keep working
   after flashing to Reaper; only *new-node discovery* is affected. Reported on GT-BE98/PRO, but
@@ -97,6 +109,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     new log lines say which. Run it on the BE96U too — that splits a Reaper regression from a
     BE98-port issue.
 
+---
+
 - **[P2] Wireless Quality Auto Scan pins the winner by itself; it should not.** Owner 2026-08-13:
   a scan should rank and report, and pinning should be the separate **Pin best** button
   (`scanpin` / `scanPin()`) that already exists. Today a clean sweep commits the winner without
@@ -126,10 +140,14 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   - **Fix shape:** take the `!aborted` branch out, i.e. always restore `orig_cs`/`orig_bw` after a
     sweep, and leave every pin to `scanPin()`. Then correct whichever comment is left lying.
 
+---
+
 - **[P2] Dual-WAN failover: both NextDNS profiles receive DNS logs though only one WAN is live.**
   Secondary WAN (2.5 Gbps, DHCP, its own NextDNS profile) is active; the future primary (10 Gbps,
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
   expected only the active WAN's profile to log. [Requires_Research]
+
+---
 
 - **[P2] Field report: heavy ping loss to 8.8.8.8 / 1.1.1.1, cured only by rebooting the ONT.**
   Third-party report on v2.4.4, 2026-08-15: timeouts start right after a firmware update and also
@@ -164,7 +182,46 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `REAPER-WARDEN-OUT` instead of being indistinguishable from an inbound one, so `grep` answers the
   first question outright.
 
+---
+
 ## UI / UX polish
+
+---
+
+- **[P2] Flash overlay: hide the poll heartbeat, and remove the Close button while an install is
+  running.** Owner, 2026-08-14, seen live while flashing v2.4.2. The overlay reads
+  `0:58 &middot; pollUpBack &middot; 3` and offers a **CLOSE** button beneath it. Three changes wanted:
+
+  - **`pollUpBack` must not be on screen.** It is the literal name of the internal polling function,
+    passed to `veilBeat('pollUpBack')` and rendered by `veilTick()` into `#veilTick` as
+    `mm:ss · <phase> · <pollcount>` (`Reaper_Firmware.asp` ~470). It reads as a leaked debug string.
+  - **The poll count must go with it.** Same line, `veilPolls`.
+  - **No Close button during an install, and the overlay must persist until the poll succeeds.**
+    Today `#veilAct` is revealed unconditionally by a timer — `VEIL_ESCAPE_MS = 25000` (~line 462) —
+    so it appears about 25 s in whether or not the flash is progressing normally, which is why it is
+    on screen at 0:58. `veilDismiss()` only removes the overlay; it cannot stop a flash already
+    running, so dismissing it mid-flash leaves a user looking at a live page while the router is
+    mid-write.
+
+  **This reverses a deliberate v2.3.2 decision — read this before putting it back.** The Close
+  button, Esc handler and the heartbeat were added *together* in v2.3.2 so that "a stalled flash can
+  no longer look like a frozen browser". The reason they were needed has since been removed: the tab
+  was not stalling, it was **locking up**, because every failed poll round scheduled two successors
+  and the chain doubled every two seconds until the tab died (standing rule 34, fixed in
+  `a0c115dc45` — the changelog for that release says outright that "v2.3.2's Close button treated the
+  symptom; this is the cause"). With the cause fixed, the escape hatch is now mostly a way to
+  dismiss a *working* flash. That is the justification for removing it, and it is why this is a
+  change of mind rather than an oversight.
+
+  **Decide while implementing — do not silently drop it:** `veilFail()` reveals the same button on a
+  *terminal* state (a flash that genuinely failed, a rejected image). Removing the button everywhere
+  would trap the user on a dead overlay with no way back. The ask is specifically about the install
+  path, so the likely shape is: no timer-based reveal at all, no button while polling, and the
+  button still offered on terminal failure — plus keeping the elapsed `mm:ss`, which is the part of
+  the heartbeat that is useful to a person rather than to a developer. The Esc handler
+  (~line 500) is gated on the button being visible and follows it automatically.
+
+---
 
 - **[P3] Two more live charts still step by index and want the v2.4.5 Traffic Analyzer treatment —
   QoS Diagnostics and the Sysinfo temperature graph.** Owner request 2026-08-16. Same root cause
@@ -211,6 +268,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   it, so an edit to the base file genuinely ships** — but it is stock code, so keep the change
   minimal and revertable.
 
+---
+
 - **[P3] Dashboard linking — rows that land on the wrong page.** The Security Posture panel became
   clickable in v2.4.1 (all fourteen rows carry a destination). Corrections as they are found:
 
@@ -232,6 +291,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
       dashboard rail is shared across all five models. Mirror the menu's conditional rather than
       hardcoding, or confirm every shipped model asserts `mtlancfg`.
 
+---
+
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage + nav/header
   blocking during an apply/reboot is done (v2.2.5, refined v2.3.0); the overlays are now anchored to
   the browser viewport rather than the framed document — the shell publishes the frame's visible slice
@@ -250,38 +311,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   overlay** with a Reaper-themed equivalent — none should survive in stock styling; (iii) confirm the
   anchoring **on the router** with the real pages, not just headless. [owed]
 
-- **[P2] Flash overlay: hide the poll heartbeat, and remove the Close button while an install is
-  running.** Owner, 2026-08-14, seen live while flashing v2.4.2. The overlay reads
-  `0:58 &middot; pollUpBack &middot; 3` and offers a **CLOSE** button beneath it. Three changes wanted:
-
-  - **`pollUpBack` must not be on screen.** It is the literal name of the internal polling function,
-    passed to `veilBeat('pollUpBack')` and rendered by `veilTick()` into `#veilTick` as
-    `mm:ss · <phase> · <pollcount>` (`Reaper_Firmware.asp` ~470). It reads as a leaked debug string.
-  - **The poll count must go with it.** Same line, `veilPolls`.
-  - **No Close button during an install, and the overlay must persist until the poll succeeds.**
-    Today `#veilAct` is revealed unconditionally by a timer — `VEIL_ESCAPE_MS = 25000` (~line 462) —
-    so it appears about 25 s in whether or not the flash is progressing normally, which is why it is
-    on screen at 0:58. `veilDismiss()` only removes the overlay; it cannot stop a flash already
-    running, so dismissing it mid-flash leaves a user looking at a live page while the router is
-    mid-write.
-
-  **This reverses a deliberate v2.3.2 decision — read this before putting it back.** The Close
-  button, Esc handler and the heartbeat were added *together* in v2.3.2 so that "a stalled flash can
-  no longer look like a frozen browser". The reason they were needed has since been removed: the tab
-  was not stalling, it was **locking up**, because every failed poll round scheduled two successors
-  and the chain doubled every two seconds until the tab died (standing rule 34, fixed in
-  `a0c115dc45` — the changelog for that release says outright that "v2.3.2's Close button treated the
-  symptom; this is the cause"). With the cause fixed, the escape hatch is now mostly a way to
-  dismiss a *working* flash. That is the justification for removing it, and it is why this is a
-  change of mind rather than an oversight.
-
-  **Decide while implementing — do not silently drop it:** `veilFail()` reveals the same button on a
-  *terminal* state (a flash that genuinely failed, a rejected image). Removing the button everywhere
-  would trap the user on a dead overlay with no way back. The ask is specifically about the install
-  path, so the likely shape is: no timer-based reveal at all, no button while polling, and the
-  button still offered on terminal failure — plus keeping the elapsed `mm:ss`, which is the part of
-  the heartbeat that is useful to a person rather than to a developer. The Esc handler
-  (~line 500) is gated on the button being visible and follows it automatically.
+---
 
 - **[P3] Loader z-index raise is class-wide (watch-item).** The z-index bump was applied to the shared
   `.popup_bg` class, so it also raises `#hiddenMask` (the confirm-dialog backdrop) — benign/positive.
@@ -289,12 +319,16 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   the loader is displayed*, it would render behind the loader. Scope the class to `#Loading` only if a
   concurrent-modal case turns up. [watch — cosmetic]
 
+---
+
 - **[P3] SDN Wi-Fi-key mask can be bypassed by an SSID containing a literal `<b>` tag (watch-item).**
   The shared `state.js showWlHintContainer()` injects the SSID into `innerHTML` unescaped, so an SSID
   literally containing `<b>…</b>` would shift the bold-element index and leave the key visible. Only
   weakens the *new* privacy feature (never a crash or XSS), and the root cause is the pre-existing
   unescaped-SSID behavior in the **shared** `state.js` (out of scope of the mask's design). Optional
   hardening: mask the LAST `<b>` per row instead of index 1. [watch — cosmetic/privacy]
+
+---
 
 - **[P3] Smart Connect band-mask hazards (watch-items, from the v2.3.5 investigation).**
   Two things worth not re-deriving. (i) `Advanced_Wireless_Content.asp`'s mask builder has a
@@ -310,7 +344,45 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `scratchpad/smartconnect_sim.js` for reading any future screenshot of that page.
   [watch — no action unless the guard changes]
 
+---
+
 ## Features to add
+
+---
+
+- **[P2] [owed] Metal-validate the v2.4.4 IPv6 per-device attribution on a box that actually has
+  IPv6.** The maintainer's RT-BE96U runs `wan_proto=dhcp` with no IPv6 up, so it cannot exercise the
+  new path at all — which is precisely why the gap survived to a field report. The reporting
+  **RT-BE88U** has native IPv6 with a delegated /56 and is the natural test box. What to check with a
+  large download running: the device's row tracks the WAN line rather than showing only its ACK
+  stream; a dual-stack device stays **one** row rather than splitting; and the neighbour table the
+  collector reads (`nd_n`) agrees with `ip -6 neigh show dev br0`. The netlink reader was tested
+  against seeded bridge and non-bridge neighbours on the host, and the code cross-compiles with zero
+  new warnings, but neither proves behaviour on real traffic.
+
+---
+
+- **[P2] NATIVE FIREWALL SUITE — the remaining pieces.** The suite itself **shipped in v2.4.1**
+  (engine, hub, Status posture view, Phase 2 egress defaults, Phase 3 hardened forwards, their
+  authoring tabs, backup/restore, and a measured engine-active signal); see
+  [`CHANGELOG.md`](CHANGELOG.md). What is left:
+
+  - **Advanced DSL for the Rules tab** — the approved 2026-08-08 design called for a Basic form
+    *and* an advanced text syntax; only the Basic form was built (`grep -ci 'dsl\|advanced'` on
+    `Reaper_Firewall.asp` = 0). Decide whether it is still wanted: the Basic form plus the compile
+    preview may already cover the need the DSL was meant to serve.
+    *(The Logging viewer tab from that design IS built — `tab_logging` + `loadDrops()` + the `fw_log`
+    CGI path — so do not re-raise it as missing.)*
+  - **Fleet fan-out — BLOCKED until the overlays are regenerated.** The rung touches
+    `www/Main_ReaperDash.asp` and `www/reaper_shell.asp`, which all four per-model overlays also
+    carry, so `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98_PRO` cannot take this series until those
+    overlays are rebuilt against it. Everything else in the rung is model-neutral.
+  - The rule tracer is tracked as its own entry above. *(The dnsmasq `ipset=` upgrade is no longer
+    listed here — it was implemented 2026-08-14 and is in the unreleased rung; the "dnsmasq is
+    compiled without ipset" blocker this file used to record was a misreading and must not be
+    re-raised. See [`CHANGELOG.md`](CHANGELOG.md).)*
+
+---
 
 - **[P3] [owed] The local build path does not stamp the provenance file; only CI does.**
   `build-scripts/gen_provenance.sh` writes `www/reaper_provenance.js` (patch count, base pin, build
@@ -320,6 +392,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   why it is the fallback) but it makes a local image and a CI image differ visibly, which is exactly
   the kind of difference the decompose-and-diff cross-check exists to notice. One call, same
   arguments; the local engine already knows the version and can count `patches/`.
+
+---
 
 - **[P3] [blocked] Route the About page's donation link through `unbounded-engineering.com/donate`
   rather than hardcoding the payment endpoints.** Blocked on the website expansion — there is
@@ -350,15 +424,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   indirection stops being a convenience. Stripe is not exposed this way — `donate.stripe.com/<id>`
   is bound to the account and simply stops working when deactivated.
 
-- **[P2] [owed] Metal-validate the v2.4.4 IPv6 per-device attribution on a box that actually has
-  IPv6.** The maintainer's RT-BE96U runs `wan_proto=dhcp` with no IPv6 up, so it cannot exercise the
-  new path at all — which is precisely why the gap survived to a field report. The reporting
-  **RT-BE88U** has native IPv6 with a delegated /56 and is the natural test box. What to check with a
-  large download running: the device's row tracks the WAN line rather than showing only its ACK
-  stream; a dual-stack device stays **one** row rather than splitting; and the neighbour table the
-  collector reads (`nd_n`) agrees with `ip -6 neigh show dev br0`. The netlink reader was tested
-  against seeded bridge and non-bridge neighbours on the host, and the code cross-compiles with zero
-  new warnings, but neither proves behaviour on real traffic.
+---
 
 - **[P3] A v6-only device shows a blank address label (v2.4.4).** Attribution is keyed on the
   hardware address, so such a device is counted correctly and merges properly — only the display
@@ -368,7 +434,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   hardware address as the fallback label, or carry a separate display field outside the persisted
   header. Not worth a history-invalidating format bump on its own.
 
-- **Warden Plus** Requests have been made for custom feeds input by the user.
+---
 
 - **[P3] Warden: decide whether country rules should be evaluated BEFORE the threat feeds.**
   Left as an explicit owner decision by the 2026-08-14 block-count work, not an oversight. Both rule
@@ -382,6 +448,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   flatten, with no way to explain the discontinuity after the fact. The breakdown shipped in the
   unreleased rung makes both numbers visible, so this is now a free choice rather than a fix.
 
+---
+
 - **[P3] Firewall rule tracer (FIREWALL-PLAN Phase 3, the last unbuilt piece of it).** "Given a
   packet like *this*, which rule would match?" — a simulator that walks the committed config in C
   and reports the first match, rather than shelling out to iptables. Deferred from the firewall rung as
@@ -389,31 +457,15 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   Everything else in Phases 2 and 3 shipped in v2.4.1 (`a103b59d6d` engine, `fa1e5d634f` Egress and
   Forwards tabs + backup/restore).
 
-- **[P2] NATIVE FIREWALL SUITE — the remaining pieces.** The suite itself **shipped in v2.4.1**
-  (engine, hub, Status posture view, Phase 2 egress defaults, Phase 3 hardened forwards, their
-  authoring tabs, backup/restore, and a measured engine-active signal); see
-  [`CHANGELOG.md`](CHANGELOG.md). What is left:
-
-  - **Advanced DSL for the Rules tab** — the approved 2026-08-08 design called for a Basic form
-    *and* an advanced text syntax; only the Basic form was built (`grep -ci 'dsl\|advanced'` on
-    `Reaper_Firewall.asp` = 0). Decide whether it is still wanted: the Basic form plus the compile
-    preview may already cover the need the DSL was meant to serve.
-    *(The Logging viewer tab from that design IS built — `tab_logging` + `loadDrops()` + the `fw_log`
-    CGI path — so do not re-raise it as missing.)*
-  - **Fleet fan-out — BLOCKED until the overlays are regenerated.** The rung touches
-    `www/Main_ReaperDash.asp` and `www/reaper_shell.asp`, which all four per-model overlays also
-    carry, so `RT-BE86U` / `RT-BE88U` / `GT-BE98` / `GT-BE98_PRO` cannot take this series until those
-    overlays are rebuilt against it. Everything else in the rung is model-neutral.
-  - The rule tracer is tracked as its own entry above. *(The dnsmasq `ipset=` upgrade is no longer
-    listed here — it was implemented 2026-08-14 and is in the unreleased rung; the "dnsmasq is
-    compiled without ipset" blocker this file used to record was a misreading and must not be
-    re-raised. See [`CHANGELOG.md`](CHANGELOG.md).)*
+---
 
 - **[P3] NORTH STAR — progressively replace stock GUI pages with Reaper-native ones.** Over time,
   migrate stock ASUS/Merlin pages to Reaper-native equivalents (own theme, de-clouded, only the
   functions we want exposed), as already done for Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/
   Advisor/Conn/QoSDiag/Analytics/Storage/Firmware (v2.3.1). The Firewall suite (above) is the next
   candidate. [ongoing]
+
+---
 
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** Today each control applies
   immediately (e.g. changing all three Wi-Fi bands = three applies + three `restart_wireless`). Add a
@@ -430,33 +482,34 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
     stock ASUS pages). *Recommended path:* Reaper-native pages first; quick sub-win = a single Reaper
     Wireless page for all three bands that applies once. The full cross-page system is its own project.
 
+---
+
 - **[P3] Remote syslog push/fetch.** The router can already send its log to a remote collector
   (send-only). Add the ability to **push to / be fetched by** analytics systems (most SIEM pipelines are
   push-based). Pairs with the shipped health-metrics export (Data Export page). Also open from that
   feature: **wireless RSSI/PHY** per-device metrics were deliberately deferred and can be added later
   from the existing `web-broadcom-am.c` backend.
 
+---
+
 - **[P3] NIST-grade auditing.** Consider adding audit capabilities aligned to a NIST baseline.
+
+---
 
 - **[P3] Diag: regulatory-mismatch warning.** Make `reaper_diag` (and possibly a Wireless-page hint)
   print an explicit `WARN: territory_code=EU/xx but wlX_country_code=US` line when the factory territory
   and per-radio country codes disagree — self-documents gray-market / region-switched units. Read-only
   compare, no behavior change (firmware must never auto-alter regulatory nvram). [shelved]
 
+---
+
+- **Warden Plus** Requests have been made for custom feeds input by the user.
+
+---
+
 ## Code quality / deferred (with reason)
 
-- **[P3] `poll_fcache` O(n²)→hash pairing** (`rtrafd.c`). Bounded to ≤1536 flows every 5 s in the
-  metal-validated per-client accounting path — a rewrite of a millisecond-scale loop isn't worth the
-  regression risk. Revisit only if a flow-heavy box shows real cost. [shelved]
-
-- **[P3] `poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal measured 2–3 % CPU at the class
-  cadence; treated as a non-issue. [shelved]
-
-- **[P3] Theme-token vocabulary consolidation (remainder of D4).** The accidental same-name/different-
-  value drift across the 15 Reaper pages was canonicalized in v2.2.7. Still deferred to the migration:
-  the naming-vocabulary consolidation (`--panel2`/`--red*` → `--panel-2`/`--crimson*`) and the `--line`
-  cream-vs-red divergence, both of which need per-page CSS **usage** rewrites (visual-regression risk).
-  [owed — to migration]
+---
 
 - **[P2] [owed] The whole `RFW_*` namespace — the entire firewall page, 244 keys — has never had a
   translation pass.** Measured 2026-08-16 across the 24 non-EN packs: 306 Reaper-minted keys still
@@ -478,205 +531,9 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   `aria-label`), so its translations must not contain a double quote; see also the two `RFW_36`/
   `RFW_37` single-quote contexts below.
 
-- **[P3] [owed] Translations for the About page — `RABT_00`–`RABT_40`, 41 keys.** Minted with the
-  page and English-seeded in all 25 packs (lockstep 6586 → 6627), so nothing renders as a raw
-  `<#KEY#>`; the non-English packs simply carry the English text. Most of it is prose rather than
-  labels — the credit lines in particular are written to land as jokes, so a mechanical translation
-  will flatten them and is worse than leaving them in English until someone can do it properly.
+---
 
-- **[P3] Translations owed for the 2026-08-14 rung — Warden's router-self filter.** `RWDN_69`–
-  `RWDN_72` (toggle label, description, and the two-part risk warning) are English-seeded in all 25
-  packs. The packs stay in lockstep so nothing renders as a raw `<#KEY#>`; the non-English packs
-  simply carry the English text until translated. *(`RWDN_73`–`RWDN_76`, the block-count breakdown
-  labels, were translated in v2.4.5 when the breakdown became a visible strip.)*
-
-- **[P3] Two pre-existing rule-29 single-quote contexts on `Reaper_Firewall.asp`.** `RFW_36`
-  ("Time") and `RFW_37` ("Action") are interpolated into a single-quoted JavaScript string in the
-  log-table header builder. **Latent only** — every pack still carries the untranslated English, so
-  nothing breaks today — but the standing rule exists because a translation containing an apostrophe
-  turns this into a syntax error for that language alone, which is how the v1.8.6a EU breakage
-  happened. Convert both to backticks next time that code is touched. Verified 2026-08-14 that the
-  per-tab help work introduced no new such contexts; these two predate it.
-
-- **[P3] `do_reaper_dev_cgi` function-local `static` snapshot arrays aren't re-entrant.** Latent only
-  (httpd serialises these requests); a malloc refactor of the multi-return CGI would add leak risk to
-  fix a can't-happen case. [shelved]
-
-## Documentation
-
-- **[P1] `Reaper_Firewall.asp` IPv6 protocol select cannot be safely tokenized as-is — and must not
-  be.** Found by the 2026-08-15 i18n audit. Line 243:
-
-  ```html
-  <select id="v6_proto"><option>TCP</option><option>UDP</option>
-                        <option>BOTH</option><option>OTHER</option></select>
-  ```
-
-  Those `<option>` elements carry **no `value=` attribute**, so the visible text *is* the submitted
-  value — and line 1129 reads it straight back with `$('v6_proto').value`. Wrapping `BOTH`/`OTHER`
-  in dict tokens, which is the obvious "make it translatable" fix, would submit the **translated**
-  string to the firewall backend: a German user would send `Beide` where the rule format expects
-  `BOTH`. That is a functional break in 24 languages, produced by an i18n change, with nothing in
-  the build to catch it.
-
-  **Correct fix, in this order:** confirm the literals the backend actually expects, add explicit
-  `value="TCP|UDP|BOTH|OTHER"` attributes so the wire format is pinned independently of the label,
-  *then* tokenize the labels (`RFW_252` already exists for "Both"; "Other" still needs a key).
-  Marked P1 not because it is broken today — it is not, English submits correctly — but because the
-  obvious fix breaks it, so the trap needs to be written down before someone tidies the page.
-
-- **[P3] [owed] One remaining hardcoded UI string needs a new key.** The 2026-08-15 audit scanned
-  all 19 Reaper pages for user-visible text without a `<#TOKEN#>`. **Four of the five findings
-  shipped in v2.4.5**: `Drop`/`Accept` on the two firewall log-level
-  selects reuse `RFW_139`/`RFW_138`; `QoS Diagnostics` reuses `RQD_00`, which already carried that
-  exact wording and brings the page in line with every other Reaper `<title>`; the shell's brand
-  link and content-iframe titles reuse `Reaper_c_dashboard` and `Settings`. Only **`RFW_252=Both`**
-  had to be minted, and it is appended to all 25 packs (lockstep 6585 → 6586, key order verified
-  identical across every pack).
-
-  **Still owed:** a key for `OTHER` on the IPv6 protocol select — blocked behind the P1 above, since
-  tokenizing that select before pinning its `value=` attributes is the thing that breaks it.
-
-  **`option_both_direction` was rejected as the reuse for "Both" and must stay rejected:** its
-  EN/DE/FR/ES/IT/RU values are a generic "both", but **JP `双方向`, CN `双向`, TW `雙向` all mean
-  *bidirectional*** — right for a direction picker, wrong for "log both drops and accepts".
-
-  *Deliberately left literal, verified during the same audit so they are not re-raised:* the Splunk
-  index/sourcetype placeholders, the Diag sanitization-ledger preview (it mirrors the English `.txt`
-  artifact), the Broadcom counter names on the Wireless page (`nopkt`, `txop`, `glitch`, `chspec`,
-  `obss`, `doze`, `knoise`), the firewall schedule placeholders (`Mon,Tue|09:00|17:00` is *parsed*,
-  so translating it would break the field), third-party product names, and `title="hidden"` on three
-  `display:none` iframes. `Reaper_Devices.asp`'s `title="' + esc(T('RDEV_xx')) + '"` attributes are
-  already tokenized through a `T()` helper.
-
-- **[P2] [owed] Retranslate the three Traffic Analyzer accounting strings (v2.4.4).** `RTRF_45`
-  (where the per-device numbers come from) was rewritten in all 25 packs and its 24 non-English
-  translations were **deliberately discarded**: the old text said the numbers come from the
-  accelerator table (untrue since v2.3.3) and that IPv6 is "not yet split per-device" (now the
-  opposite of what the code does), so leaving the translations would have had 24 languages
-  asserting the reverse of the truth. `RTRF_75` / `RTRF_76` (the "Upload only" badge and its
-  tooltip) are new and English-seeded. All three read in English outside EN until a translation
-  pass. Precedent for why this matters: the DE.dict `RQOS_117` drift left non-English users
-  double-derating their download cap.
-
-- **[P3] Make `cut_rung` own the version/count restatements, so doc drift cannot recur.**
-  *(All the corrections from the 2026-08-12/13/14 drift sweeps are DONE — `README.md`,
-  `INSTALL-AND-ROLLBACK.md`, `CI-PUBLIC-BUILD.md`, `RELEASE-NOTES.md`, `patches/README.md` and the
-  `public-build.yml` pin comment. Only the automation below is left.)*
-
-  Every doc that restates a version or a count is a copy that can rot, and `cut_rung` already knows
-  the true values at cut time. Candidates it could own outright: the `patches/README.md` header
-  count, the `docs/CI-PUBLIC-BUILD.md` pin row, and the `RELEASE-NOTES.md` "current head" line —
-  plus writing image hashes into `provenance/manifest.json` on publish.
-
-  **Two findings from those sweeps that must not be re-derived:**
-  - **`provenance/manifest.json` is NOT a "did it ship" signal.** Image hashes are populated only
-    for v2.1.0–v2.1.5 and v2.3.1; every v2.0.x and v1.x rung is zero too, *including ones known to
-    have shipped*. Reading absence of a sporadically-populated field as evidence of non-release is
-    what produced a day of contradiction. The authoritative record is the GitHub Releases API.
-  - **"Current version" means the newest PUBLISHED release** — the newest image a user can download
-    — as distinct from "current head", the newest source rung. Both are now stated explicitly, each
-    in exactly one place, because leaving it to inference is what let them drift apart.
-  - **Automation would not have caught the worst instance.** The 2026-08-14 round found that
-    `CHANGELOG.md` and `RELEASE-NOTES.md` both carried a *technical justification that was false* —
-    that this router's dnsmasq is compiled without ipset support, which it never was. A version
-    number is mechanical and can be generated; a reason is written by hand and can only be caught by
-    someone re-deriving it.
-
-- **[P3] Decide whether two internal docs should be published here.** `GUESTPRO-2.5G-VLAN-PLAN.md`
-  and `CODE-AUDIT-2026-08-05.md` live in the private working tree and were referenced by dead links
-  from this file and `CHANGELOG.md` (found 2026-08-13 by a 211-link sweep; those were the only two
-  broken). **The links are already removed** and the prose names the docs as unpublished — so
-  nothing 404s today. What remains is the owner call: copy them in, or leave as-is. Neither has been
-  through a PII/scope review, which is why this is a decision rather than a cleanup.
-
-- **[P3]** Document the non-functional retained features (the firmware update-check UI's stock pieces,
-  the removed security-check UI) that are kept only for potential future use.
-- **[P3]** Annotate the system defaults.
-- **[P3]** Write a user guide for other users. *(Started 2026-08-14:
-  [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) covers the eleven firewall tabs — what each is for, how
-  best to use it, worked examples, and the non-obvious traps — and every tab's **?** button links to
-  its section. The guide is tracked and pushed, so those links now resolve; the "404 until pushed"
-  caveat that used to sit here is stale and has been removed. Extended 2026-08-15 with the
-  allowlist recipe — "allow only these destinations, block everything else" — after a field request
-  for rule negation turned out to be a documentation gap rather than a missing feature. The same
-  treatment is owed for Warden, Gatekeeper, QoS, Traffic and the Devices pages.)*
-
-## Known issues (cannot remediate — closed-source blob)
-
-- **[P3] Unused BSS/BSSID generated when disabled → RADIUS log spam.** An onboarding/backhaul BSS is
-  created even when every feature that would use it is disabled, spamming the log with RADIUS codes for
-  an unused radio. Traced to a **closed-source Broadcom blob**; a boot-time suppression script did not
-  work and was reverted. [blocked — blob; risk-accepted]
-
-- **[P3] Guest Network Pro (AP-isolation SDN) breaks the 2.5G-1 LAN port when a manual WAN VLAN is also
-  active — GT-BE98.** Creating a Guest Pro network with AP isolation makes the 2.5G-1 port stop passing
-  untagged main-LAN traffic (an 802.1Q VID-52 tag becomes required). On-metal captures proved there is
-  **no userspace interface on this firmware to read or program the hardware switch VLAN/PVID table**, so
-  neither a source fix nor a runtime correction hook is possible. **Workarounds:** keep Guest Pro off
-  the 2.5G-1 port, move the device to another LAN port, or tag it VID-52; or avoid pairing a manual WAN
-  VLAN with Guest Pro on that port. Almost certainly present on stock ASUS too (same blob). Full
-  investigation: `GUESTPRO-2.5G-VLAN-PLAN.md` — **not published in this repo**; it lives in the private
-  working tree. (Was a link here, which was dead for every public reader.) [blocked — blob; risk-accepted]
-
-## Reported, investigated, closed as working-as-designed
-
-*Not defects. Recorded so the same report does not get re-investigated from scratch, and so the
-reasoning survives the person who made the call.*
-
-- **`rwatch: FAILURE detected: warden-self-drop:<n>` is the feature reporting, not a fault.**
-  Reported from the field on v2.4.4 (2026-08-14), with a large BCM/BPM kernel dump attached.
-
-  `warden-self-drop` fires only when `rwarden_self=1` — the **opt-in** router-origin filter
-  (`RW_SELF` on OUTPUT, drops to `RW_SDROP`). `<n>` is the number of the router's own outbound
-  packets dropped since the previous rwatch tick. `rc/rwatch.c` classifies it **FAIL rather than
-  CRIT on purpose**, and the in-code comment says why: *"dropping a flagged destination is the
-  feature working, and only the operator can say which it is."*
-
-  It is reported at all because the failure mode is silent — feed refresh, DDNS or a VPN client
-  simply stop, and nobody watches OUTPUT counters. An alert that occasionally says "this is
-  working" is the price of not discovering a mute router weeks later.
-
-  **The BPM kernel dump is not part of the fault.** It is rwatch's bounded first-failure
-  diagnostic collection (kept to 3, written to `/jffs/rwatch`). In the reported instance the pool
-  was healthy — `no_buf_err = 0`, `skb_fail_cnt = 0`, `buf_exp_fail_count = 0`, 1493 buffers
-  available — so it carried no signal. Same misreading risk as the `blog_get_dstentry_by_id`
-  debug flood: a scary-looking Broadcom dump next to an unrelated event.
-
-  **To act on one:** `RW_SDROP` always logs regardless of `rwarden_log`, so
-  `grep REAPER-WARDEN-SELF` in syslog names the destination. dnsmasq's upstream resolvers and NTP
-  are already carved out, so a hit is usually a feed host, DDNS endpoint, or a VPN peer that has
-  landed in a geo or threat set. Turning `rwarden_self` off stops both the filtering and the alert.
-
-  *Possible future UX work, not a fix: the alert could name the top destination inline so the
-  operator does not have to go to syslog to triage it.*
-
-- **Firewall rule negation / "not" on source and destination — considered, not building.**
-  Field request on v2.4.4 (2026-08-15): negate a rule's source or destination.
-
-  **The engine already does what it was wanted for.** An empty source or destination means "any"
-  (`rfw_emit_rule`: an empty field matches anything, while a *named* object resolving to nothing
-  emits no rule at all — fail-closed to a missing rule, never an unrestricted one). So an allowlist
-  is an ordered pair, `Accept` to the allowed object above `Drop` with the field left empty. Two
-  further layers exist for posture — per-device Egress defaults and Zone policy — with a fixed
-  precedence: *explicit rule > Egress default > Zone policy*. Documented with a worked example in
-  [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) §Rules as a result of this request; the gap was the guide,
-  not the engine.
-
-  **Two reasons not to add it anyway.** First, negation does not distribute over the engine's
-  (src set × dst set) expansion — `NOT in (A ∪ B)` is not `(NOT in A) OR (NOT in B)`, and the second
-  form matches almost everything — so any negated object resolving to more than one set (a group, or
-  anything dual-stack) would silently mean far more than asked. Second, and the larger cost: it would
-  add a *second, overlapping* way to express default-deny, per-rule and less visible than the two
-  layers designed for it, making a ruleset materially harder to audit later.
-
-  **The narrow case it would genuinely serve**, if it is ever asked for specifically: a single rule
-  needing "everything except X" as one condition, where the ordered-pair form would mean placing two
-  rules carefully among many others — e.g. "drop SSH to anywhere except the jump host". If that
-  request arrives, the implementation gate is: single-set objects only, groups refused loudly, and
-  the inverted match spelled out in plain language in Preview before commit.
-
-  - **[P2] `/tmp` is `0777` with NO sticky bit — it turns any unprivileged foothold into root.**
+- **[P2] `/tmp` is `0777` with NO sticky bit — it turns any unprivileged foothold into root.**
   Found 2026-08-14 by the v2.4.2 security audit, which kept arriving at it from three unrelated
   directions. `rc/init.c:25601` does `chmod("/tmp", 0777)` and nothing anywhere in `rc/` or
   `shared/` ever sets `S_ISVTX` (grepped). The sticky bit is what normally stops one uid from
@@ -709,3 +566,262 @@ reasoning survives the person who made the call.*
   (`/var/run/rwarden`, `/var/run/reaper_fw`), plus `lstat` the directory and refuse it if it is not
   a root-owned `0700`, and open scratch files `O_CREAT|O_EXCL|O_NOFOLLOW`. (b) is narrower and
   fixes the cases we actually own; (a) fixes the class. Doing (b) first is the safer order.
+
+---
+
+- **[P3] `poll_fcache` O(n²)→hash pairing** (`rtrafd.c`). Bounded to ≤1536 flows every 5 s in the
+  metal-validated per-client accounting path — a rewrite of a millisecond-scale loop isn't worth the
+  regression risk. Revisit only if a flow-heavy box shows real cost. [shelved]
+
+---
+
+- **[P3] `poll_classes` 7× `tmctl` popen batch** (`rtrafd.c`). Metal measured 2–3 % CPU at the class
+  cadence; treated as a non-issue. [shelved]
+
+---
+
+- **[P3] Theme-token vocabulary consolidation (remainder of D4).** The accidental same-name/different-
+  value drift across the 15 Reaper pages was canonicalized in v2.2.7. Still deferred to the migration:
+  the naming-vocabulary consolidation (`--panel2`/`--red*` → `--panel-2`/`--crimson*`) and the `--line`
+  cream-vs-red divergence, both of which need per-page CSS **usage** rewrites (visual-regression risk).
+  [owed — to migration]
+
+---
+
+- **[P3] [owed] Translations for the About page — `RABT_00`–`RABT_40`, 41 keys.** Minted with the
+  page and English-seeded in all 25 packs (lockstep 6586 → 6627), so nothing renders as a raw
+  `<#KEY#>`; the non-English packs simply carry the English text. Most of it is prose rather than
+  labels — the credit lines in particular are written to land as jokes, so a mechanical translation
+  will flatten them and is worse than leaving them in English until someone can do it properly.
+
+---
+
+- **[P3] Translations owed for the 2026-08-14 rung — Warden's router-self filter.** `RWDN_69`–
+  `RWDN_72` (toggle label, description, and the two-part risk warning) are English-seeded in all 25
+  packs. The packs stay in lockstep so nothing renders as a raw `<#KEY#>`; the non-English packs
+  simply carry the English text until translated. *(`RWDN_73`–`RWDN_76`, the block-count breakdown
+  labels, were translated in v2.4.5 when the breakdown became a visible strip.)*
+
+---
+
+- **[P3] Two pre-existing rule-29 single-quote contexts on `Reaper_Firewall.asp`.** `RFW_36`
+  ("Time") and `RFW_37` ("Action") are interpolated into a single-quoted JavaScript string in the
+  log-table header builder. **Latent only** — every pack still carries the untranslated English, so
+  nothing breaks today — but the standing rule exists because a translation containing an apostrophe
+  turns this into a syntax error for that language alone, which is how the v1.8.6a EU breakage
+  happened. Convert both to backticks next time that code is touched. Verified 2026-08-14 that the
+  per-tab help work introduced no new such contexts; these two predate it.
+
+---
+
+- **[P3] `do_reaper_dev_cgi` function-local `static` snapshot arrays aren't re-entrant.** Latent only
+  (httpd serialises these requests); a malloc refactor of the multi-return CGI would add leak risk to
+  fix a can't-happen case. [shelved]
+
+---
+
+## Documentation
+
+---
+
+- **[P1] `Reaper_Firewall.asp` IPv6 protocol select cannot be safely tokenized as-is — and must not
+  be.** Found by the 2026-08-15 i18n audit. Line 243:
+
+  ```html
+  <select id="v6_proto"><option>TCP</option><option>UDP</option>
+                        <option>BOTH</option><option>OTHER</option></select>
+  ```
+
+  Those `<option>` elements carry **no `value=` attribute**, so the visible text *is* the submitted
+  value — and line 1129 reads it straight back with `$('v6_proto').value`. Wrapping `BOTH`/`OTHER`
+  in dict tokens, which is the obvious "make it translatable" fix, would submit the **translated**
+  string to the firewall backend: a German user would send `Beide` where the rule format expects
+  `BOTH`. That is a functional break in 24 languages, produced by an i18n change, with nothing in
+  the build to catch it.
+
+  **Correct fix, in this order:** confirm the literals the backend actually expects, add explicit
+  `value="TCP|UDP|BOTH|OTHER"` attributes so the wire format is pinned independently of the label,
+  *then* tokenize the labels (`RFW_252` already exists for "Both"; "Other" still needs a key).
+  Marked P1 not because it is broken today — it is not, English submits correctly — but because the
+  obvious fix breaks it, so the trap needs to be written down before someone tidies the page.
+
+---
+
+- **[P2] [owed] Retranslate the three Traffic Analyzer accounting strings (v2.4.4).** `RTRF_45`
+  (where the per-device numbers come from) was rewritten in all 25 packs and its 24 non-English
+  translations were **deliberately discarded**: the old text said the numbers come from the
+  accelerator table (untrue since v2.3.3) and that IPv6 is "not yet split per-device" (now the
+  opposite of what the code does), so leaving the translations would have had 24 languages
+  asserting the reverse of the truth. `RTRF_75` / `RTRF_76` (the "Upload only" badge and its
+  tooltip) are new and English-seeded. All three read in English outside EN until a translation
+  pass. Precedent for why this matters: the DE.dict `RQOS_117` drift left non-English users
+  double-derating their download cap.
+
+---
+
+- **[P3] [owed] One remaining hardcoded UI string needs a new key.** The 2026-08-15 audit scanned
+  all 19 Reaper pages for user-visible text without a `<#TOKEN#>`. **Four of the five findings
+  shipped in v2.4.5**: `Drop`/`Accept` on the two firewall log-level
+  selects reuse `RFW_139`/`RFW_138`; `QoS Diagnostics` reuses `RQD_00`, which already carried that
+  exact wording and brings the page in line with every other Reaper `<title>`; the shell's brand
+  link and content-iframe titles reuse `Reaper_c_dashboard` and `Settings`. Only **`RFW_252=Both`**
+  had to be minted, and it is appended to all 25 packs (lockstep 6585 → 6586, key order verified
+  identical across every pack).
+
+  **Still owed:** a key for `OTHER` on the IPv6 protocol select — blocked behind the P1 above, since
+  tokenizing that select before pinning its `value=` attributes is the thing that breaks it.
+
+  **`option_both_direction` was rejected as the reuse for "Both" and must stay rejected:** its
+  EN/DE/FR/ES/IT/RU values are a generic "both", but **JP `双方向`, CN `双向`, TW `雙向` all mean
+  *bidirectional*** — right for a direction picker, wrong for "log both drops and accepts".
+
+  *Deliberately left literal, verified during the same audit so they are not re-raised:* the Splunk
+  index/sourcetype placeholders, the Diag sanitization-ledger preview (it mirrors the English `.txt`
+  artifact), the Broadcom counter names on the Wireless page (`nopkt`, `txop`, `glitch`, `chspec`,
+  `obss`, `doze`, `knoise`), the firewall schedule placeholders (`Mon,Tue|09:00|17:00` is *parsed*,
+  so translating it would break the field), third-party product names, and `title="hidden"` on three
+  `display:none` iframes. `Reaper_Devices.asp`'s `title="' + esc(T('RDEV_xx')) + '"` attributes are
+  already tokenized through a `T()` helper.
+
+---
+
+- **[P3] Make `cut_rung` own the version/count restatements, so doc drift cannot recur.**
+  *(All the corrections from the 2026-08-12/13/14 drift sweeps are DONE — `README.md`,
+  `INSTALL-AND-ROLLBACK.md`, `CI-PUBLIC-BUILD.md`, `RELEASE-NOTES.md`, `patches/README.md` and the
+  `public-build.yml` pin comment. Only the automation below is left.)*
+
+  Every doc that restates a version or a count is a copy that can rot, and `cut_rung` already knows
+  the true values at cut time. Candidates it could own outright: the `patches/README.md` header
+  count, the `docs/CI-PUBLIC-BUILD.md` pin row, and the `RELEASE-NOTES.md` "current head" line —
+  plus writing image hashes into `provenance/manifest.json` on publish.
+
+  **Two findings from those sweeps that must not be re-derived:**
+  - **`provenance/manifest.json` is NOT a "did it ship" signal.** Image hashes are populated only
+    for v2.1.0–v2.1.5 and v2.3.1; every v2.0.x and v1.x rung is zero too, *including ones known to
+    have shipped*. Reading absence of a sporadically-populated field as evidence of non-release is
+    what produced a day of contradiction. The authoritative record is the GitHub Releases API.
+  - **"Current version" means the newest PUBLISHED release** — the newest image a user can download
+    — as distinct from "current head", the newest source rung. Both are now stated explicitly, each
+    in exactly one place, because leaving it to inference is what let them drift apart.
+  - **Automation would not have caught the worst instance.** The 2026-08-14 round found that
+    `CHANGELOG.md` and `RELEASE-NOTES.md` both carried a *technical justification that was false* —
+    that this router's dnsmasq is compiled without ipset support, which it never was. A version
+    number is mechanical and can be generated; a reason is written by hand and can only be caught by
+    someone re-deriving it.
+
+---
+
+- **[P3] Decide whether two internal docs should be published here.** `GUESTPRO-2.5G-VLAN-PLAN.md`
+  and `CODE-AUDIT-2026-08-05.md` live in the private working tree and were referenced by dead links
+  from this file and `CHANGELOG.md` (found 2026-08-13 by a 211-link sweep; those were the only two
+  broken). **The links are already removed** and the prose names the docs as unpublished — so
+  nothing 404s today. What remains is the owner call: copy them in, or leave as-is. Neither has been
+  through a PII/scope review, which is why this is a decision rather than a cleanup.
+
+---
+
+- **[P3]** Document the non-functional retained features (the firmware update-check UI's stock pieces,
+  the removed security-check UI) that are kept only for potential future use.
+
+---
+
+- **[P3]** Annotate the system defaults.
+
+---
+
+- **[P3]** Write a user guide for other users. *(Started 2026-08-14:
+  [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) covers the eleven firewall tabs — what each is for, how
+  best to use it, worked examples, and the non-obvious traps — and every tab's **?** button links to
+  its section. The guide is tracked and pushed, so those links now resolve; the "404 until pushed"
+  caveat that used to sit here is stale and has been removed. Extended 2026-08-15 with the
+  allowlist recipe — "allow only these destinations, block everything else" — after a field request
+  for rule negation turned out to be a documentation gap rather than a missing feature. The same
+  treatment is owed for Warden, Gatekeeper, QoS, Traffic and the Devices pages.)*
+
+---
+
+## Known issues (cannot remediate — closed-source blob)
+
+---
+
+- **[P3] Unused BSS/BSSID generated when disabled → RADIUS log spam.** An onboarding/backhaul BSS is
+  created even when every feature that would use it is disabled, spamming the log with RADIUS codes for
+  an unused radio. Traced to a **closed-source Broadcom blob**; a boot-time suppression script did not
+  work and was reverted. [blocked — blob; risk-accepted]
+
+---
+
+- **[P3] Guest Network Pro (AP-isolation SDN) breaks the 2.5G-1 LAN port when a manual WAN VLAN is also
+  active — GT-BE98.** Creating a Guest Pro network with AP isolation makes the 2.5G-1 port stop passing
+  untagged main-LAN traffic (an 802.1Q VID-52 tag becomes required). On-metal captures proved there is
+  **no userspace interface on this firmware to read or program the hardware switch VLAN/PVID table**, so
+  neither a source fix nor a runtime correction hook is possible. **Workarounds:** keep Guest Pro off
+  the 2.5G-1 port, move the device to another LAN port, or tag it VID-52; or avoid pairing a manual WAN
+  VLAN with Guest Pro on that port. Almost certainly present on stock ASUS too (same blob). Full
+  investigation: `GUESTPRO-2.5G-VLAN-PLAN.md` — **not published in this repo**; it lives in the private
+  working tree. (Was a link here, which was dead for every public reader.) [blocked — blob; risk-accepted]
+
+---
+
+## Reported, investigated, closed as working-as-designed
+
+*Not defects. Recorded so the same report does not get re-investigated from scratch, and so the
+reasoning survives the person who made the call.*
+
+---
+
+- **`rwatch: FAILURE detected: warden-self-drop:<n>` is the feature reporting, not a fault.**
+  Reported from the field on v2.4.4 (2026-08-14), with a large BCM/BPM kernel dump attached.
+
+  `warden-self-drop` fires only when `rwarden_self=1` — the **opt-in** router-origin filter
+  (`RW_SELF` on OUTPUT, drops to `RW_SDROP`). `<n>` is the number of the router's own outbound
+  packets dropped since the previous rwatch tick. `rc/rwatch.c` classifies it **FAIL rather than
+  CRIT on purpose**, and the in-code comment says why: *"dropping a flagged destination is the
+  feature working, and only the operator can say which it is."*
+
+  It is reported at all because the failure mode is silent — feed refresh, DDNS or a VPN client
+  simply stop, and nobody watches OUTPUT counters. An alert that occasionally says "this is
+  working" is the price of not discovering a mute router weeks later.
+
+  **The BPM kernel dump is not part of the fault.** It is rwatch's bounded first-failure
+  diagnostic collection (kept to 3, written to `/jffs/rwatch`). In the reported instance the pool
+  was healthy — `no_buf_err = 0`, `skb_fail_cnt = 0`, `buf_exp_fail_count = 0`, 1493 buffers
+  available — so it carried no signal. Same misreading risk as the `blog_get_dstentry_by_id`
+  debug flood: a scary-looking Broadcom dump next to an unrelated event.
+
+  **To act on one:** `RW_SDROP` always logs regardless of `rwarden_log`, so
+  `grep REAPER-WARDEN-SELF` in syslog names the destination. dnsmasq's upstream resolvers and NTP
+  are already carved out, so a hit is usually a feed host, DDNS endpoint, or a VPN peer that has
+  landed in a geo or threat set. Turning `rwarden_self` off stops both the filtering and the alert.
+
+  *Possible future UX work, not a fix: the alert could name the top destination inline so the
+  operator does not have to go to syslog to triage it.*
+
+---
+
+- **Firewall rule negation / "not" on source and destination — considered, not building.**
+  Field request on v2.4.4 (2026-08-15): negate a rule's source or destination.
+
+  **The engine already does what it was wanted for.** An empty source or destination means "any"
+  (`rfw_emit_rule`: an empty field matches anything, while a *named* object resolving to nothing
+  emits no rule at all — fail-closed to a missing rule, never an unrestricted one). So an allowlist
+  is an ordered pair, `Accept` to the allowed object above `Drop` with the field left empty. Two
+  further layers exist for posture — per-device Egress defaults and Zone policy — with a fixed
+  precedence: *explicit rule > Egress default > Zone policy*. Documented with a worked example in
+  [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) §Rules as a result of this request; the gap was the guide,
+  not the engine.
+
+  **Two reasons not to add it anyway.** First, negation does not distribute over the engine's
+  (src set × dst set) expansion — `NOT in (A ∪ B)` is not `(NOT in A) OR (NOT in B)`, and the second
+  form matches almost everything — so any negated object resolving to more than one set (a group, or
+  anything dual-stack) would silently mean far more than asked. Second, and the larger cost: it would
+  add a *second, overlapping* way to express default-deny, per-rule and less visible than the two
+  layers designed for it, making a ruleset materially harder to audit later.
+
+  **The narrow case it would genuinely serve**, if it is ever asked for specifically: a single rule
+  needing "everything except X" as one condition, where the ordered-pair form would mean placing two
+  rules carefully among many others — e.g. "drop SSH to anywhere except the jump host". If that
+  request arrives, the implementation gate is: single-set objects only, groups refused loudly, and
+  the inverted match spelled out in plain language in Preview before commit.
+
+---

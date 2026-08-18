@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.4.7** — `3006.102.8_Reaper_v2.4.7`, 454 patches (replay-verified). **No image published from it yet.** Shared code only: all four overlays came back *unchanged* from regeneration, which independently confirms the rung touches no per-model identity; images come from the clean-room CI build. |
+| **Current rung** | **v2.4.8** — `3006.102.8_Reaper_v2.4.8`, in the source tree and built on RT-BE96U in both variants as a **test image**. The rung is **not cut**: no patch series, no provenance stamp, and the four siblings have not taken it. The newest *cut* rung remains **v2.4.7** — 454 patches (replay-verified), shared code only, with all four overlays coming back *unchanged* from regeneration, which independently confirms it touches no per-model identity. **No image published from either.** Published images come from the clean-room CI build. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6 and v2.4.7. v2.4.1 through v2.4.4 are built on RT-BE96U, both variants. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7 and v2.4.8. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,96 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.4.8 — built as a test image, not cut and not published
+
+*Two field reports, two owner requests, and one regression from v2.4.6. Built on RT-BE96U in both
+variants so the changes could be seen working; the rung is not cut, so there is no patch series and
+the four siblings have not taken it.*
+
+### Your addons are listed in the menu on every page, not just the dashboard
+
+Reported plainly: on the dashboard, ntpMerlin, spdMerlin, scMerlin and the rest each get their own
+menu entry; open any other page and all of them are gone, replaced by a single **Addons** link.
+
+Both menus read the same file, but different code draws them. Addons register themselves as *tabs*
+underneath one parent entry — the right shape for every other section of the menu, and the wrong
+one here, because the side menu draws one entry per section. The dashboard is the one top-level
+page that builds its own menu, and it had already been taught to open that section out, so the two
+menus disagreed and the dashboard was the one that was right. The side menu now expands it too:
+a heading, then one entry per addon, framed by the same handler as everything else.
+
+That file is the one third-party addons write themselves into, so nothing in it is trusted. Names
+are escaped rather than rendered as written; a target that is not a plain page on the router itself
+opens in a new tab instead of being drawn inside the interface — a third-party "Help & Support"
+entry is a real case. A router with no addons installed emits nothing at all, not even a bare
+heading, so its menu is byte-for-byte what it shipped with.
+
+### The About mark stays on screen when the menu gets long
+
+It is pinned to the bottom of the *menu*, which is where it belongs and is not the same thing as the
+bottom of the *window*. The menu deliberately has no scrollbar of its own — it grows with the
+document and scrolls with the page, which is what keeps one scrollbar on the right instead of two —
+so with several addons installed the menu runs past the bottom of the window and takes the mark
+with it: still at the bottom, just not a bottom anyone can see without scrolling to the end of the
+page. Listing addons individually, above, made the menu grow by a row per addon rather than a row
+in total, which made this worse on exactly the routers most likely to hit it.
+
+The mark now holds its place at the foot of the window while the menu slides beneath it, and
+releases back into its natural position at the true end of the list — so it is never detached from
+the list it belongs to. On a menu that fits the window it costs nothing and renders identically to
+before.
+
+### The temperature and QoS diagnostics graphs fill left to right again
+
+Reported as "they load right to left". **The axis was never inverted** — newest on the right, oldest
+on the left, correctly, in both. What was backwards was the direction the trace *grew* while the
+history was still short.
+
+This is a v2.4.6 regression, from the change that made these graphs flow instead of stepping.
+Placing each reading by *when it arrived* anchors the window to "now" at the right-hand edge, so
+the first reading of a run is drawn at the right edge and the trace extends leftward as history
+accumulates. The index-based code it replaced began at the left and grew rightward, simply because
+a half-full history had fewer entries. Same picture once the window is full; completely different
+first minute — which is the whole of what someone watching a page load actually sees.
+
+Both graphs now scale across only the history they actually hold until a full window has elapsed,
+so the oldest reading sits at the left edge and the newest advances rightward, reaching the right
+edge exactly as the window fills. From that point the behaviour is identical to v2.4.6. The
+vertical scaling — its rounding to sensible values and its hold before shrinking — is deliberately
+left running on real time, so the smoothness v2.4.5 and v2.4.6 bought is kept intact.
+
+### The Reaper settings explain themselves behind a "?" now
+
+On **Tools → Other Settings**, the three Reaper rows printed their entire explanation as text beside
+the control, so a one-word dropdown sat next to a full sentence — while the stock rows on the same
+page put their help behind a marker you click. The page disagreed with itself halfway down.
+
+The setting's name now carries a small **?**; clicking it discloses the same text in a panel under
+the control. The wording is unchanged — this only moves where it renders. It is reachable by
+keyboard and announces its state to a screen reader. It deliberately does not use the stock help
+popup: that indexes numbered arrays in a shared stock file, which makes every entry added there a
+merge conflict waiting for the next upstream drop, and these strings already exist in Reaper's own
+dictionaries.
+
+### You can choose which hour the scheduled firmware check runs in
+
+On the **Firmware** page, a time picker appears when **Scheduled Check** is switched on, and saves
+with it — there is no second Apply button, and no state where a time is set but the check is off.
+
+There was nothing to expose before this, so it had to be built. The check has always fired at an
+hour and minute drawn at random once per boot, landing somewhere between 02:00 and 05:59 and moving
+every time the router restarts, with nothing user-visible and no setting behind it. The new setting
+pins the **hour**; leaving it on **Automatic** is exactly the old behaviour.
+
+**The minute stays random either way, and that is deliberate rather than an omission.** The check
+pulls a manifest we host, so a time users could name to the minute would let a fleet converge on
+one — and the default would concentrate hardest of all. Pinning the hour is what the request is
+actually about: check overnight, not in the middle of the working day. A junk or out-of-range value
+falls back to automatic rather than failing closed, so a bad setting can never stop the check
+running.
 
 ---
 

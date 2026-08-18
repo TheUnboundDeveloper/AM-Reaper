@@ -1,0 +1,247 @@
+From 73df323b7da42636b7056d8a4294265aafc68ca6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 18 Aug 2026 07:48:32 -0400
+Subject: [PATCH] wan: make the RFC 4638 PPPoE MTU survive, and pair MTU with
+ MRU in the GUI
+
+Field report: a 1500-byte PPPoE MTU still failed a `ping -f -l 1472` path test.
+Three defects, all inherited from the Merlin/ASUS base and all only reachable
+because Reaper is the one that exposes a >1492 PPPoE MTU in the GUI (upstream
+caps both fields at 1492 through 3006.102.8, so nobody upstream can arm this).
+
+1. The derived parent MTU was never persisted. start_wan_if() raises the WAN
+   Ethernet interface to pppoe_mtu+8 with a bare SIOCSIFMTU but leaves wanX_mtu
+   at 1500. Every later ifconfig() of that interface goes through _ifconfig()
+   with mtu 0, which re-applies wanX_mtu - and for PPPoE with "Get WAN IP
+   automatically" on (the default) udhcpc runs on the Ethernet interface
+   between the raise and start_pppd(), so its bound handler drops the parent
+   back to 1500 before pppd ever connects. rp-pppoe's PPPOEConnectDevice() then
+   reads SIOCGIFMTU, clamps both lcp mru values to mtu-8 = 1492, and
+   discovery.c's `MIN(allow, want) > 1492` test fails, so no PPP-Max-Payload
+   tag is sent and the line comes up at 1492 with nothing in the log. The same
+   stomp repeats on every DHCP renew. Persist mtu+8 to wanX_mtu, and clear a
+   stale raised value before the proto switch so it can never leak into a
+   DHCP/static connection or outlive a downgrade back to a 1492 PPPoE MTU.
+
+2. get_wanX_mtu()/init_wanX_mtu() built their nvram prefix from an
+   uninitialised `unit` while looping on `i`. Disassembling the built object
+   shows gcc-10.3 settled on a literal 0, so every lookup resolved wan0_
+   regardless of the interface asked about and a secondary WAN never had its
+   MTU applied. Loop on `i`.
+
+3. RFC 4638 is only requested when BOTH the PPP MTU and MRU exceed 1492, since
+   rp-pppoe sends the tag on MIN(mtu, mru). The two GUI fields were independent
+   and both default to 1492, so raising only the MTU was a silent no-op. Keep
+   the pair in step on edit, on submit, and in both pages' legacy validForm -
+   the base page and the MULTISERVICE_WAN sysdep variant that actually ships.
+
+Defaults are unchanged at 1492/1492, so this stays opt-in. ip-up now logs the
+MTU the link actually achieved, naming the case where a >1492 request came back
+at 1492 because the peer offered no PPP-Max-Payload tag, so the next report of
+this shape diagnoses itself.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/interface.c             | 13 +++---
+ release/src/router/rc/ppp.c                   | 12 ++++++
+ release/src/router/rc/wan.c                   | 17 ++++++++
+ .../src/router/www/Advanced_WAN_Content.asp   |  7 ++++
+ .../MULTISERVICE_WAN/Advanced_WAN_Content.asp | 41 ++++++++++++++++++-
+ 5 files changed, 83 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/rc/interface.c b/release/src/router/rc/interface.c
+index cd5f7327e7..b6945b664e 100644
+--- a/release/src/router/rc/interface.c
++++ b/release/src/router/rc/interface.c
+@@ -182,12 +182,14 @@ void gen_lan_ports(char *buf, const int sample[SWPORT_COUNT], int index, int ind
+ 
+ int get_wanX_mtu(const char *name)
+ {
+-        int i, unit, ret = 0;
+-        char wan_ifname[16];
++        int i, ret = 0;
+         char tmp[100], prefix[32];
+ 
++        /* NB: this used to format the prefix from an uninitialised unit variable,
++         * which gcc resolved to a constant 0 - every lookup hit wan0_ regardless
++         * of the interface asked about, so a secondary WAN never got its MTU. */
+         for(i=0; i<WAN_UNIT_MAX; ++i) {
+-                snprintf(prefix, sizeof(prefix), "wan%d_", unit);
++                snprintf(prefix, sizeof(prefix), "wan%d_", i);
+ 		if (nvram_match(strcat_r(prefix, "ifname", tmp), name)) {
+                         ret = nvram_get_int(strcat_r(prefix, "mtu", tmp));
+                         break;
+@@ -199,11 +201,12 @@ int get_wanX_mtu(const char *name)
+ 
+ void init_wanX_mtu(int wan_mtu)
+ {
+-        int i, unit;
++        int i;
+         char tmp[100], prefix[32], *mp;
+ 
++        /* Same uninitialised-unit defect as get_wanX_mtu() above. */
+         for(i=0; i<WAN_UNIT_MAX; ++i) {
+-                snprintf(prefix, sizeof(prefix), "wan%d_", unit);
++                snprintf(prefix, sizeof(prefix), "wan%d_", i);
+                 if (strlen(strcat_r(prefix, "ifname", tmp))) {
+                         mp = nvram_get(strcat_r(prefix, "mtu", tmp));
+ 			if(!mp || !*mp) {
+diff --git a/release/src/router/rc/ppp.c b/release/src/router/rc/ppp.c
+index d93aa3da20..2aa8e12f88 100644
+--- a/release/src/router/rc/ppp.c
++++ b/release/src/router/rc/ppp.c
+@@ -154,6 +154,18 @@ ipup_main(int argc, char **argv)
+ 		nvram_set(strcat_r(prefix, "netmask", tmp), "255.255.255.255");
+ 	}
+ 
++	/* Report the MTU actually achieved on the link. pppd falls back to 1492
++	 * without a word when the peer returns no RFC 4638 PPP-Max-Payload tag, so
++	 * make the outcome of a >1492 request visible in the log. */
++	{
++		int ppp_mtu = 0;
++
++		if (_ifconfig_get(wan_ifname, NULL, NULL, NULL, NULL, &ppp_mtu) == 0 && ppp_mtu > 0)
++			logmessage("pppd", "%s up with MTU %d%s", wan_ifname, ppp_mtu,
++				(nvram_get_int(strcat_r(prefix, "pppoe_mtu", tmp)) > 1492 && ppp_mtu <= 1492)
++					? " (requested >1492; peer declined RFC 4638)" : "");
++	}
++
+ 	if ((value = getenv("IPREMOTE")))
+ 		nvram_set(strcat_r(prefix, "gateway", tmp), value);
+ 
+diff --git a/release/src/router/rc/wan.c b/release/src/router/rc/wan.c
+index 8fddfc821e..53aef66319 100644
+--- a/release/src/router/rc/wan.c
++++ b/release/src/router/rc/wan.c
+@@ -1996,6 +1996,13 @@ TRACE_PT("3g begin with %s.\n", wan_ifname);
+ 		}
+ #endif
+ #endif
++		/* wanX_mtu is the value _ifconfig() re-applies on every later ifconfig()
++		 * of the WAN interface. The PPPoE case below raises it to pppoe_mtu+8 for
++		 * RFC 4638; clear a stale raised value here so it can never leak into a
++		 * non-PPPoE connection or outlive a downgrade back to a 1492 PPPoE MTU. */
++		if (nvram_get_int(strcat_r(prefix, "mtu", tmp)) > 1500)
++			nvram_set_int(strcat_r(prefix, "mtu", tmp), 1500);
++
+ 		/*
+ 		 * Configure PPPoE connection. The PPPoE client will run
+ 		 * ip-up/ip-down scripts upon link's connect/disconnect.
+@@ -2100,6 +2107,16 @@ TRACE_PT("3g begin with %s.\n", wan_ifname);
+ 							perror(wan_ifname);
+ 							logmessage("start_wan_if()", "Error setting MTU on %s to %d", wan_ifname, mtu);
+ 						}
++						else {
++							/* Persist the derived parent MTU. Every later
++							 * ifconfig() of this interface (udhcpc bound/renew,
++							 * wan_up) goes through _ifconfig() with mtu 0, which
++							 * re-applies wanX_mtu; without this the parent drops
++							 * back to 1500 before pppd connects and rp-pppoe
++							 * silently clamps MTU/MRU to 1492, losing RFC 4638. */
++							nvram_set_int(strcat_r(prefix, "mtu", tmp), mtu + 8);
++							logmessage("start_wan_if()", "PPPoE MTU %d: raised %s to %d for RFC 4638", mtu, wan_ifname, mtu + 8);
++						}
+ 						close(s);
+ 					}
+ 				}
+diff --git a/release/src/router/www/Advanced_WAN_Content.asp b/release/src/router/www/Advanced_WAN_Content.asp
+index 7d9082432d..3bd4df6a7e 100644
+--- a/release/src/router/www/Advanced_WAN_Content.asp
++++ b/release/src/router/www/Advanced_WAN_Content.asp
+@@ -1029,6 +1029,13 @@ function validForm(){
+ 				|| !validator.numberRange(document.form.wan_pppoe_mru, 128, 1500))
+ 			return false;
+ 
++		/* RFC 4638 is requested only when BOTH exceed 1492 (rp-pppoe sends the
++		 * PPP-Max-Payload tag on MIN(mtu, mru)); keep the pair in step. */
++		if(parseInt(document.form.wan_pppoe_mtu.value) > 1492 && parseInt(document.form.wan_pppoe_mru.value) <= 1492)
++			document.form.wan_pppoe_mru.value = document.form.wan_pppoe_mtu.value;
++		else if(parseInt(document.form.wan_pppoe_mru.value) > 1492 && parseInt(document.form.wan_pppoe_mtu.value) <= 1492)
++			document.form.wan_pppoe_mtu.value = document.form.wan_pppoe_mru.value;
++
+ 		/* reset wan_mtu to default value */
+ 		if($("#wan_mtu_tr").css("display") != "none"){
+ 			if(document.form.wan_mtu.value != "") {
+diff --git a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+index d67d801b16..634691b67f 100644
+--- a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+@@ -340,6 +340,19 @@ function clean_applyData(){ //remove values of hidden settings from applyData
+ 	});
+ }
+ 
++/* RFC 4638 ("baby jumbo") is only requested when BOTH the PPP MTU and the PPP MRU
++ * exceed 1492: rp-pppoe emits the PPP-Max-Payload tag on MIN(mtu, mru), so raising
++ * one alone is a silent no-op that leaves the line at 1492. Keep the pair in step. */
++function sync_pppoe_babyjumbo(edited_id, other_id){
++	var edited = parseInt($("#" + edited_id).val());
++	var other = parseInt($("#" + other_id).val());
++
++	if(isNaN(edited) || isNaN(other))
++		return;
++	if(edited > 1492 && other <= 1492)
++		$("#" + other_id).val(edited);
++}
++
+ function save_applyData(wan_unit){
+ 	var pvc_shift = "1" + load_wan_unit + "0";
+ 
+@@ -391,6 +404,17 @@ function save_applyData(wan_unit){
+ 		applyData["wan_enable"] = "1";
+ 
+ 	if(applyData["wan_proto"] == "pppoe"){
++		/* Enforce the RFC 4638 pairing on the submitted values too - the field
++		 * handlers only fire on user edits (see sync_pppoe_babyjumbo). */
++		var pppoe_mtu_val = parseInt(applyData["wan_pppoe_mtu"]);
++		var pppoe_mru_val = parseInt(applyData["wan_pppoe_mru"]);
++		if(!isNaN(pppoe_mtu_val) && !isNaN(pppoe_mru_val)){
++			if(pppoe_mtu_val > 1492 && pppoe_mru_val <= 1492)
++				applyData["wan_pppoe_mru"] = "" + pppoe_mtu_val;
++			else if(pppoe_mru_val > 1492 && pppoe_mtu_val <= 1492)
++				applyData["wan_pppoe_mtu"] = "" + pppoe_mru_val;
++		}
++
+ 		if($("#wan_mtu_container").is(":visible")){
+ 			if(parseInt($("#wan_mtu").val()) < 1500 && parseInt($("#wan_pppoe_mtu").val()) + 8 > parseInt($("#wan_mtu").val())){
+ 				applyData["wan_pppoe_mtu"] = parseInt($("#wan_mtu").val()) - 8;
+@@ -1004,7 +1028,10 @@ function Get_Component_Setting_Profile(type){//internet, user_defined
+ 			return validator.isNumber(this, event);
+ 		})
+ 		.change(function(){
+-			return validator.numberRange(this, 128, 1500);
++			if(!validator.numberRange(this, 128, 1500))
++				return false;
++			sync_pppoe_babyjumbo("wan_pppoe_mtu", "wan_pppoe_mru");
++			return true;
+ 		})
+ 
+ 	var pppoe_mru_parm = {"title":"<#PPPConnection_x_PPPoEMRU_itemname#> (128 - 1500)", "type":"text", "id":"wan_pppoe_mru", "need_check":true, "maxlength":5, "openHint":"7_8"};
+@@ -1014,7 +1041,10 @@ function Get_Component_Setting_Profile(type){//internet, user_defined
+ 			return validator.isNumber(this, event);
+ 		})
+ 		.change(function(){
+-			return validator.numberRange(this, 128, 1500);
++			if(!validator.numberRange(this, 128, 1500))
++				return false;
++			sync_pppoe_babyjumbo("wan_pppoe_mru", "wan_pppoe_mtu");
++			return true;
+ 		})
+ 
+ 	var pppoe_service_parm = {"title":"<#PPPConnection_x_ServiceName_itemname#>", "type":"text", "id":"wan_pppoe_service", "need_check":true, "maxlength":32, "openHint":"7_9"};
+@@ -2211,6 +2241,13 @@ function validForm(){
+ 			|| !validator.numberRange(document.form.wan_pppoe_mru, 128, 1500))
+ 			return false;
+ 
++		/* RFC 4638 is requested only when BOTH exceed 1492 (rp-pppoe sends the
++		 * PPP-Max-Payload tag on MIN(mtu, mru)); keep the pair in step. */
++		if(parseInt(document.form.wan_pppoe_mtu.value) > 1492 && parseInt(document.form.wan_pppoe_mru.value) <= 1492)
++			document.form.wan_pppoe_mru.value = document.form.wan_pppoe_mtu.value;
++		else if(parseInt(document.form.wan_pppoe_mru.value) > 1492 && parseInt(document.form.wan_pppoe_mtu.value) <= 1492)
++			document.form.wan_pppoe_mtu.value = document.form.wan_pppoe_mru.value;
++
+ 		/* reset wan_mtu to default value */
+ 		if($("#wan_mtu_tr").css("display") != "none"){
+ 			if(document.form.wan_mtu.value != "") {
+-- 
+2.25.1
+

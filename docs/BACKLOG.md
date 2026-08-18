@@ -210,6 +210,27 @@ worth more than the attempt itself.*
 
 ---
 
+- **[P2] The 1500-byte PPPoE MTU fix is not yet confirmed against the line that reported it.**
+  v2.4.9 fixed three real defects underneath that report: the widened WAN port was never recorded,
+  so it was reverted before pppd negotiated; the MTU and MRU both have to exceed 1492 before the
+  RFC 4638 extension is requested at all, and the page let you raise only one; and a dual-WAN
+  lookup always answered for the first connection. **What is not established is whether the
+  reporter's provider supports the extension**, which decides whether 1500 was ever achievable on
+  that line. The decisive evidence is one log line, now emitted on every PPPoE connect:
+
+  ```
+  grep -i "up with MTU" /tmp/syslog.log
+  ```
+
+  → `pppd: ppp0 up with MTU 1500` means it negotiated. `pppd: ppp0 up with MTU 1492 (requested
+  >1492; peer declined RFC 4638)` means the provider refused, and no router-side change will alter
+  that. Worth capturing alongside it: `ifconfig $(nvram get wan0_ifname) | grep -i mtu` should read
+  **1508** while the session is up — if it reads 1500, the record-the-width fix is not holding and
+  this belongs back in [Open bugs](#open-bugs--under-investigation). If the log reports 1500 and
+  `ping -f -l 1472` still fails, the constriction is beyond the provider's access equipment and is
+  not ours. **Do not use `logread`** — it returns empty on this platform by design; read the file.
+  **[owed]**
+
 - **[P2] The Call of Duty / UPnP report is not yet confirmed fixed.** v2.4.6 removed two real
   dead ends — the phantom `WANPPPConnection` advertisement and the IGD:2 device description on
   the default daemon — and both were verified in the build (preprocessor probe on each configure
@@ -568,7 +589,8 @@ worth more than the attempt itself.*
 ---
 
 - **[P2] [owed] `cut_rung.sh` leaves `public-build.yml` read-only, so the NEXT cut aborts.** Hit on
-  the v2.4.7 cut, 2026-08-17, and it will recur on every rung until the script changes. Step 8 pins
+  the v2.4.7 cut, 2026-08-17, and again on the v2.4.9 cut, 2026-08-18; it recurs on every rung
+  until the script changes. Step 8 pins
   `EXPECTED_VERSION` with `sed -i`, which on the Windows mount writes a temp file and renames it
   over the target; it cannot carry the permissions across, logs
   `sed: preserving permissions for '…/sedzXXXXX': Operation not permitted`, and leaves the result

@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.4.8** — `3006.102.8_Reaper_v2.4.8`, in the source tree and built on RT-BE96U in both variants as a **test image**. The rung is **not cut**: no patch series, no provenance stamp, and the four siblings have not taken it. The newest *cut* rung remains **v2.4.7** — 454 patches (replay-verified), shared code only, with all four overlays coming back *unchanged* from regeneration, which independently confirms it touches no per-model identity. **No image published from either.** Published images come from the clean-room CI build. |
+| **Current rung** | **v2.4.9** — `3006.102.8_Reaper_v2.4.9`, cut from RT-BE96U: **462 patches** (replay-verified), provenance stamped, and **all four sibling models ported** — they were on v2.4.7, so this rung carries them across v2.4.8 as well. The four overlays were **regenerated** and passed the identity gate; that is expected here rather than a warning sign, because the rung carries v2.4.8's menu work, which touches per-model files. Built on RT-BE96U as a compile check. **No image published.** Published images come from the clean-room CI build. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7 and v2.4.8. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7, v2.4.8 and v2.4.9. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants; v2.4.9 is built on RT-BE96U as a compile check. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -18,11 +18,74 @@
 
 ---
 
-## What's new in v2.4.8 — built as a test image, not cut and not published
+## What's new in v2.4.9 — cut, ported to the fleet, not published
+
+*One field report about a PPPoE connection refusing to run at a 1500-byte MTU — and two further
+defects found underneath it while working out why.*
+
+### A PPPoE connection set to 1500 now keeps the size you asked for
+
+Reported as a full-size ping test failing: `ping -f -l 1472` is exactly a 1500-byte packet that may
+not be split up on the way, so it is the standard way to ask "does 1500 actually work end to end?"
+
+PPPoE spends 8 bytes of every frame on its own headers, so the ordinary ceiling is 1492. A
+long-standing extension — RFC 4638, usually called *baby jumbo* — asks the provider to carry 8 bytes
+more per frame so the connection can run a clean 1500. Reaper is the only build in this lineage that
+offers the setting at all; upstream caps both boxes at 1492, so the only way to ask for it there is
+by hand at the command line.
+
+**The cause was not in the PPPoE code.** Running at 1500 works by widening the physical WAN port to
+1508 first, and the firmware did that correctly — but it widened the port without *recording* the
+new width. The recorded width is what gets re-applied every time anything touches that port
+afterwards, and for PPPoE the router asks the provider for an address on that same port moments
+later, which touches it. The port therefore snapped back to its old width before the PPPoE session
+was negotiated at all; the negotiation found no room for the extra 8 bytes and settled for 1492
+without a word, and did so again at every address renewal.
+
+The width is now recorded when it is set, so it survives — and it is cleared again if the connection
+changes type or the MTU drops back below the threshold, so a stale 1508 cannot leak into a
+connection that should not have one.
+
+**Whether 1500 is actually available still depends on the provider supporting the extension.** That
+is not something firmware can change; what has changed is that you now get what you asked for
+wherever it is supported, and are told plainly when it is not.
+
+**This is not the LAN "Jumbo Frame" setting.** That is a separate feature, on a different page, and
+it has no bearing on a whole-path test like the one above — the two are easy to conflate and were.
+
+### The MTU and MRU boxes are treated as the pair they are
+
+They are the outgoing and incoming halves of a single negotiation, and the extension is only
+*requested* when **both** exceed 1492 — the router asks for the smaller of the two. Setting one to
+1500 and leaving the other at its 1492 default was a silent no-op: nothing was requested, nothing
+was refused, and the page gave no hint that the two boxes were related.
+
+Raising either one now raises the other to match — as you type, when you save, and on both variants
+of the WAN page. Values at or below 1492 are left exactly as entered, and the defaults are unchanged
+at 1492, so this stays opt-in and is invisible to anyone not looking for it.
+
+### The log says what the connection actually got
+
+When a PPPoE link comes up it now records the MTU it settled on, and where more than 1492 was asked
+for and not granted, it says so explicitly — that is the provider declining the extension rather
+than the router discarding the setting. That fallback was previously silent, which is the whole
+reason the original report was hard to place: nothing on the router distinguished "your setting was
+thrown away" from "your provider does not offer this."
+
+### A second internet connection never had its MTU applied
+
+Found while tracing the above. A loop meant to check each configured connection in turn was asking
+about the first one every time — a variable was read before it had been given a value, and the
+compiler settled it to zero, so every lookup answered for connection one regardless of what was
+asked. It has been present for as long as the code has and can only show on a dual-WAN setup.
+
+---
+
+## What's new in v2.4.8 — cut with v2.4.9, ported to the fleet, not published
 
 *Two field reports, two owner requests, and one regression from v2.4.6. Built on RT-BE96U in both
-variants so the changes could be seen working; the rung is not cut, so there is no patch series and
-the four siblings have not taken it.*
+variants so the changes could be seen working. It was not cut on its own: patches 0455–0460 went out
+inside the v2.4.9 series, which is also how the four siblings took it.*
 
 ### Your addons are listed in the menu on every page, not just the dashboard
 

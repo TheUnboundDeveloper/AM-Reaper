@@ -1,0 +1,116 @@
+From 7b92785f93b817dc9c8fffcec1a387aeabcbb6cf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 17 Aug 2026 17:15:55 -0400
+Subject: [PATCH] rails: keep the About signet on screen when addons make the
+ nav long
+
+Owner: the About entry needs to stay bound to the bottom of the viewport,
+because addons can make the list long enough to push it out of sight.
+
+margin-top:auto pins it to the foot of the RAIL, and the rail deliberately has
+no scrollbar of its own - it grows with the document and scrolls with the body
+(that decision is recorded in the .rail comment and is what keeps a single page
+scrollbar on the right). So with several addons installed the rail runs past the
+viewport and the signet goes below the fold: still at the bottom, just not a
+bottom anyone can see without scrolling the page to its end. Yesterday's
+menu_Addons expansion made this materially worse, since the rail now grows by
+one row per installed addon instead of one row total.
+
+position:sticky;bottom:14px on .railabout, on BOTH rails - the shell's and the
+dashboard's, which is its own separate copy of the markup and CSS.
+
+Why sticky rather than the alternatives:
+  - it costs NOTHING when the rail fits. margin-top:auto still places it, the
+    offset never engages, and short-rail rendering is byte-identical.
+  - it releases back into its natural position at the true end of the rail, so
+    the signet is never detached from the list it belongs to - which is the
+    "pin it to the last open position" behaviour, and the sticky behaviour, from
+    the same three declarations.
+  - it does NOT give the rail its own scrollbar. Making the rail a scroll
+    container with a fixed footer would have worked too, but it would put a
+    second scrollbar on the page and reverse a deliberate earlier decision.
+
+It has to paint over the nav items sliding beneath it, so it carries an opaque
+background - the rail gradient's end colour #08080a, which is exactly what sits
+behind it in its resting position, so nothing changes visually where it normally
+lives - plus a z-index. The existing border-top doubles as the separator once
+items are moving underneath. bottom is 14px rather than 0 so the row is never
+flush against the window edge while stuck.
+
+Verified: <style> braces balanced on both pages (79/79 + 2/2 shell, 253/253
+dashboard), no unclosed comments, all five declarations present with the
+intended values, and every inline script block still parses under node --check.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 20 ++++++++++++++++++++
+ release/src/router/www/reaper_shell.asp    | 20 ++++++++++++++++++++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index aa57c47357..b485b1ed01 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -95,7 +95,27 @@ main{min-width:0}
+   padding:9px 11px;font-family:var(--body);font-size:12px;outline:none}
+ .railsearch input:focus{border-color:var(--line)}
+ .railsearch input:disabled{opacity:.4;cursor:not-allowed}
++/* reaper 2026-08-17: STICKY, so the signet stays reachable no matter how long
++   the rail gets. margin-top:auto alone pins it to the foot of the RAIL, and the
++   rail deliberately has no scrollbar of its own (see the .rail comment) - it
++   grows with the document and scrolls with the body. So on a box with several
++   addons installed the rail runs past the viewport and About goes below the
++   fold: still at the "bottom", just not a bottom you can see without scrolling
++   the whole page.
++
++   position:sticky costs nothing when the rail fits - margin-top:auto still does
++   the work and the offset never engages - and pins it to the viewport bottom
++   only once the rail would otherwise carry it off screen. It releases back into
++   its natural place at the true end of the rail, so it is never detached from
++   the list it belongs to.
++
++   It needs to paint OVER the nav items sliding beneath it, hence the opaque
++   background (the rail gradient's end colour, so it is invisible where it
++   normally sits) and the z-index; the existing border-top doubles as the
++   separator once items are moving underneath. bottom is 14px rather than 0 so
++   the row never sits flush against the window edge while stuck. */
+ .railabout{margin-top:auto;padding-top:13px;border-top:1px solid var(--line-soft);
++  position:sticky;bottom:14px;z-index:2;background:#08080a;
+   display:flex;align-items:center;gap:10px;text-decoration:none}
+ .railabout .sig{flex:0 0 auto;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+   background:var(--panel-2);border:1px solid var(--line-soft);
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index f34ae6f3f2..2145752b3a 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -89,7 +89,27 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .railclock .rc-time{font-family:var(--hdr);font-weight:700;font-size:23px;letter-spacing:.07em;color:var(--bone);font-variant-numeric:tabular-nums}
+ .railclock .rc-sec{color:var(--crimson)}
+ .railclock .rc-date{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);margin-top:4px}
++/* reaper 2026-08-17: STICKY, so the signet stays reachable no matter how long
++   the rail gets. margin-top:auto alone pins it to the foot of the RAIL, and the
++   rail deliberately has no scrollbar of its own (see the .rail comment) - it
++   grows with the document and scrolls with the body. So on a box with several
++   addons installed the rail runs past the viewport and About goes below the
++   fold: still at the "bottom", just not a bottom you can see without scrolling
++   the whole page.
++
++   position:sticky costs nothing when the rail fits - margin-top:auto still does
++   the work and the offset never engages - and pins it to the viewport bottom
++   only once the rail would otherwise carry it off screen. It releases back into
++   its natural place at the true end of the rail, so it is never detached from
++   the list it belongs to.
++
++   It needs to paint OVER the nav items sliding beneath it, hence the opaque
++   background (the rail gradient's end colour, so it is invisible where it
++   normally sits) and the z-index; the existing border-top doubles as the
++   separator once items are moving underneath. bottom is 14px rather than 0 so
++   the row never sits flush against the window edge while stuck. */
+ .railabout{margin-top:auto;padding-top:13px;border-top:1px solid var(--line-soft);
++  position:sticky;bottom:14px;z-index:2;background:#08080a;
+   display:flex;align-items:center;gap:10px;text-decoration:none}
+ .railabout .sig{flex:0 0 auto;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+   background:var(--panel-2);border:1px solid var(--line-soft);
+-- 
+2.25.1
+

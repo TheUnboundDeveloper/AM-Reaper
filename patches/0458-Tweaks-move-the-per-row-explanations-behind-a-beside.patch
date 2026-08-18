@@ -1,0 +1,124 @@
+From ae7b57cc1692277d771f09c6d32da0b09516cab7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 17 Aug 2026 17:36:30 -0400
+Subject: [PATCH] Tweaks: move the per-row explanations behind a "?" beside the
+ label
+
+Owner: the information should be tidier and more professional, with the
+explanation behind a question-mark icon next to the item name.
+
+The three Reaper rows printed their whole explanation in a <span> next to the
+control, so a one-word dropdown sat beside a long sentence - and the stock rows
+on this same page put their help behind ASUS's hintstyle/openHint popup, so the
+page disagreed with itself halfway down. The label now carries a 16px "?" and
+the same text is disclosed in a panel underneath the control.
+
+Not wired to openHint(): that indexes numbered arrays in the stock
+helpcontent.js, which makes every entry we add a merge conflict waiting for the
+next GPL drop, and the strings already exist as RTWK_02/04/06. This is
+self-contained - no new dictionary keys, no stock file touched, nothing to
+collide with. Colours come from currentColor so it reads correctly under the
+injected Reaper theme and under plain stock styling.
+
+Accessible: the "?" is a real focusable control with role=button, aria-controls
+and aria-expanded tracking the panel; the panel is inert markup and nothing is
+evaluated. Text is unchanged - this only moves where it renders.
+
+Rule 33: no sysdep variant of Tools_OtherSettings.asp, so the base file ships.
+All 7 inline script blocks still parse under node --check.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../src/router/www/Tools_OtherSettings.asp    | 44 ++++++++++++++++---
+ 1 file changed, 38 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/www/Tools_OtherSettings.asp b/release/src/router/www/Tools_OtherSettings.asp
+index 0d68a251ad..1fa3369373 100644
+--- a/release/src/router/www/Tools_OtherSettings.asp
++++ b/release/src/router/www/Tools_OtherSettings.asp
+@@ -18,10 +18,42 @@
+ <script language="JavaScript" type="text/javascript" src="/validator.js"></script>
+ <script language="JavaScript" type="text/javascript" src="/popup.js"></script>
+ <script language="JavaScript" type="text/javascript" src="/help.js"></script>
++<style>
++/* reaper 2026-08-17: the three Reaper rows below used to print their whole
++   explanation in a <span> beside the control, which read as a wall of text next
++   to a one-word dropdown - and sat badly against the stock rows on this same
++   page, which put their help behind ASUS's hintstyle/openHint popup. These get
++   a "?" beside the LABEL instead; the text is unchanged and simply moves into a
++   panel the button discloses.
++
++   Deliberately NOT wired to openHint(): that indexes numbered arrays in the
++   stock helpcontent.js, so every entry we add is a merge conflict waiting for
++   the next GPL drop, and the strings already exist as RTWK_ tokens. This is
++   self-contained - no new dictionary keys, nothing stock to collide with.
++   Colours come from currentColor so it works under the injected Reaper theme
++   and under plain stock styling alike. */
++.rtwkq{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
++  margin-left:7px;border:1px solid currentColor;border-radius:50%;font-size:11px;line-height:1;
++  font-weight:700;text-decoration:none;color:inherit;opacity:.6;cursor:pointer;vertical-align:middle}
++.rtwkq:hover,.rtwkq:focus-visible{opacity:1}
++.rtwkhelp{display:none;margin-top:7px;font-size:12px;line-height:1.55;opacity:.85;max-width:74ch}
++.rtwkhelp.on{display:block}
++</style>
+ <script>
+ 
+ var RTWK_ORIG = {};
+ 
++/* Toggle the help panel a "?" owns. aria-expanded tracks it so the control is
++   announced correctly; the panel is plain markup, so nothing is evaluated. */
++function rtwkHelp(a){
++	var d = document.getElementById(a.getAttribute('aria-controls'));
++	if(!d) return false;
++	var on = d.className.indexOf('on') < 0;
++	d.className = on ? 'rtwkhelp on' : 'rtwkhelp';
++	a.setAttribute('aria-expanded', on ? 'true' : 'false');
++	return false;
++}
++
+ function initial() {
+ 	/* reaper: reaper_inject is a kill switch with no defaults.c entry - unset or
+ 	   any non-zero value means ON, only a literal "0" disables it, so the empty
+@@ -166,33 +198,33 @@ function applyRule(){
+ 					</thead>
+ 
+ 					<tr>
+-						<th><#RTWK_01#></th>
++						<th><#RTWK_01#><a class="rtwkq" href="javascript:void(0);" role="button" aria-controls="rtwkh1" aria-expanded="false" onclick="return rtwkHelp(this);">?</a></th>
+ 						<td>
+ 							<select name="reaper_inject" class="input_option">
+ 								<option value="1"><#checkbox_Yes#></option>
+ 								<option value="0"><#checkbox_No#></option>
+ 							</select>
+-							<span style="margin-left:8px"><#RTWK_02#></span>
++							<div class="rtwkhelp" id="rtwkh1"><#RTWK_02#></div>
+ 						</td>
+ 					</tr>
+ 
+ 					<tr>
+-						<th><#RTWK_03#></th>
++						<th><#RTWK_03#><a class="rtwkq" href="javascript:void(0);" role="button" aria-controls="rtwkh2" aria-expanded="false" onclick="return rtwkHelp(this);">?</a></th>
+ 						<td>
+ 							<select name="wlcsm_bindfix" class="input_option">
+ 								<option value="1"><#checkbox_Yes#></option>
+ 								<option value="0"><#checkbox_No#></option>
+ 							</select>
+-							<span style="margin-left:8px"><#RTWK_04#></span>
++							<div class="rtwkhelp" id="rtwkh2"><#RTWK_04#></div>
+ 						</td>
+ 					</tr>
+ 
+ 					<tr>
+-						<th><#RTWK_05#></th>
++						<th><#RTWK_05#><a class="rtwkq" href="javascript:void(0);" role="button" aria-controls="rtwkh3" aria-expanded="false" onclick="return rtwkHelp(this);">?</a></th>
+ 						<td>
+ 							<input type="text" maxlength="64" class="input_25_table" name="rwarden_sched"
+ 							       value="<% nvram_get("rwarden_sched"); %>" placeholder="30 4 * * *">
+-							<span style="margin-left:8px"><#RTWK_06#></span>
++							<div class="rtwkhelp" id="rtwkh3"><#RTWK_06#></div>
+ 						</td>
+ 					</tr>
+ 				</table>
+-- 
+2.25.1
+

@@ -1,0 +1,551 @@
+From 8321fa2a8060353a77758a30aab0268ba4835dfb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 17 Aug 2026 17:36:31 -0400
+Subject: [PATCH] firmware: let the user choose which hour the scheduled check
+ runs in
+
+Owner asked for a box, appearing when Scheduled Check is enabled, to set the
+check time - assuming it was cron. It is not: the check is
+auto_firmware_check_reaper() (our rename of Merlin's auto_firmware_check_merlin)
+driven from the watchdog loop, firing when
+
+    local.tm_hour == (2 + rand_hr) && local.tm_min == rand_min
+
+with rand_hr = rand%4 and rand_min = rand%60 both drawn ONCE AT BOOT. So it has
+always run at a random time between 02:00 and 05:59, moving on every reboot,
+with nothing user-visible and no nvram behind it. There was no time to expose -
+it had to be built.
+
+  firmware_check_hour   new nvram. Empty = automatic, which is exactly the
+                        behaviour above. 0-23 pins the hour.
+
+THE MINUTE STAYS RANDOM EITHER WAY, and that is deliberate rather than an
+omission. This check pulls a GitHub-hosted manifest, so an exact user-visible
+time would let a whole fleet name the same minute and arrive together; the
+default would concentrate hardest of all. Pinning the hour is what the request
+actually wants - "check overnight, not in the middle of the day" - while the
+minute inside it is noise to the user and load-spreading to us. An out-of-range
+or junk value falls back to automatic rather than failing closed, so a bad nvram
+value can never stop the check running.
+
+UI: the picker is revealed by the same toggle that owns the feature and rides
+the same save, so there is no second Apply and no state where a time is set but
+the check is off. A stale value that no longer matches an option resets the
+select to Automatic instead of showing blank.
+
+RFWU_45..47 minted and English-seeded across 25 packs, lockstep 6635 -> 6638.
+RFWU_46 renders inside a JS backtick template; all three values are free of
+quotes, apostrophes and backticks (rule 29 checked across every pack).
+
+NOT COMPILE-VERIFIED: watchdog.c cannot be built standalone - the router package
+makefiles need the parent env - so the C rides the next full build. atoi and
+nvram_get are both long-established in this file.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/watchdog.c           | 15 ++++++++-
+ release/src/router/shared/defaults.c       |  7 ++++
+ release/src/router/www/BR.dict             |  3 ++
+ release/src/router/www/CN.dict             |  3 ++
+ release/src/router/www/CZ.dict             |  3 ++
+ release/src/router/www/DA.dict             |  3 ++
+ release/src/router/www/DE.dict             |  3 ++
+ release/src/router/www/EN.dict             |  3 ++
+ release/src/router/www/ES.dict             |  3 ++
+ release/src/router/www/FI.dict             |  3 ++
+ release/src/router/www/FR.dict             |  3 ++
+ release/src/router/www/HU.dict             |  3 ++
+ release/src/router/www/IT.dict             |  3 ++
+ release/src/router/www/JP.dict             |  3 ++
+ release/src/router/www/KR.dict             |  3 ++
+ release/src/router/www/MS.dict             |  3 ++
+ release/src/router/www/NL.dict             |  3 ++
+ release/src/router/www/NO.dict             |  3 ++
+ release/src/router/www/PL.dict             |  3 ++
+ release/src/router/www/RO.dict             |  3 ++
+ release/src/router/www/RU.dict             |  3 ++
+ release/src/router/www/Reaper_Firmware.asp | 38 +++++++++++++++++++++-
+ release/src/router/www/SL.dict             |  3 ++
+ release/src/router/www/SV.dict             |  3 ++
+ release/src/router/www/TH.dict             |  3 ++
+ release/src/router/www/TR.dict             |  3 ++
+ release/src/router/www/TW.dict             |  3 ++
+ release/src/router/www/UK.dict             |  3 ++
+ 28 files changed, 133 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index cee8439330..e34c819b12 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -12312,6 +12312,8 @@ void auto_firmware_check_reaper()
+ 	time_t now;
+ 	struct tm local;
+ 	static int rand_hr, rand_min;
++	int sched_hr;
++	const char *sched_hv;
+ 
+ 	if (!nvram_get_int("ntp_ready")){
+ 		return;
+@@ -12335,7 +12337,18 @@ void auto_firmware_check_reaper()
+ 	time(&now);
+ 	localtime_r(&now, &local);
+ 
+-	if(local.tm_hour == (2 + rand_hr) && local.tm_min == rand_min) { //at 2 am + random offset to check
++	/* reaper 2026-08-17: firmware_check_hour pins the HOUR when set to 0-23;
++	 * empty or out of range keeps the original 2 am + random offset. The
++	 * minute stays rand_min in BOTH cases on purpose: the check pulls a
++	 * GitHub-hosted manifest, so letting every router name the same exact
++	 * minute would concentrate the fleet into one request window. Pinning the
++	 * hour is what a user actually wants ("check overnight, not mid-day");
++	 * the minute within it is noise to them and load-spreading to us. */
++	sched_hv = nvram_get("firmware_check_hour");
++	sched_hr = (sched_hv && *sched_hv) ? atoi(sched_hv) : -1;
++	if (sched_hr < 0 || sched_hr > 23)
++		sched_hr = 2 + rand_hr;
++	if(local.tm_hour == sched_hr && local.tm_min == rand_min) {
+ 		periodic_check = 1;
+ 		period_retry = 0;
+ 	}
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 86b47b5ea7..a73dedeb70 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5295,6 +5295,13 @@ struct nvram_tuple router_defaults[] = {
+ 
+ #ifdef RTCONFIG_MERLINUPDATE
+ 	{ "firmware_check_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* reaper 2026-08-17: which HOUR the scheduled update check runs in. Empty =
++	   automatic, which is the behaviour that shipped before this key existed:
++	   02:00 plus a random 0-3 h offset drawn at boot. A value of 0-23 pins the
++	   hour; the MINUTE stays random either way, deliberately - the check fetches
++	   a GitHub-hosted manifest, and an exact shared time would put every router
++	   on the same minute. See auto_firmware_check_reaper() in rc/watchdog.c. */
++	{ "firmware_check_hour", "", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ 
+ #ifdef RTCONFIG_SSH
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 959c319af4..fee0f7943e 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 60f8755e02..cddb26fe18 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 4f7bae9e94..bb6d07102e 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 55b7f09da0..dacc87fb4f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index fe516d12f4..aca151b3d4 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index a0ba580f3f..f10ed9b18f 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index c9beb5293d..b79f76ff78 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index e0d1065122..31963c5eaa 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 1d5145f99a..22389ab223 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 7cbfeffd72..4152f025e7 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4dc34fd1fc..02693b6121 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 3fae8c241b..7c2ced6b87 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 839ce4d073..9a6cd75b00 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index c493891a8f..d75d8c054f 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 6a2ec23ce9..5b5d82ee1e 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index d85eaa4358..52a62e5926 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index ff73a34d3a..f14de7e29f 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index f0ad65b5b8..667fc82abc 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 20a39e44d4..fbe47c25cd 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 86aff079c3..bda281bd6e 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -123,6 +123,11 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+       <span class="stat ok" id="schedStat" style="margin-top:0;display:none">&#10003;</span>
+     </div>
+     <p class="note"><#RFWU_15#></p>
++    <div class="tgl" id="schedTimeRow" style="display:none;margin-top:10px">
++      <label for="schedHour" class="note" style="margin-top:0"><#RFWU_45#></label>
++      <select id="schedHour" onchange="schedSave()"></select>
++    </div>
++    <p class="note" id="schedTimeNote" style="display:none"><#RFWU_47#></p>
+   </div>
+ </div>
+ 
+@@ -186,6 +191,7 @@ var FW = {
+   upd:  '<% nvram_get("webs_state_update"); %>'
+ };
+ var CHK_EN = '<% nvram_get("firmware_check_enable"); %>';
++var CHK_HR = '<% nvram_get("firmware_check_hour"); %>';
+ /* the noMCP build stamps "_noMCP" into EXTENDNO (same signal the backend
+    scripts read from the filesystem) - no extra probe needed */
+ var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
+@@ -632,9 +638,37 @@ function pollBack(tries, wentDown){
+ 
+ /* ---------------- scheduled check ---------------- */
+ 
++/* The hour picker only means anything while the check is enabled, so it rides
++   the same toggle and the same save. '' = automatic, which the watchdog reads as
++   "keep 2 am + the random offset"; 0-23 pins the hour, and the minute inside it
++   stays random either way (auto_firmware_check_reaper, rc/watchdog.c). */
++function schedTimeVis(){
++  var on = $id('schedChk').checked;
++  $id('schedTimeRow').style.display  = on ? 'flex' : 'none';
++  $id('schedTimeNote').style.display = on ? ''     : 'none';
++}
++
++function schedFill(){
++  var s = $id('schedHour'), i, o;
++  if(!s || s.options.length) return;
++  o = document.createElement('option');
++  o.value = ''; o.textContent = `<#RFWU_46#>`;
++  s.appendChild(o);
++  for(i = 0; i < 24; i++){
++    o = document.createElement('option');
++    o.value = String(i);
++    o.textContent = (i < 10 ? '0' : '') + i + ':00';
++    s.appendChild(o);
++  }
++  s.value = CHK_HR || '';
++  if(s.selectedIndex < 0) s.value = '';     /* stale or junk nvram -> automatic */
++}
++
+ function schedSave(){
+   var v = $id('schedChk').checked ? '1' : '0';
+-  post({ action_script: 'saveNvram', firmware_check_enable: v });
++  var h = $id('schedHour') ? $id('schedHour').value : '';
++  schedTimeVis();
++  post({ action_script: 'saveNvram', firmware_check_enable: v, firmware_check_hour: h });
+   var s = $id('schedStat');
+   s.style.display = 'inline';
+   setTimeout(function(){ s.style.display = 'none'; }, 2500);
+@@ -723,6 +757,8 @@ function boot(){
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
+   loadNodes();
+   $id('schedChk').checked = (CHK_EN === '1');
++  schedFill();
++  schedTimeVis();
+   /* a previous check (scheduled or manual) already found an update ->
+      render it immediately (this is where the dashboard badge lands) */
+   if(FW.flag === '1' && FW.info){ showAvail(); }
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 81aecd9d73..26ad37224e 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 2ca4b3ecc4..b17a536107 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ebe670362b..ba4566f569 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 8083c723c4..be6e990205 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 80e126cfe7..d04b28727f 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index ed20a3efbb..89240ebf33 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6530,6 +6530,9 @@ RFWU_41=Push the current firmware to every AiMesh node? Each node reboots once i
+ RFWU_42=Update sent. Nodes flash and reboot on their own; this can take several minutes.
+ RFWU_43=The router would not accept the update request.
+ RFWU_44=Update all nodes
++RFWU_45=Check at
++RFWU_46=Automatic (overnight)
++RFWU_47=The exact minute within the chosen hour is picked at random, so that routers do not all contact the update server at the same moment.
+ RFW_204=Egress
+ RFW_205=Forwards
+ RFW_206=Per-device egress defaults
+-- 
+2.25.1
+

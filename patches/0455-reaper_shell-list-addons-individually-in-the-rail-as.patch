@@ -1,0 +1,105 @@
+From 4df043044e55c32a1486b3609c5917088935a938 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 17 Aug 2026 16:51:59 -0400
+Subject: [PATCH] reaper_shell: list addons individually in the rail, as the
+ dashboard does
+
+Field report: "when on the dashboard page addons are listed individually in the
+menu, but on any other page only 'Addons' appears in the index."
+
+Installed addons are TABS under a single menu_Addons menu, and buildRail()
+renders one rail entry per MENU - correct for every other menu, wrong for this
+one, because it folds ntpMerlin / spdMerlin / scMerlin / Sitemap into a lone
+"Addons" link. Main_ReaperDash.asp does not go through buildRail: it is the one
+top-level page with its own rail, it parses menuTree.js as text itself, and
+7a7f316942 taught it to expand those tabs. So the two menus disagreed, and the
+dashboard was the one that was right.
+
+menu_Addons is now expanded here too: a .grp header (the same element menu_Split
+uses, which is what draws the uppercase "ADDONS" label in the report's
+screenshot) followed by one a.item per addon, carrying data-page so the existing
+click handler frames them. Rail is now identical on every page.
+
+TRUST: menuTree.js is the file third-party addons BIND-MOUNT over, so nothing
+from it is trusted - labels go through esc(), and a target that is not a bare
+same-origin page goes to a new tab via isExternalUrl() rather than being framed
+(a third-party "Help & Support" entry is a real case). This is the same
+treatment the tab bar already gives these exact entries; the dashboard applies a
+stricter SAFE regex because it parses raw text, whereas here menuTree.js has
+already been through require().
+
+Emits NOTHING when no tab survives filtering - not even the header - so a box
+with no addons keeps the rail exactly as it ships.
+
+ICONS gains menu_Addons: the same puzzle-piece glyph the dashboard draws, so an
+addon looks identical in both rails rather than falling through to _default.
+
+Verified: all 4 inline script blocks still parse under node --check (block 3
+641 -> 676 lines), and a simulation of the branch against the reporter's addon
+set plus hostile input passes 10/10 - one entry per addon, header present,
+NULL/__HIDE__ dropped, external new-tabbed and never framed, a script-tag label
+escaped, and an empty set producing no bare header.
+
+Rule 33: there is no sysdep variant of reaper_shell.asp, so the base file ships.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 35 +++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index dc7da4eec6..f34ae6f3f2 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -317,6 +317,9 @@ var ICONS = {
+   menu_OpenNAT:        '<svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg>',
+   menu_APP:            '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg>',
+   menu_ReaperDevices:  '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>',
++  /* same puzzle-piece glyph Main_ReaperDash.asp draws for its addon rail group,
++     so an addon looks identical on the dashboard and inside the shell */
++  menu_Addons:         '<svg viewBox="0 0 24 24"><path d="M10 4h4v3a2 2 0 0 0 2 2h3v4h-3a2 2 0 0 0-2 2v3h-4v-3a2 2 0 0 0-2-2H5V9h3a2 2 0 0 0 2-2z"/></svg>',
+   menu_AiCloud:        '<svg viewBox="0 0 24 24"><path d="M7 17a4 4 0 0 1 .6-8 5 5 0 0 1 9.6 1.4A3.5 3.5 0 0 1 17 17z"/></svg>',
+   menu_Tool:           '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+   menu_Wireless:       '<svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg>',
+@@ -448,6 +451,38 @@ function buildRail(menuTree){
+     if(exMenus.indexOf(m.index)!==-1) continue;
+     if(m.index==='menu_QIS') continue;
+     if(m.index==='menu_Split'){ h+='<div class="grp">'+esc(m.menuName)+'</div>'; continue; }
++    /* reaper 2026-08-17 field fix: "addons are listed individually on the
++       dashboard but collapse to one 'Addons' entry on every other page".
++
++       Installed addons are TABS under a single menu_Addons menu, so the
++       one-item-per-menu rule below renders the whole set as a lone link, while
++       Main_ReaperDash.asp - the one top-level page with its own rail, which
++       parses menuTree.js itself - lists each addon. Expand them here so the
++       rail is the same everywhere: a group header plus one entry per addon,
++       matching the shape the dashboard already produces.
++
++       menuTree.js is the file third-party addons BIND-MOUNT over, so nothing
++       here is trusted: labels go through esc(), and a target that is not a
++       bare same-origin page is opened in a new tab by isExternalUrl() rather
++       than framed - the same treatment the tab bar gives these entries. If no
++       tab survives filtering, nothing is emitted, not even the header, so a
++       box with no addons keeps the rail exactly as it ships. */
++    if(m.index==='menu_Addons'){
++      var ai='', ta, an;
++      for(var a=0;a<(m.tab||[]).length;a++){
++        ta=m.tab[a];
++        if(!ta||!ta.url||ta.url==='NULL') continue;
++        if(exTabs.indexOf(ta.url)!==-1) continue;
++        if(ta.tabName==='__HIDE__'||ta.tabName==='__INHERIT__') continue;
++        an=ta.tabName||ta.url;
++        if(isExternalUrl(ta.url))
++          ai+='<a class="item" href="'+esc(ta.url)+'" target="_blank" rel="noopener noreferrer">'+ICONS.menu_Addons+'<span class="rtip">'+esc(an)+'</span></a>';
++        else
++          ai+='<a class="item" href="/reaper_shell.asp#'+esc(ta.url)+'" data-page="'+esc(ta.url)+'" data-pages="'+esc(ta.url)+'">'+ICONS.menu_Addons+'<span class="rtip">'+esc(an)+'</span></a>';
++      }
++      if(ai) h+='<div class="grp">'+esc(m.menuName)+'</div>'+ai;
++      continue;
++    }
+     var first=-1, pages=[];
+     for(var j=0;j<(m.tab||[]).length;j++){
+       var t=m.tab[j];
+-- 
+2.25.1
+

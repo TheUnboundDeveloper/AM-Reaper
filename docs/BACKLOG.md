@@ -35,6 +35,68 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ---
 
+### SECURITY REVIEW 2026-08-18/19 — Phase 3 vulnerability pass: OPEN items only
+
+> The fixes from this pass (the five corrected defective-reworks plus the new Phase 3 fixes) are
+> recorded in the v2.5.0 **CHANGELOG** and **RELEASE-NOTES**, not here — this section carries only
+> what is still open. **Committed on `be96u-only` as v2.5.0 (HEAD `8be2150520`), cut into the lean repo (patches 0463-0465); NOT yet pushed or released.**
+
+**Before v2.5.0 can be cut — validation TODOs (applied but not yet hardware-proven):**
+
+- **[P2-H6] QoS priority — REVERTED, needs a metal-test session.** The defect is real (libtmctl's own
+  help says `lower value, lower priority`, and the live queues read back inverted) but the in-place
+  renumber fix is rejected by the hardware (`Priority already in use`), so it was reverted to the safe
+  (inverted-but-stable) baseline. The correct fix is `delqcfg`-all-then-`setqcfg`-all (clear every
+  queue, then reassign), which can only be validated on hardware. Land it in a metal session.
+- **[chpass CSRF] applied — validate on a real factory-reset flow before cut.** The `http_id` check is
+  gated to the default-password window and `Reaper_FirstBoot.asp` was updated to send the token, but
+  the first-boot credential path has a lockout history ([[firstboot-login-loop]]); confirm a clean
+  factory-reset setup still completes before shipping.
+- **General:** the whole batch is build-validated only (compiles + packages, MAKE_EXIT=0). Metal-test
+  at least the QoS priorities, Gatekeeper enforcement on a guest/SDN network, the Warden manual-ban
+  live-cut, and the first-boot password flow before cutting the rung.
+
+**Still open (verified real, not fixed):**
+
+- **[LOW, inherited]** OpenVPN `if` field in `libovpn/openvpn_setup.c` (`write_ovpn_dnsmasq_config`)
+  unvalidated (newline). Marginal — OpenVPN config is entirely admin-controlled (no privilege gain)
+  and it is inherited Merlin/OpenVPN code.
+- **[POLICY]** SNMP `rwuser` left as-is (SNMPv3-USM-gated; `rouser` would remove SNMP-SET, a real
+  feature). Change only if the owner wants read-only SNMP.
+- **[COSMETIC]** esc() consolidation on 3 pages (`gkEsc`/`rwEsc`/`bwlEsc` — GK + Warden don't load
+  `reaper_util.js`).
+
+**Deferred per owner (2026-08-19): the `/tmp` systemic dir-ownership issue** — `mkdir(,0700)` return
+ignored, owner never checked, rc `umask(0)` → `fopen("w")` is 0666; ~11 sites. Fix = ONE shared
+validate-or-refuse helper (`lstat` → `S_ISDIR && uid==0 && !(mode&077)`), pattern already at
+`reaper_fw.c:2071`; targeted `umask(077)` per daemon `main()` is the cheap partial (done for rtrafd).
+Covers the `rmcpd` DIAG_OUT dir-perm item too.
+
+**Investigated — NOT a bug (do not re-raise):** `Reaper_Firewall.asp` `v4_src`/`lw_sip`/`lw_dip`
+"XSS" (renders via `td.textContent`); Warden `V6LAN`/`WANIPS`/`V6WAN` (the router's own ISP-assigned
+addresses, not reachably poisonable); dnsmasq `/etc/hosts` IP field (an admin can already edit hosts
+via custom config); `custom_clientlist` tail truncation (the reader uses `strdup`, no fixed buffer);
+scrape-token "fail-open stub" (already `CRYPTO_memcmp` + `!want[0]` fail-CLOSED); store-chooser TOCTOU
+(mitigated by the `O_NOFOLLOW` opens).
+
+**ARCHITECTURAL — need owner decision (do NOT patch unilaterally):**
+
+- **[HIGH] Firewall layer ordering.** `reaper_fw` is hooked (`-I` pos 1) AHEAD of Warden + Gatekeeper
+  (last `-I` wins), and it emits terminal `ACCEPT` (they mostly `RETURN`), so an allow rule silently
+  disables both — and the order is non-deterministic (`restart_gk` re-inserts at pos 1). Options: a
+  shared `REAPER_HOOK` front chain with a defined order, OR convert `reaper_fw` user-ACCEPT to
+  RETURN+allow-mark.
+- **[HIGH/MED] Gatekeeper multi-network** (broader than the P2-H1 rework): even with the right bridge
+  field, the per-network DNS carve-out / captive DNAT / L3 "internet-only" logic is all br0-only, and
+  "internet-only" has no L3 leg so linked SDNs defeat it. A coupled redesign.
+
+**Also carried:** ~96 MEDIUM/LOW findings from the Phase 1/2 (waste + data-flow) passes remain
+unworked — catalogued in [`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md). Mostly
+efficiency/dead-code, low security relevance.
+
+---
+
+
 - **[P2] Speed test: `level_err_cnt` is consumed once per POLL, not once per error — this is
   probably the real cause of a run dying mid-test.** Found 2026-08-16 while the owner pushed back
   on the v2.4.5 changelog entry claiming the counter-leak fix addressed hanging/erroring speed
@@ -193,6 +255,16 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ---
 
+**Traffic Analyzer Issue IPV6 Devices:**
+- Also I have noticed on the traffic analyser page - the 1 year - one of my devices that didn't update until the ipv6 patch - is still on 186 MB and some other devices (probably the ipv6 devices aren't getting updated either) Did more testing, some devices update, some don't on the Year tab.
+
+Edit: Looked like the *The Month* tab gets reset when you do a firmware update - but the ipv6 devices do get updated on that tab. The Last 24 hours and Last 14 days are getting updated fine and not resetting after an update :)
+
+Edit 2: More testing, had moved from usb to jffs and the year tab seems to be updating now with that sticky device.
+
+**Baby Jumbo Frames not Fixed on IPV6**
+- Seems firmware is setting eth0 to 1508 but leaving vlan6 at 1500.
+
 ## Pending verification
 
 *A change has been made and is believed to fix the problem. What is missing is **confirmation**,
@@ -209,6 +281,33 @@ worth more than the attempt itself.*
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
 
 ---
+
+- **[P3] The local-build provenance call is implemented but has never run through the build
+  engine.** `_reaper_build_lib.sh` gained a `gen_provenance.sh` call in `_rb_variant()` on
+  2026-08-18, but the v2.5.0 test image was built with a plain `make` rather than through the
+  engine, and the stamp was invoked directly with the same arguments instead. So the *fix* is
+  verified in effect - the image carries a real patch count and base commit rather than dashes - but
+  the *wiring* has not been exercised. It will be the first time a build goes through
+  `build_be96u.sh` (or CI's container path, which already had its own call). Nothing to do but
+  notice whether the "provenance stamp" line appears in that build log. **[owed]**
+
+- **[P2] Confirm the Warden country counters actually attribute after the geo-first change.**
+  The rule order was flipped on 2026-08-18 (owner decision) so the per-country rules are evaluated
+  before the threat feed; both still jump to the same drop target, so this is attribution only. What
+  needs eyes on a live box is that the numbers now behave as intended: with at least one country
+  blocked **and** at least one feed enabled, the **Top Blocked Countries** table should start moving
+  in step with the total, and the feed figure in the breakdown strip should flatten relative to
+  before. If the country table still sits near zero while the total climbs, the reorder did not take
+  and this belongs back in [Open bugs](#open-bugs--under-investigation).
+
+  ```
+  iptables -nvxL REAPER_WARDEN | head -20
+  ```
+
+  → the per-country `rw_g_<cc>` rules must appear **above** the `rw_threat` rule, and their packet
+  counts should be non-zero on a box that was previously attributing everything to the feed.
+  **Expect a discontinuity in banked history at this version** - that is the accepted cost of the
+  change, not a fault. **[owed]**
 
 - **[P2] The 1500-byte PPPoE MTU fix is not yet confirmed against the line that reported it.**
   v2.4.9 fixed three real defects underneath that report: the widened WAN port was never recorded,
@@ -271,29 +370,6 @@ worth more than the attempt itself.*
 ---
 
 ## UI / UX polish
-
----
-
-- **[P3] Dashboard linking — rows that land on the wrong page.** The Security Posture panel became
-  clickable in v2.4.1 (all fourteen rows carry a destination). Corrections as they are found:
-
-  - **Wi-Fi Encryption should go to `/reaper_shell.asp#SDN.asp`** (owner, 2026-08-14). It currently
-    carries `data-go="Advanced_Wireless_Content.asp"` (`Main_ReaperDash.asp` ~489), which is the
-    stock per-radio Wireless page. On this MULTILAN_MWL build that is the wrong place to send
-    someone: the user's main SSID and its security live in the **SDN MAINFH profile**, which is what
-    the Network section of the menu already points at (standing rules 4 and 6). The row *reads* the
-    right thing — `wlX_auth_mode_x` at radio level is correct, and that is what `encInfo()` reports —
-    it just offers a page that cannot change it.
-    - **Fix is one token, and do NOT paste the full URL in.** The click handler
-      (`Main_ReaperDash.asp` ~1447) already does `location.href = '/reaper_shell.asp#' + p`, so the
-      value must be the bare page name: `data-go="SDN.asp"`. Writing the whole path would produce
-      `/reaper_shell.asp#/reaper_shell.asp#SDN.asp`.
-    - **Check the fan-out before shipping it.** `SDN.asp` is not in base `www/` — it ships from the
-      `sysdep/FUNCTION/SDN` overlay, and the menu reaches it conditionally:
-      `isSupport("mtlancfg") ? "SDN.asp" : "Guest_network.asp"` (`menuTrees/menuTree.js:63`). A
-      hardcoded `SDN.asp` dead-ends on any model or build where `mtlancfg` is not supported, and the
-      dashboard rail is shared across all five models. Mirror the menu's conditional rather than
-      hardcoding, or confirm every shipped model asserts `mtlancfg`.
 
 ---
 
@@ -376,72 +452,6 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P3] [owed] The local build path does not stamp the provenance file; only CI does.**
-  `build-scripts/gen_provenance.sh` writes `www/reaper_provenance.js` (patch count, base pin, build
-  date, variant) and is wired into `build-scripts/ci/container_build.sh` before the build. The local
-  engine — `_reaper_build_lib.sh` — has no equivalent call, so a **locally built image shows dashes
-  on the About page** where CI-built images show real figures. Harmless (a dash is honest, which is
-  why it is the fallback) but it makes a local image and a CI image differ visibly, which is exactly
-  the kind of difference the decompose-and-diff cross-check exists to notice. One call, same
-  arguments; the local engine already knows the version and can count `patches/`.
-
----
-
-- **[P3] [blocked] Route the About page's donation link through `unbounded-engineering.com/donate`
-  rather than hardcoding the payment endpoints.** Blocked on the website expansion — there is
-  nothing to redirect to yet (owner, 2026-08-16).
-
-  **Why an indirection rather than the obvious two options.** Hardcoded payment links are immutable:
-  an image ships once and cannot be recalled, so changing processor, adding an option or killing a
-  link would need a firmware release on every installed router. The alternative that was tried and
-  **deliberately reverted** was fetching the links from the update manifest — it worked, and its
-  validation held against all 24 hostile cases including the `https://paypal.me@evil.com/x` userinfo
-  spoof, but it turned a static page into one whose links a remote file controls. Two gates that
-  hold today are still two gates that have to keep holding, on firmware, for the sake of swapping a
-  Stripe URL.
-
-  A redirect through our own domain gets the mutability with none of that: the redirect happens **in
-  the visitor's browser after they click**, so the router never fetches, parses or validates
-  anything. Zero runtime input, fully changeable destination.
-
-  **The trade, stated plainly: it makes the domain load-bearing.** It already is — it is on the page
-  either way — so this goes from three immutable destinations to one that must be kept alive. Keep
-  `unbounded-engineering.com` on auto-renew, registrar-locked, with a long expiry. **A lapsed domain
-  is the worst outcome on this page**: a squatter would inherit traffic from every Reaper router's
-  About page with our own UI vouching for the link, which is materially worse than a dead donate
-  button.
-
-  **Verify before shipping either way:** whether PayPal recycles a released `paypal.me` handle. If
-  it does, a hardcoded `paypal.me/TheUnboundDeveloper` in firmware is a long-dated liability and the
-  indirection stops being a convenience. Stripe is not exposed this way — `donate.stripe.com/<id>`
-  is bound to the account and simply stops working when deactivated.
-
----
-
-- **[P3] A v6-only device shows a blank address label (v2.4.4).** Attribution is keyed on the
-  hardware address, so such a device is counted correctly and merges properly — only the display
-  label is empty until the network map names it. `cli_t.ip` is a 16-byte IPv4 field living inside the
-  persisted `dbhdr_t`, so widening it to hold a v6 literal would change the on-disk layout and
-  discard every saved history file (the `DB_VER` 1→2 precedent). Options if it ever matters: show the
-  hardware address as the fallback label, or carry a separate display field outside the persisted
-  header. Not worth a history-invalidating format bump on its own.
-
----
-
-- **[P3] Warden: decide whether country rules should be evaluated BEFORE the threat feeds.**
-  Left as an explicit owner decision by the 2026-08-14 block-count work, not an oversight. Both rule
-  families jump to the same drop target, so the order is purely **attribution** — it changes which
-  counter increments, never whether a packet is dropped. Today the feed rule runs first, and because
-  the large feeds overlap heavily with the countries people block, the feed absorbs the hit and the
-  per-country counters barely move; that is the whole reason the total and the country table looked
-  unrelated. Putting geo first would give real country attribution at zero enforcement cost.
-  **Why it was not just done:** it silently changes the meaning of a statistic users have been
-  accumulating — banked country counts would suddenly grow much faster and the feed count would
-  flatten, with no way to explain the discontinuity after the fact. The breakdown shipped in the
-  unreleased rung makes both numbers visible, so this is now a free choice rather than a fix.
-
----
-
 - **[P3] Firewall rule tracer (FIREWALL-PLAN Phase 3, the last unbuilt piece of it).** "Given a
   packet like *this*, which rule would match?" — a simulator that walks the committed config in C
   and reports the first match, rather than shelling out to iptables. Deferred from the firewall rung as
@@ -495,11 +505,36 @@ worth more than the attempt itself.*
 
 ---
 
-- **Warden Plus** Requests have been made for custom feeds input by the user.
+- **[P3] [owed] Translations for the Warden custom-feed labels — `RWDN_77`–`RWDN_85`, 9 keys.**
+  Minted 2026-08-18 with the custom-feeds feature and English-seeded into all 25 packs (lockstep
+  6638 → 6647), so nothing renders as a raw `<#KEY#>`; the 24 non-English packs carry English until
+  a pass. **Constraint for whoever does it:** `RWDN_80`, `RWDN_81` and `RWDN_82` are used as HTML
+  **`placeholder=` attribute values**, so their translations must not contain a double quote — the
+  same hazard already recorded for `RFW_229`.
 
 ---
 
 ## Code quality / deferred (with reason)
+
+---
+
+- **[P2] [owed] Work the Phase 1 code-review findings — see
+  [`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md).** 70 findings across the ~25k lines
+  of Reaper-owned and Reaper-changed code (5 high, 32 medium, 33 low). Two of the five high
+  items are already fixed in tree; the document carries the rest with file:line, evidence and a
+  fix shape, plus a "checked and cleared" section so the next pass does not re-derive what was
+  already settled.
+
+  **The four cross-cutting themes are worth more than the individual items:** Reaper builds
+  netfilter state one process at a time (~260 spawns for a 20-country Warden config, and both
+  Warden and Gatekeeper tear down twice per arm) while `firewall.c` already uses
+  `iptables-restore` in 15 places; `websWrite` is `fprintf`+`fflush` and three JSON escapers
+  emit one character at a time through it, so a 250 KB response is ~250k syscalls; page polling
+  is gated on `document.hidden` in three pages and not in the two heaviest; and the
+  `reaper_util.js` consolidation stalled with 12 of 15 pages unable to reach it, leaving `esc()`
+  in five variants with divergent null handling.
+
+  Suggested order and the reasoning behind it are in §7 of the document. **[owed]**
 
 ---
 
@@ -541,6 +576,10 @@ worth more than the attempt itself.*
   - `rc` writes and then executes `/tmp/rwarden/{apply,fold,stats}.sh` **as root**, on a cron tick
     and on every UI poll. `mkdir(RW_DIR, 0700)` ignores `EEXIST` and never checks owner or mode, so
     a directory pre-created by another uid is used as-is.
+  - `rwarden`'s updater writes `/tmp/rwarden/feed.$$` and `$TMP.rst` **as root**, into a directory
+    created by `mkdir(RW_DIR, 0700)` that likewise ignores `EEXIST` and never checks owner or mode.
+    The 2026-08-18 custom-feed work added another root-written file on this path; it does not create
+    the class, and the same fix (b) covers it.
   - `reaper_fw` has the same unchecked `mkdir` for `/tmp/reaper_fw`, and on a default box that
     directory does not exist until the firewall engine is first enabled — a wide pre-creation
     window. Its `dnsmasq.ipset` fragment is spliced into a **root-parsed** config.
@@ -558,6 +597,22 @@ worth more than the attempt itself.*
   (`/var/run/rwarden`, `/var/run/reaper_fw`), plus `lstat` the directory and refuse it if it is not
   a root-owned `0700`, and open scratch files `O_CREAT|O_EXCL|O_NOFOLLOW`. (b) is narrower and
   fixes the cases we actually own; (a) fixes the class. Doing (b) first is the safer order.
+
+---
+
+- **[P3] Two residual limits on Warden custom feeds, found by the 2026-08-18 adversarial pass and
+  deliberately left.** Neither is a security hole; both are ceilings a user can reach by accident.
+  - **`rw_threat` is created with ipset's default `maxelem` (65536).** A custom feed large enough to
+    push the merged set past that makes `ipset restore` fail, which falls back to the per-entry loop,
+    which then fails per entry once full. The result is a silently truncated block set with a log
+    line, not an error the user sees. Curated feeds are nowhere near the limit; a user-chosen list
+    can be. Fix shape: create the threat sets with an explicit `maxelem`, and surface the entry count
+    the page already fetches against it.
+  - **Update runtime is now user-extensible.** Eight custom feeds at `--retry 2 --max-time 40` add up
+    to ~16 minutes to a refresh on top of the curated feeds and the country lists, and nothing locks
+    the cron refresh against a concurrent "update now" from the page. Daily cron makes overlap
+    unlikely rather than impossible. Fix shape: a lock file around the updater, and/or a lower
+    per-feed timeout for custom entries.
 
 ---
 
@@ -588,24 +643,6 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P2] [owed] `cut_rung.sh` leaves `public-build.yml` read-only, so the NEXT cut aborts.** Hit on
-  the v2.4.7 cut, 2026-08-17, and again on the v2.4.9 cut, 2026-08-18; it recurs on every rung
-  until the script changes. Step 8 pins
-  `EXPECTED_VERSION` with `sed -i`, which on the Windows mount writes a temp file and renames it
-  over the target; it cannot carry the permissions across, logs
-  `sed: preserving permissions for '…/sedzXXXXX': Operation not permitted`, and leaves the result
-  with the Windows **ReadOnly** attribute set (`-r-xr-xr-x`). `cut_fleet.sh`'s own preflight then
-  correctly refuses to start — *"public-build.yml is not writable … the EXPECTED_VERSION pin would
-  silently not apply"* — so the failure is safe and loud rather than a silently unpinned workflow.
-  But it means **every cut breaks the next one**, and the fix is a manual
-  `Set-ItemProperty -Path <file> -Name IsReadOnly -Value $false` on the Windows side.
-
-  **Fix shape:** stop using `sed -i` on that path. Either write via a temp file in the same
-  directory and `cat > "$target"` (truncate-in-place preserves the existing permissions), or
-  `chmod +w` the file immediately after the sed. The `cat >` form is preferable — it never creates
-  a new inode, so the attribute cannot be lost in the first place. Same hazard applies to any
-  future `sed -i` the release scripts run against a file on `/mnt/c`.
-
 - **[P3] [owed] Translations for the renamed bind-shim labels — `RTWK_03` and `RTWK_04`.** Renamed
   2026-08-17 ("Socket bind shim (nvram netlink)" plus an "On by default" note) and English-seeded
   into all 25 packs, so the 24 non-English packs currently show English for these two keys. Small,
@@ -619,16 +656,6 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P3] Two pre-existing rule-29 single-quote contexts on `Reaper_Firewall.asp`.** `RFW_36`
-  ("Time") and `RFW_37` ("Action") are interpolated into a single-quoted JavaScript string in the
-  log-table header builder. **Latent only** — every pack still carries the untranslated English, so
-  nothing breaks today — but the standing rule exists because a translation containing an apostrophe
-  turns this into a syntax error for that language alone, which is how the v1.8.6a EU breakage
-  happened. Convert both to backticks next time that code is touched. Verified 2026-08-14 that the
-  per-tab help work introduced no new such contexts; these two predate it.
-
----
-
 - **[P3] `do_reaper_dev_cgi` function-local `static` snapshot arrays aren't re-entrant.** Latent only
   (httpd serialises these requests); a malloc refactor of the multi-return CGI would add leak risk to
   fix a can't-happen case. [shelved]
@@ -639,26 +666,22 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P1] `Reaper_Firewall.asp` IPv6 protocol select cannot be safely tokenized as-is — and must not
-  be.** Found by the 2026-08-15 i18n audit. Line 243:
+- **[P3] [owed] `Reaper_Firewall.asp` IPv6 protocol select — labels still to tokenize.**
+  *(The P1 half of this is FIXED, 2026-08-18. The `<option>` elements now carry explicit
+  `value="TCP|UDP|BOTH|OTHER"`, so the wire format is pinned independently of the visible label and
+  tokenizing the labels can no longer change what is submitted.)*
 
-  ```html
-  <select id="v6_proto"><option>TCP</option><option>UDP</option>
-                        <option>BOTH</option><option>OTHER</option></select>
-  ```
+  The original trap, kept because it explains why the values are pinned and must stay pinned: the
+  options carried **no `value=`**, so the visible text *was* the submitted value — line 1129 reads
+  it straight back with `$('v6_proto').value`, and it is serialized into `ipv6_fw_rulelist` as the
+  fifth `>`-separated field. `rc/firewall.c` compares it with `strcmp(proto, "TCP"|"BOTH"|"OTHER")`
+  (lines ~1520-1525, ~1602-1615, ~1659-1663), so a tokenized label would have sent a German user's
+  `Beide` straight into the rule format — a functional break in 24 languages produced by an i18n
+  change, with nothing in the build to catch it. **Do not remove those `value=` attributes.**
 
-  Those `<option>` elements carry **no `value=` attribute**, so the visible text *is* the submitted
-  value — and line 1129 reads it straight back with `$('v6_proto').value`. Wrapping `BOTH`/`OTHER`
-  in dict tokens, which is the obvious "make it translatable" fix, would submit the **translated**
-  string to the firewall backend: a German user would send `Beide` where the rule format expects
-  `BOTH`. That is a functional break in 24 languages, produced by an i18n change, with nothing in
-  the build to catch it.
-
-  **Correct fix, in this order:** confirm the literals the backend actually expects, add explicit
-  `value="TCP|UDP|BOTH|OTHER"` attributes so the wire format is pinned independently of the label,
-  *then* tokenize the labels (`RFW_252` already exists for "Both"; "Other" still needs a key).
-  Marked P1 not because it is broken today — it is not, English submits correctly — but because the
-  obvious fix breaks it, so the trap needs to be written down before someone tidies the page.
+  **What is left:** tokenize the four labels. `RFW_252` already exists for "Both"; "Other" still
+  needs a key. No longer blocking, and no longer dangerous — but it belongs with the `RFW_*`
+  namespace pass rather than being done piecemeal, for the same reason `RFW_252` was left English.
 
 ---
 
@@ -683,8 +706,9 @@ worth more than the attempt itself.*
   had to be minted, and it is appended to all 25 packs (lockstep 6585 → 6586, key order verified
   identical across every pack).
 
-  **Still owed:** a key for `OTHER` on the IPv6 protocol select — blocked behind the P1 above, since
-  tokenizing that select before pinning its `value=` attributes is the thing that breaks it.
+  **Still owed:** a key for `OTHER` on the IPv6 protocol select. **No longer blocked** — the
+  `value=` attributes were pinned on 2026-08-18, so tokenizing those labels can no longer change
+  what is submitted. It now rides the `RFW_*` namespace pass rather than being done on its own.
 
   **`option_both_direction` was rejected as the reuse for "Both" and must stay rejected:** its
   EN/DE/FR/ES/IT/RU values are a generic "both", but **JP `双方向`, CN `双向`, TW `雙向` all mean

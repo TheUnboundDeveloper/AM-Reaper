@@ -1,0 +1,1087 @@
+From f685c6fdb432260761a0b31b4c3baaea945e290a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 18 Aug 2026 17:10:00 -0400
+Subject: [PATCH] warden: user-supplied blocklists, geo-before-feed
+ attribution, and four backlog fixes
+
+WARDEN CUSTOM FEEDS (new). rwarden_cfeeds holds up to 8 '<'-separated
+name>url>url6 records. Each URL is fetched on the existing schedule and merged
+into $NEW/$NEW6, so custom entries land in rw_threat/rw_threat6 and inherit the
+bogon/LAN filter, the atomic swap, the jffs cache, the existing rules and the
+existing counters - no new set, no new chain, no change to rule ordering.
+
+The URL is the only user data that reaches the generated updater, where it goes
+into a single-quoted curl argument alongside the curated table's fixed literals.
+The charset is therefore a security boundary, not a tidiness check: ' would close
+that quote, and \ ` " $ whitespace < > @ are excluded too. ; # ( ) ! * are also
+excluded - inert inside single quotes, but the quoting is the only thing making
+them safe and a future edit that emits the URL unquoted would turn ';' into a
+command separator. Every value is re-validated at generation time as well as on
+save, because nvram is not a trust boundary.
+
+Verified by driving the real emission loop with hostile nvram: shell escape via
+single quote, command substitution, backtick, a quote in the name and an http
+downgrade all emit nothing; a hostile record between two valid ones is dropped
+while its neighbours still emit; 12 records yield exactly 8. Validators pass 39
+hostile cases including all five curated feed URLs, and rw_field is
+canary-checked for overflow with oversized fields refused rather than truncated.
+
+Also hardened, found by the same pass:
+- the page bootstrapped rwarden_cfeeds raw into a single-quoted JS string; a
+  stored apostrophe would have ended it. Now nvram_char_to_ascii +
+  decodeURIComponent, as Reaper_Firewall.asp already does for its rule lists.
+- curl -fsSL follows redirects and permits https->http, so an https feed that
+  302'd to http was still followed and its content loaded into a DROP set.
+  Now --proto =https --proto-redir =https, probed once so a curl without the
+  flag still fetches (failing closed means no threat data at all).
+- no --max-filesize, and /tmp is tmpfs: one oversized list was a
+  memory-exhaustion event. Capped at 32 MiB.
+- RW_CFEED_MAX counted successes, so a value full of junk was walked in full
+  (2001 records = 2001 iterations, measured). It now bounds records parsed.
+
+GEO BEFORE FEEDS (owner decision). The per-country rules are now evaluated
+before the threat feed at all three emission sites - both source stacks and the
+shared dst group used by RW_OUT and RW_SELF. Both still jump to the same drop
+target, so this changes only which counter increments, never whether a packet is
+dropped. The feeds ran first and overlap heavily with the countries people
+block, so the feed absorbed nearly every hit while the country table sat near
+zero - the "block count with no matching country count" field report. The trade,
+taken knowingly: banked country counts now climb much faster and the feed count
+flattens, leaving a discontinuity in accumulated history at this version. Every
+comment that described the old order was corrected in the same commit.
+
+BACKLOG FIXES:
+- Reaper_Firewall.asp: the IPv6 protocol select submitted its visible text as
+  its value, so tokenizing the labels - the obvious i18n fix - would have sent a
+  translated word into ipv6_fw_rulelist, which rc/firewall.c compares with
+  strcmp against "TCP"/"BOTH"/"OTHER". Values are now pinned with explicit
+  value= attributes, defusing the trap before someone tidies the page.
+- Reaper_Firewall.asp: RFW_36/RFW_37 were interpolated into a single-quoted JS
+  string (standing rule 29); converted to backticks.
+- Main_ReaperDash.asp: the Wi-Fi Encryption row linked to the per-radio Wireless
+  page, which on a MULTILAN_MWL build cannot change what the row reports. It now
+  targets SDN.asp, gated on isSupport('mtlancfg') exactly as menuTree.js is, and
+  keeps the old destination as the fallback so a model without the SDN overlay
+  cannot dead-end.
+- Reaper_About.asp: the donate buttons pointed straight at two payment
+  endpoints, which an image cannot ever change. One link to our own page now;
+  the redirect happens in the browser, so the router still fetches, parses and
+  validates nothing.
+
+i18n: RWDN_77-85 minted and English-seeded into all 25 packs (6638 -> 6647,
+lockstep). reaper_langcheck reports 0 breakers across 20 pages.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c            | 202 +++++++++++++++++++--
+ release/src/router/shared/defaults.c       |   1 +
+ release/src/router/www/BR.dict             |   9 +
+ release/src/router/www/CN.dict             |   9 +
+ release/src/router/www/CZ.dict             |   9 +
+ release/src/router/www/DA.dict             |   9 +
+ release/src/router/www/DE.dict             |   9 +
+ release/src/router/www/EN.dict             |   9 +
+ release/src/router/www/ES.dict             |   9 +
+ release/src/router/www/FI.dict             |   9 +
+ release/src/router/www/FR.dict             |   9 +
+ release/src/router/www/HU.dict             |   9 +
+ release/src/router/www/IT.dict             |   9 +
+ release/src/router/www/JP.dict             |   9 +
+ release/src/router/www/KR.dict             |   9 +
+ release/src/router/www/MS.dict             |   9 +
+ release/src/router/www/Main_ReaperDash.asp |  18 +-
+ release/src/router/www/NL.dict             |   9 +
+ release/src/router/www/NO.dict             |   9 +
+ release/src/router/www/PL.dict             |   9 +
+ release/src/router/www/RO.dict             |   9 +
+ release/src/router/www/RU.dict             |   9 +
+ release/src/router/www/Reaper_About.asp    |  26 ++-
+ release/src/router/www/Reaper_Firewall.asp |   4 +-
+ release/src/router/www/Reaper_Warden.asp   | 102 ++++++++++-
+ release/src/router/www/SL.dict             |   9 +
+ release/src/router/www/SV.dict             |   9 +
+ release/src/router/www/TH.dict             |   9 +
+ release/src/router/www/TR.dict             |   9 +
+ release/src/router/www/TW.dict             |   9 +
+ release/src/router/www/UK.dict             |   9 +
+ 31 files changed, 554 insertions(+), 24 deletions(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index a5feaae17d..47bd5d2ad9 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -19,7 +19,9 @@
+  *   (manual DROP), rw_threat[/6] (feed DROP), and PER-COUNTRY rw_g_<cc>[/6]
+  *   (country DROP). Country blocking uses one set + one drop rule PER country
+  *   so the iptables rule packet-counter attributes drops to that country -
+- *   that is what feeds the "top blocked countries" stats.
++ *   that is what feeds the "top blocked countries" stats. The country rules run
++ *   BEFORE the feed rule so that attribution is real rather than whatever the
++ *   feeds did not already absorb; see ATTRIBUTION ORDER in rw_gen_apply().
+  * CHAIN REAPER_WARDEN (INPUT+FORWARD), order fixed after the 2026-07-29 field
+  *   lockout: loopback -> RETURN; DHCP -> RETURN; ESTABLISHED,RELATED -> RETURN;
+  *   [dir=out/both: -j RW_OUT]; allow src -> RETURN; ban src -> RW_DROP (manual
+@@ -60,7 +62,7 @@
+  *   (enable/armed/v6/lastupd/threat_n/geo_n + total blocked + top countries).
+  *   do_reaper_warden_cgi streams it to Reaper_Warden.asp.
+  *
+- * nvram: rwarden_enable rwarden_feeds rwarden_geo rwarden_dir rwarden_self
++ * nvram: rwarden_enable rwarden_feeds rwarden_cfeeds rwarden_geo rwarden_dir rwarden_self
+  *        rwarden_ban rwarden_allow rwarden_log rwarden_sched rwarden_lastupd
+  *        rwarden_stats_save rwarden_reset
+  */
+@@ -90,6 +92,14 @@
+  * single-quoted curl arg in the generated updater, and is a fixed literal here
+  * (never user data). Country lists come from ipdeny (CC-BY). */
+ struct rw_feed { const char *id; const char *url; const char *url6; };
++
++/* User-supplied ("custom") feeds. rwarden_cfeeds holds '<'-separated records of
++ * name>url>url6 (url6 optional). Bounds are deliberately small: this data is
++ * re-validated on every generation and a hostile value must not be able to make
++ * the generated script large or slow either. */
++#define RW_CFEED_MAX       8
++#define RW_CFEED_NAME_MAX  24
++#define RW_CFEED_URL_MAX   200
+ static const struct rw_feed rw_feeds[] = {
+ 	{ "firehol1", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset", NULL },
+ 	{ "feodo",    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt", NULL },
+@@ -190,6 +200,80 @@ static int rw_valid_sched(const char *s)
+ 	return 1;
+ }
+ 
++/* one '>'-separated field out of a '<'-separated record. Returns 0 when the
++ * field is absent or does not fit; the caller validates the contents. */
++static int rw_field(const char *rec, int idx, char *out, size_t ol)
++{
++	const char *p = rec, *e;
++	size_t n;
++	int i;
++
++	if (!rec || !out || !ol) return 0;
++	for (i = 0; i < idx; i++) {
++		if (!(p = strchr(p, '>'))) return 0;
++		p++;
++	}
++	e = strchr(p, '>');
++	n = e ? (size_t)(e - p) : strlen(p);
++	if (n >= ol) return 0;
++	memcpy(out, p, n);
++	out[n] = 0;
++	return 1;
++}
++
++/* A custom feed's NAME. Label only - it reaches the generated script solely
++ * inside a double-quoted logger message, and the charset below cannot terminate
++ * that string either. */
++static int rw_valid_feedname(const char *s)
++{
++	int n = 0;
++
++	if (!s || !*s) return 0;
++	for (; *s; s++, n++) {
++		if (n >= RW_CFEED_NAME_MAX) return 0;
++		if (isalnum((unsigned char)*s)) continue;
++		if (*s == ' ' || *s == '-' || *s == '_' || *s == '.') continue;
++		return 0;
++	}
++	return 1;
++}
++
++/* A custom feed's URL. THIS IS THE ONLY USER DATA THAT REACHES THE GENERATED
++ * SHELL SCRIPT - it is emitted into a single-quoted curl argument, exactly where
++ * the curated table's fixed literals go. The charset is therefore a security
++ * boundary, not a tidiness check:
++ *   '   would CLOSE the single quote and hand the caller a shell;
++ *   \ ` " $  are excluded belt-and-braces though inert inside single quotes;
++ *   whitespace and controls are excluded so one URL can never become two args;
++ *   ; # ( ) ! *  are excluded too. They are inert inside single quotes, so
++ *            this is defence in depth, not a live hole - but the quoting is the
++ *            only thing making them safe, and a future edit that emits this URL
++ *            anywhere else would turn ';' into a command separator and '#' into
++ *            a comment. No real blocklist URL uses them, so the charset carries
++ *            the guarantee instead of the quoting. ('&' and '=' are kept: query
++ *            strings genuinely need them, and they are inert unquoted anyway.)
++ *   < >      are excluded because they are our own record separators;
++ *   @        is excluded so https://trusted.example@evil.example cannot be
++ *            stored and then misread by a human as the trusted host.
++ * https only, and not negotiable: whatever is fetched is loaded straight into a
++ * DROP set, so an on-path attacker rewriting a plaintext feed would be choosing
++ * what the router blocks - including, without the bogon filter below, the LAN. */
++static int rw_valid_feedurl(const char *s)
++{
++	static const char ok[] = "-._~:/?&=%+,[]";
++	int n = 0;
++
++	if (!s || strncmp(s, "https://", 8) != 0) return 0;
++	if (!s[8]) return 0;
++	for (; *s; s++, n++) {
++		if (n >= RW_CFEED_URL_MAX) return 0;
++		if (isalnum((unsigned char)*s)) continue;
++		if (strchr(ok, *s)) continue;
++		return 0;
++	}
++	return 1;
++}
++
+ /* feed id from nvram must match a known feed (prevents arbitrary ids). */
+ static const struct rw_feed *rw_feed_by_id(const char *id)
+ {
+@@ -333,12 +417,16 @@ static void rw_emit_dst_group(FILE *f, const char *ipt, const char *chain,
+ {
+ 	fprintf(f,
+ 	  "%s -A %s -m set --match-set %s dst -j RETURN\n"
+-	  "%s -A %s -m set --match-set %s dst -j %s\n"
+ 	  "%s -A %s -m set --match-set %s dst -j %s\n",
+ 	  ipt, chain, v6 ? "rw_allow6" : "rw_allow",
+-	  ipt, chain, v6 ? "rw_ban6"    : "rw_ban",    drop,
+-	  ipt, chain, v6 ? "rw_threat6" : "rw_threat", drop);
++	  ipt, chain, v6 ? "rw_ban6"    : "rw_ban",    drop);
++	/* Geo BEFORE the feed - attribution only; see the ATTRIBUTION ORDER note in
++	 * rw_gen_apply(). Kept identical on the dst side so inbound and outbound
++	 * counters mean the same thing. */
+ 	rw_emit_country_rules(f, ipt, chain, "dst", drop, v6);
++	fprintf(f,
++	  "%s -A %s -m set --match-set %s dst -j %s\n",
++	  ipt, chain, v6 ? "rw_threat6" : "rw_threat", drop);
+ }
+ 
+ /* RW_SELF: the same destination logic applied to traffic the ROUTER originates
+@@ -496,8 +584,26 @@ static void rw_gen_apply(void)
+ 	 *   6. ban src RW_DROP        - manual ban beats the LAN shield on purpose
+ 	 *                               (admin intent: a LAN device can be banned)
+ 	 *   7. LAN-source RETURN      - the structural anti-lockout
+-	 *   8. threat/geo src RW_DROP - feed data can now never drop LAN/loopback
+-	 * The 0243 ordering placed rule 7 dead last (after the src drops), on the
++	 *   8. geo src RW_DROP        - per-country sets, one rule each, so each
++	 *                               country's own packet counter attributes its
++	 *                               own drops (see ATTRIBUTION ORDER below)
++	 *   9. threat src RW_DROP     - feed data; neither 8 nor 9 can now drop
++	 *                               LAN/loopback
++	 * ATTRIBUTION ORDER (owner decision, 2026-08-18): GEO IS EVALUATED BEFORE THE
++ * FEEDS. Both jump to the same drop target, so this changes nothing about
++ * WHETHER a packet is dropped - only which rule's counter increments. It used to
++ * be the other way round, and because the large feeds overlap heavily with the
++ * countries people block, the feed rule absorbed almost every hit while the
++ * per-country table sat near zero and the total climbed - which is precisely the
++ * "block count total but no country count matching it" field report. Geo first
++ * gives real per-country attribution at zero enforcement cost.
++ * THE TRADE, TAKEN KNOWINGLY: banked country counts now grow much faster and the
++ * feed count flattens, so a user's accumulated history has a discontinuity at
++ * this version. That was the whole reason it was not done sooner; the v2.4.5
++ * breakdown strip makes both numbers visible, which turned it from a silent
++ * rewrite of a statistic into a free choice.
++ *
++ * The 0243 ordering placed rule 7 dead last (after the src drops), on the
+ 	 * false premise that feeds never carry LAN addresses; FireHOL level1 ships
+ 	 * fullbogons (192.168/16, 10/8, 127/8, 0/8, ...) and that armed the
+ 	 * 2026-07-29 field lockout the moment the whitelist was emptied.
+@@ -564,9 +670,10 @@ static void rw_gen_apply(void)
+ 	fprintf(f,
+ 	  "iptables -A REAPER_WARDEN -m set --match-set rw_allow src -j RETURN\n"
+ 	  "iptables -A REAPER_WARDEN -m set --match-set rw_ban src -j RW_DROP\n"
+-	  "iptables -A REAPER_WARDEN -s $LANNET -j RETURN\n"
+-	  "iptables -A REAPER_WARDEN -m set --match-set rw_threat src -j RW_DROP\n");
++	  "iptables -A REAPER_WARDEN -s $LANNET -j RETURN\n");
+ 	rw_emit_country_rules(f, "iptables", "REAPER_WARDEN", "src", "RW_DROP", 0);
++	fprintf(f,
++	  "iptables -A REAPER_WARDEN -m set --match-set rw_threat src -j RW_DROP\n");
+ 	fprintf(f,
+ 	  "iptables -I INPUT -j REAPER_WARDEN\n"
+ 	  "iptables -I FORWARD -j REAPER_WARDEN\n");
+@@ -602,15 +709,16 @@ static void rw_gen_apply(void)
+ 		fprintf(f, "ip6tables -A REAPER_WARDEN -j RW_OUT\n");
+ 	/* v6 anti-lockout (same slot-7 position as the v4 LAN RETURN): link-local +
+ 	 * ULA always exempt, plus the delegated LAN prefix when present - BEFORE
+-	 * the feed/geo src drops, AFTER the dst group (L2). */
++	 * the geo/feed src drops, AFTER the dst group (L2). */
+ 	fprintf(f,
+ 	  "ip6tables -A REAPER_WARDEN -m set --match-set rw_allow6 src -j RETURN\n"
+ 	  "ip6tables -A REAPER_WARDEN -m set --match-set rw_ban6 src -j RW_DROP\n"
+ 	  "ip6tables -A REAPER_WARDEN -s fe80::/10 -j RETURN\n"
+ 	  "ip6tables -A REAPER_WARDEN -s fc00::/7 -j RETURN\n"
+-	  "[ -n \"$V6LAN\" ] && ip6tables -A REAPER_WARDEN -s \"$V6LAN\" -j RETURN\n"
+-	  "ip6tables -A REAPER_WARDEN -m set --match-set rw_threat6 src -j RW_DROP\n");
++	  "[ -n \"$V6LAN\" ] && ip6tables -A REAPER_WARDEN -s \"$V6LAN\" -j RETURN\n");
+ 	rw_emit_country_rules(f, "ip6tables", "REAPER_WARDEN", "src", "RW_DROP", 1);
++	fprintf(f,
++	  "ip6tables -A REAPER_WARDEN -m set --match-set rw_threat6 src -j RW_DROP\n");
+ 	fprintf(f,
+ 	  "ip6tables -I INPUT -j REAPER_WARDEN\n"
+ 	  "ip6tables -I FORWARD -j REAPER_WARDEN\n");
+@@ -634,7 +742,25 @@ static void rw_gen_update(void)
+ 	fprintf(f,
+ 	  "#!/bin/sh\n"
+ 	  "# generated by start_rwarden - fetch feeds -> ipset, cache to jffs\n"
+-	  "CURL='curl -fsSL --retry 2 --max-time 40'\n"
++	  /* --max-filesize: /tmp is tmpfs, i.e. RAM. Without a cap, one oversized
++	   * or hostile list is a memory-exhaustion event on the router, and custom
++	   * feeds put that URL under user control. 32 MiB is ~20x the largest
++	   * curated feed. */
++	  "CURL='curl -fsSL --max-filesize 33554432 --retry 2 --max-time 40'\n"
++	  /* https-only INCLUDING across redirects. -L follows redirects and curl
++	   * permits https->http by default, so an https feed that 302s to http was
++	   * still followed - and whatever came back is loaded straight into a DROP
++	   * set, which hands an on-path attacker the choice of what the router
++	   * blocks. Probed rather than assumed: a curl without --proto-redir must
++	   * still fetch, because failing closed here means no threat data at all,
++	   * which is worse than an unpinned redirect. Every URL this script fetches
++	   * is https today (both curated feeds and ipdeny), so nothing legitimate
++	   * is refused by the pin. */
++	  "if curl --proto-redir =https --version >/dev/null 2>&1; then\n"
++	  "  CURL=\"$CURL --proto =https --proto-redir =https\"\n"
++	  "else\n"
++	  "  logger -t rwarden \"curl has no --proto-redir; feed fetches are not redirect-pinned\"\n"
++	  "fi\n"
+ 	  "TMP=/tmp/rwarden/feed.$$\n"
+ 	  "# Reserved/special ranges must NEVER enter a block set (2026-07-29 LAN\n"
+ 	  "# lockout: FireHOL level1 ships fullbogons - 192.168/16, 10/8, 127/8,\n"
+@@ -669,6 +795,56 @@ static void rw_gen_update(void)
+ 		}
+ 		free(list);
+ 	}
++	/* ---- user-supplied custom feeds ------------------------------------
++	 * Re-validated HERE as well as on save. nvram is not a trust boundary: a
++	 * value written by any other path - a restore, a script, a future import -
++	 * must not be able to break out of the single-quoted curl argument. A
++	 * record that fails is skipped and logged, never emitted.
++	 *
++	 * Output goes into the SAME $NEW/$NEW6 as the curated feeds, so custom
++	 * entries land in rw_threat/rw_threat6 and inherit the bogon/LAN filter
++	 * (rw_f4/rw_f6 - the 2026-07-29 lockout guard, and the reason a hostile or
++	 * simply careless list cannot blackhole the user's own network), the atomic
++	 * swap, the jffs cache, the existing rules and the existing counters. No
++	 * new set, no new chain, no change to rule ordering. */
++	list = strdup(nvram_safe_get("rwarden_cfeeds"));
++	if (list) {
++		int nrec = 0;
++		for (tok = strtok_r(list, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
++			char nm[RW_CFEED_NAME_MAX + 2];
++			char u4[RW_CFEED_URL_MAX + 2], u6[RW_CFEED_URL_MAX + 2];
++
++			/* Bound RECORDS PARSED, not feeds emitted. Counting only successes
++			 * made the cap cosmetic: a value full of junk records was walked in
++			 * full before anything stopped it (2001 records = 2001 iterations,
++			 * measured). The UI never stores more than 8 valid rows, so this
++			 * only ever bites hand-written nvram - which is exactly the case
++			 * the cap exists for. */
++			if (++nrec > RW_CFEED_MAX) {
++				logmessage("rwarden", "more than %d custom-feed records - the rest are IGNORED",
++					   RW_CFEED_MAX);
++				break;
++			}
++			if (!rw_field(tok, 0, nm, sizeof(nm)) || !rw_valid_feedname(nm))
++				continue;
++			if (!rw_field(tok, 1, u4, sizeof(u4)) || !rw_valid_feedurl(u4)) {
++				logmessage("rwarden", "custom feed \"%s\": URL rejected, feed SKIPPED", nm);
++				continue;
++			}
++			fprintf(f,
++			  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
++			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 >> $NEW\n"
++			  "else\n"
++			  "  logger -t rwarden \"custom feed fetch FAILED: %s\"\n"
++			  "fi\n", u4, nm);
++			if (rw_field(tok, 2, u6, sizeof(u6)) && *u6 && rw_valid_feedurl(u6))
++				fprintf(f,
++				  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
++				  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 >> $NEW6\n"
++				  "fi\n", u6);
++		}
++		free(list);
++	}
+ 	/* rebuild rw_threat / rw_threat6 atomically via swap sets.
+ 	 * Backlog 2026-08-02: the old `while read n; do ipset add ...` was one
+ 	 * fork per CIDR - a large feed meant tens of thousands of execs every
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index a73dedeb70..fc80c1911a 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3181,6 +3181,7 @@ struct nvram_tuple router_defaults[] = {
+ 	/* reaper v1.8.0: Warden - ipset threat-feed / geo / manual-IP firewall (rc/rwarden.c). Default OFF (lockout risk). */
+ 	{ "rwarden_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ipset) */
+ 	{ "rwarden_feeds", "", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* enabled threat-feed ids (space/comma list): firehol1 feodo spamhaus dshield */
++	{ "rwarden_cfeeds", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* user-supplied feeds: '<'-sep records of name>url>url6; url re-validated in rwarden.c before it reaches the generated fetcher */
+ 	{ "rwarden_geo", "", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2-letter country codes to block (ipdeny), space/comma list */
+ 	{ "rwarden_dir", "in", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* enforcement direction: in | out | both */
+ 	{ "rwarden_self", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = also filter traffic the ROUTER originates (OUTPUT/RW_SELF); opt-in, see rwarden.c */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index fee0f7943e..44c9f3277f 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index cddb26fe18..1df0f1e1e3 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index bb6d07102e..b0e80d3dd4 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index dacc87fb4f..015b9391b1 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index aca151b3d4..9ee188e861 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f10ed9b18f..81b11c614c 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index b79f76ff78..c508a1f9be 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 31963c5eaa..cb5e4e9328 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 22389ab223..effec9acc0 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 4152f025e7..08d05261b0 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 02693b6121..3ab6e031bc 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 7c2ced6b87..87de1bef1b 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 9a6cd75b00..42d982c12b 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index d75d8c054f..a508928588 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index b485b1ed01..716619b82b 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -554,7 +554,7 @@ main{min-width:0}
+         <section class="card col8">
+           <div class="head"><h3><#Reaper_c_security_posture#></h3></div>
+           <div class="rows two">
+-            <div class="srow" data-go="Advanced_Wireless_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></div>
++            <div class="srow" id="srow_wifi_enc" data-go="Advanced_Wireless_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></div>
+               <div><div class="name"><#RDSH_08#></div><div class="sub2" id="s_wifi_sub">&mdash;</div></div></div><span class="tag ok" id="s_wifi_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Firewall.asp?t=general"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/></svg></div>
+               <div><div class="name"><#RDSH_09#></div><div class="sub2" id="s_fw_sub">&mdash;</div></div></div><span class="tag ok" id="s_fw_tag">&mdash;</span></div>
+@@ -1510,6 +1510,22 @@ window.addEventListener('resize', function(){ reaperTips(); });
+  * free of boilerplate, and a row that loses its data-go stops being focusable
+  * automatically. */
+ (function(){
++  /* Wi-Fi Encryption retarget. The row READS the right thing (wlX_auth_mode_x at
++   * radio level), but on a MULTILAN_MWL build the user's main SSID and its
++   * security live in the SDN MAINFH profile, so the stock per-radio Wireless
++   * page cannot change what the row reports. Done here rather than in the
++   * markup because SDN.asp is NOT in base www/ - it ships from the
++   * sysdep/FUNCTION/SDN overlay, and this dashboard is shared across all five
++   * models. Mirror menuTree.js's own conditional; where mtlancfg is absent the
++   * Wireless page really is the right destination, so it stays as the markup
++   * fallback and a build without SDN.asp can never dead-end. */
++  try {
++    if (typeof isSupport === 'function' && isSupport('mtlancfg')) {
++      var enc = document.getElementById('srow_wifi_enc');
++      if (enc) enc.setAttribute('data-go', 'SDN.asp');
++    }
++  } catch (e) {}
++
+   function go(el){
+     var p = el && el.getAttribute('data-go');
+     if (p) location.href = '/reaper_shell.asp#' + p;
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 5b5d82ee1e..42bd33620a 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 52a62e5926..94f928acae 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index f14de7e29f..921e1b2001 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 667fc82abc..d0748e515c 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index fbe47c25cd..8a43d1fb63 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/Reaper_About.asp b/release/src/router/www/Reaper_About.asp
+index 1d5f74c8e1..5fa1f9b19d 100644
+--- a/release/src/router/www/Reaper_About.asp
++++ b/release/src/router/www/Reaper_About.asp
+@@ -196,12 +196,28 @@ git am --keep-cr /path/to/patches/*.patch</div>
+   <div class="support">
+     <p><#RABT_33#></p>
+     <div class="btns">
+-      <a class="btn primary" href="https://donate.stripe.com/14A14n5CpaISdl4fhBgnK00" target="_blank" rel="noopener noreferrer">
++      <!-- ONE link, to our own page - do NOT put processor endpoints back here.
++           A firmware image ships once and cannot be recalled, so a hardcoded
++           payment URL is immutable: changing processor, adding an option or
++           killing a dead link would need a release on every installed router.
++           The redirect happens in the visitor's browser AFTER they click, so
++           the router never fetches, parses or validates anything - zero runtime
++           input, fully changeable destination.
++
++           The rejected alternative was fetching the links from the update
++           manifest. It worked and its validation held against all 24 hostile
++           cases, but it turned a static page into one whose links a remote file
++           controls; it was deliberately reverted and must not come back.
++
++           CONSEQUENCE: unbounded-engineering.com is now load-bearing for this
++           page. Keep it on auto-renew, registrar-locked, long expiry. A lapsed
++           domain is the worst outcome here - a squatter would inherit traffic
++           from every Reaper router's About page with our own UI vouching for
++           the link. (Dropping paypal.me from the image also retires the
++           open question of whether PayPal recycles a released handle.) -->
++      <a class="btn primary" href="https://unbounded-engineering.com/support/#give" target="_blank" rel="noopener noreferrer">
+         <svg viewBox="0 0 16 16"><path d="M8 14.25s-5.6-3.6-5.6-7A3.1 3.1 0 0 1 8 5.2a3.1 3.1 0 0 1 5.6 2.05c0 3.4-5.6 7-5.6 7z"/></svg>
+-        <#RABT_34#> <span class="sub">Stripe</span></a>
+-      <a class="btn" href="https://paypal.me/TheUnboundDeveloper" target="_blank" rel="noopener noreferrer">
+-        <svg viewBox="0 0 16 16"><path d="M5.6 14H3.2l2-12h4.4c2.3 0 3.7 1.2 3.3 3.4-.4 2.3-2.1 3.5-4.5 3.5H6.7L5.6 14zm1.6-7.2h1.3c1 0 1.8-.4 2-1.5.1-1-.5-1.4-1.4-1.4H7.7l-.5 2.9z"/></svg>
+-        PayPal <span class="sub">paypal.me</span></a>
++        <#RABT_34#></a>
+     </div>
+   </div>
+ </div>
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 6f192dc14e..5e173c7de3 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -240,7 +240,7 @@ table.ipt td.hit{color:var(--amber)}
+       <div class="fg"><span class="fl"><#RFW_56#></span><input class="fld s" id="v6_rip" placeholder="2001::/64"></div>
+       <div class="fg"><span class="fl"><#RFW_57#></span><input class="fld s" id="v6_lip"></div>
+       <div class="fg"><span class="fl"><#RFW_41#></span><input class="fld s" id="v6_port"></div>
+-      <div class="fg"><span class="fl"><#RFW_54#></span><select class="fld s" id="v6_proto"><option>TCP</option><option>UDP</option><option>BOTH</option><option>OTHER</option></select></div>
++      <div class="fg"><span class="fl"><#RFW_54#></span><select class="fld s" id="v6_proto"><option value="TCP">TCP</option><option value="UDP">UDP</option><option value="BOTH">BOTH</option><option value="OTHER">OTHER</option></select></div>
+       <button class="btn ghost sm" id="v6_add"><#RFW_59#></button>
+     </div>
+     <div class="row" style="margin-top:14px">
+@@ -1091,7 +1091,7 @@ function loadDrops(){
+       rows.push({cl:cl,tm:tm,inif:inif,src:src,dst:dst,proto:proto,dpt:dpt});
+       if(src)srcCount[src]=(srcCount[src]||0)+1;
+     }
+-    var h='<table class="logtbl"><thead><tr><th><#RFW_36#></th><th><#RFW_37#></th><th><#RFW_38#></th><th><#RFW_39#></th><th><#RFW_40#></th><th>proto</th><th><#RFW_41#></th></tr></thead><tbody>';
++    var h=`<table class="logtbl"><thead><tr><th><#RFW_36#></th><th><#RFW_37#></th><th><#RFW_38#></th><th><#RFW_39#></th><th><#RFW_40#></th><th>proto</th><th><#RFW_41#></th></tr></thead><tbody>`;
+     rows.slice(0,300).forEach(function(r){
+       h+='<tr><td class="cls"><span class="cbadge '+r.cl.c+'">'+esc(r.cl.t)+'</span></td><td>'+esc(r.tm)+'</td><td>'+esc(r.inif)+'</td><td>'+esc(r.src)+'</td><td>'+esc(r.dst)+'</td><td>'+esc(r.proto)+'</td><td>'+esc(r.dpt)+'</td></tr>';
+     });
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 61feab619e..f0f245967c 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -178,6 +178,14 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   </div>
+ </div>
+ 
++<div class="card">
++  <h2><#RWDN_77#></h2>
++  <div class="desc"><#RWDN_78#></div>
++  <div id="cfeedrows"></div>
++  <div style="margin-top:10px"><button type="button" class="btn" onclick="rwCfeedAdd()"><#RWDN_79#></button></div>
++  <div class="desc" style="margin-top:10px"><#RWDN_84#></div>
++</div>
++
+ <div class="card">
+   <h2><#RWDN_12#></h2>
+   <div class="setrow"><span class="sl"><#RWDN_12#><span class="sd"><#RWDN_13#></span></span>
+@@ -251,6 +259,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <input type="hidden" name="action_wait" value="10">
+   <input type="hidden" name="rwarden_enable" value="">
+   <input type="hidden" name="rwarden_feeds" value="">
++  <input type="hidden" name="rwarden_cfeeds" value="">
+   <input type="hidden" name="rwarden_geo" value="">
+   <input type="hidden" name="rwarden_dir" value="">
+   <input type="hidden" name="rwarden_self" value="">
+@@ -266,6 +275,13 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ var NV = {
+   enable: '<% nvram_get("rwarden_enable"); %>',
+   feeds:  '<% nvram_get("rwarden_feeds"); %>',
++  /* percent-encoded, NOT raw. Every other value here is charset-constrained to
++     digits/letters/dots by its own save path, so a raw paste is survivable; this
++     one holds names and URLs, and rwarden.c's own contract says nvram is not a
++     trust boundary. A stored apostrophe - written by a restore, a script, or
++     `nvram set` - would end this string and run whatever followed. Same form
++     Reaper_Firewall.asp uses for its rule lists. */
++  cfeeds: decodeURIComponent('<% nvram_char_to_ascii("", "rwarden_cfeeds"); %>'),
+   geo:    '<% nvram_get("rwarden_geo"); %>',
+   dir:    '<% nvram_get("rwarden_dir"); %>',
+   self:   '<% nvram_get("rwarden_self"); %>',
+@@ -279,6 +295,69 @@ var NV = {
+ /* retention windows the backend (fold.sh) understands; anything else = off */
+ var RESET_IVS = ['off','24h','7d','30d','90d'];
+ var FEED_IDS = ['firehol1','feodo','spamhaus','dshield'];
++/* ---- custom feeds ----------------------------------------------------------
++   Mirrors rwarden.c's rw_valid_feedname/rw_valid_feedurl. This copy is a
++   COURTESY so a typo is caught while typing - it is not the security control.
++   The C side re-validates every record at generation time because nvram can be
++   written by paths this page never sees. Keep the two in step: the URL charset
++   here is the same one, and it excludes the single quote because the value ends
++   up inside a single-quoted curl argument in a generated shell script. */
++var CFEED_MAX = 8, CFEED_NAME_MAX = 24, CFEED_URL_MAX = 200;
++var CFEED_URL_RE = /^https:\/\/[A-Za-z0-9\-._~:\/?&=%+,\[\]]+$/;
++var CFEED_NAME_RE = /^[A-Za-z0-9 ._-]+$/;
++
++function rwCfeedValidUrl(u){
++  return u.length >= 9 && u.length <= CFEED_URL_MAX && CFEED_URL_RE.test(u) && u.indexOf('@') < 0;
++}
++function rwCfeedParse(s){
++  var out = [];
++  String(s||'').split('<').forEach(function(rec){
++    if(!rec) return;
++    var f = rec.split('>');
++    if(!f[0] || !f[1]) return;
++    out.push({name:f[0], url:f[1], url6:f[2]||''});
++  });
++  return out.slice(0, CFEED_MAX);
++}
++function rwCfeedRow(c){
++  var d = document.createElement('div');
++  d.className = 'feedrow';
++  d.style.cssText = 'flex-wrap:wrap;gap:8px';
++  /* Backticks, not single quotes: these carry dict tokens, and a translation
++     containing an apostrophe would end the string and break the page for that
++     language alone (standing rule 29 - the v1.8.6a EU breakage). */
++  d.innerHTML =
++    `<input type="text" class="cf-name" maxlength="${CFEED_NAME_MAX}" placeholder="<#RWDN_80#>" style="flex:0 0 150px">` +
++    `<input type="text" class="cf-url" maxlength="${CFEED_URL_MAX}" placeholder="<#RWDN_81#>" style="flex:1;min-width:220px">` +
++    `<input type="text" class="cf-url6" maxlength="${CFEED_URL_MAX}" placeholder="<#RWDN_82#>" style="flex:1;min-width:220px">` +
++    `<button type="button" class="btn" onclick="this.parentNode.parentNode.removeChild(this.parentNode)"><#RWDN_83#></button>`;
++  d.querySelector('.cf-name').value = c ? c.name : '';
++  d.querySelector('.cf-url').value  = c ? c.url  : '';
++  d.querySelector('.cf-url6').value = c ? c.url6 : '';
++  return d;
++}
++function rwCfeedAdd(){
++  var host = document.getElementById('cfeedrows');
++  if(host.children.length >= CFEED_MAX) return;
++  host.appendChild(rwCfeedRow(null));
++}
++/* Returns {ok:"serialized", bad:[messages]} - an invalid row aborts the whole
++   save rather than being dropped, so a mistyped feed is never silently lost. */
++function rwCfeedCollect(){
++  var host = document.getElementById('cfeedrows'), out = [], bad = [], i;
++  for(i = 0; i < host.children.length; i++){
++    var r = host.children[i];
++    var n = r.querySelector('.cf-name').value.trim();
++    var u = r.querySelector('.cf-url').value.trim();
++    var u6 = r.querySelector('.cf-url6').value.trim();
++    if(!n && !u && !u6) continue;
++    if(!CFEED_NAME_RE.test(n) || n.length > CFEED_NAME_MAX){ bad.push(n || '(unnamed)'); continue; }
++    if(!rwCfeedValidUrl(u)){ bad.push(n + ': ' + (u || '-')); continue; }
++    if(u6 && !rwCfeedValidUrl(u6)){ bad.push(n + ': ' + u6); continue; }
++    out.push(n + '>' + u + '>' + u6);
++  }
++  return {ok: out.slice(0, CFEED_MAX).join('<'), bad: bad};
++}
+ /* ISO 3166-1 alpha-2 subset (common + commonly-blocked). Codes only ever leave
+    here as 2 ascii letters; the backend re-validates each as [A-Za-z]{2}. */
+ var COUNTRIES = [
+@@ -351,6 +430,12 @@ function rwPaint(){
+   document.getElementById('allow').value = rwSplit(NV.allow).join('\n');
+   rwBuildGeo();
+ 
++  var host = document.getElementById('cfeedrows');
++  host.innerHTML = '';
++  var cf = rwCfeedParse(NV.cfeeds);
++  cf.forEach(function(c){ host.appendChild(rwCfeedRow(c)); });
++  nf += cf.length;
++
+   document.getElementById('s_feeds').textContent = String(nf);
+   document.getElementById('s_geo').textContent   = String(rwSplit(NV.geo).length);
+   var lu = parseInt(NV.lastupd, 10);
+@@ -464,8 +549,15 @@ function rwSave(updateNow){
+     return;
+   }
+ 
++  var cfeeds = rwCfeedCollect();
++  if(cfeeds.bad.length){
++    alert(`<#RWDN_85#>` + '\n\n' + cfeeds.bad.join('\n'));
++    return;
++  }
++
+   f.rwarden_enable.value = on ? '1' : '0';
+   f.rwarden_feeds.value  = feeds.join(' ');
++  f.rwarden_cfeeds.value = cfeeds.ok;
+   f.rwarden_geo.value    = rwCleanCC(geo);
+   f.rwarden_dir.value    = document.getElementById('dir').value;
+   f.rwarden_self.value   = (document.getElementById('tgself').className.indexOf('on') >= 0) ? '1' : '0';
+@@ -515,9 +607,13 @@ function rwStats(){
+       (typeof b.total === 'number') ? b.total.toLocaleString() : '\u2014';
+     /* 2026-08-14 field report: "a block count total but no country count
+        matching the total". The total is every drop; the country table only ever
+-       covered the geo rules, and the feed rule is evaluated first (both drop, so
+-       this is an attribution order, not an enforcement one) - so on a box with
+-       feeds enabled the feed absorbs most hits and the countries stay near zero.
++       covered the geo rules. The feed rule USED to be evaluated first, so on a
++       box with feeds enabled the feed absorbed most hits and the countries
++       stayed near zero. Since 2026-08-18 the geo rules run FIRST (both still
++       drop - this is an attribution order, not an enforcement one), so the
++       country counts are now real and the feed count carries only what no
++       country rule already matched. Counts banked before that version were
++       accumulated under the old order and will look flat by comparison.
+        Spell the split out so the two numbers can be reconciled instead of
+        looking broken. Rendered only when the backend supplies it.
+        The trailing item is the WINDOW the counts cover: the persisted start when
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 26ad37224e..680f36264b 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index b17a536107..4f30e759b5 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ba4566f569..d49843be44 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index be6e990205..aadedfe189 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index d04b28727f..4c86a20d55 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 89240ebf33..09f3f73ca4 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6636,3 +6636,12 @@ RTWK_04=Works around a Broadcom defect in the nvram netlink socket that can leav
+ RTWK_05=Warden feed update schedule
+ RTWK_06=Cron format - minute hour day month weekday. Leave empty for the default of 04:30 daily.
+ RTWK_07=The schedule may contain only digits, spaces, and the characters * / , -
++RWDN_77=Custom feeds
++RWDN_78=Add your own IP or CIDR blocklists. Each list is fetched over HTTPS on the same schedule as the built-in feeds and merged into the same block set, so its entries appear in the same counters. Private, loopback and reserved ranges are stripped from every list before it is loaded - a list cannot block your own network.
++RWDN_79=Add feed
++RWDN_80=Name
++RWDN_81=List URL (https)
++RWDN_82=IPv6 list URL (optional)
++RWDN_83=Remove
++RWDN_84=HTTPS only, and the address may not contain quotes, spaces or an @. A list is fetched by the router and loaded straight into a blocking set, so only add sources you trust. Up to 8 custom feeds.
++RWDN_85=Check these custom feeds - nothing was saved:
+-- 
+2.25.1
+

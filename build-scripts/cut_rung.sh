@@ -229,7 +229,21 @@ step "8. CI version pin"
 YML="$LEAN/.github/workflows/public-build.yml"
 if [ "$DO_PIN" = 1 ]; then
   if grep -q "'Reaper_v[0-9][^']*'" "$YML"; then
-    sed -i "s/'Reaper_v[0-9][^']*'/'$EXTEND'/" "$YML"
+    # NOT `sed -i`. This file lives on the Windows mount, where sed -i writes a
+    # temp file and renames it over the target: the rename cannot carry the
+    # permissions across, logs "preserving permissions ... Operation not
+    # permitted", and leaves the result with the Windows ReadOnly attribute set
+    # - so the NEXT cut_fleet aborts at preflight 0 and every cut broke the one
+    # after it. Redirecting onto the existing file truncates it in place, reuses
+    # the inode, and therefore keeps its attributes. Applies to any sed -i these
+    # scripts run against a path under /mnt/c.
+    _pin=$(mktemp)
+    sed "s/'Reaper_v[0-9][^']*'/'$EXTEND'/" "$YML" > "$_pin" \
+      || { rm -f "$_pin"; die "could not rewrite EXPECTED_VERSION in $YML"; }
+    cat "$_pin" > "$YML" \
+      || { rm -f "$_pin"; die "could not write EXPECTED_VERSION into $YML"; }
+    rm -f "$_pin"
+    [ -w "$YML" ] || echo "  ! $YML is no longer writable - the next cut will abort"
     echo "  EXPECTED_VERSION -> $EXTEND"
   else
     echo "  ! could not find the EXPECTED_VERSION literal - set it by hand"

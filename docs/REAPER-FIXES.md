@@ -466,3 +466,84 @@ That one is a compatibility fault, not a security one: an IGD:2 device
 description left a PS5 unable to match any service type, so it could not create a
 mapping at all. Both were reported together as "UPnP breaks Call of Duty", which
 is worth recording as a reminder that one symptom had two independent causes.
+
+---
+
+## Code review 2026-08-18 — phase 1 & 2 remediation (in progress, v2.5.0)
+
+A three-phase review of Reaper's own code: (1) waste, dead and unreachable code, (2) function flow
+and data passing, (3) vulnerabilities — **phase 3 has not started**. Phases 1 and 2 produced 114
+findings, 16 of them high. They were not security-scoped passes, but several findings are security
+in substance and are recorded here; the rest live in
+[`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md).
+
+**This section is appended to as the campaign proceeds. It is not complete.**
+
+| ID | Severity | Component | Issue | Fix | Status |
+|---|---|---|---|---|---|
+| CR-S1 | **Medium** (privilege-escalation *enabler*, not a standalone attack) | `rc/init.c` | `/tmp` is `chmod` `0777` with **no** `S_ISVTX`, and nothing in `rc/` or `shared/` ever sets it. Without the sticky bit any uid may unlink or rename another uid's entry in a shared directory, so a non-root process can delete a root-owned file and recreate it with its own content, or plant a directory before root creates one. Reaper keeps live control state under `/tmp` (`reaper_fw/`, `rwarden/`, `gk/`), including generated scripts that are executed as root. Not exploitable alone — almost everything on the box runs as root — but it converts any unprivileged foothold into root code execution. | `chmod("/tmp", 01777)`. `/tmp` is tmpfs, so the sticky bit costs nothing. | Fixed, compiles clean |
+| CR-S2 | **Medium** (access control reports success, enforces nothing) | `www/Reaper_Devices.asp` | `gk` is `-1` for a device absent from `gk_rl`. The access `<select>` offers `{1,2,3,0}` with no `-1` case, so no option is marked `selected` and the browser renders the **first** — value 1, "Full access" — for every un-enrolled device, **including one `REAPER_GKF` is actively DROPping**. The handler is `onchange`, so re-picking the displayed value fires nothing and the page cannot correct itself. `Reaper_GK.asp` calls the same device Pending: two admin views disagree about enforcement state. | Explicit placeholder option rendered when `gk` is outside the known set; `setGk()` ignores an empty submission. New dict token `RDEV_91`, all 25 packs. | Fixed, compiles clean |
+| CR-S3 | **Low** (remote resource exhaustion, pre-auth reachable surface) | `httpd/web.c` | Four JSON emitters escape a value one character at a time through `websWrite`, which is `fprintf` + `fflush` (`httpd.h:354`) on the client socket: one `write(2)` per byte, and one TLS record per byte under HTTPS. The firewall drops ring is `400 x 640` = 250 KB, so a single `reaper_fw.cgi?action=drops` is ~250,000 writes. httpd is single-flight, so this is head-of-line blocking for every other GUI request — a cheap way for anyone who can reach the interface to occupy it. | `fputc` / `fprintf` on the same stream, which do not flush; the stream is flushed by the `websWrite` that closes the JSON string. The review named three sites; a fourth (the `egress_tm` capture, flushing on every newline of a multi-KB shell dump) was found while fixing them. | Fixed, compiles clean |
+| CR-S4 | **Low** (resource leak, defensive) | `rc/reaper_fw.c` | The teardown branch of `rfw_gen_apply()` returned before the keep-list ipset sweep, which only runs on the enabled path, so disabling the engine or rolling back left up to 256 `rwfw_*` sets resident until reboot — while the comment in `stop_reaper_fw()` stated the sweep had run. | Unconditional sweep emitted in the teardown branch; the chains are already gone at that point, so no set is still referenced. | Fixed, compiles clean |
+| CR-S5 | **High** (access control reports success and enforces nothing) | `rc/gatekeeper.c` | Every enforcement hook bound `$LANIF` - `br0` - while `gkd` accepts an ARP row from any `br*` and sweeps every `wlN.M` VIF, which is where MULTILAN (`RTCONFIG_MULTILAN_CFG=y`) puts guest, IoT and SDN networks. A device on one of those was listed, offered Approve/Block/Guest, written to `gk_rl` and logged as newly seen - and never traversed a Gatekeeper chain. **Block reported success and changed nothing**; in quarantine mode the inverse, those devices were never held at the gate, so default-deny device access control was false for every network except the primary LAN. `self_heal()` only probes that the chains *exist*, so nothing surfaced it. | Hooks are emitted per MTLAN network (`GKIFS`, built from `get_mtlan()` as `pc.c:1891` does, each name passing the same charset gate as `LANIF`). Teardown sweeps a broader list (`GKALL`, plus every bridge present) so a network deleted since the last arm still loses its stale hook. All jumps are removed before any chain is flushed. `gk_teardown_rules()` rewritten to match, dropping the fixed buffer that had been silently truncating every teardown. | Fixed, compiles clean |
+| CR-S6 | **Medium** (a half-loaded ruleset was recorded as applied) | `rc/reaper_fw.c` | `apply.sh` had no `set -e`, no per-command status check, and its last line was `fc flush`, so `system()` could only ever observe the flush. Arbitrarily many DROP rules could fail to load and the engine still reported success - and on Keep that set became both the confirmed flash config **and** the rollback target. | Every rule emission routes through an `RFWR` wrapper that counts failures; the script writes the count to `/tmp/reaper_fw/failcount` and exits **3**, distinct from the existing LAN-not-ready exit 1. The caller sets `reaper_fw_err` with the count and logs it. (A named helper rather than a shadowing function, because this busybox is built without the `command` builtin.) | Fixed, compiles clean |
+| CR-S7 | **Medium** (stale telemetry keeps leaving the device) | `rc/services.c`, `httpd/web.c` | `stop_rtraf()` killed the collector and deleted nothing under `/tmp/rtraf`, and no reader tests freshness: rexport's only liveness check is a readability test, `health.json` carries no timestamp, and `metrics.prom` carries none either - OpenMetrics without timestamps is stamped at scrape time, so frozen gauges read as current. The collector stopped and the box kept POSTing the same per-device RTT/jitter/loss payload to Splunk or Datadog every interval indefinitely, while the Analytics page reported a 200. | `stop_rtraf()` sweeps `.json` and `.prom` from `/tmp/rtraf` (the healthhist spool is deliberately kept - it is staging for the durable store). The Prometheus endpoint refuses a snapshot older than 300 s, covering an unclean exit where the file survives. | Fixed, compiles clean |
+| CR-S8 | **Medium** (defeats the anti-lockout safety net) | `rc/reaper_fw.c` | The engine holds its eight editable lists in nvram RAM and is designed to commit them only inside `reaper_fw_confirm()`. But `nvram_commit()` takes no key argument and flushes the **whole** store, and `web.c` alone calls it around 105 times (Apply on any stock page, Gatekeeper actions, Storage save, Analytics save), while `gkd` commits from a background daemon on guest-pass expiry with no operator action at all. Any one of those inside the confirm window persists an unconfirmed draft. The arm marker and the deadline both live in tmpfs and do not survive a reboot, and no cron job remains to time the change out - so the boot path re-applied the draft from nvram under the stated premise that what boots was already confirmed. **A rule that locked the admin out survived the reboot meant to undo it.** | `start_reaper_fw()` now loads the last CONFIRMED snapshot (`RFW_LASTGOOD`), falling back to nvram only when no snapshot exists, so a box that has never confirmed one is unaffected. Safe because `rfw_write_lastgood()` has exactly one caller - `reaper_fw_confirm()` - and `reaper_fw_apply()` always arms, so no legitimately-applied config exists only in nvram. A `reaper_fw_armed` flag with no tmpfs marker is also cleared at boot, so a stale flag cannot wedge the single-arm CAS. | Fixed, compiles clean |
+
+Correctness fixes from the same pass, recorded for completeness rather than as security findings.
+The Gatekeeper's wired/wireless flag could only ever hold one value, so **every** device - Ethernet
+clients included - was labelled wireless (`gkd.c`); and `load_seen()` kept 3 of the 8 `seen.tsv`
+columns, discarding hostname and band on every restart. The two compound, because the band is what
+the corrected wired test reads, so both had to be fixed together. An IPv4 flow opened from the WAN
+side was dropped before attribution, so every port-forwarded or UPnP-mapped connection was counted
+on the WAN line and appeared against no device (`rtrafd.c`). All four traffic-history windows were
+re-serialised together every 5 minutes - about 212,000 `fprintf` calls inside a loop budgeted at
+100 ms - stalling the live sampler; the slow windows now rotate.
+
+**P2-H5** (`rwarden_dir`) was resolved as *label matches code*, by owner decision: `"out"` and
+`"both"` have always produced a byte-identical ruleset, because `do_out` gates only the `RW_OUT`
+chain while the inbound source group and the `-I INPUT` hook are emitted unconditionally. The
+unachievable option was removed from the page and a stored value migrated to `both`. **No
+enforcement changed**, and `do_out` still accepts the legacy value.
+
+**P2-H6** (QoS strict priority) was **confirmed on hardware** rather than inferred. The 4916
+target's own shipped `tmctl` (`targets/96813GW/fs/bin/tmctl`) documents
+`priority = <0,7(MAX_Q_PRIO-1)>, lower value, lower priority`, and a live read-back on RT-BE96U
+returned qid 1 -> priority 1 and qid 5 -> priority 5. The generator passed the queue id as the
+priority, so class 1 - the page's top row, described as served first - ranked below the catch-all
+Default. The rank is now inverted within the same value set, so no rank can collide with a queue the
+script does not reconfigure. **This is the one fix in the set that changes live traffic behaviour
+and wants a metal test.**
+
+> **Disclosure note for CR-S1.** The `/tmp` mode is **inherited stock ASUS/Merlin behaviour**, not a
+> Reaper regression — it is present on the base firmware and therefore on other Broadcom HND
+> Asuswrt-Merlin models running currently-shipping firmware. It falls under the coordinated-disclosure
+> notice at the top of this document. It was found on 2026-08-14 by the v2.4.2 security audit, which
+> reached it from three unrelated directions.
+
+**Output escaping was consolidated before the security pass, not after.** The review recommended
+this explicitly, and the reason is auditability: `esc()` existed in **eight** textually distinct
+copies across the Reaper pages, four of which rendered a null or undefined value as the literal text
+"null" while the rest rendered empty, and one of which emitted numeric character references where the
+others emitted named ones. None of the differences was exploitable - every copy escaped the same five
+characters - but a vulnerability review should have one implementation to reason about rather than
+eight. There is now a single `window.ReaperEsc` in `reaper_util.js`; 13 local definitions were removed
+and 10 pages gained the script tag. Verified afterwards that no page still defines its own, that every
+caller loads the shared one, and that no page calls it before the tag (a load-order mistake would
+throw at render time).
+
+While doing it, one item the review had deferred **to** phase 3 was closed as a false lead:
+`Reaper_Analytics.asp` defines an `esc()` it never calls, and the review flagged its `innerHTML` use
+as a possible latent XSS. The page has exactly three `innerHTML` sinks and every one takes a
+constant - two dict tokens and a lookup table whose values are all dict tokens. No attacker-influenced
+data reaches any of them, so the unused function was dead code and was deleted rather than wired up.
+
+*A caution for anyone reading the review's own figures: they were wrong on all four counts here (it
+said five variants, twelve of fifteen pages, two null-renderers, and implied `esc` was already in
+`reaper_util.js`). Verify before acting on a count.*
+
+**Still open from these phases.** All 16 HIGH findings are now fixed. Roughly 96 MEDIUM and LOW
+findings remain unworked; they are catalogued in
+[`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md). **Phase 3, the dedicated vulnerability
+pass, has not started** - everything recorded here came out of reviews scoped to waste and to data
+flow, which is worth remembering when reading this section as a security record.

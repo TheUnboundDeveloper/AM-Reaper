@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.4.9** — `3006.102.8_Reaper_v2.4.9`, cut from RT-BE96U: **462 patches** (replay-verified), provenance stamped, and **all four sibling models ported** — they were on v2.4.7, so this rung carries them across v2.4.8 as well. The four overlays were **regenerated** and passed the identity gate; that is expected here rather than a warning sign, because the rung carries v2.4.8's menu work, which touches per-model files. Built on RT-BE96U as a compile check. **No image published.** Published images come from the clean-room CI build. |
+| **Current rung** | **v2.5.0** — committed on `be96u-only` (HEAD `8be2150520`) and **cut into the lean repo** (patches 0463-0465, 465 total, replay-verified, provenance stamped); **built on RT-BE96U** (MCP variant, `sha256 31e02104…`) with every change confirmed present in the staged rootfs. **Not yet pushed or released**, and the four siblings have not taken it. Carries the new Warden feature, the block-count change, and a full three-phase security review (five defective fixes corrected, the QoS remap reverted pending a hardware test, and a batch of new hardening fixes). The newest *cut* rung remains **v2.4.9** — `3006.102.8_Reaper_v2.4.9`, cut from RT-BE96U: **462 patches** (replay-verified), provenance stamped, and **all four sibling models ported** — they were on v2.4.7, so this rung carries them across v2.4.8 as well. The four overlays were **regenerated** and passed the identity gate; that is expected here rather than a warning sign, because the rung carries v2.4.8's menu work, which touches per-model files. Built on RT-BE96U as a compile check. **No image published.** Published images come from the clean-room CI build. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7, v2.4.8 and v2.4.9. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants; v2.4.9 is built on RT-BE96U as a compile check. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7, v2.4.8, v2.4.9 and v2.5.0. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants; v2.4.9 is built on RT-BE96U as a compile check. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,227 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.5.0 — cut into the lean repo, not yet pushed or published
+
+*One new feature, one deliberate change to what an existing statistic means, and four fixes taken
+off the backlog. Built on RT-BE96U so the changes could be exercised; the rung is not cut, so there
+is no patch series and the four siblings have not taken it.*
+
+### Warden: bring your own blocklists
+
+Up to eight of your own IP or CIDR lists, each given a name and an HTTPS address. They are fetched
+on the same schedule as the four built-in feeds and merged into the same block set, so a custom
+entry enforces exactly like a built-in one and appears in the same counters — there is no separate
+switch and no second set of rules to reason about.
+
+**Private, loopback and reserved ranges are stripped from every list before it is loaded.** That is
+the filter added after the July 2026 lockout, when a built-in feed turned out to ship bogon ranges
+including the whole of 192.168/16; custom feeds sit behind the same guard, so a list cannot
+blackhole your own network however badly chosen it is.
+
+Lists are HTTPS-only, and the address is validated against a deliberately narrow set of characters
+— narrower than the URL standard allows. A feed address is one of very few places where text you
+type reaches something the router runs as root, so it is treated as a boundary rather than a form
+field, and the same check runs again when the fetcher is generated rather than trusting what was
+stored.
+
+**That path was reviewed adversarially before release, and the review found four things worth
+fixing.** A stored address was being read back into the page in a form a single apostrophe could
+have broken out of. `curl` was following redirects from HTTPS to plain HTTP — so a list that
+redirected could have been supplied by anyone positioned in the middle, and whatever came back would
+have gone straight into a blocking set. There was no limit on how much a list could download, and
+the router's scratch space is memory rather than disk, so one oversized list was a way to exhaust
+it. And the eight-feed limit counted feeds *accepted* rather than entries *read*, so a malformed
+setting was still walked from end to end. All four are fixed.
+
+The checks were run rather than reasoned: the real code was driven with hostile settings and its
+output inspected. An address carrying a quote, a command substitution, a backtick, or a plain-HTTP
+address produces no fetch at all; one bad entry among good ones is dropped while its neighbours
+still work; and twelve entries yield exactly eight.
+
+### Country block counts are now real
+
+Warden drops a packet if it matches a threat feed **or** a blocked country. Both jump to the same
+place, so the order between them never decided whether anything was dropped — only which counter got
+the credit. The feeds ran first, and the large open feeds overlap heavily with the countries people
+block, so the feed rule absorbed nearly every hit: the country table sat near zero while the total
+climbed. That is exactly the "block count with no matching country count" that was reported.
+
+Countries are now evaluated first. The per-country numbers are real, and the feed number carries
+only what no country rule already matched.
+
+**Nothing about what gets blocked has changed** — but two numbers you may have been watching for
+months have changed meaning. Expect country counts to climb much faster from here and the feed count
+to flatten, with a visible kink in the history at this version. The breakdown strip from v2.4.5
+shows both figures together, which is what makes that readable rather than alarming.
+
+### The donate button goes through our own page
+
+An image ships once and cannot be recalled, so a payment link baked into firmware is permanent:
+changing provider, adding an option or retiring a dead link would otherwise need a release on every
+installed router. The button now points at `unbounded-engineering.com/support/#give`, and the
+redirect happens in the browser after the click — the router never fetches, parses or validates
+anything.
+
+The rejected alternative was having the router read the links from the update file. It worked, and
+its validation held, but it turned a static page into one whose links a remote file controls. That
+was not a trade worth making to swap a URL.
+
+### A full code review, and what is being fixed because of it
+
+Reaper's own code was reviewed end to end in three passes: what is wasteful or unreachable, whether
+data actually arrives where it is supposed to, and — still to come — a dedicated security pass. The
+first two passes are complete and produced 114 findings. This section tracks what has been fixed;
+it will grow as the rest are worked.
+
+**Be clear about the ceiling.** This review covers the code we can read and change. It does not
+cover the closed wireless driver, the Broadcom dataplane, `cfg_server`, the end-of-life 4.19 kernel,
+or the third-party packages (Samba, OpenVPN, dnsmasq, Tor) that carry their own advisories. "Only
+someone with physical access could break in" is not a reachable claim on this hardware, and this
+work does not make it one. What it does is narrower and real: reduce what *our* code contributes.
+
+Fixed so far:
+
+- **The scratch directory `/tmp` is now protected against one program interfering with another's
+  files.** It holds live control state — generated firewall rules, block lists, the device table —
+  and was world-writable without the usual safeguard. Not an attack on its own, since nearly
+  everything on a router runs as the administrator; it matters as the second step of a chain. This
+  one is inherited from the base firmware rather than introduced here.
+- **A device the Gatekeeper had no rule for was displayed as having full access** — including
+  devices that were actively being blocked — and the control could not be used to correct it,
+  because it only reacts when the selection changes and the wrong value was already selected.
+- **Every device was labelled wireless**, cabled ones included, because the flag could only ever
+  hold one value. It is now derived from whether the device appears on any Wi-Fi radio. The same fix
+  had to restore the hostname and band the device table was discarding on every restart.
+- **Four responses were being written a byte at a time** — one network write, and one encrypted
+  record under HTTPS, per character. On the 250 KB dropped-packet view that is a quarter of a
+  million writes, and because the interface serves one request at a time it stalled the whole GUI.
+- **Disabling the firewall engine left up to 256 address sets in memory** until reboot, while the
+  comment beside the code claimed they had been cleaned up.
+
+- **Blocking a device only worked on the main network.** The Gatekeeper discovered devices on every
+  network - guest, IoT, anything separated off - and enforced on none of them but the primary LAN.
+  Block was accepted, recorded and logged, and changed nothing, on exactly the networks people
+  create because they distrust what is on them. Enforcement now follows discovery.
+- **The firewall could not report a partial failure**, so a ruleset missing any number of block rules
+  was recorded as applied - and became the saved configuration and the rollback target if kept.
+- **Analytics kept posting a frozen snapshot** to your external service after collection was turned
+  off, indefinitely, while reporting success.
+- **Inbound connections were counted but attributed to nobody** - port forwards and UPnP mappings
+  showed on the WAN graph with no device against them, and IPv6 disagreed with IPv4 on the page.
+- **The live graph stuttered every five minutes** while all four history ranges were rewritten
+  together. They now take turns.
+- **An unconfirmed firewall change could survive the reboot meant to undo it** - the anti-lockout net
+  had a hole, because any unrelated save elsewhere in the interface writes the whole settings store,
+  pending rule included, while the countdown tracking it lived in memory a reboot clears. Boot now
+  starts from the last ruleset you actually confirmed.
+- **Warden's "Outbound only" never differed from "Both directions"** and has been removed. Nothing
+  about what is filtered changes.
+- **QoS priorities are still ranked the old (inverted) way — the fix was reverted.** The class you marked most
+  important really is served last (confirmed on hardware), but the router's own queue tool refuses the in-place
+  renumber the fix attempted, so the correction cannot be proven without the hardware. This release keeps the
+  existing behaviour; the QoS follow-up is tracked in the Backlog.
+
+**Correction resolved (2026-08-19).** The six flagged fixes have been worked. Five are now genuinely
+corrected — Gatekeeper enforcement, the firewall's partial-failure reporting, analytics/Prometheus
+staleness, inbound-flow attribution, and the unconfirmed-change-survives-reboot hole — and re-validated by
+a full RT-BE96U build. The sixth, the QoS priority fix, was **reverted**: the router's own queue tool
+confirms the priorities really are inverted, but it also rejects the in-place renumber the fix attempted,
+and a correct fix cannot be validated without the hardware, so this release keeps the existing
+(inverted-but-stable) behaviour and the QoS follow-up is tracked in the Backlog. The security pass (Phase
+3) below has since run and been applied. This version is **committed locally** (patches 0463-0465) but **not yet pushed or published**; roughly 96
+smaller code-quality findings from the earlier passes remain unworked.
+
+### The security pass (Phase 3) — what it found and what is fixed
+
+This is the pass the whole review was building toward: eight reviewers plus two specialists, each
+given a different way into the router, and one more told to attack this session's own changes. Be
+clear about the ceiling, unchanged from before: this covers the code we can read. It does not cover
+the closed wireless driver, the Broadcom dataplane, the end-of-life kernel, or the third-party
+packages, and "only physical access could break in" is not reachable on this hardware. The goal is
+narrower — that our own code adds no way in.
+
+Fixed and confirmed:
+
+- **A saved firewall object could run a command as root.** An address-object's name was passed into
+  the rule-builder unquoted, so a name carrying a semicolon and a command executed it with full
+  privileges — and it persisted across reboots. Names are now restricted to safe characters at the
+  point of use. Administrator-reachable, closed regardless.
+- **Warden could run a planted script as root on a router where it was never enabled** — the script
+  was executed on an existence check alone, from a directory a lesser process could create first. It
+  now runs only when Warden is on and only from a genuinely root-owned, owner-only file.
+- **A cluster of working files were world-writable** (the traffic collector, the analytics exporter
+  and the health watchdog, including one holding your analytics token) — now owner-only. **Two heavy
+  read-only pages could be triggered from another website**; they now require the anti-forgery token.
+- **SNMP-over-WAN also exposed SNMP to guest and IoT networks** — now pinned to the WAN interface.
+- **Two DHCP-reservation paths and the connection daemon could be fed router configuration or a crash
+  through a device-supplied field** — all now validated.
+- **UPnP could be used to hijack the router's own VPN or file-server ports** — when the router runs a PPTP VPN
+  or an internet-facing FTP server, UPnP now refuses a device's request to map those external ports to itself.
+- **Blocking an IP now cuts its live connection at once** — a manually banned host used to keep any already-open
+  connection until it timed out; those are now severed when the ban is applied.
+- **A flood of oversized requests could hang the whole web interface** — an unauthenticated request claiming a
+  two-billion-byte body would pin the CPU; those reads are now capped (genuine large uploads are unaffected), and a
+  companion off-by-one past a request-path buffer was fixed.
+- **The advisor's arming second factor could be reset from an ordinary settings save** — its salt, hash, lockout
+  counters and USB enrolment were in the general settings table; they are now written only by the arming screen.
+- **The firmware update check trusted the published manifest blindly** — every field (URL, version, checksum, size)
+  is now validated before it is stored or shown, and the firmware page renders them safely.
+- **Ejecting a USB disk could be triggered from another website** — it now carries the anti-forgery token.
+- **The first-boot password screen could be set by a cross-site request** while the password was still default — it
+  now requires the anti-forgery token in exactly that window (post-setup changes are unchanged).
+- **A firewall rule with an over-long field silently widened** — it is now dropped and logged instead.
+- **SNMP now answers only on the main LAN address** (not on guest/IoT VLANs), plus smaller hardening — the analytics
+  history log will not follow a symlink, the advisor reclaims a stale diagnostic lock on start-up, and the export
+  screen caps its free-text fields.
+
+Honestly stated: a systemic issue is deliberately held for the next pass — the router's scratch
+directories are created without verifying they are owned by root, which on a box that runs almost everything
+as root is the second half of several of the findings above. Two applied fixes carry a caveat: the QoS
+priority correction was reverted (above) and needs a hardware session, and the first-boot password protection
+should be checked on a real factory-reset flow before this is cut. A handful of smaller hardening items and
+two architectural questions (the order the firewall layers run in, and how the device gate behaves across
+separated networks) are open and tracked in the Backlog.
+
+
+
+### A tagged WAN line can no longer undo the 1500-byte PPPoE fix
+
+A field report on a GT-BE98 showed the symptom v2.4.9 was written to fix, on a line where the
+provider requires VLAN tagging: the physical WAN port had been widened to 1508, but the tagged
+interface sitting on top of it — the one the PPPoE session actually runs over — was still 1500, so
+the session came up at 1492 and a full-size ping still failed. **v2.4.9 fixes that report.** Most
+lines have no tagged interface at all and never showed this shape; on those, the port itself was the
+thing that snapped back.
+
+What the tagged case exposed is worth removing anyway. A tagged interface cannot be made wider than
+the one underneath it — the kernel refuses rather than widening the one underneath for you. The
+firmware widens both, in the right order, but it only *records* the width of the tagged one. The one
+underneath held its width for the rest of the session purely because nothing else ever re-applied a
+width to it. Nothing in the firmware lowers it today; the point is that the correctness of a tagged
+PPPoE line rested on that continuing to be true, in two steps whose ordering was never written down
+as mattering. A later change could have broken it silently, and only for people on tagged lines.
+
+The width underneath is now re-established at the moment the recorded WAN width is applied, so the
+two can no longer drift apart whatever order things happen in. It only ever widens, never narrows,
+and only for the WAN interface — tagged interfaces elsewhere on the router are untouched. If the one
+underneath ever cannot be widened, the log now says so and names it, rather than the connection
+settling for 1492 without comment.
+
+### Two smaller fixes
+
+The dashboard's **Wi-Fi Encryption** row linked to the per-radio Wireless page, which on this build
+cannot change the setting the row reports — the main network's security lives in the Network
+profile. It now goes there, and falls back to the old destination on builds without that page.
+
+Two **latent translation faults** on the firewall page, neither visible in English. The IPv6
+protocol menu submitted its visible text as its value, so translating the labels would have sent a
+translated word into the rule format and broken the feature in 24 languages; values and labels are
+now separate. And the log table's column headings would have been cut short by any translation
+containing an apostrophe — the same fault that broke several European packs in v1.8.6a.
 
 ---
 

@@ -78,6 +78,24 @@ _rb_variant() {   # $1 = MCP|noMCP
     bash "$_sc" --fix "$R" || true
   fi
 
+  # PROVENANCE STAMP. CI runs gen_provenance.sh before its build; the local
+  # engine never did, so a locally built image showed dashes on the About page
+  # where a CI image of the same source shows real figures - a visible
+  # difference between two images that should be identical, which is exactly
+  # what the decompose-and-diff cross-check exists to notice. Must run BEFORE
+  # the vendor www install, i.e. before make. Deliberately non-fatal: an empty
+  # field renders as a dash, which is honest, so a stamping failure must never
+  # take a build down. Output is gitignored, so this cannot dirty the tree and
+  # cannot make cut_fleet refuse to run.
+  local _gp="$(dirname "${BASH_SOURCE[0]}")/gen_provenance.sh"
+  if [ -f "$_gp" ]; then
+    local _pc
+    _pc=$(ls "$(dirname "${BASH_SOURCE[0]}")"/../patches/*.patch 2>/dev/null | wc -l)
+    echo "=== [$label] provenance stamp (patches=$_pc) ==="
+    bash "$_gp" "$R" "$_pc" a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3 \
+      || echo "    ! provenance stamp failed - the About page will show dashes"
+  fi
+
   cd "$P" || return 9
   # 2026-08-13: "config_${TARGET}" was RELATIVE here, and we have just cd'd to
   # $P - but the generated model profile lives in release/src/router/, so that

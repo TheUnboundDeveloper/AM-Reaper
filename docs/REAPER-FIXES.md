@@ -542,8 +542,33 @@ data reaches any of them, so the unused function was dead code and was deleted r
 said five variants, twelve of fifteen pages, two null-renderers, and implied `esc` was already in
 `reaper_util.js`). Verify before acting on a count.*
 
-**Still open from these phases.** All 16 HIGH findings are now fixed. Roughly 96 MEDIUM and LOW
-findings remain unworked; they are catalogued in
-[`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md). **Phase 3, the dedicated vulnerability
-pass, has not started** - everything recorded here came out of reviews scoped to waste and to data
-flow, which is worth remembering when reading this section as a security record.
+**Still open from these phases.** All 16 HIGH findings are fixed. The bulk of the MEDIUM/LOW tail was
+then worked across v2.5.1–v2.5.4 (dead-code and hot-path cleanups, the store-resolver mount guards,
+the MCP arm-time stale-session sweep, the Warden fold/stats shared lock, the analytics staleness
+gate); what remains is catalogued in [`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md) and is
+efficiency / data-flow in nature rather than security. **Phase 3, the dedicated vulnerability pass,
+ran and shipped in v2.5.0** — its corrected defective-reworks and new fixes are recorded in the
+v2.5.0 CHANGELOG and RELEASE-NOTES; the two items it left open are architectural owner-decisions (the
+firewall layer-ordering, and the deeper Gatekeeper multi-network redesign) tracked in the BACKLOG.
+
+---
+
+## Audit re-verification 2026-08-20 (v2.5.7)
+
+The 13 findings still marked open from the 2026-07-31 inherited-code audit were re-verified by a
+five-agent pass against the current tree: **0 Critical, 0 High**, and most already resolved by the
+v2.5.0–v2.5.4 work. Five Low/Info items were fixed in **v2.5.7**:
+
+| ID | Severity | Component | Issue | Fix |
+|---|---|---|---|---|
+| B1-SEC-003 | Low | `httpd/web.c` | An out-of-bounds read was reachable in the multipart-boundary scanners under a crafted header. | Bounds guards added at the three scan sites. |
+| A1-SEC-003 | Info | `httpd/web.c` | `gk_baseline_snapshot` could iterate past a very large `gk_rl`. | Fail-safe skip when `gk_rl` ≥ 16 K (logs `gk_rl too large`). |
+| A1-SEC-004 | Low | `httpd/web.c` | A `usbkey=` value could carry a stray CR/LF into a downstream write. | CR/LF stripped from the value. |
+| B1-SEC-006 | Low | `httpd/web.c` | The `ejusb` disk parameter was unconstrained. | Numeric-or-`all` guard on the parameter. |
+| A4-UI-006 | Info | `www/js/httpApi.js` | The change-password call used the wrong HTTP-method shape. | `chpass` now issues a proper `POST`. |
+
+Not fixed, with cause: **A3-NET-002** — the "fix" would itself cause an admin lockout, and fail-open
+is the correct posture here; **A6-REL-001** — needs upstream feed signatures that do not exist.
+Deferred: **A6-PERF-001**, an rtrafd viewer-gate that is a performance item only validatable on a
+live page, held for a focused follow-up. Already resolved earlier and re-confirmed: A6-PERF-002,
+B4-SEC-001, A2-QUALITY-004, and the `0700` directory-mode item (A3-REL-005).

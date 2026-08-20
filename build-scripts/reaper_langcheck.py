@@ -24,7 +24,14 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        'Reaper_Firewall.asp',
        # Added 2026-08-16 with the page itself - caught by this file's own
        # LANGCOVERAGE assertion on the very first run, which is what it is for.
-       'Reaper_About.asp']
+       'Reaper_About.asp',
+       # Added 2026-08-20 with v2.5.6's Policy Routing page - the same LANGCOVERAGE
+       # assertion caught it on the first FLEET build (the quick RT-BE96U test builds
+       # never ran reaper_verify). Its RVR_ tokens sit in backtick JS contexts
+       # (target map / renderRule / placeholders) and two double-quoted HTML
+       # attributes; English values are all backtick/quote-safe, and the RVR
+       # translation pass must keep every value free of ` ${ and ".
+       'Reaper_VPNRouting.asp']
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is
 # shelved and the file is not in the tree, so the entry only ever hit the

@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.5.0** — committed on `be96u-only` (HEAD `8be2150520`) and **cut into the lean repo** (patches 0463-0465, 465 total, replay-verified, provenance stamped); **built on RT-BE96U** (MCP variant, `sha256 31e02104…`) with every change confirmed present in the staged rootfs. **Not yet pushed or released**, and the four siblings have not taken it. Carries the new Warden feature, the block-count change, and a full three-phase security review (five defective fixes corrected, the QoS remap reverted pending a hardware test, and a batch of new hardening fixes). The newest *cut* rung remains **v2.4.9** — `3006.102.8_Reaper_v2.4.9`, cut from RT-BE96U: **462 patches** (replay-verified), provenance stamped, and **all four sibling models ported** — they were on v2.4.7, so this rung carries them across v2.4.8 as well. The four overlays were **regenerated** and passed the identity gate; that is expected here rather than a warning sign, because the rung carries v2.4.8's menu work, which touches per-model files. Built on RT-BE96U as a compile check. **No image published.** Published images come from the clean-room CI build. |
+| **Current rung** | **v2.5.3** — `3006.102.8_Reaper_v2.5.3`, cut from RT-BE96U (patches 0466-0471, 471 total, replay-verified, provenance stamped); **built on RT-BE96U** (MCP variant, `sha256 4c45ea36…`) and green. It is the cut that lands everything since v2.5.0: the pre-public MED/HIGH hardening carried as **v2.5.1**, the metal-validated fixes carried as **v2.5.2** (Gatekeeper first-seen + the QoS shaper, both confirmed on hardware), and its own code-review batch. This build **stages the strongSwan IPSec runtime for the first time in the lineage** (`starter`/`stroke`/`charon`/`swanctl`, verified present) — IPSec Server, IPSec client and Instant Guard should now function, pending on-metal confirmation. **Not yet pushed or released**, and the four sibling models have not taken it. Published images still come from the clean-room CI build. |
 | **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7, v2.4.8, v2.4.9 and v2.5.0. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants; v2.4.9 is built on RT-BE96U as a compile check. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7, v2.4.8, v2.4.9, v2.5.0, v2.5.1, v2.5.2 and v2.5.3. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants; v2.4.9, v2.5.2 and v2.5.3 are built on RT-BE96U as compile checks (v2.5.2 additionally metal-validated for its Gatekeeper + QoS fixes). v2.5.1 and v2.5.2 were never cut as their own lean-repo rungs — v2.5.3 is the cut that carries them. |
 | **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,78 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.5.3 — cut into the lean repo, not yet pushed or published
+
+*The rung that lands everything since v2.5.0. It folds two series that never got their own release —
+the pre-public hardening batch (v2.5.1) and the metal-validated fixes (v2.5.2) — into one cut,
+alongside its own code-review batch and one build-side resurrection that matters more than its size
+suggests.*
+
+### IPSec works again
+
+IPSec Server, the IPSec client, and Instant Guard were dead on every Reaper image ever shipped — not
+misconfigured, not disabled, but missing their engine. The strongSwan runtime they all depend on
+(`/usr/lib/ipsec/starter`, `stroke`, `charon`, and `swanctl`) was never staged into the image,
+lost to a stale-configure trap that left the daemons out while the rest of the package looked built.
+Anyone who enabled any of the three was turning on a feature whose executables were not in the
+firmware. This build stages them, and their presence is verified as part of the cut. It is a build
+and packaging fix, not a change to any IPSec page — but it is the difference between a feature that
+never ran and one that does. **It has not yet been exercised on hardware;** the binaries are present,
+and a tunnel establishing is what remains to confirm.
+
+### Devices stop reading as first seen years ago
+
+A device the router discovered in the brief window after boot but before its clock was set from the
+network was stamped with the build's fallback date (2024-01-01) and then frozen there — which is why
+some devices read "first seen ~961 days ago". First- and last-seen stamping now waits for a real
+clock and backfills the devices caught in that window. **Confirmed on metal:** the recorded
+first-seen times are now correct.
+
+### The QoS shaper leaves the rate you set intact
+
+A 10% egress headroom was tried on the way to this release and removed: on this router's hardware QoS
+it lowered every class ceiling by a tenth and pushed the lowest-priority queue into tail-drops under
+load. The shaper runs the rates you configure, unmodified, and the earlier decimal-kbps handling and
+the statistics-timer gate are corrected with it. **Confirmed on metal.**
+
+### The firewall, Warden and analytics get more reliable
+
+The firewall's admin-management exemption is now scoped to the INPUT chain only — it was also being
+emitted on FORWARD and OUTPUT, which quietly exempted forwarded traffic to the admin address's
+:443/:22 from the whole firewall. Port-forward entries now guard empty or malformed external and
+internal ports, and the zone-matrix save cap was raised from 2048 to 8192 bytes so the interface
+stops refusing a full matrix the engine accepts. The Gatekeeper's and Warden's generated `apply.sh`
+are now written atomically (temp-then-rename), so a concurrent restart can never run a half-written
+teardown. Warden's fold and stats passes share a lock, ending a one-tick backward dip in the block
+count at the quarter-hour; a partial feed update no longer stamps itself a success; and the analytics
+exporter skips the push when the collector's `health.json` is more than three minutes stale rather
+than posting a frozen snapshot as live. The Internet Speed Test now shows an error state when its
+engine fails to launch instead of hanging the GUI until timeout.
+
+### The navigation is identical on every page
+
+The left-nav rail's row height, icon size and active-marker inset had drifted between the Dashboard
+and the framed pages, so switching pages nudged the rail and the brand logo. The framed rail is now
+standardised to the Dashboard's, the dashboard logo no longer jumps, and the Firmware page's Mesh
+Nodes card has moved to the bottom. An AiMesh node on a wireless backhaul is also no longer mislabeled
+Wired.
+
+### Hardening carried up from the pre-public review
+
+An OpenVPN client-config field could emit a stray trailing newline and is now stripped; the firewall
+engine drops-with-log on a zone-constraint violation, logs a failed NAT-rule build, caps each record
+before `nvram_set`, and reports a build failure rather than applying a partial ruleset; the shared
+text-escaping helper is used consistently across the Gatekeeper, Warden and Firewall pages; and the
+eleven analytics-export nvram keys are now declared with defaults that apply on a factory reset only.
+SNMP's `rwuser` policy was reviewed and kept.
+
+**Validation:** built on RT-BE96U (MCP variant), green, with the IPSec runtime verified present in
+the staged rootfs. The Gatekeeper first-seen fix and the QoS shaper are **confirmed on metal**
+(carried from v2.5.2); the IPSec resurrection is **staged and verified present but not yet
+metal-confirmed**. Not cut to the four siblings; no image published.
 
 ---
 
@@ -1173,6 +1245,11 @@ fixed** and are tracked in
   **Samba was moved to 4.15.13a** with the CVE-2025-9640 backport, and **net-snmp to
   5.9.4** — both current or CVE-backported, no longer on the frozen-EOL list.) To be
   addressed by ABI-preserving CVE backports or an ASUS-led version bump.
+- **IPSec is newly present and not yet metal-confirmed (v2.5.3).** The strongSwan runtime
+  (`starter`, `stroke`, `charon`, `swanctl`) was absent from every image before v2.5.3 and is now
+  staged and verified present. IPSec Server, the IPSec client and Instant Guard should function for
+  the first time on this lineage, but no tunnel has yet been established on hardware — treat all three
+  as **build-verified, pending on-metal confirmation** until a connection is reported back.
 
 **Cannot fix in this tree (monitor ASUS):**
 - The **auth / token / session core** and the web input filter live in closed-source

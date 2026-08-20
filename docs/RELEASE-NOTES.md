@@ -2,19 +2,146 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.5.3** — `3006.102.8_Reaper_v2.5.3`, cut from RT-BE96U (patches 0466-0471, 471 total, replay-verified, provenance stamped); **built on RT-BE96U** (MCP variant, `sha256 4c45ea36…`) and green. It is the cut that lands everything since v2.5.0: the pre-public MED/HIGH hardening carried as **v2.5.1**, the metal-validated fixes carried as **v2.5.2** (Gatekeeper first-seen + the QoS shaper, both confirmed on hardware), and its own code-review batch. This build **stages the strongSwan IPSec runtime for the first time in the lineage** (`starter`/`stroke`/`charon`/`swanctl`, verified present) — IPSec Server, IPSec client and Instant Guard should now function, pending on-metal confirmation. **Not yet pushed or released**, and the four sibling models have not taken it. Published images still come from the clean-room CI build. |
-| **Newest published** | **v2.3.7**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). |
+| **Current rung** | **v2.5.7** — `3006.102.8_Reaper_v2.5.7`, built on RT-BE96U and running on metal. The line since v2.5.3 adds, in order: **v2.5.4** (the hardware-QoS priority fix, an honest QoS page, the speed-test / channel-scan / Warden-blocklist / SDN-key fixes, and the Firewall + About + Warden translations); **v2.5.5** (ipset **Policy Routing** — a companion to VPN Director — plus a post-boot PPPoE re-dial for lines that go quiet after a reboot); **v2.5.6** (the Policy Routing editor page); and **v2.5.7** (the audit-remainder security-hardening batch). Each is built on RT-BE96U and validated on hardware; **none is yet cut as a public CI release or pushed**, and the four sibling models have not taken them. Note: v2.5.3 first staged the strongSwan IPSec runtime, and **IPSec Server / client / Instant Guard are now confirmed working on metal** for the first time in the lineage. Published images still come from the clean-room CI build. |
+| **Newest published** | **v2.5.3**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). It carries the IPSec resurrection (Server / client / Instant Guard now work), the Gatekeeper first-seen fix, the QoS shaper restore, and the pre-public hardening folded in from v2.5.1 / v2.5.2. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus v2.4.2, v2.4.3, v2.4.4, v2.4.5, v2.4.6, v2.4.7, v2.4.8, v2.4.9, v2.5.0, v2.5.1, v2.5.2 and v2.5.3. v2.4.1 through v2.4.4, and v2.4.8, are built on RT-BE96U, both variants; v2.4.9, v2.5.2 and v2.5.3 are built on RT-BE96U as compile checks (v2.5.2 additionally metal-validated for its Gatekeeper + QoS fixes). v2.5.1 and v2.5.2 were never cut as their own lean-repo rungs — v2.5.3 is the cut that carries them. |
-| **Prior full-fleet releases** | **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus the intermediate firewall rungs v2.4.2–v2.4.8, and v2.5.0, v2.5.1, v2.5.2, and v2.5.4–v2.5.7. **v2.4.9 and v2.5.3 both published** on all five models — v2.5.3 is the current newest (above). v2.4.1–v2.4.4 and v2.4.8 are built on RT-BE96U, both variants; v2.5.2 is a compile-check build additionally metal-validated for its Gatekeeper + QoS fixes. v2.5.1 and v2.5.2 were never cut as their own lean-repo rungs — v2.5.3 is the cut that carries them. **v2.5.4 through v2.5.7 are each built on RT-BE96U and validated on hardware** (v2.5.4 QoS on metal, v2.5.5 policy-routing data path on the lab link, v2.5.6 the routing page on hardware, v2.5.7 verified in the image) but are not yet cut as public CI releases. |
+| **Prior full-fleet releases** | **v2.4.9**, **v2.3.7**, **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
 > RT-BEXXU. This document is the release summary; the exhaustive security detail
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.5.7 — a quiet security-hardening batch from the audit sweep
+
+*Built on RT-BE96U and verified in the built image. Not yet cut as a public CI release. Closes the
+remaining low-severity findings from the 2026-07-31 security audit; the audit remainder now stands at
+zero Critical and zero High.*
+
+Five low-severity findings were fixed. None was reachable for real harm — they are post-authentication,
+physically-gated, or defence-in-depth — but each is closed anyway. A three-byte over-read at the end of
+the file-upload boundary scanner is now bounds-checked. The Gatekeeper "grandfather the currently-connected
+devices" step now refuses to overwrite its authorised-device list if that list is ever too large to load
+into its buffer, logging the skip instead of silently dropping the devices it could not read. The AI-Advisor
+USB-key session file strips stray line breaks out of a volume name before writing it. The USB-eject helper
+accepts only a numeric port or "all". And the password-change request now travels as a POST body rather than
+defaulting to a URL query — so a changed password no longer lands in browser history, the server access log,
+or a Referer header.
+
+A re-verification pass over the entire audit remainder found several other items were already fixed in
+earlier releases, and deliberately left two open: the access-restriction rule fails *open* when it has no
+valid rules (failing closed would lock the administrator out of the router), and the block-feed ingest has
+no cryptographic signature because the upstream threat feeds publish none — every lightweight mitigation
+(HTTPS-only, redirect pinning, size and count bounds, private-range filtering, atomic swap) is already in
+place. The bundled Samba remains on its EOL branch with the one flagged CVE backported and build-gated, as
+documented under known limitations.
+
+---
+
+## What's new in v2.5.6 — a page to build VPN and WAN routing rules by site or device
+
+*Built on RT-BE96U and confirmed working on hardware. Not yet cut as a public CI release. Adds the
+graphical editor for the policy-routing engine introduced in v2.5.5.*
+
+The policy-routing engine added in v2.5.5 could only be driven from the command line; it now has a proper
+themed page, **Policy Routing**, in the VPN menu directly beside VPN Director. You build rules that match
+traffic — by a Firewall address or domain **object** (a named list of sites/addresses), by a **source IP or
+range**, or by a device's **MAC** — and send each match to an **OpenVPN client**, **out the WAN** (bypassing
+a full-tunnel VPN), or to a **block**. The rule table, the add-rule form with its object picker, and the
+master on/off switch read and write the router's own policy-routing configuration and apply it in place.
+WireGuard targets are intentionally not offered yet (see v2.5.5). The page's labels ship in all twenty-five
+language packs.
+
+---
+
+## What's new in v2.5.5 — route chosen traffic by rule, and a fix for PPPoE lines that go quiet after a reboot
+
+*Built on RT-BE96U; the routing data path was validated directly on the router over the read-only lab link.
+Not yet cut as a public CI release. Introduces the policy-routing engine (its editor page arrives in v2.5.6)
+and a targeted fix for a PPPoE-after-reboot dead-line.*
+
+### Policy routing by object or by device — the piece VPN Director was missing
+
+Merlin's VPN Director can route traffic through a tunnel only by matching a source or destination address.
+This adds rules keyed on a **Firewall address/domain object** — so "send everything in this named list of
+sites" — or on a **source IP or MAC**, routed to a **VPN tunnel**, **out the WAN**, or to a **block**. It is
+built entirely from mechanisms already in the firmware: a firewall packet mark plus a routing-policy rule,
+carved into an unused mark field and a routing-priority band that sits *above* VPN Director's, so an explicit
+rule here **overrides** the broad tunnel policy — for example, tunnel everything but send one site straight
+out the WAN. A tunnel rule fails **closed**: if its tunnel is down the matched traffic is blocked, never
+silently leaked to the WAN. This first cut covers OpenVPN clients, the WAN and block, on IPv4; WireGuard
+targets are deferred because the router's hardware accelerator bypasses the routing rule for WireGuard and
+needs separate handling. It is off by default, and the editor page lands in v2.5.6.
+
+### A PPPoE line that went quiet after a reboot now recovers itself
+
+On some carriers, after a cold router reboot the line trains up and PPPoE connects, but the provider's
+equipment keeps the *previous* session and black-holes the new one — the WAN reads connected while nothing
+passes, until the user manually power-cycles their ONT. The router now detects exactly that state (a PPPoE
+WAN that is link-up but cannot reach the internet after boot) and forces a single, least-disruptive PPPoE
+re-dial to clear the stale session, at most once per boot. It acts only when several public targets are all
+unreachable, so one dead host cannot trigger it, and it only ever touches a PPPoE line. On by default and
+can be turned off — it automates, in software, the ONT power-cycle those users were doing by hand.
+
+---
+
+## What's new in v2.5.4 — QoS priority, an honest QoS page, speed-test and channel-scan fixes, and more languages
+
+*The batch after v2.5.3, led by a hardware-QoS fix root-caused and validated on the router's own
+traffic manager over the read-only lab link. Built on RT-BE96U and running on metal (owner-confirmed);
+not yet cut as a public CI release. The QoS priority fix is confirmed at the queue level on hardware; its
+behaviour under sustained classified load still owes a load pass.*
+
+### QoS now serves your top-priority class first
+
+Under hardware QoS (type 11) the upload class queues were carrying their priority rank **inverted** —
+class 1, the row meant to be served first, held the second-lowest rank, so the catch-all and bulk
+classes outranked it. The more carefully traffic was classified, the worse it did under congestion.
+The queues are now given the correct descending priority (class 1 highest), reassigned by deleting
+and recreating each one because the traffic manager refuses to renumber a live priority in place.
+Read back directly on hardware, the queues now sit in the intended order.
+
+### The QoS page stops offering a weighting the hardware cannot honour
+
+The per-class *Weighted (WRR)* option and its weight column are gone. On this platform's egress
+scheduler every queue slot is strict-priority and a weighted queue cannot be created at all — the
+same request fails in the stock code too — so the weights never scheduled anything. Classes are now
+presented honestly as strict priority, top row first. The limitation is in a closed Broadcom driver
+and is documented for ASUS/Broadcom in the Backlog.
+
+### The speed test stops ending itself on a brief stall
+
+The results page re-reads its whole buffer every fifth of a second and was counting the same trailing
+error entry on each pass, so a short stall was tallied as fifty errors in ten seconds and the run was
+failed. An error is now counted once, when a new one arrives, and the count resets on any progress —
+so only a genuinely stuck run ends, on its own timeout.
+
+### A channel scan reports, and no longer changes your channel
+
+A completed Wireless scan was silently committing its winning channel — which also switched automatic
+channel selection off for that radio — even when the scan was run only to look. A scan now ranks and
+reports; committing a result is the explicit *Pin best* button, as the page always described.
+
+### Two smaller hardening fixes
+
+A large custom Warden blocklist could be silently truncated: the threat block set was created at
+ipset's default 65,536-entry cap, so a user feed larger than that failed to load its overflow. The
+threat sets now carry an explicit 524,288 cap. Separately, the SDN Wi-Fi-key privacy mask could be
+defeated by a network name containing literal `<b>` markup — the wireless-settings hint now escapes
+the name and key at the source, so a crafted name can no longer shift the element the mask relies on.
+
+### The Firewall, About and Warden pages speak more languages
+
+The **entire Firewall page (245 strings)** — the single largest untranslated surface in the interface —
+plus the nine Warden custom-feed strings and the About page's field labels and section headings are now
+translated across all twenty-four non-English packs. The About page's personal credits and the licence,
+vendor and no-warranty text are intentionally kept in English.
 
 ---
 
@@ -859,7 +986,7 @@ that includes it.
 
 > Naming note: the build artifacts are `…_Reaper_v<version>_nand_squashfs.pkgtb`
 > (**with** the Advisor) and `…_Reaper_v<version>_noMCP_…` (**without**); the filenames
-> above show the newest published version, **v2.3.7**. §8 lists the exact filenames and
+> above show the newest published version, **v2.5.3**. §8 lists the exact filenames and
 > their hashes per release.
 
 ---
@@ -1292,27 +1419,27 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v2.3.7 flashable-image hashes (SHA-256)** — the **newest published release**, built and
-shipped on all five models (both variants each) through the public clean-room CI pipeline,
-2026-08-13. These are the values in the on-router update manifest
+**v2.5.3 flashable-image hashes (SHA-256)** — the **newest published release**, built and
+shipped on all five models (both variants each) through the public clean-room CI pipeline.
+These are the values in the on-router update manifest
 ([`releases/latest.json`](../releases/latest.json)), which the Firmware page checks before it
 flashes anything.
 
 | Model | Variant | SHA-256 of `…_nand_squashfs.pkgtb` |
 |---|---|---|
-| RT-BE96U | + AI Advisor | `0e5a85e2842e86a7ca21a1c9c0c4e58cfbc6aa627cfd86107a6b8fffc7116ae7` |
-| RT-BE96U | Standard (`noMCP`) | `a48952f4755a737853198e929386b1af5f90bdbaad070fbe9c1aeeb7ce5a9ad3` |
-| RT-BE86U | + AI Advisor | `814d663db3bc42e48b92fc6aaae502afe462d222711884a2db42bbbb47898a9b` |
-| RT-BE86U | Standard (`noMCP`) | `45a52022987a38e38a79e3d113ef2384a8bafcd570484322a76bdcf27cf77aa6` |
-| RT-BE88U | + AI Advisor | `ec38a58fc720cfae8288e48ab559adfcee4cddc62236336af0c2c7c8845298df` |
-| RT-BE88U | Standard (`noMCP`) | `299a390d3d4cd8e38477509a35ed091a2c8462c4948ebf85370b620bb016e78b` |
-| GT-BE98 | + AI Advisor | `d0859e8820adf08b901bd5debe2403cc29f99558f9cba3b19abcee4199d78273` |
-| GT-BE98 | Standard (`noMCP`) | `9a4e3b5ea8f017a521f178ffe3d5fcd0bef810b2c6ca02c007f02a2add86dd35` |
-| GT-BE98 Pro | + AI Advisor | `7232067e325ce3d70037c14cd5f5bbf4f55f4e6df686049013450fb6d0dd53b1` |
-| GT-BE98 Pro | Standard (`noMCP`) | `baf4bdffc0638f8ccdd8c5f8eadf88294f7c9fa24bc74259d0c4949eead4281d` |
+| RT-BE96U | + AI Advisor | `63a076499de1368edc47b058889f6cb76ceac87638c25bc2e4f4875d639f091a` |
+| RT-BE96U | Standard (`noMCP`) | `e3feae07983c441c17fd93a605cebb797706c6553851e5b49bee3640fb41ae83` |
+| RT-BE86U | + AI Advisor | `c2180a89192ae9d6eda49edf46e0b46ccfa90282ff97597e544a88a53bb4c587` |
+| RT-BE86U | Standard (`noMCP`) | `d4a19b5d3f370138f05d1d8350159d749e2be6185482d4f58bbad6d74f9168c3` |
+| RT-BE88U | + AI Advisor | `995bafc45d828a9bdd6b3c909c7908040f3ed6b764c27a70a889ff5abb591644` |
+| RT-BE88U | Standard (`noMCP`) | `701bcca2bdd1294b675b6a2d5101fa07c520c5dc8b71a841eab231831f9bb2b1` |
+| GT-BE98 | + AI Advisor | `050e0c928f9037ff5c4f42a49ceccec7240acf021b1d77cddc788d7c42cad4cb` |
+| GT-BE98 | Standard (`noMCP`) | `7efb36fe04abe880df4bb5b0d4256ea298da029ba481e262e0c0d51c41d53161` |
+| GT-BE98 Pro | + AI Advisor | `d6dbb4c7369242b01ca38549122d7d5f67a4ff00ed0559692e173dc1c9cdff4a` |
+| GT-BE98 Pro | Standard (`noMCP`) | `dcbd292ec31501b9cfc26b1b1bbfa627db4db8cb887fdcd3fc75e5d17bde5ed7` |
 
 Each model's `…_loader.pkgtb` recovery image is listed in its own
-`SHA256SUMS-<MODEL>-Reaper_v2.3.7.txt` alongside the images under `releases/<Model>/`.
+`SHA256SUMS-<MODEL>-Reaper_v2.5.3.txt` alongside the images under `releases/<Model>/`.
 
 <details>
 <summary><strong>Earlier releases — image hashes (v2.1.0 – v2.1.9, v1.7.7)</strong></summary>
@@ -1441,9 +1568,12 @@ on the `reaper-firmware/` ladder.
 | **v2.1.4 – v2.2.1** | Five-model, both-variant fan-out — all five built + shipped, each passing the staged-image verify gate (17 checks through v2.1.6, **19 from v2.1.7** once the shared-parity and patch-marker checks were added). GT-BE98 Pro was converted to Samba 4 during this line. |
 | **v2.2.2 – v2.2.4** | RT-BE96U only. |
 | **v2.2.5, v2.2.6, v2.3.0, v2.3.1** | Each built + shipped on all five models, both variants — every build as itself, per-model banner / base / BUILD_NAME verified by the 19-check staged-image gate, noMCP images confirmed Advisor-free. |
-| **v2.3.2, v2.3.4, v2.3.7** | Shipped on all five models. **v2.3.7** is the newest published release. |
+| **v2.3.2, v2.3.4, v2.3.7** | Shipped on all five models. |
 | **v2.4.1, v2.4.2** | Built on RT-BE96U, both variants, and run on hardware. |
 | **v2.4.3** | Built on RT-BE96U, both variants (20 pass / 0 warn / 0 FAIL each). Siblings ported, for CI. |
+| **v2.4.4 – v2.4.9** | RT-BE96U builds; **v2.4.9 published full-fleet** (all five models, both variants). |
+| **v2.5.0 – v2.5.3** | RT-BE96U builds; **v2.5.3 is the cut published full-fleet on all five models — the current newest published release**, folding v2.5.1 / v2.5.2. |
+| **v2.5.4 – v2.5.7** | RT-BE96U only, built + validated on hardware (QoS priority, IPSec confirmed working, ipset Policy Routing, the audit-remainder batch); **not yet cut as a public release**, sibling fan-out owed. |
 
 ---
 

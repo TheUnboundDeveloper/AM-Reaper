@@ -35,6 +35,26 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 ---
 
+> **Shipped since (all built on RT-BE96U, in the Changelog / Release-Notes; NOT yet cut as public CI releases):**
+> **v2.5.4** — the **P2-H6 QoS priority inversion**, the **speed-test `level_err_cnt`** counter, the
+> **QoS WRR weight UI** removal, the **Wireless auto-scan auto-pin**, the **Warden blocklist maxelem**,
+> the **SDN Wi-Fi-key mask** hardening, and the Firewall (245) + About + Warden **translations** (v2.5.4
+> is on metal; only the P2-H6 **drain-under-load** confirmation still sits under
+> [Pending verification](#pending-verification)). **v2.5.5** — the **ipset Policy Routing** engine and the
+> **PPPoE post-boot re-dial** (bounce). **v2.5.6** — the **Policy Routing editor page** (`Reaper_VPNRouting.asp`).
+> **v2.5.7** — five **security-audit** hardening fixes (`B1-SEC-003` OOB-read guard, `A1-SEC-003` gk-baseline
+> skip, `A1-SEC-004` usbkey CRLF strip, `B1-SEC-006` ejusb guard, `A4-UI-006` chpass POST). The entries that
+> follow are genuinely still open.
+>
+> **➤ Next highest-priority open ticket: the `[HIGH]` Firewall layer ordering** item under
+> *ARCHITECTURAL — need owner decision* below. `reaper_fw` is hooked ahead of Warden and Gatekeeper
+> and emits a terminal `ACCEPT` (they mostly `RETURN`), so a single allow rule can silently disable
+> both — and the hook order is non-deterministic. It is blocked on an **owner decision** (a shared
+> `REAPER_HOOK` front chain with a defined order, vs. converting the `reaper_fw` user-ACCEPT to
+> RETURN+allow-mark). The other big-ticket open items are the `[HIGH/MED]` **Gatekeeper multi-network**
+> redesign (also owner-decision) and the **AiMesh-search node-discovery** gate (needs mesh hardware);
+> the remaining data-flow and efficiency findings are lower severity.
+
 ### SECURITY REVIEW 2026-08-18/19 — Phase 3 vulnerability pass: OPEN items only
 
 > The fixes from this pass (the five corrected defective-reworks plus the new Phase 3 fixes) are
@@ -43,11 +63,24 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 **Before v2.5.0 can be cut — validation TODOs (applied but not yet hardware-proven):**
 
-- **[P2-H6] QoS priority — REVERTED, needs a metal-test session.** The defect is real (libtmctl's own
-  help says `lower value, lower priority`, and the live queues read back inverted) but the in-place
-  renumber fix is rejected by the hardware (`Priority already in use`), so it was reverted to the safe
-  (inverted-but-stable) baseline. The correct fix is `delqcfg`-all-then-`setqcfg`-all (clear every
-  queue, then reassign), which can only be validated on hardware. Land it in a metal session.
+- **[P2-H6] QoS priority inversion — FIXED, metal-validated 2026-08-20 (staged for v2.5.4, pending flash).**
+  Confirmed on the lab RT-BE96U: `tmctl` priority is a rank where a HIGHER value is served first
+  (`priority = <0,7>, lower value, lower priority`), and the class queues shipped with `priority == qid`,
+  so class 1 (qid1, "served first") was drained second-to-last. `delqcfg` exists; an in-place renumber is
+  rejected (`Priority already in use`), so the fix deletes all five class queues and recreates them with
+  `priority = 6 - qid` (q1=5 … q5=1), leaving reserved qid0/qid6 at stock — the only sequence the TM
+  accepts, and the recreated priority survives the later `setqdropalg`/`setqshaper` (all verified on
+  metal). Start and stop paths in `qos.c` both updated; QoSDiag's qid-based label is now correct with no
+  change. Owed: on-flash confirmation of the drain order under real classified load.
+- **[UI addressed v2.5.4 → weights removed from the QoS page ([Pending verification](#pending-verification)); root cause + the ASUS-actionable fix are in B-1 under *Blocked by closed-source components*.] QoS WRR weights (`qos_sched` `w<N>`) are structurally unsupported on RT-BE96U — silently no-op.**
+  Discovered during the P2-H6 metal session: any WRR `setqcfg` fails with `get_wrr_queue_idx: No free
+  queue index between min[8] and max[8]` / `No place for new WRR queue` (rc=108). **The pre-fix shipping
+  code's own WRR emission fails identically**, so WRR weights have never applied — classful QoS has always
+  run all strict-priority. All eight hardware queue indices are consumed by the SP queues (qid0–6 +
+  reserve), leaving none to allocate a WRR queue. The v2.5.4 P2-H6 fix forces SP and logs a one-line
+  notice when `qos_sched` requests WRR. A real fix needs a `porttminit`-level queue-layout change (fewer
+  SP queues to free a WRR slot) or removing the WRR option from the QoS UI. Likely affects all siblings
+  (same BCM491x TM). **[owner decision: fix layout vs drop the UI option]**
 - **[chpass CSRF] applied — validate on a real factory-reset flow before cut.** The `http_id` check is
   gated to the default-password window and `Reaper_FirstBoot.asp` was updated to send the token, but
   the first-boot credential path has a lockout history ([[firstboot-login-loop]]); confirm a clean
@@ -71,14 +104,18 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 **Shipped in v2.5.3 — pending metal confirmation:**
 
-- **[P1] IPSec Server / IPSec client / Instant Guard — now build and stage; needs metal confirm.**
+- **[P1] IPSec Server — SERVER SIDE METAL-CONFIRMED on v2.5.4 (2026-08-20); client-tunnel-establishes still owed.**
   The strongSwan runtime (`/usr/lib/ipsec/{starter,stroke,charon}` + `swanctl`) was **absent from
   every prior shipped image** — a stale-configure trap left the daemons un-staged, so all three IPSec
-  features were dead on hardware regardless of configuration. The v2.5.3 build finally stages them and
-  their presence in the rootfs is verified at cut. **Not yet exercised on metal.** Settles when a
-  tunnel is confirmed to establish on hardware: IPSec Server accepts a client, an IPSec client
-  connects out, and Instant Guard pairs. Build-side fix only — no configuration-page change.
-  **[owed — metal test]**
+  features were dead on hardware regardless of configuration. v2.5.3 first staged them; **v2.5.4 metal
+  test (lab RT-BE96U): enabling IPSec Server brings the whole control plane up** — `starter` + `charon`
+  running, `/var/run/charon.vici` present, **UDP 500 + 4500 bound by charon** (IPv4 + IPv6), and
+  `swanctl --list-conns` shows BOTH profiles loaded from the ASUS config: `Host-to-Net` (IKEv1, PSK +
+  XAuth) and `Host-to-Netv2` (IKEv2, cert + EAP-MSCHAPv2). strongSwan 6.0.4. So the nvram-profile →
+  `rc_ipsec` → charon config path works end-to-end and the server is ready for clients. **Still owed:**
+  (a) a client actually establishes a tunnel (SA goes `up` — owner to connect a phone/laptop); (b) the
+  **IPSec client** (connect-out) and **Instant Guard** pairing paths, still un-exercised. Build/stage
+  fix only — no config-page change. **[owed — client-connect confirmation + IPSec-client/Instant-Guard]**
 - **The v2.5.3 code-review batch** — admin-management RETURN scoped to INPUT, port-forward
   empty/comma guards, atomic Gatekeeper + Warden `apply.sh`, the Warden fold/stats shared lock, the
   analytics-export staleness gate, the firewall zone-matrix save cap 2048→8192, the 11
@@ -117,7 +154,7 @@ figure here was an undercount.)
 
 ---
 
-- **[P2] Speed test: `level_err_cnt` is consumed once per POLL, not once per error — this is
+- **[FIXED v2.5.4 → [Pending verification](#pending-verification); mechanism kept here.] Speed test: `level_err_cnt` was consumed once per POLL, not once per error — this is
   probably the real cause of a run dying mid-test.** Found 2026-08-16 while the owner pushed back
   on the v2.4.5 changelog entry claiming the counter-leak fix addressed hanging/erroring speed
   tests. It does not, and the entry was corrected.
@@ -200,9 +237,12 @@ figure here was an undercount.)
     new log lines say which. Run it on the BE96U too — that splits a Reaper regression from a
     BE98-port issue.
 
+  - **Field Reports** Users in the field report beign able to fine mesh nodes and connect to them 
+    just fine. This bug may have been fixed due to other corrective changes.
+
 ---
 
-- **[P2] Wireless Quality Auto Scan pins the winner by itself; it should not.** Owner 2026-08-13:
+- **[FIXED v2.5.4 → [Pending verification](#pending-verification); detail kept here.] Wireless Quality Auto Scan pins the winner by itself; it should not.** Owner 2026-08-13:
   a scan should rank and report, and pinning should be the separate **Pin best** button
   (`scanpin` / `scanPin()`) that already exists. Today a clean sweep commits the winner without
   being asked.
@@ -273,6 +313,83 @@ figure here was an undercount.)
   `REAPER-WARDEN-OUT` instead of being indistinguishable from an inbound one, so `grep` answers the
   first question outright.
 
+  **[P2] Corroborating report — GT-BE98, v2.5.x, 2026-08-20 (deterministic variant of the above).**
+  Field tester: on **router reboot**, the 10 Gbps WAN link drops to ~2.5 Gbps and pings to 1.1.1.1 /
+  8.8.8.8 time out continuously; **restarting the ONT *after* the router has fully booted** restores
+  full 10 Gbps and connectivity every time. The *ordering* (ONT must come up after a stable router
+  PHY) and the **10G→2.5G rate drop** sharpen root cause **#1** above: this is a **boot-order
+  link-training race** — the 10G WAN PHY negotiates with the ONT while still training, the ONT
+  latches a lower NBASE-T rate and/or a stale UNI/PON session, and never re-trains up; an ONT
+  power-cycle against the now-stable PHY re-negotiates clean. **Not our code path** — Reaper carries
+  zero patches touching WAN link-speed / PHY autoneg (inherited stock Broadcom); this pattern is also
+  widely reported on stock ASUS 10G-WAN + fiber-ONT setups, so it is almost certainly
+  inherited/hardware, not a v2.5.x regression.
+
+  **Proposed Reaper-side mitigation (automates the ONT-restart workaround):** after the router
+  reaches a fully-booted, stable state, **bounce the WAN link once (down→up)** to force a fresh
+  re-negotiation against the trained PHY — reproducing what the ONT power-cycle does, with no user
+  action. Gate behind a knob (default on for 10G-WAN models; GT-BE98 first), with a short settle
+  delay after boot-complete; if a DHCP re-kick proves necessary, chain `restart_wan_if` after the
+  link comes back at 10G. **Do not build blind** — request three data points captured **in the bad
+  state** (after router reboot, before the ONT restart): (1) WAN link speed —
+  `cat /sys/class/net/$(nvram get wan0_ifname)/speed` (confirms `2500` vs `10000`); (2) whether WAN
+  gets an IP — `nvram get wan0_ipaddr` (link-up-no-DHCP vs DHCP-ok-upstream-dead); (3) which 10G port
+  is WAN (SFP+ combo vs 10GBASE-T) and the ISP / ONT model. That triage decides link-bounce-alone vs
+  bounce-plus-DHCP-re-kick.
+
+  **DIAG EVIDENCE 2026-08-20 (two sanitized REAPER-DIAG v1.2.0 captures, GT-BE98 Reaper_v2.5.3_noMCP,
+  EU/IT PPPoE-over-VLAN835).** The WAN is **`eth0`, a 10GBASE-T RJ45 port** (Speed Caps
+  `10G:5G:2.5G:1G:100M`, AN on; `netdev path vlan835 → eth0`, PPPoE, `ppp0 up with MTU 1492`).
+  **CORRECTED READING (owner, 2026-08-20 — an earlier draft here wrongly called this "flapping =
+  10GBASE-T marginality"; withdrawn).** Capture #1 (fresh boot, 3-min uptime) shows `eth0` coming **up
+  once at 10G with NO drops** and probes Cloudflare 0% / **Google 33%** (mild). Capture #2 shows `eth0`
+  drop→up **twice in quick succession at ~13:42, then stay stable**, with probes **0% loss to BOTH**
+  Cloudflare and Google immediately after. That clustered pair-of-transitions-then-clean is almost
+  certainly **the tester rebooting the ONT (his known fix), not the chronic fault** — an ONT power-cycle
+  bounces the UNI link a couple of times, then the loss clears, which is exactly the dmesg shape. Each
+  bounce does fire stock `wanduck → restart_wan_if` + a PPPoE re-dial (`Unable to complete PPPoE
+  Discovery` on the first try, then success), but that is the *recovery*, not the defect. Chronic 10G
+  marginality would scatter flaps over time and leave the probes lossy; instead they went to 0%.
+
+  **So neither capture catches the bad state.** #1 = fresh boot (only a mild Google 33% on a 3-ping
+  sample); #2 = *after* the ONT reboot (clean). The chronic symptom — continuous dropped packets after
+  a **router** reboot, cured by an **ONT** reboot, with the **link staying up** — best fits **ONT/OLT
+  session staleness** (root cause **#1** above): the OLT holds a stale MAC-bound session after the
+  router re-PPPoEs and drops packets until the ONT is power-cycled. Still **not Reaper** (no WAN-PHY /
+  session code) and it does **not** require a link flap. Red herrings confirmed: `default gateway
+  loss=100%` is a normal ICMP-filtered PPPoE peer (`192.168.100.1`) — the internet DNS probes are the
+  real signal; `services: apply rules error(24267)` is a transient during WAN bring-up.
+
+  **Decisive next capture (ask the tester):** run the diag **while the packets are dropping — after a
+  router reboot, BEFORE he reboots the ONT.** That one shows the real signature at once: `eth0` link
+  state (stable 10G? 2.5G? actually flapping?), the connectivity-probe loss (should be high), and
+  whether the WAN has an IP / PPPoE is up. Everything so far is a capture of the *recovery*, not the
+  fault.
+
+  **Mitigation, re-reconsidered:** because an ONT-side link bounce demonstrably cleared it (loss → 0%
+  right after the 13:42 transitions), the original **router-side post-boot WAN link bounce (`eth0`
+  down/up, ± a `restart_wan_if`)** is back to being the plausible automation of the ONT-reboot fix — IF
+  a UNI-port transition prompts the OLT to re-establish the session. Confirm the bad-state signature
+  first; forcing 2.5G/5G is only relevant if that capture actually shows a flapping/mis-trained link
+  rather than a stable-but-lossy one. **[owed — tester: capture DURING the dropped-packet state, before
+  the ONT reboot]**
+
+  **MITIGATION IMPLEMENTED (staged, next build) — 2026-08-20, owner-requested.** Because the evidence
+  best fits **session staleness with the link staying up** (not a PHY rate mis-train), the mitigation
+  built is the **PPPoE-re-dial variant, not an `eth0` link bounce**: a one-shot **PPPoE stale-session
+  bounce** riding the existing rwatch cron tick (`rc/rwatch.c`, "reaper v1.9.2" block; knob
+  `reaper_wanbounce_enable` default ON in `shared/defaults.c`). Logic: **once per boot** (tmpfs latch
+  `/tmp/reaper_wan_bounced`), after rwatch's 300 s boot grace, if the primary WAN is **`proto==pppoe`
+  and `wanX_state_t==2` (link up) yet no internet is reachable** (its own probe: `wandog_target`, then
+  1.1.1.1, then 8.8.8.8 — a bounce fires only if **all three** fail, so one dead host can't false-trip),
+  it sends **`SIGHUP` to `/var/run/ppp-wanX.pid`** — the least-disruptive re-dial (keeps NAT/firewall/
+  routes) — forcing the OLT to drop the stale session and accept the new dial. This automates the
+  tester's manual ONT power-cycle for the *session-staleness* path. **Deliberately NOT an `eth0` down/up**
+  (that PHY-retrain variant is only warranted if the owed bad-state capture shows a flapping/mis-trained
+  link). Shell syntax validated (`sh -n` + `dash -n`). **[owed metal: confirm on a box that reproduces —
+  a `logger -t rwatch` line records each fire; and still get the DURING-bad-state capture to confirm the
+  root cause and whether a link bounce is additionally needed.]**
+
 ---
 
 **Traffic Analyzer Issue IPV6 Devices:**
@@ -296,6 +413,42 @@ test is how something sits here for five rungs. Items leave in one of two direct
 worth more than the attempt itself.*
 
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
+
+---
+
+### v2.5.4 (2026-08-20) — staged batch, awaiting confirmation
+
+- **[P2-H6] QoS strict-priority order corrected — queue config metal-validated; drain-under-load owed.**
+  The class queues shipped with `priority == qid`, which inverts the intended order (class 1, the row
+  "served first", held the second-lowest rank and the catch-all outranked it). Fixed to
+  `priority = 6 - qid` (class 1 highest), applied by delete-then-recreate because the traffic manager
+  refuses an in-place renumber (`Priority already in use`). **Read back on the lab RT-BE96U as correct**
+  (q1=5…q5=1; q0/q6 left at stock 0/6), and the priority survives the later `setqdropalg`/`setqshaper`.
+  **Settles when** a type-11 upload under real classified congestion shows the higher classes draining
+  ahead of the catch-all — the one thing a queue-config read-back cannot prove.
+  `tmctl getqcfg --devtype 0 --if <wan> --qid 1..5` should read priority 5,4,3,2,1. **[owed — metal, drain under load]**
+
+- **[P2] Speed test no longer ends on a brief stall — needs the multi-run session.** `level_err_cnt`
+  was consumed once per 200 ms poll, so a stalled tail entry was tallied ~5×/s and `LEVEL_ERR_MAX=50`
+  became "10 s of a stall". It is now counted once per **new** buffer entry and reset on any progress
+  (consecutive-error semantics; the run stays bounded by the existing `test_timeout`). **Settles when**
+  several back-to-back runs — including one that stalls mid-transfer — complete or fail on the real
+  timeout rather than the false 50-error trip. This is the multi-run-on-metal test the item always
+  named; do not defer it a fourth time on "one pass proves nothing". **[owed — metal, multi-run]**
+
+- **[P2] QoS WRR weights removed from the UI (strict priority only) — glance.** The per-class
+  Weighted/weight controls were removed because this platform's egress scheduler cannot create a WRR
+  queue at all (every queue slot is strict-priority; the stock code's own WRR `setqcfg` fails the same
+  way). Root cause and the ASUS-actionable fix are under
+  [Blocked by closed-source components](#blocked-by-closed-source-components--for-asus--broadcom) (B-1).
+  **Settles on** a glance that the QoS class table shows strict priority only, `qos_sched` saves as
+  `p,p,p,p,p`, and classification still works. **[owed — glance]**
+
+- **[P3] Wireless Auto-Scan reports instead of auto-pinning — glance.** A clean sweep used to commit
+  `wlN_chanspec` (which also switched auto-channel off for that radio); it now always restores the
+  pre-sweep channel/width and leaves committing to the "Pin best" button. **Settles on** a glance: run
+  a scan, confirm the radio's Control Channel is unchanged afterwards, and "Pin best" still applies the
+  winner. **[owed — glance]**
 
 ---
 
@@ -439,12 +592,13 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P3] SDN Wi-Fi-key mask can be bypassed by an SSID containing a literal `<b>` tag (watch-item).**
-  The shared `state.js showWlHintContainer()` injects the SSID into `innerHTML` unescaped, so an SSID
-  literally containing `<b>…</b>` would shift the bold-element index and leave the key visible. Only
-  weakens the *new* privacy feature (never a crash or XSS), and the root cause is the pre-existing
-  unescaped-SSID behavior in the **shared** `state.js` (out of scope of the mask's design). Optional
-  hardening: mask the LAST `<b>` per row instead of index 1. [watch — cosmetic/privacy]
+- **[DONE v2.5.4] SDN Wi-Fi-key mask bypass via an SSID containing a literal `<b>` tag — fixed at the
+  source.** The shared `state.js showWlHintContainer()` injected the SSID into `innerHTML` unescaped, so
+  an SSID literally containing `<b>…</b>` shifted the bold-element index and could leave the key
+  visible. Rather than the narrower "mask the last `<b>`" workaround, v2.5.4 **escapes the SSID, key and
+  band at the source** (`_esc()` over `& < > "`), so the injected markup — and the index shift it caused —
+  can no longer happen. Never a crash or XSS; this closes the mask-bypass root cause. Recorded in the
+  Changelog (v2.5.4).
 
 ---
 
@@ -515,12 +669,49 @@ worth more than the attempt itself.*
   - Gate 1 (routing tables) PASS: `wgc1-5` (rt_tables 1-5) + `ovpnc1-5` (6-10) defined.
   - Gate 2 (mark space) PASS in the current config: mangle MARK table empty; QoS is HW type 10/11
     (no mangle marks), no MTWAN, so the `0xf000` nibble is uncontended.
-  - Gate 3 (the load-bearing one) UNVERIFIED: no `ip rule fwmark .../0xf000 lookup <table>` rules are
-    present because ALL VPN clients were down (`ovpnc1-5 state=0`, no WG up). Cannot confirm whether
-    stock VPN Director emits the *fwmark* form of the rule (its default is `from/to`; the fwmark form
-    is what x3mRouting *adds*). **This decides Easy (just a mangle-MARK emitter) vs Moderate (emitter
-    + we create the fwmark ip-rules too). MUST be answered with a live OpenVPN/WG client up before
-    building.** Do NOT build this blind - routing live VPN traffic wrong blackholes the user.
+  - Gate 3 (the load-bearing one) **RESOLVED 2026-08-20 → `from/to` form ⇒ MODERATE.** The GT-BE98
+    field tester's box (live WireGuard `wgc1` + VPN Director) logs `vpndirector: Routing <name> from
+    192.168.50.x to any through wgc1` — i.e. **source-IP `ip rule`s (`from <src> lookup wgc1`), NOT
+    fwmark.** Stock VPN Director does not emit the fwmark form (that is x3mRouting's addition). Decisive
+    because an `ip rule` cannot match an ipset — only a fwmark can (set via `iptables -m set` in mangle)
+    — so the ipset feature MUST use the fwmark path regardless, and since VPN Director gives only
+    from/to rules, **our feature emits BOTH the mangle-MARK and the `ip rule fwmark …/0xf000 lookup
+    <tunnel-table>` itself.** (Diag-tool captures don't include `ip rule list`; the raw list is still
+    worth grabbing once to pick a non-colliding rule priority — or add a VPN-routing section to
+    `reaper_diag`.) **Build guardrails:** idempotent rule add; gate the MARK on tunnel-UP state so a
+    down tunnel can't blackhole; IPv4-first. No longer blocked — ready to design/scope the MVP.
+
+  **MVP CORE IMPLEMENTED (staged, next build) — 2026-08-20, owner delegated the design.** New
+  subsystem `rc/reaper_pbr.c` (mirrors `reaper_fw`'s idempotent-generated-script discipline), wired
+  into `rc/Makefile`, `rc/rc.h`, `rc/services.c` (start/stop cluster + `reaper_pbr` notify_rc handler),
+  and the `start_firewall` re-apply hook in `rc/firewall.c`; knobs `reaper_pbr_enable` (default **OFF**)
+  + `reaper_pbr_rulelist` in `shared/defaults.c`. **Contract (recorded in memory + `docs/VPN-Director-
+  ipset-PBR-MVP-Plan.md`, supersedes the stale `0xf000`/`Reaper_Firewall.asp` mentions above):**
+  fwmark field **bits 16-19 / mask `0x000F0000`** (the only free nibble on BE96U - bwdpi is compiled
+  out so it's unconditional); `ip rule` pref base **9000, BELOW VPN Director's 10000** so PBR overrides
+  it; reuses the existing `ovpnc1-5` tables + `reaper_fw` `rwfw_<obj>` sets. Data path: mangle
+  `-m set --match-set rwfw_<obj> dst -j MARK --set-xmark <code>/mask` (+ CONNMARK restore/save so only
+  the first packet is matched) then `ip rule fwmark <code>/mask lookup <table> pref 9000+code`, with a
+  **fail-closed `prohibit`** below each tunnel lookup (no WAN leak when the tunnel drops). Record:
+  `<en>desc>seltype>selval>proto>port>target`, all fields charset-validated in C, 50-rule blast cap.
+  **MVP scope: targets OVPN1-5 / WAN-force / BLOCK, IPv4. WireGuard (WGC*) targets DEFERRED** - the
+  BE96U WG data path is HW-offloaded and the accelerator ignores an `ip rule` unless the destination is
+  fed to `hnd_skip_wg_network()`, which takes static CIDRs not a dynamic ipset; WGC rules are parsed,
+  logged, and skipped (never silently "supported") until a mark-aware accel-skip is designed against
+  on-box offload behaviour. **Remaining before ship:** (I4) route apply through `reaper_fw`'s
+  commit-confirm/auto-revert; (I5) the VPN-area UI tab; then WG + IPv6. **Testable now from CLI/lab**
+  once a build is cut.
+
+  **MVP CORE METAL-VALIDATED 2026-08-20 (lab rmcpd, Reaper_v2.5.5).** Built green (MAKE_EXIT=0,
+  `[rc] CC reaper_pbr.o`, both Done markers; new strings confirmed in the staged `rc` ELF). On-box
+  via CLI: enabling a 5-rule set produced EXACTLY the designed rules — `9001 lookup ovpnc1` + `9101
+  prohibit` (OVPN1 fail-closed), `9011 lookup main` (WAN-force), `9015 prohibit` (BLOCK); MARK rules
+  `.240=0x10000 .241/.242=0xb0000 .50=0xf0000`; the empty-desc record `1>>src>…>WAN` parsed correctly
+  (vstrsep); WGC1 emitted NO rule + `reaper_pbr: WGC target 'WGC1' is not supported yet …- rule
+  skipped`; marks land in bits 16-19, band is 9000s below VPN Director, no errors. `ovpnc1`=table 6 so
+  the lookup loads with the client down and the 9101 prohibit fails the flow CLOSED. Disable → fully
+  clean teardown (chain gone, no jump, active=0). **Remaining: I4 commit-confirm, I5 UI, WG accel-skip,
+  IPv6.** Data path is proven; the feature is real.
 
 ---
 
@@ -599,12 +790,12 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P3] [owed] Translations for the Warden custom-feed labels — `RWDN_77`–`RWDN_85`, 9 keys.**
-  Minted 2026-08-18 with the custom-feeds feature and English-seeded into all 25 packs (lockstep
-  6638 → 6647), so nothing renders as a raw `<#KEY#>`; the 24 non-English packs carry English until
-  a pass. **Constraint for whoever does it:** `RWDN_80`, `RWDN_81` and `RWDN_82` are used as HTML
-  **`placeholder=` attribute values**, so their translations must not contain a double quote — the
-  same hazard already recorded for `RFW_229`.
+- **[DONE v2.5.4] Translations — Warden custom-feed labels (`RWDN_77`–`RWDN_85`) + About-page field
+  labels and section headings — applied across all 24 non-English packs.** Lockstep preserved (each
+  pack unchanged at its key count), placeholder keys `RWDN_80/81/82` verified free of double quotes.
+  The About page's personal credits, descriptive prose and the licence / vendor / no-warranty text
+  were intentionally left in English. Recorded in the Changelog (v2.5.4). Any future minor-language
+  nuance pass is a native-speaker review, not a blocker.
 
 ---
 
@@ -672,10 +863,13 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P2] [owed] The whole `RFW_*` namespace — the entire firewall page, 244 keys — has never had a
-  translation pass.** Measured 2026-08-16 across the 24 non-EN packs: 306 Reaper-minted keys still
-  carry the English string, and **244 of them are this one page**. Every other Reaper namespace is
-  in single digits or zero. The firewall shipped in v2.4.1 and the pass never followed.
+- **[DONE v2.5.4 → Changelog] The whole `RFW_*` namespace — the entire firewall page (245 keys) — now
+  translated across all 24 non-English packs.** Lockstep preserved; the RFW_229 double-quote and
+  RFW_36/RFW_37 apostrophe constraints (below) were honored, and protocol/product tokens were kept
+  verbatim. The RFW_252 "Both" note below stays relevant for keeping that selector consistent. Original
+  finding, for the record: measured 2026-08-16 across the 24 non-EN packs, 306 Reaper-minted keys still
+  carried the English string, and **244 of them were this one page** — every other Reaper namespace was
+  in single digits or zero. The firewall shipped in v2.4.1 and the pass never followed until now.
 
   **This is why `RFW_252` ("Both") was minted English in v2.4.5 and deliberately left untranslated.**
   It is one option of the logged-packets selector, whose other three options (`RFW_100` None,
@@ -697,12 +891,12 @@ worth more than the attempt itself.*
 
 - **[P3] Two residual limits on Warden custom feeds, found by the 2026-08-18 adversarial pass and
   deliberately left.** Neither is a security hole; both are ceilings a user can reach by accident.
-  - **`rw_threat` is created with ipset's default `maxelem` (65536).** A custom feed large enough to
-    push the merged set past that makes `ipset restore` fail, which falls back to the per-entry loop,
-    which then fails per entry once full. The result is a silently truncated block set with a log
-    line, not an error the user sees. Curated feeds are nowhere near the limit; a user-chosen list
-    can be. Fix shape: create the threat sets with an explicit `maxelem`, and surface the entry count
-    the page already fetches against it.
+  - **[DONE v2.5.4 (cap)] `rw_threat` was created with ipset's default `maxelem` (65536).** A custom
+    feed large enough to push the merged set past that made `ipset restore` fail (then the per-entry
+    fallback failed per entry once full) — a silently truncated block set with only a log line. Fixed
+    v2.5.4: all `rw_threat`/`rw_threat6` create sites (live + swap-tmp, so the atomic swap stays
+    header-compatible) now use an explicit `maxelem 524288`. **Still [owed], the smaller half:** surface
+    the entry count the page already fetches against that limit in the Warden UI.
   - **Update runtime is now user-extensible.** Eight custom feeds at `--retry 2 --max-time 40` add up
     to ~16 minutes to a refresh on top of the curated feeds and the country lists. The
     concurrent-run half is now **addressed** — v2.5.1 added a per-run `flock` on `update.sh` (a
@@ -990,3 +1184,52 @@ Investigated — NOT a bug (do not re-raise): Reaper_Firewall.asp v4_src/lw_sip/
   the inverted match spelled out in plain language in Preview before commit.
 
 ---
+
+## Blocked by closed-source components — for ASUS / Broadcom
+
+> Defects and limitations root-caused on RT-BE96U hardware that we **cannot** fix because the
+> responsible code lives in prebuilt Broadcom blobs (`libtmctl.so`, `tmctl`, `rdpa.o` / the runner &
+> rdpa port-init) rather than in the buildable SDK sources. Each entry below is written so an engineer
+> with the closed sources can act on it. Metal evidence was captured on RT-BE96U (BCM6813 / 4916,
+> XRDP) via `tmctl`, `bdmf_shell`, and reading the shipped binaries' strings.
+
+### B-1. Classful QoS "WRR" (weighted round-robin) is non-functional on eth ports — every class silently runs strict-priority
+
+- **Symptom.** With `qos_type=11` (classful hardware QoS) and any class set to a WRR weight, the weight
+  never takes effect — traffic is scheduled strict-priority regardless. The weights are inert.
+- **Reproduced on metal.** `tmctl setqcfg --devtype 0 --if eth0 --qid N --schedmode 2 --weight W`
+  fails, rc=108, with (from `libtmctl.so`):
+  ```
+  get_wrr_queue_idx: No free queue index between min[8] and max[8]
+  No place for new WRR queue, qid[N]
+  ```
+  full chain: `get_wrr_queue_idx.2067` → `prepare_set_wrr_q_in_sp_wrr_mode_single_level.2171` →
+  `prepare_set_q_in_singel_level.2904` → `prepare_set_q.2994` → `tmctl_RdpaTmQueueSet.3163`.
+- **Root cause.** Every port's egress_tm is created with **`num_sp_elements = 8` of `num_queues = 8`**
+  (confirmed live: `bdmf_shell -c <id> -cmd "/Bdmf/e egress_tm max_prints:-1"` shows `mode: sp_wrr`,
+  `num_queues: 8`, `num_sp_elements: 8` on eth0/index=4 (WAN upload) **and every other port**). With all
+  8 scheduler elements assigned to strict-priority, there is **no queue index left for a WRR queue**, so
+  the SP_WRR single-level arbiter rejects any WRR queue.
+- **Why it is blob-gated for us.** `num_sp_elements` for **eth** ports is set at egress_tm creation
+  inside the closed rdpa driver (`rdpa.o`, prebuilt) — the symbol appears in *no* eth-port source in the
+  SDK (only the GPON path `rdpa_cmd_llid.c` and the DSL path `xtmrt_runner_ex.c`). `tmctl` and
+  `libtmctl.so` ship prebuilt with no source, so the `porttminit --flag` / `--profileid` encoding that
+  would choose the SP/WRR split is not visible or modifiable. The GPL header
+  `rdp/drivers/rdpa_gpl/include/rdpa_egress_tm.h` documents the valid splits —
+  `rdpa_tm_num_sp_elem ∈ {0, 2, 4, 8, 16, 32}` — and explicitly marks `rdpa_tm_sched_sp_wrr` as
+  `\XRDP_LIMITED`.
+- **What ASUS / Broadcom can do (has the source).** Create the eth-port egress_tm with
+  `num_sp_elements = 4` (4 SP + 4 WRR of 8 queues) — or expose a `porttminit` flag / TM profile that
+  selects it — so `tmctl setqcfg --schedmode 2 --weight N` can place WRR queues. If XRDP genuinely cannot
+  offer mixed SP/WRR on eth ports, please **document eth egress as SP-only** so integrators don't surface
+  weight controls. A read-only `tmctl getportcaps`-style query returning `maxSpQueues` would also let
+  userspace detect this instead of discovering it by a failed `setqcfg`.
+- **Our mitigation (Reaper v2.5.4).** rc/qos.c forces strict-priority for all class queues and logs a
+  one-line notice if `qos_sched` requested WRR; the QoS UI's per-class scheduler-mode + weight controls
+  were removed so the page no longer offers a control the hardware ignores. See
+  [[qos-classful-defects]] and the P2-H6 entry above (the *priority* half of classful QoS — the queue
+  rank being inverted — **was** in our source and is fixed).
+
+*(Other items we cannot remediate because they live in closed-source blobs are catalogued under
+"Known issues (cannot remediate — closed-source blob or source)" above; this section collects the ones
+that are specifically actionable by ASUS/Broadcom with the closed sources in hand.)*

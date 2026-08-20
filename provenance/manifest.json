@@ -21,6 +21,29 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v2.5.3",
+      "firmware": "3006.102.8_Reaper_v2.5.3",
+      "build_commit": "a44e12415b",
+      "source_tree": {
+        "release/src/router": "0028cf71bdf41a2654eff844a6b21bd2c83148cc",
+        "release/src-rt": "dadd002298249e784d1c139b0610ba0f9f245b4d"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "37e20905d0f8288d00dc129448c2cd6a7a67d2d8",
+        "release/src-rt": "dadd002298249e784d1c139b0610ba0f9f245b4d"
+      },
+      "images": [],
+      "patch_count": 471,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-08-19",
+      "parent": "v2.5.0",
+      "summary": "v2.5.3 folds three internal iterations (v2.5.1 pre-public hardening, the v2.5.2 metal fixes, and the v2.5.3 code-review batch) into one rung on top of v2.5.0; v2.5.1 and v2.5.2 were never published. Biggest item is a build-side resurrection: /usr/lib/ipsec/{starter,stroke,charon} and swanctl were ABSENT from every prior shipped image (strongSwan stale-configure trap) - this build finally stages them, so IPSec Server / IPSec client / Instant Guard, dead on all earlier releases, should now function (needs on-metal confirmation). Gatekeeper: first/last device stamping is gated on ntp_ready with backfill, fixing the 'first seen ~961 days ago' freeze (devices seen in the pre-NTP boot window had been pinned to RC_BUILDTIME 2024-01-01) - confirmed on RT-BE96U metal. Firewall engine: the admin-management RETURN is scoped to INPUT only (it was also emitted on FORWARD/OUTPUT, exempting the admin address's forwarded :443/:22 from the whole firewall); port-forward external and internal ports reject empty/comma shapes iptables would refuse; the Gatekeeper and Warden apply.sh are now generated atomically (temp+rename) like reaper_fw's, so a concurrent restart_firewall can't exec a half-written teardown; the firewall zone-matrix save cap was raised 2048->8192 (CGI + nvram class) so the UI stops refusing a full zone matrix the engine accepts. Warden: a partial feed update no longer stamps the last-updated time as success, the retention window and per-run flock were corrected, and a shared lock between fold.sh and stats.sh removes a one-tick backward dip in the block count at the 15-minute checkpoint. Analytics export skips the push when health.json is >3 min stale (a crashed collector) instead of POSTing a frozen snapshot as live; the 11 reaper_export_* keys gained a length class and factory default (applied on factory reset only). QoS: the classful shaper leaves the rate you set intact (a 10% egress-headroom experiment added in v2.5.1 was reverted in v2.5.2 after it caused low-priority tail-drops on the BE96U hardware queues) with the on-page figures corrected to decimal kbps. Inherited/UI: OpenVPN 'if'-field trailing newline, an SNMP rwuser policy tightening, a shared HTML escaper across the Gatekeeper/Warden/Firewall pages, the dashboard logo header alignment, the firmware page's Mesh-Nodes section moved to the bottom, mesh nodes on a wireless backhaul reported as range-extenders rather than Wired, and the left-nav item geometry standardized to the dashboard so the rail is identical on every page. Build-validated on RT-BE96U (MAKE_EXIT=0); the v2.5.2 portion (Gatekeeper first-seen, QoS shaping) is metal-confirmed, while the IPSec resurrection and the v2.5.3 firewall-emission changes still need on-metal confirmation. NO IMAGES YET - image hashes are added when the build ships.",
+      "models_note": "Overlay overlap (step 7): this rung touches www/Main_ReaperDash.asp and www/reaper_shell.asp (the dashboard logo header and the shared left-nav geometry), both carried by the GT-BE98, GT-BE98_PRO, RT-BE86U and RT-BE88U overlays - regenerate each overlays/<MODEL>.patch before the fleet run. BE96U (canon) is unaffected and installs directly from the series."
+    },
+    {
       "version": "v2.5.0",
       "firmware": "3006.102.8_Reaper_v2.5.0",
       "build_commit": "8be2150520",

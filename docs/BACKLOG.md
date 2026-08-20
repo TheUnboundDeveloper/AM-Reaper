@@ -39,7 +39,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 
 > The fixes from this pass (the five corrected defective-reworks plus the new Phase 3 fixes) are
 > recorded in the v2.5.0 **CHANGELOG** and **RELEASE-NOTES**, not here — this section carries only
-> what is still open. **Committed on `be96u-only` as v2.5.0 (HEAD `8be2150520`), cut into the lean repo (patches 0463-0465); NOT yet pushed or released.**
+> what is still open. **The v2.5.0 fixes are cut into the lean repo (patches 0463-0465); everything since — the v2.5.1 pre-public hardening, the v2.5.2 metal fixes, and the v2.5.3 code-review batch — lands in the v2.5.3 cut (patches 0466-0471). NOT yet pushed or released.**
 
 **Before v2.5.0 can be cut — validation TODOs (applied but not yet hardware-proven):**
 
@@ -52,32 +52,49 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
   gated to the default-password window and `Reaper_FirstBoot.asp` was updated to send the token, but
   the first-boot credential path has a lockout history ([[firstboot-login-loop]]); confirm a clean
   factory-reset setup still completes before shipping.
-- **General:** the whole batch is build-validated only (compiles + packages, MAKE_EXIT=0). Metal-test
-  at least the QoS priorities, Gatekeeper enforcement on a guest/SDN network, the Warden manual-ban
-  live-cut, and the first-boot password flow before cutting the rung.
+- **General:** metal-validation is now partial — v2.5.2 **confirmed on RT-BE96U** the Gatekeeper
+  first-seen fix and the QoS shaper behaviour. Still build-validated only, and owed a metal pass: the
+  QoS **priority** inversion (P2-H6 above), Gatekeeper enforcement on a guest/SDN network, the Warden
+  manual-ban live-cut, the first-boot password flow, and the **IPSec resurrection** (v2.5.3 stages
+  `starter`/`stroke`/`charon`/`swanctl` — confirm a tunnel establishes; see the IPSec item below).
 
-**Still open (verified real, not fixed):**
+**Shipped in v2.5.1 (cut into the lean repo via the v2.5.3 series, patches 0466-0471):**
 
-- **[LOW, inherited]** OpenVPN `if` field in `libovpn/openvpn_setup.c` (`write_ovpn_dnsmasq_config`)
-  unvalidated (newline). Marginal — OpenVPN config is entirely admin-controlled (no privilege gain)
-  and it is inherited Merlin/OpenVPN code.
-- **[POLICY]** SNMP `rwuser` left as-is (SNMPv3-USM-gated; `rouser` would remove SNMP-SET, a real
-  feature). Change only if the owner wants read-only SNMP.
-- **[COSMETIC]** esc() consolidation on 3 pages (`gkEsc`/`rwEsc`/`bwlEsc` — GK + Warden don't load
-  `reaper_util.js`).
+- **[LOW, inherited] OpenVPN `if` newline — FIXED.** `write_ovpn_server_dnsmasq_config`
+  (`openvpn_setup.c:101`) gates the `vpn_serverN_if` value through `ovpn_host_safe` before splicing
+  it into the dnsmasq `interface=` directive — a newline can no longer inject config. Normal
+  `"tun"`/`"tap"` pass; a bad value emits nothing (degrade-safe).
+- **[COSMETIC] esc() consolidation — FIXED (3/3 pages).** `Reaper_GK.asp` + `Reaper_Warden.asp`
+  gained the `<script src="/reaper_util.js">` tag; `gkEsc`/`rwEsc`/`bwlEsc` now delegate to the
+  shared `window.esc`. `ReaperEsc` is byte-identical to all three (same regex/map/null→empty), so
+  no behaviour change. §2.4 consolidation is now complete.
+
+**Shipped in v2.5.3 — pending metal confirmation:**
+
+- **[P1] IPSec Server / IPSec client / Instant Guard — now build and stage; needs metal confirm.**
+  The strongSwan runtime (`/usr/lib/ipsec/{starter,stroke,charon}` + `swanctl`) was **absent from
+  every prior shipped image** — a stale-configure trap left the daemons un-staged, so all three IPSec
+  features were dead on hardware regardless of configuration. The v2.5.3 build finally stages them and
+  their presence in the rootfs is verified at cut. **Not yet exercised on metal.** Settles when a
+  tunnel is confirmed to establish on hardware: IPSec Server accepts a client, an IPSec client
+  connects out, and Instant Guard pairs. Build-side fix only — no configuration-page change.
+  **[owed — metal test]**
+- **The v2.5.3 code-review batch** — admin-management RETURN scoped to INPUT, port-forward
+  empty/comma guards, atomic Gatekeeper + Warden `apply.sh`, the Warden fold/stats shared lock, the
+  analytics-export staleness gate, the firewall zone-matrix save cap 2048→8192, the 11
+  `reaper_export_*` declarations, and the left-nav rail geometry standardized to the Dashboard — is
+  build-verified green. The firewall-emission changes owe a metal glance on the next flash. **[owed — metal glance]**
+
+**Policy decision (2026-08-19, owner):**
+
+- **[POLICY] SNMP `rwuser` — KEEP as-is.** SNMPv3-USM-authenticated (no unauthenticated exposure);
+  `rouser` would remove SNMP-SET, a real feature. No code change.
 
 **Deferred per owner (2026-08-19): the `/tmp` systemic dir-ownership issue** — `mkdir(,0700)` return
 ignored, owner never checked, rc `umask(0)` → `fopen("w")` is 0666; ~11 sites. Fix = ONE shared
 validate-or-refuse helper (`lstat` → `S_ISDIR && uid==0 && !(mode&077)`), pattern already at
 `reaper_fw.c:2071`; targeted `umask(077)` per daemon `main()` is the cheap partial (done for rtrafd).
-Covers the `rmcpd` DIAG_OUT dir-perm item too.
-
-**Investigated — NOT a bug (do not re-raise):** `Reaper_Firewall.asp` `v4_src`/`lw_sip`/`lw_dip`
-"XSS" (renders via `td.textContent`); Warden `V6LAN`/`WANIPS`/`V6WAN` (the router's own ISP-assigned
-addresses, not reachably poisonable); dnsmasq `/etc/hosts` IP field (an admin can already edit hosts
-via custom config); `custom_clientlist` tail truncation (the reader uses `strdup`, no fixed buffer);
-scrape-token "fail-open stub" (already `CRYPTO_memcmp` + `!want[0]` fail-CLOSED); store-chooser TOCTOU
-(mitigated by the `O_NOFOLLOW` opens).
+Covers the `rmcpd` DIAG_OUT dir-perm item too. **The sticky-bit half is already done** — `chmod("/tmp", 01777)` at `init.c:25607`, shipped in v2.5.0; what remains deferred here is the narrower owner-validation hardening (candidate-b).
 
 **ARCHITECTURAL — need owner decision (do NOT patch unilaterally):**
 
@@ -90,12 +107,15 @@ scrape-token "fail-open stub" (already `CRYPTO_memcmp` + `!want[0]` fail-CLOSED)
   field, the per-network DNS carve-out / captive DNAT / L3 "internet-only" logic is all br0-only, and
   "internet-only" has no L3 leg so linked SDNs defeat it. A coupled redesign.
 
-**Also carried:** ~96 MEDIUM/LOW findings from the Phase 1/2 (waste + data-flow) passes remain
-unworked — catalogued in [`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md). Mostly
-efficiency/dead-code, low security relevance.
+**Also carried:** the Phase 1/2 (waste + data-flow) review findings remain **unworked** — **70
+from Phase 1** (inefficiency / dead code: 5 high, 32 medium, 33 low) and **44 from Phase 2**
+(function-flow / data-passing; the doc's own prose says 38 in one place — a minor internal
+inconsistency). Mostly efficiency/dead-code, low security relevance. Catalogued in
+`CODE-REVIEW-2026-08-18.md`, which lives in the **private working tree** (`asuswrt-merlin.ng/docs/`),
+not synced into this lean repo — so that link resolves only in the mirror. (The earlier "~96"
+figure here was an undercount.)
 
 ---
-
 
 - **[P2] Speed test: `level_err_cnt` is consumed once per POLL, not once per error — this is
   probably the real cause of a run dying mid-test.** Found 2026-08-16 while the owner pushed back
@@ -262,9 +282,6 @@ Edit: Looked like the *The Month* tab gets reset when you do a firmware update -
 
 Edit 2: More testing, had moved from usb to jffs and the year tab seems to be updating now with that sticky device.
 
-**Baby Jumbo Frames not Fixed on IPV6**
-- Seems firmware is setting eth0 to 1508 but leaving vlan6 at 1500.
-
 ## Pending verification
 
 *A change has been made and is believed to fix the problem. What is missing is **confirmation**,
@@ -281,6 +298,27 @@ worth more than the attempt itself.*
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
 
 ---
+
+- **[P2] AiMesh nodes now classified wired/wireless by RE-node awareness — needs a mesh box.**
+  `do_reaper_dev` used to default any device it could not positively place to Wired, which stamped a
+  **wireless-backhaul** AiMesh node Wired (its backhaul iface is often WDS/dpsta — neither `eth*` nor
+  `wl*` — so the FDB pass left it unclassified). 2026-08-19 (field report): the last-resort fallback
+  (`web.c` ~24460) is now RE-node-aware — `is_re_node()` (cfg_mnt shm) promotes an unplaced *active*
+  node to **wireless**, guarded `#ifdef RTCONFIG_CFGSYNC` with a no-op `#else`, mirroring
+  `rdev_scan_amesh`. **Shipped in v2.5.1** (recompiled clean again in the v2.5.3 build). **The
+  maintainer has no mesh, so this cannot be self-tested** — `is_re_node()` is a constant 0 there, so
+  behaviour is identical to before. **Settles when a field tester confirms BOTH:** a wireless-backhaul
+  node reads Wireless, *and* a wired (cabled) node still reads Wired. **[owed — field test]**
+
+- **[P3] Dashboard brand logo no longer jumps vs the other menus — SHIPPED v2.5.1 (logo padding) + v2.5.3 (whole left-nav rail geometry standardized to the Dashboard); needs a glance on the built image.**
+  2026-08-19: `Main_ReaperDash.asp` `.top` padding was `10px 18px` while the shell (every framed menu)
+  uses `14px 18px`, so the logo sat 4px higher on the dashboard and jumped when switching to/from it.
+  Padding matched to `14px 18px`. www-only; **settles when the built image shows no vertical logo shift
+  switching Dashboard ↔ any other menu.** **[owed]**
+
+- **[P3] Firmware page — Mesh Nodes card moved to the bottom — SHIPPED v2.5.1.** 2026-08-19: on `Reaper_Firmware.asp`
+  the Mesh Nodes card (`RFWU_32`) was swapped below the manual-upload card so it is the last section.
+  www-only; **settles on a glance at the built Firmware page.** **[owed]**
 
 - **[P3] The local-build provenance call is implemented but has never run through the build
   engine.** `_reaper_build_lib.sh` gained a `gen_provenance.sh` call in `_rb_variant()` on
@@ -313,7 +351,7 @@ worth more than the attempt itself.*
   v2.4.9 fixed three real defects underneath that report: the widened WAN port was never recorded,
   so it was reverted before pppd negotiated; the MTU and MRU both have to exceed 1492 before the
   RFC 4638 extension is requested at all, and the page let you raise only one; and a dual-WAN
-  lookup always answered for the first connection. **What is not established is whether the
+  lookup always answered for the first connection. **v2.5.0 additionally widens the 802.1Q VLAN parent (`assert_vlan_parent_mtu`, `interface.c`) so a tagged-WAN line's `vlan6` is raised to 1508 instead of left at 1500 — the eth0-1508/vlan6-1500 field observation; check `ip link show vlan6` reads mtu 1508 while up.** **What is not established is whether the
   reporter's provider supports the extension**, which decides whether 1500 was ever achievable on
   that line. The decisive evidence is one log line, now emitted on every PPPoE connect:
 
@@ -430,6 +468,62 @@ worth more than the attempt itself.*
 
 ---
 
+- **[P3] VPN ipset/domain policy routing — a UI (field-user request, 2026-08-19).** OpenWrt-style
+  "Policy Based Routing" / a VPN-Director-equivalent, but **ipset-driven and authored in the Reaper
+  UI**. The requester's words: *"a UI version, similar to your Firewall Rules, that would selectively
+  mark and route packets to a certain VPN interface based on an ipset"* — offered as an addition to
+  the existing geo firewall + firewall rules, to use the box's otherwise-idle routing capability.
+  Equivalent to what the amtm **Domain VPN Routing / x3mRouting** script does today, brought native.
+  Ipset based routing as concept and function would ideally be placed in the proximity of IP based 
+  routing aka VPN Director. At that point you have a robust VPN (and WAN) routing solution.
+  The firewall with all the smart additions is a totally different, solid and much improved function.  
+  **Most of the mechanism already exists — the requester's screenshot shows the per-tunnel fwmark
+  allocation that makes this cheap** (the amtm script's marks; a native feature would emit the same):
+
+  | Tunnel | FWMark | Mask |
+  |---|---|---|
+  | OpenVPN Client 1 | `0x1000` | `0xf000` |
+  | OpenVPN Client 2 | `0x2000` | `0xf000` |
+  | OpenVPN Client 3 | `0x4000` | `0xf000` |
+  | OpenVPN Client 4 | `0x7000` | `0xf000` |
+  | OpenVPN Client 5 | `0x3000` | `0xf000` |
+  | WireGuard Client 1 | `0xa000` | `0xf000` |
+  | WireGuard Client 2 | `0xb000` | `0xf000` |
+  | WireGuard Client 3 | `0xc000` | `0xf000` |
+  | WireGuard Client 4 | `0xd000` | `0xf000` |
+  | WireGuard Client 5 | `0xe000` | `0xf000` |
+
+  Per-tunnel routing tables (`ovpnc1..5` / `wgc1..5`) and the `ip rule fwmark …/0xf000 lookup <table>`
+  primitive already exist in-tree. With a dedicated `0xf000` mask per tunnel, a PBR rule is just:
+  `iptables -t mangle -A PREROUTING -m set --match-set rwfw_<obj> dst -j MARK --set-xmark <tunnel-mark>/0xf000`
+  — reusing a `reaper_fw` ipset/FQDN object and the tunnel's own mark. **This screenshot resolves the
+  top "fwmark-space coordination" risk the feasibility note flagged:** the mark space is already
+  partitioned so VPN owns the `0xf000` nibble — only verify QoS/MTWAN masks don't touch that nibble.
+  That pushes the estimate from *Moderate* toward *Easy* for an MVP.
+
+  Full implementation path + verdict is in the private working tree:
+  `asuswrt-merlin.ng/docs/VPN ipset-based Routing Implmentation Check.md`. Reuse: `reaper_fw` ipset
+  objects + the dnsmasq FQDN→ipset emitter + the commit-confirm/auto-revert engine; add one
+  mangle-MARK emitter + a tab on `Reaper_Firewall.asp`, keyed to the ipset objects the geo/firewall
+  work already builds. IPv4-first (VPN Director is v4-only). **Plan only — not built.**
+
+  **PLACEMENT DECIDED (owner, 2026-08-20): the GUI is a new tab in the VPN area (near VPN Director),
+  NOT on `Reaper_Firewall.asp`.** The firewall page only supplies the ipset objects; the routing
+  editor lives with the VPN pages.
+
+  **Feasibility gates checked live 2026-08-20 (lab rmcpd), deferred pending an active tunnel:**
+  - Gate 1 (routing tables) PASS: `wgc1-5` (rt_tables 1-5) + `ovpnc1-5` (6-10) defined.
+  - Gate 2 (mark space) PASS in the current config: mangle MARK table empty; QoS is HW type 10/11
+    (no mangle marks), no MTWAN, so the `0xf000` nibble is uncontended.
+  - Gate 3 (the load-bearing one) UNVERIFIED: no `ip rule fwmark .../0xf000 lookup <table>` rules are
+    present because ALL VPN clients were down (`ovpnc1-5 state=0`, no WG up). Cannot confirm whether
+    stock VPN Director emits the *fwmark* form of the rule (its default is `from/to`; the fwmark form
+    is what x3mRouting *adds*). **This decides Easy (just a mangle-MARK emitter) vs Moderate (emitter
+    + we create the fwmark ip-rules too). MUST be answered with a live OpenVPN/WG client up before
+    building.** Do NOT build this blind - routing live VPN traffic wrong blackholes the user.
+
+---
+
 - **[P2] NATIVE FIREWALL SUITE — the remaining pieces.** The suite itself **shipped in v2.4.1**
   (engine, hub, Status posture view, Phase 2 egress defaults, Phase 3 hardened forwards, their
   authoring tabs, backup/restore, and a measured engine-active signal); see
@@ -518,23 +612,63 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P2] [owed] Work the Phase 1 code-review findings — see
-  [`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md).** 70 findings across the ~25k lines
-  of Reaper-owned and Reaper-changed code (5 high, 32 medium, 33 low). Two of the five high
-  items are already fixed in tree; the document carries the rest with file:line, evidence and a
-  fix shape, plus a "checked and cleared" section so the next pass does not re-derive what was
-  already settled.
+- **[P2] [owed] Work the Phase 1/2 code-review findings** — catalogue in the private working tree
+  (`asuswrt-merlin.ng/docs/CODE-REVIEW-2026-08-18.md`), not synced into this lean repo. 70 Phase-1
+  findings (5 high, 32 med, 33 low) + 44 Phase-2. **The §7 priority list is now fully resolved:**
+  - HIGH items (Phase-1 H1–H5, Phase-2 P2-H1…P2-H11) — **all fixed in v2.5.0** (see that section).
+  - §2.2 per-byte `fflush` in the JSON escapers — **fixed** (H3, v2.5.0).
+  - §2.4 `esc()` / `reaper_util.js` consolidation — **fixed**: v2.5.0 landed the shared helper;
+    v2.5.1 finished the last 3 pages (GK/Warden/QoS now delegate to `window.esc`).
+  - §2.3 page-polling `document.hidden` gate — **fixed 2026-08-19**: `Reaper_GK` (5 s) and
+    `Reaper_Traffic` (user-selectable down to 100 ms) now stop their timers when the tab is
+    hidden, matching `Reaper_QoS`/`Reaper_Conn`/`Reaper_QoSDiag`.
+  - §2.1 netfilter fork storms (Warden/GK → `iptables-restore` batching + the double teardowns) —
+    **DEFERRED per owner (2026-08-19)**: high blast-radius on controls under active metal-test;
+    revisit once v2.5.0's firewall/Gatekeeper is validated on hardware.
+  - `services.c:8404` `reload_upnp()` full restart per firewall rebuild — **REFUTED (2026-08-19),
+    do NOT "fix".** The restart is a deliberate 2026-08-11 field fix; the old SIGUSR1 was the *bug*
+    (re-adds nothing → every UPnP/PCP mapping silently dies after a firewall flush). It already
+    routes through `notify_rc("restart_upnp")` **asynchronously**, so the `sleep(5)` never stalls
+    `start_firewall`. Reverting would reintroduce "UPnP stops working after a while".
 
-  **The four cross-cutting themes are worth more than the individual items:** Reaper builds
-  netfilter state one process at a time (~260 spawns for a 20-country Warden config, and both
-  Warden and Gatekeeper tear down twice per arm) while `firewall.c` already uses
-  `iptables-restore` in 15 places; `websWrite` is `fprintf`+`fflush` and three JSON escapers
-  emit one character at a time through it, so a 250 KB response is ~250k syscalls; page polling
-  is gated on `document.hidden` in three pages and not in the two heaviest; and the
-  `reaper_util.js` consolidation stalled with 12 of 15 pages unable to reach it, leaving `esc()`
-  in five variants with divergent null handling.
+  **What remains (the real [owed] work):** the discrete MEDIUM/LOW efficiency + data-flow tail —
+  dead code, redundant nvram re-reads, per-device fork loops, etc. Each needs per-item reachability
+  verification before it becomes a patch; the `reload_upnp` refutation and the `psc6g` deliberate
+  duplicate prove some findings are stale or as-is by design.
 
-  Suggested order and the reasoning behind it are in §7 of the document. **[owed]**
+  **Tail progress (2026-08-19) — SHIPPED in v2.5.1 (cut into the lean repo via the v2.5.3 series):**
+  - *Fixed — dead code / cosmetic (bucket a):* dead `static ip2str()` removed (`rtrafd.c`); dead
+    `nhex` counter removed (`rwarden.c` `rw_valid_cidr6`); 18 lines of orphaned CSS for the removed
+    iptables chain-view removed (`Reaper_Firewall.asp` — `.chaincard`/`.owner*`/`table.ipt`,
+    grep-confirmed zero references); broken `input.txt` selector → `input[type="text"]` so the
+    custom-feed inputs get themed instead of browser-default (`Reaper_Warden.asp`); defined the
+    missing `--panel-3` token so the `.railabout:hover` lift actually renders (`Main_ReaperDash.asp`);
+    defined the missing `.btn.ghost` variant used by 3 buttons but never styled (`Reaper_Wireless.asp`).
+  - *Fixed — hot-path MEDIUMs (bucket b):* `gk_client_name()` (`web.c`) now parses `custom_clientlist`
+    **once per request** into a MAC→name index (rebuilt only when the value changes) instead of
+    re-reading + strdup'ing + re-parsing per device — 300+ redundant nvram reads/parses per status
+    request on a 5 s poll eliminated; first-match + 32-byte clamp preserved exactly, single-flight
+    safe, no entry-count regression (index is dynamically sized). `sb_scrub_sec_tuples()` (`rmcpd.c`)
+    hoists the constant `SEC_AUTH` token lengths out of the per-boundary match loop (kills the
+    per-byte `strlen` storm on the ~256 KB posture payload); output byte-identical. `connseen_update()`
+    (`rtrafd.c`) now rewrites `/tmp/reaper_conn_seen` only when a flow was **added or evicted** — the
+    file holds only `(nfc, seen)` and neither changes for a live entry, so a stable set was rewriting
+    ~40 KB every 5 s for byte-identical content (the reader keys by nfc, never checks mtime; zero
+    functional risk). `Main_ReaperDash` client-list + eth-port tiles skip the `innerHTML` rebuild when
+    the built HTML is unchanged (cached on the element) — preserves scroll position and text selection
+    while the operator reads, mirroring the page's existing `ST_SIG` guard.
+  - *Refuted (verified, NOT changed):* `rmcpd.c tool_firewall` "-S and -nvxL are redundant" — they
+    carry **different** data (`-S` = rule syntax, `-nvxL` = hit counters/policies), documented in
+    the code comment. `rexport.c:166` `if(mins<1)` clamp is confirmed dead but **retained** as a
+    defensive bound (zero cost, guards a future floor change).
+  - *Deliberately left:* the `rmcpd get_settings_audit` secret-redaction `sed` — it is a
+    defense-in-depth **secret mask**; removing it to save one exec is the wrong risk trade even if
+    the C scrubber "subsumes" it.
+  - *Still [owed]:* **`do_reaper_conn_cgi` nested-scan-under-lock restructure** — reads conntrack
+    before taking the single-flight lock and does a nested linear scan inside it; **deferred per owner
+    (2026-08-19) as too risky to reorder locking on a control under metal-test** — wants a dedicated
+    look. Also the "4 orphaned dashboard CSS blocks" (needs a usage audit — the review's line numbers
+    have drifted; the dashboard CSS is mostly live so no blind removal). **[owed]**
 
 ---
 
@@ -560,45 +694,6 @@ worth more than the attempt itself.*
 
 ---
 
-- **[P2] `/tmp` is `0777` with NO sticky bit — it turns any unprivileged foothold into root.**
-  Found 2026-08-14 by the v2.4.2 security audit, which kept arriving at it from three unrelated
-  directions. `rc/init.c:25601` does `chmod("/tmp", 0777)` and nothing anywhere in `rc/` or
-  `shared/` ever sets `S_ISVTX` (grepped). The sticky bit is what normally stops one uid from
-  unlinking or renaming another's entry in a shared directory; without it, **any non-root process
-  can delete a root-owned file in `/tmp` and recreate it with its own content**, or substitute a
-  whole directory before root creates it.
-
-  This is stock ASUS/Merlin behaviour, not a Reaper regression — which is exactly why it is easy to
-  keep walking past. Three live consumers found in one afternoon:
-  - `httpd` (root) parses `/tmp/allwclientlist.json` and `/tmp/wiredclientlist.json` on a
-    **CSRF-exempt** endpoint (`reaper_dev.cgi?action=status`). The v2.4.2 fix hardened the parser
-    against a hostile document, but the write primitive is still there.
-  - `rc` writes and then executes `/tmp/rwarden/{apply,fold,stats}.sh` **as root**, on a cron tick
-    and on every UI poll. `mkdir(RW_DIR, 0700)` ignores `EEXIST` and never checks owner or mode, so
-    a directory pre-created by another uid is used as-is.
-  - `rwarden`'s updater writes `/tmp/rwarden/feed.$$` and `$TMP.rst` **as root**, into a directory
-    created by `mkdir(RW_DIR, 0700)` that likewise ignores `EEXIST` and never checks owner or mode.
-    The 2026-08-18 custom-feed work added another root-written file on this path; it does not create
-    the class, and the same fix (b) covers it.
-  - `reaper_fw` has the same unchecked `mkdir` for `/tmp/reaper_fw`, and on a default box that
-    directory does not exist until the firewall engine is first enabled — a wide pre-creation
-    window. Its `dnsmasq.ipset` fragment is spliced into a **root-parsed** config.
-
-  **Reachability today is LATENT**, and that is the only reason this is not P1: nearly everything on
-  this firmware runs as root. The privilege-dropping services found were dnsmasq (`user=nobody`) and
-  `in.tftpd -u nobody`, plus any jffs/Entware addon that drops privilege. So it needs a prior
-  non-root code-execution bug — but it converts one into root across several subsystems at once.
-
-  **Deferred deliberately, not overlooked:** setting the sticky bit changes behaviour for every
-  program on the box, including closed ASUS blobs that may rely on cross-uid unlink in `/tmp`. It
-  deserves its own rung and its own on-hardware pass rather than riding a feature release. Two
-  candidate shapes: (a) `chmod("/tmp", 01777)` in `init.c` — one line, broad blast radius; or
-  (b) leave `/tmp` alone and move the root-executed scratch to a root-only parent
-  (`/var/run/rwarden`, `/var/run/reaper_fw`), plus `lstat` the directory and refuse it if it is not
-  a root-owned `0700`, and open scratch files `O_CREAT|O_EXCL|O_NOFOLLOW`. (b) is narrower and
-  fixes the cases we actually own; (a) fixes the class. Doing (b) first is the safer order.
-
----
 
 - **[P3] Two residual limits on Warden custom feeds, found by the 2026-08-18 adversarial pass and
   deliberately left.** Neither is a security hole; both are ceilings a user can reach by accident.
@@ -609,10 +704,11 @@ worth more than the attempt itself.*
     can be. Fix shape: create the threat sets with an explicit `maxelem`, and surface the entry count
     the page already fetches against it.
   - **Update runtime is now user-extensible.** Eight custom feeds at `--retry 2 --max-time 40` add up
-    to ~16 minutes to a refresh on top of the curated feeds and the country lists, and nothing locks
-    the cron refresh against a concurrent "update now" from the page. Daily cron makes overlap
-    unlikely rather than impossible. Fix shape: a lock file around the updater, and/or a lower
-    per-feed timeout for custom entries.
+    to ~16 minutes to a refresh on top of the curated feeds and the country lists. The
+    concurrent-run half is now **addressed** — v2.5.1 added a per-run `flock` on `update.sh` (a
+    scheduled refresh and a manual "update now" can no longer overlap), and v2.5.3 added a shared lock
+    between `fold.sh` and `stats.sh`. What **remains**: a lower per-feed timeout for custom entries so
+    one slow feed cannot stall the whole refresh window.
 
 ---
 
@@ -779,7 +875,16 @@ worth more than the attempt itself.*
 
 ---
 
-## Known issues (cannot remediate — closed-source blob)
+## Known issues (cannot remediate — closed-source blob or source)
+
+---
+
+- **Investigated — NOT a bug (do not re-raise):** `Reaper_Firewall.asp` `v4_src`/`lw_sip`/`lw_dip`
+  "XSS" (renders via `td.textContent`); Warden `V6LAN`/`WANIPS`/`V6WAN` (the router's own ISP-assigned
+  addresses, not reachably poisonable); dnsmasq `/etc/hosts` IP field (an admin can already edit hosts
+  via custom config); `custom_clientlist` tail truncation (the reader uses `strdup`, no fixed buffer);
+  scrape-token "fail-open stub" (already `CRYPTO_memcmp` + `!want[0]` fail-CLOSED); store-chooser TOCTOU
+  (mitigated by the `O_NOFOLLOW` opens).
 
 ---
 
@@ -802,10 +907,31 @@ worth more than the attempt itself.*
 
 ---
 
+- **[P3] Inherited ASUS/Merlin `httpd` core — two pre-auth robustness gaps that ship in stock.**
+  Unlike the entries above these are **not blobs and are technically remediable** — but they live in
+  the inherited `httpd` core, are present in **every stock Asuswrt-Merlin build** (not
+  Reaper-introduced), and a change there risks a regression on the login/serve path and breaks the
+  upstream merge-cleanliness the fork depends on. Recorded here as **known and out of scope for the
+  public release**, matching the review's stated bar (*"Reaper's own code contributes no exploitable
+  surface"*); revisit only as deliberate opt-in hardening that goes beyond stock.
+  - **`Content-Length` has no upper clamp** — only `< 0` is rejected, and four pre-auth body drains
+    do `while (cl--) fgetc(...)`, so an oversized `Content-Length` spins ~2e9 syscalls and takes the
+    whole single-flight GUI down until the tab is killed. Fix if taken: clamp `cl > 65535 → 413`.
+  - **`url[128]` left unterminated for a path ≥ 128 bytes** (the bound test is `>`, not `>=`) → an
+    out-of-bounds read via the following `strstr`/`snprintf`; same for `login_url`. Fix if taken:
+    `>=` + `url[file_len] = 0`. Reachability unproven.
+  [inherited stock; deferred — not a Reaper regression, present upstream]
+
+---
+
 ## Reported, investigated, closed as working-as-designed
 
 *Not defects. Recorded so the same report does not get re-investigated from scratch, and so the
 reasoning survives the person who made the call.*
+
+---
+
+Investigated — NOT a bug (do not re-raise): Reaper_Firewall.asp v4_src/lw_sip/lw_dip "XSS" (renders via td.textContent); Warden V6LAN/WANIPS/V6WAN (the router's own ISP-assigned addresses, not reachably poisonable); dnsmasq /etc/hosts IP field (an admin can already edit hosts via custom config); custom_clientlist tail truncation (the reader uses strdup, no fixed buffer); scrape-token "fail-open stub" (already CRYPTO_memcmp + !want[0] fail-CLOSED); store-chooser TOCTOU (mitigated by the O_NOFOLLOW opens).
 
 ---
 

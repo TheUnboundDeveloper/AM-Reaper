@@ -1,0 +1,1347 @@
+From ea085cdf160779ee95c34eb4b31c2a922a99181f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 19 Aug 2026 17:31:36 -0400
+Subject: [PATCH] v2.5.1: pre-public MED/HIGH remediation, code-review fixes,
+ and UI refinements
+
+Firewall engine (reaper_fw.c): zone-constraint drop-with-log; port-forward
+range colon->hyphen; atomic apply.sh generation via temp+rename; NAT-rule
+drop-logging; build-failure reporting.
+
+Warden (rwarden.c): OK-gated lastupd stamp so a partial feed update no longer
+advances the timestamp; retention-block reorder; per-run flock.
+
+httpd (web.c): firewall 3-state active reporting; per-record length cap before
+nvram_set; store-resolver USB device-boundary guards; Gatekeeper status now/path
+emission; mesh-node RE fallback classification.
+
+Store resolver (rwatch.c, services.c): mount-boundary guards; MCP stale-session
+sweep split into boot vs runtime.
+
+QoS (qos.c, Reaper_QoS.asp): classful egress headroom; decimal-kbps unit
+correction; stats timer gating.
+
+Inherited: OpenVPN if-field newline (openvpn_setup.c); SNMP rwuser policy;
+esc() consolidation across the GK/Warden/Firewall pages.
+
+UI: dashboard logo header alignment; firmware Mesh-Nodes section ordering;
+analytics/traffic/wireless/GK/firmware page touch-ups.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c                |  12 +-
+ release/src/router/httpd/web.c              | 169 ++++++++++++++++----
+ release/src/router/libovpn/openvpn_setup.c  |  12 +-
+ release/src/router/rc/qos.c                 |  16 +-
+ release/src/router/rc/reaper_fw.c           |  66 ++++++--
+ release/src/router/rc/rexport.c             |   1 +
+ release/src/router/rc/rwarden.c             |  47 ++++--
+ release/src/router/rc/rwatch.c              |   2 +-
+ release/src/router/rc/services.c            |  56 +++++--
+ release/src/router/rmcpd/rmcpd.c            |  11 +-
+ release/src/router/rtrafd/rtrafd.c          |  26 +--
+ release/src/router/shared/defaults.c        |   2 +-
+ release/src/router/www/Main_ReaperDash.asp  |   8 +-
+ release/src/router/www/Reaper_Analytics.asp |   6 +-
+ release/src/router/www/Reaper_Firewall.asp  |  34 ++--
+ release/src/router/www/Reaper_Firmware.asp  |  16 +-
+ release/src/router/www/Reaper_GK.asp        |  15 +-
+ release/src/router/www/Reaper_QoS.asp       |  24 +--
+ release/src/router/www/Reaper_Traffic.asp   |   7 +
+ release/src/router/www/Reaper_Warden.asp    |   5 +-
+ release/src/router/www/Reaper_Wireless.asp  |   3 +-
+ 21 files changed, 389 insertions(+), 149 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 3a8213b8fe..a1450e4b8c 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -412,11 +412,13 @@ static void self_heal(void)
+ 	/* §4 (v1.7.1): probe EVERY enforcement component, not just GKF + the
+ 	 * ebtables hook. apply.sh always creates GKF/GKI/GKN (v4+v6) and the
+ 	 * ebtables chain, so any one missing means a flush occurred - reapply. */
+-	armed = (system("iptables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
+-	         system("iptables -nL REAPER_GKI >/dev/null 2>&1") == 0 &&
+-	         system("iptables -t nat -nL REAPER_GKN >/dev/null 2>&1") == 0 &&
+-	         system("ip6tables -nL REAPER_GKF >/dev/null 2>&1") == 0 &&
+-	         system("ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0);
++	/* one shell fork for the whole armed check (was five); the && chain
++	 * short-circuits identically and 'armed' is still true iff all five pass. */
++	armed = (system("iptables -nL REAPER_GKF >/dev/null 2>&1 && "
++	                "iptables -nL REAPER_GKI >/dev/null 2>&1 && "
++	                "iptables -t nat -nL REAPER_GKN >/dev/null 2>&1 && "
++	                "ip6tables -nL REAPER_GKF >/dev/null 2>&1 && "
++	                "ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0);
+ 
+ 	if (armed) {
+ 		int fd = open(CHAIN_STAMP, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b52fa1a0cc..72cb197ae6 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22516,7 +22516,6 @@ static void rwifi_scan_worker(int unit)
+ 	snprintf(orig_bw, sizeof(orig_bw), "%s", nvram_safe_get(nvk));
+ 
+ 	ncand = rwifi_scan_candidates(unit, ifname, cand, RWIFI_SCAN_MAX);
+-	rwifi_scan_rank(r, 0, order);
+ 	if (ncand <= 0) {
+ 		rwifi_scan_publish(unit, 1, 0, "", 0, 0, r, 0, order);
+ 		unlink(RWIFI_SRUN);
+@@ -22570,7 +22569,6 @@ static void rwifi_scan_worker(int unit)
+ 	 * SIDE EFFECT (stated on the page): this pins the radio. A radio joins
+ 	 * acs_ifnames only while wlN_chanspec is "0", so auto-channel is off for it
+ 	 * until the operator sets Control Channel back to Auto. */
+-	rwifi_scan_rank(r, n, order);
+ 	snprintf(nvk, sizeof(nvk), "wl%d_chanspec", unit);
+ 	if (!aborted && n > 0) {
+ 		nvram_set(nvk, r[order[0]].cs);
+@@ -22584,7 +22582,6 @@ static void rwifi_scan_worker(int unit)
+ 	nvram_commit();
+ 	notify_rc("restart_wireless");
+ 
+-	rwifi_scan_rank(r, n, order);
+ 	rwifi_scan_publish(unit, 1, aborted ? 1 : 0, "", ncand, ncand, r, n, order);
+ 	if (!aborted && n > 0)
+ 		logmessage("reaper_scan",
+@@ -22952,28 +22949,63 @@ gk_json_esc(FILE *stream, const char *s)
+ 	websWrite(stream, "\"");
+ }
+ 
+-/* look mac up in custom_clientlist ("<name>MAC>...") for a friendly name */
++/* look mac up in custom_clientlist ("<name>MAC>...") for a friendly name.
++ *
++ * The device-status loops (GK seen list, GK device list, Devices page) call this
++ * once per device - up to 256 - within a single request, and the raw code
++ * re-read + strdup'd + fully re-parsed custom_clientlist on EVERY call. httpd is
++ * single-flight and the list is constant across a request, so parse it once into
++ * a MAC->name index and rebuild only when the underlying nvram value actually
++ * changes (e.g. after a set_name in a later request). One parse per request, not
++ * N. First-match-wins and the 32-byte name clamp are preserved exactly. */
+ static void
+ gk_client_name(const char *mac, char *name, size_t nlen)
+ {
+-	char *cl = nvram_safe_get("custom_clientlist");
+-	char *buf = strdup(cl), *tok, *sp = NULL;
++	static char  *snap = NULL;	/* pristine copy of the indexed value (change detect) */
++	static char  *work = NULL;	/* tokenised copy; macs[]/names[] point into it */
++	static char **macs = NULL, **names = NULL;
++	static int    nent = 0;
++	const char   *cur = nvram_safe_get("custom_clientlist");
++
+ 	name[0] = 0;
+-	if (!buf) return;
+-	for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+-		char *f1 = strchr(tok, '>');
+-		if (!f1) continue;
+-		*f1++ = 0;
+-		{
+-			char *f2 = strchr(f1, '>');
+-			if (f2) *f2 = 0;
++
++	if (!snap || strcmp(snap, cur) != 0) {
++		char *tok, *sp = NULL;
++		const char *q;
++		int cap = 1;			/* upper bound on entries = count('<') + 1 */
++		free(snap); free(work); free(macs); free(names);
++		snap = work = NULL; macs = names = NULL; nent = 0;
++		for (q = cur; *q; q++) if (*q == '<') cap++;
++		snap  = strdup(cur);
++		work  = strdup(cur);
++		macs  = malloc((size_t)cap * sizeof(*macs));
++		names = malloc((size_t)cap * sizeof(*names));
++		if (!snap || !work || !macs || !names) {
++			/* allocation failed: drop to a clean empty index; the caller
++			 * falls back to the device's self-reported host name */
++			free(snap); free(work); free(macs); free(names);
++			snap = work = NULL; macs = names = NULL; nent = 0;
++			return;
+ 		}
+-		if (!strcasecmp(f1, mac)) {
+-			snprintf(name, nlen, "%.32s", tok);
+-			break;
++		for (tok = strtok_r(work, "<", &sp); tok && nent < cap;
++		     tok = strtok_r(NULL, "<", &sp)) {
++			char *f1 = strchr(tok, '>');		/* tuple = name > MAC > ... */
++			if (!f1) continue;
++			*f1++ = 0;
++			{ char *f2 = strchr(f1, '>'); if (f2) *f2 = 0; }
++			names[nent] = tok;			/* field 0 = name */
++			macs[nent]  = f1;			/* field 1 = MAC  */
++			nent++;
+ 		}
+ 	}
+-	free(buf);
++	{
++		int i;
++		for (i = 0; i < nent; i++)
++			if (!strcasecmp(macs[i], mac)) {
++				snprintf(name, nlen, "%.32s", names[i]);
++				return;
++			}
++	}
+ }
+ 
+ #define GK_SEEN_TSV "/tmp/gk/seen.tsv"
+@@ -23191,7 +23223,8 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		 * actually present (gkd stamps /tmp/gk/chains.ok when they are). It can
+ 		 * lag "enable" right after a cold boot until the LAN bridge comes up -
+ 		 * the UI surfaces that gap so the admin is never left guessing. */
+-		websWrite(stream, "{\"enable\":%d,\"armed\":%d,\"def\":%d,\"guest_hours\":%d,\"captive\":%d,\"notify\":%d",
++		websWrite(stream, "{\"now\":%ld,\"enable\":%d,\"armed\":%d,\"def\":%d,\"guest_hours\":%d,\"captive\":%d,\"notify\":%d",
++			(long)time(NULL),
+ 			nvram_match("gk_enable", "1") ? 1 : 0,
+ 			f_exists("/tmp/gk/chains.ok") ? 1 : 0,
+ 			nvram_match("gk_default", "1") ? 1 : 0,
+@@ -23467,6 +23500,12 @@ fw_line_is_fwlog(const char *line)
+  * mirrors RFW_CONFIRM_MIN in rc/reaper_fw.c - the timer is the anti-lockout net
+  * (S3), so neither end may accept a 0. */
+ #define RFW_LIST_MAX		8192
++/* The list cap above bounds the whole '<'-separated string, but the engine
++ * copies each record ALONE into a fixed rec[2048] in rfw_find()/rfw_resolve()
++ * (rc/reaper_fw.c) and drops any record that does not fit - silently. A single
++ * over-long record therefore passes the list cap yet never enforces. Keep in
++ * lockstep with that engine buffer. */
++#define RFW_REC_MAX		2048
+ #define RFW_CONFIRM_FLOOR	15
+ #define RFW_CONFIRM_CEIL	3600
+ 
+@@ -23562,12 +23601,17 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		 * and their buffers are gone with it. Raw chains remain available over
+ 		 * the shell for anyone who actually wants them. */
+ 
+-		/* the Reaper rules engine */
++		/* the Reaper rules engine.
++		 * fwen = reaper_fw_enable (what was ASKED for; flips the instant opts writes it)
++		 * fwactive = reaper_fw_active (written LAST by start/stop_reaper_fw once the
++		 *   chains actually exist). A deferred boot leaves fwen=1, fwactive=0, so the
++		 *   page needs both to tell "On" from "enabled but no chains yet". */
+ 		websWrite(stream,
+-			",\"fwen\":%d,\"fwconfirm\":%d,\"fwarmed\":%d,"
++			",\"fwen\":%d,\"fwactive\":%d,\"fwconfirm\":%d,\"fwarmed\":%d,"
+ 			"\"nrules\":%d,\"nobj\":%d,\"ngrp\":%d,\"nsvc\":%d,"
+ 			"\"nzone\":%d,\"nzpol\":%d",
+ 			nvram_match("reaper_fw_enable", "1") ? 1 : 0,
++			nvram_match("reaper_fw_active", "1") ? 1 : 0,
+ 			nvram_get_int("reaper_fw_confirm"),
+ 			nvram_match("reaper_fw_armed", "1") ? 1 : 0,
+ 			fw_list_count(nvram_safe_get("reaper_fw_rules")),
+@@ -23737,7 +23781,21 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 					return;
+ 				}
+ 			}
+-			nvram_set(tbl[i].nv, v);           /* RAM only - see the note above */
++			/* No single '<'-delimited record may exceed the engine's per-record buffer
++				 * (RFW_REC_MAX): rfw_find()/rfw_resolve() copy ONE record at a time and
++				 * drop any that does not fit - silently, so a referencing rule quietly
++				 * stops matching. Reject it HERE, where we can report it. */
++				{
++					const char *a = v, *b;
++					for (; a && *a == '<'; a = b) {
++						b = strchr(a + 1, '<');
++						if ((size_t)((b ? b : v + strlen(v)) - (a + 1)) >= RFW_REC_MAX) {
++							websWrite(stream, "{\"ok\":0,\"error\":\"record too long\"}");
++							return;
++						}
++					}
++				}
++				nvram_set(tbl[i].nv, v);           /* RAM only - see the note above */
+ 			websWrite(stream, "{\"ok\":1}");
+ 			return;
+ 		}
+@@ -24222,6 +24280,22 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ static void rdev_scan_amesh(struct rdev *v, int *n) { (void)v; (void)n; }
+ #endif	/* RTCONFIG_CFGSYNC */
+ 
++/* reaper 2026-08-19 (field report: "mesh nodes show as Wired even when the
++ * wireless mesh backhaul is in use"). is_re_node() consults the cfg_mnt shared
++ * client table and returns 1 for an ACTIVE AiMesh RE node. Wrapped so the
++ * device-classification fallback stays build-agnostic: on a non-cfgsync build
++ * (or a box with no mesh) it is a constant 0 and nothing changes. */
++#ifdef RTCONFIG_CFGSYNC
++static int rdev_is_re_node(const char *mac)
++{
++	char m[18];
++	snprintf(m, sizeof(m), "%s", mac);	/* is_re_node() takes a non-const char* */
++	return is_re_node(m, 1);		/* check_path=1: only an active node */
++}
++#else
++static int rdev_is_re_node(const char *mac) { (void)mac; return 0; }
++#endif
++
+ /* the 2nd hex nibble x2 bit => locally-administered (randomized) MAC */
+ static int rdev_is_rand(const char *mac)
+ {
+@@ -24252,12 +24326,23 @@ static const char *rdev_store_base(char *buf, size_t len)
+ 			return "jffs";
+ 		}
+ 	} else if (!strcmp(mode, "usb")) {
++		/* v2.1.7 parity with rtrafd resolve_store(): an eject (ejusb before the
++		 * services stop) can leave a bare /tmp/mnt/<label> mountpoint DIRECTORY
++		 * behind on tmpfs. Recreating .reaper inside it would write "durable"
++		 * history into RAM - "saved" successfully, gone at reboot. A real USB
++		 * mount has a different st_dev from tmpfs /tmp/mnt, so skip any entry
++		 * that is not actually a mounted filesystem. */
++		struct stat mroot;
+ 		DIR *d = opendir("/tmp/mnt");
+ 		struct dirent *e;
+-		if (d) {
++		if (d && stat("/tmp/mnt", &mroot) == 0) {
+ 			while ((e = readdir(d)) != NULL) {
+ 				char p[128];
++				struct stat ms;
+ 				if (e->d_name[0] == '.') continue;
++				snprintf(p, sizeof(p), "/tmp/mnt/%s", e->d_name);
++				if (stat(p, &ms) != 0 || ms.st_dev == mroot.st_dev)
++					continue;	/* bare dir on tmpfs, not a mount */
+ 				snprintf(p, sizeof(p), "/tmp/mnt/%s/.reaper", e->d_name);
+ 				mkdir(p, 0700);
+ 				if (lstat(p, &st) == 0 && S_ISDIR(st.st_mode) &&
+@@ -24267,8 +24352,8 @@ static const char *rdev_store_base(char *buf, size_t len)
+ 					return "usb";
+ 				}
+ 			}
+-			closedir(d);
+ 		}
++		if (d) closedir(d);
+ 	}
+ 	mkdir("/tmp/reaper", 0700);
+ 	strlcpy(buf, "/tmp/reaper", len);
+@@ -24415,9 +24500,23 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		 * run after the FDB so it can correct that verdict, and before the
+ 		 * fallback below so it can pre-empt it. */
+ 		rdev_scan_amesh(dev, &n);
+-		/* last resort: an online device the FDB never placed and no radio saw */
+-		for (i = 0; i < n; i++)
+-			if (dev[i].online && !dev[i].wifi && !dev[i].wired) dev[i].wired = 1;
++		/* last resort: an online device the FDB never placed and no radio saw
++		 * is Wired - UNLESS it is an AiMesh RE node. A node reaches us over a
++		 * backhaul interface that is frequently neither eth* nor wl*-named
++		 * (WDS/dpsta), so rdev_scan_fdb() leaves it unclassified; a node that a
++		 * real ethernet port did NOT already place Wired is on a wireless
++		 * backhaul (field report 2026-08-19). Conservative: only fires for a
++		 * device the three passes above could not place, so a cabled node
++		 * (Wired via its eth FDB port) is untouched, and on a non-mesh box
++		 * rdev_is_re_node() is always 0 -> every such device is Wired as before. */
++		for (i = 0; i < n; i++) {
++			if (!(dev[i].online && !dev[i].wifi && !dev[i].wired))
++				continue;
++			if (rdev_is_re_node(dev[i].mac))
++				dev[i].wifi = 1;	/* wireless-backhaul node */
++			else
++				dev[i].wired = 1;
++		}
+ 
+ 		/* 4. dhcp_staticlist reservations: <MAC>IP>DNS>HOST */
+ 		buf = strdup(nvram_safe_get("dhcp_staticlist"));
+@@ -24794,9 +24893,10 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		/* requested usb but resolved elsewhere => no writable stick present */
+ 		mounted = (!strcmp(req, loc_eff)) ? 1 : 0;
+ 
+-		websWrite(stream, "{\"loc\":\"%s\",\"loc_eff\":\"%s\",\"mounted\":%d,",
++		websWrite(stream, "{\"loc\":\"%s\",\"loc_eff\":\"%s\",\"mounted\":%d,\"path\":",
+ 			(req && req[0]) ? req : "ram", loc_eff, mounted);
+-		websWrite(stream, "\"ds\":");
++		gk_json_esc(stream, base);
++		websWrite(stream, ",\"ds\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_store_ds"));
+ 		websWrite(stream, ",\"free\":%llu,\"total\":%llu,", freeb, totb);
+ 
+@@ -25073,9 +25173,14 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 			if (fgets(sbuf, sizeof(sbuf), sf)) { char *nl = strchr(sbuf, '\n'); if (nl) *nl = '\0'; }
+ 			fclose(sf);
+ 		}
+-		websWrite(stream, "{\"ok\":1,\"result\":");
+-		gk_json_esc(stream, sbuf);
+-		websWrite(stream, "}");
++		{
++			int tok_ok = 0;
++			char *sp = strrchr(sbuf, ' ');   /* status line "<epoch> <engine> <resp>" */
++			if (sp) { sp++; if (!strcmp(sp, "ok") || sp[0] == '2') tok_ok = 1; }
++			websWrite(stream, "{\"ok\":%d,\"result\":", tok_ok);
++			gk_json_esc(stream, sbuf);
++			websWrite(stream, "}");
++		}
+ 		return;
+ 	}
+ 
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index eff74417f5..6082bf68dd 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -89,6 +89,8 @@ void write_ovpn_dnsmasq_config(FILE* dnsmasq_conf) {
+ 	write_ovpn_client_dnsmasq_config(dnsmasq_conf);
+ }
+ 
++static int ovpn_host_safe(const char *s);	/* fwd: charset gate defined below */
++
+ void write_ovpn_server_dnsmasq_config(FILE* dnsmasq_conf) {
+ 	char prefix[16];
+ 	int unit;
+@@ -96,8 +98,14 @@ void write_ovpn_server_dnsmasq_config(FILE* dnsmasq_conf) {
+ 	// Add interfaces for servers that provide DNS services
+ 	for (unit = 1; unit <= OVPN_SERVER_MAX; unit++) {
+ 		sprintf(prefix, "vpn_server%d_", unit);
+-		if (nvram_pf_get_int(prefix, "pdns"))
+-			fprintf(dnsmasq_conf, "interface=%s%d\n", nvram_pf_safe_get(prefix, "if"), OVPN_SERVER_BASE + unit);
++		if (nvram_pf_get_int(prefix, "pdns")) {
++			const char *ifn = nvram_pf_safe_get(prefix, "if");
++			/* the "if" value ("tun"/"tap") is spliced into a dnsmasq directive;
++			 * a newline in it would inject arbitrary config.  Emit only when it
++			 * passes the interface-name charset gate. */
++			if (ovpn_host_safe(ifn))
++				fprintf(dnsmasq_conf, "interface=%s%d\n", ifn, OVPN_SERVER_BASE + unit);
++		}
+ 	}
+ }
+ 
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 480463b200..659f694c32 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3312,6 +3312,16 @@ int start_hwqos_classful(void)
+ 		return -1;
+ 	}
+ 
++	/* qos_obw is the user's MEASURED upload (honest decimal kbps). Shape the
++	 * egress aggregate at ~90% so the ROUTER owns the bottleneck and the ISP's
++	 * upstream buffer stays drained - a shaper at 100% of measured leaves the
++	 * standing queue at the ISP and defeats QoS. This is the SAME 10% headroom
++	 * already applied to the ingress policer below (prate = ibw - ibw/10) and to
++	 * both cake directions. Applied ONCE here so every egress consumer inherits
++	 * it: per-class calc(obw,ceil/rate), the qid 0 / qid 6 caps, and the port
++	 * shaper. Do NOT also bake headroom into the page or a second engine site. */
++	obw -= obw / 10;
++
+ 	/* same shell-safety guard as start_hwqos: wan_ifname is single-quoted in
+ 	 * the generated root script; reject anything that isn't a plain interface
+ 	 * name and fall back to an empty (inert) WANIF rather than emit it. */
+@@ -3417,9 +3427,9 @@ int start_hwqos_classful(void)
+ 			fprintf(f, "\t[ -n \"$QS\" ] && tmctl setqcfg --devtype 0 --if $WANIF --qid %d --priority %d --qsize $QS --schedmode %d --weight %d --l4s %d\n",
+ 				qid, qid, sched_w[i] > 0 ? 2 : 1, sched_w[i] > 0 ? sched_w[i] : 1, l4s ? 1 : 0);
+ 		}
+-		/* obw==0 means "no bandwidth configured" -> leave the class unshaped,
+-		 * matching start_hwqos. (calc() floors to 2, so without this guard a
+-		 * blank OBW would throttle every 1..99%% class to ~2 kbit.) */
++		/* obw is guaranteed > 0 here - the function returns -1 above when
++		 * qos_obw is empty - so the obw > 0 guards below are belt-and-suspenders,
++		 * not the branch selector the old comment implied. */
+ 		cap = (obw > 0 && ceil >= 1 && ceil < 100) ? calc(obw, ceil) : obw;
+ 		minr = (minrates && obw > 0 && rate >= 1 && rate <= 100) ? calc(obw, rate) : 0;
+ 		if (cap > 0 && minr > cap)
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 2b5d5cd8b3..0252cae64c 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -1096,7 +1096,10 @@ static int rfw_count_ports(const char *p)
+ {
+ 	int n = 1;
+ 	if (!p || !*p) return 0;
+-	for (; *p; p++) if (*p == ',') n++;
++	/* a LOW:HIGH range counts as TWO ports to iptables multiport, so the
++	 * <=RFW_MAX_PORTS cap must count ':' as well as ',' or an 8-range service
++	 * passes the gate then emits a multiport line iptables rejects. */
++	for (; *p; p++) if (*p == ',' || *p == ':') n++;
+ 	return n;
+ }
+ 
+@@ -1250,9 +1253,29 @@ static void rfw_emit_rule(FILE *f, const rfw_cfg_t *c, const char *rec, int ridx
+ 	ndi = rfw_zone_ifaces(c, dzone, difs, RFW_MAX_IFACE);
+ 	if (szone[0] && nsi == 0) return;
+ 	if (dzone[0] && ndi == 0) return;
+-	/* -i is meaningless in OUTPUT and -o is meaningless in INPUT */
+-	if (d == RFW_D_OUT) nsi = 0;
+-	if (d == RFW_D_IN)  ndi = 0;
++	/* -i is meaningless in OUTPUT and -o is meaningless in INPUT, so the
++	 * direction-incompatible zone's interfaces cannot be matched on this chain.
++	 * Zeroing them silently, though, turns a rule whose ONLY constraint is that
++	 * unmatchable zone into a match over EVERY interface (e.g. dir=out with just
++	 * src-zone=Guest would drop all output). If zeroing leaves the rule with no
++	 * constraint at all - no interface, no address set (nss/nds) - and the
++	 * incompatible side actually carried a zone, drop it instead of emitting the
++	 * over-broad rule. A rule that still has the compatible-side interface or a
++	 * set/service constraint is kept (it just loses the unmatchable zone). */
++	if (d == RFW_D_OUT) {
++		if (szone[0] && ndi == 0 && nss == 0 && nds == 0) {
++			if (!v6) logmessage("reaper_fw", "rule %d: source zone cannot match on OUTPUT and no other constraint remains - DROPPED", ridx);
++			return;
++		}
++		nsi = 0;
++	}
++	if (d == RFW_D_IN) {
++		if (dzone[0] && nsi == 0 && nss == 0 && nds == 0) {
++			if (!v6) logmessage("reaper_fw", "rule %d: destination zone cannot match on INPUT and no other constraint remains - DROPPED", ridx);
++			return;
++		}
++		ndi = 0;
++	}
+ 
+ 	/* service -> protocol(s) + ports */
+ 	proto[0][0] = 0;
+@@ -1453,7 +1476,7 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 	if (!(dup = strdup(c->nat))) return;
+ 
+ 	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+-		char en[4], proto[12], eport[24], iip[64], iport[24];
++		char en[4], proto[12], eport[24], iip[64], iport[24], toport[24];
+ 		char sobj[RFW_NAME_MAX + 2], logf[4], sched[96], schedfrag[160];
+ 		char srcfrag[128] = "";
+ 		rfw_setname_t sets[RFW_MAX_SETS];
+@@ -1465,10 +1488,10 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 			break;
+ 		}
+ 		if (!rfw_field(tok, 0, en, sizeof(en)) || strcmp(en, "1") != 0) continue;
+-		if (!rfw_field(tok, 1, proto, sizeof(proto)) || !rfw_valid_proto(proto)) continue;
+-		if (!rfw_field(tok, 2, eport, sizeof(eport)) || !rfw_valid_ports(eport)) continue;
+-		if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip)) continue;
+-		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) continue;
++		if (!rfw_field(tok, 1, proto, sizeof(proto)) || !rfw_valid_proto(proto)) { logmessage("reaper_fw", "forward: invalid protocol - DROPPED"); continue; }
++		if (!rfw_field(tok, 2, eport, sizeof(eport)) || !rfw_valid_ports(eport)) { logmessage("reaper_fw", "forward: invalid external port - DROPPED"); continue; }
++		if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip)) { logmessage("reaper_fw", "forward: invalid internal IP - DROPPED"); continue; }
++		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) { logmessage("reaper_fw", "forward: invalid internal port - DROPPED"); continue; }
+ 		if (!rfw_field(tok, 5, sobj, sizeof(sobj))) sobj[0] = 0;
+ 		if (!rfw_field(tok, 6, logf, sizeof(logf))) logf[0] = 0;
+ 		if (!rfw_field(tok, 7, sched, sizeof(sched))) sched[0] = 0;
+@@ -1482,8 +1505,18 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 			logmessage("reaper_fw", "forward %s: internal port cannot be a list - DROPPED", eport);
+ 			continue;
+ 		}
++		/* DNAT --to-destination wants a HYPHEN between the low and high port of a
++		 * range (ip:lo-hi), whereas iptables --dport takes the COLON form (lo:hi).
++		 * iport arrives colon-separated and comma-free (checked just above), so
++		 * translate the range separator for the TARGET only; eport and the
++		 * companion FORWARD --dport keep the colon form. */
++		{
++			char *cp;
++			strlcpy(toport, iport, sizeof(toport));
++			if ((cp = strchr(toport, ':')) != NULL) *cp = '-';
++		}
+ 		if (sobj[0]) {
+-			if (!rfw_valid_name(sobj)) continue;
++			if (!rfw_valid_name(sobj)) { logmessage("reaper_fw", "forward: invalid source object - DROPPED"); continue; }
+ 			if (rfw_ref_is_mac(c, sobj)) {
+ 				/* a MAC never survives a routed hop, so it can never match on
+ 				 * traffic arriving from the WAN */
+@@ -1517,7 +1550,7 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 				fprintf(f, "[ -n \"$WANIF\" ] && RFWR iptables -t nat -A " RFW_CHAIN_NAT
+ 				           " -i \"$WANIF\" -p %s --dport %s%s%s"
+ 				           " -j DNAT --to-destination %s:%s\n",
+-				        protos[pv], eport, srcfrag, schedfrag, iip, iport);
++				        protos[pv], eport, srcfrag, schedfrag, iip, toport);
+ 
+ 				/* the companion filter ACCEPT - see the header comment */
+ 				fprintf(f, "[ -n \"$WANIF\" ] && RFWR iptables -A " RFW_CHAIN_FWD
+@@ -1572,14 +1605,21 @@ static void rfw_emit_rules(FILE *f, const rfw_cfg_t *c, int v6, int want)
+  * a disabled-by-config apply share one code path. */
+ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only)
+ {
+-	FILE *f = fopen(path, "w");
+ 	/* worst case is RFW_MAX_OBJ objects x 2 families x (prefix + name + space);
+ 	 * strlcat truncates rather than overflows, but a truncated keep-list would
+ 	 * make the sweep try to destroy a set that is actually in use, so size it
+ 	 * past the real maximum instead of relying on that. */
+ 	char keep[RFW_MAX_OBJ * 2 * (sizeof(RFW_SET6) + RFW_NAME_MAX + 2)];
++	char tmp[160];
++	FILE *f;
+ 	int d;
+ 
++	/* atomic publish: write to <path>.tmp then rename over <path>, so a reader
++	 * (start_firewall execs these AFTER releasing file_lock("firewall")) can
++	 * never exec a half-written script. Matches rfw_write_lastgood() /
++	 * rfw_gen_dnsmasq(), which already temp+rename. */
++	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
++	f = fopen(tmp, "w");
+ 	if (!f) return 0;
+ 	keep[0] = 0;
+ 
+@@ -1759,6 +1799,7 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "  exit 3\n"
+ 	  "fi\n");
+ 	fclose(f);
++	if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 	return 1;
+ }
+ 
+@@ -2153,6 +2194,7 @@ void reaper_fw_apply(void)
+ 		 * or lets commit-confirm revert it. exit 0 is a clean apply. */
+ 		if (code != 0 && code != 3) {
+ 			file_unlock(lock);
++			nvram_set("reaper_fw_err", "candidate ruleset failed to build - rolled back");
+ 			logmessage("reaper_fw", "candidate ruleset FAILED to build - rolling back now");
+ 			system("sh " RFW_ROLLBACK " 2>/dev/null");
+ 			rfw_cfg_free(&c);
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index d285580d47..e4a42a0f52 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -96,6 +96,7 @@ static void rexport_gen(void)
+ 	  "  else\n"
+ 	  "    echo \"$NOW syslog fail\" > \"$STAT\"; logger -t rexport \"syslog-tls export failed\"\n"
+ 	  "  fi\n"
++	  "  [ \"$SRCF\" = /tmp/rexport.src ] && rm -f /tmp/rexport.src\n"
+ 	  "  exit 0\n"
+ 	  "fi\n"
+ 	  "\n"
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 2f4c1465bc..dfc006cff0 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -152,7 +152,7 @@ static int rw_valid_cidr(const char *s)
+  * "ffff:...:ffff/128" = 43 chars. */
+ static int rw_valid_cidr6(const char *s)
+ {
+-	int colon = 0, slash = 0, nhex = 0, prefix = -1;
++	int colon = 0, slash = 0, prefix = -1;
+ 	const char *p;
+ 	if (!s || !*s || strlen(s) > 43) return 0;
+ 	for (p = s; *p; p++) {
+@@ -170,7 +170,7 @@ static int rw_valid_cidr6(const char *s)
+ 		}
+ 		if ((*p >= '0' && *p <= '9') ||
+ 		    (*p >= 'a' && *p <= 'f') ||
+-		    (*p >= 'A' && *p <= 'F')) { nhex++; continue; }
++		    (*p >= 'A' && *p <= 'F')) { continue; }
+ 		if (*p == ':') { colon++; continue; }
+ 		return 0;                 /* any other char -> reject */
+ 	}
+@@ -774,6 +774,15 @@ static void rw_gen_update(void)
+ 	fprintf(f,
+ 	  "#!/bin/sh\n"
+ 	  "# generated by start_rwarden - fetch feeds -> ipset, cache to jffs\n"
++	  /* SERIALIZE runs. The cron refresh and an on-demand "update now" can fire
++	   * together; without a lock they share $NEW/$NEW6 and the fixed
++	   * rw_threat_tmp/rw_threat6_tmp swap sets, so one truncates the other and a
++	   * partial set is persisted to /jffs. busybox here has CONFIG_FLOCK=y, so
++	   * take an exclusive non-blocking lock on fd 9 held for the life of the
++	   * script; a second concurrent run exits at once. */
++	  "mkdir -p /tmp/rwarden 2>/dev/null\n"
++	  "exec 9>/tmp/rwarden/update.lock\n"
++	  "flock -n 9 || { logger -t rwarden \"feed update already in progress - skipping this run\"; exit 0; }\n"
+ 	  /* --max-filesize: /tmp is tmpfs, i.e. RAM. Without a cap, one oversized
+ 	   * or hostile list is a memory-exhaustion event on the router, and custom
+ 	   * feeds put that URL under user control. 32 MiB is ~20x the largest
+@@ -806,7 +815,8 @@ static void rw_gen_update(void)
+ 	  "for s in rw_threat; do ipset create $s hash:net -exist; done\n"
+ 	  "for s in rw_threat6; do ipset create $s hash:net family inet6 -exist; done\n"
+ 	  "NEW=/tmp/rwarden/threat.new; : > $NEW\n"
+-	  "NEW6=/tmp/rwarden/threat6.new; : > $NEW6\n");
++	  "NEW6=/tmp/rwarden/threat6.new; : > $NEW6\n"
++	  "OK=0\n");
+ 	/* enabled threat feeds (v4 always; v6 when the feed offers a v6 list) */
+ 	list = strdup(nvram_safe_get("rwarden_feeds"));
+ 	if (list) {
+@@ -816,6 +826,7 @@ static void rw_gen_update(void)
+ 			fprintf(f,
+ 			  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
+ 			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 >> $NEW\n"
++			  "  OK=1\n"
+ 			  "else\n"
+ 			  "  logger -t rwarden \"threat feed fetch FAILED: %s\"\n"
+ 			  "fi\n", fd->url, fd->url);
+@@ -823,6 +834,7 @@ static void rw_gen_update(void)
+ 				fprintf(f,
+ 				  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
+ 				  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 >> $NEW6\n"
++				  "  OK=1\n"
+ 				  "fi\n", fd->url6);
+ 		}
+ 		free(list);
+@@ -866,6 +878,7 @@ static void rw_gen_update(void)
+ 			fprintf(f,
+ 			  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
+ 			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 >> $NEW\n"
++			  "  OK=1\n"
+ 			  "else\n"
+ 			  "  logger -t rwarden \"custom feed fetch FAILED: %s\"\n"
+ 			  "fi\n", u4, nm);
+@@ -873,6 +886,7 @@ static void rw_gen_update(void)
+ 				fprintf(f,
+ 				  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
+ 				  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 >> $NEW6\n"
++				  "  OK=1\n"
+ 				  "fi\n", u6);
+ 		}
+ 		free(list);
+@@ -927,7 +941,8 @@ static void rw_gen_update(void)
+ 			  "    grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 | while read n; do ipset add rw_g_%s_t $n -exist; done\n"
+ 			  "  fi\n"
+ 			  "  ipset swap rw_g_%s_t rw_g_%s; ipset destroy rw_g_%s_t\n"
+-			  "else logger -t rwarden \"geo v4 fetch FAILED for %s - keeping last-good\"; fi\n",
++			  "  OK=1\n"
++				  "else logger -t rwarden \"geo v4 fetch FAILED for %s - keeping last-good\"; fi\n",
+ 			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
+ 			/* IPv6 (same batch + fallback shape) */
+ 			fprintf(f,
+@@ -941,7 +956,8 @@ static void rw_gen_update(void)
+ 			  "    grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 | while read n; do ipset add rw_g6_%s_t $n -exist; done\n"
+ 			  "  fi\n"
+ 			  "  ipset swap rw_g6_%s_t rw_g6_%s; ipset destroy rw_g6_%s_t\n"
+-			  "else logger -t rwarden \"geo v6 fetch FAILED for %s - keeping last-good\"; fi\n",
++			  "  OK=1\n"
++				  "else logger -t rwarden \"geo v6 fetch FAILED for %s - keeping last-good\"; fi\n",
+ 			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
+ 		}
+ 		free(list);
+@@ -961,7 +977,8 @@ static void rw_gen_update(void)
+ 	  "done\n"
+ 	  "if [ -s " RW_SAVE ".tmp ]; then mv " RW_SAVE ".tmp " RW_SAVE "\n"
+ 	  "else rm -f " RW_SAVE ".tmp; logger -t rwarden \"cache save produced no data - /jffs cache left unchanged\"; fi\n"
+-	  "nvram set rwarden_lastupd=$(date +%%s); nvram commit\n"
++	  "if [ \"$OK\" = 1 ]; then nvram set rwarden_lastupd=$(date +%%s); nvram commit\n"
++	  "else logger -t rwarden \"feed update: no feed produced data (all fetches failed) - rwarden_lastupd left unchanged\"; fi\n"
+ 	  "logger -t rwarden \"feeds updated: threat=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p')\"\n");
+ 	/* Newly-added threat/geo members do not affect already-offloaded flows;
+ 	 * flush the flow cache so existing flows to a now-blocked peer re-traverse
+@@ -1027,14 +1044,11 @@ static void rw_gen_fold(void)
+ 	   * truncate the other's listing mid-read and bank a zero. */
+ 	  "TMPCC=" RW_CCTMP ".$$\n"
+ 	  "TMPCH=" RW_CHTMP ".$$\n"
+-	  "# opt-out: keep counting live in iptables, persist nothing\n"
+-	  "[ \"$(nvram get rwarden_stats_save)\" = 0 ] && exit 0\n"
+-	  "# not armed -> nothing to bank. This is the normal case at boot and right\n"
+-	  "# after the C teardown, so it must be a silent no-op.\n"
++	  "# not armed -> nothing to bank or reset. This is the normal case at boot and\n"
++	  "# right after the C teardown, so it must be a silent no-op.\n"
+ 	  "iptables -nL RW_DROP >/dev/null 2>&1 || exit 0\n"
+ 	  "NOW=$(date +%s)\n"
+ 	  "mkdir -p \"$DIR\" 2>/dev/null\n"
+-	  "{ [ -d \"$DIR\" ] && [ -w \"$DIR\" ]; } || exit 0\n"
+ 	  "# one-time migration from the v2.2.1 single-value baseline (no per-country\n"
+ 	  "# history existed then, and no window start - stamp the window as now)\n"
+ 	  "if [ ! -f \"$CTR\" ] && [ -f " RW_BASE " ]; then\n"
+@@ -1043,7 +1057,10 @@ static void rw_gen_fold(void)
+ 	  "fi\n"
+ 	  "SINCE=$(awk '$1==\"SINCE\"{print $2+0; exit}' \"$CTR\" 2>/dev/null)\n"
+ 	  "case \"$SINCE\" in ''|0|*[!0-9]*) SINCE=$NOW;; esac\n"
+-	  "# retention window (rwarden_reset): wipe the store and restart the window\n"
++	  "# RETENTION WINDOW (rwarden_reset): zeroing the LIVE iptables counters on the\n"
++	  "# interval IS the reset, and is INDEPENDENT of whether stats are persisted -\n"
++	  "# so it runs BEFORE the rwarden_stats_save opt-out below. The -Z loop is\n"
++	  "# unconditional; only the window-anchor write to $CTR is best-effort.\n"
+ 	  "case \"$(nvram get rwarden_reset)\" in\n"
+ 	  "  24h) IV=86400;; 7d) IV=604800;; 30d) IV=2592000;; 90d) IV=7776000;; *) IV=0;;\n"
+ 	  "esac\n"
+@@ -1052,10 +1069,14 @@ static void rw_gen_fold(void)
+ 	  "    iptables -Z \"$C\" 2>/dev/null; ip6tables -Z \"$C\" 2>/dev/null\n"
+ 	  "  done\n"
+ 	  "  { echo \"SINCE $NOW\"; echo \"TOTAL 0\"; } > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null\n"
+-	  "  rm -f \"$TMPCC\"\n"
+ 	  "  logger -t rwarden \"block statistics reset - retention interval reached\"\n"
+ 	  "  exit 0\n"
+ 	  "fi\n"
++	  "# STATISTICS PERSISTENCE (rwarden_stats_save opt-out): everything below banks\n"
++	  "# the accumulating counters to /jffs. Skipped when save is off; live counting\n"
++	  "# in iptables and the retention reset above are unaffected.\n"
++	  "[ \"$(nvram get rwarden_stats_save)\" = 0 ] && exit 0\n"
++	  "{ [ -d \"$DIR\" ] && [ -w \"$DIR\" ]; } || exit 0\n"
+ 	  "# Read the counters, WRITE the store, and only then zero what was banked.\n"
+ 	  "# Ordering matters both ways round:\n"
+ 	  "#  - zero-before-write would lose the delta if the /jffs write failed, and\n"
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index c9639f1676..c21530f65c 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -69,7 +69,7 @@ static void rwatch_gen(void)
+ 	  "  M=\"$(nvram get reaper_store)\"\n"
+ 	  "  case \"$M\" in\n"
+ 	  "    jffs) mkdir -p /jffs/reaper 2>/dev/null; [ -d /jffs/reaper ] && [ -w /jffs/reaper ] && { echo /jffs/reaper; return; } ;;\n"
+-	  "    usb)  for d in /tmp/mnt/*/; do [ -d \"$d\" ] || continue; b=\"${d}.reaper\"; mkdir -p \"$b\" 2>/dev/null; [ -d \"$b\" ] && [ -w \"$b\" ] && { echo \"$b\"; return; }; done ;;\n"
++	  "    usb)  for d in /tmp/mnt/*/; do [ -d \"$d\" ] || continue; m=\"${d%/}\"; grep -qF \" $m \" /proc/mounts 2>/dev/null || continue; b=\"${d}.reaper\"; mkdir -p \"$b\" 2>/dev/null; [ -d \"$b\" ] && [ -w \"$b\" ] && { echo \"$b\"; return; }; done ;;\n"
+ 	  "  esac\n"
+ 	  "  mkdir -p /tmp/reaper 2>/dev/null; echo /tmp/reaper\n"
+ 	  "}\n"
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 471d6b53d9..b34d7f8cdc 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7723,7 +7723,7 @@ start_rchqd(void)
+ {
+ 	stop_rchqd();
+ 	if (!is_routing_enabled()) return;
+-	if (nvram_match("rchq_enable", "0")) return;
++	if (!nvram_get_int("rchq_enable")) return;	/* fail closed like rchqd, which exits on !nvram_get_int */
+ 	xstart("rchqd");
+ }
+ 
+@@ -7745,6 +7745,9 @@ stop_rmcp(void)
+ 		killall_tk("rmcpd");
+ }
+ 
++/* definition lives with the boot sweep further down this file */
++static void reaper_mcp_sweep_stale(int drop_session);
++
+ void
+ start_rmcp(void)
+ {
+@@ -7755,6 +7758,14 @@ start_rmcp(void)
+ 		logmessage("rmcpd", "start requested with no armed session - ignoring");
+ 		return;
+ 	}
++	/* reaper: the boot-only sweep never fires for its real target - an unclean
++	 * rmcpd exit (SIGKILL/SEGV) WHILE THE BOX STAYS UP, which leaves the prior LAN
++	 * ACCEPT rule installed (/tmp is wiped only on reboot, so at boot there is
++	 * nothing left to sweep). stop_rmcp() above has already reaped any live
++	 * daemon, so with rmcpd down, drop that lingering rule HERE before the fresh
++	 * daemon installs its own. Pass 0: KEEP the session httpd just wrote (removing
++	 * it would stop the new daemon from arming); the boot path passes 1. */
++	reaper_mcp_sweep_stale(0);
+ 	xstart("rmcpd");
+ }
+ 
+@@ -7771,15 +7782,22 @@ static int rmcp_ipv4_literal_ok(const char *s)
+ 	return 1;
+ }
+ 
+-/* reaper v1.4.4: boot-time stale-rule sweep. Normally the daemon's atexit/signal
+- * cleanup removes its LAN INPUT ACCEPT rule and /tmp/reaper_mcp/session. If it
+- * died abnormally (SIGKILL/SEGV) that cleanup never ran and both can linger -
+- * inert (the daemon is gone) but untidy, and the port match stays open. On boot,
+- * with rmcpd NOT running, reconstruct the exact rule from nvram + the session's
+- * recorded client and tear it down. A clean boot has neither file nor rule, so
+- * this is a no-op. */
+-void
+-reaper_mcp_boot_sweep(void)
++/* reaper v1.4.4: stale-rule sweep. Normally the daemon's atexit/signal cleanup
++ * removes its LAN INPUT ACCEPT rule and /tmp/reaper_mcp/session. If it died
++ * abnormally (SIGKILL/SEGV) that cleanup never ran and both can linger - inert
++ * (the daemon is gone) but untidy, and the port match stays open. With rmcpd NOT
++ * running, reconstruct the exact rule from nvram + the session's recorded client
++ * and tear it down.
++ *
++ * drop_session:
++ *   1 (boot path)   - also unlink the session; a clean boot has neither file nor
++ *                     rule, so the whole call is a no-op.
++ *   0 (re-arm path) - KEEP the session. start_rmcp() calls this AFTER httpd has
++ *                     already written the NEW armed session, purely to drop a
++ *                     rule an unclean prior exit left behind before the fresh
++ *                     daemon installs its own; unlinking here would delete the
++ *                     valid new session and break arming. */
++static void reaper_mcp_sweep_stale(int drop_session)
+ {
+ 	char client[64] = "";
+ 	char cmd[256];
+@@ -7837,8 +7855,20 @@ reaper_mcp_boot_sweep(void)
+ 		system(cmd);
+ 	}
+ 
+-	unlink("/tmp/reaper_mcp/session");
+-	logmessage("rmcpd", "boot: cleared stale advisor rule/session left by an unclean exit");
++	if (drop_session) {
++		unlink("/tmp/reaper_mcp/session");
++		logmessage("rmcpd", "boot: cleared stale advisor rule/session left by an unclean exit");
++	} else {
++		logmessage("rmcpd", "re-arm: cleared a stale advisor ACCEPT rule left by an unclean exit");
++	}
++}
++
++/* boot-path wrapper: preserves the extern symbol and the start_services boot
++ * call site, and still removes the now-redundant session file. */
++void
++reaper_mcp_boot_sweep(void)
++{
++	reaper_mcp_sweep_stale(1);
+ }
+ #endif
+ 
+@@ -21942,7 +21972,7 @@ retry_wps_enr:
+ 	}
+ 	else if (strcmp(script, "rwarden_update") == 0)	/* reaper v1.8.0 Warden feed refresh on demand (UI "Update now") */
+ 	{
+-		if(action & RC_SERVICE_START) doSystem("sh /tmp/rwarden/update.sh");
++		if((action & RC_SERVICE_START) && f_exists("/tmp/rwarden/update.sh")) doSystem("sh /tmp/rwarden/update.sh");
+ 	}
+ 	/* reaper v2.3.8 native firewall rules engine. The four verbs are separate
+ 	 * services rather than one with arguments so each is individually auditable
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index 8212b00f11..f3d53aa357 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -511,9 +511,16 @@ static void sb_scrub_sec_tuples(sbuf_t *in)
+ {
+ 	sbuf_t out;
+ 	size_t i = 0;
++	/* SEC_AUTH tokens are compile-time constants; hoist their lengths out of
++	 * the per-boundary match loop (was ~one strlen per token per '>'/'<'
++	 * boundary across the whole payload). Output is byte-identical. */
++	size_t sec_len[sizeof(SEC_AUTH) / sizeof(SEC_AUTH[0])];
++	int nsec;
+ 
+ 	if (!in->p || !in->len)
+ 		return;
++	for (nsec = 0; SEC_AUTH[nsec]; nsec++)
++		sec_len[nsec] = strlen(SEC_AUTH[nsec]);
+ 	sb_init(&out);
+ 	if (!out.p) {
+ 		/* same fail-closed contract as sb_scrub_secrets() */
+@@ -527,8 +534,8 @@ static void sb_scrub_sec_tuples(sbuf_t *in)
+ 		int f, matched = 0;
+ 		int at_bound = (i == 0 || in->p[i - 1] == '>' || in->p[i - 1] == '<');
+ 
+-		for (f = 0; at_bound && SEC_AUTH[f] && !matched; f++) {
+-			size_t fl = strlen(SEC_AUTH[f]);
++		for (f = 0; at_bound && f < nsec && !matched; f++) {
++			size_t fl = sec_len[f];
+ 			size_t j;
+ 
+ 			if (i + fl >= in->len ||
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index c0239a205c..d6da517230 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -193,6 +193,11 @@ static void brsub_refresh(void)
+ 	struct ifconf ifc;
+ 	struct ifreq buf[32], ifr;
+ 	int s, i, n;
++	static time_t brsub_when = 0;	/* bridges are a human-speed event; cache like netlbl_refresh */
++	time_t now = time(NULL);
++
++	if (brsub_when && (now - brsub_when) < 30) return;
++	brsub_when = now;
+ 
+ 	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0) return;
+ 	memset(&ifc, 0, sizeof(ifc));
+@@ -434,12 +439,6 @@ static int net_slot(const char *name)
+ 	return nnet++;
+ }
+ 
+-static void ip2str(uint32_t ip, char *out /* >=16 */)
+-{
+-	snprintf(out, 16, "%u.%u.%u.%u",
+-		 (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+-}
+-
+ /* LAN-side interface -> its bridge (per-network grouping). A port's bridge is
+  * /sys/class/net/<dev>/master; wireless VIFs (wl2.1) and wired ports resolve to
+  * br0/br1/... Cached; unbridged devices report under their own name. */
+@@ -827,7 +826,7 @@ static void poll_classes(const char *wanif)
+ {
+ 	int qid;
+ 	char cmd[160], line[160];
+-	if (!(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11)) {
++	if (!cfg_qos_on) {			/* cached at 1 Hz (refresh_cfg), same test */
+ 		have_cls_last = 0;
+ 		return;
+ 	}
+@@ -904,7 +903,7 @@ static struct { uint64_t nfc; time_t seen; int miss; } connseen[CONNSEEN_MAX];
+ static int connseen_n = 0;
+ static void connseen_update(struct fcf *fl, int nfl)
+ {
+-	int i, j;
++	int i, j, dirty = 0;
+ 	time_t now = time(NULL);
+ 	FILE *cf;
+ 
+@@ -919,14 +918,19 @@ static void connseen_update(struct fcf *fl, int nfl)
+ 			connseen[connseen_n].seen = now;
+ 			connseen_n++;
+ 			j = connseen_n - 1;
++			dirty = 1;			/* new flow -> file content changed */
+ 		}
+ 		connseen[j].miss = 0;
+ 	}
+ 	for (i = 0; i < connseen_n; ) {
+-		if (connseen[i].miss > 12) connseen[i] = connseen[--connseen_n];
++		if (connseen[i].miss > 12) { connseen[i] = connseen[--connseen_n]; dirty = 1; }
+ 		else i++;
+ 	}
+-	if ((cf = fopen("/tmp/reaper_conn_seen", "w")) != NULL) {
++	/* the file holds only (nfc, seen) per live flow, and neither changes for an
++	 * existing entry - so when nothing was added or evicted the on-disk content
++	 * is byte-identical and the ~40 KB rewrite is pure waste (v2.0.6 rewrote it
++	 * every poll regardless; the reader keys by nfc and never checks mtime). */
++	if (dirty && (cf = fopen("/tmp/reaper_conn_seen", "w")) != NULL) {
+ 		for (i = 0; i < connseen_n; i++)
+ 			fprintf(cf, "%llx %ld\n",
+ 				(unsigned long long)connseen[i].nfc, (long)connseen[i].seen);
+@@ -1340,7 +1344,7 @@ static void probe_close_bucket(void)
+ /* ---------- quota ---------- */
+ static void check_quota(void)
+ {
+-	uint64_t cap_gb = strtoull(nvram_safe_get("rtraf_cap_gb"), NULL, 10);
++	uint64_t cap_gb = cfg_cap_gb;		/* cached at 1 Hz (refresh_cfg) */
+ 	uint64_t used;
+ 	if (cap_gb > 1000000ULL) cap_gb = 1000000ULL;	/* F14: avoid u64 overflow below */
+ 	struct tm tm;
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 9d523854c7..a8517dacd0 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3212,7 +3212,7 @@ struct nvram_tuple router_defaults[] = {
+ 	 * the engine never creates a parallel country set; overlap is surfaced in the UI. Big
+ 	 * lists spill to /jffs when nvram-pressured. */
+ 	{ "reaper_fw_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (default off) */
+-	{ "reaper_fw_confirm", "60", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* commit-confirm auto-revert seconds (0 = off; the anti-lockout net, keep >0) */
++	{ "reaper_fw_confirm", "60", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* commit-confirm auto-revert seconds; clamped to 15-3600, 0 is promoted (never off) - the anti-lockout net */
+ 	{ "reaper_fw_obj", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address objects: <name>type>value>comment ; type=host|cidr|range|mac|fqdn|geo (geo value=CC ref to Warden) */
+ 	{ "reaper_fw_grp", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address groups: <name>member,member,...>comment (members = object names) */
+ 	{ "reaper_fw_svc", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* service objects: <name>proto>ports>comment ; proto=tcp|udp|both|icmp, ports=list/range */
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 77bc2b3c51..96cfdaad3c 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -41,7 +41,7 @@
+ @font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
+ @font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
+ :root{
+-  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418; --panel-3:#1b1b20;
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C; --crimson-dim:#7A0C0C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+@@ -148,7 +148,7 @@ main{min-width:0}
+    single row that must NOT wrap on desktop: brand and buttons stay fixed,
+    the pill strip shrinks between them (media queries below drop the
+    lowest-priority pills before anything can clip at 1080p widths) */
+-.top{display:flex;align-items:center;gap:14px;padding:10px 18px;flex-wrap:nowrap;
++.top{display:flex;align-items:center;gap:14px;padding:14px 18px;flex-wrap:nowrap;
+   border-bottom:1px solid var(--line-soft);box-shadow:0 1px 0 rgba(225,6,0,.12);
+   background:#040405;position:sticky;top:0;z-index:10}
+ .brand{display:flex;align-items:center;flex:0 0 auto;text-decoration:none}
+@@ -1210,7 +1210,7 @@ function renderClients(){
+   var list=LIVE_CLIENTS[sel.value]||[], h='';
+   for(var i=0;i<list.length;i++){ h+='<div class="cl-item"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span>'+(list[i].ip6?' &middot; <span class="mono">'+esc(list[i].ip6)+'</span>':'')+' &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div>'; }
+   if(!h) h=`<div class="cd" style="padding:8px"><#RDSH_77#></div>`;
+-  var box=$id('cl_list'); if(box) box.innerHTML=h;
++  var box=$id('cl_list'); if(box && h!==box._rh){ box.innerHTML=h; box._rh=h; }   /* skip identical rebuild: preserves scroll position + text selection while reading */
+ }
+ function setBand(barId,nId,count,total){
+   var b=$id(barId), n=$id(nId);
+@@ -1366,7 +1366,7 @@ function pollPorts(){
+         var code=sp[keys[i]], up=(code!=='X');
+         h+='<div class="port'+(up?' up':'')+((keys[i].indexOf('WAN')===0)?' wan':'')+'"><div class="pn">'+esc(keys[i])+'</div><div class="ps">'+(up?((SPEEDMAP[code]||code)+` \u00b7 <#RDSH_79#>`):'&mdash;')+'</div><div class="led"></div></div>';
+       }
+-      var box=$id('eth_ports'); if(box) box.innerHTML=h;
++      var box=$id('eth_ports'); if(box && h!==box._rh){ box.innerHTML=h; box._rh=h; }   /* skip identical rebuild (preserve selection) */
+     }catch(e){}
+   };
+   x.send();
+diff --git a/release/src/router/www/Reaper_Analytics.asp b/release/src/router/www/Reaper_Analytics.asp
+index ff8de412e9..f70e64abfc 100644
+--- a/release/src/router/www/Reaper_Analytics.asp
++++ b/release/src/router/www/Reaper_Analytics.asp
+@@ -347,7 +347,8 @@ function metricList(){ var a = []; ['lat','tcp','thru'].forEach(function(k){ if(
+ function save(){
+   var b = $('saveBtn'); b.disabled = true;
+   var mode = $('enTg').classList.contains('on')
+-    ? ((C && C.mode === 'exportonly') ? 'exportonly' : 'both') : 'off';
++    ? ((C && C.mode === 'exportonly') ? 'exportonly' : 'both')
++    : ((C && C.mode === 'storeonly') ? 'storeonly' : 'off');   /* don't downgrade storeonly to off on save */
+   var tlsv = $('tlsTg').classList.contains('on') ? '1' : '0';
+   var maskmac = $('maskTg').classList.contains('on') ? '1' : '0';
+   var q = '/reaper_export.cgi?action=save'
+@@ -361,7 +362,8 @@ function save(){
+     + '&source=' + encodeURIComponent($('srcFld').value)
+     + '&maskmac=' + maskmac
+     + '&http_id=' + encodeURIComponent(REAPER_HTTPID);
+-  if(tokenDirty && $('tokFld').value) q += '&token=' + encodeURIComponent($('tokFld').value);
++  if(tokenDirty){ if($('tokFld').value) q += '&token=' + encodeURIComponent($('tokFld').value);
++                  else q += '&cleartoken=1'; }   /* empty submit clears a set token (CGI supports cleartoken=1) */
+   xhr('GET', q, function(j){
+     b.disabled = false;
+     var s = $('saved');
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 87c6172592..7fc7db4214 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -107,24 +107,6 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ .addrow .fg .fl{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
+ .days{display:flex;gap:6px;flex-wrap:wrap}
+ .days label{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--bone-dim);border:1px solid var(--line-mid);border-radius:6px;padding:5px 9px;cursor:pointer}
+-.chaincard{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;margin-bottom:10px;overflow:hidden}
+-.chaincard .ch{display:flex;align-items:center;gap:10px;padding:9px 12px;background:#111116;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+-.chaincard .ch .nm{font-family:var(--hdr);font-weight:600;font-size:13px;color:var(--bone);letter-spacing:.03em}
+-.chaincard .ch .pol{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--steel)}
+-.chaincard .ch .pol b{color:var(--bone-dim)}
+-.owner{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;border-radius:4px;padding:2px 7px;margin-left:auto}
+-.owner.core{border:1px solid var(--line-mid);color:var(--bone-dim)}
+-.owner.warden{border:1px solid var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10)}
+-.owner.gk{border:1px solid #4a6b8a;color:#a9cde8}
+-.owner.vpn{border:1px solid #6a5a9a;color:#c3b6ea}
+-.owner.sdn{border:1px solid #3d7a5c;color:#9fd8bb}
+-.owner.ctrl{border:1px solid #8a7a3a;color:#e0cf8b}
+-.owner.other{border:1px solid var(--line-soft);color:var(--steel)}
+-table.ipt{width:100%;border-collapse:collapse;font-family:ui-monospace,Consolas,monospace;font-size:11px}
+-table.ipt th{text-align:left;color:var(--steel);font-weight:400;padding:5px 9px;border-bottom:1px solid var(--line-soft)}
+-table.ipt td{padding:4px 9px;border-bottom:1px solid rgba(255,255,255,.03);color:var(--bone-dim);white-space:nowrap}
+-table.ipt td.n{text-align:right;color:var(--bone)}
+-table.ipt td.hit{color:var(--amber)}
+ .statgrid{display:flex;gap:22px;flex-wrap:wrap}
+ .statgrid .kv{display:flex;flex-direction:column;gap:2px;min-width:96px}
+ .statgrid .k{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+@@ -1045,7 +1027,14 @@ function loadStatus(){
+     setPill(f.enable);
+ 
+     /* --- reaper rules engine --- */
+-    g =kvOn(`<#RFW_171#>`,f.fwen);
++    /* Three-state Engine posture. "On" only once the chains are actually up
++       (fwactive); a boot that deferred because the LAN was not ready leaves
++       fwen=1/fwactive=0 - show that as the transient "Working" token, not a bare
++       "On" with no chains behind it. RFW_224 is the token the enable toggle
++       animates with, so no new dict string is needed. */
++    g =f.fwen ? (f.fwactive ? kvRow(`<#RFW_171#>`,'on',ON_T)
++                            : kvRow(`<#RFW_171#>`,'off',`<#RFW_224#>`))
++              : kvRow(`<#RFW_171#>`,'off',OFF_T);
+     g+=kvCount(`<#RFW_172#>`,f.nrules);
+     g+=kvCount(`<#RFW_173#>`,f.nobj);
+     g+=kvCount(`<#RFW_174#>`,f.ngrp);
+@@ -1147,9 +1136,6 @@ function initToggles(){
+     tgSet(el,NV[el.getAttribute('data-nv')]==='1');
+     el.onclick=function(){el.classList.toggle('on');};
+   });
+-  Array.prototype.slice.call(document.querySelectorAll('.tg:not([data-nv])')).forEach(function(el){
+-    el.onclick=function(){el.classList.toggle('on');};
+-  });
+ }
+ function initGeneral(){
+   $('g_log').value=NV.fw_log_x||'none';
+@@ -1280,7 +1266,7 @@ function initRfw(){
+       }
+       $('ob_geowarn').classList.add('hidden');
+     }
+-    RFW.obj.push([n,t,v,c.replace(/[<>]/g,'')]);
++    RFW.obj.push([n,t,v.replace(/[<>]/g,''),c.replace(/[<>]/g,'')]);
+     $('ob_name').value='';$('ob_val').value='';$('ob_cmt').value='';
+     rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,S);
+   };
+@@ -1291,7 +1277,7 @@ function initRfw(){
+     var members=m.split(','),known=RFW.obj.map(function(r){return r[0];}),i;
+     for(i=0;i<members.length;i++)if(known.indexOf(members[i])<0)return bad(`<#RFW_67#>`);
+     if(RFW.grp.some(function(r){return r[0]===n;})||RFW.obj.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+-    RFW.grp.push([n,m,c.replace(/[<>]/g,'')]);
++    RFW.grp.push([n,m.replace(/[<>]/g,''),c.replace(/[<>]/g,'')]);
+     $('gr_name').value='';$('gr_mem').value='';$('gr_cmt').value='';
+     rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,S);
+   };
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 863f95100e..2d713125ce 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -131,14 +131,6 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+   </div>
+ </div>
+ 
+-<div class="card">
+-  <h2><#RFWU_32#></h2>
+-  <div id="nodeBox"></div>
+-  <div class="stat" id="nodeStat"><#RFWU_33#></div>
+-  <button class="btn2" id="nodeUpd" style="display:none" onclick="upgradeNodes(this)"><#RFWU_44#></button>
+-  <p class="note"><#RFWU_34#></p>
+-</div>
+-
+ <div class="card">
+   <h2><#RFWU_16#></h2>
+   <p class="note" style="margin:0 0 8px"><#RFWU_17#> <#RFWU_26#></p>
+@@ -149,6 +141,14 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+   <div class="stat" id="upStat"></div>
+ </div>
+ 
++<div class="card">
++  <h2><#RFWU_32#></h2>
++  <div id="nodeBox"></div>
++  <div class="stat" id="nodeStat"><#RFWU_33#></div>
++  <button class="btn2" id="nodeUpd" style="display:none" onclick="upgradeNodes(this)"><#RFWU_44#></button>
++  <p class="note"><#RFWU_34#></p>
++</div>
++
+ <div class="veil" id="veil">
+   <div class="vin">
+     <div class="vt" id="veilT"></div>
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+index 83bc2d8098..4a543eb510 100644
+--- a/release/src/router/www/Reaper_GK.asp
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -186,6 +186,7 @@ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--
+   </ul>
+ </div>
+ 
++<script src="/reaper_util.js"></script>
+ <script>
+ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* F4 CSRF token */
+ (function(){ window.GK = { st:null, filter:'all', busy:false, notArmedSince:0 }; })();
+@@ -194,18 +195,19 @@ var GK_TXT = { arming:`<#RGK_57#>`, warm:`<#RGK_58#>`, fault:`<#RGK_59#>`, fault
+ var GK_STUCK_MS = 60000;  /* enabled-but-not-armed past this = treat as a fault, not warmup */
+ 
+ function gkMac(m){ m=String(m==null?'':m); return /^[0-9A-Fa-f:]{1,17}$/.test(m)?m:''; }
+-function gkEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
++function gkEsc(s){ return esc(s); }   /* consolidated to shared window.esc (reaper_util.js) */
+ 
++function gkNow(){ return (GK.st && GK.st.now) ? GK.st.now : Math.floor(Date.now()/1000); }  /* router clock (fetch time), matches gkd enforcement; not the browser clock */
+ function gkAgo(ep){
+   if(!ep) return '-';
+-  var d = Math.max(0, Math.floor(Date.now()/1000) - ep);
++  var d = Math.max(0, gkNow() - ep);
+   if(d < 45) return `<#RGK_45#>`;
+   if(d < 3600) return Math.floor(d/60) + ` <#RGK_46#>`;
+   if(d < 86400) return Math.floor(d/3600) + ` <#RGK_47#>`;
+   return Math.floor(d/86400) + ` <#RGK_48#>`;
+ }
+ function gkLeft(ep){
+-  var d = ep - Math.floor(Date.now()/1000);
++  var d = ep - gkNow();
+   if(d <= 0) return '0:00';
+   var h = Math.floor(d/3600), m = Math.floor((d%3600)/60);
+   return h + ':' + (m<10?'0':'') + m;
+@@ -361,7 +363,12 @@ function gkCfg(){
+ }
+ 
+ gkRefresh();
+-setInterval(gkRefresh, 5000);
++var _gkTimer = setInterval(gkRefresh, 5000);
++/* stop the 5s poll while the tab is backgrounded (mirrors Reaper_QoS/Conn) */
++document.addEventListener('visibilitychange', function(){
++  if (document.hidden) { if (_gkTimer) { clearInterval(_gkTimer); _gkTimer = null; } }
++  else if (!_gkTimer) { gkRefresh(); _gkTimer = setInterval(gkRefresh, 5000); }
++});
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index b53925732e..ed1f1c9826 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -486,9 +486,13 @@ function syncPanels(){
+   document.getElementById('engpill_t').textContent = on ? (`<#RQOS_106#> ` + (mm ? mm.name : (`<#RQOS_107#> `+NV.type))) : `<#RQOS_108#>`;
+ }
+ 
+-/* ---------- bandwidth (nvram kbps <-> UI Mb/s, stock x1024 convention) ---------- */
+-function kb2mb(k){ k = parseInt(k,10)||0; return k ? (Math.round(k/1024*10)/10) : ''; }
+-function mb2kb(m){ m = parseFloat(m)||0; return Math.round(m*1024); }
++/* ---------- bandwidth (nvram DECIMAL kbps <-> UI Mb/s) ----------
++ * The shaper/policer/tc all treat qos_obw/qos_ibw as decimal (1000-based)
++ * kbit/s: tmctl --shapingrate, tc "kbit", the rdpa RX policer, and
++ * Reaper_QoSDiag (qos_obw*1000). The old x1024 convention over-shaped by
++ * 2.4% (a "100" entry shaped at 102.4 Mbps). Store honest decimal kbps. */
++function kb2mb(k){ k = parseInt(k,10)||0; return k ? (Math.round(k/1000*10)/10) : ''; }
++function mb2kb(m){ m = parseFloat(m)||0; return Math.round(m*1000); }
+ document.getElementById('bw_up').value = kb2mb(NV.obw);
+ document.getElementById('bw_dn').value = kb2mb(NV.ibw);
+ 
+@@ -575,7 +579,7 @@ function serializeClasses(){
+     }
+   }
+   if (csum === 0){ alert(`<#RQOS_97#>`); return null; }
+-  if (document.getElementById('tg_minrates').checked && msum > 100){
++  if (document.getElementById('tg_minrates').checked && msum > 85){   /* 85 = QOS_MINRATE_BUDGET_PCT in rc/qos.c; engine rescales above this */
+     alert(`<#RQOS_98#> `+msum+`<#RQOS_99#>`);
+     return null;
+   }
+@@ -588,6 +592,7 @@ function serializeClasses(){
+ 
+ /* ---------- live stats ---------- */
+ var lastStats = null, lastT = 0;
++function d32(a,b){ var d=a-b; return d<0 ? d+4294967296 : d; }   /* 32-bit HW counter wrap, matches QoSDiag */
+ function fmtRate(bps){
+   if (bps >= 1e9) return (Math.round(bps/1e8)/10)+' Gb/s';
+   if (bps >= 1e6) return (Math.round(bps/1e5)/10)+' Mb/s';
+@@ -608,7 +613,7 @@ function pollStats(){
+       var q = d['q'+(i+1)]; if(!q || !rows[i]) continue;
+       var rateEl = rows[i].querySelector('.rate'), dropEl = rows[i].querySelector('.drops');
+       if (lastStats && lastStats['q'+(i+1)] && now>lastT){
+-        var bps = Math.max(0,(q.txb - lastStats['q'+(i+1)].txb))*8000/(now-lastT);
++        var bps = d32(q.txb, lastStats['q'+(i+1)].txb)*8000/(now-lastT);
+         rateEl.textContent = fmtRate(bps);
+         var dd = q.dp - lastStats['q'+(i+1)].dp;
+         dropEl.textContent = q.dp + (dd>0 ? ' (+'+dd+')' : '');
+@@ -621,7 +626,7 @@ function pollStats(){
+       if (qq && el){
+         var r = '';
+         if (lastStats && lastStats[xq[k][0]] && now>lastT)
+-          r = fmtRate(Math.max(0,(qq.txb-lastStats[xq[k][0]].txb))*8000/(now-lastT))+' &middot; ';
++          r = fmtRate(d32(qq.txb, lastStats[xq[k][0]].txb)*8000/(now-lastT))+' &middot; ';
+         el.innerHTML = r + qq.dp + ` <#RQOS_109#>`;
+       }
+     }
+@@ -631,10 +636,11 @@ function pollStats(){
+ }
+ /* poll only while the tab is visible: pollStats popens tmctl x7, so a
+    backgrounded tab would keep forking for nothing (matches Conn/QoSDiag). */
+-var _qosStatsTimer = setInterval(pollStats, 3000);
++var _qosStatsOn = (NV.enable==='1' && String(NV.type)==='11');   /* pollStats no-ops otherwise; page reloads on apply */
++var _qosStatsTimer = _qosStatsOn ? setInterval(pollStats, 3000) : null;
+ document.addEventListener('visibilitychange', function(){
+ 	if (document.hidden) { if (_qosStatsTimer) { clearInterval(_qosStatsTimer); _qosStatsTimer = null; } }
+-	else if (!_qosStatsTimer) { pollStats(); _qosStatsTimer = setInterval(pollStats, 3000); }
++	else if (_qosStatsOn && !_qosStatsTimer) { pollStats(); _qosStatsTimer = setInterval(pollStats, 3000); }
+ });
+ 
+ /* ---------- apply ---------- */
+@@ -643,7 +649,7 @@ document.addEventListener('visibilitychange', function(){
+    enable>MAC>download(Kb/s)>upload(Kb/s)>priority ; stored HTML-entity-encoded. */
+ var BWL = [];            /* [{en, mac, dn(kb), up(kb)}] */
+ /* D1: device names resolved via reaper_util.js ReaperNames (MAC-keyed, custom+live). */
+-function bwlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
++function bwlEsc(s){ return esc(s); }   /* consolidated to shared window.esc (reaper_util.js) */
+ function bwlDecode(s){ return String(s||'').replace(/&#62/g,'>').replace(/&#60/g,'<'); }
+ function bwlKb2Mb(k){ k=parseInt(k,10)||0; return k ? String(Math.round(k/1024*10)/10) : '0'; }
+ function bwlMb2Kb(m){ m=parseFloat(m)||0; return Math.round(m*1024); }
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index b1ccba0adf..32ad12a143 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -757,6 +757,13 @@ function loadWin(){
+     liveTimer=setInterval(histTick, 30000);   /* history windows refresh too (were one-shot -> went stale) */
+   }
+ }
++/* stop polling while the tab is backgrounded; loadWin() rebuilds the correct
++   timer (live vs history) on return - the fastest poller in the UI (down to
++   100ms) must not keep forking CGI work for a hidden tab (mirrors Reaper_QoS/Conn). */
++document.addEventListener('visibilitychange', function(){
++  if(document.hidden){ if(liveTimer){ clearInterval(liveTimer); liveTimer=null; } stopLive(); }
++  else { loadWin(); }
++});
+ function setPollRate(){
+   pollMs = parseInt(document.getElementById('pollrate').value,10) || 1000;
+   try{ localStorage.setItem('rtraf_pollms', pollMs); }catch(e){}
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 850b440030..4aa47b7fa7 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -67,7 +67,7 @@ label.ck input:checked + .box::after{content:"";position:absolute;left:5px;top:1
+ .setrow:last-child{border-bottom:none}
+ .setrow .sl{flex:1;color:var(--bone);font-size:13px}
+ .setrow .sd{font-size:11.5px;color:var(--steel);display:block;margin-top:1px;font-weight:400}
+-select,textarea,input.txt{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
++select,textarea,input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
+ select.setsel{min-width:150px}
+ select[multiple]{width:100%;height:170px;padding:4px}
+ select[multiple] option{padding:3px 6px;border-radius:4px}
+@@ -269,6 +269,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <input type="hidden" name="rwarden_reset" value="">
+ </form>
+ 
++<script src="/reaper_util.js"></script>
+ <script>
+ /* ---------- nvram bootstrap (values are charset-constrained on save) ---------- */
+ var NV = {
+@@ -380,7 +381,7 @@ var COUNTRIES = [
+  ['UZ','Uzbekistan'],['VE','Venezuela'],['VN','Vietnam'],['YE','Yemen'],['ZW','Zimbabwe']
+ ];
+ 
+-function rwEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
++function rwEsc(s){ return esc(s); }   /* consolidated to shared window.esc (reaper_util.js) */
+ 
+ /* split an nvram list on any of space, comma, '<', '>' */
+ function rwSplit(s){ return String(s||'').split(/[\s,<>]+/).filter(function(x){ return x.length; }); }
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index f846a02c01..c0097f64e4 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -48,6 +48,7 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .btn:hover{border-color:var(--line)}
+ .btn[disabled]{opacity:.45;cursor:default}
+ .btn.hot{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++.btn.ghost{background:transparent;color:var(--bone-dim)}   /* secondary/ghost variant (was used but undefined) */
+ .panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:16px 18px;margin-bottom:16px}
+ .panel h2{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:2px}
+ .panel .sub{font-size:12px;color:var(--steel);margin:2px 0 12px;line-height:1.55}
+@@ -310,7 +311,7 @@ function render(){
+   }
+   document.getElementById("constrtiles").innerHTML=tiles;
+   document.getElementById("constrsub").textContent=sub;
+-  document.getElementById("exlists").innerHTML=ex;
++  var exb=document.getElementById("exlists"); if(ex!==exb._rh){ exb.innerHTML=ex; exb._rh=ex; }   /* skip identical 30s rebuild */
+ 
+   var cu=document.getElementById("capunit");
+   if(cu.options.length===0){
+-- 
+2.25.1
+

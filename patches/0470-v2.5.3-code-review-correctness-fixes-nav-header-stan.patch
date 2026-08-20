@@ -1,0 +1,291 @@
+From 0e437dc01f2ba961d5cf29bfe277367236893ccb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 19 Aug 2026 22:07:27 -0400
+Subject: [PATCH] v2.5.3: code-review correctness fixes + nav/header
+ standardization
+
+reaper_fw.c: admin-management RETURN scoped to INPUT (was also emitted on
+FORWARD/OUTPUT, exempting the admin address's forwarded :443/:22 from the whole
+firewall); port-forward external port now rejects empty/comma (rfw_valid_ports
+permits both but --dport has no -m multiport), internal-port guard rejects empty.
+
+gatekeeper.c, rwarden.c: apply.sh generated atomically (temp+rename) so a
+concurrent restart_firewall cannot exec a half-written teardown. reaper_fw
+already had this; GK and Warden did not.
+
+rwarden.c: shared flock between fold.sh and stats.sh so a 30s poll straddling
+the 15-min checkpoint cannot read the banked total before the mv and the live
+counters after the -Z (one-tick backward dip).
+
+rexport.c: skip the push when health.json is >3min stale (collector crashed
+without a clean stop) instead of POSTing a frozen snapshot as live; test bypasses.
+
+web.c + defaults.c: raise reaper_fw_zone/zpol save cap 2048 -> RFW_LIST_MAX /
+CKN_STR_MAX so the UI stops refusing a full zone matrix the engine accepts.
+
+defaults.c: declare the 11 reaper_export_* keys (length class + factory default;
+defaults apply on factory reset only, so existing configs are untouched).
+
+reaper_shell.asp: nav-item geometry (height 38->40, icon 18->19, marker inset
+7->8) standardized to Main_ReaperDash so the left rail is identical across pages.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c          |  4 +--
+ release/src/router/rc/gatekeeper.c      |  9 ++++--
+ release/src/router/rc/reaper_fw.c       | 39 +++++++++++++++++--------
+ release/src/router/rc/rexport.c         | 10 +++++++
+ release/src/router/rc/rwarden.c         | 20 ++++++++++++-
+ release/src/router/shared/defaults.c    | 21 +++++++++++--
+ release/src/router/www/reaper_shell.asp | 10 +++++--
+ 7 files changed, 91 insertions(+), 22 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 0a060ff7ca..66a6711657 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23756,8 +23756,8 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			{ "obj",   "reaper_fw_obj",   RFW_LIST_MAX },
+ 			{ "grp",   "reaper_fw_grp",   RFW_LIST_MAX },
+ 			{ "svc",   "reaper_fw_svc",   2048 },
+-			{ "zone",  "reaper_fw_zone",  2048 },
+-			{ "zpol",  "reaper_fw_zpol",  2048 },
++			{ "zone",  "reaper_fw_zone",  RFW_LIST_MAX },	/* full zone matrix needs >2048; engine parses per-record, schema is CKN_STR_MAX */
++			{ "zpol",  "reaper_fw_zpol",  RFW_LIST_MAX },	/* 8x8 default-policy matrix ~3.8KB with long zone names */
+ 			{ "rules", "reaper_fw_rules", RFW_LIST_MAX },
+ 			{ "edef",  "reaper_fw_edef",  2048 },	/* Phase 2: per-device egress defaults */
+ 			{ "nat",   "reaper_fw_nat",   2048 },	/* Phase 3: hardened inbound forwards */
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 920ef15ae9..23ce3cc3a5 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -176,7 +176,7 @@ static void gk_gen_apply(void)
+ 		}
+ 	}
+ 
+-	f = fopen(GK_APPLY, "w");
++	f = fopen(GK_APPLY ".tmp", "w");
+ 	if (!f) return;
+ 
+ 	/* reaper v1.7.3: the LAN identity (bridge ifname, router IP, admin port) is
+@@ -334,7 +334,12 @@ static void gk_gen_apply(void)
+ 		   "fc flush 2>/dev/null\n");
+ 
+ 	fclose(f);
+-	chmod(GK_APPLY, 0700);
++	chmod(GK_APPLY ".tmp", 0700);
++	/* atomic publish: start_firewall() runs this script AFTER releasing the
++	 * firewall lock, so a concurrent restart_firewall must never exec a
++	 * half-written apply.sh whose opening act is the chain teardown. */
++	if (rename(GK_APPLY ".tmp", GK_APPLY) != 0)
++		unlink(GK_APPLY ".tmp");
+ }
+ 
+ void gk_teardown_rules(void)
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 0252cae64c..b5d968bbe6 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -1045,15 +1045,24 @@ static void rfw_emit_head(FILE *f, int v6, int dir)
+ 	}
+ 
+ 	/* The operator's own management path. $ADM is the address of the session
+-	 * that armed this ruleset (login_ip_str), matched only in its own family. */
+-	fprintf(f,
+-	  "if [ -n \"$ADM\" ] && [ \"$ADMV6\" = \"%d\" ]; then\n"
+-	  "  RFWR %s -A %s %s \"$ADM\" -p tcp --dport \"$MGMT\" -j RETURN\n"
+-	  "  [ \"$SSHEN\" != \"0\" ] && RFWR %s -A %s %s \"$ADM\" -p tcp --dport \"$SSHP\" -j RETURN\n"
+-	  "fi\n",
+-	  v6 ? 1 : 0,
+-	  ipt, ch, (dir == RFW_D_OUT) ? "-d" : "-s",
+-	  ipt, ch, (dir == RFW_D_OUT) ? "-d" : "-s");
++	 * that armed this ruleset (login_ip_str), matched only in its own family.
++	 * Management traffic is inbound to the ROUTER, so this exemption belongs on
++	 * INPUT only. On FORWARD it would RETURN every forwarded :MGMT/:SSH packet
++	 * from the admin address - i.e. exempt all of the admin's HTTPS/SSH to the
++	 * whole internet from the firewall (over-broad); on OUTPUT it is the wrong
++	 * direction. The ESTABLISHED,RELATED RETURN above already keeps the arming
++	 * session's in-flight replies alive on every chain, so anti-lockout is
++	 * unaffected by scoping this to INPUT. */
++	if (dir == RFW_D_IN) {
++		fprintf(f,
++		  "if [ -n \"$ADM\" ] && [ \"$ADMV6\" = \"%d\" ]; then\n"
++		  "  RFWR %s -A %s -s \"$ADM\" -p tcp --dport \"$MGMT\" -j RETURN\n"
++		  "  [ \"$SSHEN\" != \"0\" ] && RFWR %s -A %s -s \"$ADM\" -p tcp --dport \"$SSHP\" -j RETURN\n"
++		  "fi\n",
++		  v6 ? 1 : 0,
++		  ipt, ch,
++		  ipt, ch);
++	}
+ 
+ 	/* Name resolution and DHCP for the LAN itself. The router is the LAN's
+ 	 * resolver; a blanket inbound drop that takes DNS with it looks exactly
+@@ -1490,6 +1499,12 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		if (!rfw_field(tok, 0, en, sizeof(en)) || strcmp(en, "1") != 0) continue;
+ 		if (!rfw_field(tok, 1, proto, sizeof(proto)) || !rfw_valid_proto(proto)) { logmessage("reaper_fw", "forward: invalid protocol - DROPPED"); continue; }
+ 		if (!rfw_field(tok, 2, eport, sizeof(eport)) || !rfw_valid_ports(eport)) { logmessage("reaper_fw", "forward: invalid external port - DROPPED"); continue; }
++		/* the external port is spliced into --dport with NO -m multiport, and a
++		 * DNAT needs a concrete target port, so it must be a single port or a
++		 * contiguous range. rfw_valid_ports() also passes empty and comma lists;
++		 * an empty value word-splits the rule apart and a comma list is rejected
++		 * by iptables at load - reject both here. */
++		if (!*eport || strchr(eport, ',')) { logmessage("reaper_fw", "forward: external port must be a single port or range - DROPPED"); continue; }
+ 		if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip)) { logmessage("reaper_fw", "forward: invalid internal IP - DROPPED"); continue; }
+ 		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) { logmessage("reaper_fw", "forward: invalid internal port - DROPPED"); continue; }
+ 		if (!rfw_field(tok, 5, sobj, sizeof(sobj))) sobj[0] = 0;
+@@ -1500,9 +1515,9 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 			continue;
+ 		}
+ 		/* an internal port must be a single port or a contiguous range - DNAT
+-		 * cannot map a comma list to a target */
+-		if (strchr(iport, ',')) {
+-			logmessage("reaper_fw", "forward %s: internal port cannot be a list - DROPPED", eport);
++		 * cannot map a comma list (or an empty value) to a target */
++		if (!*iport || strchr(iport, ',')) {
++			logmessage("reaper_fw", "forward %s: internal port must be a single port or range - DROPPED", eport);
+ 			continue;
+ 		}
+ 		/* DNAT --to-destination wants a HYPHEN between the low and high port of a
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index e4a42a0f52..066a9c70d9 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -52,6 +52,16 @@ static void rexport_gen(void)
+ 	  "# generated by start_rexport - do not edit\n"
+ 	  "H=/tmp/rtraf/health.json\n"
+ 	  "[ -r \"$H\" ] || exit 0\n"
++	  /* P2-H11 residual: stop_rtraf() sweeps these files on a CLEAN stop, but a
++	   * CRASHED rtrafd leaves health.json frozen in tmpfs, and without this we
++	   * would keep POSTing the same snapshot to Splunk/Datadog forever as if it
++	   * were live. health.json carries no timestamp, so gate on its mtime: if it
++	   * has not been rewritten in 3 min the collector is gone - skip the push.
++	   * 'test' (Test Connection) bypasses so an endpoint can still be validated.
++	   * If find(1) lacks -mmin the subshell is empty and the gate simply no-ops. */
++	  "if [ \"$1\" != test ] && [ -n \"$(find \"$H\" -mmin +3 2>/dev/null)\" ]; then\n"
++	  "  logger -t rexport \"health.json stale (>3m) - collector down, not pushing\"; exit 0\n"
++	  "fi\n"
+ 	  "if [ \"$1\" != test ]; then\n"		/* 'test' bypasses the mode gate (Test Connection) */
+ 	  "  case \"$(nvram get reaper_export_mode)\" in both|exportonly) ;; *) exit 0 ;; esac\n"
+ 	  "fi\n"
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index dfc006cff0..60e38bebc7 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -517,7 +517,7 @@ static void rw_emit_self_chain(FILE *f, const char *ipt, int v6)
+ 
+ static void rw_gen_apply(void)
+ {
+-	FILE *f = fopen(RW_APPLY, "w");
++	FILE *f = fopen(RW_APPLY ".tmp", "w");
+ 	int do_out, do_self;
+ 	if (!f) return;
+ 	do_out = (nvram_match("rwarden_dir", "out") || nvram_match("rwarden_dir", "both"));
+@@ -760,6 +760,13 @@ static void rw_gen_apply(void)
+ 	fprintf(f, "fc flush 2>/dev/null\n");
+ 	rw_emit_ban_conntrack(f);	/* sever live flows to freshly-banned hosts */
+ 	fclose(f);
++	/* atomic publish: start_firewall() execs this script after releasing the
++	 * firewall lock, so a concurrent rebuild must never see a half-written
++	 * apply.sh whose opening act is the chain teardown. (The later
++	 * chmod(RW_APPLY) in the caller then no-ops on the finished file.) */
++	chmod(RW_APPLY ".tmp", 0700);
++	if (rename(RW_APPLY ".tmp", RW_APPLY) != 0)
++		unlink(RW_APPLY ".tmp");
+ }
+ 
+ /* The updater: fetches enabled feeds + country CIDRs (v4+v6) over HTTPS into
+@@ -1047,6 +1054,12 @@ static void rw_gen_fold(void)
+ 	  "# not armed -> nothing to bank or reset. This is the normal case at boot and\n"
+ 	  "# right after the C teardown, so it must be a silent no-op.\n"
+ 	  "iptables -nL RW_DROP >/dev/null 2>&1 || exit 0\n"
++	  /* Serialize the read -> bank -> zero critical section against stats.sh's
++	   * banked+live read: without it a 30 s poll landing mid-checkpoint can read
++	   * the banked $CTR before the mv and the live counters after the -Z, showing
++	   * the total dip backward for one tick. Same lock file as stats.sh (which
++	   * takes it shared); best-effort 5 s wait, proceed either way. */
++	  "exec 9>/tmp/rwarden/ctr.lock; flock -w 5 9 2>/dev/null\n"
+ 	  "NOW=$(date +%s)\n"
+ 	  "mkdir -p \"$DIR\" 2>/dev/null\n"
+ 	  "# one-time migration from the v2.2.1 single-value baseline (no per-country\n"
+@@ -1162,6 +1175,11 @@ static void rw_gen_stats(void)
+ 	  "SV=1; [ \"$(nvram get rwarden_stats_save)\" = 0 ] && SV=0\n"
+ 	  "RI=$(nvram get rwarden_reset)\n"
+ 	  "case \"$RI\" in 24h|7d|30d|90d) ;; *) RI=off;; esac\n"
++	  /* Shared lock (see fold.sh): hold it across the banked $CTR reads and the
++	   * live counter reads so a fold.sh checkpoint cannot mv+zero between them and
++	   * produce a one-tick backward dip. Reader-shared so concurrent 30 s polls
++	   * do not serialize; best-effort 5 s wait. */
++	  "exec 9>/tmp/rwarden/ctr.lock; flock -w 5 -s 9 2>/dev/null\n"
+ 	  "BASE=0; SINCE=0\n"
+ 	  "if [ \"$SV\" = 1 ] && [ -f \"$CTR\" ]; then\n"
+ 	  "  BASE=$(awk '$1==\"TOTAL\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$BASE\" ] || BASE=0\n"
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index a8517dacd0..2a5d95a354 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3216,8 +3216,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_fw_obj", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address objects: <name>type>value>comment ; type=host|cidr|range|mac|fqdn|geo (geo value=CC ref to Warden) */
+ 	{ "reaper_fw_grp", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address groups: <name>member,member,...>comment (members = object names) */
+ 	{ "reaper_fw_svc", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* service objects: <name>proto>ports>comment ; proto=tcp|udp|both|icmp, ports=list/range */
+-	{ "reaper_fw_zone", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zones: <name>iface,iface,...>comment (br0, vlanN, tun+, wgc+, eth0=WAN...) */
+-	{ "reaper_fw_zpol", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zone default-policy matrix: <srczone>dstzone>action (action=accept|drop|reject) */
++	{ "reaper_fw_zone", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zones: <name>iface,iface,...>comment (br0, vlanN, tun+, wgc+, eth0=WAN...). CKN_STR_MAX (was 2048): a full zone matrix exceeds 2048; matches the CGI cap + engine's per-record parse. */
++	{ "reaper_fw_zpol", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zone default-policy matrix: <srczone>dstzone>action (action=accept|drop|reject). CKN_STR_MAX (was 2048) for a full 8x8 matrix. */
+ 	{ "reaper_fw_rules", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* committed policy: <en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment (dir=in|out|fwd) */
+ 	/* Phase 2: per-device egress defaults. Zones are interface-based, so they cannot say
+ 	   "this laptop gets no internet unless allowed" - every LAN device shares br0. Applied
+@@ -3243,6 +3243,23 @@ struct nvram_tuple router_defaults[] = {
+ 	   is in flight, and on the deferred "LAN not ready at boot" path. */
+ 	{ "reaper_fw_active", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "reaper_fw_err", "", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* last refusal reason, surfaced by the page */
++	/* reaper v2.5.3: analytics export (Reaper_Analytics.asp -> rc/rexport). These
++	 * 11 keys previously had NO router_defaults[] entry, so they carried no length
++	 * class (hence no generic CGI length validation) and no factory default.
++	 * Declared now with conservative classes; the defaults apply on factory reset
++	 * only (init.c NEED_TO_SET_DEFAULT_VALUE gates on restore_defaults_g), so an
++	 * existing box's configured export settings are left untouched. */
++	{ "reaper_export_mode",         "",    CKN_STR32,  CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* off | exportonly | both */
++	{ "reaper_export_engine",       "",    CKN_STR32,  CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* prometheus | splunk | syslog */
++	{ "reaper_export_url",          "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* HEC / collector URL */
++	{ "reaper_export_token",        "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* push auth token */
++	{ "reaper_export_tlsverify",    "1",   CKN_STR8,   CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* verify server cert by default */
++	{ "reaper_export_index",        "",    CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Splunk index */
++	{ "reaper_export_source",       "",    CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* source label */
++	{ "reaper_export_maskmac",      "0",   CKN_STR8,   CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* hash MACs before push */
++	{ "reaper_export_interval",     "300", CKN_STR32,  CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* push cadence, seconds */
++	{ "reaper_export_metrics",      "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* selected metric set */
++	{ "reaper_export_scrape_token", "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Prometheus scrape bearer */
+ 	/* reaper v1.9.1: Device Identity Manager Rung B - unified long-term storage
+ 	 * (Reaper_Storage.asp, System Log group). reaper_store = durable location for
+ 	 * opt-in history datasets: "" / "ram" = RAM only (default, volatile), "jffs" =
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 2145752b3a..b1d0f37883 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -126,16 +126,20 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .railabout .v{display:block;font-size:10.5px;color:var(--steel);margin-top:2px;
+   font-variant-numeric:tabular-nums}
+ .grp{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.2em;font-size:10px;color:var(--steel);padding:12px 10px 4px}
+-a.item{display:flex;align-items:center;gap:12px;height:38px;border-radius:9px;color:var(--steel);
++/* Nav-item geometry standardized to Main_ReaperDash's .nav a EXACTLY (height,
++   icon size, active-marker inset) - the 38px/18px/7px values had drifted 2px/1px
++   from the dashboard's 40px/19px/8px, visible when switching between a stock page
++   and the dashboard. */
++a.item{display:flex;align-items:center;gap:12px;height:40px;border-radius:9px;color:var(--steel);
+   text-decoration:none;padding:0 12px;position:relative;transition:.15s;
+   font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap;flex:0 0 auto;overflow:hidden}
+-a.item svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;flex:0 0 18px}
++a.item svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7;flex:0 0 19px}
+ a.item>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+ /* i18n overflow util: truncate with an ellipsis instead of stretching the box */
+ .rtip{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ a.item:hover{color:var(--bone);background:var(--panel)}
+ a.item.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+-a.item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;background:var(--crimson);border-radius:2px}
++a.item.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+ /* content stage: shell-owned tab bar + frame. The frame auto-grows to its
+    content (JS below), so the ONLY scrollbar is the browser's own - no nested
+    iframe scrollbar on long pages (SDN.asp). min-height keeps short pages
+-- 
+2.25.1
+

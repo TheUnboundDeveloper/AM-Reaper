@@ -1,0 +1,102 @@
+From 77b1da631c893d584c61e8d4c45af5a4a6d692e4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 19 Aug 2026 18:51:11 -0400
+Subject: [PATCH] v2.5.2: metal fixes - revert QoS egress headroom, gate GK
+ stamps on ntp_ready, ookla launch-error state
+
+QoS (qos.c): revert the classful egress 10% headroom (obw -= obw/10) added in
+v2.5.1. On BE96U hardware QoS type 11 it lowered every class ceiling by 10%
+(e.g. qid5 2140160->1926144 kbit), so the low-priority class tail-dropped
+earlier under contention - visible as an elevated aggregate-drop rate. Restores
+the prior shaper rates.
+
+Gatekeeper (gkd.c): gate first/last device stamping on ntp_ready, with backfill.
+Pre-NTP, setup_timezone() pins time() to RC_BUILDTIME (2024-01-01), which froze
+first-seen at that constant and rendered as "first seen ~961 days ago" (climbing
+one per day). Confirmed on metal via /tmp/gk/seen.tsv (first=1704067286).
+
+httpd (web.c): ookla_exec now sets OOKLA_STATE_ERR_UNKNOWN when _eval fails to
+launch the binary, so a launch failure surfaces immediately instead of leaving
+the GUI on RUN until the JS poll times out.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c   | 11 ++++++++++-
+ release/src/router/httpd/web.c |  9 +++++++++
+ release/src/router/rc/qos.c    | 10 ----------
+ 3 files changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index a1450e4b8c..2a6ff8e6ac 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -100,15 +100,24 @@ static dev_t_gk *find_dev(const char *mac)
+ static dev_t_gk *touch_dev(const char *mac, long now)
+ {
+ 	dev_t_gk *d = find_dev(mac);
++	/* Pre-NTP, setup_timezone() pins time() to RC_BUILDTIME (2024-01-01) until
++	 * the first sync; stamping first/last against that frozen clock is what
++	 * later renders as "first seen ~961 days ago" (climbing one per day). Only
++	 * stamp against a real wall clock, and backfill first-seen once NTP catches
++	 * up. Online-tracking and enforcement are unaffected either way. */
++	int clock_ok = nvram_get_int("ntp_ready");
+ 	if (!d) {
+ 		if (ndev >= MAX_DEV) return NULL;
+ 		d = &devs[ndev++];
+ 		memset(d, 0, sizeof(*d));
+ 		snprintf(d->mac, sizeof(d->mac), "%s", mac);
+ 		norm_mac(d->mac);
++		d->first = clock_ok ? now : 0;
++	} else if (d->first == 0 && clock_ok) {
+ 		d->first = now;
+ 	}
+-	d->last = now;
++	if (clock_ok)
++		d->last = now;
+ 	d->online = 1;
+ 	return d;
+ }
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 72cb197ae6..0a060ff7ca 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -37974,6 +37974,15 @@ ookla_exec(char *type, char *id, char *iface)
+ 		retval = _eval(cmd, ">"OOKLA_RESULT, 0, &pid);
+ 	}
+ 
++	/* If the ookla binary could not be launched (fork/exec failed), _eval
++	 * returns non-zero and no child will ever write a result - the JS poller
++	 * would otherwise sit on OOKLA_STATE_RUN until it times out. Surface the
++	 * failure immediately and accurately instead of hanging on a stale RUN. */
++	if (retval != 0) {
++		OOKLA_DBG(" ookla launch failed, retval=%d\n", retval);
++		nvram_set_int("ookla_state", OOKLA_STATE_ERR_UNKNOWN);
++	}
++
+ #if defined(RTCONFIG_ETH_MONITOR)
+ 	int pid2 = 0;
+ 	int eth_mon_interval = 0;
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 659f694c32..391a3f4e9c 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3312,16 +3312,6 @@ int start_hwqos_classful(void)
+ 		return -1;
+ 	}
+ 
+-	/* qos_obw is the user's MEASURED upload (honest decimal kbps). Shape the
+-	 * egress aggregate at ~90% so the ROUTER owns the bottleneck and the ISP's
+-	 * upstream buffer stays drained - a shaper at 100% of measured leaves the
+-	 * standing queue at the ISP and defeats QoS. This is the SAME 10% headroom
+-	 * already applied to the ingress policer below (prate = ibw - ibw/10) and to
+-	 * both cake directions. Applied ONCE here so every egress consumer inherits
+-	 * it: per-class calc(obw,ceil/rate), the qid 0 / qid 6 caps, and the port
+-	 * shaper. Do NOT also bake headroom into the page or a second engine site. */
+-	obw -= obw / 10;
+-
+ 	/* same shell-safety guard as start_hwqos: wan_ifname is single-quoted in
+ 	 * the generated root script; reject anything that isn't a plain interface
+ 	 * name and fall back to an empty (inert) WANIF rather than emit it. */
+-- 
+2.25.1
+

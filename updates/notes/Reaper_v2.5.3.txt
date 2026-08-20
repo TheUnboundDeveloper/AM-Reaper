@@ -1,0 +1,65 @@
+Reaper v2.5.3
+
+The cut that lands everything since v2.5.0. It folds two rungs that never got their own release — the pre-public hardening batch carried as v2.5.1, and the metal-validated fixes carried as v2.5.2 — into one series alongside its own code-review batch. Cut from RT-BE96U as 3006.102.8_Reaper_v2.5.3 — patches 0466-0471, 471 total, replay-verified, provenance stamped. Built on RT-BE96U (MCP variant, sha256 4c45ea36…) and green, with the IPSec binaries confirmed present in the staged rootfs. Not yet pushed or released, and the four sibling models have not taken it. v2.5.2's Gatekeeper and QoS fixes are confirmed on metal; v2.5.3's IPSec resurrection is built and staged but not yet metal-confirmed.
+
+> Validation status (2026-08-19). The Gatekeeper first-seen fix and the QoS shaper behaviour below were confirmed on RT-BE96U hardware. The IPSec resurrection is built and verified present in the staged image but not yet exercised on metal — the owner is flashing it now. IPSec Server, IPSec client and Instant Guard should function for the first time on this lineage; treat that as pending on-hardware confirmation until it is reported back.
+
+> Fixed (build-side, the big one): IPSec Server, IPSec client and Instant Guard were dead on every prior image, and now build
+
+The strongSwan components the whole IPSec stack depends on — /usr/lib/ipsec/starter, /usr/lib/ipsec/stroke, /usr/lib/ipsec/charon and swanctl — were absent from every Reaper image ever shipped, lost to a stale-configure trap in the strongSwan build that left the daemons un-staged while the rest of the package looked built. Anyone who turned on IPSec Server, configured an IPSec client, or tried Instant Guard was enabling a feature whose engine was not in the firmware at all. This build finally stages them, and their presence in the rootfs is verified as part of the cut. This is a build/packaging fix, not a code change — nothing about the IPSec configuration pages changed — but it is the difference between a feature that never ran and one that does. It still needs an on-metal pass to confirm a tunnel actually establishes.
+
+> Fixed: devices could show as first seen hundreds of days ago — some read "first seen ~961 days ago"
+
+A device discovered in the short window after boot but before the router's clock had been set from the network was stamped with the build's own fallback date (2024-01-01), and that wrong first-seen time was then frozen. First- and last-seen stamping now waits until the clock is real (ntp_ready) and backfills the devices caught in that window, so the "first seen" column reflects when the router actually first saw the device. Confirmed on metal — the recorded first-seen times are now correct.
+
+> Changed: the QoS shaper leaves the rate you set intact
+
+On the way to this release a 10% egress headroom was tried and then removed: on this router's hardware QoS (type 11) it lowered every class ceiling by a tenth and pushed the lowest-priority queue into tail-drops under load. It nets to no change from v2.5.0 — the shaper runs the rates you configure, unmodified — and the earlier decimal-kbps unit handling and the statistics-timer gate are corrected alongside it. Confirmed on metal.
+
+> Fixed: the firewall's admin-management exemption was far broader than intended
+
+The rule that keeps the admin address reachable was being emitted on the FORWARD and OUTPUT chains as well as INPUT, which quietly exempted forwarded traffic to the admin address's :443 and :22 from the entire firewall. It is now scoped to INPUT only, where it belongs.
+
+> Fixed: a partly-typed port-forward could produce a broken rule
+
+Empty or comma-malformed external ports, and empty internal ports, are now guarded rather than written straight into the ruleset; port-forward ranges also render with a hyphen rather than a colon. Combined with a save-cap raise (below), the zone editor and forwards no longer refuse or mangle valid input the engine would have accepted.
+
+> Fixed: the UI could refuse a full firewall zone matrix the engine was happy to accept
+
+The save cap on the zone-matrix keys (reaper_fw_zone / reaper_fw_zpol) was 2048 bytes, smaller than a fully-populated matrix, so the interface rejected configurations the firewall engine would run. The cap is now 8192.
+
+> Fixed: a restart during a firewall or Warden reconfigure could run a half-written teardown
+
+The generated apply.sh for the Gatekeeper and for Warden is now written to a temporary file and renamed into place atomically — the same guarantee the firewall engine already had — so a concurrent restart_firewall can never exec a script that is still being written.
+
+> Fixed: Warden's block counter could dip backwards for one tick at the quarter-hour
+
+The fold and stats passes now share a single lock, so the 15-minute checkpoint can no longer read a half-updated count and report a momentary backward step. Alongside it, a partial feed update no longer stamps the run as a success (the "last updated" time is written only when the update actually completed), the retention/prune step runs in the correct order, and each update run takes its own lock so a scheduled refresh and a manual "update now" cannot collide.
+
+> Fixed: analytics could keep posting a frozen snapshot as though it were live
+
+If the metrics collector crashes, its health.json stops advancing; the exporter now skips the push when that file is more than three minutes stale rather than POSTing the last good snapshot on every cycle and reporting success. This extends the v2.5.0 fix that stopped stale data being sent after collection was deliberately switched off.
+
+> Fixed: the Internet Speed Test could hang the GUI when its engine failed to launch
+
+If the speedtest binary cannot start, the page now moves to an explicit error state instead of leaving the interface waiting until it times out.
+
+> Fixed: an AiMesh node on a wireless backhaul was listed as Wired
+
+A mesh node whose backhaul is neither an eth nor a wl interface fell through to the "Wired" default; it is now recognised as a node and shown accordingly. (Still owed a look on a real mesh — see the Backlog.)
+
+> Changed: the left navigation is identical on every page
+
+The rail's item geometry — row height, icon size and the active-marker inset — had drifted between the Dashboard and the framed pages, so switching pages nudged the nav and the brand logo. The framed pages' rail is now standardised to the Dashboard's, and the dashboard logo header no longer jumps when you move to or from it. On the Firmware page, the Mesh Nodes card has moved to the bottom so it is the last section.
+
+> Security / Hardened: a batch of correctness and boundary fixes carried up from the pre-public review
+
+An OpenVPN client-config field could emit a stray trailing newline; it is now stripped, so it cannot run on into the directive that follows it. The firewall engine now drops-with-log on a zone-constraint violation, logs when a NAT rule fails to build, caps each record's length before it reaches nvram_set, and reports a build failure rather than applying a partial ruleset. The store-resolver adds USB device and mount guards, the Gatekeeper status now emits a live "now" timestamp, and the shared text-escaping helper (esc()) is used consistently across the Gatekeeper, Warden and Firewall pages. SNMP's rwuser policy was reviewed and deliberately kept (SNMPv3-USM authenticated; rouser would remove a real feature).
+
+> Internal: eleven analytics-export nvram keys are now declared with a length class and a factory default
+
+The reaper_export_ keys were previously undeclared; they now have proper defaults that apply on a factory reset only, so a reset lands them at known values rather than empty.
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

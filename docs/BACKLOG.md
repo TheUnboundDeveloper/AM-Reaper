@@ -273,6 +273,13 @@ figure here was an undercount.)
 
 ---
 
+- **Flash Steps** If a user cancles a firmware upgrade by slelecting no or cancle the page does 
+  not return to previous state and has to be reloaded for the buttons work again.
+
+---
+
+---
+
 - **[P2] Dual-WAN failover: both NextDNS profiles receive DNS logs though only one WAN is live.**
   Secondary WAN (2.5 Gbps, DHCP, its own NextDNS profile) is active; the future primary (10 Gbps,
   PPPoE) is not yet connected. With only the secondary live, **both** NextDNS profiles show traffic;
@@ -415,6 +422,66 @@ worth more than the attempt itself.*
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
 
 ---
+
+### v2.6.0 (2026-08-21) — QoS Classful queue rebuild, awaiting confirmation
+
+- **[P1] GT-BE98 (and any port that rejects the recreate) keeps IPv4 with QoS Classful on.**
+  `rq_rebuild()` in the generated `/tmp/qos_hwc.sh`. **Settles when** the reporter, on a v2.6.0
+  GT-BE98 image with `qos_type=11`, has IPv4 after boot AND `tmctl getqcfg --devtype 0 --if eth0
+  --qid N` answers for N=1..5. Expected syslog on that box: `hwqos: setqcfg qid 1 priority 5
+  REJECTED` + `class queues restored at the stock priority layout`, with NO `FATAL` line. A
+  `FATAL` line means even the bare recreate failed and the delete itself must be abandoned on that
+  port — report it. Also worth knowing WHY the recreate is rejected there (run the failing
+  `tmctl setqcfg` by hand without `2>/dev/null`) so the priority correction can be made to work on
+  that port rather than just fail safe. **[owed — reporter, GT-BE98 metal]**
+- **[P2] RT-BE96U unchanged in behaviour.** **Settles when** a v2.6.0 BE96U shows qid 1..5 at
+  priority 5..1 after `restart_qos` and no `hwqos` fallback line. **[owed — metal]**
+
+### v2.5.9 (2026-08-21) — the trusted tester's batch, awaiting confirmation
+
+- **[P1] Warden country sets populated after a reboot.** Per-set, members-only cache replay + no
+  empty-set cache overwrite + `maxelem 262144` on `rw_g_*`. **Settles when** the reporter (or any
+  box with countries selected) reboots on this image and `ipset -t list rw_g_<cc>` shows a non-zero
+  "Number of entries" for every selected country, with no `rwarden: cache restore for set` lines in
+  the log; the Warden tile should read the prefix count, not amber. First boot after upgrading from a
+  pre-v2.5.9 cache is the interesting case. **[owed — reporter, reboot + ipset readback]**
+- **[P2] Wireless AiMesh node shows its backhaul band on Devices, with the AiMesh Node chip.**
+  `rdev_node_classify()` reads `CM_CLIENT_TABLE` by `realMacAddr` and maps `activePath`
+  (2 → 2.4 GHz, 4/8 → 5 GHz, 128 → 6 GHz, 512 → MLO, 1/16/32/64 → Wired). **Settles when** the
+  reporter's node row shows the band and the orphan backhaul-STA row is gone; a *cabled* node must
+  still read Wired. **[owed — reporter, Devices page]**
+- **[P2] Addons rail identical on dashboard and shell.** Shared `ReaperAddons` parser. **Settles
+  when** a box with amtm/scMerlin-style addons shows the same entries, labels and order-within-group
+  on the dashboard and on any framed page, including an external Help link opening in a new tab on
+  both. **[owed — reporter, a box with addons]**
+- **[P2] Policy Routing works with the Firewall engine OFF.** `reaper_fw_sets_only()` is called from
+  `start_reaper_pbr()`. **Settles when** a routing rule keyed on a domain list steers traffic on a
+  box with `reaper_fw_enable=0`: `ipset list rwfw_<list>` is populated, `iptables -t mangle -vnL
+  REAPER_PBR` shows the match loading (not "set does not exist"), and `cru l` shows
+  `reaper_fw_dns`. **[owed — metal, fw off]**
+- **[P2] Domain lists survive a reboot.** `/jffs/reaper_fw/sets/rwfw_<name>` written after each
+  resolver pass, replayed at set creation. **Settles when** after a reboot (before any client DNS
+  lookup) `ipset -t list rwfw_<list>` is already non-empty. **[owed — metal, reboot]**
+- **[P3] Edit flows on the Firewall page (8 lists) and Policy Routing (rules + domain lists) —
+  page check.** Modify → Save replaces in place, Cancel restores Add, order/enable/comment preserved
+  on rules, a renamed domain list updates the rules that referenced it. Mock-renderable except the
+  CGI saves. **[owed — page check]**
+
+### v2.5.8 (2026-08-20) — upstream 3006.102.8_4 alignment, awaiting confirmation
+
+- **[P2] UPnP gaming fix (completed revert of the Asus jump patch) — needs a real UPnP game.** The
+  FORWARD→FUPNP half of Asus patch `a1ce74be78` is now removed, completing the revert Merlin shipped
+  as `085a2f2768` (the PREROUTING→VUPNP half was already reverted here on 2026-08-13). **Settles
+  when** a game that forwards its port via UPnP (the PS5 is the known reproducer in this house)
+  accepts inbound connections with UPnP enabled — the symptom upstream fixed was "cannot connect to
+  gaming servers if a game forwards a port through UPnP". Also worth a glance:
+  `iptables -t nat -vnL PREROUTING | grep VUPNP` and `iptables -vnL FORWARD | grep FUPNP` should
+  both be empty, with the VSERVER→VUPNP jump still present. **[owed — metal, UPnP inbound connect]**
+
+- **[P3] miniupnpd 2.3.11 + OpenVPN 2.7.6 report their real versions — glance.** Both packages carry
+  version-stamp freeze traps (generated `config.h` gating); the stale files were purged before this
+  build, but **settles when** the System Log / `miniupnpd -version` and the VPN page's
+  `openvpn --version` line read 2.3.11 / 2.7.6 on the flashed image. **[owed — metal, glance]**
 
 ### v2.5.4 (2026-08-20) — staged batch, awaiting confirmation
 

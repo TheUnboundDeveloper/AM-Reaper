@@ -1,0 +1,1474 @@
+From bdfe435eef94f55d657e759cdb08466dc79f8cb0 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Fri, 7 Aug 2026 10:19:40 -0400
+Subject: [PATCH] openvpn: updated to 2.7.6
+
+(cherry picked from commit 9b6fd33d58b8a5730e931a09a33b4de17dddf9ac)
+---
+ release/src/router/openvpn/CMakeLists.txt     |  11 +-
+ release/src/router/openvpn/ChangeLog          |  37 +++++
+ release/src/router/openvpn/Changes.rst        |  93 ++++++++++-
+ .../openvpn/doc/man-sections/examples.rst     |   4 +
+ .../openvpn/doc/man-sections/link-options.rst |  27 ++--
+ .../doc/man-sections/vpn-network-options.rst  |   4 +
+ .../src/router/openvpn/doc/openvpn-examples.5 |   4 +
+ .../openvpn/doc/openvpn-examples.5.html       |   3 +
+ release/src/router/openvpn/doc/openvpn.8      |  31 ++--
+ release/src/router/openvpn/doc/openvpn.8.html |  27 ++--
+ .../router/openvpn/include/openvpn-plugin.h   |   2 +-
+ .../sample/sample-config-files/client.conf    |   2 +
+ .../sample/sample-config-files/server.conf    |   2 +
+ .../openvpn/sample/sample-plugins/Makefile    |   8 +-
+ .../src/router/openvpn/src/openvpn/crypto.c   |   6 +-
+ .../router/openvpn/src/openvpn/cryptoapi.c    |   4 +-
+ release/src/router/openvpn/src/openvpn/dco.c  |  24 ++-
+ .../src/router/openvpn/src/openvpn/helper.c   |  27 +---
+ release/src/router/openvpn/src/openvpn/init.c |   9 --
+ release/src/router/openvpn/src/openvpn/mtu.c  |   8 +
+ .../src/router/openvpn/src/openvpn/options.c  |  44 ++++--
+ .../src/router/openvpn/src/openvpn/options.h  |   2 +
+ .../src/router/openvpn/src/openvpn/proto.c    |   2 +-
+ .../src/router/openvpn/src/openvpn/socket.c   |  36 +----
+ .../src/router/openvpn/src/openvpn/socket.h   |   4 +-
+ release/src/router/openvpn/src/openvpn/ssl.c  |  16 +-
+ .../src/router/openvpn/src/openvpn/ssl_pkt.h  |   1 -
+ .../openvpn/src/openvpn/ssl_verify_mbedtls.c  | 145 ++++++++++++++++--
+ .../router/openvpn/src/openvpnserv/validate.c |  11 +-
+ .../src/router/openvpn/tests/t_client.sh.in   |   2 +-
+ .../tests/unit_tests/openvpn/test_ssl.c       |  83 ++++++++--
+ .../tests/unit_tests/openvpn/test_tls_crypt.c |  20 ++-
+ release/src/router/openvpn/version.m4         |   4 +-
+ 33 files changed, 533 insertions(+), 170 deletions(-)
+
+diff --git a/release/src/router/openvpn/CMakeLists.txt b/release/src/router/openvpn/CMakeLists.txt
+index 15ddf5f646..c92d9ea656 100644
+--- a/release/src/router/openvpn/CMakeLists.txt
++++ b/release/src/router/openvpn/CMakeLists.txt
+@@ -383,12 +383,20 @@ if (BUILD_TESTING)
+     find_package(cmocka CONFIG)
+     if (TARGET cmocka::cmocka)
+         set(CMOCKA_LIBRARIES cmocka::cmocka)
++        get_target_property(CMOCKA_INCLUDE_DIRS cmocka::cmocka INTERFACE_INCLUDE_DIRECTORIES)
+     else ()
+         pkg_search_module(cmocka cmocka REQUIRED IMPORTED_TARGET)
+         set(CMOCKA_LIBRARIES PkgConfig::cmocka)
++        set(CMOCKA_INCLUDE_DIRS ${cmocka_INCLUDE_DIRS})
+     endif ()
+-    set(CMAKE_REQUIRED_LIBRARIES ${CMOCKA_LIBRARIES})
++    # cmocka_version.h exists since cmocka 2.0; its absence selects the
++    # cmocka 1.x compat shims in test_common.h. Detecting a header only needs
++    # the include path - do NOT add cmocka to CMAKE_REQUIRED_LIBRARIES, as that
++    # makes check_include_files link the shared library, which can fail in the
++    # probe for unrelated reasons and wrongly mis-detect cmocka 2.x as < 2.0.
++    set(CMAKE_REQUIRED_INCLUDES ${CMOCKA_INCLUDE_DIRS})
+     check_include_files(cmocka_version.h HAVE_CMOCKA_VERSION_H)
++    unset(CMAKE_REQUIRED_INCLUDES)
+ endif ()
+ 
+ configure_file(config.h.cmake.in config.h)
+@@ -811,7 +819,6 @@ if (BUILD_TESTING)
+ 
+     target_sources(test_mbuf PRIVATE
+         tests/unit_tests/openvpn/mock_get_random.c
+-        src/openvpn/buffer.c
+         src/openvpn/mbuf.c
+         )
+ 
+diff --git a/release/src/router/openvpn/ChangeLog b/release/src/router/openvpn/ChangeLog
+index d3bf999539..b9da468066 100644
+--- a/release/src/router/openvpn/ChangeLog
++++ b/release/src/router/openvpn/ChangeLog
+@@ -1,6 +1,43 @@
+ OpenVPN ChangeLog
+ Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
+ 
++2026.08.05 -- Version 2.7.6
++
++Antonio Quartulli (2):
++      Enable TCP_NODELAY by default and push it to clients
++      options: make 'tun' the default for '--dev'
++
++Arne Schwabe (1):
++      Correctly calculate packet id size when epoch packet format is in use
++
++Frank Lichtenheld (5):
++      test_tls_crypt: Fix issue with temp file name on big endian systems
++      ssl_pkt: Fix doxygen warning about read_control_auth
++      t_client.sh.in: Do not run resolvectl if systemd is not running
++      test_tls_crypt: Fix test failure on Windows
++      ssl: Ignore hard reset packets with a non-zero packet id
++
++Heiko Hund (2):
++      mingw: avoid C99 "hh" scanf length modifier
++      interactive: forbid "--setenv opt" in startup data
++
++Lev Stipakov (1):
++      CMake: detect cmocka_version.h via include path, not by linking
++
++Marco Baffo (1):
++      options: limit ping and keepalive values to one day
++
++Max Fillinger (2):
++      Make --x509-username-field work with Mbed TLS
++      Remove --providers from --help output for Mbed TLS
++
++Ralf Lici (1):
++      dco: make key state desync recoverable
++
++rootvector2 (1):
++      proto: correct 802.1Q length check in is_ipv_X
++
++
+ 2026.07.01 -- Version 2.7.5
+ 
+ Antonio Quartulli (2):
+diff --git a/release/src/router/openvpn/Changes.rst b/release/src/router/openvpn/Changes.rst
+index 4b689abcb0..36b57eef06 100644
+--- a/release/src/router/openvpn/Changes.rst
++++ b/release/src/router/openvpn/Changes.rst
+@@ -1,3 +1,94 @@
++Overview of changes in 2.7.6
++============================
++Security fixes
++--------------
++- openvpnserv (windows): better scrutinize command line passed in
++  from the control socket to openvpn.  This would lead to circumventing
++  admin restrictions on allowed openvpn config directories (but never
++  to "read files the user has no permissions for")  (CVE-2026-63649)
++
++  (Bug found by 章鱼哥 (www.aipyaipy.com), tracked
++   in Github: OpenVPN/openvpn-private-issues#142)
++
++- dco: make key state desync recoverable
++
++  This was reported as a "with suitable timing, a key-update de-sync between
++  OpenVPN and the kernel could trigger an ASSERT()", and was initially
++  handled as security report.  It turned out to be not exploitable, but the
++  state machine was not very robust and so the opportunity was used to
++  improve the code.
++
++  (Bug found by 章鱼哥 (www.aipyaipy.com), tracked
++   in Github: OpenVPN/openvpn-private-issues#143)
++
++- make ``--x509-username-field`` work with mbedTLS.
++
++  In very particular setups, together with a CA creating matching certificates,
++  this could lead to unintentionally permitting a certificate that should
++  not have.  This is why this was considered a (low-prio) security bug and a
++  CVE ID was assigned  (CVE-2026-63650)
++
++  (Bug found by 章鱼哥 (www.aipyaipy.com), tracked
++   in Github: OpenVPN/openvpn-private-issues#144)
++
++Bugfixes
++--------
++- refuse incoming HARD RESET packets with a sequence ID != 0
++  (this is basically making an OpenVPN server ignore and log a
++   "should never happen" client-side misbehaviour, which could lead to
++   TLS handshake establishment failures in p2p TLS setups)
++
++- correctly calculate packet id size if epoch packet format is in use
++  - this was off by 4, for connections openvpn 2.7+ to openvpn 2.7+,
++  exceeding "mssfix mtu" headroom by those 4 bytes
++  (Github: OpenVPN/openvpn#1074)
++
++- correct minimum packet length check for 802.1q tagged packets
++  (Github: OpenVPN/openvpn#1044).
++
++  This was also reported (twice) as a security bug, as technically
++  OpenVPN with ``--client-nat`` would read and write up to 4 bytes
++  "after the end of the packet" - but due to the OpenVPN packet buffer
++  layouts, which are always full-frame-sized this is fully safe and has
++  no adverse consequences.
++
++User-visible Changes
++--------------------
++- if ``--dev`` is not specified, default to ``--dev tun`` - so for the
++  tun case, this option can now be left out of the openvpn config.
++
++- ``--ping`` and ``--keepalive`` settings are now limited to 24 hours
++  maximum - the primary reason for that is to avoid lots of extra code
++  in the DCO kernel to handle arbitrarily large values without overflowing
++  32 bit integers.  24h is considered much higher than any reasonable use.
++
++- The ``TCP_NODELAY`` socket flag is now "always on". The ``--tcp-nodelay``
++  option is kept, because setting it on a p2mp server also enables pushing
++  of ``socket-flags TCP_NODELAY`` to clients, which might not have this
++  code change yet.
++
++- Remove ``--providers`` from ``--help`` output on mbedTLS builds.
++
++Building/Testing improvements
++-----------------------------
++- no longer use C99 ``hh`` scanf() length modifier, as it's not portable
++  across all MinGW variants.
++
++- fix test_tls_crypt test failures on Windows.
++
++- t_client.sh: do not run resolvectl to query DNS settings if systemd is
++  not running (= do not pollute log files with nonsensical errors).
++
++- CMake builds: detect cmocka_version.h via include path, not by linking
++
++- test_tls_crypt: Fix issue with temp file name on big endian systems
++  (encountered trying to build 2.7.5 on Fedora s390x build instances).
++
++Documentation improvements
++--------------------------
++- ssl_pkt: Fix doxygen warning about read_control_auth
++
++
+ Overview of changes in 2.7.5
+ ============================
+ Security fixes
+@@ -27,7 +118,7 @@ Security fixes
+    tracked in Github: OpenVPN/openvpn-private-issues#119, #131)
+ 
+ - Fix server crash on reception of suitably malformed auth-token, if
+-  ```--auth-gen-token external-auth`` is active (CVE-2026-13122)
++  ``--auth-gen-token external-auth`` is active (CVE-2026-13122)
+ 
+   (Bug found by Haiyang Huang <huanghaiyang83@gmail.com>, tracked in
+    Github: OpenVPN/openvpn-private-issues#118)
+diff --git a/release/src/router/openvpn/doc/man-sections/examples.rst b/release/src/router/openvpn/doc/man-sections/examples.rst
+index 80ef2df0c5..416e576a80 100644
+--- a/release/src/router/openvpn/doc/man-sections/examples.rst
++++ b/release/src/router/openvpn/doc/man-sections/examples.rst
+@@ -63,6 +63,10 @@ you will get a weird feedback loop.
+ Example 1: A simple tunnel without security (not recommended)
+ -------------------------------------------------------------
+ 
++Since :code:`tun` is the default device type, ``--dev`` is optional; when it
++is omitted OpenVPN creates a dynamically-named ``tunX`` device. The examples
++below still name the device (``--dev tun1``) explicitly for clarity.
++
+ On bob::
+ 
+    openvpn --remote alice.example.com --dev tun1 \
+diff --git a/release/src/router/openvpn/doc/man-sections/link-options.rst b/release/src/router/openvpn/doc/man-sections/link-options.rst
+index df8c917753..735ee519c5 100644
+--- a/release/src/router/openvpn/doc/man-sections/link-options.rst
++++ b/release/src/router/openvpn/doc/man-sections/link-options.rst
+@@ -74,7 +74,9 @@ the local and the remote host.
+      keepalive interval timeout
+ 
+   Send ping once every ``interval`` seconds, restart if ping is not received
+-  for ``timeout`` seconds.
++  for ``timeout`` seconds. Both values are limited to 86400 seconds. Since the
++  server-side timeout is doubled, ``timeout`` is limited to 43200 seconds in
++  server mode.
+ 
+   This option can be used on both client and server side, but it is enough
+   to add this on the server side as it will push appropriate ``--ping``
+@@ -247,6 +249,8 @@ the local and the remote host.
+   cause ping packets to be sent in both directions since OpenVPN ping
+   packets are not echoed like IP ping packets).
+ 
++  The maximum value for ``n`` is 86400 seconds.
++
+   This option has two intended uses:
+ 
+   (1)  Compatibility with stateful firewalls. The periodic ping will ensure
+@@ -264,6 +268,8 @@ the local and the remote host.
+   ``--inactive``, ``--ping`` and ``--ping-exit`` to create a two-tiered
+   inactivity disconnect.
+ 
++  The maximum value for ``n`` is 86400 seconds.
++
+   For example,
+   ::
+ 
+@@ -278,6 +284,8 @@ the local and the remote host.
+   ``n`` seconds pass without reception of a ping or other packet from
+   remote.
+ 
++  The maximum value for ``n`` is 86400 seconds.
++
+   This option is useful in cases where the remote peer has a dynamic IP
+   address and a low-TTL DNS name is used to track the IP address using a
+   service such as https://www.nsupdate.info/ + a dynamic DNS client such as
+@@ -465,23 +473,20 @@ the local and the remote host.
+   trying to group several smaller packets into a larger packet.  This can
+   result in a considerably improvement in latency.
+ 
+-  This option is pushable from server to client, and should be used on
+-  both client and server for maximum effect.
++  Since OpenVPN 2.7.6 :code:`TCP_NODELAY` is enabled by default on every TCP
++  socket, so specifying it here is no longer necessary.
+ 
+ --tcp-nodelay
+-  This macro sets the :code:`TCP_NODELAY` socket flag on the server as well
+-  as pushes it to connecting clients. The :code:`TCP_NODELAY` flag disables
+-  the Nagle algorithm on TCP sockets causing packets to be transmitted
+-  immediately with low latency, rather than waiting a short period of time
+-  in order to aggregate several packets into a larger containing packet.
+-  In VPN applications over TCP, :code:`TCP_NODELAY` is generally a good
+-  latency optimization.
++  :code:`TCP_NODELAY` is enabled by default on every TCP socket. In
++  ``--mode server`` this option additionally pushes
++  ``socket-flags TCP_NODELAY`` to connecting clients, so that clients older
++  than 2.7.6 get it too. The option can be removed once such clients are no
++  longer in use.
+ 
+   The macro expands as follows:
+   ::
+ 
+      if mode server:
+-         socket-flags TCP_NODELAY
+          push "socket-flags TCP_NODELAY"
+ 
+ --max-packet-size size
+diff --git a/release/src/router/openvpn/doc/man-sections/vpn-network-options.rst b/release/src/router/openvpn/doc/man-sections/vpn-network-options.rst
+index 33ebedb5ef..960c6addf2 100644
+--- a/release/src/router/openvpn/doc/man-sections/vpn-network-options.rst
++++ b/release/src/router/openvpn/doc/man-sections/vpn-network-options.rst
+@@ -50,6 +50,10 @@ routing.
+   :code:`null` or an arbitrary name string (:code:`X` can be omitted for
+   a dynamic device.)
+ 
++  If neither ``--dev`` nor ``--dev-type`` is specified, OpenVPN defaults to
++  :code:`tun`, i.e. it creates a dynamically-named :code:`tunX` device and
++  runs a layer-3 tunnel.
++
+   See examples section below for an example on setting up a TUN device.
+ 
+   You must use either tun devices on both ends of the connection or tap
+diff --git a/release/src/router/openvpn/doc/openvpn-examples.5 b/release/src/router/openvpn/doc/openvpn-examples.5
+index ac943b6712..6531f0f639 100644
+--- a/release/src/router/openvpn/doc/openvpn-examples.5
++++ b/release/src/router/openvpn/doc/openvpn-examples.5
+@@ -350,6 +350,10 @@ that is part of your local subnet for either of the tunnel endpoints,
+ you will get a weird feedback loop.
+ .SS Example 1: A simple tunnel without security (not recommended)
+ .sp
++Since \fBtun\fP is the default device type, \fB\-\-dev\fP is optional; when it
++is omitted OpenVPN creates a dynamically\-named \fBtunX\fP device. The examples
++below still name the device (\fB\-\-dev tun1\fP) explicitly for clarity.
++.sp
+ On bob:
+ .INDENT 0.0
+ .INDENT 3.5
+diff --git a/release/src/router/openvpn/doc/openvpn-examples.5.html b/release/src/router/openvpn/doc/openvpn-examples.5.html
+index 596b51ae7e..3cc02b2753 100644
+--- a/release/src/router/openvpn/doc/openvpn-examples.5.html
++++ b/release/src/router/openvpn/doc/openvpn-examples.5.html
+@@ -628,6 +628,9 @@ you will get a weird feedback loop.</p>
+ </div>
+ <div class="section" id="example-1-a-simple-tunnel-without-security-not-recommended">
+ <h2>Example 1: A simple tunnel without security (not recommended)</h2>
++<p>Since <code>tun</code> is the default device type, <tt class="docutils literal"><span class="pre">--dev</span></tt> is optional; when it
++is omitted OpenVPN creates a dynamically-named <tt class="docutils literal">tunX</tt> device. The examples
++below still name the device (<tt class="docutils literal"><span class="pre">--dev</span> tun1</tt>) explicitly for clarity.</p>
+ <p>On bob:</p>
+ <pre class="literal-block">
+ openvpn --remote alice.example.com --dev tun1 \
+diff --git a/release/src/router/openvpn/doc/openvpn.8 b/release/src/router/openvpn/doc/openvpn.8
+index 74c5fc0ea7..023f9e8cf3 100644
+--- a/release/src/router/openvpn/doc/openvpn.8
++++ b/release/src/router/openvpn/doc/openvpn.8
+@@ -4173,7 +4173,9 @@ keepalive interval timeout
+ .UNINDENT
+ .sp
+ Send ping once every \fBinterval\fP seconds, restart if ping is not received
+-for \fBtimeout\fP seconds.
++for \fBtimeout\fP seconds. Both values are limited to 86400 seconds. Since the
++server\-side timeout is doubled, \fBtimeout\fP is limited to 43200 seconds in
++server mode.
+ .sp
+ This option can be used on both client and server side, but it is enough
+ to add this on the server side as it will push appropriate \fB\-\-ping\fP
+@@ -4364,6 +4366,8 @@ sent for at least \fBn\fP seconds (specify \fB\-\-ping\fP on both peers to
+ cause ping packets to be sent in both directions since OpenVPN ping
+ packets are not echoed like IP ping packets).
+ .sp
++The maximum value for \fBn\fP is 86400 seconds.
++.sp
+ This option has two intended uses:
+ .INDENT 7.0
+ .IP 1. 3
+@@ -4383,6 +4387,8 @@ ping or other packet from remote. This option can be combined with
+ \fB\-\-inactive\fP, \fB\-\-ping\fP and \fB\-\-ping\-exit\fP to create a two\-tiered
+ inactivity disconnect.
+ .sp
++The maximum value for \fBn\fP is 86400 seconds.
++.sp
+ For example,
+ .INDENT 7.0
+ .INDENT 3.5
+@@ -4402,6 +4408,8 @@ Similar to \fB\-\-ping\-exit\fP, but trigger a \fBSIGUSR1\fP restart after
+ \fBn\fP seconds pass without reception of a ping or other packet from
+ remote.
+ .sp
++The maximum value for \fBn\fP is 86400 seconds.
++.sp
+ This option is useful in cases where the remote peer has a dynamic IP
+ address and a low\-TTL DNS name is used to track the IP address using a
+ service such as \fI\%https://www.nsupdate.info/\fP + a dynamic DNS client such as
+@@ -4597,17 +4605,15 @@ kernel to send tunnel packets immediately over the TCP connection without
+ trying to group several smaller packets into a larger packet.  This can
+ result in a considerably improvement in latency.
+ .sp
+-This option is pushable from server to client, and should be used on
+-both client and server for maximum effect.
++Since OpenVPN 2.7.6 \fBTCP_NODELAY\fP is enabled by default on every TCP
++socket, so specifying it here is no longer necessary.
+ .TP
+ .B  \-\-tcp\-nodelay
+-This macro sets the \fBTCP_NODELAY\fP socket flag on the server as well
+-as pushes it to connecting clients. The \fBTCP_NODELAY\fP flag disables
+-the Nagle algorithm on TCP sockets causing packets to be transmitted
+-immediately with low latency, rather than waiting a short period of time
+-in order to aggregate several packets into a larger containing packet.
+-In VPN applications over TCP, \fBTCP_NODELAY\fP is generally a good
+-latency optimization.
++\fBTCP_NODELAY\fP is enabled by default on every TCP socket. In
++\fB\-\-mode server\fP this option additionally pushes
++\fBsocket\-flags TCP_NODELAY\fP to connecting clients, so that clients older
++than 2.7.6 get it too. The option can be removed once such clients are no
++longer in use.
+ .sp
+ The macro expands as follows:
+ .INDENT 7.0
+@@ -4615,7 +4621,6 @@ The macro expands as follows:
+ .sp
+ .EX
+ if mode server:
+-    socket\-flags TCP_NODELAY
+     push \(dqsocket\-flags TCP_NODELAY\(dq
+ .EE
+ .UNINDENT
+@@ -4714,6 +4719,10 @@ TUN/TAP virtual network device which can be \fBtunX\fP, \fBtapX\fP,
+ \fBnull\fP or an arbitrary name string (\fBX\fP can be omitted for
+ a dynamic device.)
+ .sp
++If neither \fB\-\-dev\fP nor \fB\-\-dev\-type\fP is specified, OpenVPN defaults to
++\fBtun\fP, i.e. it creates a dynamically\-named \fBtunX\fP device and
++runs a layer\-3 tunnel.
++.sp
+ See examples section below for an example on setting up a TUN device.
+ .sp
+ You must use either tun devices on both ends of the connection or tap
+diff --git a/release/src/router/openvpn/doc/openvpn.8.html b/release/src/router/openvpn/doc/openvpn.8.html
+index cc1c4c5694..c6deee70c8 100644
+--- a/release/src/router/openvpn/doc/openvpn.8.html
++++ b/release/src/router/openvpn/doc/openvpn.8.html
+@@ -3860,7 +3860,9 @@ UDP multicast stream which requires fragmentation.</p>
+ keepalive interval timeout
+ </pre>
+ <p>Send ping once every <tt class="docutils literal">interval</tt> seconds, restart if ping is not received
+-for <tt class="docutils literal">timeout</tt> seconds.</p>
++for <tt class="docutils literal">timeout</tt> seconds. Both values are limited to 86400 seconds. Since the
++server-side timeout is doubled, <tt class="docutils literal">timeout</tt> is limited to 43200 seconds in
++server mode.</p>
+ <p>This option can be used on both client and server side, but it is enough
+ to add this on the server side as it will push appropriate <tt class="docutils literal"><span class="pre">--ping</span></tt>
+ and <tt class="docutils literal"><span class="pre">--ping-restart</span></tt> options to the client. If used on both server and
+@@ -4014,6 +4016,7 @@ option.</td></tr>
+ sent for at least <tt class="docutils literal">n</tt> seconds (specify <tt class="docutils literal"><span class="pre">--ping</span></tt> on both peers to
+ cause ping packets to be sent in both directions since OpenVPN ping
+ packets are not echoed like IP ping packets).</p>
++<p>The maximum value for <tt class="docutils literal">n</tt> is 86400 seconds.</p>
+ <p>This option has two intended uses:</p>
+ <ol class="arabic simple">
+ <li>Compatibility with stateful firewalls. The periodic ping will ensure
+@@ -4030,6 +4033,7 @@ using the <tt class="docutils literal"><span class="pre">--ping-exit</span></tt>
+ ping or other packet from remote. This option can be combined with
+ <tt class="docutils literal"><span class="pre">--inactive</span></tt>, <tt class="docutils literal"><span class="pre">--ping</span></tt> and <tt class="docutils literal"><span class="pre">--ping-exit</span></tt> to create a two-tiered
+ inactivity disconnect.</p>
++<p>The maximum value for <tt class="docutils literal">n</tt> is 86400 seconds.</p>
+ <p>For example,</p>
+ <pre class="literal-block">
+ openvpn [options...] --inactive 3600 --ping 10 --ping-exit 60
+@@ -4044,6 +4048,7 @@ data is exchanged.</p>
+ <tr><td>&nbsp;</td><td><p class="first">Similar to <tt class="docutils literal"><span class="pre">--ping-exit</span></tt>, but trigger a <code>SIGUSR1</code> restart after
+ <tt class="docutils literal">n</tt> seconds pass without reception of a ping or other packet from
+ remote.</p>
++<p>The maximum value for <tt class="docutils literal">n</tt> is 86400 seconds.</p>
+ <p>This option is useful in cases where the remote peer has a dynamic IP
+ address and a low-TTL DNS name is used to track the IP address using a
+ service such as <a class="reference external" href="https://www.nsupdate.info/">https://www.nsupdate.info/</a> + a dynamic DNS client such as
+@@ -4210,22 +4215,19 @@ session is terminated.</p>
+ kernel to send tunnel packets immediately over the TCP connection without
+ trying to group several smaller packets into a larger packet.  This can
+ result in a considerably improvement in latency.</p>
+-<p class="last">This option is pushable from server to client, and should be used on
+-both client and server for maximum effect.</p>
++<p class="last">Since OpenVPN 2.7.6 <code>TCP_NODELAY</code> is enabled by default on every TCP
++socket, so specifying it here is no longer necessary.</p>
+ </td></tr>
+ <tr><td class="option-group">
+ <kbd><span class="option">--tcp-nodelay</span></kbd></td>
+-<td><p class="first">This macro sets the <code>TCP_NODELAY</code> socket flag on the server as well
+-as pushes it to connecting clients. The <code>TCP_NODELAY</code> flag disables
+-the Nagle algorithm on TCP sockets causing packets to be transmitted
+-immediately with low latency, rather than waiting a short period of time
+-in order to aggregate several packets into a larger containing packet.
+-In VPN applications over TCP, <code>TCP_NODELAY</code> is generally a good
+-latency optimization.</p>
++<td><p class="first"><code>TCP_NODELAY</code> is enabled by default on every TCP socket. In
++<tt class="docutils literal"><span class="pre">--mode</span> server</tt> this option additionally pushes
++<tt class="docutils literal"><span class="pre">socket-flags</span> TCP_NODELAY</tt> to connecting clients, so that clients older
++than 2.7.6 get it too. The option can be removed once such clients are no
++longer in use.</p>
+ <p>The macro expands as follows:</p>
+ <pre class="last literal-block">
+ if mode server:
+-    socket-flags TCP_NODELAY
+     push &quot;socket-flags TCP_NODELAY&quot;
+ </pre>
+ </td></tr>
+@@ -4310,6 +4312,9 @@ server-side firewall rule.</p>
+ <td><p class="first">TUN/TAP virtual network device which can be <code>tunX</code>, <code>tapX</code>,
+ <code>null</code> or an arbitrary name string (<code>X</code> can be omitted for
+ a dynamic device.)</p>
++<p>If neither <tt class="docutils literal"><span class="pre">--dev</span></tt> nor <tt class="docutils literal"><span class="pre">--dev-type</span></tt> is specified, OpenVPN defaults to
++<code>tun</code>, i.e. it creates a dynamically-named <code>tunX</code> device and
++runs a layer-3 tunnel.</p>
+ <p>See examples section below for an example on setting up a TUN device.</p>
+ <p>You must use either tun devices on both ends of the connection or tap
+ devices on both ends. You cannot mix them, as they represent different
+diff --git a/release/src/router/openvpn/include/openvpn-plugin.h b/release/src/router/openvpn/include/openvpn-plugin.h
+index 89ee8fb6aa..41557916a7 100644
+--- a/release/src/router/openvpn/include/openvpn-plugin.h
++++ b/release/src/router/openvpn/include/openvpn-plugin.h
+@@ -52,7 +52,7 @@ extern "C" {
+  */
+ #define OPENVPN_VERSION_MAJOR 2
+ #define OPENVPN_VERSION_MINOR 7
+-#define OPENVPN_VERSION_PATCH ".5"
++#define OPENVPN_VERSION_PATCH ".6"
+ 
+ /*
+  * Plug-in types.  These types correspond to the set of script callbacks
+diff --git a/release/src/router/openvpn/sample/sample-config-files/client.conf b/release/src/router/openvpn/sample/sample-config-files/client.conf
+index 53b8027db1..1806b249ab 100644
+--- a/release/src/router/openvpn/sample/sample-config-files/client.conf
++++ b/release/src/router/openvpn/sample/sample-config-files/client.conf
+@@ -20,6 +20,8 @@ client
+ # On most systems, the VPN will not function
+ # unless you partially or fully disable
+ # the firewall for the TUN/TAP interface.
++# "tun" is the default device type, so the
++# "dev tun" line below is optional.
+ ;dev tap
+ dev tun
+ 
+diff --git a/release/src/router/openvpn/sample/sample-config-files/server.conf b/release/src/router/openvpn/sample/sample-config-files/server.conf
+index 8943c34e92..924fb96003 100644
+--- a/release/src/router/openvpn/sample/sample-config-files/server.conf
++++ b/release/src/router/openvpn/sample/sample-config-files/server.conf
+@@ -49,6 +49,8 @@ proto udp
+ # On most systems, the VPN will not function
+ # unless you partially or fully disable/open
+ # the firewall for the TUN/TAP interface.
++# "tun" is the default device type, so the
++# "dev tun" line below is optional.
+ ;dev tap
+ dev tun
+ 
+diff --git a/release/src/router/openvpn/sample/sample-plugins/Makefile b/release/src/router/openvpn/sample/sample-plugins/Makefile
+index 1bbace9301..e17787d2c7 100644
+--- a/release/src/router/openvpn/sample/sample-plugins/Makefile
++++ b/release/src/router/openvpn/sample/sample-plugins/Makefile
+@@ -218,7 +218,7 @@ OPENSSL_CFLAGS =
+ OPENSSL_LIBS = -lssl -lcrypto 
+ OPENVPN_VERSION_MAJOR = 2
+ OPENVPN_VERSION_MINOR = 7
+-OPENVPN_VERSION_PATCH = .5
++OPENVPN_VERSION_PATCH = .6
+ OPTIONAL_CRYPTO_CFLAGS =  
+ OPTIONAL_CRYPTO_LIBS =  -lssl -lcrypto 
+ OPTIONAL_DL_LIBS = -ldl
+@@ -245,10 +245,10 @@ P11TOOL =
+ PACKAGE = openvpn
+ PACKAGE_BUGREPORT = openvpn-users@lists.sourceforge.net
+ PACKAGE_NAME = OpenVPN
+-PACKAGE_STRING = OpenVPN 2.7.5
++PACKAGE_STRING = OpenVPN 2.7.6
+ PACKAGE_TARNAME = openvpn
+ PACKAGE_URL = 
+-PACKAGE_VERSION = 2.7.5
++PACKAGE_VERSION = 2.7.6
+ PATH_SEPARATOR = :
+ PKCS11_HELPER_CFLAGS = 
+ PKCS11_HELPER_LIBS = 
+@@ -281,7 +281,7 @@ TAP_WIN_MIN_MINOR = 9
+ TEST_CFLAGS =       -I$(top_srcdir)/include 
+ TEST_LDFLAGS =  -lssl -lcrypto   -lcap-ng    -lcmocka 
+ TMPFILES_DIR = 
+-VERSION = 2.7.5
++VERSION = 2.7.6
+ WINDMC = no
+ WOLFSSL_CFLAGS = 
+ WOLFSSL_INCLUDEDIR = 
+diff --git a/release/src/router/openvpn/src/openvpn/crypto.c b/release/src/router/openvpn/src/openvpn/crypto.c
+index 9ff3b209c1..679f74ba8e 100644
+--- a/release/src/router/openvpn/src/openvpn/crypto.c
++++ b/release/src/router/openvpn/src/openvpn/crypto.c
+@@ -1473,9 +1473,9 @@ read_key_file(struct key2 *key2, const char *file, const unsigned int flags)
+                     hex_byte[hb_index++] = c;
+                     if (hb_index == 2)
+                     {
+-                        uint8_t u;
+-                        ASSERT(sscanf((const char *)hex_byte, "%" SCNx8, &u) == 1);
+-                        *out++ = u;
++                        unsigned int u;
++                        ASSERT(sscanf((const char *)hex_byte, "%2x", &u) == 1);
++                        *out++ = (uint8_t)u;
+                         hb_index = 0;
+                         if (++count == keylen)
+                         {
+diff --git a/release/src/router/openvpn/src/openvpn/cryptoapi.c b/release/src/router/openvpn/src/openvpn/cryptoapi.c
+index 49f5bbb698..d586dfa078 100644
+--- a/release/src/router/openvpn/src/openvpn/cryptoapi.c
++++ b/release/src/router/openvpn/src/openvpn/cryptoapi.c
+@@ -169,10 +169,12 @@ parse_hexstring(const char *p, unsigned char *arr, size_t capacity)
+             break;
+         }
+ 
+-        if (!isxdigit(p[0]) || !isxdigit(p[1]) || sscanf(p, "%2hhx", &arr[i++]) != 1)
++        unsigned int b;
++        if (!isxdigit(p[0]) || !isxdigit(p[1]) || sscanf(p, "%2x", &b) != 1)
+         {
+             return 0;
+         }
++        arr[i++] = (unsigned char)b;
+     }
+     return i;
+ }
+diff --git a/release/src/router/openvpn/src/openvpn/dco.c b/release/src/router/openvpn/src/openvpn/dco.c
+index e944547b97..25843688de 100644
+--- a/release/src/router/openvpn/src/openvpn/dco.c
++++ b/release/src/router/openvpn/src/openvpn/dco.c
+@@ -73,9 +73,12 @@ dco_install_key(struct tls_multi *multi, struct key_state *ks, const uint8_t *en
+ 
+     int ret = dco_new_key(multi->dco, multi->dco_peer_id, ks->key_id, slot, encrypt_key, encrypt_iv,
+                           decrypt_key, decrypt_iv, ciphername, epoch);
+-    if ((ret == 0) && (multi->dco_keys_installed < 2))
++    if (ret == 0)
+     {
+-        multi->dco_keys_installed++;
++        if (multi->dco_keys_installed < 2)
++        {
++            multi->dco_keys_installed++;
++        }
+         ks->dco_status =
+             (slot == OVPN_KEY_SLOT_PRIMARY) ? DCO_INSTALLED_PRIMARY : DCO_INSTALLED_SECONDARY;
+     }
+@@ -166,7 +169,13 @@ dco_update_keys(dco_context_t *dco, struct tls_multi *multi)
+     /* if we have a primary key, it must have been installed already (keys
+      * are installed upon generation in the TLS code)
+      */
+-    ASSERT(primary->dco_status != DCO_NOT_INSTALLED);
++    if (primary->dco_status == DCO_NOT_INSTALLED)
++    {
++        msg(D_DCO, "DCO key state mismatch: selected primary key is not installed "
++                   "(peer_id=%d, key_id=%d, dco_keys_installed=%d)",
++            multi->dco_peer_id, primary->key_id, multi->dco_keys_installed);
++        return false;
++    }
+ 
+     struct key_state *secondary = dco_get_secondary_key(multi, primary);
+     /* if the current primary key was installed as secondary in DCO,
+@@ -190,6 +199,14 @@ dco_update_keys(dco_context_t *dco, struct tls_multi *multi)
+                 primary->key_id);
+         }
+ 
++        if (secondary && secondary->dco_status != DCO_INSTALLED_PRIMARY)
++        {
++            msg(D_DCO, "DCO key state mismatch: expected old primary key is not installed as DCO primary before swap "
++                       "(peer_id=%d, new_primary_key_id=%d, old_primary_key_id=%d, old_primary_dco_status=%d, dco_keys_installed=%d)",
++                multi->dco_peer_id, primary->key_id, secondary->key_id, secondary->dco_status, multi->dco_keys_installed);
++            return false;
++        }
++
+         int ret = dco_swap_keys(dco, multi->dco_peer_id);
+         if (ret < 0)
+         {
+@@ -200,7 +217,6 @@ dco_update_keys(dco_context_t *dco, struct tls_multi *multi)
+         primary->dco_status = DCO_INSTALLED_PRIMARY;
+         if (secondary)
+         {
+-            ASSERT(secondary->dco_status == DCO_INSTALLED_PRIMARY);
+             secondary->dco_status = DCO_INSTALLED_SECONDARY;
+         }
+     }
+diff --git a/release/src/router/openvpn/src/openvpn/helper.c b/release/src/router/openvpn/src/openvpn/helper.c
+index 9e7ad93240..9a12d4b917 100644
+--- a/release/src/router/openvpn/src/openvpn/helper.c
++++ b/release/src/router/openvpn/src/openvpn/helper.c
+@@ -99,14 +99,6 @@ print_str_int(const char *str, const int i, struct gc_arena *gc)
+     return BSTR(&out);
+ }
+ 
+-static const char *
+-print_str(const char *str, struct gc_arena *gc)
+-{
+-    struct buffer out = alloc_buf_gc(128, gc);
+-    buf_printf(&out, "%s", str);
+-    return BSTR(&out);
+-}
+-
+ static void
+ helper_add_route(const in_addr_t network, const in_addr_t netmask, struct options *o)
+ {
+@@ -567,6 +559,12 @@ helper_keepalive(struct options *o)
+             msg(M_USAGE,
+                 "--keepalive conflicts with --ping, --ping-exit, or --ping-restart.  If you use --keepalive, you don't need any of the other --ping directives.");
+         }
++        if (o->mode == MODE_SERVER && o->keepalive_timeout > PING_TIMEOUT_MAX / 2)
++        {
++            msg(M_USAGE,
++                "The second parameter to --keepalive must not exceed %d in server mode.",
++                PING_TIMEOUT_MAX / 2);
++        }
+ 
+         /*
+          * Expand.
+@@ -601,22 +599,13 @@ helper_keepalive(struct options *o)
+  * EXPANDS TO:
+  *
+  * if mode server:
+- *   socket-flags TCP_NODELAY
+  *   push "socket-flags TCP_NODELAY"
+  */
+ void
+ helper_tcp_nodelay(struct options *o)
+ {
+-    if (o->server_flags & SF_TCP_NODELAY_HELPER)
++    if ((o->server_flags & SF_TCP_NODELAY_HELPER) && o->mode == MODE_SERVER)
+     {
+-        if (o->mode == MODE_SERVER)
+-        {
+-            o->sockflags |= SF_TCP_NODELAY;
+-            push_option(o, print_str("socket-flags TCP_NODELAY", &o->gc), M_USAGE);
+-        }
+-        else
+-        {
+-            o->sockflags |= SF_TCP_NODELAY;
+-        }
++        push_option(o, "socket-flags TCP_NODELAY", M_USAGE);
+     }
+ }
+diff --git a/release/src/router/openvpn/src/openvpn/init.c b/release/src/router/openvpn/src/openvpn/init.c
+index 670afd0e9b..b80bb5987e 100644
+--- a/release/src/router/openvpn/src/openvpn/init.c
++++ b/release/src/router/openvpn/src/openvpn/init.c
+@@ -2642,15 +2642,6 @@ do_deferred_options(struct context *c, const unsigned int found, const bool is_u
+         }
+     }
+ 
+-    if (found & OPT_P_SOCKFLAGS)
+-    {
+-        msg(D_PUSH, "OPTIONS IMPORT: --socket-flags option modified");
+-        for (int i = 0; i < c->c1.link_sockets_num; i++)
+-        {
+-            link_socket_update_flags(c->c2.link_sockets[i], c->options.sockflags);
+-        }
+-    }
+-
+     if (found & OPT_P_PERSIST)
+     {
+         msg(D_PUSH, "OPTIONS IMPORT: --persist options modified");
+diff --git a/release/src/router/openvpn/src/openvpn/mtu.c b/release/src/router/openvpn/src/openvpn/mtu.c
+index e5db8ab135..f3c2874870 100644
+--- a/release/src/router/openvpn/src/openvpn/mtu.c
++++ b/release/src/router/openvpn/src/openvpn/mtu.c
+@@ -35,6 +35,7 @@
+ #include "crypto.h"
+ 
+ #include "memdbg.h"
++#include "ssl_common.h"
+ 
+ /* allocate a buffer for socket or tun layer */
+ void
+@@ -51,6 +52,13 @@ unsigned int
+ calc_packet_id_size_dc(const struct options *options, const struct key_type *kt)
+ {
+     bool tlsmode = options->tls_server || options->tls_client;
++    bool epoch = options->imported_protocol_flags & CO_EPOCH_DATA_KEY_FORMAT;
++
++    /* epoch format uses a 64-bit packet id: 16 bit epoch + 48 bit per-epoch counter */
++    if (epoch)
++    {
++        return sizeof(uint64_t);
++    }
+ 
+     bool packet_id_long_form = !tlsmode || cipher_kt_mode_ofb_cfb(kt->cipher);
+ 
+diff --git a/release/src/router/openvpn/src/openvpn/options.c b/release/src/router/openvpn/src/openvpn/options.c
+index ea7571617a..e90c81764e 100644
+--- a/release/src/router/openvpn/src/openvpn/options.c
++++ b/release/src/router/openvpn/src/openvpn/options.c
+@@ -190,7 +190,8 @@ static const char usage_message[] =
+     " or --socks-proxy"
+     " is used).\n"
+     "--nobind        : Do not bind to local address and port.\n"
+-    "--dev tunX|tapX : tun/tap device (X can be omitted for dynamic device.\n"
++    "--dev tunX|tapX : tun/tap device (X can be omitted for dynamic device).\n"
++    "                  Defaults to \"tun\" if neither --dev nor --dev-type is given.\n"
+     "--dev-type dt   : Which device type are we using? (dt = tun or tap) Use\n"
+     "                  this option only if the tun/tap device used with --dev\n"
+     "                  does not begin with \"tun\" or \"tap\".\n"
+@@ -487,8 +488,8 @@ static const char usage_message[] =
+     "                  virtual address table to v.\n"
+     "--bcast-buffers n : Allocate n broadcast buffers.\n"
+     "--tcp-queue-limit n : Maximum number of queued TCP output packets.\n"
+-    "--tcp-nodelay   : Macro that sets TCP_NODELAY socket flag on the server\n"
+-    "                  as well as pushes it to connecting clients.\n"
++    "--tcp-nodelay   : In server mode, push TCP_NODELAY to clients (it is\n"
++    "                  enabled by default on the local socket).\n"
+     "--learn-address cmd : Run command cmd to validate client virtual addresses.\n"
+     "--connect-freq n s : Allow a maximum of n new connections per s seconds.\n"
+     "--connect-freq-initial n s : Allow a maximum of n replies for initial connections attempts per s seconds.\n"
+@@ -611,7 +612,9 @@ static const char usage_message[] =
+     "                : Use --show-tls to see a list of supported TLS ciphers (suites).\n"
+     "--tls-cert-profile p : Set the allowed certificate crypto algorithm profile\n"
+     "                  (default=legacy).\n"
++#ifndef ENABLE_CRYPTO_MBEDTLS
+     "--providers l   : A list l of OpenSSL providers to load.\n"
++#endif
+     "--tls-timeout n : Packet retransmit timeout on TLS control channel\n"
+     "                  if no ACK from remote within n seconds (default=%d).\n"
+     "--reneg-bytes n : Renegotiate data chan. key after n bytes sent and recvd.\n"
+@@ -806,6 +809,7 @@ init_options(struct options *o)
+     gc_init(&o->dns_options.gc);
+ 
+     o->mode = MODE_POINT_TO_POINT;
++    o->dev = "tun";
+     o->topology = TOP_UNDEF;
+     o->ce.proto = PROTO_UDP;
+     o->ce.af = AF_UNSPEC;
+@@ -2629,6 +2633,13 @@ options_postprocess_verify_ce(const struct options *options, const struct connec
+             MUST_BE_UNDEF(vlan_accept, "vlan-accept");
+             MUST_BE_UNDEF(vlan_pvid, "vlan-pvid");
+         }
++
++        if (options->server_flags & SF_TCP_NODELAY_HELPER)
++        {
++            msg(M_INFO, "NOTE: TCP_NODELAY is always enabled locally; "
++                        "--tcp-nodelay is now only useful to push the flag to "
++                        "clients older than 2.7.6.");
++        }
+     }
+     else
+     {
+@@ -2659,9 +2670,7 @@ options_postprocess_verify_ce(const struct options *options, const struct connec
+         MUST_BE_FALSE(options->ssl_flags & SSLF_AUTH_USER_PASS_OPTIONAL, "auth-user-pass-optional");
+         if (options->server_flags & SF_TCP_NODELAY_HELPER)
+         {
+-            msg(M_WARN, "WARNING: setting tcp-nodelay on the client side will not "
+-                        "affect the server. To have TCP_NODELAY in both direction use "
+-                        "tcp-nodelay in the server configuration instead.");
++            msg(M_WARN, "DEPRECATED OPTION: --tcp-nodelay is always enabled on clients");
+         }
+         MUST_BE_UNDEF(auth_user_pass_verify_script, "auth-user-pass-verify");
+         MUST_BE_UNDEF(auth_token_generate, "auth-gen-token");
+@@ -6541,11 +6550,9 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
+         VERIFY_PERMISSION(OPT_P_SOCKFLAGS);
+         for (j = 1; j < MAX_PARMS && p[j]; ++j)
+         {
+-            if (streq(p[j], "TCP_NODELAY"))
+-            {
+-                options->sockflags |= SF_TCP_NODELAY;
+-            }
+-            else
++            /* TCP_NODELAY is enabled by default; the flag is still accepted
++             * for backwards compatibility but no longer has any effect */
++            if (!streq(p[j], "TCP_NODELAY"))
+             {
+                 msg(msglevel, "unknown socket flag: %s", p[j]);
+             }
+@@ -6795,24 +6802,29 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
+     else if (streq(p[0], "keepalive") && p[1] && p[2] && !p[3])
+     {
+         VERIFY_PERMISSION(OPT_P_GENERAL);
+-        options->keepalive_ping = atoi_warn(p[1], msglevel);
+-        options->keepalive_timeout = atoi_warn(p[2], msglevel);
++        atoi_constrained(p[1], &options->keepalive_ping, "keepalive ping",
++                         1, PING_TIMEOUT_MAX, msglevel);
++        atoi_constrained(p[2], &options->keepalive_timeout, "keepalive timeout",
++                         1, PING_TIMEOUT_MAX, msglevel);
+     }
+     else if (streq(p[0], "ping") && p[1] && !p[2])
+     {
+         VERIFY_PERMISSION(OPT_P_TIMER);
+-        options->ping_send_timeout = positive_atoi(p[1], msglevel);
++        atoi_constrained(p[1], &options->ping_send_timeout, p[0],
++                         0, PING_TIMEOUT_MAX, msglevel);
+     }
+     else if (streq(p[0], "ping-exit") && p[1] && !p[2])
+     {
+         VERIFY_PERMISSION(OPT_P_TIMER);
+-        options->ping_rec_timeout = positive_atoi(p[1], msglevel);
++        atoi_constrained(p[1], &options->ping_rec_timeout, p[0],
++                         0, PING_TIMEOUT_MAX, msglevel);
+         options->ping_rec_timeout_action = PING_EXIT;
+     }
+     else if (streq(p[0], "ping-restart") && p[1] && !p[2])
+     {
+         VERIFY_PERMISSION(OPT_P_TIMER);
+-        options->ping_rec_timeout = positive_atoi(p[1], msglevel);
++        atoi_constrained(p[1], &options->ping_rec_timeout, p[0],
++                         0, PING_TIMEOUT_MAX, msglevel);
+         options->ping_rec_timeout_action = PING_RESTART;
+     }
+     else if (streq(p[0], "ping-timer-rem") && !p[1])
+diff --git a/release/src/router/openvpn/src/openvpn/options.h b/release/src/router/openvpn/src/openvpn/options.h
+index 05256d6143..852144d151 100644
+--- a/release/src/router/openvpn/src/openvpn/options.h
++++ b/release/src/router/openvpn/src/openvpn/options.h
+@@ -56,6 +56,8 @@
+ #define OPTION_PARM_SIZE 256
+ #define OPTION_LINE_SIZE 256
+ 
++#define PING_TIMEOUT_MAX 86400 /* one day (in seconds) */
++
+ extern const char title_string[];
+ 
+ /* certain options are saved before --pull modifications are applied */
+diff --git a/release/src/router/openvpn/src/openvpn/proto.c b/release/src/router/openvpn/src/openvpn/proto.c
+index a55a2aef05..994062dbc4 100644
+--- a/release/src/router/openvpn/src/openvpn/proto.c
++++ b/release/src/router/openvpn/src/openvpn/proto.c
+@@ -70,7 +70,7 @@ is_ipv_X(int tunnel_type, struct buffer *buf, int ip_ver)
+         if (proto == htons(OPENVPN_ETH_P_8021Q))
+         {
+             const struct openvpn_8021qhdr *evh;
+-            if (BLEN(buf) < (sizeof(struct openvpn_ethhdr) + sizeof(struct openvpn_iphdr)))
++            if (BLEN(buf) < sizeof(struct openvpn_8021qhdr) + sizeof(struct openvpn_iphdr))
+             {
+                 return false;
+             }
+diff --git a/release/src/router/openvpn/src/openvpn/socket.c b/release/src/router/openvpn/src/openvpn/socket.c
+index 82d297a490..d5a2c2dc30 100644
+--- a/release/src/router/openvpn/src/openvpn/socket.c
++++ b/release/src/router/openvpn/src/openvpn/socket.c
+@@ -516,34 +516,6 @@ socket_set_mark(socket_descriptor_t sd, int mark)
+ #endif
+ }
+ 
+-static bool
+-socket_set_flags(socket_descriptor_t sd, unsigned int sockflags)
+-{
+-    /* SF_TCP_NODELAY doesn't make sense for dco-win */
+-    if ((sockflags & SF_TCP_NODELAY) && (!(sockflags & SF_DCO_WIN)))
+-    {
+-        return socket_set_tcp_nodelay(sd, 1);
+-    }
+-    else
+-    {
+-        return true;
+-    }
+-}
+-
+-bool
+-link_socket_update_flags(struct link_socket *sock, unsigned int sockflags)
+-{
+-    if (sock && socket_defined(sock->sd))
+-    {
+-        sock->sockflags |= sockflags;
+-        return socket_set_flags(sock->sd, sock->sockflags);
+-    }
+-    else
+-    {
+-        return false;
+-    }
+-}
+-
+ void
+ link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int sndbuf)
+ {
+@@ -1485,8 +1457,12 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
+ static void
+ phase2_set_socket_flags(struct link_socket *sock)
+ {
+-    /* set misc socket parameters */
+-    socket_set_flags(sock->sd, sock->sockflags);
++    /* TCP_NODELAY is enabled by default on every TCP socket; dco-win is
++     * skipped as it manages its own socket */
++    if (proto_is_tcp(sock->info.proto) && !(sock->sockflags & SF_DCO_WIN))
++    {
++        socket_set_tcp_nodelay(sock->sd, 1);
++    }
+ 
+     /* set socket to non-blocking mode */
+     set_nonblock(sock->sd);
+diff --git a/release/src/router/openvpn/src/openvpn/socket.h b/release/src/router/openvpn/src/openvpn/socket.h
+index ebaf776fd4..ea0e6e7129 100644
+--- a/release/src/router/openvpn/src/openvpn/socket.h
++++ b/release/src/router/openvpn/src/openvpn/socket.h
+@@ -207,7 +207,7 @@ struct link_socket
+     int mtu; /* OS discovered MTU, or 0 if unknown */
+ 
+ #define SF_USE_IP_PKTINFO    (1 << 0)
+-#define SF_TCP_NODELAY       (1 << 1)
++#define SF_TCP_NODELAY       (1 << 1) /* unused: flag always enabled */
+ #define SF_PORT_SHARE        (1 << 2)
+ #define SF_HOST_RANDOMIZE    (1 << 3)
+ #define SF_GETADDRINFO_DGRAM (1 << 4)
+@@ -390,8 +390,6 @@ void link_socket_bad_outgoing_addr(void);
+ 
+ void setenv_trusted(struct env_set *es, const struct link_socket_info *info);
+ 
+-bool link_socket_update_flags(struct link_socket *sock, unsigned int sockflags);
+-
+ void link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int sndbuf);
+ 
+ /*
+diff --git a/release/src/router/openvpn/src/openvpn/ssl.c b/release/src/router/openvpn/src/openvpn/ssl.c
+index 66614ad324..97f9958a95 100644
+--- a/release/src/router/openvpn/src/openvpn/ssl.c
++++ b/release/src/router/openvpn/src/openvpn/ssl.c
+@@ -3893,8 +3893,22 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from,
+         /* Extract the packet ID from the packet */
+         if (reliable_ack_read_packet_id(buf, &id))
+         {
++            /* A hard reset always is the first packet of a session, so it
++             * always must use packet id 0. Ignore it if it claims another id.
++             * In a specific existing bug these packets were replays of an
++             * already handled reset, so ignoring it is better than aborting
++             * the connection attempt.
++             */
++            if (is_hard_reset_method2(op) && id != 0)
++            {
++                msg(D_TLS_ERRORS,
++                    "TLS Error: received %s with packet id " packet_id_format
++                    " from %s -- 0 was expected, ignoring packet",
++                    packet_opcode_name(op), (packet_id_print_type)id,
++                    print_link_socket_actual(from, &gc));
++            }
+             /* Avoid deadlock by rejecting packet that would de-sequentialize receive buffer */
+-            if (reliable_wont_break_sequentiality(ks->rec_reliable, id))
++            else if (reliable_wont_break_sequentiality(ks->rec_reliable, id))
+             {
+                 if (reliable_not_replay(ks->rec_reliable, id))
+                 {
+diff --git a/release/src/router/openvpn/src/openvpn/ssl_pkt.h b/release/src/router/openvpn/src/openvpn/ssl_pkt.h
+index 640885e8c4..82cb5b1f60 100644
+--- a/release/src/router/openvpn/src/openvpn/ssl_pkt.h
++++ b/release/src/router/openvpn/src/openvpn/ssl_pkt.h
+@@ -207,7 +207,6 @@ void write_control_auth(struct tls_session *session, struct key_state *ks, struc
+  * @param ctx               control channel security context
+  * @param from              incoming link socket address
+  * @param opt               tls options struct for the session
+- * @param initial_packet    whether this is the initial packet for the connection
+  * @return                  if the packet was successfully processed
+  */
+ bool read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
+diff --git a/release/src/router/openvpn/src/openvpn/ssl_verify_mbedtls.c b/release/src/router/openvpn/src/openvpn/ssl_verify_mbedtls.c
+index 4c29bc82c0..66cc66e55e 100644
+--- a/release/src/router/openvpn/src/openvpn/ssl_verify_mbedtls.c
++++ b/release/src/router/openvpn/src/openvpn/ssl_verify_mbedtls.c
+@@ -137,19 +137,133 @@ x509_username_field_ext_supported(const char *fieldname)
+     return false;
+ }
+ 
++static const char *
++fieldname_to_oid(const char *fieldname)
++{
++    if (strcmp(fieldname, "C") == 0)
++    {
++        return MBEDTLS_OID_AT_COUNTRY;
++    }
++    else if (strcmp(fieldname, "ST") == 0)
++    {
++        return MBEDTLS_OID_AT_STATE;
++    }
++    else if (strcmp(fieldname, "LOCALITY") == 0)
++    {
++        return MBEDTLS_OID_AT_LOCALITY;
++    }
++    else if (strcmp(fieldname, "O") == 0)
++    {
++        return MBEDTLS_OID_AT_ORGANIZATION;
++    }
++    else if (strcmp(fieldname, "OU") == 0)
++    {
++        return MBEDTLS_OID_AT_ORG_UNIT;
++    }
++    else if (strcmp(fieldname, "CN") == 0)
++    {
++        return MBEDTLS_OID_AT_CN;
++    }
++    else if (strcmp(fieldname, "GN") == 0)
++    {
++        return MBEDTLS_OID_AT_GIVEN_NAME;
++    }
++    else if (strcmp(fieldname, "SN") == 0)
++    {
++        return MBEDTLS_OID_AT_SUR_NAME;
++    }
++    else if (strcmp(fieldname, "initials") == 0)
++    {
++        return MBEDTLS_OID_AT_INITIALS;
++    }
++    else if (strcmp(fieldname, "pseudonym") == 0)
++    {
++        return MBEDTLS_OID_AT_PSEUDONYM;
++    }
++    else if (strcmp(fieldname, "title") == 0)
++    {
++        return MBEDTLS_OID_AT_TITLE;
++    }
++    else if (strcmp(fieldname, "generationQualifier") == 0)
++    {
++        return MBEDTLS_OID_AT_GENERATION_QUALIFIER;
++    }
++    else if (strcmp(fieldname, "postalAddress") == 0)
++    {
++        return MBEDTLS_OID_AT_POSTAL_ADDRESS;
++    }
++    else if (strcmp(fieldname, "postalCode") == 0)
++    {
++        return MBEDTLS_OID_AT_POSTAL_CODE;
++    }
++    else if (strcmp(fieldname, "emailAddress") == 0)
++    {
++        return MBEDTLS_OID_PKCS9_EMAIL;
++    }
++    else if (strcmp(fieldname, "uid") == 0)
++    {
++        return MBEDTLS_OID_AT_UNIQUE_IDENTIFIER;
++    }
++    else if (strcmp(fieldname, "dnQualifier") == 0)
++    {
++        return MBEDTLS_OID_AT_DN_QUALIFIER;
++    }
++    else
++    {
++        return NULL;
++    }
++}
++
+ result_t
+ backend_x509_get_username(char *cn, size_t cn_len, char *x509_username_field, mbedtls_x509_crt *cert)
+ {
+-    mbedtls_x509_name *name;
++    ASSERT(cn != NULL && cn_len > 0 && cert != NULL);
+ 
+-    ASSERT(cn != NULL);
++    if (x509_username_field == NULL)
++    {
++        goto fail;
++    }
+ 
+-    name = &cert->subject;
++    if (strcmp(x509_username_field, "serialNumber") == 0)
++    {
++        if (cn_len < 2)
++        {
++            goto fail;
++        }
++        cn[0] = '0';
++        cn[1] = 'x';
++        size_t cn_index = 2;
++        bool leading_zeros = true;
++        for (size_t i = 0; i < cert->serial.len; i++)
++        {
++            uint8_t serial_byte = cert->serial.p[i];
++            if (leading_zeros && serial_byte == 0)
++            {
++                continue;
++            }
++            leading_zeros = false;
++            if (cn_index > cn_len - 3)
++            {
++                goto fail;
++            }
++            snprintf(&cn[cn_index], cn_len - cn_index, "%02X", serial_byte);
++            cn_index += 2;
++        }
++        return SUCCESS;
++    }
++
++    const char *field_oid = fieldname_to_oid(x509_username_field);
++    if (field_oid == NULL)
++    {
++        goto fail;
++    }
+ 
+-    /* Find common name */
++    /* Find field_oid in the subject name. */
++    mbedtls_x509_name *name = &cert->subject;
+     while (name != NULL)
+     {
+-        if (0 == memcmp(name->oid.p, MBEDTLS_OID_AT_CN, MBEDTLS_OID_SIZE(MBEDTLS_OID_AT_CN)))
++        if (strlen(field_oid) == name->oid.len
++            && 0 == memcmp(name->oid.p, field_oid, name->oid.len))
+         {
+             break;
+         }
+@@ -160,22 +274,23 @@ backend_x509_get_username(char *cn, size_t cn_len, char *x509_username_field, mb
+     /* Not found, return an error if this is the peer's certificate */
+     if (name == NULL)
+     {
+-        return FAILURE;
++        goto fail;
+     }
+ 
+-    /* Found, extract CN */
+-    if (cn_len > name->val.len)
+-    {
+-        memcpy(cn, name->val.p, name->val.len);
+-        cn[name->val.len] = '\0';
+-    }
+-    else
++    /* Check that we have room in the buffer, including the terminating '/0' byte. */
++    if (cn_len <= name->val.len)
+     {
+-        memcpy(cn, name->val.p, cn_len);
+-        cn[cn_len - 1] = '\0';
++        goto fail;
+     }
+ 
++    memcpy(cn, name->val.p, name->val.len);
++    cn[name->val.len] = '\0';
++
+     return SUCCESS;
++
++fail:
++    cn[0] = '\0';
++    return FAILURE;
+ }
+ 
+ #if MBEDTLS_VERSION_NUMBER >= 0x04000000
+diff --git a/release/src/router/openvpn/src/openvpnserv/validate.c b/release/src/router/openvpn/src/openvpnserv/validate.c
+index 5cf83252c8..7c0a87b392 100644
+--- a/release/src/router/openvpn/src/openvpnserv/validate.c
++++ b/release/src/router/openvpn/src/openvpnserv/validate.c
+@@ -308,8 +308,9 @@ IsUserInGroup(PSID sid, const PTOKEN_GROUPS token_groups, const WCHAR *group_nam
+ }
+ 
+ /*
+- * Check whether option argv[0] is white-listed. If argv[0] == "--config",
+- * also check that argv[1], if present, passes CheckConfigPath().
++ * Check whether option argv[0] is white-listed. If argv[0] == "--config", also
++ * check that argv[1], if present, passes CheckConfigPath(). If argv[0] is "--setenv",
++ * check that we do not allow random options to be passed via "--setenv opt ...".
+  * The caller should set argc to the number of valid elements in argv[] array.
+  */
+ BOOL
+@@ -328,5 +329,11 @@ CheckOption(const WCHAR *workdir, int argc, WCHAR *argv[], const settings_t *s)
+         return FALSE;
+     }
+ 
++    /* Do not allow "--setenv opt ..." */
++    if (wcscmp(argv[0], L"--setenv") == 0 && argc > 1 && wcscmp(argv[1], L"opt") == 0)
++    {
++        return FALSE;
++    }
++
+     return TRUE;
+ }
+diff --git a/release/src/router/openvpn/tests/t_client.sh.in b/release/src/router/openvpn/tests/t_client.sh.in
+index a49de402f5..45bf01cfec 100755
+--- a/release/src/router/openvpn/tests/t_client.sh.in
++++ b/release/src/router/openvpn/tests/t_client.sh.in
+@@ -214,7 +214,7 @@ get_ifconfig_route()
+     # except Linux and MacOS
+     case $UNAME in
+ 	Linux)
+-            if [ -x /usr/bin/resolvectl ] ; then
++            if [ -x /usr/bin/resolvectl -a -d /run/systemd/system ] ; then
+                 echo "-- linux resolvectl --"
+                 resolvectl status
+             else
+diff --git a/release/src/router/openvpn/tests/unit_tests/openvpn/test_ssl.c b/release/src/router/openvpn/tests/unit_tests/openvpn/test_ssl.c
+index 618b495c4b..7e7679c583 100644
+--- a/release/src/router/openvpn/tests/unit_tests/openvpn/test_ssl.c
++++ b/release/src/router/openvpn/tests/unit_tests/openvpn/test_ssl.c
+@@ -775,7 +775,7 @@ free_certificate(openvpn_x509_cert_t *cert)
+ static openvpn_x509_cert_t *
+ get_certificate(const char *cert_str)
+ {
+-    BIO *in = BIO_new_mem_buf((char *)cert1, -1);
++    BIO *in = BIO_new_mem_buf((char *)cert_str, -1);
+     assert_non_null(in);
+     X509 *cert = PEM_read_bio_X509(in, NULL, NULL, NULL);
+     assert_non_null(cert);
+@@ -790,10 +790,37 @@ free_certificate(openvpn_x509_cert_t *cert)
+ }
+ #endif
+ 
++/* Generated with:
++ * openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -keyout - -noenc -sha256 -days 3650 \
++ * -subj '/CN=ovpn-test-secp384r1/O=OpenVPN Unit Test Example Corp./OU=Cert Details Dept.'
++ * -addext 'subjectAltName=DNS:unittest.example.com' -addext 'extendedKeyUsage=clientAuth' */
++static const char *cert_details_test_cert =
++    "-----BEGIN CERTIFICATE-----\n"
++    "MIICkzCCAhqgAwIBAgIUKDsZM+PApGdaD2QF9iYaxoFJAkowCgYIKoZIzj0EAwIw\n"
++    "ZTEcMBoGA1UEAwwTb3Zwbi10ZXN0LXNlY3AzODRyMTEoMCYGA1UECgwfT3BlblZQ\n"
++    "TiBVbml0IFRlc3QgRXhhbXBsZSBDb3JwLjEbMBkGA1UECwwSQ2VydCBEZXRhaWxz\n"
++    "IERlcHQuMB4XDTI2MDcwNzEwNTIxNloXDTM2MDcwNDEwNTIxNlowZTEcMBoGA1UE\n"
++    "AwwTb3Zwbi10ZXN0LXNlY3AzODRyMTEoMCYGA1UECgwfT3BlblZQTiBVbml0IFRl\n"
++    "c3QgRXhhbXBsZSBDb3JwLjEbMBkGA1UECwwSQ2VydCBEZXRhaWxzIERlcHQuMHYw\n"
++    "EAYHKoZIzj0CAQYFK4EEACIDYgAEOlKoQVk+wbBD6V/6kg+/oHfqF0Dq08LlCL+B\n"
++    "om4RhutG99QDrow251Ps+Ds/7LQYYRA8+hHyEFrmGM+j2o6KhS5K2uA6dIZL4zLK\n"
++    "vl0NeF2M61Z8tt/IjrFZd+CrEANco4GKMIGHMB0GA1UdDgQWBBSEyG6m+QdWazeg\n"
++    "0CHN7q0edJlqMjAfBgNVHSMEGDAWgBSEyG6m+QdWazeg0CHN7q0edJlqMjAPBgNV\n"
++    "HRMBAf8EBTADAQH/MB8GA1UdEQQYMBaCFHVuaXR0ZXN0LmV4YW1wbGUuY29tMBMG\n"
++    "A1UdJQQMMAoGCCsGAQUFBwMCMAoGCCqGSM49BAMCA2cAMGQCMCyK7aQcyKGW8BWQ\n"
++    "UOYqbJUJZJcviP6ACgJRzK6pgkqt9gY0E0Tb00Qh6D5dBV5i3wIwCMhSgpVJxDrc\n"
++    "pRfligoK8bmv4HEgnV6BDeoDYd41WVMpE9u1issQDHY0SnWC7d9q\n"
++    "-----END CERTIFICATE-----\n";
++const char *const cert_details_cname = "ovpn-test-secp384r1";
++const char *const cert_details_org = "OpenVPN Unit Test Example Corp.";
++const char *const cert_details_org_unit = "Cert Details Dept.";
++const char *const cert_details_serial_number = "229677570263950905252266749734450551528150860362";
++const char *const cert_details_serial_number_hex = "0x283B1933E3C0A4675A0F6405F6261AC68149024A";
++
+ void
+ crypto_test_print_cert_details(void **state)
+ {
+-    openvpn_x509_cert_t *cert = get_certificate(cert1);
++    openvpn_x509_cert_t *cert = get_certificate(cert_details_test_cert);
+     struct gc_arena gc = gc_new();
+ 
+     const char *fp = backend_x509_get_serial_hex(cert, &gc);
+@@ -801,29 +828,57 @@ crypto_test_print_cert_details(void **state)
+     /* we messed this up between TLS libraries. But let's at least notice in
+      * the future ...*/
+ #if defined(ENABLE_CRYPTO_MBEDTLS)
+-    assert_string_equal(fp, "82:6B:DD:CC:BD:E5:5E:B7:08:F1:2D:68:00:3C:24:DE");
++    assert_string_equal(fp, "28:3B:19:33:E3:C0:A4:67:5A:0F:64:05:F6:26:1A:C6:81:49:02:4A");
+ #else
+-    assert_string_equal(fp, "82:6b:dd:cc:bd:e5:5e:b7:08:f1:2d:68:00:3c:24:de");
++    assert_string_equal(fp, "28:3b:19:33:e3:c0:a4:67:5a:0f:64:05:f6:26:1a:c6:81:49:02:4a");
+ #endif
+ 
+     const char *sn = backend_x509_get_serial(cert, &gc);
+-    assert_string_equal(sn, "173359713849739808110610111821055272158");
++    assert_string_equal(sn, cert_details_serial_number);
+ 
+     char username[TLS_USERNAME_LEN + 1] = { 0 }; /* null-terminated */
+ 
+-    int ret = backend_x509_get_username(username, sizeof(username), "CN",
+-                                        cert);
++    int ret = backend_x509_get_username(username, sizeof(username), "CN", cert);
+ 
+-    assert_string_equal(username, "ovpn-test-ec1");
++    assert_string_equal(username, cert_details_cname);
+     assert_int_equal(ret, SUCCESS);
+ 
+-#ifndef ENABLE_CRYPTO_MBEDTLS
+-    /* mbed TLS does not implement this */
+-    ret = backend_x509_get_username(username, sizeof(username), "serialNumber",
+-                                    cert);
++    ret = backend_x509_get_username(username, sizeof(username), "serialNumber", cert);
+     assert_int_equal(ret, SUCCESS);
+-    assert_string_equal(username, "0x826BDDCCBDE55EB708F12D68003C24DE");
+-#endif
++    assert_string_equal(username, cert_details_serial_number_hex);
++
++    ret = backend_x509_get_username(username, sizeof(username), "O", cert);
++
++    assert_string_equal(username, cert_details_org);
++    assert_int_equal(ret, SUCCESS);
++
++    ret = backend_x509_get_username(username, sizeof(username), "OU", cert);
++
++    assert_string_equal(username, cert_details_org_unit);
++    assert_int_equal(ret, SUCCESS);
++
++    /* Check that FAILURE is returned if a field does not exist. */
++    ret = backend_x509_get_username(username, sizeof(username), "SN", cert);
++    assert_int_equal(ret, FAILURE);
++
++    /* Check that FAILURE is returned for invalid field names. */
++    ret = backend_x509_get_username(username, sizeof(username), "invalidField", cert);
++    assert_int_equal(ret, FAILURE);
++
++    /* Check that FAILURE is returned if the output buffer is too small. Do this separately
++     * for a subject field and for the serial number, because these are different code paths.
++     *
++     * First case: Can't fit all characters. */
++    ret = backend_x509_get_username(username, strlen(cert_details_cname) / 2, "CN", cert);
++    assert_int_equal(ret, FAILURE);
++    ret = backend_x509_get_username(username, strlen(cert_details_serial_number_hex) / 2, "serialNumber", cert);
++    assert_int_equal(ret, FAILURE);
++
++    /* Second case: Can fit the characters but not the terminating '\0'. */
++    ret = backend_x509_get_username(username, strlen(cert_details_cname), "CN", cert);
++    assert_int_equal(ret, FAILURE);
++    ret = backend_x509_get_username(username, strlen(cert_details_serial_number_hex), "serialNumber", cert);
++    assert_int_equal(ret, FAILURE);
+ 
+     gc_free(&gc);
+     free_certificate(cert);
+diff --git a/release/src/router/openvpn/tests/unit_tests/openvpn/test_tls_crypt.c b/release/src/router/openvpn/tests/unit_tests/openvpn/test_tls_crypt.c
+index 5bfcfbea35..7adfb465ea 100644
+--- a/release/src/router/openvpn/tests/unit_tests/openvpn/test_tls_crypt.c
++++ b/release/src/router/openvpn/tests/unit_tests/openvpn/test_tls_crypt.c
+@@ -710,7 +710,7 @@ tls_crypt_v2_unwrap_checks(void **state)
+     assert_true(tls_crypt_v2_extract_client_key(&tmp, &wrap_ctx, &tls_options));
+     tls_wrap_free(&wrap_ctx);
+ 
+-
++#ifndef _WIN32
+     /* Use /bin/true as verify script */
+     script_security_set(2);
+     tls_options.tls_crypt_v2_verify_script = "/usr/bin/true";
+@@ -722,11 +722,17 @@ tls_crypt_v2_unwrap_checks(void **state)
+ 
+     tls_options.tmp_dir = "/tmp";
+ 
+-    /* Since we override rand_bytes the tmpfile name is non-random as well */
+-    const char *non_random_tmpfile = "/tmp/openvpn_tls_crypt_v2_metadata__706050403020100706050403020100.tmp";
+-    unlink(non_random_tmpfile);
++    /* Since we override rand_bytes the tmpfile name is non-random as well.
++     * Build the expected name via the same code path as
++     * platform_create_temp_file() */
++    char non_random_tmpfile[128];
++    snprintf(non_random_tmpfile, sizeof(non_random_tmpfile),
++             PACKAGE "_tls_crypt_v2_metadata__%08" PRIx64 "%08" PRIx64 ".tmp",
++             get_random(), get_random());
++    const char *tmpfile_path = platform_gen_path(tls_options.tmp_dir, non_random_tmpfile, &ctx->gc);
++    unlink(tmpfile_path);
+ 
+-    expect_string(__wrap_buffer_write_file, filename, non_random_tmpfile);
++    expect_string(__wrap_buffer_write_file, filename, tmpfile_path);
+ 
+     /* We do not write the first byte (type) to the file but rather to a
+      * metadata_type environment variable */
+@@ -747,7 +753,7 @@ tls_crypt_v2_unwrap_checks(void **state)
+         tls_options.tls_crypt_v2_verify_script = "/bin/false";
+     }
+ 
+-    expect_string(__wrap_buffer_write_file, filename, non_random_tmpfile);
++    expect_string(__wrap_buffer_write_file, filename, tmpfile_path);
+     expect_memory(__wrap_buffer_write_file, pem, buf_bptr(&expected_metadata), buf_len(&expected_metadata));
+     will_return(__wrap_buffer_write_file, true);
+ 
+@@ -755,8 +761,8 @@ tls_crypt_v2_unwrap_checks(void **state)
+     assert_false(tls_crypt_v2_extract_client_key(&tmp, &wrap_ctx, &tls_options));
+     tls_wrap_free(&wrap_ctx);
+ 
+-
+     tls_options.tls_crypt_v2_verify_script = NULL;
++#endif
+ 
+     /* An outdated time should fail */
+     tmp = create_client_key_input(ctx, 31);
+diff --git a/release/src/router/openvpn/version.m4 b/release/src/router/openvpn/version.m4
+index 59a4a56d47..f479c41983 100644
+--- a/release/src/router/openvpn/version.m4
++++ b/release/src/router/openvpn/version.m4
+@@ -3,12 +3,12 @@ define([PRODUCT_NAME], [OpenVPN])
+ define([PRODUCT_TARNAME], [openvpn])
+ define([PRODUCT_VERSION_MAJOR], [2])
+ define([PRODUCT_VERSION_MINOR], [7])
+-define([PRODUCT_VERSION_PATCH], [.5])
++define([PRODUCT_VERSION_PATCH], [.6])
+ m4_append([PRODUCT_VERSION], [PRODUCT_VERSION_MAJOR])
+ m4_append([PRODUCT_VERSION], [PRODUCT_VERSION_MINOR], [[.]])
+ m4_append([PRODUCT_VERSION], [PRODUCT_VERSION_PATCH], [[]])
+ define([PRODUCT_BUGREPORT], [openvpn-users@lists.sourceforge.net])
+-define([PRODUCT_VERSION_RESOURCE], [2,7,5,0])
++define([PRODUCT_VERSION_RESOURCE], [2,7,6,0])
+ dnl define the TAP version
+ define([PRODUCT_TAP_WIN_COMPONENT_ID], [tap0901])
+ define([PRODUCT_TAP_WIN_MIN_MAJOR], [9])
+-- 
+2.25.1
+

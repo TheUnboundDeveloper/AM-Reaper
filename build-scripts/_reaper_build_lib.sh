@@ -89,10 +89,28 @@ _rb_variant() {   # $1 = MCP|noMCP
   # cannot make cut_fleet refuse to run.
   local _gp="$(dirname "${BASH_SOURCE[0]}")/gen_provenance.sh"
   if [ -f "$_gp" ]; then
-    local _pc
-    _pc=$(ls "$(dirname "${BASH_SOURCE[0]}")"/../patches/*.patch 2>/dev/null | wc -l)
-    echo "=== [$label] provenance stamp (patches=$_pc) ==="
-    bash "$_gp" "$R" "$_pc" a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3 \
+    # Patch count: claim one ONLY when the public series' tip IS this version
+    # (the tip is the bump patch, named ...Reaper_v<X>). A local rung built
+    # ahead of its cut stamps a dash - honest - never the previous cut's
+    # count (that stale-number failure shipped v2.5.0/465 on every local
+    # image up to v2.5.8). In CI, series == EXPECTED_VERSION == build, so
+    # the real count shows. Series dir: lean repo layout first, engine-dir
+    # fallback via WIN_ASUS_ROOT (set by _reaper_env.sh).
+    local _pd="$(dirname "${BASH_SOURCE[0]}")/../patches"
+    [ -n "$(ls "$_pd"/*.patch 2>/dev/null | head -1)" ] \
+      || _pd="${WIN_ASUS_ROOT:-/mnt/c/Users/natha/AppData/Roaming/VSC/ASUS}/ASUS-Merlin-Reaper/patches"
+    local _pc="" _tip="" _sv="" _cv=""
+    _cv=$(grep '^EXTENDNO=' "$R/release/src-rt/version.conf" 2>/dev/null \
+          | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | head -1)
+    _tip=$(ls "$_pd"/*.patch 2>/dev/null | tail -1)
+    if [ -n "$_tip" ]; then
+      _sv=$(basename "$_tip" | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | tail -1)
+      [ -n "$_sv" ] && [ "$_sv" = "$_cv" ] && _pc=$(ls "$_pd"/*.patch 2>/dev/null | wc -l)
+    fi
+    # VARIANT must be passed explicitly: the generator's .config fallback
+    # reads the PREVIOUS variant's config at stamp time (we run before make).
+    echo "=== [$label] provenance stamp (patches=${_pc:--}) ==="
+    VARIANT="$label" bash "$_gp" "$R" "$_pc" a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3 \
       || echo "    ! provenance stamp failed - the About page will show dashes"
   fi
 

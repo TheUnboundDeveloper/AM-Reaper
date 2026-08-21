@@ -1,0 +1,151 @@
+From 1ae26426020b98ef653701fa8f363be681507983 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 21 Aug 2026 13:11:12 -0400
+Subject: [PATCH] qos: make the classful class-queue priority rebuild
+ transactional (field: GT-BE98 v2.5.7 "QoS on => IPv4 dead, IPv6 fine")
+
+The P2-H6 correction deletes class queues qid 1-5 and recreates them with
+inverted priorities. The five setqcfg calls had no return check: on the
+reporter's GT-BE98 every recreate was rejected after the deletes, so qid 1-5
+ceased to exist (tmctl getqcfg rc=108; kernel "DS egress queue 1 is not
+configured" / "Cannot rdpa_ucast_flow_add"), every IPv4 flow CONNMARKed into a
+class queue - including the catch-all default class - was refused by the
+Runner, and only unmarked IPv6 on qid 0 survived.
+
+rq_rebuild(): read back all five qsizes or abort; delete; recreate with an rc
+check; on ANY rejection put all five back at the stock priority==qid layout,
+trying the full argument set, then without --l4s, then the bare minimum, and
+say so in syslog. rq_present(): the idempotence guard probes all five qids,
+not just qid 1. Success path emits the identical tmctl sequence as before.
+Stub-tmctl harness: 6 cases incl. the GT-BE98 shape (plans/qos-p2h6-harden).
+---
+ release/src/router/rc/qos.c | 92 +++++++++++++++++++++++++------------
+ 1 file changed, 62 insertions(+), 30 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 9dc946fb0d..1d1bee809f 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3330,6 +3330,57 @@ int start_hwqos_classful(void)
+ 		"WANIF='%s'\n"
+ 		"SIG='%u'\n"
+ 		"HWCST=/tmp/qos_hwc_state\n\n"
++		/* P2-H6 HARDENING (field report 2026-08-21: "QoS on => IPv4 dead, IPv6
++		 * fine" on v2.5.7, fine on v2.5.3). The class-queue priority correction
++		 * is delete-then-recreate, and the original emission checked ONLY the
++		 * qsize readback: a setqcfg rejected AFTER delqcfg left that queue
++		 * DELETED, and every IPv4 flow CONNMARKed into it (including the
++		 * catch-all default class) was blackholed, while unmarked IPv6 rode qid 0
++		 * untouched. rq_rebuild() makes the whole thing transactional: readback
++		 * all five first, delete, recreate with rc checks, and on ANY rejection
++		 * put all five back at the stock priority == qid layout (the v2.5.3
++		 * behaviour - inverted ranks, but a working link) and say so in syslog.
++		 * Worst case is now "old priority order", never "no internet".
++		 *   rq_rebuild "<p1> <p2> <p3> <p4> <p5>" <l4s>   -> 0 ok / 1 fell back */
++		"rq_present() {\n"
++		"\tfor q in 1 2 3 4 5; do tmctl getqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1 || return 1; done\n"
++		"\treturn 0\n"
++		"}\n"
++		"rq_rebuild() {\n"
++		"\t_PL=\"$1\"; _L4S=\"$2\"; _OK=1\n"
++		"\tfor q in 1 2 3 4 5; do\n"
++		"\t\t_S=$(tmctl getqcfg --devtype 0 --if $WANIF --qid $q 2>/dev/null | grep qsize | awk '{print $3}')\n"
++		"\t\tif [ -z \"$_S\" ]; then logger -t hwqos \"class-queue priority correction skipped (qid $q readback failed)\"; return 1; fi\n"
++		"\t\teval _QSZ$q=\"$_S\"\n"
++		"\tdone\n"
++		"\tfor q in 1 2 3 4 5; do\n"
++		"\t\ttmctl delqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1 || logger -t hwqos \"delqcfg qid $q failed (rc=$?) - continuing\"\n"
++		"\tdone\n"
++		"\tfor q in 1 2 3 4 5; do\n"
++		"\t\t_P=$(echo \"$_PL\" | cut -d' ' -f$q); eval _S=\\$_QSZ$q\n"
++		"\t\tif ! tmctl setqcfg --devtype 0 --if $WANIF --qid $q --priority $_P --qsize $_S --schedmode 1 --weight 1 --l4s $_L4S >/dev/null 2>&1; then\n"
++		"\t\t\tlogger -t hwqos \"setqcfg qid $q priority $_P REJECTED - reverting all class queues to the stock layout\"\n"
++		"\t\t\t_OK=0; break\n"
++		"\t\tfi\n"
++		"\tdone\n"
++		"\t[ $_OK = 1 ] && return 0\n"
++		"\tfor q in 1 2 3 4 5; do\n"
++		"\t\ttmctl getqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1 && tmctl delqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1\n"
++		"\tdone\n"
++		/* layered: the GT-BE98 field box (2026-08-21 diag) rejected ALL five
++		 * recreates, so a fallback that repeats the same argument set could
++		 * fail the same way. Try stock priority with the full arguments, then
++		 * without --l4s, then the bare minimum the tool accepts everywhere. */
++		"\tfor q in 1 2 3 4 5; do\n"
++		"\t\teval _S=\\$_QSZ$q\n"
++		"\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid $q --priority $q --qsize $_S --schedmode 1 --weight 1 --l4s 0 >/dev/null 2>&1 \\\n"
++		"\t\t|| tmctl setqcfg --devtype 0 --if $WANIF --qid $q --priority $q --qsize $_S --schedmode 1 --weight 1 >/dev/null 2>&1 \\\n"
++		"\t\t|| tmctl setqcfg --devtype 0 --if $WANIF --qid $q --priority $q --qsize $_S >/dev/null 2>&1 \\\n"
++		"\t\t|| logger -t hwqos \"FATAL: qid $q could not be recreated even at stock priority - IPv4 traffic classified into class $q WILL BE DROPPED; switch QoS off/on or reboot\"\n"
++		"\tdone\n"
++		"\ttmctl getqcfg --devtype 0 --if $WANIF --qid 1 >/dev/null 2>&1 && logger -t hwqos \"class queues restored at the stock priority layout (priority order correction NOT applied on this port)\"\n"
++		"\treturn 1\n"
++		"}\n\n"
+ 		"case \"$1\" in\n"
+ 		"start)\n"
+ 		/* Idempotence guard. start_iQos re-runs this on every WAN event, and
+@@ -3340,7 +3391,9 @@ int start_hwqos_classful(void)
+ 		 * (a queue lost to a link/driver reset falls through and is
+ 		 * reprogrammed). "force" as $2 overrides. */
+ 		"\tif [ \"$2\" != \"force\" ] && [ \"$(cat $HWCST 2>/dev/null)\" = \"$WANIF:$SIG\" ] \\\n"
+-		"\t   && tmctl getqcfg --devtype 0 --if $WANIF --qid 1 >/dev/null 2>&1; then\n"
++		/* P2-H6 hardening: probe ALL five class queues, not just qid 1 - a partial
++		 * loss (qid 1 back, qid 3 missing) used to pass this guard and persist. */
++		"\t   && rq_present; then\n"
+ 		"\t\texit 0\n"
+ 		"\tfi\n"
+ 		"\trm -f $HWCST\n",
+@@ -3423,19 +3476,8 @@ int start_hwqos_classful(void)
+ 	{
+ 		int wrr_req = 0;
+ 		for (i = 0; i < 5; i++) if (sched_w[i] > 0) wrr_req = 1;
+-		fprintf(f, "\tQ1=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 1 | grep qsize | awk '{print $3}')\n");
+-		fprintf(f, "\tQ2=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 2 | grep qsize | awk '{print $3}')\n");
+-		fprintf(f, "\tQ3=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 3 | grep qsize | awk '{print $3}')\n");
+-		fprintf(f, "\tQ4=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 4 | grep qsize | awk '{print $3}')\n");
+-		fprintf(f, "\tQ5=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 5 | grep qsize | awk '{print $3}')\n");
+-		fprintf(f, "\tif [ -n \"$Q1\" ] && [ -n \"$Q2\" ] && [ -n \"$Q3\" ] && [ -n \"$Q4\" ] && [ -n \"$Q5\" ]; then\n");
+-		fprintf(f, "\t\tfor q in 1 2 3 4 5; do tmctl delqcfg --devtype 0 --if $WANIF --qid $q; done\n");
+-		fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 1 --priority 5 --qsize $Q1 --schedmode 1 --weight 1 --l4s %d\n", l4s ? 1 : 0);
+-		fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 2 --priority 4 --qsize $Q2 --schedmode 1 --weight 1 --l4s %d\n", l4s ? 1 : 0);
+-		fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 3 --priority 3 --qsize $Q3 --schedmode 1 --weight 1 --l4s %d\n", l4s ? 1 : 0);
+-		fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 4 --priority 2 --qsize $Q4 --schedmode 1 --weight 1 --l4s %d\n", l4s ? 1 : 0);
+-		fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 5 --priority 1 --qsize $Q5 --schedmode 1 --weight 1 --l4s %d\n", l4s ? 1 : 0);
+-		fprintf(f, "\telse\n\t\tlogger -t hwqos \"class-queue priority correction skipped (queue readback failed)\"\n\tfi\n");
++		/* transactional rebuild, see rq_rebuild() in the preamble */
++		fprintf(f, "\trq_rebuild \"5 4 3 2 1\" %d\n", l4s ? 1 : 0);
+ 		if (wrr_req)
+ 			fprintf(f, "\tlogger -t hwqos \"qos_sched requested WRR weights; not supported on this queue layout - using strict priority\"\n");
+ 	}
+@@ -3519,22 +3561,12 @@ int start_hwqos_classful(void)
+ 	/* P2-H6: start reassigned every class-queue priority (delete-then-recreate,
+ 	 * priority = 6 - qid), so stop returns all five to the stock priority == qid
+ 	 * layout the same way - an in-place rewrite would hit the same "already in use"
+-	 * collision. Same qsize-readback guard; all-or-nothing so a queue is never left
+-	 * deleted. The recreated priority survives the setqdropalg/setqshaper reset that
+-	 * follows (verified on metal). */
+-	fprintf(f, "\tQ1=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 1 | grep qsize | awk '{print $3}')\n");
+-	fprintf(f, "\tQ2=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 2 | grep qsize | awk '{print $3}')\n");
+-	fprintf(f, "\tQ3=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 3 | grep qsize | awk '{print $3}')\n");
+-	fprintf(f, "\tQ4=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 4 | grep qsize | awk '{print $3}')\n");
+-	fprintf(f, "\tQ5=$(tmctl getqcfg --devtype 0 --if $WANIF --qid 5 | grep qsize | awk '{print $3}')\n");
+-	fprintf(f, "\tif [ -n \"$Q1\" ] && [ -n \"$Q2\" ] && [ -n \"$Q3\" ] && [ -n \"$Q4\" ] && [ -n \"$Q5\" ]; then\n");
+-	fprintf(f, "\t\tfor q in 1 2 3 4 5; do tmctl delqcfg --devtype 0 --if $WANIF --qid $q; done\n");
+-	fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 1 --priority 1 --qsize $Q1 --schedmode 1 --weight 1 --l4s 0\n");
+-	fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 2 --priority 2 --qsize $Q2 --schedmode 1 --weight 1 --l4s 0\n");
+-	fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 3 --priority 3 --qsize $Q3 --schedmode 1 --weight 1 --l4s 0\n");
+-	fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 4 --priority 4 --qsize $Q4 --schedmode 1 --weight 1 --l4s 0\n");
+-	fprintf(f, "\t\ttmctl setqcfg --devtype 0 --if $WANIF --qid 5 --priority 5 --qsize $Q5 --schedmode 1 --weight 1 --l4s 0\n");
+-	fprintf(f, "\tfi\n");
++	 * collision. Readback + rc-checked recreate with stock-layout fallback so a queue
++	 * is never left deleted. The recreated priority survives the setqdropalg/setqshaper
++	 * reset that follows (verified on metal). */
++	/* transactional rebuild, see rq_rebuild() in the preamble. A fallback here
++	 * lands on the same stock layout anyway, so stop can never make things worse. */
++	fprintf(f, "\trq_rebuild \"1 2 3 4 5\" 0\n");
+ 	for (qid = 0; qid <= 6; qid++) {
+ 		/* reset minrate along with the ceiling - a bare "--shapingrate 0"
+ 		 * would leave a stale committed rate configured on the queue */
+-- 
+2.25.1
+

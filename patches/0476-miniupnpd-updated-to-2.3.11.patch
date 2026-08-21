@@ -1,0 +1,1402 @@
+From 85175d2cec1641ef99729241d61ef6e26b7eeb13 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Sun, 16 Aug 2026 13:39:05 -0400
+Subject: [PATCH] miniupnpd: updated to 2.3.11
+
+(cherry picked from commit ee02fd019387051140367e29af5985d31255d477)
+---
+ .../src/router/miniupnpd-igdv2/Changelog.txt  |   9 +
+ release/src/router/miniupnpd-igdv2/Doxyfile   |   2 +-
+ release/src/router/miniupnpd-igdv2/VERSION    |   2 +-
+ .../miniupnpd-igdv2/netfilter/iptcrdr.c       |   8 +-
+ .../src/router/miniupnpd-igdv2/pf/obsdrdr.c   |  14 +-
+ .../src/router/miniupnpd-igdv2/rw_unaligned.h |   6 +-
+ release/src/router/miniupnpd-igdv2/upnphttp.c |   2 +-
+ .../router/miniupnpd-igdv2/upnppermissions.c  |   2 +-
+ .../src/router/miniupnpd-igdv2/upnpredirect.c |  13 +-
+ release/src/router/miniupnpd-igdv2/upnpsoap.c | 242 ++++++++++++++++--
+ release/src/router/miniupnpd/Changelog.txt    |   9 +
+ release/src/router/miniupnpd/Doxyfile         |   2 +-
+ release/src/router/miniupnpd/VERSION          |   2 +-
+ .../src/router/miniupnpd/netfilter/iptcrdr.c  |   8 +-
+ release/src/router/miniupnpd/pf/obsdrdr.c     |  14 +-
+ release/src/router/miniupnpd/rw_unaligned.h   |   6 +-
+ release/src/router/miniupnpd/upnphttp.c       |   2 +-
+ .../src/router/miniupnpd/upnppermissions.c    |   2 +-
+ release/src/router/miniupnpd/upnpredirect.c   |  13 +-
+ release/src/router/miniupnpd/upnpsoap.c       | 242 ++++++++++++++++--
+ 20 files changed, 526 insertions(+), 74 deletions(-)
+
+diff --git a/release/src/router/miniupnpd-igdv2/Changelog.txt b/release/src/router/miniupnpd-igdv2/Changelog.txt
+index 3eb086d1d4..3ff2af1a9b 100644
+--- a/release/src/router/miniupnpd-igdv2/Changelog.txt
++++ b/release/src/router/miniupnpd-igdv2/Changelog.txt
+@@ -1,5 +1,14 @@
+ $Id: Changelog.txt,v 1.535 2025/04/26 13:07:53 nanard Exp $
+ 
++VERSION 2.3.11 : released on 2026/08/12
++
++2026/08/11:
++  fix READNU32 by casting to uint32_t
++  filter out non printable characters in description for lease file
++
++2026/08/09:
++  check for the return value of snprintf() : overflow or error
++
+ 2026/06/16:
+   nftables: Avoid building too long rule with
+     nftnl_rule_nlmsg_build_payload() by triming description to 256 chars.
+diff --git a/release/src/router/miniupnpd-igdv2/Doxyfile b/release/src/router/miniupnpd-igdv2/Doxyfile
+index b1ee18515a..9a64a71681 100644
+--- a/release/src/router/miniupnpd-igdv2/Doxyfile
++++ b/release/src/router/miniupnpd-igdv2/Doxyfile
+@@ -48,7 +48,7 @@ PROJECT_NAME           = "MiniUPnPd"
+ # could be handy for archiving the generated documentation or if some version
+ # control system is used.
+ 
+-PROJECT_NUMBER         = 2.3.10
++PROJECT_NUMBER         = 2.3.11
+ 
+ # Using the PROJECT_BRIEF tag one can provide an optional one line description
+ # for a project that appears at the top of each page and should give viewer a
+diff --git a/release/src/router/miniupnpd-igdv2/VERSION b/release/src/router/miniupnpd-igdv2/VERSION
+index 9fa5f12ab0..f470771a1f 100644
+--- a/release/src/router/miniupnpd-igdv2/VERSION
++++ b/release/src/router/miniupnpd-igdv2/VERSION
+@@ -1 +1 @@
+-2.3.10
++2.3.11
+diff --git a/release/src/router/miniupnpd-igdv2/netfilter/iptcrdr.c b/release/src/router/miniupnpd-igdv2/netfilter/iptcrdr.c
+index 975d883a86..74deb2b961 100644
+--- a/release/src/router/miniupnpd-igdv2/netfilter/iptcrdr.c
++++ b/release/src/router/miniupnpd-igdv2/netfilter/iptcrdr.c
+@@ -241,16 +241,20 @@ get_redirect_desc(unsigned short eport, int proto,
+ 	{
+ 		if(p->eport == eport && p->proto == (short)proto)
+ 		{
+-			if(desc)
++			if(desc) {
+ 				strncpy(desc, p->str, desclen);
++				desc[desclen-1] = '\0';
++			}
+ 			if(timestamp)
+ 				*timestamp = p->timestamp;
+ 			return;
+ 		}
+ 	}
+ 	/* if no description was found, return miniupnpd as default */
+-	if(desc)
++	if(desc) {
+ 		strncpy(desc, "miniupnpd", desclen);
++		desc[desclen-1] = '\0';
++	}
+ 	if(timestamp)
+ 		*timestamp = 0;
+ }
+diff --git a/release/src/router/miniupnpd-igdv2/pf/obsdrdr.c b/release/src/router/miniupnpd-igdv2/pf/obsdrdr.c
+index 8b489ef420..dfbc0615cc 100644
+--- a/release/src/router/miniupnpd-igdv2/pf/obsdrdr.c
++++ b/release/src/router/miniupnpd-igdv2/pf/obsdrdr.c
+@@ -486,6 +486,16 @@ int add_nat_rule(const char * ifname,
+ }
+ 
+ 
++/* action of the rules created by add_nat_rule(), used to select the
++ * ruleset to scan when looking for a rule to delete.
++ * The kernel maps the rule action to a ruleset number, so PF_NAT selects
++ * PF_RULESET_NAT while PF_PASS selects PF_RULESET_FILTER. */
++#ifndef PF_NEWSTYLE
++#define NAT_RULE_ACTION	PF_NAT
++#else
++#define NAT_RULE_ACTION	PF_PASS	/* or PF_MATCH as we dont expect outbound packets to be blocked */
++#endif
++
+ /*
+  * returns:  0 : OK
+  *          -1 : ERROR
+@@ -511,7 +521,7 @@ delete_nat_rule(const char * ifname, unsigned short iport, int proto, in_addr_t
+ 		return -1;
+ 	}
+ #ifdef USE_LIBPFCTL
+-	if(pfctl_get_rules_info(dev, &ri, PF_PASS, anchor_name) < 0)
++	if(pfctl_get_rules_info(dev, &ri, NAT_RULE_ACTION, anchor_name) < 0)
+ 	{
+ 		syslog(LOG_ERR, "pfctl_get_rules_info: %m");
+ 		return -1;
+@@ -543,7 +553,7 @@ delete_nat_rule(const char * ifname, unsigned short iport, int proto, in_addr_t
+ 	for(i=0; i<n; i++)
+ 	{
+ #ifdef USE_LIBPFCTL
+-		if(pfctl_get_rule(dev, i, ri.ticket, anchor_name, PF_PASS, &rule, anchor_call) < 0)
++		if(pfctl_get_rule(dev, i, ri.ticket, anchor_name, NAT_RULE_ACTION, &rule, anchor_call) < 0)
+ 		{
+ 			syslog(LOG_ERR, "pfctl_get_rule(): %m");
+ 			r = -1;
+diff --git a/release/src/router/miniupnpd-igdv2/rw_unaligned.h b/release/src/router/miniupnpd-igdv2/rw_unaligned.h
+index c847910fe7..2691f92fb4 100644
+--- a/release/src/router/miniupnpd-igdv2/rw_unaligned.h
++++ b/release/src/router/miniupnpd-igdv2/rw_unaligned.h
+@@ -1,7 +1,7 @@
+ /* $Id: rw_unaligned.h,v 1.2 2025/04/03 21:11:35 nanard Exp $ */
+ /* MiniUPnP project
+  * http://miniupnp.free.fr/ or https://miniupnp.tuxfamily.org/
+- * (c) 2012-2022 Thomas Bernard
++ * (c) 2012-2026 Thomas Bernard
+  * This software is subject to the conditions detailed
+  * in the LICENCE file provided within the distribution */
+ 
+@@ -27,7 +27,7 @@
+  * \return 32 bits word */
+ INLINE uint32_t readnu32(const uint8_t * p)
+ {
+-	return (p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]);
++	return ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3]);
+ }
+ #define READNU32(p) readnu32(p)
+ /*! \brief read 2 bytes to a 16bits word
+@@ -35,7 +35,7 @@ INLINE uint32_t readnu32(const uint8_t * p)
+  * \return 16 bits word */
+ INLINE uint16_t readnu16(const uint8_t * p)
+ {
+-	return (p[0] << 8 | p[1]);
++	return ((uint16_t)p[0] << 8 | (uint16_t)p[1]);
+ }
+ #define READNU16(p) readnu16(p)
+ /*! \brief write 32bits to 4 bytes
+diff --git a/release/src/router/miniupnpd-igdv2/upnphttp.c b/release/src/router/miniupnpd-igdv2/upnphttp.c
+index 27867a1ee0..476028318b 100644
+--- a/release/src/router/miniupnpd-igdv2/upnphttp.c
++++ b/release/src/router/miniupnpd-igdv2/upnphttp.c
+@@ -1272,7 +1272,7 @@ BuildResp2_upnphttp(struct upnphttp * h, int respcode,
+                     const char * body, int bodylen)
+ {
+ 	int r = BuildHeader_upnphttp(h, respcode, respmsg, bodylen);
+-	if(body && (r >= 0)) {
++	if(body && (bodylen > 0) && (r >= 0)) {
+ 		memcpy(h->res_buf + h->res_buflen, body, bodylen);
+ 		h->res_buflen += bodylen;
+ 	}
+diff --git a/release/src/router/miniupnpd-igdv2/upnppermissions.c b/release/src/router/miniupnpd-igdv2/upnppermissions.c
+index f7ba9eabdb..b1d3b51634 100644
+--- a/release/src/router/miniupnpd-igdv2/upnppermissions.c
++++ b/release/src/router/miniupnpd-igdv2/upnppermissions.c
+@@ -183,7 +183,7 @@ get_addr_or_mask(const char * s, struct in_addr * addr)
+ 	else if (dot_cnt == 0)
+ 	{
+ 		int n_bits = atoi(buf);
+-		if (n_bits >= 32 || n_bits < 0)
++		if (n_bits > 32 || n_bits < 0)
+ 			return NULL;
+ 		addr->s_addr = !n_bits ? 0 : htonl(0xffffffffu << (32 - n_bits));
+ 	}
+diff --git a/release/src/router/miniupnpd-igdv2/upnpredirect.c b/release/src/router/miniupnpd-igdv2/upnpredirect.c
+index a28ba9bd8c..dc6026cdd6 100644
+--- a/release/src/router/miniupnpd-igdv2/upnpredirect.c
++++ b/release/src/router/miniupnpd-igdv2/upnpredirect.c
+@@ -2,7 +2,7 @@
+ /* vim: tabstop=4 shiftwidth=4 noexpandtab
+  * MiniUPnP project
+  * http://miniupnp.free.fr/ or https://miniupnp.tuxfamily.org/
+- * (c) 2006-2025 Thomas Bernard
++ * (c) 2006-2026 Thomas Bernard
+  * This software is subject to the conditions detailed
+  * in the LICENCE file provided within the distribution */
+ 
+@@ -79,9 +79,16 @@ lease_file_add(unsigned short eport,
+ #endif
+ 	}
+ 
+-	fprintf(fd, "%s:%hu:%s:%hu:%u:%s\n",
++	fprintf(fd, "%s:%hu:%s:%hu:%u:",
+ 	        proto_itoa(proto), eport, iaddr, iport,
+-	        timestamp, desc);
++	        timestamp);
++	while(*desc) {
++		/* skip non-printable characters, including CR and LF */
++		if (*desc >= ' ')
++			fputc(*desc, fd);
++		desc++;
++	}
++	fputc('\n', fd);
+ 	fclose(fd);
+ 
+ 	return 0;
+diff --git a/release/src/router/miniupnpd-igdv2/upnpsoap.c b/release/src/router/miniupnpd-igdv2/upnpsoap.c
+index e6268e8387..4b2d590349 100644
+--- a/release/src/router/miniupnpd-igdv2/upnpsoap.c
++++ b/release/src/router/miniupnpd-igdv2/upnpsoap.c
+@@ -129,6 +129,12 @@ GetConnectionTypeInfo(struct upnphttp * h, const char * action, const char * ns)
+ 
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	         action, ns, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -158,6 +164,12 @@ GetTotalBytesSent(struct upnphttp * h, const char * action, const char * ns)
+ #else /* UPNP_STRICT */
+              r<0?0:data.obytes, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -189,6 +201,12 @@ GetTotalBytesReceived(struct upnphttp * h, const char * action, const char * ns)
+ #else /* UPNP_STRICT */
+ 	         r<0?0:data.ibytes, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -215,6 +233,12 @@ GetTotalPacketsSent(struct upnphttp * h, const char * action, const char * ns)
+ #else /* UPNP_STRICT */
+ 	         r<0?0:data.opackets, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -241,6 +265,12 @@ GetTotalPacketsReceived(struct upnphttp * h, const char * action, const char * n
+ #else /* UPNP_STRICT */
+ 	         r<0?0:data.ipackets, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -282,6 +312,12 @@ GetCommonLinkProperties(struct upnphttp * h, const char * action, const char * n
+ 	    wan_access_type,
+ 	    upstream_bitrate, downstream_bitrate,
+ 	    status, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -309,6 +345,12 @@ GetStatusInfo(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 		action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 		status, (long)uptime, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -343,6 +385,12 @@ GetNATRSIPStatus(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 		action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 		action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -411,6 +459,12 @@ GetExternalIPAddress(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	              action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 				  ext_ip_addr, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -593,6 +647,12 @@ AddPortMapping(struct upnphttp * h, const char * action, const char * ns)
+ 	case 0:	/* success */
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		                   action, ns/*SERVICE_TYPE_WANIPC*/);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++			return;
++		}
+ 		BuildSendAndCloseSoapResp(h, body, bodylen);
+ 		break;
+ 	case -4:
+@@ -766,6 +826,12 @@ AddAnyPortMapping(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		              action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 					  eport, action);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++			return;
++		}
+ 		BuildSendAndCloseSoapResp(h, body, bodylen);
+ 		break;
+ 	case -2:	/* already redirected */
+@@ -864,7 +930,13 @@ GetSpecificPortMappingEntry(struct upnphttp * h, const char * action, const char
+ 				action, ns/*SERVICE_TYPE_WANIPC*/,
+ 				(unsigned int)iport, int_ip, desc, leaseduration,
+ 				action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 
+ 	ClearNameValueList(&data);
+@@ -974,7 +1046,13 @@ DeletePortMapping(struct upnphttp * h, const char * action, const char * ns)
+ 	{
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		                   action, ns, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 
+ 	ClearNameValueList(&data);
+@@ -1051,7 +1129,13 @@ DeletePortMappingRange(struct upnphttp * h, const char * action, const char * ns
+ 	free(port_list);
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ 
+ 	ClearNameValueList(&data);
+ }
+@@ -1134,7 +1218,13 @@ GetGenericPortMappingEntry(struct upnphttp * h, const char * action, const char
+ 			action, ns, /*SERVICE_TYPE_WANIPC,*/ rhost,
+ 			(unsigned int)eport, protocol, (unsigned int)iport, iaddr, desc,
+ 		    leaseduration, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 
+ 	ClearNameValueList(&data);
+@@ -1175,6 +1265,7 @@ GetListOfPortMappings(struct upnphttp * h, const char * action, const char * ns)
+ 	char * body;
+ 	size_t bodyalloc;
+ 	int bodylen;
++	int n;
+ 
+ 	int r = -1;
+ 	unsigned short iport;
+@@ -1248,8 +1339,9 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
+ 	}
+ 	bodylen = snprintf(body, bodyalloc, resp_start,
+ 	              action, ns/*SERVICE_TYPE_WANIPC*/);
+-	if(bodylen < 0)
++	if(bodylen < 0 || bodylen >= (int)bodyalloc)
+ 	{
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, bodyalloc);
+ 		SoapError(h, 501, "Action Failed");
+ 		free(body);
+ 		return;
+@@ -1289,10 +1381,16 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
+ #ifdef ENABLE_PCP
+ 			hide_pcp_nonce(desc);
+ #endif
+-			bodylen += snprintf(body+bodylen, bodyalloc-bodylen, entry,
+-			                    rhost, port_list[i], protocol,
+-			                    iport, int_ip, desc, leaseduration);
+-			number--;
++			n = snprintf(body+bodylen, bodyalloc-bodylen, entry,
++			             rhost, port_list[i], protocol,
++			             iport, int_ip, desc, leaseduration);
++			if (n < 0 || n >= (int)(bodyalloc-bodylen)) {
++				/* ignore the error in the output */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", n, (bodyalloc-bodylen));
++			} else {
++				bodylen += n;
++				number--;
++			}
+ 		}
+ 	}
+ 	free(port_list);
+@@ -1307,16 +1405,22 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
+ 		{
+ 			syslog(LOG_CRIT, "realloc(%p, %u) FAILED", body_sav, (unsigned)bodyalloc);
+ 			ClearNameValueList(&data);
+-			SoapError(h, 501, "Action Failed");
++			SoapError(h, 501, "Action Failed");	/* TODO : use UDAP error 603 Out of Memory */
+ 			free(body_sav);
+ 			return;
+ 		}
+ 	}
+ 	memcpy(body+bodylen, list_end, sizeof(list_end));
+ 	bodylen += (sizeof(list_end) - 1);
+-	bodylen += snprintf(body+bodylen, bodyalloc-bodylen, resp_end,
+-	                    action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	n = snprintf(body+bodylen, bodyalloc-bodylen, resp_end,
++	             action);
++	if (n < 0 || n >= (int)(bodyalloc-bodylen)) {
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", n, bodyalloc-bodylen);
++		SoapError(h, 501, "Action Failed");
++	} else {
++		bodylen += n;
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ 	free(body);
+ 
+ 	ClearNameValueList(&data);
+@@ -1357,7 +1461,13 @@ SetDefaultConnectionService(struct upnphttp * h, const char * action, const char
+ 			syslog(LOG_INFO, "%s(%s) : Ignored", action, p);
+ 			bodylen = snprintf(body, sizeof(body), resp,
+ 			                   action, ns, action);
+-			BuildSendAndCloseSoapResp(h, body, bodylen);
++			if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++				/* snprintf() output was truncated */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++				SoapError(h, 501, "Action Failed");
++			} else {
++				BuildSendAndCloseSoapResp(h, body, bodylen);
++			}
+ 		}
+ 	} else {
+ 		/* missing argument */
+@@ -1388,6 +1498,12 @@ GetDefaultConnectionService(struct upnphttp * h, const char * action, const char
+ 	/* namespace : urn:schemas-upnp-org:service:Layer3Forwarding:1 */
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns, uuidvalue_wcd, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ #endif
+@@ -1477,7 +1593,13 @@ QueryStateVariable(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+                            action, ns,/*"urn:schemas-upnp-org:control-1-0",*/
+ 		                   status, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ #if 0
+ 	/* not useful */
+@@ -1500,7 +1622,13 @@ QueryStateVariable(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+                            action, ns,/*"urn:schemas-upnp-org:control-1-0",*/
+ 		                   strn, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 	else
+ 	{
+@@ -1534,6 +1662,12 @@ GetFirewallStatus(struct upnphttp * h, const char * action, const char * ns)
+ 	    GETFLAG(IPV6FCFWDISABLEDMASK) ? 0 : 1,
+ 	    GETFLAG(IPV6FCINBOUNDDISALLOWEDMASK) ? 0 : 1,
+ 	    action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -1891,7 +2025,13 @@ AddPinhole(struct upnphttp * h, const char * action, const char * ns)
+ 			                   resp, action,
+ 			                   ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 			                   uid, action);
+-			BuildSendAndCloseSoapResp(h, body, bodylen);
++			if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++				/* snprintf() output was truncated */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++				SoapError(h, 501, "Action Failed");
++			} else {
++				BuildSendAndCloseSoapResp(h, body, bodylen);
++			}
+ 			break;
+ 		case -1: 	/* not permitted */
+ 			SoapError(h, 701, "PinholeSpaceExhausted");
+@@ -1985,7 +2125,13 @@ UpdatePinhole(struct upnphttp * h, const char * action, const char * ns)
+ 	else {
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		                   action, ns, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ }
+ 
+@@ -2043,7 +2189,13 @@ GetOutboundPinholeTimeout(struct upnphttp * h, const char * action, const char *
+ 			bodylen = snprintf(body, sizeof(body), resp,
+ 			                   action, ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 			                   opt, action);
+-			BuildSendAndCloseSoapResp(h, body, bodylen);
++			if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++				/* snprintf() output was truncated */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++				SoapError(h, 501, "Action Failed");
++			} else {
++				BuildSendAndCloseSoapResp(h, body, bodylen);
++			}
+ 			break;
+ 		case -5:	/* Protocol not supported */
+ 			SoapError(h, 705, "ProtocolNotSupported");
+@@ -2128,6 +2280,12 @@ DeletePinhole(struct upnphttp * h, const char * action, const char * ns)
+ 	       action, uid);
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -2183,7 +2341,13 @@ CheckPinholeWorking(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 						action, ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 						1, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 	else if(r == -2)
+ 		SoapError(h, 704, "NoSuchEntry");
+@@ -2247,6 +2411,12 @@ GetPinholePackets(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 			action, ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 			packets, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ #endif
+@@ -2289,7 +2459,13 @@ SendSetupMessage(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns/*"urn:schemas-upnp-org:service:DeviceProtection:1"*/,
+ 	                   OutMessage, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ 	ClearNameValueList(&data);
+ }
+ 
+@@ -2316,7 +2492,13 @@ GetSupportedProtocols(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns/*"urn:schemas-upnp-org:service:DeviceProtection:1"*/,
+ 	                   ProtocolList, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ }
+ 
+ static void
+@@ -2346,7 +2528,13 @@ GetAssignedRoles(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns/*"urn:schemas-upnp-org:service:DeviceProtection:1"*/,
+ 	                   RoleList, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ }
+ #endif
+ 
+@@ -3410,6 +3598,14 @@ SoapError(struct upnphttp * h, int errCode, const char * errDesc)
+ 
+ 	syslog(LOG_INFO, "Returning UPnPError %d: %s", errCode, errDesc);
+ 	bodylen = snprintf(body, sizeof(body), resp, errCode, errDesc);
++	if(bodylen < 0) {
++		syslog(LOG_ERR, "snprintf() returned %d", bodylen);
++		bodylen = 0;
++	} else if(bodylen >= (int)sizeof(body)) {
++		/* truncating */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes available", bodylen, sizeof(body));
++		bodylen = sizeof(body) - 1;
++	}
+ 	BuildResp2_upnphttp(h, 500, "Internal Server Error", body, bodylen);
+ 	SendRespAndClose_upnphttp(h);
+ }
+diff --git a/release/src/router/miniupnpd/Changelog.txt b/release/src/router/miniupnpd/Changelog.txt
+index 3eb086d1d4..3ff2af1a9b 100644
+--- a/release/src/router/miniupnpd/Changelog.txt
++++ b/release/src/router/miniupnpd/Changelog.txt
+@@ -1,5 +1,14 @@
+ $Id: Changelog.txt,v 1.535 2025/04/26 13:07:53 nanard Exp $
+ 
++VERSION 2.3.11 : released on 2026/08/12
++
++2026/08/11:
++  fix READNU32 by casting to uint32_t
++  filter out non printable characters in description for lease file
++
++2026/08/09:
++  check for the return value of snprintf() : overflow or error
++
+ 2026/06/16:
+   nftables: Avoid building too long rule with
+     nftnl_rule_nlmsg_build_payload() by triming description to 256 chars.
+diff --git a/release/src/router/miniupnpd/Doxyfile b/release/src/router/miniupnpd/Doxyfile
+index b1ee18515a..9a64a71681 100644
+--- a/release/src/router/miniupnpd/Doxyfile
++++ b/release/src/router/miniupnpd/Doxyfile
+@@ -48,7 +48,7 @@ PROJECT_NAME           = "MiniUPnPd"
+ # could be handy for archiving the generated documentation or if some version
+ # control system is used.
+ 
+-PROJECT_NUMBER         = 2.3.10
++PROJECT_NUMBER         = 2.3.11
+ 
+ # Using the PROJECT_BRIEF tag one can provide an optional one line description
+ # for a project that appears at the top of each page and should give viewer a
+diff --git a/release/src/router/miniupnpd/VERSION b/release/src/router/miniupnpd/VERSION
+index 9fa5f12ab0..f470771a1f 100644
+--- a/release/src/router/miniupnpd/VERSION
++++ b/release/src/router/miniupnpd/VERSION
+@@ -1 +1 @@
+-2.3.10
++2.3.11
+diff --git a/release/src/router/miniupnpd/netfilter/iptcrdr.c b/release/src/router/miniupnpd/netfilter/iptcrdr.c
+index 975d883a86..74deb2b961 100644
+--- a/release/src/router/miniupnpd/netfilter/iptcrdr.c
++++ b/release/src/router/miniupnpd/netfilter/iptcrdr.c
+@@ -241,16 +241,20 @@ get_redirect_desc(unsigned short eport, int proto,
+ 	{
+ 		if(p->eport == eport && p->proto == (short)proto)
+ 		{
+-			if(desc)
++			if(desc) {
+ 				strncpy(desc, p->str, desclen);
++				desc[desclen-1] = '\0';
++			}
+ 			if(timestamp)
+ 				*timestamp = p->timestamp;
+ 			return;
+ 		}
+ 	}
+ 	/* if no description was found, return miniupnpd as default */
+-	if(desc)
++	if(desc) {
+ 		strncpy(desc, "miniupnpd", desclen);
++		desc[desclen-1] = '\0';
++	}
+ 	if(timestamp)
+ 		*timestamp = 0;
+ }
+diff --git a/release/src/router/miniupnpd/pf/obsdrdr.c b/release/src/router/miniupnpd/pf/obsdrdr.c
+index 8b489ef420..dfbc0615cc 100644
+--- a/release/src/router/miniupnpd/pf/obsdrdr.c
++++ b/release/src/router/miniupnpd/pf/obsdrdr.c
+@@ -486,6 +486,16 @@ int add_nat_rule(const char * ifname,
+ }
+ 
+ 
++/* action of the rules created by add_nat_rule(), used to select the
++ * ruleset to scan when looking for a rule to delete.
++ * The kernel maps the rule action to a ruleset number, so PF_NAT selects
++ * PF_RULESET_NAT while PF_PASS selects PF_RULESET_FILTER. */
++#ifndef PF_NEWSTYLE
++#define NAT_RULE_ACTION	PF_NAT
++#else
++#define NAT_RULE_ACTION	PF_PASS	/* or PF_MATCH as we dont expect outbound packets to be blocked */
++#endif
++
+ /*
+  * returns:  0 : OK
+  *          -1 : ERROR
+@@ -511,7 +521,7 @@ delete_nat_rule(const char * ifname, unsigned short iport, int proto, in_addr_t
+ 		return -1;
+ 	}
+ #ifdef USE_LIBPFCTL
+-	if(pfctl_get_rules_info(dev, &ri, PF_PASS, anchor_name) < 0)
++	if(pfctl_get_rules_info(dev, &ri, NAT_RULE_ACTION, anchor_name) < 0)
+ 	{
+ 		syslog(LOG_ERR, "pfctl_get_rules_info: %m");
+ 		return -1;
+@@ -543,7 +553,7 @@ delete_nat_rule(const char * ifname, unsigned short iport, int proto, in_addr_t
+ 	for(i=0; i<n; i++)
+ 	{
+ #ifdef USE_LIBPFCTL
+-		if(pfctl_get_rule(dev, i, ri.ticket, anchor_name, PF_PASS, &rule, anchor_call) < 0)
++		if(pfctl_get_rule(dev, i, ri.ticket, anchor_name, NAT_RULE_ACTION, &rule, anchor_call) < 0)
+ 		{
+ 			syslog(LOG_ERR, "pfctl_get_rule(): %m");
+ 			r = -1;
+diff --git a/release/src/router/miniupnpd/rw_unaligned.h b/release/src/router/miniupnpd/rw_unaligned.h
+index c847910fe7..2691f92fb4 100644
+--- a/release/src/router/miniupnpd/rw_unaligned.h
++++ b/release/src/router/miniupnpd/rw_unaligned.h
+@@ -1,7 +1,7 @@
+ /* $Id: rw_unaligned.h,v 1.2 2025/04/03 21:11:35 nanard Exp $ */
+ /* MiniUPnP project
+  * http://miniupnp.free.fr/ or https://miniupnp.tuxfamily.org/
+- * (c) 2012-2022 Thomas Bernard
++ * (c) 2012-2026 Thomas Bernard
+  * This software is subject to the conditions detailed
+  * in the LICENCE file provided within the distribution */
+ 
+@@ -27,7 +27,7 @@
+  * \return 32 bits word */
+ INLINE uint32_t readnu32(const uint8_t * p)
+ {
+-	return (p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]);
++	return ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3]);
+ }
+ #define READNU32(p) readnu32(p)
+ /*! \brief read 2 bytes to a 16bits word
+@@ -35,7 +35,7 @@ INLINE uint32_t readnu32(const uint8_t * p)
+  * \return 16 bits word */
+ INLINE uint16_t readnu16(const uint8_t * p)
+ {
+-	return (p[0] << 8 | p[1]);
++	return ((uint16_t)p[0] << 8 | (uint16_t)p[1]);
+ }
+ #define READNU16(p) readnu16(p)
+ /*! \brief write 32bits to 4 bytes
+diff --git a/release/src/router/miniupnpd/upnphttp.c b/release/src/router/miniupnpd/upnphttp.c
+index 27867a1ee0..476028318b 100644
+--- a/release/src/router/miniupnpd/upnphttp.c
++++ b/release/src/router/miniupnpd/upnphttp.c
+@@ -1272,7 +1272,7 @@ BuildResp2_upnphttp(struct upnphttp * h, int respcode,
+                     const char * body, int bodylen)
+ {
+ 	int r = BuildHeader_upnphttp(h, respcode, respmsg, bodylen);
+-	if(body && (r >= 0)) {
++	if(body && (bodylen > 0) && (r >= 0)) {
+ 		memcpy(h->res_buf + h->res_buflen, body, bodylen);
+ 		h->res_buflen += bodylen;
+ 	}
+diff --git a/release/src/router/miniupnpd/upnppermissions.c b/release/src/router/miniupnpd/upnppermissions.c
+index f7ba9eabdb..b1d3b51634 100644
+--- a/release/src/router/miniupnpd/upnppermissions.c
++++ b/release/src/router/miniupnpd/upnppermissions.c
+@@ -183,7 +183,7 @@ get_addr_or_mask(const char * s, struct in_addr * addr)
+ 	else if (dot_cnt == 0)
+ 	{
+ 		int n_bits = atoi(buf);
+-		if (n_bits >= 32 || n_bits < 0)
++		if (n_bits > 32 || n_bits < 0)
+ 			return NULL;
+ 		addr->s_addr = !n_bits ? 0 : htonl(0xffffffffu << (32 - n_bits));
+ 	}
+diff --git a/release/src/router/miniupnpd/upnpredirect.c b/release/src/router/miniupnpd/upnpredirect.c
+index a28ba9bd8c..dc6026cdd6 100644
+--- a/release/src/router/miniupnpd/upnpredirect.c
++++ b/release/src/router/miniupnpd/upnpredirect.c
+@@ -2,7 +2,7 @@
+ /* vim: tabstop=4 shiftwidth=4 noexpandtab
+  * MiniUPnP project
+  * http://miniupnp.free.fr/ or https://miniupnp.tuxfamily.org/
+- * (c) 2006-2025 Thomas Bernard
++ * (c) 2006-2026 Thomas Bernard
+  * This software is subject to the conditions detailed
+  * in the LICENCE file provided within the distribution */
+ 
+@@ -79,9 +79,16 @@ lease_file_add(unsigned short eport,
+ #endif
+ 	}
+ 
+-	fprintf(fd, "%s:%hu:%s:%hu:%u:%s\n",
++	fprintf(fd, "%s:%hu:%s:%hu:%u:",
+ 	        proto_itoa(proto), eport, iaddr, iport,
+-	        timestamp, desc);
++	        timestamp);
++	while(*desc) {
++		/* skip non-printable characters, including CR and LF */
++		if (*desc >= ' ')
++			fputc(*desc, fd);
++		desc++;
++	}
++	fputc('\n', fd);
+ 	fclose(fd);
+ 
+ 	return 0;
+diff --git a/release/src/router/miniupnpd/upnpsoap.c b/release/src/router/miniupnpd/upnpsoap.c
+index e6268e8387..4b2d590349 100644
+--- a/release/src/router/miniupnpd/upnpsoap.c
++++ b/release/src/router/miniupnpd/upnpsoap.c
+@@ -129,6 +129,12 @@ GetConnectionTypeInfo(struct upnphttp * h, const char * action, const char * ns)
+ 
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	         action, ns, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -158,6 +164,12 @@ GetTotalBytesSent(struct upnphttp * h, const char * action, const char * ns)
+ #else /* UPNP_STRICT */
+              r<0?0:data.obytes, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -189,6 +201,12 @@ GetTotalBytesReceived(struct upnphttp * h, const char * action, const char * ns)
+ #else /* UPNP_STRICT */
+ 	         r<0?0:data.ibytes, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -215,6 +233,12 @@ GetTotalPacketsSent(struct upnphttp * h, const char * action, const char * ns)
+ #else /* UPNP_STRICT */
+ 	         r<0?0:data.opackets, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -241,6 +265,12 @@ GetTotalPacketsReceived(struct upnphttp * h, const char * action, const char * n
+ #else /* UPNP_STRICT */
+ 	         r<0?0:data.ipackets, action);
+ #endif /* UPNP_STRICT */
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -282,6 +312,12 @@ GetCommonLinkProperties(struct upnphttp * h, const char * action, const char * n
+ 	    wan_access_type,
+ 	    upstream_bitrate, downstream_bitrate,
+ 	    status, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -309,6 +345,12 @@ GetStatusInfo(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 		action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 		status, (long)uptime, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -343,6 +385,12 @@ GetNATRSIPStatus(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 		action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 		action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -411,6 +459,12 @@ GetExternalIPAddress(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	              action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 				  ext_ip_addr, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -593,6 +647,12 @@ AddPortMapping(struct upnphttp * h, const char * action, const char * ns)
+ 	case 0:	/* success */
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		                   action, ns/*SERVICE_TYPE_WANIPC*/);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++			return;
++		}
+ 		BuildSendAndCloseSoapResp(h, body, bodylen);
+ 		break;
+ 	case -4:
+@@ -766,6 +826,12 @@ AddAnyPortMapping(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		              action, ns, /*SERVICE_TYPE_WANIPC,*/
+ 					  eport, action);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++			return;
++		}
+ 		BuildSendAndCloseSoapResp(h, body, bodylen);
+ 		break;
+ 	case -2:	/* already redirected */
+@@ -864,7 +930,13 @@ GetSpecificPortMappingEntry(struct upnphttp * h, const char * action, const char
+ 				action, ns/*SERVICE_TYPE_WANIPC*/,
+ 				(unsigned int)iport, int_ip, desc, leaseduration,
+ 				action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 
+ 	ClearNameValueList(&data);
+@@ -974,7 +1046,13 @@ DeletePortMapping(struct upnphttp * h, const char * action, const char * ns)
+ 	{
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		                   action, ns, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 
+ 	ClearNameValueList(&data);
+@@ -1051,7 +1129,13 @@ DeletePortMappingRange(struct upnphttp * h, const char * action, const char * ns
+ 	free(port_list);
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ 
+ 	ClearNameValueList(&data);
+ }
+@@ -1134,7 +1218,13 @@ GetGenericPortMappingEntry(struct upnphttp * h, const char * action, const char
+ 			action, ns, /*SERVICE_TYPE_WANIPC,*/ rhost,
+ 			(unsigned int)eport, protocol, (unsigned int)iport, iaddr, desc,
+ 		    leaseduration, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 
+ 	ClearNameValueList(&data);
+@@ -1175,6 +1265,7 @@ GetListOfPortMappings(struct upnphttp * h, const char * action, const char * ns)
+ 	char * body;
+ 	size_t bodyalloc;
+ 	int bodylen;
++	int n;
+ 
+ 	int r = -1;
+ 	unsigned short iport;
+@@ -1248,8 +1339,9 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
+ 	}
+ 	bodylen = snprintf(body, bodyalloc, resp_start,
+ 	              action, ns/*SERVICE_TYPE_WANIPC*/);
+-	if(bodylen < 0)
++	if(bodylen < 0 || bodylen >= (int)bodyalloc)
+ 	{
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, bodyalloc);
+ 		SoapError(h, 501, "Action Failed");
+ 		free(body);
+ 		return;
+@@ -1289,10 +1381,16 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
+ #ifdef ENABLE_PCP
+ 			hide_pcp_nonce(desc);
+ #endif
+-			bodylen += snprintf(body+bodylen, bodyalloc-bodylen, entry,
+-			                    rhost, port_list[i], protocol,
+-			                    iport, int_ip, desc, leaseduration);
+-			number--;
++			n = snprintf(body+bodylen, bodyalloc-bodylen, entry,
++			             rhost, port_list[i], protocol,
++			             iport, int_ip, desc, leaseduration);
++			if (n < 0 || n >= (int)(bodyalloc-bodylen)) {
++				/* ignore the error in the output */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", n, (bodyalloc-bodylen));
++			} else {
++				bodylen += n;
++				number--;
++			}
+ 		}
+ 	}
+ 	free(port_list);
+@@ -1307,16 +1405,22 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
+ 		{
+ 			syslog(LOG_CRIT, "realloc(%p, %u) FAILED", body_sav, (unsigned)bodyalloc);
+ 			ClearNameValueList(&data);
+-			SoapError(h, 501, "Action Failed");
++			SoapError(h, 501, "Action Failed");	/* TODO : use UDAP error 603 Out of Memory */
+ 			free(body_sav);
+ 			return;
+ 		}
+ 	}
+ 	memcpy(body+bodylen, list_end, sizeof(list_end));
+ 	bodylen += (sizeof(list_end) - 1);
+-	bodylen += snprintf(body+bodylen, bodyalloc-bodylen, resp_end,
+-	                    action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	n = snprintf(body+bodylen, bodyalloc-bodylen, resp_end,
++	             action);
++	if (n < 0 || n >= (int)(bodyalloc-bodylen)) {
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", n, bodyalloc-bodylen);
++		SoapError(h, 501, "Action Failed");
++	} else {
++		bodylen += n;
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ 	free(body);
+ 
+ 	ClearNameValueList(&data);
+@@ -1357,7 +1461,13 @@ SetDefaultConnectionService(struct upnphttp * h, const char * action, const char
+ 			syslog(LOG_INFO, "%s(%s) : Ignored", action, p);
+ 			bodylen = snprintf(body, sizeof(body), resp,
+ 			                   action, ns, action);
+-			BuildSendAndCloseSoapResp(h, body, bodylen);
++			if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++				/* snprintf() output was truncated */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++				SoapError(h, 501, "Action Failed");
++			} else {
++				BuildSendAndCloseSoapResp(h, body, bodylen);
++			}
+ 		}
+ 	} else {
+ 		/* missing argument */
+@@ -1388,6 +1498,12 @@ GetDefaultConnectionService(struct upnphttp * h, const char * action, const char
+ 	/* namespace : urn:schemas-upnp-org:service:Layer3Forwarding:1 */
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns, uuidvalue_wcd, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ #endif
+@@ -1477,7 +1593,13 @@ QueryStateVariable(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+                            action, ns,/*"urn:schemas-upnp-org:control-1-0",*/
+ 		                   status, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ #if 0
+ 	/* not useful */
+@@ -1500,7 +1622,13 @@ QueryStateVariable(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+                            action, ns,/*"urn:schemas-upnp-org:control-1-0",*/
+ 		                   strn, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 	else
+ 	{
+@@ -1534,6 +1662,12 @@ GetFirewallStatus(struct upnphttp * h, const char * action, const char * ns)
+ 	    GETFLAG(IPV6FCFWDISABLEDMASK) ? 0 : 1,
+ 	    GETFLAG(IPV6FCINBOUNDDISALLOWEDMASK) ? 0 : 1,
+ 	    action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -1891,7 +2025,13 @@ AddPinhole(struct upnphttp * h, const char * action, const char * ns)
+ 			                   resp, action,
+ 			                   ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 			                   uid, action);
+-			BuildSendAndCloseSoapResp(h, body, bodylen);
++			if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++				/* snprintf() output was truncated */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++				SoapError(h, 501, "Action Failed");
++			} else {
++				BuildSendAndCloseSoapResp(h, body, bodylen);
++			}
+ 			break;
+ 		case -1: 	/* not permitted */
+ 			SoapError(h, 701, "PinholeSpaceExhausted");
+@@ -1985,7 +2125,13 @@ UpdatePinhole(struct upnphttp * h, const char * action, const char * ns)
+ 	else {
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 		                   action, ns, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ }
+ 
+@@ -2043,7 +2189,13 @@ GetOutboundPinholeTimeout(struct upnphttp * h, const char * action, const char *
+ 			bodylen = snprintf(body, sizeof(body), resp,
+ 			                   action, ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 			                   opt, action);
+-			BuildSendAndCloseSoapResp(h, body, bodylen);
++			if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++				/* snprintf() output was truncated */
++				syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++				SoapError(h, 501, "Action Failed");
++			} else {
++				BuildSendAndCloseSoapResp(h, body, bodylen);
++			}
+ 			break;
+ 		case -5:	/* Protocol not supported */
+ 			SoapError(h, 705, "ProtocolNotSupported");
+@@ -2128,6 +2280,12 @@ DeletePinhole(struct upnphttp * h, const char * action, const char * ns)
+ 	       action, uid);
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ 
+@@ -2183,7 +2341,13 @@ CheckPinholeWorking(struct upnphttp * h, const char * action, const char * ns)
+ 		bodylen = snprintf(body, sizeof(body), resp,
+ 						action, ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 						1, action);
+-		BuildSendAndCloseSoapResp(h, body, bodylen);
++		if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++			/* snprintf() output was truncated */
++			syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++			SoapError(h, 501, "Action Failed");
++		} else {
++			BuildSendAndCloseSoapResp(h, body, bodylen);
++		}
+ 	}
+ 	else if(r == -2)
+ 		SoapError(h, 704, "NoSuchEntry");
+@@ -2247,6 +2411,12 @@ GetPinholePackets(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 			action, ns/*"urn:schemas-upnp-org:service:WANIPv6FirewallControl:1"*/,
+ 			packets, action);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++		return;
++	}
+ 	BuildSendAndCloseSoapResp(h, body, bodylen);
+ }
+ #endif
+@@ -2289,7 +2459,13 @@ SendSetupMessage(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns/*"urn:schemas-upnp-org:service:DeviceProtection:1"*/,
+ 	                   OutMessage, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ 	ClearNameValueList(&data);
+ }
+ 
+@@ -2316,7 +2492,13 @@ GetSupportedProtocols(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns/*"urn:schemas-upnp-org:service:DeviceProtection:1"*/,
+ 	                   ProtocolList, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ }
+ 
+ static void
+@@ -2346,7 +2528,13 @@ GetAssignedRoles(struct upnphttp * h, const char * action, const char * ns)
+ 	bodylen = snprintf(body, sizeof(body), resp,
+ 	                   action, ns/*"urn:schemas-upnp-org:service:DeviceProtection:1"*/,
+ 	                   RoleList, action);
+-	BuildSendAndCloseSoapResp(h, body, bodylen);
++	if (bodylen < 0 || bodylen >= (int)sizeof(body)) {
++		/* snprintf() output was truncated */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes were available", bodylen, sizeof(body));
++		SoapError(h, 501, "Action Failed");
++	} else {
++		BuildSendAndCloseSoapResp(h, body, bodylen);
++	}
+ }
+ #endif
+ 
+@@ -3410,6 +3598,14 @@ SoapError(struct upnphttp * h, int errCode, const char * errDesc)
+ 
+ 	syslog(LOG_INFO, "Returning UPnPError %d: %s", errCode, errDesc);
+ 	bodylen = snprintf(body, sizeof(body), resp, errCode, errDesc);
++	if(bodylen < 0) {
++		syslog(LOG_ERR, "snprintf() returned %d", bodylen);
++		bodylen = 0;
++	} else if(bodylen >= (int)sizeof(body)) {
++		/* truncating */
++		syslog(LOG_WARNING, "snprintf() returned %d, %lu bytes available", bodylen, sizeof(body));
++		bodylen = sizeof(body) - 1;
++	}
+ 	BuildResp2_upnphttp(h, 500, "Internal Server Error", body, bodylen);
+ 	SendRespAndClose_upnphttp(h);
+ }
+-- 
+2.25.1
+

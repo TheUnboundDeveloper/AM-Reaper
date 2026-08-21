@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.5.7** — `3006.102.8_Reaper_v2.5.7`, built on RT-BE96U and running on metal. The line since v2.5.3 adds, in order: **v2.5.4** (the hardware-QoS priority fix, an honest QoS page, the speed-test / channel-scan / Warden-blocklist / SDN-key fixes, and the Firewall + About + Warden translations); **v2.5.5** (ipset **Policy Routing** — a companion to VPN Director — plus a post-boot PPPoE re-dial for lines that go quiet after a reboot); **v2.5.6** (the Policy Routing editor page); and **v2.5.7** (the audit-remainder security-hardening batch). Each is built on RT-BE96U and validated on hardware; **none is yet cut as a public CI release or pushed**, and the four sibling models have not taken them. Note: v2.5.3 first staged the strongSwan IPSec runtime, and **IPSec Server / client / Instant Guard are now confirmed working on metal** for the first time in the lineage. Published images still come from the clean-room CI build. |
+| **Current rung** | **v2.5.8** — `3006.102.8_Reaper_v2.5.8`, built on RT-BE96U. The line since v2.5.3 adds, in order: **v2.5.4** (the hardware-QoS priority fix, an honest QoS page, the speed-test / channel-scan / Warden-blocklist / SDN-key fixes, and the Firewall + About + Warden translations); **v2.5.5** (ipset **Policy Routing** — a companion to VPN Director — plus a post-boot PPPoE re-dial for lines that go quiet after a reboot); **v2.5.6** (the Policy Routing editor page); **v2.5.7** (the audit-remainder security-hardening batch); and **v2.5.8** (upstream Merlin 3006.102.8_4 alignment: the UPnP gaming fix, OpenVPN 2.7.6, miniupnpd 2.3.11). **None is yet cut as a public CI release or pushed**, and the four sibling models have not taken v2.5.8. Note: v2.5.3 first staged the strongSwan IPSec runtime, and **IPSec Server / client / Instant Guard are now confirmed working on metal** for the first time in the lineage. Published images still come from the clean-room CI build. |
 | **Newest published** | **v2.5.3**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). It carries the IPSec resurrection (Server / client / Instant Guard now work), the Gatekeeper first-seen fix, the QoS shaper restore, and the pre-public hardening folded in from v2.5.1 / v2.5.2. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus the intermediate firewall rungs v2.4.2–v2.4.8, and v2.5.0, v2.5.1, v2.5.2, and v2.5.4–v2.5.7. **v2.4.9 and v2.5.3 both published** on all five models — v2.5.3 is the current newest (above). v2.4.1–v2.4.4 and v2.4.8 are built on RT-BE96U, both variants; v2.5.2 is a compile-check build additionally metal-validated for its Gatekeeper + QoS fixes. v2.5.1 and v2.5.2 were never cut as their own lean-repo rungs — v2.5.3 is the cut that carries them. **v2.5.4 through v2.5.7 are each built on RT-BE96U and validated on hardware** (v2.5.4 QoS on metal, v2.5.5 policy-routing data path on the lab link, v2.5.6 the routing page on hardware, v2.5.7 verified in the image) but are not yet cut as public CI releases. |
+| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus the intermediate firewall rungs v2.4.2–v2.4.8, and v2.5.0, v2.5.1, v2.5.2, and v2.5.4–v2.5.8. **v2.4.9 and v2.5.3 both published** on all five models — v2.5.3 is the current newest (above). v2.4.1–v2.4.4 and v2.4.8 are built on RT-BE96U, both variants; v2.5.2 is a compile-check build additionally metal-validated for its Gatekeeper + QoS fixes. v2.5.1 and v2.5.2 were never cut as their own lean-repo rungs — v2.5.3 is the cut that carries them. **v2.5.4 through v2.5.7 are each built on RT-BE96U and validated on hardware** (v2.5.4 QoS on metal, v2.5.5 policy-routing data path on the lab link, v2.5.6 the routing page on hardware, v2.5.7 verified in the image) but are not yet cut as public CI releases. **v2.5.8** is built on RT-BE96U; its UPnP gaming fix owes an on-metal check (a UPnP-forwarding game accepting inbound connections). |
 | **Prior full-fleet releases** | **v2.4.9**, **v2.3.7**, **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,80 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.6.0 — the QoS Classful IPv4 outage
+
+*Built on RT-BE96U (pending). Not yet cut as a public CI release.*
+
+A GT-BE98 on v2.5.7 with **Hardware QoS Classful** enabled lost all IPv4 while IPv6 kept working; the
+diagnostic it sent settled it in one read: class queues 1–5 did not exist (`tmctl getqcfg` rc=108), and
+the kernel was refusing every flow with `DS egress queue 1 is not configured`. The v2.5.4 priority fix
+deletes and recreates those queues and never checked the recreate; on that port it was rejected. The
+rebuild is now transactional with a layered fallback to the stock queue layout, logged, so the worst
+case is the old priority order rather than a dead link. All models.
+
+---
+
+## What's new in v2.5.9 — a trusted tester's batch
+
+*Built on RT-BE96U (pending). Not yet cut as a public CI release. One field report, from a reporter
+whose reports have been right every time, became eight fixes.*
+
+**Warden's country lists were empty after a reboot on v2.5.7** while the threat and allow lists
+looked fine — and the page said "3 countries" the whole time. The feed cache was replayed with a
+single `ipset restore`, which stops at the first error; v2.5.7 had changed the threat set's size
+header, a pre-upgrade cache still carried the old one, and everything written after that point in the
+file (every country) stayed empty. Worse, the next save could persist those empty sets over the good
+cache, so it never healed. The cache is now replayed per set, members only, with errors logged; an
+empty set never overwrites its cache entry; the country sets get the enlarged size limit; and the
+"Countries blocked" tile shows prefixes actually loaded, amber when a list is empty.
+
+**The wireless AiMesh node still read "Wired" on Devices.** The previous fix could never fire (it
+queried the mesh table by the wrong address and then required the *wired* code). The backend now
+reads the mesh client table by the node's LAN address and shows its real uplink — band, MLO or
+Wired — plus an AiMesh Node chip; the phantom backhaul-radio "device" is folded away.
+
+**The Addons menu had two variants.** Dashboard and shell each parsed the addon menu with their own
+rules; they now share one parser, so detection, external links and the empty case agree.
+
+**Policy Routing is now practical to live with.** Every rule and every Firewall list has Modify;
+domain lists are created and edited on the Policy Routing page itself (same objects the Firewall
+sees); the value box takes one domain per line or a pasted list; the selectors are relabelled and a
+hint explains what a device rule adds over VPN Director (fail-closed, Block, MAC keying, precedence).
+Under the hood: the sets are now built whether or not the Firewall engine is on (before, a
+routing-only user's rules silently matched nothing), domain lists are saved to flash after every
+10-minute refresh and restored at boot, and a long list is no longer silently truncated.
+
+---
+
+## What's new in v2.5.8 — the UPnP gaming fix and the rest of upstream 3006.102.8_4
+
+*Built on RT-BE96U. Not yet cut as a public CI release. An upstream-alignment rung: **Eric "Merlin"
+Sauvageau** released Asuswrt-Merlin 3006.102.8_4 on 20-Aug-2026, and every item in it was triaged
+against this tree commit by commit — what applied was brought over (credited to him as author on each
+cherry-picked commit), and what Reaper had already fixed on its own was verified covered and skipped.*
+
+The headline is the **UPnP gaming fix**. The 3006.102.8 base carried an Asus patch that jumped *all*
+traffic through the UPnP port-map chains, applying game-port DNAT redirects to packets they were never
+meant to touch — upstream's symptom line is "cannot connect to gaming servers if a game forwards a port
+through UPnP". Reaper had already reverted the NAT half of that patch independently; this rung removes
+the remaining forwarding-chain half, completing the same revert upstream shipped. UPnP port maps are
+reached only through the virtual-server chain again, as before 102.8.
+
+Alongside it: **OpenVPN moves 2.7.5 → 2.7.6** (upstream's two new CVEs affect the Windows service and
+mbedTLS builds, neither in this firmware; the maintenance fixes are taken to stay current — the
+seven-CVE 2.7.5 batch was already carried). **miniupnpd moves 2.3.10 → 2.3.11 in both daemons** (the
+standard one and the IGD:2 pinhole daemon), a small upstream hardening batch, with Reaper's own UPnP
+diagnostics preserved on top. An OpenVPN server downgraded from **TLS Encrypt V2 to TLS Auth** now
+regenerates its static key in the format tls-auth can use. The **Network Tools connection list** no
+longer comes back empty when no display option is ticked. And the **`ddns-start` user script** now
+receives the WAN IPv6 address as its second argument, matching Merlin 3004.388.
+
+Deliberately *not* re-taken: upstream's httpd buffer-overrun fixes and its certificate-parser rewrite —
+both spots were already hardened in Reaper's earlier audit rounds in equivalent or stronger form — and
+the WANPPPConnection discovery fix, which Reaper took in v2.4.6.
 
 ---
 

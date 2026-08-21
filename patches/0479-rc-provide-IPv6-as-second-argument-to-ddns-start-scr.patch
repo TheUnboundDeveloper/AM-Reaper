@@ -1,0 +1,41 @@
+From 0156813a2d72d9a2ba7252130e4f989bdf155488 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Sun, 26 Jan 2025 21:46:51 -0500
+Subject: [PATCH] rc: provide IPv6 as second argument to ddns-start script
+
+(cherry picked from commit d2701f4e238c2f423849fc78368223d883efbf44)
+---
+ release/src/router/rc/services.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 9e8de27d40..91c40ade31 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -5663,7 +5663,11 @@ start_ddns(char *caller, int isAidisk)
+ 		}
+ 	} else {	// Custom DDNS
+ 		// Block until it completes and updates the DDNS update results in nvram
++#ifdef RTCONFIG_IPV6
++			run_custom_script("ddns-start", 120, wan_ip, ip6_addr);
++#else
+ 			run_custom_script("ddns-start", 120, wan_ip, NULL);
++#endif
+ 			return 0;
+ 	}
+ #endif
+@@ -5671,7 +5675,11 @@ start_ddns(char *caller, int isAidisk)
+ 	if (ret == 0)
+ 		nvram_set_int("ddns_last_wan_unit", unit);
+ 
++#ifdef RTCONFIG_IPV6
++	run_custom_script("ddns-start", 0, wan_ip, ip6_addr);
++#else
+ 	run_custom_script("ddns-start", 0, wan_ip, NULL);
++#endif
+ 
+ 	return ret;
+ }
+-- 
+2.25.1
+

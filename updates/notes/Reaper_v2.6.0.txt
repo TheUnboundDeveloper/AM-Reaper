@@ -1,0 +1,11 @@
+Reaper v2.6.0
+
+Built on RT-BE96U (pending). One fix, high severity, all models. Not yet cut as a public CI release.
+
+> Fixed: with Hardware QoS Classful enabled, some routers lost all IPv4 (IPv6 kept working) on v2.5.4–v2.5.9
+
+The v2.5.4 priority-order correction rebuilds the five class queues by deleting and recreating them. The recreate calls were never checked. On the reporter's GT-BE98 the traffic manager rejected every recreate, so class queues 1–5 simply ceased to exist — the diagnostic showed tmctl getqcfg failing for qid 1–5 and the kernel logging DS egress queue 1 is not configured / Cannot rdpa_ucast_flow_add on every flow. Every IPv4 connection is classified into one of those queues (unmatched traffic lands in the default class), so the hardware refused all of it; IPv6 is not classified and rode the untouched queue 0, which is exactly the "only IPv6 works" symptom. The rebuild is now transactional: all five queue sizes are read first or nothing is touched; each recreate is checked; on any rejection all five queues are put back at the stock layout — trying the full argument set, then without the L4S flag, then the bare minimum — and a syslog line says the priority correction was not applied on this port. Worst case is now "the old priority order", never "no internet". The idempotence guard also checks all five queues instead of just the first, so a partial loss can no longer persist until reboot. The RT-BE96U, where the recreate succeeds, is unaffected in behaviour; it simply gains the safety net. Shared code — all five models.
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

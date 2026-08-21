@@ -1,0 +1,35 @@
+From 9c691399d4cb7b1e8ef0def466ab0f950e8cc960 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 20 Aug 2026 20:25:59 -0400
+Subject: [PATCH] rc: complete revert of Asus UPnP jump patch (upstream
+ 085a2f2768)
+
+The PREROUTING->VUPNP half was already reverted here on 2026-08-13 (the
+"all traffic gets DNAT" 3006.102.8 regression); this removes the remaining
+FORWARD->FUPNP jump so the tree matches upstream Merlin 3006.102.8_4,
+which reverted Asus patch a1ce74be78 in full. The VSERVER-chain jump is
+the sole UPnP entry point again, restoring pre-102.8 behaviour for
+UPnP-forwarded game ports.
+---
+ release/src/router/rc/firewall.c | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index cb9705bc24..1c7c983d84 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -5620,11 +5620,6 @@ TRACE_PT("writing Parental Control\n");
+ 	/* Drop the wrong state, INVALID, packets */
+ 	fprintf(fp, "-A FORWARD -m state --state INVALID -j %s\n", logdrop);
+ 
+-	/* Add rule to jump to FUPNP chain when upnp is enabled */
+-	snprintf(tmp, sizeof(tmp), "wan%d_upnp_enable", wan_primary_ifunit());
+-	if (nvram_get_int(tmp) == 1)
+-		fprintf(fp, "-A FORWARD -j FUPNP\n");
+-
+ //#if 0
+ #ifdef RTCONFIG_IPV6
+ 	if (ipv6_enabled()) {
+-- 
+2.25.1
+

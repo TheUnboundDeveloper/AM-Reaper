@@ -116,7 +116,7 @@ OLDHOME='/home/na'"than"
 OLDREPO='ASUS-Merlin''-Reaper'
 for p in "$STAGE"/*.patch; do
   sed -i \
-    -e "s|^From: .*|From: $IDENTITY|" \
+    -e "/^From: Eric Sauvageau <merlin@asuswrt-merlin.net>/! s|^From: .*|From: $IDENTITY|" \
     -e "s|$OLDHOME|/home/builder|g" \
     -e "s|$OLDREPO|AM-Reaper|g" "$p"
 done

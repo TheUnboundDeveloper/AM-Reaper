@@ -1,0 +1,2475 @@
+From b9d62de0085031d14de776520d933f371929ae6a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 21 Aug 2026 07:22:10 -0400
+Subject: [PATCH] v2.5.9: trusted-tester batch - Warden geo cache, AiMesh node,
+ Addons rail, Policy Routing usability + decoupling, fqdn set persistence
+
+- rwarden: per-set add-only cache replay with logging (one-shot ipset restore aborted on the
+  rw_threat maxelem header drift and left every country set empty), never save an empty set over a
+  good cache entry, maxelem 262144 on rw_g_*, stats geo_e/geo_empty; Warden page tile shows loaded
+  prefixes and goes amber on an empty country list.
+- httpd: rdev_node_classify() reads CM_CLIENT_TABLE by realMacAddr and decodes re_path, so a
+  wireless-backhaul AiMesh node shows its band (or MLO) instead of Wired; backhaul-STA phantom rows
+  folded; "node" JSON field + AiMesh Node chip on Reaper_Devices.
+- www: one shared ReaperAddons parser (reaper_util.js) feeds both the dashboard and shell rails.
+- reaper_fw: rfw_field() truncation now rejects+logs (was silently cut), RFW_VAL_MAX 2048,
+  dnsmasq emitter continues on a second ipset= line, fqdn sets saved to /jffs/reaper_fw/sets by the
+  resolver and replayed at create; reaper_fw_sets_only() materialises object sets without chains and
+  is called by start_reaper_pbr() (policy routing no longer needs the firewall engine on).
+- Reaper_Firewall: Modify/Save/Cancel on all eight lists; object value is a multi-line box.
+- Reaper_VPNRouting: rule Modify, inline Domain lists card, relabelled selectors + VPN Director hint.
+- Tools_OtherSettings: Reaper interface theme option removed from the Tweaks page.
+- 24 new dict keys in all 25 packs (lockstep 6707), translated.
+---
+ release/src/router/httpd/web.c                | 108 ++++++---
+ release/src/router/rc/rc.h                    |   1 +
+ release/src/router/rc/reaper_fw.c             | 138 ++++++++++--
+ release/src/router/rc/reaper_pbr.c            |   7 +
+ release/src/router/rc/rwarden.c               |  68 +++++-
+ release/src/router/www/BR.dict                |  24 ++
+ release/src/router/www/CN.dict                |  24 ++
+ release/src/router/www/CZ.dict                |  24 ++
+ release/src/router/www/DA.dict                |  24 ++
+ release/src/router/www/DE.dict                |  24 ++
+ release/src/router/www/EN.dict                |  24 ++
+ release/src/router/www/ES.dict                |  24 ++
+ release/src/router/www/FI.dict                |  24 ++
+ release/src/router/www/FR.dict                |  24 ++
+ release/src/router/www/HU.dict                |  24 ++
+ release/src/router/www/IT.dict                |  24 ++
+ release/src/router/www/JP.dict                |  24 ++
+ release/src/router/www/KR.dict                |  24 ++
+ release/src/router/www/MS.dict                |  24 ++
+ release/src/router/www/Main_ReaperDash.asp    |  69 ++----
+ release/src/router/www/NL.dict                |  24 ++
+ release/src/router/www/NO.dict                |  24 ++
+ release/src/router/www/PL.dict                |  24 ++
+ release/src/router/www/RO.dict                |  24 ++
+ release/src/router/www/RU.dict                |  24 ++
+ release/src/router/www/Reaper_Devices.asp     |   6 +-
+ release/src/router/www/Reaper_Firewall.asp    | 168 ++++++++++----
+ release/src/router/www/Reaper_VPNRouting.asp  | 207 +++++++++++++++---
+ release/src/router/www/Reaper_Warden.asp      |  18 ++
+ release/src/router/www/SL.dict                |  24 ++
+ release/src/router/www/SV.dict                |  24 ++
+ release/src/router/www/TH.dict                |  24 ++
+ release/src/router/www/TR.dict                |  24 ++
+ release/src/router/www/TW.dict                |  24 ++
+ .../src/router/www/Tools_OtherSettings.asp    |  23 +-
+ release/src/router/www/UK.dict                |  24 ++
+ release/src/router/www/reaper_shell.asp       |  41 ++--
+ release/src/router/www/reaper_util.js         |  83 +++++++
+ 38 files changed, 1310 insertions(+), 227 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 579fe53918..8ea00a4360 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23953,6 +23953,8 @@ struct rdev {
+ 	long gk_expiry;
+ 	int  mlo;		/* Wi-Fi 7 MLD: an affiliated link folded into this MLD MAC */
+ 	int  bandmask;		/* bands linked on: 1=2.4 2=5 4=6 */
++	int  node;		/* AiMesh RE node: its re_path (uplink type), 0 = not a node */
++	int  bh_sta;		/* this MAC is a node's BACKHAUL station, not a device - folded */
+ };
+ 
+ /* dotted-quad -> host-order u32; 0 on parse failure (0.0.0.0 is never a host) */
+@@ -24290,20 +24292,70 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ static void rdev_scan_amesh(struct rdev *v, int *n) { (void)v; (void)n; }
+ #endif	/* RTCONFIG_CFGSYNC */
+ 
+-/* reaper 2026-08-19 (field report: "mesh nodes show as Wired even when the
+- * wireless mesh backhaul is in use"). is_re_node() consults the cfg_mnt shared
+- * client table and returns 1 for an ACTIVE AiMesh RE node. Wrapped so the
+- * device-classification fallback stays build-agnostic: on a non-cfgsync build
+- * (or a box with no mesh) it is a constant 0 and nothing changes. */
++/* reaper 2026-08-19 / 2026-08-21 (field report, twice: "the wireless AiMesh
++ * node still shows up as Wired"). The first fix called is_re_node() with the
++ * node's LAN MAC - but that helper only matches a node's BACKHAUL STATION MACs
++ * (sta2g/sta5g), and with check_path=1 it additionally insisted on
++ * activePath==1, which is the WIRED uplink code. It could never fire for the
++ * row this page lists (keyed by the LAN MAC from the lease/ARP), so every node
++ * fell through to the Wired default. The cfg_mnt shared client table carries
++ * both halves of what is needed, so read it directly:
++ *   realMacAddr[i]  = the node's LAN MAC  -> "is this row a node?"
++ *   activePath[i]   = re_path             -> HOW it is uplinked:
++ *                     1/16/32/64 wired port, 2 = 2.4 GHz, 4/8 = 5 GHz,
++ *                     128 = 6 GHz, 512 = MLO backhaul, 0 = not connected
++ *                     (the same table the stock AiMesh page decodes in
++ *                     device-map/amesh.asp)
++ *   sta2g/5g/6g[i]  = the node's backhaul station MACs, which our own radios
++ *                     DO see in the assoclist and which therefore appear as a
++ *                     phantom lease-less Wi-Fi "device" next to the node.
++ * rdev_node_classify() walks that table once per request and (a) stamps each
++ * node row with its re_path + the matching band, (b) marks the backhaul STA
++ * rows so the emitter can fold them. Build-agnostic: a no-op without cfgsync. */
+ #ifdef RTCONFIG_CFGSYNC
+-static int rdev_is_re_node(const char *mac)
+-{
+-	char m[18];
+-	snprintf(m, sizeof(m), "%s", mac);	/* is_re_node() takes a non-const char* */
+-	return is_re_node(m, 1);		/* check_path=1: only an active node */
++static void rdev_node_classify(struct rdev *v, int n)
++{
++	int shm_id, i, k;
++	P_CM_CLIENT_TABLE tbl;
++	void *shm;
++
++	shm_id = shmget((key_t)KEY_SHM_CFG, sizeof(CM_CLIENT_TABLE), 0666|IPC_CREAT);
++	if (shm_id == -1) return;
++	shm = shmat(shm_id, (void *)0, 0);
++	if (shm == (void *)-1) return;
++	tbl = (P_CM_CLIENT_TABLE)shm;
++
++	for (k = 0; k < n; k++) {
++		unsigned char mb[6] = {0};
++		ether_atoe(v[k].mac, mb);
++		for (i = 1; i < tbl->count; i++) {		/* index 0 = this router (the CAP) */
++			if (memcmp(tbl->realMacAddr[i], mb, 6) == 0) {
++				int path = tbl->activePath[i];
++				v[k].node = path > 0 ? path : -1;	/* -1: a node, uplink unknown/down */
++				if (path == 2)        { v[k].wifi = 1; v[k].wired = 0; snprintf(v[k].band, sizeof(v[k].band), "2.4"); v[k].bandmask |= 1; }
++				else if (path == 4 || path == 8) { v[k].wifi = 1; v[k].wired = 0; snprintf(v[k].band, sizeof(v[k].band), "5"); v[k].bandmask |= 2; }
++				else if (path == 128) { v[k].wifi = 1; v[k].wired = 0; snprintf(v[k].band, sizeof(v[k].band), "6"); v[k].bandmask |= 4; }
++				else if (path == 512) { v[k].wifi = 1; v[k].wired = 0; v[k].mlo = 1;
++					/* the table does not say which links an MLO backhaul
++					 * uses; report the radios whose backhaul STA exists */
++					if (tbl->sta2g[i][0] | tbl->sta2g[i][1] | tbl->sta2g[i][2] | tbl->sta2g[i][3] | tbl->sta2g[i][4] | tbl->sta2g[i][5]) v[k].bandmask |= 1;
++					if (tbl->sta5g[i][0] | tbl->sta5g[i][1] | tbl->sta5g[i][2] | tbl->sta5g[i][3] | tbl->sta5g[i][4] | tbl->sta5g[i][5]) v[k].bandmask |= 2;
++					if (tbl->sta6g[i][0] | tbl->sta6g[i][1] | tbl->sta6g[i][2] | tbl->sta6g[i][3] | tbl->sta6g[i][4] | tbl->sta6g[i][5]) v[k].bandmask |= 4;
++				}
++				else if (path == 1 || path == 16 || path == 32 || path == 64) { v[k].wired = 1; v[k].wifi = 0; v[k].band[0] = '\0'; }
++				break;
++			}
++			if (memcmp(tbl->sta2g[i], mb, 6) == 0 || memcmp(tbl->sta5g[i], mb, 6) == 0 ||
++			    memcmp(tbl->sta6g[i], mb, 6) == 0) {
++				v[k].bh_sta = 1;
++				break;
++			}
++		}
++	}
++	shmdt(shm);
+ }
+ #else
+-static int rdev_is_re_node(const char *mac) { (void)mac; return 0; }
++static void rdev_node_classify(struct rdev *v, int n) { (void)v; (void)n; }
+ #endif
+ 
+ /* the 2nd hex nibble x2 bit => locally-administered (randomized) MAC */
+@@ -24510,22 +24562,18 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		 * run after the FDB so it can correct that verdict, and before the
+ 		 * fallback below so it can pre-empt it. */
+ 		rdev_scan_amesh(dev, &n);
+-		/* last resort: an online device the FDB never placed and no radio saw
+-		 * is Wired - UNLESS it is an AiMesh RE node. A node reaches us over a
+-		 * backhaul interface that is frequently neither eth* nor wl*-named
+-		 * (WDS/dpsta), so rdev_scan_fdb() leaves it unclassified; a node that a
+-		 * real ethernet port did NOT already place Wired is on a wireless
+-		 * backhaul (field report 2026-08-19). Conservative: only fires for a
+-		 * device the three passes above could not place, so a cabled node
+-		 * (Wired via its eth FDB port) is untouched, and on a non-mesh box
+-		 * rdev_is_re_node() is always 0 -> every such device is Wired as before. */
++		/* AiMesh NODES (the node device itself, not its clients): the cfg_mnt
++		 * table knows each node by LAN MAC and carries its uplink type
++		 * (re_path), so that verdict is authoritative and OVERRIDES the FDB
++		 * guess - a node reaches us over a backhaul interface that is neither
++		 * eth*- nor wl*-named (WDS/dpsta) and otherwise lands on the Wired
++		 * default below. See rdev_node_classify() for the 2026-08-19 miss. */
++		rdev_node_classify(dev, n);
++		/* last resort: an online device nothing above could place is Wired. */
+ 		for (i = 0; i < n; i++) {
+ 			if (!(dev[i].online && !dev[i].wifi && !dev[i].wired))
+ 				continue;
+-			if (rdev_is_re_node(dev[i].mac))
+-				dev[i].wifi = 1;	/* wireless-backhaul node */
+-			else
+-				dev[i].wired = 1;
++			dev[i].wired = 1;
+ 		}
+ 
+ 		/* 4. dhcp_staticlist reservations: <MAC>IP>DNS>HOST */
+@@ -24628,6 +24676,14 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				for (j = 0; j < n; j++)
+ 					if (j != i && dev[j].resv && rdev_ip2u(dev[j].resv_ip) == rip) { dup = 1; break; }
+ 
++			/* a node's backhaul station is the node's uplink radio, not a
++			 * device; the node itself is listed under its LAN MAC. Fold it
++			 * unless the operator has named/reserved/gated that MAC on purpose. */
++			if (d->bh_sta && !d->resv && d->gk_state < 0) {
++				gk_client_name(d->mac, uname, sizeof(uname));
++				if (!uname[0]) continue;
++			}
++
+ 			gk_client_name(d->mac, uname, sizeof(uname));
+ 			have_user = uname[0] ? 1 : 0;
+ 			src = have_user ? "user" : (d->host[0] ? "lease" : "");
+@@ -24651,8 +24707,8 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				if (d->bandmask & 1) strlcat(bands, "2.4", sizeof(bands));
+ 				if (d->bandmask & 2) { if (bands[0]) strlcat(bands, "+", sizeof(bands)); strlcat(bands, "5", sizeof(bands)); }
+ 				if (d->bandmask & 4) { if (bands[0]) strlcat(bands, "+", sizeof(bands)); strlcat(bands, "6", sizeof(bands)); }
+-				websWrite(stream, ",\"rand\":%d,\"orphan\":%d,\"dup\":%d,\"nolease\":%d,\"mlo_link\":%d,\"mlo\":%d,\"bands\":\"%s\"}",
+-					rdev_is_rand(d->mac), orphan, dup, nolease, mlo_link, d->mlo, bands);
++				websWrite(stream, ",\"rand\":%d,\"orphan\":%d,\"dup\":%d,\"nolease\":%d,\"mlo_link\":%d,\"mlo\":%d,\"bands\":\"%s\",\"node\":%d}",
++					rdev_is_rand(d->mac), orphan, dup, nolease, d->node ? 0 : mlo_link, d->mlo, bands, d->node ? 1 : 0);
+ 			}
+ 		}
+ 		websWrite(stream, "]}");
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 2f89f9a97b..606d2f8a7f 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2994,6 +2994,7 @@ extern void reaper_fw_apply(void);
+ extern void reaper_fw_confirm(void);
+ extern void reaper_fw_rollback(void);
+ extern void reaper_fw_dryrun(void);
++extern void reaper_fw_sets_only(void);	/* object ipsets + dnsmasq + resolver, no chains (policy routing with the engine off) */
+ /* reaper v2.5.x ipset policy routing (rc/reaper_pbr.c): marks ipset/selector
+  * matches in mangle and steers them via `ip rule fwmark lookup <tunnel>`, BELOW
+  * VPN Director's pref band so it overrides. Inert unless reaper_pbr_enable=1. */
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index b5d968bbe6..bb8b5a9bed 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -99,6 +99,7 @@
+ #define RFW_APPLY    RFW_DIR "/apply.sh"          /* idempotent teardown+build (committed set) */
+ #define RFW_FAILCOUNT RFW_DIR "/failcount"    /* P2-H3: rules that did not load */
+ #define RFW_CAND     RFW_DIR "/candidate.sh"      /* the armed candidate (staged set) */
++#define RFW_SETS     RFW_DIR "/sets.sh"           /* object sets ONLY (policy routing with the firewall engine off) */
+ #define RFW_CC       RFW_DIR "/cc_check.sh"       /* cru-run deadline checker */
+ #define RFW_ARMED    RFW_DIR "/armed"             /* single-arm CAS token (a directory: mkdir/rmdir are atomic) */
+ #define RFW_DEADLINE RFW_DIR "/deadline"          /* absolute epoch the arm reverts at */
+@@ -117,6 +118,8 @@
+  * services.c (1024) - see the note there for what a truncated directive does
+  * to dnsmasq. Change one and re-check the other. */
+ #define RFW_DNSMASQ_LINE_MAX 800
++#define RFW_VAL_MAX  2048                         /* an object's value field; a whole record is < RFW_REC_MAX (2048) */
++#define RFW_SETCACHE RFW_CACHE "/sets"            /* fqdn set contents, saved by the resolver, restored at create */
+ #define RFW_PREVIEW  RFW_DIR "/preview.txt"       /* compile-preview output (never executed) */
+ 
+ #define RFW_CONFIRM_MIN  15                       /* commit-confirm floor, seconds (S3: never 0) */
+@@ -543,7 +546,16 @@ static int rfw_field(const char *rec, int idx, char *out, size_t ol)
+ 	end = strchr(p, '>');
+ 	{
+ 		size_t n = end ? (size_t)(end - p) : strlen(p);
+-		if (n >= ol) return -1;	/* truncated: distinct from an absent field (0) */
++		/* 2026-08-21: this used to return -1 for "does not fit", and every one
++		 * of the ~48 callers tests `!rfw_field(...)` - so a -1 was TRUE and the
++		 * record sailed through with a silently cut value (a long domain list
++		 * lost its tail with no log line). Refuse it like an absent field and
++		 * say so, once per record, so the operator can see which object it was. */
++		if (n >= ol) {
++			logmessage("reaper_fw", "record field %d is longer than %u bytes - record IGNORED (shorten the list or split it)",
++			           idx, (unsigned)(ol - 1));
++			return 0;
++		}
+ 		memcpy(out, p, n);
+ 		out[n] = 0;
+ 	}
+@@ -724,6 +736,14 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 			  "ipset destroy %s%s 2>/dev/null\n", s[i], name, s[i], name);
+ 			fprintf(f, "ipset create %s%s %s%s timeout %d -exist\n",
+ 			        s[i], name, stype4, i ? " family inet6" : "", RFW_FQDN_TTL);
++			/* 2026-08-21: sets are kernel-resident and come back EMPTY after a
++			 * reboot; until the first resolver pass / dnsmasq answer a rule or a
++			 * policy route keyed on this object matched nothing. The resolver
++			 * saves each fqdn set's members to /jffs after every pass (timeouts
++			 * stripped, so a restored member gets a full TTL); replay them here,
++			 * add-lines only, so a stale cache line can never abort the script. */
++			fprintf(f, "[ -f " RFW_SETCACHE "/%s%s ] && grep '^add ' " RFW_SETCACHE "/%s%s | ipset restore -exist 2>/dev/null\n",
++			        s[i], name, s[i], name);
+ 			strlcat(keep, " ", keeplen);
+ 			strlcat(keep, s[i], keeplen);
+ 			strlcat(keep, name, keeplen);
+@@ -772,7 +792,7 @@ static void rfw_emit_sets(FILE *f, const rfw_cfg_t *c, char *keep, size_t keeple
+ 	if (!c->obj || !*c->obj) return;
+ 	if (!(dup = strdup(c->obj))) return;
+ 	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+-		char name[RFW_NAME_MAX + 2], type[16], val[768];
++		char name[RFW_NAME_MAX + 2], type[16], val[RFW_VAL_MAX];
+ 		if (++n > RFW_MAX_OBJ) {
+ 			logmessage("reaper_fw", "more than %d objects - the rest are IGNORED", RFW_MAX_OBJ);
+ 			break;
+@@ -819,6 +839,19 @@ static void rfw_emit_sets(FILE *f, const rfw_cfg_t *c, char *keep, size_t keeple
+  * "ipset", and config.h's NO_IPSET sits in the __APPLE__ branch.)
+  * ------------------------------------------------------------------------- */
+ 
++/* 2026-08-21: the object sets are consumed by TWO engines - this one and the
++ * ipset policy router (rc/reaper_pbr.c), which matches `rwfw_<object>` in
++ * mangle. They used to exist only while THIS engine was enabled, so a user who
++ * wanted policy routing alone found every route silently matching nothing (and
++ * had to discover that the Firewall tab was the prerequisite). The sets, the
++ * dnsmasq directives and the resolver are now wanted whenever either engine is
++ * on; reaper_fw_sets_only() materialises them without touching a chain. */
++static int rfw_sets_wanted(const rfw_cfg_t *c)
++{
++	if (c->enable && !strcmp(c->enable, "1")) return 1;
++	return nvram_match("reaper_pbr_enable", "1");
++}
++
+ /* Write the `ipset=` fragment: one line per FQDN object listing all of its
+  * names and both of its sets. dnsmasq tries every listed set for each answer
+  * and silently skips the family that does not match (tables.c only logs on
+@@ -837,11 +870,11 @@ static void rfw_gen_dnsmasq(const rfw_cfg_t *c)
+ 	if (!(f = fopen(tmp, "w"))) return;
+ 	fprintf(f, "# generated by reaper_fw - fqdn objects; edit the objects, not this\n");
+ 
+-	if (c->enable && !strcmp(c->enable, "1") && c->obj && *c->obj &&
++	if (rfw_sets_wanted(c) && c->obj && *c->obj &&
+ 	    (dup = strdup(c->obj)) != NULL) {
+ 		int nobj = 0;
+ 		for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+-			char name[RFW_NAME_MAX + 2], type[16], val[768], *d2, *t2, *s2 = NULL;
++			char name[RFW_NAME_MAX + 2], type[16], val[RFW_VAL_MAX], *d2, *t2, *s2 = NULL;
+ 			char line[RFW_DNSMASQ_LINE_MAX];
+ 			size_t used;
+ 			int n = 0, dropped = 0;
+@@ -875,14 +908,21 @@ static void rfw_gen_dnsmasq(const rfw_cfg_t *c)
+ 				need = 1 + strlen(t2);                       /* "/name" */
+ 				tail = 1 + sizeof(RFW_SET4) - 1 + strlen(name)
+ 				         + 1 + sizeof(RFW_SET6) - 1 + strlen(name) + 2;
+-				if (used + need + tail >= sizeof(line)) { dropped++; continue; }
++				/* 2026-08-21: a list longer than one directive used to have its
++				 * tail OMITTED. dnsmasq accepts any number of ipset= lines for
++				 * the same sets, so close this line and continue on the next. */
++				if (used + need + tail >= sizeof(line)) {
++					if (n) fprintf(f, "ipset=%s/%s%s,%s%s\n", line, RFW_SET4, name, RFW_SET6, name);
++					used = 0; line[0] = 0; n = 0;
++					if (need + tail >= sizeof(line)) { dropped++; continue; }   /* one absurd name */
++				}
+ 				used += (size_t)snprintf(line + used, sizeof(line) - used, "/%s", t2);
+ 				n++;
+ 			}
+ 			free(d2);
+ 			if (dropped)
+ 				logmessage("reaper_fw", "object %s: %d domain name(s) OMITTED from the "
+-				           "dnsmasq directive - the line would have been too long",
++				           "dnsmasq directive - a single name was too long",
+ 				           name, dropped);
+ 			if (n)
+ 				fprintf(f, "ipset=%s/%s%s,%s%s\n", line,
+@@ -950,15 +990,17 @@ static void rfw_gen_resolve(const rfw_cfg_t *c)
+ 	char *dup, *tok, *save = NULL;
+ 	int any = 0;
+ 	if (!f) return;
+-	fprintf(f, "#!/bin/sh\n# generated by reaper_fw - refresh fqdn objects into their ipsets\n");
++	fprintf(f, "#!/bin/sh\n# generated by reaper_fw - refresh fqdn objects into their ipsets\n"
++	           "SAVE=''\n");
+ 	if (c->obj && *c->obj && (dup = strdup(c->obj)) != NULL) {
+ 		for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+-			char name[RFW_NAME_MAX + 2], type[16], val[768], *d2, *t2, *s2 = NULL;
++			char name[RFW_NAME_MAX + 2], type[16], val[RFW_VAL_MAX], *d2, *t2, *s2 = NULL;
+ 			if (!rfw_field(tok, 0, name, sizeof(name)) ||
+ 			    !rfw_field(tok, 1, type, sizeof(type)) ||
+ 			    !rfw_field(tok, 2, val,  sizeof(val))) continue;
+ 			if (strcmp(type, "fqdn") || !rfw_valid_name(name)) continue;
+ 			if (!(d2 = strdup(val))) continue;
++			fprintf(f, "SAVE=\"$SAVE %s%s %s%s\"\n", RFW_SET4, name, RFW_SET6, name);
+ 			for (t2 = strtok_r(d2, ",", &s2); t2; t2 = strtok_r(NULL, ",", &s2)) {
+ 				if (!rfw_valid_fqdn(t2)) continue;
+ 				any = 1;
+@@ -978,6 +1020,22 @@ static void rfw_gen_resolve(const rfw_cfg_t *c)
+ 		}
+ 		free(dup);
+ 	}
++	/* persist: one file per set, members only, timeouts stripped; a set that is
++	 * empty right now keeps its previous file (a cold boot with no DNS yet must
++	 * not erase the last good list). Files for objects that no longer exist are
++	 * removed so the create-time replay cannot resurrect a deleted list. */
++	fprintf(f,
++	  "if [ -w /jffs ]; then\n"
++	  "  mkdir -p " RFW_SETCACHE " 2>/dev/null\n"
++	  "  for s in $SAVE; do\n"
++	  "    N=$(ipset -t list $s 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$N\" ] || N=0\n"
++	  "    [ \"$N\" -gt 0 ] || continue\n"
++	  "    ipset save $s 2>/dev/null | sed -n 's/ timeout [0-9]*$//; /^add /p' > " RFW_SETCACHE "/$s.tmp && mv " RFW_SETCACHE "/$s.tmp " RFW_SETCACHE "/$s\n"
++	  "  done\n"
++	  "  for fpath in " RFW_SETCACHE "/" RFW_SET4 "* " RFW_SETCACHE "/" RFW_SET6 "*; do\n"
++	  "    [ -f \"$fpath\" ] || continue; b=${fpath##*/}; case \" $SAVE \" in *\" $b \"*) ;; *) rm -f \"$fpath\";; esac\n"
++	  "  done\n"
++	  "fi\n");
+ 	fclose(f);
+ 	chmod(RFW_RESOLVE, 0700);
+ 	if (any) {
+@@ -1703,10 +1761,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 		 * run. Nothing is kept when the engine is coming down, so this sweep is
+ 		 * unconditional; the chains above are already gone, so no set is still
+ 		 * referenced and every destroy can succeed. */
+-		fprintf(f,
+-		  "ipset list -n 2>/dev/null | while read S; do\n"
+-		  "  case \"$S\" in " RFW_SET4 "*|" RFW_SET6 "*) ipset destroy \"$S\" 2>/dev/null;; esac\n"
+-		  "done\n");
++		if (!nvram_match("reaper_pbr_enable", "1"))	/* policy routing still wants them: sets.sh owns the sweep */
++			fprintf(f,
++			  "ipset list -n 2>/dev/null | while read S; do\n"
++			  "  case \"$S\" in " RFW_SET4 "*|" RFW_SET6 "*) ipset destroy \"$S\" 2>/dev/null;; esac\n"
++			  "done\n");
+ 		fprintf(f, "fc flush 2>/dev/null\nexit 0\n");
+ 		fclose(f);
+ 		return 1;
+@@ -2042,6 +2101,51 @@ void stop_reaper_fw(void)
+ 	nvram_set("reaper_fw_active", "0");
+ }
+ 
++/* Materialise the object ipsets (+ dnsmasq directives + resolver) WITHOUT
++ * touching any chain. Called by the policy router on every apply so its
++ * `rwfw_<object>` matches have a set behind them whether or not the firewall
++ * engine is enabled. Reads the nvram lists (the draft): for sets that is the
++ * safe direction - a set is additive, nothing routes or filters because a set
++ * exists, only because a rule names it. When the firewall engine IS active its
++ * own committed apply owns the chains; this only adds/refreshes sets, and the
++ * sweep it runs cannot destroy a set a chain still references (ipset refuses). */
++void reaper_fw_sets_only(void)
++{
++	rfw_cfg_t c;
++	char keep[RFW_MAX_OBJ * 2 * (sizeof(RFW_SET6) + RFW_NAME_MAX + 2)];
++	char tmp[160];
++	FILE *f;
++	int lock;
++
++	if (!is_routing_enabled()) return;
++	if (!rfw_cfg_load(&c, 0)) return;
++	mkdir(RFW_DIR, 0700);
++	keep[0] = 0;
++	snprintf(tmp, sizeof(tmp), "%s.tmp", RFW_SETS);
++	if ((f = fopen(tmp, "w")) != NULL) {
++		fprintf(f, "#!/bin/sh\n# generated by reaper_fw - object sets only (no chains); idempotent\n");
++		rfw_emit_sets(f, &c, keep, sizeof(keep));
++		fprintf(f,
++		  "RFW_KEEP=\"%s\"\n"
++		  "ipset list -n 2>/dev/null | while read S; do\n"
++		  "  case \"$S\" in " RFW_SET4 "*|" RFW_SET6 "*) ;; *) continue;; esac\n"
++		  "  case \" $RFW_KEEP \" in *\" $S \"*) continue;; esac\n"
++		  "  ipset destroy \"$S\" 2>/dev/null\n"
++		  "done\nexit 0\n", keep);
++		fclose(f);
++		if (rename(tmp, RFW_SETS) == 0) {
++			lock = file_lock("firewall");
++			chmod(RFW_SETS, 0700);
++			system("sh " RFW_SETS " 2>/dev/null");
++			file_unlock(lock);
++		} else
++			unlink(tmp);
++	}
++	rfw_gen_resolve(&c);
++	rfw_sync_dnsmasq(&c);
++	rfw_cfg_free(&c);
++}
++
+ /* Apply the COMMITTED ruleset. Boot, restart_firewall re-hook, and the enable
+  * toggle all land here. No arm: what is in flash has already been confirmed. */
+ void start_reaper_fw(void)
+@@ -2053,9 +2157,15 @@ void start_reaper_fw(void)
+ 
+ 	if (!is_routing_enabled()) return;
+ 	if (!nvram_match("reaper_fw_enable", "1")) {
+-		if (f_exists(RFW_APPLY) || nvram_match("reaper_fw_armed", "1"))
++		if (f_exists(RFW_APPLY) || nvram_match("reaper_fw_armed", "1")) {
+ 			stop_reaper_fw();          /* clears reaper_fw_active itself */
+-		else
++			/* the engine was just switched off under a live policy router:
++			 * stop dropped the resolver + dnsmasq directives, so put the
++			 * sets-only layer back. (At boot nothing was torn down and
++			 * start_reaper_pbr() materialises the sets itself.) */
++			if (nvram_match("reaper_pbr_enable", "1"))
++				reaper_fw_sets_only();
++		} else
+ 			nvram_set("reaper_fw_active", "0");  /* nothing to tear down, but say so */
+ 		return;
+ 	}
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 76b9bafe24..1cae508a67 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -286,6 +286,13 @@ void start_reaper_pbr(void)
+ 		return;
+ 	}
+ 	mkdir(PPBR_DIR, 0700);
++	/* 2026-08-21: the rwfw_<object> sets this chain matches are built by the
++	 * firewall engine - and used to exist ONLY while that engine was enabled,
++	 * so a policy-routing-only user got routes that matched nothing. Ask the
++	 * object layer to materialise them (sets + dnsmasq + resolver, no chains)
++	 * BEFORE the chain references them; a `-m set` on a missing set is a
++	 * rule-load failure, not an empty match. Idempotent when the engine is on. */
++	reaper_fw_sets_only();
+ 	if (!ppbr_gen(PPBR_APPLY, 0)) return;
+ 	lock = file_lock("firewall");                   /* P4 */
+ 	chmod(PPBR_APPLY, 0700);
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 8e91971063..9cb22df294 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -87,6 +87,8 @@
+ #define RW_CCTMP  "/tmp/rwarden/cc.live"	/* scratch: live per-country deltas being folded */
+ #define RW_CHTMP  "/tmp/rwarden/ch.live"	/* scratch: one chain listing, read by every bucket */
+ #define RW_SAVE   "/jffs/rwarden/sets.ipset"
++#define RW_GEO_MAXELEM   262144		/* per-country sets; the default 65536 truncates the biggest zones */
++#define RW_GEO_MAXELEM_S "262144"	/* same value, for string-pasted script text */
+ 
+ /* Curated open IP/CIDR feeds. id must be [a-z0-9]; url is emitted only into a
+  * single-quoted curl arg in the generated updater, and is a fixed literal here
+@@ -385,8 +387,10 @@ static void rw_emit_country_creates(FILE *f)
+ 		char cc[3];
+ 		if (!rw_valid_cc(tok)) continue;
+ 		cc[0] = tolower((int)tok[0]); cc[1] = tolower((int)tok[1]); cc[2] = 0;
+-		fprintf(f, "ipset create rw_g_%s hash:net -exist\n", cc);
+-		fprintf(f, "ipset create rw_g6_%s hash:net family inet6 -exist\n", cc);
++		/* maxelem: the v2.5.7 rw_threat fix never reached the country sets, and a
++		 * large aggregated zone (default 65536) degrades to a truncated set. */
++		fprintf(f, "ipset create rw_g_%s hash:net maxelem %d -exist\n", cc, RW_GEO_MAXELEM);
++		fprintf(f, "ipset create rw_g6_%s hash:net family inet6 maxelem %d -exist\n", cc, RW_GEO_MAXELEM);
+ 	}
+ 	free(list);
+ }
+@@ -598,9 +602,29 @@ static void rw_gen_apply(void)
+ 	  "ipset create rw_threat hash:net maxelem 524288 -exist\n"
+ 	  "ipset create rw_threat6 hash:net family inet6 maxelem 524288 -exist\n");
+ 	rw_emit_country_creates(f);
+-	/* restore cached feed sets from jffs (boot without internet still protected) */
++	/* restore cached feed sets from jffs (boot without internet still protected).
++	 *
++	 * 2026-08-21 field report (v2.5.7: "country sets came up empty, rw_threat
++	 * fine"): the old one-shot `ipset restore < cache` ABORTS AT THE FIRST ERROR
++	 * and silently skips everything after it. The cache carries the `create`
++	 * header of every set, and a header that no longer matches the live set
++	 * (v2.5.7 gave rw_threat maxelem 524288; a pre-upgrade cache still said
++	 * 65536) is exactly such an error - `-exist` does not forgive a differing
++	 * maxelem. Sets are written in creation order, so a failure in the threat
++	 * block left every country set behind it created-but-empty, while allow/ban
++	 * (rebuilt from nvram right after) and rw_threat (before the failure point)
++	 * looked healthy. Now: every set is created above with the CURRENT header,
++	 * and the cache is replayed PER SET and ADD-LINES ONLY, so a header drift
++	 * can never matter and one bad set can never cost the others. Failures are
++	 * logged instead of discarded. */
+ 	fprintf(f,
+-	  "[ -f " RW_SAVE " ] && ipset restore -exist < " RW_SAVE " 2>/dev/null\n");
++	  "if [ -f " RW_SAVE " ]; then\n"
++	  "  for s in $(awk '$1==\"create\"{print $2}' " RW_SAVE " 2>/dev/null | grep -E '^rw_' | sort -u); do\n"
++	  "    ipset list -n 2>/dev/null | grep -qx \"$s\" || continue\n"
++	  "    RN=$(awk -v s=\"$s\" '$1==\"add\" && $2==s' " RW_SAVE " | ipset restore -exist 2>&1 | head -1)\n"
++	  "    [ -z \"$RN\" ] || logger -t rwarden \"cache restore for set $s: $RN\"\n"
++	  "  done\n"
++	  "fi\n");
+ 	/* manual allow/ban from nvram (validated; v4/v6 auto-routed) */
+ 	fprintf(f, "ipset flush rw_allow; ipset flush rw_allow6; ipset flush rw_ban; ipset flush rw_ban6\n");
+ 	rw_emit_cidrs(f, "rw_allow", "rw_allow6", "rwarden_allow");
+@@ -945,9 +969,9 @@ static void rw_gen_update(void)
+ 			cc[0] = tolower((int)tok[0]); cc[1] = tolower((int)tok[1]); cc[2] = 0;
+ 			/* IPv4 (batch ipset restore, per-entry fallback - see threat sets) */
+ 			fprintf(f,
+-			  "ipset create rw_g_%s hash:net -exist\n"
++			  "ipset create rw_g_%s hash:net maxelem " RW_GEO_MAXELEM_S " -exist\n"
+ 			  "if $CURL \"https://www.ipdeny.com/ipblocks/data/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
+-			  "  ipset create rw_g_%s_t hash:net -exist; ipset flush rw_g_%s_t\n"
++			  "  ipset create rw_g_%s_t hash:net maxelem " RW_GEO_MAXELEM_S " -exist; ipset flush rw_g_%s_t\n"
+ 			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 | sed 's/^/add rw_g_%s_t /' > $TMP.rst\n"
+ 			  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+ 			  "    logger -t rwarden \"geo v4 batch restore hit a bad entry (%s) - per-entry fallback\"\n"
+@@ -960,9 +984,9 @@ static void rw_gen_update(void)
+ 			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
+ 			/* IPv6 (same batch + fallback shape) */
+ 			fprintf(f,
+-			  "ipset create rw_g6_%s hash:net family inet6 -exist\n"
++			  "ipset create rw_g6_%s hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist\n"
+ 			  "if $CURL \"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
+-			  "  ipset create rw_g6_%s_t hash:net family inet6 -exist; ipset flush rw_g6_%s_t\n"
++			  "  ipset create rw_g6_%s_t hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist; ipset flush rw_g6_%s_t\n"
+ 			  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 | sed 's/^/add rw_g6_%s_t /' > $TMP.rst\n"
+ 			  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+ 			  "    logger -t rwarden \"geo v6 batch restore hit a bad entry (%s) - per-entry fallback\"\n"
+@@ -987,7 +1011,20 @@ static void rw_gen_update(void)
+ 	  "mkdir -p " RW_CACHE "\n"
+ 	  ": > " RW_SAVE ".tmp\n"
+ 	  "for s in $(ipset list -n 2>/dev/null | grep -E '^rw_' | grep -vE '_(t|tmp)$'); do\n"
+-	  "  ipset save $s >> " RW_SAVE ".tmp 2>/dev/null || logger -t rwarden \"cache save FAILED for set $s\"\n"
++	  /* 2026-08-21: an EMPTY live set must not overwrite a populated cache entry.
++	   * A failed fetch keeps the last-good LIVE set (swap-if-nonempty above), but
++	   * at boot the live set is whatever the cache restored - so once the cache
++	   * held an empty set (one bad save) every later boot restored empty and
++	   * every later save re-saved empty: self-perpetuating. Keep the previous
++	   * cache block for a set that is empty now. */
++	  "  NE=$(ipset -t list $s 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$NE\" ] || NE=0\n"
++	  "  if [ \"$NE\" -gt 0 ]; then\n"
++	  "    ipset save $s >> " RW_SAVE ".tmp 2>/dev/null || logger -t rwarden \"cache save FAILED for set $s\"\n"
++	  "  elif [ -f " RW_SAVE " ] && awk -v s=\"$s\" '$1==\"add\" && $2==s{f=1; exit} END{exit !f}' " RW_SAVE " 2>/dev/null; then\n"
++	  "    ipset save $s 2>/dev/null | head -1 >> " RW_SAVE ".tmp\n"
++	  "    awk -v s=\"$s\" '$1==\"add\" && $2==s' " RW_SAVE " >> " RW_SAVE ".tmp\n"
++	  "    logger -t rwarden \"set $s is empty - kept its previous cache entry\"\n"
++	  "  fi\n"
+ 	  "done\n"
+ 	  "if [ -s " RW_SAVE ".tmp ]; then mv " RW_SAVE ".tmp " RW_SAVE "\n"
+ 	  "else rm -f " RW_SAVE ".tmp; logger -t rwarden \"cache save produced no data - /jffs cache left unchanged\"; fi\n"
+@@ -1179,6 +1216,15 @@ static void rw_gen_stats(void)
+ 	  "TN=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN\" ] || TN=0\n"
+ 	  "TN6=$(ipset -t list rw_threat6 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN6\" ] || TN6=0\n"
+ 	  "GN=$(ipset list -n 2>/dev/null | grep -c '^rw_g_')\n"
++	  /* geo_e = prefixes actually loaded across every country set (v4+v6);
++	   * geo_empty = selected countries whose v4 set holds nothing. The page used
++	   * to show only the number of countries SELECTED, which read as healthy
++	   * while every set was empty (the 2026-08-21 report). */
++	  "GE=0; GZ=0\n"
++	  "for s in $(ipset list -n 2>/dev/null | grep -E '^rw_g6?_[a-z][a-z]$'); do\n"
++	  "  n=$(ipset -t list $s 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$n\" ] || n=0\n"
++	  "  GE=$((GE+n)); case $s in rw_g_*) [ \"$n\" -eq 0 ] && GZ=$((GZ+1));; esac\n"
++	  "done\n"
+ 	  "SV=1; [ \"$(nvram get rwarden_stats_save)\" = 0 ] && SV=0\n"
+ 	  "RI=$(nvram get rwarden_reset)\n"
+ 	  "case \"$RI\" in 24h|7d|30d|90d) ;; *) RI=off;; esac\n"
+@@ -1248,7 +1294,7 @@ static void rw_gen_stats(void)
+ 	  "UNCL=$((TOTAL-GEO-THREAT-BAN)); [ \"$UNCL\" -lt 0 ] && UNCL=0\n"
+ 	  "rm -f \"$CH\"\n"
+ 	  "JP=0; [ -w /jffs ] && JP=1\n"
+-	  "printf '{\"enable\":%d,\"armed\":%d,\"v6\":%d,\"lastupd\":%d,\"threat_n\":%d,\"geo_n\":%d,"
++	  "printf '{\"enable\":%d,\"armed\":%d,\"v6\":%d,\"lastupd\":%d,\"threat_n\":%d,\"geo_n\":%d,\"geo_e\":%d,\"geo_empty\":%d,"
+ 	  "\"blocked\":{\"total\":%d,\"since\":%d,\"top\":[%s],"
+ 	  "\"geo\":%d,\"threat\":%d,\"ban\":%d,\"uncl\":%d},"
+ 	  "\"save\":%d,\"reset\":\"%s\",\"jffs\":%d,"
+@@ -1258,7 +1304,7 @@ static void rw_gen_stats(void)
+ 	   * question behind the 2026-08-15 field report. Appending keys is safe: the
+ 	   * page reads named fields, so an older UI simply ignores them. */
+ 	  "\"self\":%d,\"self_n\":%d,\"out\":%d,\"out_n\":%d}\\n' "
+-	  "\"$EN\" \"$ARMED\" \"$V6\" \"$LU\" \"$((TN+TN6))\" \"$GN\" \"$TOTAL\" \"$SINCE\" \"$TOP\" "
++	  "\"$EN\" \"$ARMED\" \"$V6\" \"$LU\" \"$((TN+TN6))\" \"$GN\" \"$GE\" \"$GZ\" \"$TOTAL\" \"$SINCE\" \"$TOP\" "
+ 	  "\"$GEO\" \"$THREAT\" \"$BAN\" \"$UNCL\" \"$SV\" \"$RI\" \"$JP\" "
+ 	  "\"$SELF\" \"$SELFN\" \"$OUTA\" \"$OUTN\"\n", f);
+ 	fclose(f);
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 4bb4b48916..76d79115d6 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=lista(s) de países vazia(s)
++RWDN_87=prefixos carregados
++RWDN_88=Um país selecionado ainda não tem endereços carregados - o feed não foi buscado desde que este conjunto foi criado, ou seu cache foi perdido. Execute uma atualização do feed; se persistir após a próxima atualização agendada, verifique o log do sistema para rwarden.
++RFW_254=um por linha, ou separados por vírgula
++RFW_255=Essa lista é longa demais para um único objeto. Divida-a em dois objetos.
++RVR_34=Lista de domínios / objeto (destino)
++RVR_35=Dispositivo por IP / CIDR (origem)
++RVR_36=Dispositivo por MAC (origem)
++RVR_37=Escolha uma lista de domínios definida abaixo, ou qualquer objeto da página Firewall. Seus endereços são atualizados a cada 10 minutos e preservados entre reinicializações.
++RVR_38=Uma regra de dispositivo aqui faz o que a regra de origem do VPN Director faz, e mais: é fail-closed (túnel caído = bloqueado, nunca vaza pela WAN), pode ter como alvo Bloquear, uma regra por MAC acompanha o dispositivo mesmo com mudança de IP, e ela se sobrepõe ao VPN Director. Se você só precisa de roteamento simples por origem, o VPN Director é suficiente.
++RVR_39=Listas de domínios
++RVR_40=Uma lista de domínios é um conjunto nomeado de domínios (um objeto de firewall do tipo Nome de domínio). O roteador os resolve em endereços, atualiza-os a cada 10 minutos, guarda o que o dnsmasq responde para eles e salva o resultado para que sobreviva a uma reinicialização.
++RVR_41=Exemplo: streaming = netflix.com, nflxvideo.net, nflximg.net. CDNs mudam; edite a lista aqui sempre que isso acontecer.
++RVR_42=Nome
++RVR_43=Domínios
++RVR_44=um por linha, ou cole uma lista separada por vírgulas ou espaços
++RVR_45=Adicionar lista
++RVR_46=As listas são compartilhadas com a página Firewall. Uma lista nova ou editada entra em vigor ao Aplicar; se o mecanismo de Firewall estiver ativado, suas próprias regras assumem a mudança ao Aplicar na página Firewall.
++RVR_47=Salvo.
++RVR_48=Não foi possível salvar a lista.
++RVR_49=Informe pelo menos um domínio.
++RVR_50=Nome de domínio inválido:
++RVR_51=Essa lista é longa demais para um único objeto. Divida-a em duas listas.
++RVR_52=Uma regra ainda usa esta lista. Excluir mesmo assim?
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 479d236603..9e879246f0 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=国家/地区列表为空
++RWDN_87=个前缀已加载
++RWDN_88=所选的某个国家/地区尚未加载地址 - 自创建此集合以来尚未获取源数据，或其缓存已丢失。请执行一次源数据更新；如果下次计划更新后问题仍然存在，请在系统日志中查看 rwarden。
++RFW_254=每行一个，或以逗号分隔
++RFW_255=该列表对于单个对象来说过长。请将其拆分为两个对象。
++RVR_34=域名列表 / 对象（目标）
++RVR_35=按 IP / CIDR 的设备（来源）
++RVR_36=按 MAC 的设备（来源）
++RVR_37=选择下方定义的域名列表，或防火墙页面中的任意对象。其地址每 10 分钟刷新一次，并在重启后保留。
++RVR_38=此处的设备规则与 VPN Director 的来源规则作用相同，另外还有：故障即关闭（隧道断开 = 阻止，绝不会从 WAN 泄漏）、可以选择阻止作为目标、MAC 规则在 IP 变化后仍跟随设备，并且优先于 VPN Director。如果只需要简单的来源路由，使用 VPN Director 即可。
++RVR_39=域名列表
++RVR_40=域名列表是一组已命名的域名（类型为域名的防火墙对象）。路由器将其解析为地址，每 10 分钟刷新一次，保留 dnsmasq 为其返回的应答，并保存结果以便在重启后仍然有效。
++RVR_41=示例：streaming = netflix.com, nflxvideo.net, nflximg.net。CDN 会变化；变化时请在此处编辑列表。
++RVR_42=名称
++RVR_43=域名
++RVR_44=每行一个，或粘贴以逗号或空格分隔的列表
++RVR_45=添加列表
++RVR_46=列表与防火墙页面共享。新建或编辑的列表在点击应用本页后生效；如果已启用防火墙引擎，其自身规则会在防火墙页面点击应用后采用该更改。
++RVR_47=已保存。
++RVR_48=无法保存该列表。
++RVR_49=请至少输入一个域名。
++RVR_50=无效的域名：
++RVR_51=该列表对于单个对象来说过长。请将其拆分为两个列表。
++RVR_52=仍有规则在使用此列表。仍要删除吗？
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index be46e4c3d8..1720d5b7a8 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=seznam(y) zemí prázdný(é)
++RWDN_87=prefixů načteno
++RWDN_88=Vybraná země zatím nemá načtené žádné adresy - zdroj nebyl od vytvoření této sady stažen, nebo byla ztracena jeho mezipaměť. Spusťte aktualizaci zdroje; pokud problém přetrvá i po další plánované aktualizaci, zkontrolujte v systémovém protokolu položky rwarden.
++RFW_254=jeden na řádek, nebo oddělené čárkou
++RFW_255=Tento seznam je pro jeden objekt příliš dlouhý. Rozdělte jej do dvou objektů.
++RVR_34=Seznam domén / objekt (cíl)
++RVR_35=Zařízení podle IP / CIDR (zdroj)
++RVR_36=Zařízení podle MAC (zdroj)
++RVR_37=Vyberte seznam domén definovaný níže, nebo libovolný objekt ze stránky Firewall. Jeho adresy se obnovují každých 10 minut a zůstávají zachovány po restartu.
++RVR_38=Pravidlo pro zařízení zde dělá totéž co zdrojové pravidlo VPN Director, a navíc: je fail-closed (tunel mimo provoz = blokováno, nikdy neunikne přes WAN), může mít cíl Blokovat, pravidlo podle MAC sleduje zařízení i při změně IP a má přednost před VPN Director. Pokud potřebujete jen prosté směrování podle zdroje, VPN Director stačí.
++RVR_39=Seznamy domén
++RVR_40=Seznam domén je pojmenovaná sada domén (objekt firewallu typu Název domény). Router je převede na adresy, obnovuje je každých 10 minut, uchovává to, co pro ně odpoví dnsmasq, a výsledek ukládá, aby přežil restart.
++RVR_41=Příklad: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN se mění; kdykoli se to stane, upravte zde seznam.
++RVR_42=Název
++RVR_43=Domény
++RVR_44=jedna na řádek, nebo vložte seznam oddělený čárkami či mezerami
++RVR_45=Přidat seznam
++RVR_46=Seznamy jsou sdílené se stránkou Firewall. Nový nebo upravený seznam se uplatní po stisknutí Použít; pokud je zapnutý modul Firewall, jeho vlastní pravidla změnu převezmou po stisknutí Použít na stránce Firewall.
++RVR_47=Uloženo.
++RVR_48=Seznam se nepodařilo uložit.
++RVR_49=Zadejte alespoň jednu doménu.
++RVR_50=Neplatný název domény:
++RVR_51=Tento seznam je pro jeden objekt příliš dlouhý. Rozdělte jej do dvou seznamů.
++RVR_52=Tento seznam stále používá některé pravidlo. Přesto jej odstranit?
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index e738281518..2fa70876c4 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=landeliste(r) tom(me)
++RWDN_87=præfikser indlæst
++RWDN_88=Et valgt land har endnu ingen adresser indlæst - feedet er ikke hentet siden dette sæt blev oprettet, eller dets cache er gået tabt. Kør en feed-opdatering; hvis det fortsætter efter næste planlagte opdatering, så tjek systemloggen for rwarden.
++RFW_254=én pr. linje, eller kommasepareret
++RFW_255=Den liste er for lang til ét objekt. Del den op i to objekter.
++RVR_34=Domæneliste / objekt (destination)
++RVR_35=Enhed efter IP / CIDR (kilde)
++RVR_36=Enhed efter MAC (kilde)
++RVR_37=Vælg en domæneliste defineret nedenfor, eller et vilkårligt objekt fra Firewall-siden. Dens adresser opdateres hvert 10. minut og gemmes på tværs af genstarter.
++RVR_38=En enhedsregel her gør det samme som VPN Directors kilderegel, plus: den er fail-closed (tunnel nede = blokeret, lækker aldrig ud på WAN), den kan have Bloker som mål, en MAC-regel følger enheden ved IP-skift, og den tilsidesætter VPN Director. Har du kun brug for almindelig kilde-routing, er VPN Director nok.
++RVR_39=Domænelister
++RVR_40=En domæneliste er et navngivet sæt domæner (et firewall-objekt af typen Domænenavn). Routeren slår dem op til adresser, opdaterer dem hvert 10. minut, beholder hvad dnsmasq svarer for dem, og gemmer resultatet, så det overlever en genstart.
++RVR_41=Eksempel: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN'er ændrer sig; rediger listen her, når de gør det.
++RVR_42=Navn
++RVR_43=Domæner
++RVR_44=ét pr. linje, eller indsæt en komma- eller mellemrumssepareret liste
++RVR_45=Tilføj liste
++RVR_46=Lister deles med Firewall-siden. En ny eller redigeret liste træder i kraft ved Anvend; hvis Firewall-motoren er aktiveret, overtager dens egne regler ændringen ved Anvend på Firewall-siden.
++RVR_47=Gemt.
++RVR_48=Listen kunne ikke gemmes.
++RVR_49=Angiv mindst ét domæne.
++RVR_50=Ikke et gyldigt domænenavn:
++RVR_51=Den liste er for lang til ét objekt. Del den op i to lister.
++RVR_52=En regel bruger stadig denne liste. Slet den alligevel?
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 99ad75292f..3b855d5685 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=Länderliste(n) leer
++RWDN_87=Präfixe geladen
++RWDN_88=Für ein ausgewähltes Land sind noch keine Adressen geladen - der Feed wurde seit dem Anlegen dieses Sets nicht abgerufen oder sein Cache ist verloren gegangen. Führen Sie eine Feed-Aktualisierung aus; bleibt das Problem nach der nächsten geplanten Aktualisierung bestehen, prüfen Sie das Systemprotokoll auf rwarden.
++RFW_254=eine pro Zeile oder durch Kommas getrennt
++RFW_255=Diese Liste ist zu lang für ein Objekt. Teilen Sie sie in zwei Objekte auf.
++RVR_34=Domainliste / Objekt (Ziel)
++RVR_35=Gerät nach IP / CIDR (Quelle)
++RVR_36=Gerät nach MAC (Quelle)
++RVR_37=Wählen Sie eine unten definierte Domainliste oder ein beliebiges Objekt von der Firewall-Seite. Ihre Adressen werden alle 10 Minuten aktualisiert und bleiben über Neustarts erhalten.
++RVR_38=Eine Geräteregel hier leistet dasselbe wie die Quellregel von VPN Director, und zusätzlich: sie ist fail-closed (Tunnel unten = blockiert, niemals über das WAN geleakt), sie kann auf Blockieren zielen, eine MAC-Regel folgt dem Gerät bei IP-Wechseln, und sie hat Vorrang vor VPN Director. Wenn Sie nur einfaches Quell-Routing brauchen, reicht VPN Director aus.
++RVR_39=Domainlisten
++RVR_40=Eine Domainliste ist ein benannter Satz von Domains (ein Firewall-Objekt vom Typ Domainname). Der Router löst sie in Adressen auf, aktualisiert sie alle 10 Minuten, behält, was dnsmasq für sie beantwortet, und speichert das Ergebnis, damit es einen Neustart übersteht.
++RVR_41=Beispiel: streaming = netflix.com, nflxvideo.net, nflximg.net. CDNs ändern sich; bearbeiten Sie die Liste hier, sobald das passiert.
++RVR_42=Name
++RVR_43=Domains
++RVR_44=eine pro Zeile, oder fügen Sie eine durch Kommas oder Leerzeichen getrennte Liste ein
++RVR_45=Liste hinzufügen
++RVR_46=Listen werden mit der Firewall-Seite geteilt. Eine neue oder bearbeitete Liste wird mit Übernehmen wirksam; ist die Firewall-Engine aktiviert, übernehmen ihre eigenen Regeln die Änderung beim Übernehmen auf der Firewall-Seite.
++RVR_47=Gespeichert.
++RVR_48=Die Liste konnte nicht gespeichert werden.
++RVR_49=Geben Sie mindestens eine Domain ein.
++RVR_50=Kein gültiger Domainname:
++RVR_51=Diese Liste ist zu lang für ein Objekt. Teilen Sie sie in zwei Listen auf.
++RVR_52=Eine Regel verwendet diese Liste noch. Trotzdem löschen?
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index d90a8752f3..d55b3301a0 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=country list(s) empty
++RWDN_87=prefixes loaded
++RWDN_88=A selected country has no addresses loaded yet - the feed has not been fetched since this set was created, or its cache was lost. Run a feed update; if it persists after the next scheduled update, check the system log for rwarden.
++RFW_254=one per line, or comma-separated
++RFW_255=That list is too long for one object. Split it into two objects.
++RVR_34=Domain list / object (destination)
++RVR_35=Device by IP / CIDR (source)
++RVR_36=Device by MAC (source)
++RVR_37=Pick a domain list defined below, or any object from the Firewall page. Its addresses are refreshed every 10 minutes and saved across reboots.
++RVR_38=A device rule here does what VPN Director's source rule does, plus: it is fail-closed (tunnel down = blocked, never leaked out the WAN), it can target Block, a MAC rule follows the device across IP changes, and it overrides VPN Director. If you only need plain source routing, VPN Director is enough.
++RVR_39=Domain lists
++RVR_40=A domain list is a named set of domains (a firewall object of type Domain name). The router resolves them into addresses, refreshes them every 10 minutes, keeps what dnsmasq answers for them, and saves the result so they survive a reboot.
++RVR_41=Example: streaming = netflix.com, nflxvideo.net, nflximg.net. CDNs change; edit the list here whenever they do.
++RVR_42=Name
++RVR_43=Domains
++RVR_44=one per line, or paste a comma- or space-separated list
++RVR_45=Add list
++RVR_46=Lists are shared with the Firewall page. A new or edited list takes effect on Apply; if the Firewall engine is enabled, its own rules pick the change up on the Firewall page's Apply.
++RVR_47=Saved.
++RVR_48=Could not save the list.
++RVR_49=Enter at least one domain.
++RVR_50=Not a valid domain name:
++RVR_51=That list is too long for one object. Split it into two lists.
++RVR_52=A rule still uses this list. Delete it anyway?
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index a12eba9b80..94d29e5273 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=lista(s) de países vacía(s)
++RWDN_87=prefijos cargados
++RWDN_88=Un país seleccionado aún no tiene direcciones cargadas - el feed no se ha descargado desde que se creó este conjunto, o se perdió su caché. Ejecute una actualización del feed; si persiste tras la próxima actualización programada, revise el registro del sistema en busca de rwarden.
++RFW_254=uno por línea, o separados por comas
++RFW_255=Esa lista es demasiado larga para un solo objeto. Divídala en dos objetos.
++RVR_34=Lista de dominios / objeto (destino)
++RVR_35=Dispositivo por IP / CIDR (origen)
++RVR_36=Dispositivo por MAC (origen)
++RVR_37=Elija una lista de dominios definida abajo, o cualquier objeto de la página Firewall. Sus direcciones se actualizan cada 10 minutos y se conservan entre reinicios.
++RVR_38=Una regla de dispositivo aquí hace lo mismo que la regla de origen de VPN Director, y además: es fail-closed (túnel caído = bloqueado, nunca se filtra por la WAN), puede tener como destino Bloquear, una regla por MAC sigue al dispositivo aunque cambie de IP, y tiene prioridad sobre VPN Director. Si solo necesita enrutamiento por origen simple, VPN Director es suficiente.
++RVR_39=Listas de dominios
++RVR_40=Una lista de dominios es un conjunto con nombre de dominios (un objeto de firewall de tipo Nombre de dominio). El router los resuelve a direcciones, los actualiza cada 10 minutos, conserva lo que dnsmasq responde para ellos y guarda el resultado para que sobreviva a un reinicio.
++RVR_41=Ejemplo: streaming = netflix.com, nflxvideo.net, nflximg.net. Los CDN cambian; edite la lista aquí cuando eso ocurra.
++RVR_42=Nombre
++RVR_43=Dominios
++RVR_44=uno por línea, o pegue una lista separada por comas o espacios
++RVR_45=Añadir lista
++RVR_46=Las listas se comparten con la página Firewall. Una lista nueva o editada surte efecto al Aplicar; si el motor de Firewall está activado, sus propias reglas recogen el cambio al Aplicar en la página Firewall.
++RVR_47=Guardado.
++RVR_48=No se pudo guardar la lista.
++RVR_49=Introduzca al menos un dominio.
++RVR_50=Nombre de dominio no válido:
++RVR_51=Esa lista es demasiado larga para un solo objeto. Divídala en dos listas.
++RVR_52=Una regla todavía usa esta lista. ¿Eliminarla de todos modos?
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index fc3f2cea84..f9dcf011b6 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=maaluettelo(t) tyhjä(t)
++RWDN_87=etuliitettä ladattu
++RWDN_88=Valitulle maalle ei ole vielä ladattu osoitteita - syötettä ei ole noudettu tämän joukon luomisen jälkeen, tai sen välimuisti on kadonnut. Suorita syötteen päivitys; jos ongelma jatkuu seuraavan ajastetun päivityksen jälkeen, tarkista järjestelmälokista rwarden.
++RFW_254=yksi riviä kohden tai pilkuilla eroteltuna
++RFW_255=Luettelo on liian pitkä yhteen objektiin. Jaa se kahteen objektiin.
++RVR_34=Verkkotunnusluettelo / objekti (kohde)
++RVR_35=Laite IP:n / CIDR:n mukaan (lähde)
++RVR_36=Laite MAC:n mukaan (lähde)
++RVR_37=Valitse alla määritelty verkkotunnusluettelo tai mikä tahansa objekti Palomuuri-sivulta. Sen osoitteet päivitetään 10 minuutin välein ja ne säilyvät uudelleenkäynnistysten yli.
++RVR_38=Laitesääntö tässä tekee saman kuin VPN Directorin lähdesääntö, ja lisäksi: se on fail-closed (tunneli alhaalla = estetty, ei koskaan vuoda WAN:n kautta), sen kohteeksi voi valita Estä, MAC-sääntö seuraa laitetta IP-osoitteen vaihtuessa, ja se ohittaa VPN Directorin. Jos tarvitset vain tavallista lähdereititystä, VPN Director riittää.
++RVR_39=Verkkotunnusluettelot
++RVR_40=Verkkotunnusluettelo on nimetty joukko verkkotunnuksia (palomuuriobjekti, jonka tyyppi on Verkkotunnus). Reititin selvittää ne osoitteiksi, päivittää ne 10 minuutin välein, säilyttää sen, mitä dnsmasq niille vastaa, ja tallentaa tuloksen niin, että se säilyy uudelleenkäynnistyksen yli.
++RVR_41=Esimerkki: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN:t muuttuvat; muokkaa luetteloa tässä aina, kun niin käy.
++RVR_42=Nimi
++RVR_43=Verkkotunnukset
++RVR_44=yksi riviä kohden, tai liitä pilkuilla tai välilyönneillä eroteltu luettelo
++RVR_45=Lisää luettelo
++RVR_46=Luettelot jaetaan Palomuuri-sivun kanssa. Uusi tai muokattu luettelo tulee voimaan, kun painat Käytä; jos palomuurimoottori on käytössä, sen omat säännöt ottavat muutoksen käyttöön Palomuuri-sivun Käytä-painikkeella.
++RVR_47=Tallennettu.
++RVR_48=Luetteloa ei voitu tallentaa.
++RVR_49=Anna vähintään yksi verkkotunnus.
++RVR_50=Virheellinen verkkotunnus:
++RVR_51=Luettelo on liian pitkä yhteen objektiin. Jaa se kahteen luetteloon.
++RVR_52=Jokin sääntö käyttää yhä tätä luetteloa. Poistetaanko silti?
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 759f9d3a37..2d9f80fe88 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=liste(s) de pays vide(s)
++RWDN_87=préfixes chargés
++RWDN_88=Un pays sélectionné n'a encore aucune adresse chargée - le flux n'a pas été récupéré depuis la création de cet ensemble, ou son cache a été perdu. Lancez une mise à jour du flux ; si le problème persiste après la prochaine mise à jour planifiée, consultez le journal système pour rwarden.
++RFW_254=un par ligne, ou séparés par des virgules
++RFW_255=Cette liste est trop longue pour un seul objet. Divisez-la en deux objets.
++RVR_34=Liste de domaines / objet (destination)
++RVR_35=Appareil par IP / CIDR (source)
++RVR_36=Appareil par MAC (source)
++RVR_37=Choisissez une liste de domaines définie ci-dessous, ou n'importe quel objet de la page Pare-feu. Ses adresses sont actualisées toutes les 10 minutes et conservées après redémarrage.
++RVR_38=Une règle d'appareil ici fait ce que fait la règle source de VPN Director, et en plus : elle est fail-closed (tunnel coupé = bloqué, jamais de fuite par le WAN), elle peut cibler Bloquer, une règle MAC suit l'appareil malgré les changements d'IP, et elle prime sur VPN Director. Si vous n'avez besoin que d'un simple routage par source, VPN Director suffit.
++RVR_39=Listes de domaines
++RVR_40=Une liste de domaines est un ensemble nommé de domaines (un objet pare-feu de type Nom de domaine). Le routeur les résout en adresses, les actualise toutes les 10 minutes, conserve ce que dnsmasq répond pour eux, et enregistre le résultat pour qu'il survive à un redémarrage.
++RVR_41=Exemple : streaming = netflix.com, nflxvideo.net, nflximg.net. Les CDN changent ; modifiez la liste ici dès que c'est le cas.
++RVR_42=Nom
++RVR_43=Domaines
++RVR_44=un par ligne, ou collez une liste séparée par des virgules ou des espaces
++RVR_45=Ajouter une liste
++RVR_46=Les listes sont partagées avec la page Pare-feu. Une liste nouvelle ou modifiée prend effet avec Appliquer ; si le moteur Pare-feu est activé, ses propres règles reprennent la modification lors de l'Appliquer de la page Pare-feu.
++RVR_47=Enregistré.
++RVR_48=Impossible d'enregistrer la liste.
++RVR_49=Saisissez au moins un domaine.
++RVR_50=Nom de domaine non valide :
++RVR_51=Cette liste est trop longue pour un seul objet. Divisez-la en deux listes.
++RVR_52=Une règle utilise encore cette liste. La supprimer quand même ?
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 4e3df983d7..fd6e975dcc 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=az országlista üres
++RWDN_87=előtag betöltve
++RWDN_88=Egy kiválasztott országhoz még nincsenek betöltött címek - a feed nem lett letöltve a készlet létrehozása óta, vagy a gyorsítótára elveszett. Futtasson feed-frissítést; ha a következő ütemezett frissítés után is fennáll, ellenőrizze a rendszernaplót az rwarden bejegyzéseiért.
++RFW_254=soronként egy, vagy vesszővel elválasztva
++RFW_255=Ez a lista túl hosszú egy objektumhoz. Ossza fel két objektumra.
++RVR_34=Domainlista / objektum (cél)
++RVR_35=Eszköz IP / CIDR alapján (forrás)
++RVR_36=Eszköz MAC alapján (forrás)
++RVR_37=Válasszon egy alább definiált domainlistát, vagy bármely objektumot a Tűzfal oldalról. A címei 10 percenként frissülnek, és újraindítás után is megmaradnak.
++RVR_38=Az itteni eszközszabály ugyanazt teszi, mint a VPN Director forrásszabálya, és még többet: zártan hibázik (alagút leállt = blokkolva, soha nem szivárog ki a WAN-on), célként a Blokkolást is megadhatja, a MAC-szabály IP-változás után is követi az eszközt, és felülírja a VPN Directort. Ha csak egyszerű forrás alapú útválasztásra van szüksége, a VPN Director elegendő.
++RVR_39=Domainlisták
++RVR_40=A domainlista domainek elnevezett halmaza (egy Domainnév típusú tűzfalobjektum). A router címekké oldja fel őket, 10 percenként frissíti, megőrzi, amit a dnsmasq válaszol rájuk, és elmenti az eredményt, hogy túlélje az újraindítást.
++RVR_41=Példa: streaming = netflix.com, nflxvideo.net, nflximg.net. A CDN-ek változnak; ilyenkor szerkessze itt a listát.
++RVR_42=Név
++RVR_43=Domainek
++RVR_44=soronként egy, vagy illesszen be vesszővel vagy szóközzel elválasztott listát
++RVR_45=Lista hozzáadása
++RVR_46=A listák közösek a Tűzfal oldallal. Az új vagy szerkesztett lista az Alkalmaz gombra lép érvénybe; ha a Tűzfal motor engedélyezve van, annak saját szabályai a Tűzfal oldal Alkalmaz gombjára veszik át a változást.
++RVR_47=Mentve.
++RVR_48=A lista mentése nem sikerült.
++RVR_49=Adjon meg legalább egy domaint.
++RVR_50=Érvénytelen domainnév:
++RVR_51=Ez a lista túl hosszú egy objektumhoz. Ossza fel két listára.
++RVR_52=Egy szabály még használja ezt a listát. Mégis törli?
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 1929e867e0..f08b6a9655 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=elenco paesi vuoto
++RWDN_87=prefissi caricati
++RWDN_88=Un paese selezionato non ha ancora indirizzi caricati - il feed non è stato scaricato dalla creazione di questo set, oppure la sua cache è andata persa. Eseguire un aggiornamento del feed; se il problema persiste dopo il prossimo aggiornamento pianificato, controllare il registro di sistema per rwarden.
++RFW_254=uno per riga, oppure separati da virgola
++RFW_255=L'elenco è troppo lungo per un solo oggetto. Suddividerlo in due oggetti.
++RVR_34=Elenco domini / oggetto (destinazione)
++RVR_35=Dispositivo per IP / CIDR (origine)
++RVR_36=Dispositivo per MAC (origine)
++RVR_37=Scegliere un elenco domini definito qui sotto, oppure qualsiasi oggetto della pagina Firewall. I suoi indirizzi vengono aggiornati ogni 10 minuti e conservati dopo il riavvio.
++RVR_38=Una regola dispositivo qui fa ciò che fa la regola di origine di VPN Director, e in più: è fail-closed (tunnel inattivo = bloccato, mai inoltrato sulla WAN), può avere come destinazione Blocca, una regola MAC segue il dispositivo anche se cambia IP, e ha la precedenza su VPN Director. Se serve solo un semplice instradamento per origine, VPN Director è sufficiente.
++RVR_39=Elenchi domini
++RVR_40=Un elenco domini è un insieme di domini con un nome (un oggetto firewall di tipo Nome dominio). Il router li risolve in indirizzi, li aggiorna ogni 10 minuti, conserva le risposte di dnsmasq per essi e salva il risultato in modo che sopravviva al riavvio.
++RVR_41=Esempio: streaming = netflix.com, nflxvideo.net, nflximg.net. Le CDN cambiano; quando succede, modificare l'elenco qui.
++RVR_42=Nome
++RVR_43=Domini
++RVR_44=uno per riga, oppure incollare un elenco separato da virgole o spazi
++RVR_45=Aggiungi elenco
++RVR_46=Gli elenchi sono condivisi con la pagina Firewall. Un elenco nuovo o modificato ha effetto con Applica; se il motore Firewall è abilitato, le sue regole recepiscono la modifica con Applica nella pagina Firewall.
++RVR_47=Salvato.
++RVR_48=Impossibile salvare l'elenco.
++RVR_49=Inserire almeno un dominio.
++RVR_50=Nome dominio non valido:
++RVR_51=L'elenco è troppo lungo per un solo oggetto. Suddividerlo in due elenchi.
++RVR_52=Una regola usa ancora questo elenco. Eliminarlo comunque?
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 24337d360e..f38c271d34 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=国リストが空です
++RWDN_87=件のプレフィックスを読み込み済み
++RWDN_88=選択した国にまだアドレスが読み込まれていません - このセットの作成後にフィードが取得されていないか、キャッシュが失われました。フィード更新を実行してください。次回の定期更新後も解消しない場合は、システムログで rwarden を確認してください。
++RFW_254=1行に1つ、またはカンマ区切り
++RFW_255=このリストは1つのオブジェクトには長すぎます。2つのオブジェクトに分割してください。
++RVR_34=ドメインリスト / オブジェクト(宛先)
++RVR_35=IP / CIDR によるデバイス(送信元)
++RVR_36=MAC によるデバイス(送信元)
++RVR_37=下で定義したドメインリスト、またはファイアウォールページの任意のオブジェクトを選択します。アドレスは10分ごとに更新され、再起動後も保持されます。
++RVR_38=ここでのデバイスルールは VPN Director の送信元ルールと同じ動作に加え、フェイルクローズ(トンネル切断時はブロックされ、WAN に漏れません)、ブロックを対象にできる、MAC ルールは IP が変わってもデバイスを追跡する、VPN Director より優先される、という特長があります。単純な送信元ルーティングだけなら VPN Director で十分です。
++RVR_39=ドメインリスト
++RVR_40=ドメインリストは名前付きのドメインの集合(ドメイン名タイプのファイアウォールオブジェクト)です。ルーターはこれをアドレスに解決し、10分ごとに更新し、dnsmasq の応答を保持し、再起動後も残るよう結果を保存します。
++RVR_41=例: streaming = netflix.com, nflxvideo.net, nflximg.net。CDN は変わるため、その際はここでリストを編集してください。
++RVR_42=名前
++RVR_43=ドメイン
++RVR_44=1行に1つ、またはカンマ・スペース区切りのリストを貼り付け
++RVR_45=リストを追加
++RVR_46=リストはファイアウォールページと共有されます。新規または編集したリストは「適用」で有効になります。ファイアウォールエンジンが有効な場合、そのルールはファイアウォールページの「適用」で変更を反映します。
++RVR_47=保存しました。
++RVR_48=リストを保存できませんでした。
++RVR_49=少なくとも1つのドメインを入力してください。
++RVR_50=無効なドメイン名:
++RVR_51=このリストは1つのオブジェクトには長すぎます。2つのリストに分割してください。
++RVR_52=このリストはまだルールで使用されています。それでも削除しますか?
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 54ecf09e8a..385f46c419 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=국가 목록이 비어 있음
++RWDN_87=개 프리픽스 로드됨
++RWDN_88=선택한 국가에 아직 로드된 주소가 없습니다 - 이 세트를 만든 뒤 피드를 가져오지 않았거나 캐시가 손실되었습니다. 피드 업데이트를 실행하십시오. 다음 예약 업데이트 후에도 계속되면 시스템 로그에서 rwarden을 확인하십시오.
++RFW_254=한 줄에 하나씩, 또는 쉼표로 구분
++RFW_255=이 목록은 하나의 객체에 담기에 너무 깁니다. 두 개의 객체로 나누십시오.
++RVR_34=도메인 목록 / 객체 (대상)
++RVR_35=IP / CIDR 기준 장치 (출발지)
++RVR_36=MAC 기준 장치 (출발지)
++RVR_37=아래에 정의된 도메인 목록이나 방화벽 페이지의 객체를 선택하십시오. 주소는 10분마다 갱신되며 재부팅 후에도 유지됩니다.
++RVR_38=여기의 장치 규칙은 VPN Director의 출발지 규칙과 같은 역할을 하며 추가로: 페일 클로즈(터널 다운 = 차단, WAN으로 절대 누출되지 않음), 차단을 대상으로 지정 가능, MAC 규칙은 IP가 바뀌어도 장치를 추적, VPN Director보다 우선합니다. 단순한 출발지 라우팅만 필요하면 VPN Director로 충분합니다.
++RVR_39=도메인 목록
++RVR_40=도메인 목록은 이름이 지정된 도메인 집합(도메인 이름 유형의 방화벽 객체)입니다. 라우터는 이를 주소로 해석하고 10분마다 갱신하며, dnsmasq가 응답한 내용을 보관하고 재부팅 후에도 남도록 결과를 저장합니다.
++RVR_41=예: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN은 바뀌므로 그때마다 여기서 목록을 수정하십시오.
++RVR_42=이름
++RVR_43=도메인
++RVR_44=한 줄에 하나씩, 또는 쉼표나 공백으로 구분된 목록을 붙여넣기
++RVR_45=목록 추가
++RVR_46=목록은 방화벽 페이지와 공유됩니다. 새로 만들거나 수정한 목록은 적용 시 반영되며, 방화벽 엔진이 활성화된 경우 해당 규칙은 방화벽 페이지의 적용 시 변경 사항을 반영합니다.
++RVR_47=저장되었습니다.
++RVR_48=목록을 저장할 수 없습니다.
++RVR_49=도메인을 하나 이상 입력하십시오.
++RVR_50=유효하지 않은 도메인 이름:
++RVR_51=이 목록은 하나의 객체에 담기에 너무 깁니다. 두 개의 목록으로 나누십시오.
++RVR_52=규칙이 아직 이 목록을 사용합니다. 그래도 삭제하시겠습니까?
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 639411662d..55c266e93b 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=senarai negara kosong
++RWDN_87=awalan dimuatkan
++RWDN_88=Negara yang dipilih belum mempunyai alamat yang dimuatkan - suapan belum diambil sejak set ini dicipta, atau cachenya telah hilang. Jalankan kemas kini suapan; jika masalah berterusan selepas kemas kini berjadual seterusnya, semak log sistem untuk rwarden.
++RFW_254=satu setiap baris, atau dipisahkan dengan koma
++RFW_255=Senarai itu terlalu panjang untuk satu objek. Bahagikan kepada dua objek.
++RVR_34=Senarai domain / objek (destinasi)
++RVR_35=Peranti mengikut IP / CIDR (sumber)
++RVR_36=Peranti mengikut MAC (sumber)
++RVR_37=Pilih senarai domain yang ditakrifkan di bawah, atau mana-mana objek dari halaman Firewall. Alamatnya dimuat semula setiap 10 minit dan disimpan merentasi but semula.
++RVR_38=Peraturan peranti di sini melakukan apa yang dilakukan peraturan sumber VPN Director, dan juga: ia gagal-tertutup (terowong terputus = disekat, tidak pernah bocor keluar melalui WAN), ia boleh menyasarkan Sekat, peraturan MAC mengikuti peranti walaupun IP berubah, dan ia mengatasi VPN Director. Jika anda hanya perlukan penghalaan sumber biasa, VPN Director sudah memadai.
++RVR_39=Senarai domain
++RVR_40=Senarai domain ialah set domain bernama (objek firewall jenis Nama domain). Penghala meleraikannya kepada alamat, memuat semula setiap 10 minit, menyimpan apa yang dijawab oleh dnsmasq untuknya, dan menyimpan hasilnya supaya kekal selepas but semula.
++RVR_41=Contoh: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN berubah; edit senarai di sini apabila ia berlaku.
++RVR_42=Nama
++RVR_43=Domain
++RVR_44=satu setiap baris, atau tampal senarai yang dipisahkan dengan koma atau ruang
++RVR_45=Tambah senarai
++RVR_46=Senarai dikongsi dengan halaman Firewall. Senarai baharu atau yang diedit berkuat kuasa apabila Guna ditekan; jika enjin Firewall didayakan, peraturannya sendiri mengambil perubahan itu apabila Guna ditekan pada halaman Firewall.
++RVR_47=Disimpan.
++RVR_48=Senarai tidak dapat disimpan.
++RVR_49=Masukkan sekurang-kurangnya satu domain.
++RVR_50=Bukan nama domain yang sah:
++RVR_51=Senarai itu terlalu panjang untuk satu objek. Bahagikan kepada dua senarai.
++RVR_52=Satu peraturan masih menggunakan senarai ini. Padam juga?
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 96cfdaad3c..d861d139ac 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1572,50 +1572,36 @@ window.addEventListener('resize', function(){ reaperTips(); });
+ 
+      TRUST BOUNDARY: this file may have been rewritten by third-party addon code,
+      so every value out of it is treated as hostile - URLs must match a strict
+-     same-origin page pattern, labels go through esc(), and nothing is evaluated.
++     same-origin page pattern or be an explicit http(s)/mailto link (opened in a
++     new tab), labels go through esc(), and nothing is evaluated.
+ 
+-     Degrades in three steps: real entries when they parse; a single link into the
+-     shell when an addon block exists but its tabs do not parse (the shell's rail
+-     can render them); nothing at all when no addon block is present or the
+-     request fails - which leaves the rail exactly as it ships. */
++     2026-08-21: the parse itself moved to ReaperAddons.fromText() in
++     reaper_util.js so this rail and the shell's apply ONE rule set. When no
++     entry survives (or no addon block exists / the request fails) the group
++     stays hidden - exactly what the shell does, so the two rails agree. */
+   (function(){
+     var GRP = document.getElementById('addon_grp'),
+         NAV = document.getElementById('addon_nav');
+     if(!GRP || !NAV) return;
+ 
+-    /* A page this rail may link to: bare same-origin .asp/.htm, no scheme, no
+-       path traversal, no query string. Anything else is DROPPED, not sanitised. */
+-    var SAFE = /^[A-Za-z0-9_.-]+\.(asp|htm|html)$/;
+-
+     var ICON = '<span class="ni"><svg viewBox="0 0 24 24">'
+              + '<path d="M10 4h4v3a2 2 0 0 0 2 2h3v4h-3a2 2 0 0 0-2 2v3h-4v-3a2 2 0 0 0-2-2H5V9h3a2 2 0 0 0 2-2z"/>'
+              + '</svg></span>';
+ 
+-    /* Balanced {...} around an offset, skipping string literals so a brace
+-       inside a name cannot end the block early. Returns '' if unbalanced, which
+-       the caller treats as "could not parse". */
+-    function block(txt, at){
+-      var s = txt.lastIndexOf('{', at), d = 0, q = '', i, c;
+-      if(s < 0) return '';
+-      for(i = s; i < txt.length; i++){
+-        c = txt.charAt(i);
+-        if(q){ if(c === q && txt.charAt(i-1) !== '\\') q = ''; continue; }
+-        if(c === '"' || c === "'" || c === '`'){ q = c; continue; }
+-        if(c === '{') d++;
+-        else if(c === '}'){ d--; if(!d) return txt.slice(s, i + 1); }
++    /* 2026-08-21: detection, filtering and the external-link rule live in
++       ReaperAddons (reaper_util.js), shared with the shell rail, so the two
++       rails render the same entries. Same outcome as the shell when nothing
++       survives: the group stays hidden. */
++    function render(res){
++      var h = '', i, e;
++      for(i = 0; i < res.entries.length; i++){
++        e = res.entries[i];
++        h += e.external
++          ? '<a href="' + esc(e.url) + '" target="_blank" rel="noopener noreferrer">' + ICON + '<span class="nl">' + esc(e.label) + '</span></a>'
++          : '<a href="/reaper_shell.asp#' + esc(e.url) + '">' + ICON + '<span class="nl">' + esc(e.label) + '</span></a>';
+       }
+-      return '';
+-    }
+-
+-    function render(items, label){
+-      var h = '', i;
+-      for(i = 0; i < items.length; i++)
+-        h += '<a href="/reaper_shell.asp#' + esc(items[i][0]) + '">' + ICON
+-           + '<span class="nl">' + esc(items[i][1]) + '</span></a>';
+-      if(!h)   /* addons present but unreadable: hand off to the shell's own rail */
+-        h = '<a href="/reaper_shell.asp">' + ICON
+-          + '<span class="nl">' + esc(label) + '</span></a>';
+-      GRP.textContent = label;
++      if(!h) return;
++      GRP.textContent = res.label;
+       GRP.style.display = '';
+       NAV.innerHTML = h;
+     }
+@@ -1626,21 +1612,8 @@ window.addEventListener('resize', function(){ reaperTips(); });
+     x.onreadystatechange = function(){
+       if(x.readyState !== 4 || x.status !== 200) return;
+       try{
+-        var t = x.responseText || '', m, blk, name, tabs = [], re, r, u, n;
+-        /* by menu index first, then by the addon page-name convention */
+-        m = /index\s*:\s*["']menu_Addons["']/i.exec(t)
+-         || /url\s*:\s*["']user\d*\.asp["']/i.exec(t);
+-        if(!m) return;                       /* no addons installed - rail unchanged */
+-        blk = block(t, m.index);
+-        name = (blk && /menuName\s*:\s*["']([^"']*)["']/.exec(blk) || [])[1] || 'Addons';
+-        re = /\{\s*url\s*:\s*["']([^"']*)["']\s*,\s*tabName\s*:\s*["']([^"']*)["']\s*\}/g;
+-        while(blk && (r = re.exec(blk))){
+-          u = r[1]; n = r[2];
+-          if(!SAFE.test(u)) continue;        /* drops url:"NULL" and anything odd */
+-          if(!n || n === '__HIDE__' || n === '__INHERIT__') continue;
+-          tabs.push([u, n]);
+-        }
+-        render(tabs, name);
++        var res = ReaperAddons.fromText(x.responseText || '');
++        if(res) render(res);           /* no addons installed - rail unchanged */
+       }catch(e){ /* leave the rail exactly as it shipped */ }
+     };
+     x.send();
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 2141f87bb7..7573b4d73f 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=landenlijst(en) leeg
++RWDN_87=prefixen geladen
++RWDN_88=Een geselecteerd land heeft nog geen adressen geladen - de feed is niet opgehaald sinds deze set is gemaakt, of de cache is verloren gegaan. Voer een feedupdate uit; als het na de volgende geplande update aanhoudt, controleer dan het systeemlogboek op rwarden.
++RFW_254=een per regel, of gescheiden door komma's
++RFW_255=Die lijst is te lang voor een object. Splits deze in twee objecten.
++RVR_34=Domeinlijst / object (bestemming)
++RVR_35=Apparaat op IP / CIDR (bron)
++RVR_36=Apparaat op MAC (bron)
++RVR_37=Kies een hieronder gedefinieerde domeinlijst, of een object van de Firewall-pagina. De adressen worden elke 10 minuten vernieuwd en blijven bewaard na een herstart.
++RVR_38=Een apparaatregel hier doet wat de bronregel van VPN Director doet, plus: hij is fail-closed (tunnel down = geblokkeerd, lekt nooit via de WAN), hij kan Blokkeren als doel hebben, een MAC-regel volgt het apparaat bij IP-wijzigingen, en hij heeft voorrang op VPN Director. Als u alleen eenvoudige bronroutering nodig hebt, volstaat VPN Director.
++RVR_39=Domeinlijsten
++RVR_40=Een domeinlijst is een benoemde set domeinen (een firewallobject van het type Domeinnaam). De router lost ze op naar adressen, vernieuwt ze elke 10 minuten, bewaart wat dnsmasq ervoor antwoordt en slaat het resultaat op zodat het een herstart overleeft.
++RVR_41=Voorbeeld: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN's veranderen; bewerk de lijst hier wanneer dat gebeurt.
++RVR_42=Naam
++RVR_43=Domeinen
++RVR_44=een per regel, of plak een lijst gescheiden door komma's of spaties
++RVR_45=Lijst toevoegen
++RVR_46=Lijsten worden gedeeld met de Firewall-pagina. Een nieuwe of bewerkte lijst wordt actief bij Toepassen; als de Firewall-engine is ingeschakeld, nemen de eigen regels de wijziging over bij Toepassen op de Firewall-pagina.
++RVR_47=Opgeslagen.
++RVR_48=De lijst kon niet worden opgeslagen.
++RVR_49=Voer ten minste een domein in.
++RVR_50=Geen geldige domeinnaam:
++RVR_51=Die lijst is te lang voor een object. Splits deze in twee lijsten.
++RVR_52=Een regel gebruikt deze lijst nog. Toch verwijderen?
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index eed4eb64a4..2d068b6080 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=landliste(r) tom
++RWDN_87=prefikser lastet
++RWDN_88=Et valgt land har ingen adresser lastet ennå - feeden er ikke hentet siden dette settet ble opprettet, eller mellomlageret er tapt. Kjør en feedoppdatering; hvis det vedvarer etter neste planlagte oppdatering, sjekk systemloggen for rwarden.
++RFW_254=en per linje, eller kommaseparert
++RFW_255=Listen er for lang for ett objekt. Del den i to objekter.
++RVR_34=Domeneliste / objekt (mål)
++RVR_35=Enhet etter IP / CIDR (kilde)
++RVR_36=Enhet etter MAC (kilde)
++RVR_37=Velg en domeneliste definert nedenfor, eller et hvilket som helst objekt fra Firewall-siden. Adressene oppdateres hvert 10. minutt og lagres på tvers av omstarter.
++RVR_38=En enhetsregel her gjør det samme som kilderegelen i VPN Director, pluss: den er fail-closed (tunnel nede = blokkert, lekker aldri ut via WAN), den kan ha Blokker som mål, en MAC-regel følger enheten ved IP-endringer, og den overstyrer VPN Director. Trenger du bare enkel kilderuting, holder VPN Director.
++RVR_39=Domenelister
++RVR_40=En domeneliste er et navngitt sett med domener (et brannmurobjekt av typen Domenenavn). Ruteren slår dem opp til adresser, oppdaterer dem hvert 10. minutt, beholder det dnsmasq svarer for dem, og lagrer resultatet slik at det overlever en omstart.
++RVR_41=Eksempel: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN-er endres; rediger listen her når det skjer.
++RVR_42=Navn
++RVR_43=Domener
++RVR_44=en per linje, eller lim inn en komma- eller mellomromseparert liste
++RVR_45=Legg til liste
++RVR_46=Lister deles med Firewall-siden. En ny eller redigert liste trer i kraft ved Bruk; hvis Firewall-motoren er aktivert, fanger dens egne regler opp endringen ved Bruk på Firewall-siden.
++RVR_47=Lagret.
++RVR_48=Kunne ikke lagre listen.
++RVR_49=Skriv inn minst ett domene.
++RVR_50=Ikke et gyldig domenenavn:
++RVR_51=Listen er for lang for ett objekt. Del den i to lister.
++RVR_52=En regel bruker fortsatt denne listen. Slette likevel?
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 83f109ec62..77e2b88d2a 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=lista krajów pusta
++RWDN_87=prefiksów wczytano
++RWDN_88=Wybrany kraj nie ma jeszcze wczytanych adresów - źródło nie zostało pobrane od czasu utworzenia tego zestawu lub jego pamięć podręczna została utracona. Uruchom aktualizację źródła; jeśli problem utrzyma się po następnej zaplanowanej aktualizacji, sprawdź dziennik systemowy pod kątem rwarden.
++RFW_254=jeden w wierszu lub rozdzielone przecinkami
++RFW_255=Ta lista jest za długa dla jednego obiektu. Podziel ją na dwa obiekty.
++RVR_34=Lista domen / obiekt (cel)
++RVR_35=Urządzenie wg IP / CIDR (źródło)
++RVR_36=Urządzenie wg MAC (źródło)
++RVR_37=Wybierz listę domen zdefiniowaną poniżej lub dowolny obiekt ze strony Firewall. Jej adresy są odświeżane co 10 minut i zachowywane po ponownym uruchomieniu.
++RVR_38=Reguła urządzenia tutaj działa jak reguła źródłowa VPN Director, a ponadto: jest fail-closed (tunel wyłączony = blokada, nigdy nie wycieka przez WAN), może mieć cel Blokuj, reguła MAC podąża za urządzeniem mimo zmian IP i ma pierwszeństwo przed VPN Director. Jeśli potrzebujesz tylko zwykłego routingu źródłowego, VPN Director wystarczy.
++RVR_39=Listy domen
++RVR_40=Lista domen to nazwany zestaw domen (obiekt zapory typu Nazwa domeny). Router rozwiązuje je na adresy, odświeża co 10 minut, zachowuje to, co dnsmasq dla nich odpowiada, i zapisuje wynik, aby przetrwał ponowne uruchomienie.
++RVR_41=Przykład: streaming = netflix.com, nflxvideo.net, nflximg.net. Sieci CDN się zmieniają; edytuj listę tutaj, gdy to nastąpi.
++RVR_42=Nazwa
++RVR_43=Domeny
++RVR_44=jedna w wierszu lub wklej listę rozdzieloną przecinkami lub spacjami
++RVR_45=Dodaj listę
++RVR_46=Listy są współdzielone ze stroną Firewall. Nowa lub edytowana lista zaczyna działać po Zastosuj; jeśli silnik Firewall jest włączony, jego własne reguły przejmą zmianę po Zastosuj na stronie Firewall.
++RVR_47=Zapisano.
++RVR_48=Nie udało się zapisać listy.
++RVR_49=Wprowadź co najmniej jedną domenę.
++RVR_50=Nieprawidłowa nazwa domeny:
++RVR_51=Ta lista jest za długa dla jednego obiektu. Podziel ją na dwie listy.
++RVR_52=Reguła nadal używa tej listy. Usunąć mimo to?
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index b44ecc2fc0..516381df6b 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=lista (listele) de țări goală (goale)
++RWDN_87=prefixe încărcate
++RWDN_88=O țară selectată nu are încă adrese încărcate - fluxul nu a fost descărcat de la crearea acestui set sau cache-ul său s-a pierdut. Rulați o actualizare a fluxului; dacă problema persistă după următoarea actualizare programată, verificați jurnalul de sistem pentru rwarden.
++RFW_254=câte unul pe linie sau separate prin virgulă
++RFW_255=Lista este prea lungă pentru un singur obiect. Împărțiți-o în două obiecte.
++RVR_34=Listă de domenii / obiect (destinație)
++RVR_35=Dispozitiv după IP / CIDR (sursă)
++RVR_36=Dispozitiv după MAC (sursă)
++RVR_37=Alegeți o listă de domenii definită mai jos sau orice obiect din pagina Firewall. Adresele sale sunt reîmprospătate la fiecare 10 minute și păstrate după repornire.
++RVR_38=O regulă pentru dispozitiv de aici face ce face regula sursă din VPN Director, în plus: este fail-closed (tunel căzut = blocat, niciodată scurs prin WAN), poate viza Blocare, o regulă MAC urmărește dispozitivul la schimbările de IP și are prioritate față de VPN Director. Dacă aveți nevoie doar de rutare simplă după sursă, VPN Director este suficient.
++RVR_39=Liste de domenii
++RVR_40=O listă de domenii este un set denumit de domenii (un obiect firewall de tip Nume de domeniu). Routerul le rezolvă în adrese, le reîmprospătează la fiecare 10 minute, reține ce răspunde dnsmasq pentru ele și salvează rezultatul ca să supraviețuiască unei reporniri.
++RVR_41=Exemplu: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN-urile se schimbă; editați lista aici ori de câte ori se întâmplă.
++RVR_42=Nume
++RVR_43=Domenii
++RVR_44=câte unul pe linie sau lipiți o listă separată prin virgulă sau spațiu
++RVR_45=Adaugă listă
++RVR_46=Listele sunt partajate cu pagina Firewall. O listă nouă sau editată intră în vigoare la Aplicare; dacă motorul Firewall este activat, regulile sale preiau modificarea la Aplicare din pagina Firewall.
++RVR_47=Salvat.
++RVR_48=Lista nu a putut fi salvată.
++RVR_49=Introduceți cel puțin un domeniu.
++RVR_50=Nume de domeniu invalid:
++RVR_51=Lista este prea lungă pentru un singur obiect. Împărțiți-o în două liste.
++RVR_52=O regulă folosește încă această listă. Ștergeți oricum?
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index f4a448385c..63e90e863c 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=список(и) стран пуст(ы)
++RWDN_87=префиксов загружено
++RWDN_88=Для выбранной страны адреса ещё не загружены - фид не скачивался с момента создания этого набора или его кэш утерян. Запустите обновление фида; если проблема сохранится после следующего планового обновления, проверьте системный журнал на записи rwarden.
++RFW_254=по одному в строке или через запятую
++RFW_255=Список слишком длинный для одного объекта. Разделите его на два объекта.
++RVR_34=Список доменов / объект (назначение)
++RVR_35=Устройство по IP / CIDR (источник)
++RVR_36=Устройство по MAC (источник)
++RVR_37=Выберите список доменов, заданный ниже, или любой объект со страницы Брандмауэр. Его адреса обновляются каждые 10 минут и сохраняются между перезагрузками.
++RVR_38=Правило устройства здесь делает то же, что правило источника в VPN Director, и дополнительно: оно fail-closed (туннель упал = блокировка, трафик никогда не утекает через WAN), может использовать действие Блокировать, правило по MAC следует за устройством при смене IP и имеет приоритет над VPN Director. Если нужна лишь простая маршрутизация по источнику, достаточно VPN Director.
++RVR_39=Списки доменов
++RVR_40=Список доменов - это именованный набор доменов (объект брандмауэра типа Доменное имя). Роутер разрешает их в адреса, обновляет каждые 10 минут, запоминает ответы dnsmasq для них и сохраняет результат, чтобы он пережил перезагрузку.
++RVR_41=Пример: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN меняются; редактируйте список здесь при каждом изменении.
++RVR_42=Имя
++RVR_43=Домены
++RVR_44=по одному в строке или вставьте список через запятую или пробел
++RVR_45=Добавить список
++RVR_46=Списки общие со страницей Брандмауэр. Новый или изменённый список вступает в силу по нажатию Применить; если движок брандмауэра включён, его собственные правила подхватят изменение по нажатию Применить на странице Брандмауэр.
++RVR_47=Сохранено.
++RVR_48=Не удалось сохранить список.
++RVR_49=Введите хотя бы один домен.
++RVR_50=Недопустимое доменное имя:
++RVR_51=Список слишком длинный для одного объекта. Разделите его на два списка.
++RVR_52=Этот список ещё используется правилом. Всё равно удалить?
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 47562487ac..0be58b3dd9 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -96,6 +96,7 @@ tr:last-child td{border-bottom:none}
+ .chip.rand{color:var(--amber);border-color:rgba(217,164,65,.35)}
+ .chip.nolease{color:var(--danger);border-color:rgba(255,59,48,.45)}
+ .chip.pin{color:var(--jade);border-color:rgba(79,178,134,.4)}
++.chip.node{color:var(--bone);border-color:rgba(225,6,0,.45)}
+ .chip.pinout{color:var(--jade);border-color:rgba(79,178,134,.4)}
+ .chip.pindead{color:var(--danger);border-color:rgba(255,59,48,.45)}
+ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--steel)}
+@@ -283,7 +284,7 @@ var L = {
+   RDEV_77:`<#RDEV_77#>`, RDEV_78:`<#RDEV_78#>`, RDEV_79:`<#RDEV_79#>`, RDEV_80:`<#RDEV_80#>`,
+   RDEV_81:`<#RDEV_81#>`, RDEV_82:`<#RDEV_82#>`, RDEV_83:`<#RDEV_83#>`, RDEV_84:`<#RDEV_84#>`,
+   RDEV_85:`<#RDEV_85#>`, RDEV_86:`<#RDEV_86#>`, RDEV_62:`<#RDEV_62#>`, RDEV_63:`<#RDEV_63#>`,
+-  RDEV_64:`<#RDEV_64#>`, RDEV_87:`<#RDEV_87#>`
++  RDEV_64:`<#RDEV_64#>`, RDEV_87:`<#RDEV_87#>`, AiMesh_Node:`<#AiMesh_Node#>`
+ };
+ function T(id){ return L[id] || ''; }
+ function ago(sec){
+@@ -478,7 +479,8 @@ function renderRows(){
+       : '<span class="dname unnamed rtip" data-i="' + i + '" title="' + esc(T('RDEV_69')) + '">' + (d.host ? esc(d.host) : esc(T('RDEV_42'))) + '</span><span class="src">' + (d.host ? 'lease' : '&mdash;') + '</span>';
+     var chipsHtml = d.mlo_link
+       ? '<span class="chip pin" title="' + esc(T('RDEV_87')) + '">MLO</span>'
+-      : ((d.rand ? '<span class="chip rand" title="' + esc(T('RDEV_70')) + '">' + esc(T('RDEV_36')) + '</span>' : '') +
++      : ((d.node ? '<span class="chip node">' + esc(T('AiMesh_Node')) + '</span>' : '') +
++         (d.rand && !d.node ? '<span class="chip rand" title="' + esc(T('RDEV_70')) + '">' + esc(T('RDEV_36')) + '</span>' : '') +
+          (d.nolease ? '<span class="chip nolease" title="' + esc(T('RDEV_71')) + '">' + esc(T('RDEV_37')) + '</span>' : ''));
+     var ipHtml = d.nolease ? '<span style="color:var(--danger)">&mdash;</span>'
+                : (d.ip ? esc(d.ip) : '<span style="color:var(--steel)">&mdash;</span>');
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 7fc7db4214..68f6116ad2 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -101,6 +101,14 @@ table.rt th{font-family:var(--hdr);font-weight:600;text-transform:uppercase;lett
+ table.rt td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim);vertical-align:top}
+ table.rt tr:last-child td{border-bottom:0}
+ table.rt .del{color:var(--crimson);cursor:pointer;font-weight:600;border:1px solid var(--line-mid);border-radius:6px;padding:3px 9px;background:transparent;font-size:11px}
++table.rt .edt{color:var(--bone-dim);cursor:pointer;font-weight:600;border:1px solid var(--line-mid);border-radius:6px;padding:3px 9px;background:transparent;font-size:11px;margin-right:6px}
++table.rt .edt:hover{color:var(--bone);border-color:var(--crimson-deep)}
++table.rt tr.editing td{background:rgba(225,6,0,.07)}
++table.rt td.val{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++textarea.fld.vals{max-width:360px;min-height:36px;height:36px;resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.4}
++.addrow .fg.grow{flex:1 1 260px}
++.addrow .cancel{display:none}
++.addrow.editing .cancel{display:inline-block}
+ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ .addrow{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:12px}
+ .addrow .fg{display:flex;flex-direction:column;gap:4px}
+@@ -278,7 +286,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_134#></span><input class="fld s" id="rf_sched" placeholder="Mon,Tue|09:00|17:00"></div>
+       <div class="fg"><span class="fl"><#RFW_135#></span><input class="fld s" id="rf_rate" placeholder="20/sec" style="max-width:100px"></div>
+       <div class="fg"><span class="fl"><#RFW_136#></span><select class="fld s" id="rf_log" style="max-width:90px"><option value="0"><#checkbox_No#></option><option value="1"><#checkbox_Yes#></option></select></div>
+-      <button class="btn ghost sm" id="rf_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="rf_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="rf_cancel"><#CTL_Cancel#></button>
+     </div>
+     <div class="row" style="margin-top:14px">
+       <button class="btn ghost" id="rf_preview"><#RFW_142#></button>
+@@ -311,9 +319,9 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+           <option value="fqdn"><#RFW_113#></option>
+           <option value="geo"><#RFW_114#></option>
+         </select></div>
+-      <div class="fg"><span class="fl"><#RFW_108#></span><input class="fld s" id="ob_val" maxlength="200"></div>
++      <div class="fg grow"><span class="fl"><#RFW_108#> <span class="rtip" style="color:var(--steel);text-transform:none;letter-spacing:0"><#RFW_254#></span></span><textarea class="fld vals" id="ob_val" maxlength="1900" rows="1" spellcheck="false"></textarea></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="ob_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="ob_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="ob_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="ob_cancel"><#CTL_Cancel#></button>
+     </div>
+     <div class="note warn hidden" id="ob_geowarn"><#RFW_153#></div>
+   </div>
+@@ -325,7 +333,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_106#></span><input class="fld s" id="gr_name" maxlength="25"></div>
+       <div class="fg"><span class="fl"><#RFW_116#></span><input class="fld s" id="gr_mem" maxlength="200" placeholder="obj1,obj2"></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="gr_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="gr_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="gr_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="gr_cancel"><#CTL_Cancel#></button>
+     </div>
+   </div>
+ 
+@@ -338,7 +346,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+         <select class="fld s" id="sv_proto"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="both">TCP + UDP</option><option value="icmp">ICMP</option></select></div>
+       <div class="fg"><span class="fl"><#RFW_119#></span><input class="fld s" id="sv_ports" maxlength="120" placeholder="80,443,8000:8100"></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="sv_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="sv_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="sv_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="sv_cancel"><#CTL_Cancel#></button>
+     </div>
+   </div>
+ </div>
+@@ -358,7 +366,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_106#></span><input class="fld s" id="zn_name" maxlength="25"></div>
+       <div class="fg"><span class="fl"><#RFW_121#></span><input class="fld s" id="zn_if" maxlength="120" placeholder="br0,tun+"></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="zn_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="zn_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="zn_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="zn_cancel"><#CTL_Cancel#></button>
+     </div>
+   </div>
+ 
+@@ -371,7 +379,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_124#></span><select class="fld s" id="zp_dst"></select></div>
+       <div class="fg"><span class="fl"><#RFW_125#></span>
+         <select class="fld s" id="zp_act"><option value="accept"><#RFW_138#></option><option value="drop"><#RFW_139#></option><option value="reject"><#RFW_140#></option></select></div>
+-      <button class="btn ghost sm" id="zp_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="zp_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="zp_cancel"><#CTL_Cancel#></button>
+     </div>
+   </div>
+ </div>
+@@ -392,7 +400,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_209#></span>
+         <select class="fld s" id="eg_act"><option value="drop"><#RFW_139#></option><option value="reject"><#RFW_140#></option><option value="accept"><#RFW_138#></option></select></div>
+       <div class="fg"><span class="fl"><#RFW_130#></span><input class="fld s" id="eg_sched" maxlength="90" placeholder="Mon,Tue|09:00|17:00"></div>
+-      <button class="btn ghost sm" id="eg_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="eg_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="eg_cancel"><#CTL_Cancel#></button>
+     </div>
+   </div>
+ </div>
+@@ -418,7 +426,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_214#></span><input class="fld s" id="nt_ipt" maxlength="24" placeholder="443"></div>
+       <div class="fg"><span class="fl"><#RFW_215#></span><select class="fld s" id="nt_src"></select></div>
+       <div class="fg"><span class="fl"><#RFW_130#></span><input class="fld s" id="nt_sched" maxlength="90" placeholder="Mon,Tue|09:00|17:00"></div>
+-      <button class="btn ghost sm" id="nt_add"><#RFW_59#></button>
++      <button class="btn ghost sm" id="nt_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="nt_cancel"><#CTL_Cancel#></button>
+     </div>
+   </div>
+ 
+@@ -683,12 +691,37 @@ function kwBad(v){
+ /* =================== rule-table model ===================
+    Each editor keeps an array of records; render + serialize on apply. */
+ function rtEmpty(tbody,cols){tbody.innerHTML='<tr class="empty"><td colspan="'+cols+'">'+esc(`<#RFW_61#>`)+'</td></tr>';}
+-function rtRow(cells,onDel){
++function rtRow(cells,onDel,onEdit){
+   var tr=document.createElement('tr');
+-  for(var i=0;i<cells.length;i++){var td=document.createElement('td');td.textContent=cells[i];tr.appendChild(td);}
+-  var td2=document.createElement('td');var b=document.createElement('button');b.className='del';b.textContent=`<#RFW_60#>`;b.onclick=onDel;td2.appendChild(b);tr.appendChild(td2);
++  for(var i=0;i<cells.length;i++){var td=document.createElement('td');td.textContent=cells[i];td.title=cells[i];tr.appendChild(td);}
++  var td2=document.createElement('td');
++  /* 2026-08-21 field report: "once created you have the option to delete it;
++     there needs to be an edit option". Every list row now carries Edit: it
++     loads the record back into that list's add-row, the Add button becomes
++     Save, and saving replaces the record in place (order preserved). */
++  if(onEdit){var e=document.createElement('button');e.className='edt';e.textContent=`<#CTL_modify#>`;e.onclick=onEdit;td2.appendChild(e);}
++  var b=document.createElement('button');b.className='del';b.textContent=`<#RFW_60#>`;b.onclick=onDel;td2.appendChild(b);tr.appendChild(td2);
+   return tr;
+ }
++/* one editing slot per list: index into RFW.<list>, -1 = adding */
++var EDIT={obj:-1,grp:-1,svc:-1,zone:-1,zpol:-1,rules:-1,edef:-1,nat:-1};
++var EDIT_PFX={obj:'ob',grp:'gr',svc:'sv',zone:'zn',zpol:'zp',rules:'rf',edef:'eg',nat:'nt'};
++function editMode(list,idx){
++  EDIT[list]=idx;
++  var pfx=EDIT_PFX[list], add=$(pfx+'_add'), row=add?add.parentNode:null;
++  if(add) add.textContent = (idx>=0) ? `<#CTL_onlysave#>` : `<#RFW_59#>`;
++  if(row){ if(idx>=0) row.classList.add('editing'); else row.classList.remove('editing'); }
++  if(idx>=0 && add) add.scrollIntoView({block:'nearest'});
++}
++function editCancel(list){ editMode(list,-1); }
++/* adding vs replacing, in one place: returns true when the record was stored */
++function editCommit(list,rec,dupTest){
++  var arr=RFW[list], i=EDIT[list];
++  if(dupTest && arr.some(function(r,k){return k!==i && dupTest(r);})) return false;
++  if(i>=0 && i<arr.length){ arr[i]=rec; } else { arr.push(rec); }
++  editMode(list,-1);
++  return true;
++}
+ 
+ /* ---------- General: IPv4 inbound (filter_wllist) ---------- */
+ /* entry: <PROTO>>SRCIP>>>DSTPORT  (6 slots, only 0/2/5 used) */
+@@ -842,8 +875,11 @@ function rfwRenderEdef(){
+   var tb=$('eg_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.edef.length){rtEmpty(tb,4);return;}
+   RFW.edef.forEach(function(r,i){
+-    tb.appendChild(rtRow([r[1]||'',r[2]||'',rfwDash(r[3])],function(){
+-      RFW.edef.splice(i,1);rfwRenderEdef();rfwSave('edef',RFW.edef,$('rf_saved'));}));
++    var tr=rtRow([r[1]||'',r[2]||'',rfwDash(r[3])],function(){
++      if(EDIT.edef===i)editCancel('edef');RFW.edef.splice(i,1);rfwRenderEdef();rfwSave('edef',RFW.edef,$('rf_saved'));},
++      function(){ $('eg_obj').value=r[1]||''; $('eg_act').value=r[2]||''; $('eg_sched').value=r[3]||''; editMode('edef',i); rfwRenderEdef(); });
++    if(EDIT.edef===i)tr.className='editing';
++    tb.appendChild(tr);
+   });
+ }
+ /* Phase 3 forwards: en>proto>extport>intip>intport>srcobj>log>sched */
+@@ -851,51 +887,70 @@ function rfwRenderNat(){
+   var tb=$('nt_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.nat.length){rtEmpty(tb,7);return;}
+   RFW.nat.forEach(function(r,i){
+-    tb.appendChild(rtRow([
++    var tr=rtRow([
+       r[1]||'', r[2]||'', r[3]||'', r[4]||'',
+       (r[5]?r[5]:`<#RFW_216#>`), rfwDash(r[7])
+     ],function(){
+-      RFW.nat.splice(i,1);rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));}));
++      if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));},
++      function(){ $('nt_proto').value=r[1]||''; $('nt_ep').value=r[2]||''; $('nt_ip').value=r[3]||''; $('nt_ipt').value=r[4]||''; $('nt_src').value=r[5]||''; $('nt_sched').value=r[7]||''; editMode('nat',i); rfwRenderNat(); });
++    if(EDIT.nat===i)tr.className='editing';
++    tb.appendChild(tr);
+   });
+ }
+ function rfwRenderObj(){
+   var tb=$('ob_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.obj.length){rtEmpty(tb,5);return;}
+   RFW.obj.forEach(function(r,i){
+-    tb.appendChild(rtRow([r[0]||'',r[1]||'',r[2]||'',r[3]||''],function(){
+-      RFW.obj.splice(i,1);rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,$('rf_saved'));}));
++    var tr=rtRow([r[0]||'',r[1]||'',(r[2]||'').split(',').join(', '),r[3]||''],function(){
++      if(EDIT.obj===i)editCancel('obj');RFW.obj.splice(i,1);rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,$('rf_saved'));},
++      function(){ $('ob_name').value=r[0]||''; $('ob_type').value=r[1]||'cidr'; $('ob_val').value=(r[2]||'').split(',').join('\n'); $('ob_cmt').value=r[3]||''; editMode('obj',i); rfwRenderObj(); obValFit(); });
++    tr.getElementsByTagName('td')[2].className='val';
++    if(EDIT.obj===i)tr.className='editing';
++    tb.appendChild(tr);
+   });
+ }
+ function rfwRenderGrp(){
+   var tb=$('gr_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.grp.length){rtEmpty(tb,4);return;}
+   RFW.grp.forEach(function(r,i){
+-    tb.appendChild(rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
+-      RFW.grp.splice(i,1);rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,$('rf_saved'));}));
++    var tr=rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
++      if(EDIT.grp===i)editCancel('grp');RFW.grp.splice(i,1);rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,$('rf_saved'));},
++      function(){ $('gr_name').value=r[0]||''; $('gr_mem').value=r[1]||''; $('gr_cmt').value=r[2]||''; editMode('grp',i); rfwRenderGrp(); });
++    if(EDIT.grp===i)tr.className='editing';
++    tb.appendChild(tr);
+   });
+ }
+ function rfwRenderSvc(){
+   var tb=$('sv_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.svc.length){rtEmpty(tb,5);return;}
+   RFW.svc.forEach(function(r,i){
+-    tb.appendChild(rtRow([r[0]||'',r[1]||'',rfwDash(r[2]),r[3]||''],function(){
+-      RFW.svc.splice(i,1);rfwRenderSvc();rfwFillSelects();rfwSave('svc',RFW.svc,$('rf_saved'));}));
++    var tr=rtRow([r[0]||'',r[1]||'',rfwDash(r[2]),r[3]||''],function(){
++      if(EDIT.svc===i)editCancel('svc');RFW.svc.splice(i,1);rfwRenderSvc();rfwFillSelects();rfwSave('svc',RFW.svc,$('rf_saved'));},
++      function(){ $('sv_name').value=r[0]||''; $('sv_proto').value=r[1]||'tcp'; $('sv_ports').value=r[2]||''; $('sv_cmt').value=r[3]||''; editMode('svc',i); rfwRenderSvc(); });
++    if(EDIT.svc===i)tr.className='editing';
++    tb.appendChild(tr);
+   });
+ }
+ function rfwRenderZone(){
+   var tb=$('zn_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.zone.length){rtEmpty(tb,4);return;}
+   RFW.zone.forEach(function(r,i){
+-    tb.appendChild(rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
+-      RFW.zone.splice(i,1);rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,$('rf_saved'));}));
++    var tr=rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
++      if(EDIT.zone===i)editCancel('zone');RFW.zone.splice(i,1);rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,$('rf_saved'));},
++      function(){ $('zn_name').value=r[0]||''; $('zn_if').value=r[1]||''; $('zn_cmt').value=r[2]||''; editMode('zone',i); rfwRenderZone(); });
++    if(EDIT.zone===i)tr.className='editing';
++    tb.appendChild(tr);
+   });
+ }
+ function rfwRenderZpol(){
+   var tb=$('zp_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.zpol.length){rtEmpty(tb,4);return;}
+   RFW.zpol.forEach(function(r,i){
+-    tb.appendChild(rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
+-      RFW.zpol.splice(i,1);rfwRenderZpol();rfwSave('zpol',RFW.zpol,$('rf_saved'));}));
++    var tr=rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
++      if(EDIT.zpol===i)editCancel('zpol');RFW.zpol.splice(i,1);rfwRenderZpol();rfwSave('zpol',RFW.zpol,$('rf_saved'));},
++      function(){ $('zp_src').value=r[0]||''; $('zp_dst').value=r[1]||''; $('zp_act').value=r[2]||''; editMode('zpol',i); rfwRenderZpol(); });
++    if(EDIT.zpol===i)tr.className='editing';
++    tb.appendChild(tr);
+   });
+ }
+ /* rule fields: en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment */
+@@ -910,7 +965,12 @@ function rfwRenderRules(){
+       (rfwDash(r[5])+' / '+rfwDash(r[6])),
+       rfwDash(r[7]), rfwDash(r[8]),
+       (r[10]==='1')?`<#checkbox_Yes#>`:`<#checkbox_No#>`
+-    ],function(){RFW.rules.splice(i,1);rfwReorder();});
++    ],function(){if(EDIT.rules===i)editCancel('rules');RFW.rules.splice(i,1);rfwReorder();},
++      function(){
++        $('rf_dir').value=r[1]||''; $('rf_act').value=r[2]||''; $('rf_szone').value=r[3]||''; $('rf_sobj').value=r[4]||'';
++        $('rf_dzone').value=r[5]||''; $('rf_dobj').value=r[6]||''; $('rf_svc').value=r[7]||''; $('rf_sched').value=r[8]||'';
++        $('rf_rate').value=r[9]||''; $('rf_log').value=r[10]||'0'; editMode('rules',i); rfwRenderRules(); });
++    if(EDIT.rules===i)tr.className='editing';
+     /* order controls: the generator sorts on field 11, so moving a row is just
+        a renumber - never a re-sort of the stored list by hand */
+     var td=tr.getElementsByTagName('td')[8];
+@@ -1250,12 +1310,24 @@ function initRfw(){
+   var S=$('rf_saved');
+   function bad(m){showSaved(S,false,m);}
+ 
++  /* the value box accepts one entry per line, or commas, or spaces - a pasted
++     list from a text file lands as-is; it is normalised to the engine's comma
++     form here. Empty lines and duplicates are dropped. */
++  function obNormalise(raw){
++    var parts=String(raw||'').split(/[\s,;]+/), out=[], seen={}, i, t;
++    for(i=0;i<parts.length;i++){ t=parts[i].replace(/[<>]/g,''); if(!t||seen[t])continue; seen[t]=1; out.push(t); }
++    return out.join(',');
++  }
++  function obValFit(){ var ta=$('ob_val'); if(!ta)return; ta.style.height='36px'; var h=Math.min(220,Math.max(36,ta.scrollHeight)); ta.style.height=h+'px'; }
++  $('ob_val').oninput=obValFit;
+   $('ob_add').onclick=function(){
+     var n=$('ob_name').value.trim(),t=$('ob_type').value,
+-        v=$('ob_val').value.replace(/\s/g,''),c=$('ob_cmt').value.trim();
++        v=obNormalise($('ob_val').value),c=$('ob_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(!v)return bad(`<#RFW_66#>`);
+-    if(RFW.obj.some(function(r){return r[0]===n;})||RFW.grp.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
++    if(v.length>1900)return bad(`<#RFW_255#>`);
++    var oi=EDIT.obj;
++    if(RFW.obj.some(function(r,k){return k!==oi&&r[0]===n;})||RFW.grp.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     /* a geo object is only meaningful when Warden already carries that country
+        set - the engine refuses to emit a match against a set it did not create */
+     if(t==='geo'){
+@@ -1266,51 +1338,55 @@ function initRfw(){
+       }
+       $('ob_geowarn').classList.add('hidden');
+     }
+-    RFW.obj.push([n,t,v.replace(/[<>]/g,''),c.replace(/[<>]/g,'')]);
+-    $('ob_name').value='';$('ob_val').value='';$('ob_cmt').value='';
++    editCommit('obj',[n,t,v,c.replace(/[<>]/g,'')]);
++    $('ob_name').value='';$('ob_val').value='';$('ob_cmt').value='';obValFit();
+     rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,S);
+   };
++  $('ob_cancel').onclick=function(){ editCancel('obj'); $('ob_name').value='';$('ob_val').value='';$('ob_cmt').value='';obValFit(); rfwRenderObj(); };
+   $('gr_add').onclick=function(){
+     var n=$('gr_name').value.trim(),m=$('gr_mem').value.replace(/\s/g,''),c=$('gr_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(!m)return bad(`<#RFW_66#>`);
+     var members=m.split(','),known=RFW.obj.map(function(r){return r[0];}),i;
+     for(i=0;i<members.length;i++)if(known.indexOf(members[i])<0)return bad(`<#RFW_67#>`);
+-    if(RFW.grp.some(function(r){return r[0]===n;})||RFW.obj.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+-    RFW.grp.push([n,m.replace(/[<>]/g,''),c.replace(/[<>]/g,'')]);
++    var gi=EDIT.grp;
++    if(RFW.grp.some(function(r,k){return k!==gi&&r[0]===n;})||RFW.obj.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
++    editCommit('grp',[n,m.replace(/[<>]/g,''),c.replace(/[<>]/g,'')]);
+     $('gr_name').value='';$('gr_mem').value='';$('gr_cmt').value='';
+     rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,S);
+   };
++  $('gr_cancel').onclick=function(){ editCancel('grp'); $('gr_name').value='';$('gr_mem').value='';$('gr_cmt').value=''; rfwRenderGrp(); };
+   $('sv_add').onclick=function(){
+     var n=$('sv_name').value.trim(),p=$('sv_proto').value,
+         po=(p==='icmp')?'':normPort($('sv_ports').value),c=$('sv_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(po===null)return bad(`<#RFW_67#>`);
+-    if(RFW.svc.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+-    RFW.svc.push([n,p,po,c.replace(/[<>]/g,'')]);
++    if(!editCommit('svc',[n,p,po,c.replace(/[<>]/g,'')],function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     $('sv_name').value='';$('sv_ports').value='';$('sv_cmt').value='';
+     rfwRenderSvc();rfwFillSelects();rfwSave('svc',RFW.svc,S);
+   };
++  $('sv_cancel').onclick=function(){ editCancel('svc'); $('sv_name').value='';$('sv_ports').value='';$('sv_cmt').value=''; rfwRenderSvc(); };
+   $('zn_add').onclick=function(){
+     var n=$('zn_name').value.trim(),f=$('zn_if').value.replace(/\s/g,''),c=$('zn_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(!f)return bad(`<#RFW_66#>`);
+     if(!/^[A-Za-z0-9._+,]+$/.test(f))return bad(`<#RFW_67#>`);
+-    if(RFW.zone.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+-    RFW.zone.push([n,f,c.replace(/[<>]/g,'')]);
++    if(!editCommit('zone',[n,f,c.replace(/[<>]/g,'')],function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     $('zn_name').value='';$('zn_if').value='';$('zn_cmt').value='';
+     rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,S);
+   };
++  $('zn_cancel').onclick=function(){ editCancel('zone'); $('zn_name').value='';$('zn_if').value='';$('zn_cmt').value=''; rfwRenderZone(); };
+   /* ---- Phase 2: egress defaults (en>object>action>sched) ---- */
+   $('eg_add').onclick=function(){
+     var o=$('eg_obj').value,a=$('eg_act').value,sc=$('eg_sched').value.trim();
+     if(rfwSchedBad(sc))return bad(`<#RFW_253#>`);
+     if(!o)return bad(`<#RFW_66#>`);
+-    if(RFW.edef.some(function(r){return r[1]===o;}))return bad(`<#RFW_65#>`);
+-    RFW.edef.push(['1',o,a,sc.replace(/[<>]/g,'')]);
++    var ei=EDIT.edef, een=(ei>=0&&RFW.edef[ei])?RFW.edef[ei][0]:'1';
++    if(!editCommit('edef',[een,o,a,sc.replace(/[<>]/g,'')],function(r){return r[1]===o;}))return bad(`<#RFW_65#>`);
+     $('eg_sched').value='';
+     rfwRenderEdef();rfwSave('edef',RFW.edef,S);
+   };
++  $('eg_cancel').onclick=function(){ editCancel('edef'); $('eg_sched').value=''; rfwRenderEdef(); };
+   /* ---- Phase 3: hardened forwards (en>proto>ext>ip>int>src>log>sched) ---- */
+   $('nt_add').onclick=function(){
+     var p=$('nt_proto').value, ep=$('nt_ep').value.trim(), ip=$('nt_ip').value.trim(),
+@@ -1323,11 +1399,12 @@ function initRfw(){
+     if(!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip))return bad(`<#RFW_67#>`);
+     if(ipt.indexOf(',')>=0)return bad(`<#RFW_67#>`);
+     if(!/^[0-9:,-]+$/.test(ep)||!/^[0-9:-]+$/.test(ipt))return bad(`<#RFW_67#>`);
+-    if(RFW.nat.some(function(r){return r[1]===p&&r[2]===ep;}))return bad(`<#RFW_65#>`);
+-    RFW.nat.push(['1',p,ep,ip,ipt,src,'0',sc.replace(/[<>]/g,'')]);
++    var ni=EDIT.nat, nen=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][0]:'1', nlog=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][6]:'0';
++    if(!editCommit('nat',[nen,p,ep,ip,ipt,src,nlog,sc.replace(/[<>]/g,'')],function(r){return r[1]===p&&r[2]===ep;}))return bad(`<#RFW_65#>`);
+     $('nt_ep').value='';$('nt_ip').value='';$('nt_ipt').value='';$('nt_sched').value='';
+     rfwRenderNat();rfwSave('nat',RFW.nat,S);
+   };
++  $('nt_cancel').onclick=function(){ editCancel('nat'); $('nt_ep').value='';$('nt_ip').value='';$('nt_ipt').value='';$('nt_sched').value=''; rfwRenderNat(); };
+   /* ---- backup / restore ----
+      Export is the eight draft lists as JSON. Import writes them back through the
+      same per-list save path the tabs use, so every list goes through the CGI's
+@@ -1361,10 +1438,10 @@ function initRfw(){
+   $('zp_add').onclick=function(){
+     var s=$('zp_src').value,d=$('zp_dst').value,a=$('zp_act').value;
+     if(!s||!d)return bad(`<#RFW_66#>`);
+-    if(RFW.zpol.some(function(r){return r[0]===s&&r[1]===d;}))return bad(`<#RFW_65#>`);
+-    RFW.zpol.push([s,d,a]);
++    if(!editCommit('zpol',[s,d,a],function(r){return r[0]===s&&r[1]===d;}))return bad(`<#RFW_65#>`);
+     rfwRenderZpol();rfwSave('zpol',RFW.zpol,S);
+   };
++  $('zp_cancel').onclick=function(){ editCancel('zpol'); rfwRenderZpol(); };
+   $('rf_add').onclick=function(){
+     var r=['1',$('rf_dir').value,$('rf_act').value,
+            $('rf_szone').value,$('rf_sobj').value,
+@@ -1373,10 +1450,13 @@ function initRfw(){
+            $('rf_rate').value.replace(/\s/g,''),$('rf_log').value,'0',''];
+     if(r[8]&&!/^([A-Za-z]{3}(,[A-Za-z]{3})*)?\|\d{2}:\d{2}\|\d{2}:\d{2}$/.test(r[8]))return bad(`<#RFW_67#>`);
+     if(r[9]&&!/^\d+\/(sec|min|hour)$/.test(r[9]))return bad(`<#RFW_67#>`);
+-    RFW.rules.push(r);
++    var ri=EDIT.rules;
++    if(ri>=0&&RFW.rules[ri]){ r[0]=RFW.rules[ri][0]; r[11]=RFW.rules[ri][11]; r[12]=RFW.rules[ri][12]||''; }  /* keep enable, order, comment */
++    editCommit('rules',r);
+     $('rf_sched').value='';$('rf_rate').value='';
+     rfwReorder();
+   };
++  $('rf_cancel').onclick=function(){ editCancel('rules'); $('rf_sched').value='';$('rf_rate').value=''; rfwRenderRules(); };
+ 
+   /* Engine on/off had NO feedback at all: the click fired action=opts with an
+      empty callback and the page said nothing, so the operator could not tell a
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index c975b906a2..3cf0adfe33 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -62,6 +62,16 @@ td.sel{font-family:ui-monospace,Consolas,monospace;font-size:11.7px;color:var(--
+ .tgt.wan{color:var(--amber);border-color:rgba(224,169,59,.35)}
+ .tgt.block{color:var(--danger);border-color:rgba(255,59,48,.4)}
+ .rowdel{color:var(--danger);background:transparent;border:1px solid rgba(255,59,48,.3);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px}
++.rowedt{color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px;margin-right:6px}
++.rowedt:hover{color:var(--bone);border-color:var(--crimson-deep)}
++tr.editing td{background:rgba(225,6,0,.07)}
++.cancel{display:none}
++.editing .cancel{display:inline-block;margin-left:8px}
++.fld textarea{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;color:var(--bone);font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.4;padding:6px 10px;width:100%;min-height:38px;resize:vertical}
++.fld.wide{grid-column:1 / -1}
++td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--bone-dim);max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.objnote{font-size:11.5px;color:var(--steel);margin-top:8px}
++.objnote b{color:var(--amber);font-weight:600}
+ .editor{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end}
+ .fld{display:flex;flex-direction:column;gap:4px}
+ .fld label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--steel)}
+@@ -101,15 +111,15 @@ td.sel{font-family:ui-monospace,Consolas,monospace;font-size:11.7px;color:var(--
+   </div>
+ </div>
+ 
+-<div class="card">
++<div class="card" id="editor">
+   <h2><#RVR_14#></h2>
+   <div class="editor">
+     <div class="fld"><label><#RVR_15#></label><input type="text" id="e_desc" maxlength="48" placeholder="<#RVR_15#>"></div>
+     <div class="fld"><label><#RVR_16#></label>
+       <select id="e_type" onchange="pbrTypeChange()">
+-        <option value="ipset"><#RVR_17#></option>
+-        <option value="src"><#RVR_19#></option>
+-        <option value="mac"><#RVR_20#></option>
++        <option value="ipset"><#RVR_34#></option>
++        <option value="src"><#RVR_35#></option>
++        <option value="mac"><#RVR_36#></option>
+       </select>
+     </div>
+     <div class="fld"><label><#RVR_21#></label>
+@@ -127,9 +137,32 @@ td.sel{font-family:ui-monospace,Consolas,monospace;font-size:11.7px;color:var(--
+         <option value="BLOCK"><#RVR_24#></option>
+       </select>
+     </div>
+-    <div class="fld"><label>&nbsp;</label><button class="btn" onclick="pbrAdd()"><#RVR_25#></button></div>
++    <div class="fld"><label>&nbsp;</label><span><button class="btn" id="e_add" onclick="pbrAdd()"><#RVR_25#></button><button class="btng cancel" onclick="ruleEditCancel()"><#CTL_Cancel#></button></span></div>
+   </div>
+-  <div class="hint" id="objhint" style="display:none"><#RVR_27#></div>
++  <div class="hint" id="objhint" style="display:none"><#RVR_37#></div>
++  <div class="hint" id="devhint" style="display:none"><#RVR_38#></div>
++</div>
++
++<div class="card" id="objcard">
++  <h2><#RVR_39#> &middot; <span class="cnt" id="objcnt">0</span></h2>
++  <div class="tabintro">
++    <p><#RVR_40#></p>
++    <p class="ex"><#RVR_41#></p>
++  </div>
++  <div class="tblwrap">
++  <table>
++    <thead><tr><th><#RVR_42#></th><th><#RVR_43#></th><th><#RVR_11#></th><th></th></tr></thead>
++    <tbody id="objrows"></tbody>
++  </table>
++  </div>
++  <div class="editor" id="objeditor" style="margin-top:14px">
++    <div class="fld"><label><#RVR_42#></label><input type="text" id="o_name" maxlength="25" placeholder="streaming"></div>
++    <div class="fld"><label><#RVR_11#></label><input type="text" id="o_cmt" maxlength="60"></div>
++    <div class="fld wide"><label><#RVR_43#> <span style="text-transform:none;letter-spacing:0">(<#RVR_44#>)</span></label><textarea id="o_doms" rows="2" maxlength="1900" spellcheck="false" placeholder="netflix.com&#10;nflxvideo.net&#10;nflximg.net"></textarea></div>
++    <div class="fld"><label>&nbsp;</label><span><button class="btn" id="o_add" onclick="objSave()"><#RVR_45#></button><button class="btng cancel" onclick="objEditCancel()"><#CTL_Cancel#></button></span></div>
++  </div>
++  <div class="objnote" id="objnote"><#RVR_46#></div>
++  <div class="objnote" id="objsaved" style="display:none"></div>
+ </div>
+ 
+ <div class="applybar">
+@@ -178,37 +211,65 @@ var TGTLBL = { OVPN1:'OpenVPN 1',OVPN2:'OpenVPN 2',OVPN3:'OpenVPN 3',OVPN4:'Open
+ function selText(r){
+   if(r.seltype==='src') return `<#RVR_19#>` + ': ' + esc(r.selval);
+   if(r.seltype==='mac') return `<#RVR_20#>` + ': ' + esc(r.selval);
+-  return `<#RVR_17#>` + ': ' + esc(r.selval);   // ipset/domain -> object
++  return `<#RVR_34#>` + ': ' + esc(r.selval);   // ipset/domain -> object / domain list
+ }
+ function tgtClass(t){ return t==='WAN'?'wan':(t==='BLOCK'?'block':'vpn'); }
+ 
++var EDIT_RULE = -1;   /* index into ROWS being edited, -1 = adding */
+ function render(){
+   var tb = document.getElementById('rulerows'); tb.innerHTML='';
+   for(var i=0;i<ROWS.length;i++){ (function(idx){
+     var r = ROWS[idx];
+     var tr = document.createElement('tr');
++    if(idx===EDIT_RULE) tr.className='editing';
+     tr.innerHTML =
+       '<td><span class="tg'+(r.en?' on':'')+'" data-i="'+idx+'"></span></td>'+
+       '<td>'+ (r.desc? esc(r.desc) : '<span style="color:var(--steel)">&mdash;</span>') +'</td>'+
+       '<td class="sel">'+ selText(r) +'</td>'+
+       '<td><span class="tgt '+tgtClass(r.target)+'">'+ esc(TGTLBL[r.target]||r.target) +'</span></td>'+
+-      '<td><button class="rowdel" data-d="'+idx+'">&times;</button></td>';
++      '<td style="white-space:nowrap"><button class="rowedt" data-e="'+idx+'">'+esc(`<#CTL_modify#>`)+'</button><button class="rowdel" data-d="'+idx+'">&times;</button></td>';
+     tb.appendChild(tr);
+   })(i); }
+   document.getElementById('rulecnt').textContent = ROWS.length;
+-  // wire row toggles + deletes
++  // wire row toggles + edits + deletes
+   var tgs = tb.querySelectorAll('.tg');
+   for(var a=0;a<tgs.length;a++) tgs[a].onclick=function(){ var i=+this.getAttribute('data-i'); ROWS[i].en=!ROWS[i].en; render(); };
+   var dels = tb.querySelectorAll('.rowdel');
+-  for(var b=0;b<dels.length;b++) dels[b].onclick=function(){ ROWS.splice(+this.getAttribute('data-d'),1); render(); };
++  for(var b=0;b<dels.length;b++) dels[b].onclick=function(){ var i=+this.getAttribute('data-d'); if(EDIT_RULE===i) ruleEditCancel(); else if(EDIT_RULE>i) EDIT_RULE--; ROWS.splice(i,1); render(); };
++  var eds = tb.querySelectorAll('.rowedt');
++  for(var c=0;c<eds.length;c++) eds[c].onclick=function(){ ruleEdit(+this.getAttribute('data-e')); };
++}
++/* 2026-08-21 field report: rules could only be deleted and re-created. Edit
++   loads the row into the editor; Add becomes Save and replaces it in place. */
++function ruleEdit(i){
++  var r=ROWS[i]; if(!r) return;
++  EDIT_RULE=i;
++  document.getElementById('e_desc').value=r.desc||'';
++  document.getElementById('e_type').value=(r.seltype==='domain')?'ipset':r.seltype;
++  pbrTypeChange();
++  if(r.seltype==='src'||r.seltype==='mac') document.getElementById('e_val').value=r.selval||'';
++  else { var sel=document.getElementById('e_obj'); sel.value=r.selval||''; if(sel.value!==r.selval){ var op=document.createElement('option'); op.value=r.selval; op.textContent=r.selval; sel.appendChild(op); sel.value=r.selval; } }
++  document.getElementById('e_target').value=r.target||'OVPN1';
++  document.getElementById('e_add').textContent=`<#CTL_onlysave#>`;
++  document.getElementById('editor').classList.add('editing');
++  render();
++  document.getElementById('editor').scrollIntoView({block:'nearest'});
++}
++function ruleEditCancel(){
++  EDIT_RULE=-1;
++  document.getElementById('e_add').textContent=`<#RVR_25#>`;
++  document.getElementById('editor').classList.remove('editing');
++  document.getElementById('e_desc').value=''; document.getElementById('e_val').value='';
++  render();
+ }
+ 
+ function pbrTypeChange(){
+   var t = document.getElementById('e_type').value;
+   var sel = document.getElementById('e_obj'), val = document.getElementById('e_val');
+   var hint = document.getElementById('objhint');
+-  if(t==='ipset'){ sel.style.display=''; val.style.display='none'; hint.style.display=''; }
+-  else { sel.style.display='none'; val.style.display=''; hint.style.display='none';
++  var dh = document.getElementById('devhint');
++  if(t==='ipset'){ sel.style.display=''; val.style.display='none'; hint.style.display=''; dh.style.display='none'; }
++  else { sel.style.display='none'; val.style.display=''; hint.style.display='none'; dh.style.display='';
+     val.placeholder = (t==='src') ? `<#RVR_28#>` : `<#RVR_29#>`; }
+ }
+ 
+@@ -219,7 +280,9 @@ function pbrAdd(){
+   var target = document.getElementById('e_target').value;
+   if(!val){ alert(`<#RVR_32b#>`); return; }
+   if(/[<>]/.test(desc)||/[<>]/.test(val)){ alert('< >'); return; }
+-  ROWS.push({ en:true, desc:desc, seltype:t, selval:val, proto:'', port:'', target:target });
++  var rec = { en:true, desc:desc, seltype:t, selval:val, proto:'', port:'', target:target };
++  if(EDIT_RULE>=0 && ROWS[EDIT_RULE]){ rec.en=ROWS[EDIT_RULE].en; ROWS[EDIT_RULE]=rec; ruleEditCancel(); }
++  else { ROWS.push(rec); }
+   document.getElementById('e_desc').value=''; document.getElementById('e_val').value='';
+   render();
+ }
+@@ -253,27 +316,105 @@ function applyPBR(){
+   setTimeout(function(){ location.reload(); }, 14000);
+ }
+ 
+-// Populate the object dropdown from the Firewall engine's object list (rwfw_<name>).
++/* ---- objects: the Firewall engine's object list (rwfw_<name> sets) ----
++   2026-08-21 field report: creating a routing rule meant scroll -> Firewall ->
++   Objects -> create -> scroll -> VPN -> Policy Routing. Domain lists (fqdn
++   objects) are now created and edited HERE, through the same reaper_fw.cgi
++   list the Firewall page uses, so both pages see the same objects. Other
++   object types (address, MAC, country) still come from the Firewall page and
++   stay selectable in the dropdown. */
++var HTTPID='<% nvram_get("http_id"); %>';
++var OBJ=[], GRP=[], EDIT_OBJ=-1;    /* OBJ: [name,type,value,comment] rows */
++function fwcgi(q,cb){
++  var x=new XMLHttpRequest();
++  x.open('GET','/reaper_fw.cgi?'+q+'&http_id='+encodeURIComponent(HTTPID),true);
++  x.timeout=8000;
++  var done=false; function fin(j){ if(done)return; done=true; cb(j); }
++  x.onreadystatechange=function(){ if(x.readyState!==4)return; var j=null; if(x.status===200){try{j=JSON.parse(x.responseText);}catch(e){j=null;}} fin(j); };
++  x.onerror=x.ontimeout=x.onabort=function(){fin(null);};
++  x.send();
++}
++function splitList(s){var o=[],a=String(s||'').split('<'),i;for(i=0;i<a.length;i++)if(a[i]!=='')o.push(a[i].split('>'));return o;}
++function joinList(rows){return rows.map(function(r){return '<'+r.join('>');}).join('');}
+ function loadObjects(){
+-  try{
+-    var x = new XMLHttpRequest();
+-    x.open('GET','/reaper_fw.cgi?action=cfg',true);
+-    x.onreadystatechange=function(){
+-      if(x.readyState!==4) return;
+-      var names=[];
+-      try{ var j=JSON.parse(x.responseText);
+-        var raw = (j.obj||'').split('<');
+-        for(var i=0;i<raw.length;i++){ if(!raw[i])continue; var n=raw[i].split('>')[0]; if(n)names.push(n); }
+-        var grp=(j.grp||'').split('<');
+-        for(var k=0;k<grp.length;k++){ if(!grp[k])continue; var g=grp[k].split('>')[0]; if(g)names.push(g); }
+-      }catch(e){}
+-      var sel=document.getElementById('e_obj');
+-      var h='<option value="">'+esc(`<#RVR_26#>`)+'</option>';
+-      for(var m=0;m<names.length;m++) h+='<option value="'+esc(names[m])+'">'+esc(names[m])+'</option>';
+-      sel.innerHTML=h;
+-    };
+-    x.send();
+-  }catch(e){}
++  fwcgi('action=cfg',function(j){
++    if(!j||!j.ok){ renderObjects(); return; }
++    OBJ=splitList(j.obj); GRP=splitList(j.grp);
++    renderObjects();
++  });
++}
++function renderObjects(){
++  var sel=document.getElementById('e_obj'), keep=sel.value;
++  var h='<option value="">'+esc(`<#RVR_26#>`)+'</option>', i;
++  for(i=0;i<OBJ.length;i++) if(OBJ[i][0]) h+='<option value="'+esc(OBJ[i][0])+'">'+esc(OBJ[i][0])+(OBJ[i][1]==='fqdn'?'':' ('+esc(OBJ[i][1]||'')+')')+'</option>';
++  for(i=0;i<GRP.length;i++) if(GRP[i][0]) h+='<option value="'+esc(GRP[i][0])+'">'+esc(GRP[i][0])+' (group)</option>';
++  sel.innerHTML=h; if(keep) sel.value=keep;
++  var tb=document.getElementById('objrows'); tb.innerHTML=''; var n=0;
++  for(i=0;i<OBJ.length;i++){ (function(k){
++    var r=OBJ[k]; if(r[1]!=='fqdn') return; n++;
++    var tr=document.createElement('tr'); if(k===EDIT_OBJ) tr.className='editing';
++    var doms=(r[2]||'').split(',').filter(Boolean);
++    tr.innerHTML='<td>'+esc(r[0])+'</td>'+
++      '<td class="doms" title="'+esc(doms.join(', '))+'">'+esc(doms.length)+' &middot; '+esc(doms.join(', '))+'</td>'+
++      '<td>'+(r[3]?esc(r[3]):'<span style="color:var(--steel)">&mdash;</span>')+'</td>'+
++      '<td style="white-space:nowrap"><button class="rowedt" data-e="'+k+'">'+esc(`<#CTL_modify#>`)+'</button><button class="rowdel" data-d="'+k+'">&times;</button></td>';
++    tb.appendChild(tr);
++  })(i); }
++  document.getElementById('objcnt').textContent=n;
++  var eds=tb.querySelectorAll('.rowedt'); for(i=0;i<eds.length;i++) eds[i].onclick=function(){ objEdit(+this.getAttribute('data-e')); };
++  var dels=tb.querySelectorAll('.rowdel'); for(i=0;i<dels.length;i++) dels[i].onclick=function(){ objDelete(+this.getAttribute('data-d')); };
++}
++function objNormalise(raw){
++  var parts=String(raw||'').split(/[\s,;]+/), out=[], seen={}, i, t;
++  for(i=0;i<parts.length;i++){ t=parts[i].replace(/[<>]/g,'').toLowerCase(); if(!t||seen[t])continue; seen[t]=1; out.push(t); }
++  return out;
++}
++function objMsg(ok,msg){ var e=document.getElementById('objsaved'); e.style.display=''; e.style.color=ok?'var(--jade)':'var(--danger)'; e.textContent=msg; setTimeout(function(){e.style.display='none';},5000); }
++function objEdit(k){
++  var r=OBJ[k]; if(!r) return;
++  EDIT_OBJ=k;
++  document.getElementById('o_name').value=r[0]||''; document.getElementById('o_cmt').value=r[3]||'';
++  document.getElementById('o_doms').value=(r[2]||'').split(',').join('\n');
++  document.getElementById('o_add').textContent=`<#CTL_onlysave#>`;
++  document.getElementById('objeditor').classList.add('editing');
++  renderObjects();
++}
++function objEditCancel(){
++  EDIT_OBJ=-1;
++  document.getElementById('o_name').value=''; document.getElementById('o_cmt').value=''; document.getElementById('o_doms').value='';
++  document.getElementById('o_add').textContent=`<#RVR_45#>`;
++  document.getElementById('objeditor').classList.remove('editing');
++  renderObjects();
++}
++function objStore(){
++  fwcgi('action=save&k=obj&v='+encodeURIComponent(joinList(OBJ)),function(j){
++    if(j&&j.ok){ objMsg(true, `<#RVR_47#>`); }
++    else { objMsg(false, (j&&j.error)||`<#RVR_48#>`); loadObjects(); }
++  });
++}
++function objSave(){
++  var n=document.getElementById('o_name').value.trim(), c=document.getElementById('o_cmt').value.trim().replace(/[<>]/g,'');
++  var doms=objNormalise(document.getElementById('o_doms').value), i, bad=[];
++  if(!/^[A-Za-z0-9_]{1,25}$/.test(n)){ objMsg(false, `<#RFW_157#>`); return; }
++  for(i=0;i<doms.length;i++) if(!/^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/.test(doms[i])) bad.push(doms[i]);
++  if(!doms.length){ objMsg(false, `<#RVR_49#>`); return; }
++  if(bad.length){ objMsg(false, `<#RVR_50#>` + ' ' + bad.slice(0,3).join(', ')); return; }
++  var v=doms.join(','); if(v.length>1900){ objMsg(false, `<#RVR_51#>`); return; }
++  for(i=0;i<OBJ.length;i++) if(i!==EDIT_OBJ && OBJ[i][0]===n){ objMsg(false, `<#RFW_65#>`); return; }
++  for(i=0;i<GRP.length;i++) if(GRP[i][0]===n){ objMsg(false, `<#RFW_65#>`); return; }
++  var rec=[n,'fqdn',v,c];
++  if(EDIT_OBJ>=0 && OBJ[EDIT_OBJ]){
++    var old=OBJ[EDIT_OBJ][0]; OBJ[EDIT_OBJ]=rec;
++    if(old!==n) for(i=0;i<ROWS.length;i++) if((ROWS[i].seltype==='ipset'||ROWS[i].seltype==='domain')&&ROWS[i].selval===old) ROWS[i].selval=n;  /* rename follows */
++  } else OBJ.push(rec);
++  objEditCancel(); render(); objStore();
++}
++function objDelete(k){
++  var r=OBJ[k]; if(!r) return;
++  var used=false, i; for(i=0;i<ROWS.length;i++) if((ROWS[i].seltype==='ipset'||ROWS[i].seltype==='domain')&&ROWS[i].selval===r[0]) used=true;
++  if(used && !confirm(`<#RVR_52#>`)) return;
++  if(EDIT_OBJ===k) objEditCancel(); else if(EDIT_OBJ>k) EDIT_OBJ--;
++  OBJ.splice(k,1); renderObjects(); objStore();
+ }
+ 
+ (function init(){
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 4aa47b7fa7..d3093bd810 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -92,6 +92,8 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ .applying h3{font-size:16px;margin-bottom:6px}
+ .applying p{font-size:12px;color:var(--bone-dim)}
+ .stat .n.proto{font-size:15px;padding-top:6px;letter-spacing:.02em}
++.stat .n .sub{display:block;font-family:var(--body);font-weight:400;font-size:11px;color:var(--steel);letter-spacing:0;margin-top:-2px}
++.stat .n.warn{color:var(--amber)}
+ .topcard h2{display:flex;align-items:center;gap:10px}
+ .livepill{font-family:var(--hdr);font-weight:600;font-size:9.5px;letter-spacing:.12em;color:var(--jade);border:1px solid rgba(79,178,134,.4);border-radius:20px;padding:2px 8px}
+ .livepill.stale{color:var(--steel);border-color:var(--line-soft)}
+@@ -606,6 +608,22 @@ function rwStats(){
+     /* protocols actually enforced (v6 present only when ip6tables armed) */
+     document.getElementById('s_proto').textContent = j.v6 ? 'IPv4 \u00b7 IPv6' : 'IPv4';
+     if(j.lastupd > 0) document.getElementById('s_lastupd').textContent = rwAgo(j.lastupd);
++    /* 2026-08-21 field report: every country set was EMPTY after a reboot while
++       this tile read a healthy "3" - it only ever counted the countries SELECTED.
++       Now it also shows the prefixes actually loaded, and turns amber when a
++       selected country's set holds nothing (feed never fetched / cache lost). */
++    if(typeof j.geo_e === 'number'){
++      var gEl = document.getElementById('s_geo'), gN = rwSplit(NV.geo).length;
++      while(gEl.firstChild) gEl.removeChild(gEl.firstChild);
++      gEl.appendChild(document.createTextNode(String(gN)));
++      var sub = document.createElement('span'); sub.className = 'sub';
++      sub.textContent = (j.geo_empty > 0 && gN > 0)
++        ? (String(j.geo_empty) + ' ' + `<#RWDN_86#>`)
++        : (Number(j.geo_e).toLocaleString() + ' ' + `<#RWDN_87#>`);
++      gEl.appendChild(sub);
++      gEl.className = 'n' + ((j.geo_empty > 0 && gN > 0) ? ' warn' : '');
++      gEl.title = (j.geo_empty > 0 && gN > 0) ? `<#RWDN_88#>` : '';
++    }
+     var b = j.blocked || {};
+     document.getElementById('s_blocked').textContent =
+       (typeof b.total === 'number') ? b.total.toLocaleString() : '\u2014';
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index a32d9cf5ee..4d68183aae 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=seznam(i) držav prazen (prazni)
++RWDN_87=predpon naloženih
++RWDN_88=Izbrana država še nima naloženih naslovov - vir ni bil prenesen od nastanka tega nabora ali pa je bil njegov predpomnilnik izgubljen. Zaženite posodobitev vira; če težava ostane tudi po naslednji načrtovani posodobitvi, preverite sistemski dnevnik za rwarden.
++RFW_254=po en na vrstico ali ločeni z vejico
++RFW_255=Ta seznam je predolg za en objekt. Razdelite ga na dva objekta.
++RVR_34=Seznam domen / objekt (cilj)
++RVR_35=Naprava po IP / CIDR (vir)
++RVR_36=Naprava po MAC (vir)
++RVR_37=Izberite seznam domen, določen spodaj, ali kateri koli objekt s strani Požarni zid. Njegovi naslovi se osvežijo vsakih 10 minut in se ohranijo po ponovnem zagonu.
++RVR_38=Pravilo za napravo tukaj naredi isto kot izvorno pravilo VPN Director, poleg tega pa: je fail-closed (tunel ne deluje = blokirano, nikoli ne uide skozi WAN), lahko cilja na Blokiraj, pravilo MAC sledi napravi ob spremembah IP in ima prednost pred VPN Director. Če potrebujete le navadno usmerjanje po viru, zadostuje VPN Director.
++RVR_39=Seznami domen
++RVR_40=Seznam domen je poimenovan nabor domen (objekt požarnega zidu vrste Ime domene). Usmerjevalnik jih razreši v naslove, jih osveži vsakih 10 minut, ohrani odgovore dnsmasq zanje in shrani rezultat, da preživi ponovni zagon.
++RVR_41=Primer: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN-ji se spreminjajo; seznam tukaj uredite, kadar koli se to zgodi.
++RVR_42=Ime
++RVR_43=Domene
++RVR_44=po ena na vrstico ali prilepite seznam, ločen z vejico ali presledkom
++RVR_45=Dodaj seznam
++RVR_46=Seznami so skupni s stranjo Požarni zid. Nov ali urejen seznam začne veljati ob Uporabi; če je pogon požarnega zidu omogočen, njegova pravila prevzamejo spremembo ob Uporabi na strani Požarni zid.
++RVR_47=Shranjeno.
++RVR_48=Seznama ni bilo mogoče shraniti.
++RVR_49=Vnesite vsaj eno domeno.
++RVR_50=Neveljavno ime domene:
++RVR_51=Ta seznam je predolg za en objekt. Razdelite ga na dva seznama.
++RVR_52=Ta seznam še uporablja neko pravilo. Vseeno izbrišem?
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index e26ddd6437..b91e9be5d5 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=landslista/-listor tomma
++RWDN_87=prefix inlästa
++RWDN_88=Ett valt land har inga adresser inlästa ännu - flödet har inte hämtats sedan den här uppsättningen skapades, eller så har dess cache gått förlorad. Kör en flödesuppdatering; om problemet kvarstår efter nästa schemalagda uppdatering, kontrollera systemloggen efter rwarden.
++RFW_254=en per rad, eller kommaseparerade
++RFW_255=Listan är för lång för ett objekt. Dela upp den i två objekt.
++RVR_34=Domänlista / objekt (destination)
++RVR_35=Enhet via IP / CIDR (källa)
++RVR_36=Enhet via MAC (källa)
++RVR_37=Välj en domänlista som definieras nedan, eller valfritt objekt från brandväggssidan. Dess adresser uppdateras var 10:e minut och sparas över omstarter.
++RVR_38=En enhetsregel här gör samma sak som VPN Directors källregel, plus: den är fail-closed (tunnel nere = blockerad, läcker aldrig ut via WAN), den kan ha Blockera som mål, en MAC-regel följer enheten vid IP-byten, och den har företräde framför VPN Director. Om du bara behöver enkel källroutning räcker VPN Director.
++RVR_39=Domänlistor
++RVR_40=En domänlista är en namngiven uppsättning domäner (ett brandväggsobjekt av typen Domännamn). Routern slår upp dem till adresser, uppdaterar dem var 10:e minut, behåller vad dnsmasq svarar för dem och sparar resultatet så att det överlever en omstart.
++RVR_41=Exempel: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN:er ändras; redigera listan här när de gör det.
++RVR_42=Namn
++RVR_43=Domäner
++RVR_44=en per rad, eller klistra in en komma- eller blankstegsseparerad lista
++RVR_45=Lägg till lista
++RVR_46=Listorna delas med brandväggssidan. En ny eller redigerad lista träder i kraft vid Verkställ; om brandväggsmotorn är aktiverad plockar dess egna regler upp ändringen vid Verkställ på brandväggssidan.
++RVR_47=Sparat.
++RVR_48=Det gick inte att spara listan.
++RVR_49=Ange minst en domän.
++RVR_50=Ogiltigt domännamn:
++RVR_51=Listan är för lång för ett objekt. Dela upp den i två listor.
++RVR_52=En regel använder fortfarande den här listan. Ta bort ändå?
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index a55ff7b00d..8d199d3196 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=รายการประเทศว่างเปล่า
++RWDN_87=โหลด prefix แล้ว
++RWDN_88=ประเทศที่เลือกยังไม่มีที่อยู่โหลดไว้ - ยังไม่ได้ดึงฟีดตั้งแต่สร้างชุดนี้ หรือแคชสูญหาย ให้สั่งอัปเดตฟีด หากยังเป็นอยู่หลังการอัปเดตตามกำหนดครั้งถัดไป ให้ตรวจสอบ rwarden ในบันทึกระบบ
++RFW_254=บรรทัดละหนึ่งรายการ หรือคั่นด้วยจุลภาค
++RFW_255=รายการนี้ยาวเกินไปสำหรับหนึ่งออบเจ็กต์ ให้แบ่งเป็นสองออบเจ็กต์
++RVR_34=รายการโดเมน / ออบเจ็กต์ (ปลายทาง)
++RVR_35=อุปกรณ์ตาม IP / CIDR (ต้นทาง)
++RVR_36=อุปกรณ์ตาม MAC (ต้นทาง)
++RVR_37=เลือกรายการโดเมนที่กำหนดไว้ด้านล่าง หรือออบเจ็กต์ใดก็ได้จากหน้าไฟร์วอลล์ ที่อยู่ของรายการจะรีเฟรชทุก 10 นาทีและบันทึกไว้ข้ามการรีบูต
++RVR_38=กฎอุปกรณ์ที่นี่ทำงานเหมือนกฎต้นทางของ VPN Director และเพิ่มเติมคือ: เป็นแบบ fail-closed (อุโมงค์ล่ม = ถูกบล็อก ไม่รั่วออก WAN), สามารถตั้งเป้าหมายเป็นบล็อกได้, กฎ MAC ติดตามอุปกรณ์แม้ IP เปลี่ยน และมีลำดับความสำคัญเหนือ VPN Director หากต้องการเพียงการกำหนดเส้นทางตามต้นทางแบบธรรมดา VPN Director ก็เพียงพอ
++RVR_39=รายการโดเมน
++RVR_40=รายการโดเมนคือชุดโดเมนที่ตั้งชื่อไว้ (ออบเจ็กต์ไฟร์วอลล์ชนิดชื่อโดเมน) เราเตอร์จะแปลงเป็นที่อยู่ รีเฟรชทุก 10 นาที เก็บคำตอบที่ dnsmasq ให้ และบันทึกผลลัพธ์ไว้ให้คงอยู่หลังรีบูต
++RVR_41=ตัวอย่าง: streaming = netflix.com, nflxvideo.net, nflximg.net CDN เปลี่ยนแปลงได้ ให้แก้ไขรายการที่นี่เมื่อมีการเปลี่ยนแปลง
++RVR_42=ชื่อ
++RVR_43=โดเมน
++RVR_44=บรรทัดละหนึ่งรายการ หรือวางรายการที่คั่นด้วยจุลภาคหรือช่องว่าง
++RVR_45=เพิ่มรายการ
++RVR_46=รายการใช้ร่วมกับหน้าไฟร์วอลล์ รายการใหม่หรือที่แก้ไขจะมีผลเมื่อกดนำไปใช้ หากเปิดใช้งานเอนจินไฟร์วอลล์ กฎของเอนจินจะรับการเปลี่ยนแปลงเมื่อกดนำไปใช้ในหน้าไฟร์วอลล์
++RVR_47=บันทึกแล้ว
++RVR_48=ไม่สามารถบันทึกรายการได้
++RVR_49=กรุณาป้อนโดเมนอย่างน้อยหนึ่งรายการ
++RVR_50=ชื่อโดเมนไม่ถูกต้อง:
++RVR_51=รายการนี้ยาวเกินไปสำหรับหนึ่งออบเจ็กต์ ให้แบ่งเป็นสองรายการ
++RVR_52=ยังมีกฎที่ใช้รายการนี้อยู่ ต้องการลบอยู่หรือไม่?
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 77e1b44ae6..f017170cf0 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=ülke listesi boş
++RWDN_87=önek yüklendi
++RWDN_88=Seçilen bir ülke için henüz adres yüklenmedi - bu küme oluşturulduğundan beri besleme alınmadı veya önbelleği kayboldu. Bir besleme güncellemesi çalıştırın; sonraki zamanlanmış güncellemeden sonra da sürerse sistem günlüğünde rwarden kayıtlarına bakın.
++RFW_254=her satıra bir tane veya virgülle ayrılmış
++RFW_255=Bu liste tek bir nesne için çok uzun. İki nesneye bölün.
++RVR_34=Alan adı listesi / nesne (hedef)
++RVR_35=IP / CIDR ile cihaz (kaynak)
++RVR_36=MAC ile cihaz (kaynak)
++RVR_37=Aşağıda tanımlı bir alan adı listesi veya Güvenlik Duvarı sayfasındaki herhangi bir nesneyi seçin. Adresleri her 10 dakikada bir yenilenir ve yeniden başlatmalarda korunur.
++RVR_38=Buradaki bir cihaz kuralı, VPN Director'ın kaynak kuralının yaptığını yapar ve ek olarak: fail-closed çalışır (tünel kapalı = engellenir, asla WAN üzerinden sızmaz), Engelle hedefini kullanabilir, bir MAC kuralı IP değişse de cihazı izler ve VPN Director'ı geçersiz kılar. Yalnızca düz kaynak yönlendirmesi gerekiyorsa VPN Director yeterlidir.
++RVR_39=Alan adı listeleri
++RVR_40=Alan adı listesi, adlandırılmış bir alan adı kümesidir (Alan adı türünde bir güvenlik duvarı nesnesi). Yönlendirici bunları adreslere çözümler, her 10 dakikada bir yeniler, dnsmasq'ın verdiği yanıtları tutar ve sonucu yeniden başlatmaya dayanacak şekilde kaydeder.
++RVR_41=Örnek: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN'ler değişir; değiştiklerinde listeyi burada düzenleyin.
++RVR_42=Ad
++RVR_43=Alan adları
++RVR_44=her satıra bir tane veya virgül ya da boşlukla ayrılmış bir liste yapıştırın
++RVR_45=Liste ekle
++RVR_46=Listeler Güvenlik Duvarı sayfasıyla paylaşılır. Yeni veya düzenlenmiş bir liste Uygula ile etkinleşir; Güvenlik Duvarı motoru etkinse kendi kuralları değişikliği Güvenlik Duvarı sayfasındaki Uygula ile alır.
++RVR_47=Kaydedildi.
++RVR_48=Liste kaydedilemedi.
++RVR_49=En az bir alan adı girin.
++RVR_50=Geçerli bir alan adı değil:
++RVR_51=Bu liste tek bir nesne için çok uzun. İki listeye bölün.
++RVR_52=Bir kural hâlâ bu listeyi kullanıyor. Yine de silinsin mi?
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 5cf4afcc84..8d6f6907a0 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=國家清單為空
++RWDN_87=個前綴已載入
++RWDN_88=所選國家尚未載入任何位址 - 自建立此集合以來尚未擷取來源，或其快取已遺失。請執行來源更新；若下次排程更新後仍然如此，請在系統記錄中檢查 rwarden。
++RFW_254=每行一個，或以逗號分隔
++RFW_255=此清單對單一物件而言過長。請拆分為兩個物件。
++RVR_34=網域清單 / 物件（目的地）
++RVR_35=依 IP / CIDR 的裝置（來源）
++RVR_36=依 MAC 的裝置（來源）
++RVR_37=選擇下方定義的網域清單，或防火牆頁面中的任一物件。其位址每 10 分鐘重新整理一次，並在重新開機後保留。
++RVR_38=此處的裝置規則與 VPN Director 的來源規則功能相同，並額外具備：故障時封閉（通道中斷 = 封鎖，絕不經由 WAN 外洩）、可設為封鎖目標、MAC 規則可在 IP 變更後持續追蹤裝置，且優先於 VPN Director。若只需要一般的來源路由，使用 VPN Director 即可。
++RVR_39=網域清單
++RVR_40=網域清單是一組具名的網域（類型為網域名稱的防火牆物件）。路由器會將其解析為位址、每 10 分鐘重新整理一次、保留 dnsmasq 對其的回應，並儲存結果以在重新開機後保留。
++RVR_41=範例：streaming = netflix.com, nflxvideo.net, nflximg.net。CDN 會變動；變動時請在此編輯清單。
++RVR_42=名稱
++RVR_43=網域
++RVR_44=每行一個，或貼上以逗號或空格分隔的清單
++RVR_45=新增清單
++RVR_46=清單與防火牆頁面共用。新增或編輯的清單在按下套用後生效；若已啟用防火牆引擎，其規則會在防火牆頁面按下套用時套用變更。
++RVR_47=已儲存。
++RVR_48=無法儲存清單。
++RVR_49=請至少輸入一個網域。
++RVR_50=無效的網域名稱：
++RVR_51=此清單對單一物件而言過長。請拆分為兩個清單。
++RVR_52=仍有規則使用此清單。仍要刪除嗎？
+diff --git a/release/src/router/www/Tools_OtherSettings.asp b/release/src/router/www/Tools_OtherSettings.asp
+index 1fa3369373..72de3148b8 100644
+--- a/release/src/router/www/Tools_OtherSettings.asp
++++ b/release/src/router/www/Tools_OtherSettings.asp
+@@ -55,16 +55,10 @@ function rtwkHelp(a){
+ }
+ 
+ function initial() {
+-	/* reaper: reaper_inject is a kill switch with no defaults.c entry - unset or
+-	   any non-zero value means ON, only a literal "0" disables it, so the empty
+-	   case must select ON or opening this page would show it as off. */
+-	var ri = '<% nvram_get("reaper_inject"); %>';
+-	document.form.reaper_inject.value = (ri === '0') ? '0' : '1';
+ 	var wb = '<% nvram_get("wlcsm_bindfix"); %>';
+ 	document.form.wlcsm_bindfix.value = (wb === '0') ? '0' : '1';
+ 	/* what we loaded with, so the submit can ask for ONLY the restarts the
+ 	   change actually needs - see the action_script assembly in applyRule(). */
+-	RTWK_ORIG.inject = document.form.reaper_inject.value;
+ 	RTWK_ORIG.sched  = document.form.rwarden_sched.value;
+ 
+ 	show_menu();
+@@ -119,14 +113,10 @@ function applyRule(){
+ 	}
+ 	document.form.rwarden_sched.value = sc;
+ 
+-	/* Only ask for what the change needs. reaper_inject takes effect when httpd
+-	   restarts - and that drops this very session, so do not do it for someone
+-	   who only edited a TCP timeout. The Warden cron line is written by
++	/* Only ask for what the change needs. The Warden cron line is written by
+ 	   start_rwarden(), so a schedule change needs restart_rwarden or it saves to
+ 	   nvram and never reaches cron; no-op when Warden is disabled. */
+ 	var acts = document.form.action_script.value;
+-	if(document.form.reaper_inject.value !== RTWK_ORIG.inject)
+-		acts += ';restart_httpd';
+ 	if(sc !== RTWK_ORIG.sched)
+ 		acts += ';restart_rwarden';
+ 	document.form.action_script.value = acts;
+@@ -197,17 +187,6 @@ function applyRule(){
+ 						</tr>
+ 					</thead>
+ 
+-					<tr>
+-						<th><#RTWK_01#><a class="rtwkq" href="javascript:void(0);" role="button" aria-controls="rtwkh1" aria-expanded="false" onclick="return rtwkHelp(this);">?</a></th>
+-						<td>
+-							<select name="reaper_inject" class="input_option">
+-								<option value="1"><#checkbox_Yes#></option>
+-								<option value="0"><#checkbox_No#></option>
+-							</select>
+-							<div class="rtwkhelp" id="rtwkh1"><#RTWK_02#></div>
+-						</td>
+-					</tr>
+-
+ 					<tr>
+ 						<th><#RTWK_03#><a class="rtwkq" href="javascript:void(0);" role="button" aria-controls="rtwkh2" aria-expanded="false" onclick="return rtwkHelp(this);">?</a></th>
+ 						<td>
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index ab767d8c1b..0c3d641726 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6681,3 +6681,27 @@ RVR_30=Apply
+ RVR_31=Applying settings. This page will refresh.
+ RVR_32b=Enter a value for the selector.
+ RVR_33=Help
++RWDN_86=список країн порожній
++RWDN_87=префіксів завантажено
++RWDN_88=Для вибраної країни ще не завантажено адрес - стрічку не отримували з моменту створення цього набору або її кеш втрачено. Запустіть оновлення стрічки; якщо проблема залишиться після наступного планового оновлення, перевірте записи rwarden у системному журналі.
++RFW_254=по одному в рядку або через кому
++RFW_255=Цей список задовгий для одного об'єкта. Розділіть його на два об'єкти.
++RVR_34=Список доменів / об'єкт (призначення)
++RVR_35=Пристрій за IP / CIDR (джерело)
++RVR_36=Пристрій за MAC (джерело)
++RVR_37=Виберіть список доменів, визначений нижче, або будь-який об'єкт зі сторінки брандмауера. Його адреси оновлюються кожні 10 хвилин і зберігаються після перезавантаження.
++RVR_38=Правило пристрою тут робить те саме, що правило джерела у VPN Director, і додатково: воно працює за принципом fail-closed (тунель недоступний = заблоковано, без витоку через WAN), може мати ціль Блокувати, правило за MAC слідує за пристроєм при зміні IP і має пріоритет над VPN Director. Якщо потрібна лише проста маршрутизація за джерелом, достатньо VPN Director.
++RVR_39=Списки доменів
++RVR_40=Список доменів - це іменований набір доменів (об'єкт брандмауера типу Доменне ім'я). Маршрутизатор перетворює їх на адреси, оновлює кожні 10 хвилин, зберігає відповіді dnsmasq для них і записує результат, щоб він пережив перезавантаження.
++RVR_41=Приклад: streaming = netflix.com, nflxvideo.net, nflximg.net. CDN змінюються; редагуйте список тут щоразу, коли це стається.
++RVR_42=Назва
++RVR_43=Домени
++RVR_44=по одному в рядку або вставте список через кому чи пробіл
++RVR_45=Додати список
++RVR_46=Списки спільні зі сторінкою брандмауера. Новий або змінений список набирає чинності після Застосувати; якщо рушій брандмауера ввімкнено, його власні правила підхоплять зміну після Застосувати на сторінці брандмауера.
++RVR_47=Збережено.
++RVR_48=Не вдалося зберегти список.
++RVR_49=Введіть принаймні один домен.
++RVR_50=Недійсне доменне ім'я:
++RVR_51=Цей список задовгий для одного об'єкта. Розділіть його на два списки.
++RVR_52=Цей список ще використовується правилом. Усе одно видалити?
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 22cad73e43..db899ac292 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -11,6 +11,7 @@
+      rc_support flags) and document.writes require.min.js itself -->
+ <script type="text/javascript" src="/js/jquery.js"></script>
+ <script type="text/javascript" src="/state.js"></script>
++<script type="text/javascript" src="/reaper_util.js"></script>
+ <style>
+ /* REAPER settings shell: owns topbar + rail geometry; stock pages load
+    unmodified into the frame (all settings preserved); /reaper/reaper_content.css
+@@ -475,34 +476,20 @@ function buildRail(menuTree){
+     if(exMenus.indexOf(m.index)!==-1) continue;
+     if(m.index==='menu_QIS') continue;
+     if(m.index==='menu_Split'){ h+='<div class="grp">'+esc(m.menuName)+'</div>'; continue; }
+-    /* reaper 2026-08-17 field fix: "addons are listed individually on the
+-       dashboard but collapse to one 'Addons' entry on every other page".
+-
+-       Installed addons are TABS under a single menu_Addons menu, so the
+-       one-item-per-menu rule below renders the whole set as a lone link, while
+-       Main_ReaperDash.asp - the one top-level page with its own rail, which
+-       parses menuTree.js itself - lists each addon. Expand them here so the
+-       rail is the same everywhere: a group header plus one entry per addon,
+-       matching the shape the dashboard already produces.
+-
+-       menuTree.js is the file third-party addons BIND-MOUNT over, so nothing
+-       here is trusted: labels go through esc(), and a target that is not a
+-       bare same-origin page is opened in a new tab by isExternalUrl() rather
+-       than framed - the same treatment the tab bar gives these entries. If no
+-       tab survives filtering, nothing is emitted, not even the header, so a
+-       box with no addons keeps the rail exactly as it ships. */
+-    if(m.index==='menu_Addons'){
+-      var ai='', ta, an;
+-      for(var a=0;a<(m.tab||[]).length;a++){
+-        ta=m.tab[a];
+-        if(!ta||!ta.url||ta.url==='NULL') continue;
+-        if(exTabs.indexOf(ta.url)!==-1) continue;
+-        if(ta.tabName==='__HIDE__'||ta.tabName==='__INHERIT__') continue;
+-        an=ta.tabName||ta.url;
+-        if(isExternalUrl(ta.url))
+-          ai+='<a class="item" href="'+esc(ta.url)+'" target="_blank" rel="noopener noreferrer">'+ICONS.menu_Addons+'<span class="rtip">'+esc(an)+'</span></a>';
++    /* reaper 2026-08-17 / 2026-08-21: installed addons are TABS under one
++       menu, so the one-item-per-menu rule below would render the whole set as a
++       lone link while the dashboard lists each addon. Both rails now go through
++       ReaperAddons (reaper_util.js) - same detection (menu_Addons index OR the
++       user<N>.asp page convention), same filtering, same external-link rule -
++       so they cannot disagree again; only the markup is the rail's own.
++       If no entry survives, nothing is emitted, not even the header. */
++    if(ReaperAddons.isAddonMenu(m)){
++      var ai='', ae=ReaperAddons.entries(m, exTabs), a;
++      for(a=0;a<ae.length;a++){
++        if(ae[a].external)
++          ai+='<a class="item" href="'+esc(ae[a].url)+'" target="_blank" rel="noopener noreferrer">'+ICONS.menu_Addons+'<span class="rtip">'+esc(ae[a].label)+'</span></a>';
+         else
+-          ai+='<a class="item" href="/reaper_shell.asp#'+esc(ta.url)+'" data-page="'+esc(ta.url)+'" data-pages="'+esc(ta.url)+'">'+ICONS.menu_Addons+'<span class="rtip">'+esc(an)+'</span></a>';
++          ai+='<a class="item" href="/reaper_shell.asp#'+esc(ae[a].url)+'" data-page="'+esc(ae[a].url)+'" data-pages="'+esc(ae[a].url)+'">'+ICONS.menu_Addons+'<span class="rtip">'+esc(ae[a].label)+'</span></a>';
+       }
+       if(ai) h+='<div class="grp">'+esc(m.menuName)+'</div>'+ai;
+       continue;
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+index d52ddfc0ef..9810c66c31 100755
+--- a/release/src/router/www/reaper_util.js
++++ b/release/src/router/www/reaper_util.js
+@@ -118,3 +118,86 @@ window.ReaperEsc = function(s){
+ };
+ /* pages call it unqualified; keep the short name they already use */
+ window.esc = window.ReaperEsc;
++
++/* ---------------------------------------------------------------------------
++ * Addons menu - ONE parser for BOTH rails (2026-08-21 field report: "the Addons
++ * menu still has 2 variants - one on the Dashboard, and the Merlin one
++ * everywhere else"). reaper_shell.asp had its own expansion over the live
++ * require() module and Main_ReaperDash.asp its own regex parse over the
++ * fetched menuTree.js text; they disagreed on detection (the dashboard also
++ * accepted the user<N>.asp page-name convention, the shell only the exact
++ * menu_Addons index), on external entries (dropped on the dashboard, new-tab
++ * on the shell) and on what to do when nothing survives. This is the single
++ * set of rules; each rail only supplies its own markup.
++ *
++ *   ReaperAddons.isAddonMenu(menu)            -> bool
++ *   ReaperAddons.entries(menu, excludedTabs)  -> [{url,label,external}]
++ *   ReaperAddons.fromText(menuTreeSource)     -> {label, entries} | null
++ *
++ * menuTree.js is the file third-party addons bind-mount over, so nothing here
++ * is trusted: callers must esc() every label and url. An entry is either a
++ * bare same-origin page (framed) or an http(s)/mailto link (external, new
++ * tab); anything else is dropped. */
++window.ReaperAddons = (function(){
++  var PAGE = /^[A-Za-z0-9_.-]+\.(asp|htm|html)$/;
++  function isExternal(u){ return /^(https?:)?\/\//i.test(u) || /^mailto:/i.test(u); }
++  function isAddonMenu(m){
++    if(!m) return false;
++    if(m.index === 'menu_Addons') return true;
++    var t = m.tab || [], i;
++    for(i = 0; i < t.length; i++)
++      if(t[i] && /^user\d*\.asp$/i.test(String(t[i].url || ''))) return true;
++    return false;
++  }
++  function entries(m, exTabs){
++    var out = [], t = (m && m.tab) || [], i, ta, u, n;
++    exTabs = exTabs || [];
++    for(i = 0; i < t.length; i++){
++      ta = t[i];
++      if(!ta || !ta.url || ta.url === 'NULL') continue;
++      u = String(ta.url); n = String(ta.tabName || '');
++      if(exTabs.indexOf(u) !== -1) continue;
++      if(!n || n === '__HIDE__' || n === '__INHERIT__') continue;
++      if(isExternal(u)) out.push({ url: u, label: n, external: true });
++      else if(PAGE.test(u)) out.push({ url: u, label: n, external: false });
++      /* anything else (scheme-less path, query string, traversal) is dropped */
++    }
++    return out;
++  }
++  /* Balanced {...} that starts at `s`, skipping string literals. '' if unbalanced. */
++  function blockFrom(txt, s){
++    var d = 0, q = '', i, c;
++    for(i = s; i < txt.length; i++){
++      c = txt.charAt(i);
++      if(q){ if(c === q && txt.charAt(i-1) !== '\\') q = ''; continue; }
++      if(c === '"' || c === "'" || c === '`'){ q = c; continue; }
++      if(c === '{') d++;
++      else if(c === '}'){ d--; if(!d) return txt.slice(s, i + 1); }
++    }
++    return '';
++  }
++  /* The MENU object enclosing `at`: walk outward from the innermost block until
++     one carries a tab:[ list (a url match lands inside a TAB object first). */
++  function menuBlockAround(txt, at){
++    var s = txt.lastIndexOf('{', at), blk, hops = 0;
++    while(s >= 0 && hops < 4){
++      blk = blockFrom(txt, s);
++      if(blk && /\btab\s*:\s*\[/.test(blk)) return blk;
++      s = txt.lastIndexOf('{', s - 1); hops++;
++    }
++    return '';
++  }
++  function fromText(txt){
++    txt = String(txt || '');
++    var m = /index\s*:\s*["']menu_Addons["']/i.exec(txt)
++         || /url\s*:\s*["']user\d*\.asp["']/i.exec(txt);
++    if(!m) return null;
++    var blk = menuBlockAround(txt, m.index);
++    if(!blk) return null;
++    var label = (/menuName\s*:\s*["']([^"']*)["']/.exec(blk) || [])[1] || 'Addons';
++    var tabs = [], re = /\{\s*url\s*:\s*["']([^"']*)["']\s*,\s*tabName\s*:\s*["']([^"']*)["'][^{}]*\}/g, r;
++    while((r = re.exec(blk))) tabs.push({ url: r[1], tabName: r[2] });
++    return { label: label, entries: entries({ tab: tabs }, []) };
++  }
++  return { isAddonMenu: isAddonMenu, entries: entries, fromText: fromText, isExternal: isExternal };
++})();
+-- 
+2.25.1
+

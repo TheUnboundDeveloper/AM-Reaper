@@ -48,10 +48,14 @@ are placed, whatever is in the table.
 each with its own enable checkbox so you can park a rule without deleting it.
 
 **The add-rule form** builds one rule: pick the selector type, fill in its value, choose the target,
-and add it. **Apply** writes the whole list to the router and puts it into effect immediately. There
-is no countdown here (unlike the Firewall Rules tab) — see [Fail-closed](#fail-closed) for why the
-risky direction is defended a different way, and [Worth knowing](#worth-knowing) for the honest limit
-of that.
+and add it. Every row also has **Modify**: it loads the rule back into the form, the Add button
+becomes Save, and saving replaces the rule in place. **Apply** writes the whole list to the router and
+puts it into effect immediately. There is no countdown here (unlike the Firewall Rules tab) — see
+[Fail-closed](#fail-closed) for why the risky direction is defended a different way, and
+[Worth knowing](#worth-knowing) for the honest limit of that.
+
+**The Domain lists card** is where you build and maintain the lists the rules point at — see
+[Domain lists](#domain-lists) below. You no longer have to go to the Firewall page for this.
 
 ---
 
@@ -59,18 +63,56 @@ of that.
 
 Each rule matches traffic one of three ways:
 
-- **Object** — a **Firewall address or domain object**, chosen from the dropdown. The rule matches
-  traffic whose **destination** is in that object. This is the powerful one: build an object on the
-  **Firewall → Objects** tab that holds a list of domains or addresses (for example a group of
-  streaming sites, or a country), name it, and route everything headed *to* that list in one rule.
-  Domain objects fill in as the router resolves the names, exactly as they do in firewall rules.
-- **Source IP** — a single address or a range on your LAN. The rule matches traffic **from** it.
-- **Source MAC** — a device's hardware address. The rule matches traffic **from** that device,
-  wherever it picked up its IP.
+- **Domain list / object (destination)** — a named list of domains built on this page, or any
+  Firewall address object or group, chosen from the dropdown. The rule matches traffic whose
+  **destination** is in that list. This is the powerful one: name a set of streaming sites, or a
+  country, and route everything headed *to* it in one rule. Domain lists fill in as the router
+  resolves the names (see below).
+- **Device by IP / CIDR (source)** — a single address or a range on your LAN. The rule matches
+  traffic **from** it.
+- **Device by MAC (source)** — a device's hardware address. The rule matches traffic **from** that
+  device, wherever it picked up its IP.
 
-You build objects on the Firewall page, not here — this page only *refers* to them by name, so the
-same object can drive both a firewall rule and a routing rule and stays in one place when a device or
-a site's addresses change.
+### "VPN Director already routes by source IP — what do the device rules add?"
+
+A fair question; VPN Director's source rule and a device rule here do steer the same packets. The
+device rules exist for what they add on top:
+
+- **Fail-closed.** If the tunnel drops, a device routed here is **blocked** until it comes back. VPN
+  Director's rule would quietly fall through to the WAN unless you also enabled its kill switch.
+- **Block as a target.** "This device goes nowhere" without a firewall rule.
+- **MAC keying.** A MAC rule follows the device across DHCP changes; an IP rule does not.
+- **Precedence.** A rule here **overrides** a VPN Director rule for the same device, so you can carve
+  one device out of a broad "route this subnet" policy.
+
+If none of those matter to you, VPN Director alone is fine — use whichever you find clearer.
+
+---
+
+## Domain lists
+
+A domain list is a Firewall object of type *Domain name*: a name plus the domains it covers. The
+card on this page lets you **add, modify and delete** them without leaving Policy Routing; the
+Firewall page sees the same lists, so nothing is duplicated.
+
+- **Entering domains.** The box takes one domain per line, or a comma- or space-separated paste from
+  a text file. Blank lines and duplicates are dropped, everything is lower-cased, and each name is
+  checked before it is saved. A list can hold as many domains as fit in about 1,900 characters — if a
+  service needs more, split it into two lists and two rules.
+- **How a list becomes addresses.** Two mechanisms feed it: every DNS answer the router's own
+  resolver gives for a listed name lands in the list immediately, and a timer re-resolves every name
+  **every 10 minutes** as a floor (for clients that use their own DNS, names already cached, and
+  the cold start after a reboot). Addresses expire an hour after they were last seen, so a CDN that
+  rotates its pool prunes itself.
+- **Across reboots.** After every timer pass the lists are **saved to the router's flash** and
+  restored the moment they are re-created at boot, so a rule is not blind until the first lookup.
+- **CDNs change.** When a service starts reaching out to a domain you did not list, the traffic is
+  not matched. That is the one piece no timer can fix for you — come back and **Modify** the list.
+  (Keeping lists here, next to the rules that use them, is the point of this card.)
+- **The Firewall engine does not need to be on.** The lists are built whenever Policy Routing is
+  enabled, engine or no engine. If the Firewall engine *is* on and you edit a list here, the routing
+  side uses the new list on Apply; the Firewall's own rules pick it up on the Firewall page's Apply,
+  as its commit-and-confirm flow requires.
 
 ---
 
@@ -150,10 +192,11 @@ it sits in the firewall's own rule order.
 
 - **It is off until you turn it on, and adding a rule is what makes it do anything.** The master
   switch alone places nothing.
-- **Objects are shared with the Firewall.** Create and edit them on **Firewall → Objects**; this page
-  only points at them. A domain object that has not resolved yet, or an emptied group, produces no
-  rule rather than a rule that matches everything — the same fail-to-nothing behaviour the firewall
-  uses.
+- **Objects are shared with the Firewall.** Domain lists are edited here or on **Firewall →
+  Objects** — they are the same objects. Address, MAC and country objects are still created on the
+  Firewall page and simply show up in the dropdown. A list that has not resolved yet, or an emptied
+  group, produces no rule rather than a rule that matches everything — the same fail-to-nothing
+  behaviour the firewall uses.
 - **No commit-confirm countdown here.** The Firewall's Rules tab reverts on its own unless you press
   Keep, because a bad firewall rule can lock you out of the router. Policy Routing does not carry that
   countdown in this version: the engine stays inert until enabled, and a malformed rule is dropped and

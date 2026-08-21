@@ -1,0 +1,45 @@
+From b248d774562779dabb60fd6a16883f54b8d421bd Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Fri, 14 Aug 2026 01:38:03 -0400
+Subject: [PATCH] rc: don't run netstat-nat with just "-" if no option was
+ selected
+
+Modify netool so if no options is selected, then don't put a lone dash
+on the command line arguments.  That would cause netstat-nat to just
+output its headers
+
+(cherry picked from commit 851251a9e60b494889fdb5b2956a8d45a8fa96ea)
+---
+ release/src/router/rc/netool.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/netool.c b/release/src/router/rc/netool.c
+index 7b346db00b..b94c66d96c 100644
+--- a/release/src/router/rc/netool.c
++++ b/release/src/router/rc/netool.c
+@@ -372,9 +372,12 @@ static char *get_netstat_nat_option(const int opt)
+ 	x = 0;
+ 	memset(&Info, 0, sizeof(Info));
+ 	
++	if (!opt)
++		return "";
++
+ 	for(i = 0; i < MAX_NETSTAT_NAT_OPTIONS_NUM; i++) {
+ 		if ((opt & (1 << i)) && !x) {
+-			snprintf(Info, sizeof(Info), "%s", netst_natInfo[i].option);
++			snprintf(Info, sizeof(Info), "-%s", netst_natInfo[i].option);
+ 			x = 1;
+ 			continue;
+ 		}
+@@ -433,7 +436,7 @@ static int do_netstat_nat(void *rInfo)
+ 		snprintf(dsthost, sizeof(dsthost), "-d %s", req->dsthost);
+ 	}
+ 	
+-	snprintf(cmd, sizeof(cmd), "netstat-nat -%s %s %s %s %s > %s 2>&1 && echo 'XU6J03M6' >> %s &", 
++	snprintf(cmd, sizeof(cmd), "netstat-nat %s %s %s %s %s > %s 2>&1 && echo 'XU6J03M6' >> %s &", 
+ 				    get_netstat_nat_option(req->netst), sort, proto, srchost, dsthost,
+ 				    result_path, result_path);
+ 	MyDBG("Cmd: %s\n", cmd);
+-- 
+2.25.1
+

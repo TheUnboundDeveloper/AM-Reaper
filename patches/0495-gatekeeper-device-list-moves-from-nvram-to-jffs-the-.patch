@@ -1,0 +1,375 @@
+From f0593b969e6a797e0121df5f2ff6a579f5b42d62 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 09:27:31 -0400
+Subject: [PATCH] gatekeeper: device list moves from nvram to /jffs - the
+ 45-device wall (field report RT-BE88U v2.6.0)
+
+Field report 2026-08-22: after ~45 approved devices every further approve
+"succeeded" in the UI and audit log but never persisted; gk_rl stayed at
+990 bytes. Root cause: the HND kernel nvram store (bcm_knvram
+wlcsm_nvram.c) rejects a name+value tuple over WLCSM_NAMEVALUEPAIR_MAX =
+1024 bytes with WLCSM_GEN_ERR and libnvram reports nothing; Merlin's
+JFFS_NVRAM escape only covers a name whitelist baked into the prebuilt
+libnvram.so, which a Reaper variable cannot join. 22 bytes per entry ->
+silent cap at 45.
+
+- shared/gk_rl.c (libshared): gk_rl_get() / gk_rl_set() / gk_rl_migrate().
+  Same wire format, stored at /jffs/gatekeeper/rl (0600, tmp+fsync+rename).
+  gk_rl_get() falls back to nvram until start_gk migrates once and clears
+  the nvram copy; a stale nvram value can never re-shadow the file. Every
+  failure path logs "device list NOT saved" - the old path was silent.
+- httpd/web.c (4 reads, 2 writes), rc/gatekeeper.c, gkd/gkd.c switched.
+  The three nvram_commit() calls after gk_rl_update() dropped (nothing to
+  commit; each cost seconds of flash write per click).
+- Tables sized for the new ceiling: gkd MAX_DEV 256->512, httpd
+  GK_SEEN_MAX 256->512, RDEV_MAX 320->512.
+- Settings backup (nvram export) no longer carries the Gatekeeper list;
+  factory reset (wipes /jffs) clears it, which is the correct default-deny
+  outcome.
+
+Host unit test (stubbed nvram, GK_RL_DIR override): nvram fallback (45
+entries), migrate + clear, 300 entries round-trip (6.6 KB), empty set,
+stale nvram not re-imported - all pass.
+---
+ release/src/router/gkd/gkd.c       |  12 ++-
+ release/src/router/httpd/web.c     |  23 +++---
+ release/src/router/rc/gatekeeper.c |   3 +-
+ release/src/router/shared/Makefile |   1 +
+ release/src/router/shared/gk_rl.c  | 127 +++++++++++++++++++++++++++++
+ release/src/router/shared/shared.h |   5 ++
+ 6 files changed, 150 insertions(+), 21 deletions(-)
+ create mode 100644 release/src/router/shared/gk_rl.c
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index eb142874df..1f5a06a013 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -47,7 +47,7 @@
+ #define POLL_SECS     10
+ #define WL_REFRESH    3        /* assoclist sweep every POLL_SECS * WL_REFRESH */
+ #define HEAL_EVERY    3        /* self-heal probe every POLL_SECS * HEAL_EVERY (v1.7.1 L5) */
+-#define MAX_DEV       256
++#define MAX_DEV       512      /* v2.6.3: was 256; the rule list itself is no longer size-capped */
+ #define DEV_TTL       (24*3600) /* evict a device unseen this long (v1.7.1 L4) */
+ #define LEASE_DIR     "/var/lib/misc"   /* dnsmasq.leases + dnsmasq-<sdn>.leases (v2.6.2) */
+ 
+@@ -383,7 +383,7 @@ static void expire_guests(void)
+ 	 * landed during this poll. */
+ 	lf = open(GK_DIR "/rl.lock", O_CREAT | O_RDWR, 0600);
+ 	if (lf >= 0) flock(lf, LOCK_EX);
+-	rl = strdup(nvram_safe_get("gk_rl"));
++	rl = strdup(gk_rl_get());
+ 	if (!rl) { if (lf >= 0) { flock(lf, LOCK_UN); close(lf); } return; }
+ 	cap = strlen(rl) + 2;
+ 	out = calloc(1, cap);
+@@ -400,10 +400,8 @@ static void expire_guests(void)
+ 		strlcat(out, "<", cap);
+ 		strlcat(out, tok, cap);
+ 	}
+-	if (changed) {
+-		nvram_set("gk_rl", out);
+-		nvram_commit();
+-	}
++	if (changed && gk_rl_set(out) != 0)
++		logmessage("gatekeeper", "guest expiry: device list write FAILED");
+ 	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
+ 	if (changed)
+ 		notify_rc("restart_gk");	/* outside the lock - it kills+respawns this gkd */
+@@ -486,7 +484,7 @@ int main(int argc, char **argv)
+ 		nvram_match("gk_default", "1") ? "alert-only" : "quarantine");
+ 
+ 	while (!g_stop) {
+-		char *rl = nvram_safe_get("gk_rl");
++		char *rl = gk_rl_get();
+ 		int i;
+ 		long now = time(NULL);
+ 
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 8ea00a4360..540b049d6a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22899,7 +22899,7 @@ gk_rl_update(const char *mac, int state, long expiry)
+ 	 * yet present the lock is skipped (degrades to pre-1.7.1 behaviour). */
+ 	int lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR, 0600);
+ 	if (lf >= 0) flock(lf, LOCK_EX);
+-	rl = nvram_safe_get("gk_rl");
++	rl = gk_rl_get();
+ 	cap = strlen(rl) + 64;
+ 	out = calloc(1, cap);
+ 	buf = strdup(rl);
+@@ -22920,7 +22920,7 @@ gk_rl_update(const char *mac, int state, long expiry)
+ 		snprintf(add, sizeof(add), "<%s>%d>%ld", mac, state, expiry);
+ 		strlcat(out, add, cap);
+ 	}
+-	nvram_set("gk_rl", out);
++	if (gk_rl_set(out) != 0) logmessage("gatekeeper", "device list write FAILED - change not persisted");
+ 	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
+ 	free(out);
+ 	free(buf);
+@@ -23008,7 +23008,7 @@ gk_client_name(const char *mac, char *name, size_t nlen)
+ }
+ 
+ #define GK_SEEN_TSV "/tmp/gk/seen.tsv"
+-#define GK_SEEN_MAX 256
++#define GK_SEEN_MAX 512	/* v2.6.3: was 256 - matches gkd MAX_DEV */
+ 
+ struct gk_seen {
+ 	char mac[18], ip[46], host[40], band[8];
+@@ -23130,7 +23130,7 @@ gk_baseline_snapshot(void)
+ 	 * inside the lock. Skipped if /tmp/gk is absent (degrades to pre-lock behaviour). */
+ 	lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR, 0600);
+ 	if (lf >= 0) flock(lf, LOCK_EX);
+-	rl = nvram_safe_get("gk_rl");
++	rl = gk_rl_get();
+ 	/* A1-SEC-003: if gk_rl is too large to load into the fixed baseline buffer,
+ 	 * do NOT proceed - `before` would stay 0, the smaller fresh seed would win
+ 	 * the `n > before` test, and gk_rl would be OVERWRITTEN with a partial list,
+@@ -23198,7 +23198,7 @@ gk_baseline_snapshot(void)
+ 	/* write only when new devices were actually grandfathered (add-only, so an
+ 	 * existing approval or guest pass is never revoked here). */
+ 	if (n > before) {
+-		nvram_set("gk_rl", out);
++		if (gk_rl_set(out) != 0) logmessage("gatekeeper", "device list write FAILED - change not persisted");
+ 		logmessage("gatekeeper", "enable baseline: grandfathered %d new device(s), %d total authorized (ARP + DHCP leases + client list)", n - before, n);
+ 	}
+ 	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
+@@ -23209,7 +23209,7 @@ static void
+ do_reaper_gk_cgi(char *url, FILE *stream)
+ {
+ 	char *action = get_cgi("action");
+-	char *rl = nvram_safe_get("gk_rl");
++	char *rl = gk_rl_get();
+ 
+ 	if (!action) action = "status";
+ 
+@@ -23322,8 +23322,7 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 			if (h < 1 || h > 168) h = 24;
+ 			expiry = (long)time(NULL) + (long)h * 3600;
+ 		}
+-		gk_rl_update(umac, state, expiry);
+-		nvram_commit();
++		gk_rl_update(umac, state, expiry);	/* v2.6.3: persisted by gk_rl_set, no nvram_commit */
+ 		notify_rc("restart_gk");
+ 		reaper_audit("gatekeeper", "set-access", umac);
+ 		websWrite(stream, "{\"ok\":1}");
+@@ -23342,7 +23341,6 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		umac[17] = 0;
+ 		gk_rl_update(umac, -1, 0);
+ 		reaper_audit("gatekeeper", "remove-device", umac);
+-		nvram_commit();
+ 		notify_rc("restart_gk");
+ 		websWrite(stream, "{\"ok\":1}");
+ 		return;
+@@ -23936,7 +23934,7 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+  * block below, same as do_reaper_gk_cgi / do_reaper_warden_cgi).
+  * =================================================================== */
+ 
+-#define RDEV_MAX 320
++#define RDEV_MAX 512	/* v2.6.3: was 320 - matches gkd MAX_DEV */
+ 
+ struct rdev {
+ 	char mac[18];		/* uppercase colon form (the merge key) */
+@@ -24593,7 +24591,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		}
+ 
+ 		/* 5. gk_rl access states (also surfaces offline gk-listed devices) */
+-		buf = strdup(nvram_safe_get("gk_rl"));
++		buf = strdup(gk_rl_get());
+ 		sp = NULL;
+ 		if (buf) {
+ 			for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+@@ -24901,8 +24899,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 			if (h < 1 || h > 168) h = 24;
+ 			expiry = (long)time(NULL) + (long)h * 3600;
+ 		}
+-		gk_rl_update(umac, state, expiry);	/* same format authority as GK */
+-		nvram_commit();
++		gk_rl_update(umac, state, expiry);	/* same format authority as GK; persisted by gk_rl_set */
+ 		notify_rc("restart_gk");
+ 		{ char sd[8]; snprintf(sd, sizeof(sd), "%d", state); rdev_audit("access", umac, sd); }
+ 		websWrite(stream, "{\"ok\":1}");
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index d05725919f..e28f03e599 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -371,7 +371,7 @@ static void gk_gen_apply(void)
+ 		   "ebtables -N REAPER_GK -P RETURN\n", gkifs, gknets);
+ 
+ 	/* per-device rules */
+-	rl = nvram_safe_get("gk_rl");
++	rl = gk_rl_get();	/* v2.6.3: /jffs store, see shared/gk_rl.c */
+ 	buf = strdup(rl);
+ 	if (buf) {
+ 		for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+@@ -499,6 +499,7 @@ void start_gk(void)
+ 	if (!nvram_match("gk_enable", "1"))
+ 		return;
+ 	mkdir(GK_DIR, 0700);
++	gk_rl_migrate();	/* v2.6.3: nvram gk_rl -> /jffs/gatekeeper/rl, once */
+ 	reaper_hook_gen();	/* v2.6.2 front chains */
+ 	gk_gen_apply();
+ 	/* apply.sh exits non-zero when the LAN bridge is not up yet (cold boot):
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 3e51844a01..74b43ce46d 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -222,6 +222,7 @@ OBJS += bwdpi_utils.o
+ OBJS += mac_name_tbl.o
+ OBJS += stun.o
+ OBJS += scripts.o
++OBJS += gk_rl.o	# reaper v2.6.3: Gatekeeper device list store (/jffs, not nvram)
+ OBJS += llist.o
+ ifeq ($(RTCONFIG_HNS),y)
+ OBJS += hns_utils.o
+diff --git a/release/src/router/shared/gk_rl.c b/release/src/router/shared/gk_rl.c
+new file mode 100644
+index 0000000000..d738e20044
+--- /dev/null
++++ b/release/src/router/shared/gk_rl.c
+@@ -0,0 +1,127 @@
++/*
++ * gk_rl.c - reaper v2.6.3: the Gatekeeper device-rule list lives on /jffs,
++ * not in nvram.
++ *
++ * FIELD REPORT (RT-BE88U, v2.6.0, 2026-08-22): the 46th approved device and
++ * every one after it "succeeded" in the UI and the audit log but never
++ * persisted - gk_rl stayed at 45 entries / 990 bytes. Root cause: on the HND
++ * platform the kernel nvram store (bcm_knvram, wlcsm_nvram.c) rejects any
++ * name+value tuple over WLCSM_NAMEVALUEPAIR_MAX = 1024 bytes with
++ * WLCSM_GEN_ERR, and libnvram surfaces nothing to the caller. Merlin's
++ * JFFS_NVRAM mechanism only rescues a fixed whitelist of names baked into
++ * the prebuilt libnvram.so (custom_clientlist, dhcp_staticlist, ...) - a
++ * Reaper variable cannot be added to it. So nvram_set("gk_rl", ...) silently
++ * does nothing once the list passes ~45 devices (22 bytes each).
++ *
++ * The list is Reaper-owned end to end (httpd, rc/gatekeeper.c, gkd are the
++ * only readers/writers), so it moves to a plain file:
++ *     /jffs/gatekeeper/rl      "<MAC>state>expiry<MAC>state>expiry..."
++ * same wire format, no size limit that matters (256 devices = 5.6 KB),
++ * atomic replace (tmp + rename), 0600. Callers keep the /tmp/gk/rl.lock
++ * flock discipline they already had around the read-modify-write.
++ *
++ * Migration: gk_rl_migrate() (called from start_gk) copies a non-empty
++ * nvram gk_rl into the file once, then clears the nvram copy so no stale
++ * value can shadow the file. Until that runs, gk_rl_get() falls back to
++ * nvram, so every reader behaves on an un-migrated box.
++ *
++ * Factory reset wipes /jffs = the list is gone, which is the correct
++ * default-deny outcome. Settings backup (nvram) no longer carries it.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <bcmnvram.h>
++#include <shutils.h>
++#include "shared.h"
++
++#ifndef GK_RL_DIR
++#define GK_RL_DIR   "/jffs/gatekeeper"
++#endif
++#define GK_RL_FILE  GK_RL_DIR "/rl"
++#define GK_RL_MAX   (256 * 1024)	/* sanity cap on a read, far above any real list */
++
++static char *gk_rl_buf;	/* last value returned by gk_rl_get(); replaced on each call */
++
++char *gk_rl_get(void)
++{
++	FILE *f = fopen(GK_RL_FILE, "r");
++	char *nb = NULL;
++	size_t n = 0;
++
++	if (f) {
++		struct stat st;
++		if (fstat(fileno(f), &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0 && st.st_size < GK_RL_MAX) {
++			nb = malloc((size_t)st.st_size + 1);
++			if (nb) {
++				n = fread(nb, 1, (size_t)st.st_size, f);
++				nb[n] = 0;
++				/* strip a trailing newline an editor may have left */
++				while (n && (nb[n - 1] == '\n' || nb[n - 1] == '\r')) nb[--n] = 0;
++			}
++		}
++		fclose(f);
++		if (!nb) nb = strdup("");
++	} else {
++		/* not migrated yet (or /jffs absent): the nvram copy is authoritative */
++		nb = strdup(nvram_safe_get("gk_rl"));
++	}
++	if (!nb) return "";
++	free(gk_rl_buf);
++	gk_rl_buf = nb;
++	return gk_rl_buf;
++}
++
++int gk_rl_set(const char *v)
++{
++	FILE *f;
++	size_t len = v ? strlen(v) : 0;
++
++	mkdir(GK_RL_DIR, 0700);
++	f = fopen(GK_RL_FILE ".tmp", "w");
++	if (!f) {
++		logmessage("gatekeeper", "cannot write " GK_RL_FILE ".tmp - device list NOT saved");
++		return -1;
++	}
++	if (len && fwrite(v, 1, len, f) != len) {
++		fclose(f); unlink(GK_RL_FILE ".tmp");
++		logmessage("gatekeeper", "short write to " GK_RL_FILE " - device list NOT saved");
++		return -1;
++	}
++	if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
++		fclose(f); unlink(GK_RL_FILE ".tmp");
++		logmessage("gatekeeper", "flush of " GK_RL_FILE " failed - device list NOT saved");
++		return -1;
++	}
++	fclose(f);
++	chmod(GK_RL_FILE ".tmp", 0600);
++	if (rename(GK_RL_FILE ".tmp", GK_RL_FILE) != 0) {
++		unlink(GK_RL_FILE ".tmp");
++		logmessage("gatekeeper", "rename of " GK_RL_FILE " failed - device list NOT saved");
++		return -1;
++	}
++	return 0;
++}
++
++/* one-shot: nvram gk_rl -> file, then clear nvram so nothing stale shadows it */
++void gk_rl_migrate(void)
++{
++	const char *nv = nvram_safe_get("gk_rl");
++	struct stat st;
++
++	if (stat(GK_RL_FILE, &st) == 0) {
++		/* file exists: a leftover nvram value must not be re-imported later */
++		if (nv[0]) { nvram_unset("gk_rl"); nvram_commit(); }
++		return;
++	}
++	if (!nv[0]) return;
++	if (gk_rl_set(nv) == 0) {
++		int n = 0; const char *q;
++		for (q = nv; (q = strchr(q, '<')) != NULL; q++) n++;
++		logmessage("gatekeeper", "device list migrated from nvram to " GK_RL_FILE " (%d entries; nvram held a 1 KB cap)", n);
++		nvram_unset("gk_rl");
++		nvram_commit();
++	}
++}
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 389feb1c04..0eaa28c2f8 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3598,6 +3598,11 @@ extern int large_nvram(const char *name);
+ extern void jffs_nvram_init();
+ extern int jffs_nvram_getall(int len_nvram, char *buf, int count);
+ #endif
++/* reaper v2.6.3: Gatekeeper device-rule list store (shared/gk_rl.c) - lives on
++ * /jffs because the HND kernel nvram store caps a tuple at 1024 bytes. */
++extern char *gk_rl_get(void);	/* "" when empty; buffer valid until the next call */
++extern int gk_rl_set(const char *v);	/* atomic replace; 0 ok, -1 logged failure */
++extern void gk_rl_migrate(void);	/* one-shot nvram -> file (start_gk) */
+ #ifdef RTCONFIG_VAR_NVRAM
+ extern char *var_nvram_get(const char *name);
+ extern int var_nvram_set(const char *name, const char *value);
+-- 
+2.25.1
+

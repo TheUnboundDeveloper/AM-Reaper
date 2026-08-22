@@ -1,0 +1,42 @@
+From 24b6399de5e2b49e8f26c1387251322677a75261 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 09:28:51 -0400
+Subject: [PATCH] reaper_diag: Gatekeeper section (store location/size,
+ per-state counts, armed stamp, front-chain jumps; no MACs)
+
+---
+ release/src/router/others/reaper_diag | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 7f9172e319..821b76096f 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -426,6 +426,24 @@ for P in "REAPER-WARDEN " "REAPER-WARDEN-OUT " "REAPER-WARDEN-SELF "; do
+   echo "     '${P}' hits in syslog: ${WC:-0}"
+ done
+ 
++sec "14b. GATEKEEPER (counts only - no MACs)"
++# v2.6.3: the device list lives at /jffs/gatekeeper/rl (nvram capped it at
++# 1 KB = 45 devices, silently). Report where it is and how big, never what.
++for k in gk_enable gk_default gk_captive gk_notify gk_guest_hours; do echo "  $k = $(nvram get $k 2>/dev/null)"; done
++GK_RL=/jffs/gatekeeper/rl
++if [ -f "$GK_RL" ]; then
++  echo "  device list       : $GK_RL ($(wc -c < "$GK_RL" 2>/dev/null) bytes, $(tr -cd '<' < "$GK_RL" 2>/dev/null | wc -c) entries)"
++else
++  echo "  device list       : (no /jffs store yet - pre-v2.6.3 or never enabled)"
++fi
++GK_NV="$(nvram get gk_rl 2>/dev/null)"
++[ -n "$GK_NV" ] && echo "  nvram gk_rl       : STILL PRESENT ($(printf '%s' "$GK_NV" | wc -c) bytes, $(printf '%s' "$GK_NV" | tr -cd '<' | wc -c) entries) - not migrated yet"
++for st in 0 1 2 3; do n=0; [ -f "$GK_RL" ] && n=$(tr '<' '
++' < "$GK_RL" | grep -c ">$st>" 2>/dev/null); echo "  state $st           : $n"; done | sed 's/state 0  /state 0 (blocked)/; s/state 1  /state 1 (full)   /; s/state 2  /state 2 (inet)   /; s/state 3  /state 3 (guest)  /'
++echo "  seen table        : $( [ -f /tmp/gk/seen.tsv ] && wc -l < /tmp/gk/seen.tsv || echo 0 ) rows"
++echo "  armed stamp       : $( [ -f /tmp/gk/chains.ok ] && echo yes || echo no )"
++echo "  front-chain jumps : $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) (REAPER_HOOK_F -> REAPER_GKF, one per bridge)"
++
+ sec "15. DATAPLANE ACCELERATOR (one-shot reads)"
+ # ONE-SHOT, on operator demand only. rwatch's equivalent check is opt-in
+ # (rwatch_gdx=1) and default OFF because a PERIODIC kernel-facing /proc reader
+-- 
+2.25.1
+

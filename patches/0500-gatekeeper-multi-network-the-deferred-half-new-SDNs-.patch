@@ -1,0 +1,315 @@
+From bacba77914760a86f0dac0842b048d08ac0301bb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 10:18:36 -0400
+Subject: [PATCH] gatekeeper: multi-network, the deferred half - new SDNs
+ hooked immediately, captive page on isolated SDNs, live IPv6 prefixes
+
+Closes backlog "Gatekeeper multi-network - what v2.6.2 deliberately left
+out" (all three parts):
+
+1. A newly created / edited / removed SDN is hooked NOW. gk_refresh()
+   (regenerate apply.sh from get_mtlan() and re-run it, gkd untouched) is
+   called from the sdn and sdn_del service handlers. gkd's self-heal also
+   diffs bridges-that-carry-an-IPv4-address against /tmp/gk/ifs every
+   cycle and asks for restart_gk when one is unhooked (throttled 120 s,
+   logged) - covers SDN paths that never reach the service handler.
+2. Captive "awaiting approval" page on an SDN with Access Intranet OFF.
+   httpd binds lan_ifname only, so the redirect target stays the main LAN
+   address - which ASUS's SDN_FI drops for such an SDN. Gatekeeper now
+   places ONE rule in SDN_FI (own idempotent /tmp/gk/sdnfi.sh): admit
+   packets in ctstate DNAT to <lan_ipaddr>:80 - i.e. only the captive-
+   redirected flow of an unknown device. A known device on that SDN still
+   cannot reach the router UI; the admin escape hatch stays main-LAN-only,
+   which is what the Access Intranet switch means. gkd re-inserts the rule
+   when ASUS rebuilds SDN_FI (SDN events rebuild it out from under us).
+   Torn down with the rest.
+3. IPv6 GUA. The L3 leg now also drops to each bridge's CURRENT delegated
+   prefix(es), resolved at run time by gk_v6pfx() (`ip -6 addr ... scope
+   global`), never baked in. apply.sh stamps the prefix set it was built
+   against in /tmp/gk/v6pfx; gkd re-runs apply.sh when the live set differs
+   (prefix change on WAN reconnect), and the firewall re-apply hook already
+   re-runs it on WAN events.
++ gatekeeper's generated scripts now use the v2.6.1 `_nv` guard (6 sites;
+  missed in v2.6.1).
+
+Verified by extracting the generated apply.sh (macros substituted) and
+running it under mock iptables/ip: per-MAC order is 53-RETURNs, v4 subnet
+DROPs, fc00::/7 DROP, GUA DROP for the mocked 2001:db8:abcd:1::/64, RETURN;
+v6pfx stamp written; SDN_FI admit rule torn down and re-applied; sdnfi.sh
+and the gkd heal snippet pass sh -n / dash -n.
+---
+ release/src/router/gkd/gkd.c       | 47 ++++++++++++++++
+ release/src/router/rc/gatekeeper.c | 88 +++++++++++++++++++++++++++---
+ release/src/router/rc/rc.h         |  1 +
+ release/src/router/rc/services.c   |  2 +
+ 4 files changed, 129 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 1f5a06a013..9be38b7e2f 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -409,6 +409,52 @@ static void expire_guests(void)
+ 	free(rl);
+ }
+ 
++/* v2.6.5: the three multi-network drifts the armed probe cannot see.
++ *  1. a bridge with an IPv4 address that is not in /tmp/gk/ifs (an SDN created
++ *     by a path that never reached the sdn service handler) -> restart_gk
++ *  2. ASUS rebuilt SDN_FI and our captive-admit rule is gone -> sdnfi.sh
++ *  3. a bridge's delegated IPv6 prefix set changed since apply.sh ran -> re-run
++ * One shell fork per cycle; each action is logged and throttled. */
++static void heal_networks(void)
++{
++	static time_t last_restart = 0, last_v6 = 0;
++	static int sdnfi_logged = 0;
++	char out[512] = "";
++	FILE *p;
++	time_t now = time(NULL);
++
++	p = popen("IFS_=\"$(cat " GK_DIR "/ifs 2>/dev/null)\"; MISS=\"\"; "
++	          "for B in $(ls /sys/class/net 2>/dev/null | grep '^br'); do "
++	          "ip -4 addr show dev $B 2>/dev/null | grep -q inet || continue; "
++	          "case \" $IFS_ \" in *\" $B \"*) ;; *) MISS=\"$MISS $B\";; esac; done; "
++	          "echo \"MISS=$MISS\"; "
++	          "if iptables -nL SDN_FI >/dev/null 2>&1 && [ \"$(nvram get gk_captive)\" != 0 ] && [ \"$(nvram get http_enable)\" != 0 ]; then "
++	          "iptables -nL SDN_FI 2>/dev/null | grep -q 'ctstate DNAT' && echo SDNFI=ok || echo SDNFI=missing; else echo SDNFI=n/a; fi; "
++	          "CUR=\"$(for B in $IFS_; do ip -6 addr show dev $B scope global 2>/dev/null | awk '/inet6/{print $2}'; done | sort -u | tr '\\n' ' ')\"; "
++	          "[ \"$CUR\" = \"$(cat " GK_DIR "/v6pfx 2>/dev/null)\" ] && echo V6=same || echo V6=changed", "r");
++	if (!p) return;
++	while (fgets(out, sizeof(out), p)) {
++		char *nl = strchr(out, '\n'); if (nl) *nl = 0;
++		if (!strncmp(out, "MISS=", 5) && out[5] && out[6]) {
++			if (now - last_restart >= 120) {
++				last_restart = now;
++				logmessage("gatekeeper", "bridge(s)%s carry an address but are not hooked - re-applying on every network", out + 5);
++				notify_rc("restart_gk");	/* kills+respawns this gkd after the regen */
++			}
++		} else if (!strcmp(out, "SDNFI=missing")) {
++			if (!sdnfi_logged) { logmessage("gatekeeper", "captive admit rule missing from SDN_FI (SDN rules rebuilt) - re-inserting"); sdnfi_logged = 1; }
++			system("sh " GK_DIR "/sdnfi.sh 2>/dev/null");
++		} else if (!strcmp(out, "SDNFI=ok")) {
++			sdnfi_logged = 0;
++		} else if (!strcmp(out, "V6=changed") && now - last_v6 >= 60) {
++			last_v6 = now;
++			logmessage("gatekeeper", "a network's IPv6 prefix changed - re-applying internet-only rules");
++			system("sh " APPLY_SH);
++		}
++	}
++	pclose(p);
++}
++
+ static void self_heal(void)
+ {
+ 	/* start_firewall rebuilds iptables wholesale (user chains deleted) and
+@@ -458,6 +504,7 @@ static void self_heal(void)
+ 			logmessage("gatekeeper", "enforcement active");
+ 			last_armed = 1;
+ 		}
++		heal_networks();	/* v2.6.5: only meaningful once the base set is armed */
+ 		return;
+ 	}
+ 	unlink(CHAIN_STAMP);
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index e28f03e599..d163d979dc 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -47,6 +47,7 @@
+ #include "rc.h"
+ #include <shared.h>
+ #include "reaper_hook.h"
++#include "reaper_nv.h"
+ 
+ #define GK_DIR    "/tmp/gk"
+ #define GK_APPLY  GK_DIR "/apply.sh"
+@@ -125,8 +126,13 @@ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ 			   "  gk_net_fields \"$N\"\n"
+ 			   "  [ \"$NCIDR\" = - ] || iptables -A REAPER_GKF -m mac --mac-source %s -d \"$NCIDR\" -j DROP\n"
+ 			   "done\n"
+-			   "ip6tables -A REAPER_GKF -m mac --mac-source %s -d fc00::/7 -j DROP\n",
+-			   mac, mac, mac, mac);
++			   "ip6tables -A REAPER_GKF -m mac --mac-source %s -d fc00::/7 -j DROP\n"
++			   /* v2.6.5: delegated GUA prefixes, resolved now (see gk_v6pfx) */
++			   "for N in $GKNETS; do\n"
++			   "  gk_net_fields \"$N\"\n"
++			   "  for A in $(gk_v6pfx \"$NIF\"); do ip6tables -A REAPER_GKF -m mac --mac-source %s -d \"$A\" -j DROP; done\n"
++			   "done\n",
++			   mac, mac, mac, mac, mac);
+ 		fprintf(f, "for T in iptables ip6tables; do\n"
+ 			   "  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
+ 			   "  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
+@@ -204,6 +210,31 @@ static void gk_add_net(char *nets, size_t n, const char *ifn, const SUBNET_T *nw
+ 	strcat(nets, rec);
+ }
+ 
++/* v2.6.5: /tmp/gk/sdnfi.sh - the one rule Gatekeeper places in an ASUS-owned
++ * chain. SDN_FI (rc/firewall_sdn.c) carries `-i brN -d <lan_ipaddr> -j logdrop`
++ * for every SDN whose Access Intranet switch is off, and ASUS rebuilds that
++ * chain on every SDN event, out from under us. Idempotent: delete-all, then
++ * insert at 1 only while Gatekeeper + captive are on. */
++static void gk_gen_sdnfi(void)
++{
++	FILE *f = fopen(GK_DIR "/sdnfi.sh.tmp", "w");
++	if (!f) return;
++	fprintf(f, "#!/bin/sh\n"
++		   "# generated by start_gk - do not edit\n"
++		   REAPER_NV_HELPER
++		   "LANIP=\"$(_nv lan_ipaddr)\"\n"
++		   "case \"$LANIP\" in ''|*[!0-9.]*) exit 0;; esac\n"
++		   "R=\"-m conntrack --ctstate DNAT -d $LANIP -p tcp --dport 80 -j ACCEPT\"\n"
++		   "iptables -nL SDN_FI >/dev/null 2>&1 || exit 0\n"
++		   "while iptables -D SDN_FI $R 2>/dev/null; do :; done\n"
++		   "[ \"$(_nv gk_enable)\" = 1 ] && [ \"$(_nv gk_captive)\" != 0 ] && [ \"$(_nv http_enable)\" != 0 ] && iptables -I SDN_FI 1 $R\n"
++		   "exit 0\n");
++	fclose(f);
++	chmod(GK_DIR "/sdnfi.sh.tmp", 0700);
++	if (rename(GK_DIR "/sdnfi.sh.tmp", GK_DIR "/sdnfi.sh") != 0)
++		unlink(GK_DIR "/sdnfi.sh.tmp");
++}
++
+ static void gk_gen_apply(void)
+ {
+ 	FILE *f;
+@@ -285,8 +316,9 @@ static void gk_gen_apply(void)
+ 	 * writing half-built rules with an empty interface. */
+ 	fprintf(f, "#!/bin/sh\n"
+ 		   "# generated by start_gk - do not edit; idempotent (teardown+rebuild)\n"
+-		   "LANIF=\"$(nvram get lan_ifname)\"\n"
+-		   "LANIP=\"$(nvram get lan_ipaddr)\"\n"
++		   REAPER_NV_HELPER
++		   "LANIF=\"$(_nv lan_ifname)\"\n"
++		   "LANIP=\"$(_nv lan_ipaddr)\"\n"
+ 		   /* Admin escape-hatch port. With HTTPS admin present (http_enable != 0) a
+ 		    * held device reaches the real login on the HTTPS port - the httpd
+ 		    * do_ssl carve-out serves the login there, not the waiting page. On an
+@@ -294,9 +326,9 @@ static void gk_gen_apply(void)
+ 		    * hatch falls back to the plain-HTTP admin port and the captive redirect
+ 		    * is suppressed below, else the owner would be locked out. Fallbacks
+ 		    * mirror start_httpd (443 / 80); a non-numeric value is rejected. */
+-		   "GKHTTPEN=\"$(nvram get http_enable)\"\n"
+-		   "GKADMIN=\"$(nvram get https_lanport)\"\n"
+-		   "[ \"$GKHTTPEN\" = \"0\" ] && GKADMIN=\"$(nvram get http_lanport)\"\n"
++		   "GKHTTPEN=\"$(_nv http_enable)\"\n"
++		   "GKADMIN=\"$(_nv https_lanport)\"\n"
++		   "[ \"$GKHTTPEN\" = \"0\" ] && GKADMIN=\"$(_nv http_lanport)\"\n"
+ 		   "case \"$GKADMIN\" in ''|0|*[!0-9]*) if [ \"$GKHTTPEN\" = \"0\" ]; then GKADMIN=80; else GKADMIN=443; fi;; esac\n"
+ 		   "if [ -z \"$LANIF\" ]; then\n"
+ 		   "  logger -t gatekeeper 'lan_ifname not ready - enforcement deferred' 2>/dev/null\n"
+@@ -319,6 +351,12 @@ static void gk_gen_apply(void)
+ 		   "  oIFS=\"$IFS\"; IFS='|'; set -- $1; IFS=\"$oIFS\"\n"
+ 		   "  NIF=\"${1:--}\"; NIP=\"${2:--}\"; NMASK=\"${3:--}\"; NCIDR=\"${4:--}\"; ND1=\"${5:--}\"; ND2=\"${6:--}\"\n"
+ 		   "}\n"
++		   /* v2.6.5: the bridge's global IPv6 prefixes, resolved at RUN time (they
++		    * are delegated and change on WAN reconnect, so they are never baked in).
++		    * addr/len is what ip prints; ip6tables masks the host bits itself. */
++		   "gk_v6pfx() {\n"
++		   "  ip -6 addr show dev \"$1\" scope global 2>/dev/null | awk '/inet6/ { if ($2 ~ /^[0-9a-fA-F:]+\\/[0-9]+$/) print $2 }'\n"
++		   "}\n"
+ 		   /* DNS carve-out (2026-08-06 field report: an internet-only device
+ 		    * had no usable internet). When a DHCP-advertised resolver lives ON
+ 		    * the LAN (AdGuard/Pi-hole style), the bridge seal cuts a restricted
+@@ -362,6 +400,8 @@ static void gk_gen_apply(void)
+ 		   "done\n"
+ 		   "iptables -t nat -F REAPER_GKN 2>/dev/null; iptables -t nat -X REAPER_GKN 2>/dev/null\n"
+ 		   "ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null\n"
++		   /* v2.6.5: our one rule in ASUS's SDN_FI (captive on isolated SDNs) */
++		   "while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $LANIP -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done\n"
+ 		   "# ---- build ----\n"
+ 		   "for T in iptables ip6tables; do\n"
+ 		   "  $T -N REAPER_GKF\n"
+@@ -417,9 +457,16 @@ static void gk_gen_apply(void)
+ 		 * (http_enable != 0, so the escape hatch survives), and the router IP is
+ 		 * known (else the DNAT target would be malformed). */
+ 		fprintf(f,
+-			"if [ \"$(nvram get gk_captive)\" != \"0\" ] && [ \"$GKHTTPEN\" != \"0\" ] && [ -n \"$LANIP\" ]; then\n"
++			"if [ \"$(_nv gk_captive)\" != \"0\" ] && [ \"$GKHTTPEN\" != \"0\" ] && [ -n \"$LANIP\" ]; then\n"
+ 			"  iptables -t nat -A REAPER_GKN -p tcp --dport 80 -j DNAT --to-destination $LANIP:80\n"
+-			"fi\n");
++			"fi\n"
++			/* v2.6.5: the redirect target is the MAIN LAN address (httpd binds
++			 * lan_ifname only), and an SDN with Access Intranet OFF drops every
++			 * packet to that address in ASUS's SDN_FI. Admit ONLY the captive-
++			 * redirected (ctstate DNAT) flow there - a known device on that SDN
++			 * still cannot reach the router UI, which is what the switch means.
++			 * Own script so gkd can re-insert it when ASUS rebuilds SDN_FI. */
++			"[ -x " GK_DIR "/sdnfi.sh ] && sh " GK_DIR "/sdnfi.sh\n");
+ 	}
+ 
+ 	/* hooks at position 1: revocation must beat any ESTABLISHED shortcut.
+@@ -435,11 +482,15 @@ static void gk_gen_apply(void)
+ 		   "  ebtables -I FORWARD 1 --logical-in $I -j REAPER_GK\n"
+ 		   "done\n"
+ 		   REAPER_HOOK_RUN
++		   /* v2.6.5: remember the prefix set the rules were built against so gkd can
++		    * re-apply when a bridge's delegated prefix changes */
++		   "{ for N in $GKNETS; do gk_net_fields \"$N\"; gk_v6pfx \"$NIF\"; done; } 2>/dev/null | sort -u | tr '\\n' ' ' > " GK_DIR "/v6pfx\n"
+ 		   "# offloaded flows must re-traverse the fresh rules\n"
+ 		   "fc flush 2>/dev/null\n");
+ 
+ 	fclose(f);
+ 	chmod(GK_APPLY ".tmp", 0700);
++	gk_gen_sdnfi();
+ 	/* atomic publish: start_firewall() runs this script AFTER releasing the
+ 	 * firewall lock, so a concurrent restart_firewall must never exec a
+ 	 * half-written apply.sh whose opening act is the chain teardown. */
+@@ -477,6 +528,8 @@ void gk_teardown_rules(void)
+ 		"$T -F REAPER_GKI 2>/dev/null; $T -X REAPER_GKI 2>/dev/null; done; "
+ 		"iptables -t nat -F REAPER_GKN 2>/dev/null; iptables -t nat -X REAPER_GKN 2>/dev/null; "
+ 		"ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null; "
++		/* v2.6.5: our one rule in ASUS's SDN_FI */
++		"L=\"$(nvram get lan_ipaddr)\"; case \"$L\" in ''|*[!0-9.]*) ;; *) while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $L -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done;; esac; "
+ 		"fc flush 2>/dev/null");
+ }
+ 
+@@ -509,3 +562,20 @@ void start_gk(void)
+ 		logmessage("gatekeeper", "LAN not ready at boot - enforcement deferred, will arm automatically once the bridge is up");
+ 	xstart("gkd");
+ }
++
++/* v2.6.5: the network set changed (SDN added/removed/edited). Regenerate the
++ * apply script from the current get_mtlan() picture and re-run it, WITHOUT the
++ * stop/start cycle (gkd keeps running; apply.sh is a teardown+rebuild anyway).
++ * Called from the sdn / sdn_del service handlers; gkd's self-heal also asks for
++ * it (via restart_gk) when it sees a bridge with an address that is not in the
++ * hooked set. No-op unless Gatekeeper is enabled and was started. */
++void gk_refresh(void)
++{
++	if (!nvram_match("gk_enable", "1") || !f_exists(GK_APPLY))
++		return;
++	gk_gen_apply();
++	if (system("sh " GK_APPLY) != 0)
++		logmessage("gatekeeper", "network set changed - re-apply deferred (LAN not ready)");
++	else
++		logmessage("gatekeeper", "network set changed - enforcement re-applied on every bridge");
++}
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 420b8ea9c0..c1ff76fedf 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2980,6 +2980,7 @@ extern void stop_rchqd(void);	/* reaper v1.6.1 passive channel-quality monitor *
+ extern void start_rchqd(void);
+ extern void stop_gk(void);	/* reaper v1.6.8 Gatekeeper device access control (rc/gatekeeper.c) */
+ extern void start_gk(void);
++extern void gk_refresh(void);	/* v2.6.5: re-apply after an SDN add/remove/edit */
+ extern void gk_teardown_rules(void);
+ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exact-name pidof misses the latter) */
+ extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 91c40ade31..9d7594f65d 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -20246,10 +20246,12 @@ check_ddr_done:
+ 			start_fbwifi();
+ 		}
+ #endif
++		gk_refresh();	/* reaper v2.6.5: a new/edited SDN must be hooked now, not at the next restart_gk */
+ 	}
+ 	else if(strcmp(script, "sdn_del") == 0)
+ 	{
+ 		remove_sdn();
++		gk_refresh();	/* reaper v2.6.5 */
+ 	}
+ 	else if(strcmp(script, "sdn_del") == 0)
+ 	{
+-- 
+2.25.1
+

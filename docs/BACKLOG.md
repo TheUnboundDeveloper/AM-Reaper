@@ -39,24 +39,24 @@ was moved to the changelog; only open work and open confirmations remain.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[P2] Confirmations owed on metal** — v2.6.4 diag v1.3.0 (glance), v2.6.3 Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + Gatekeeper L3 leg, v2.6.1 nvram-guard,
-   v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node classification, v2.5.8 UPnP.
-   → [Pending verification](#pending-verification)
-2. **[P2] Gatekeeper multi-network — the deferred half**: per-network captive DNAT (collides with
-   ASUS's `SDN_FI -d lan_ipaddr logdrop` on isolated SDNs), `restart_sdn → start_gk` regeneration
-   (a new SDN is unhooked until the next restart_gk/reboot), v6 GUA prefixes.
-   → [Architectural](#architectural--owner-decision-needed)
+1. **[P2] Confirmations owed on metal** — v2.6.5 Gatekeeper multi-network close-out, v2.6.4 diag
+   v1.3.0 (glance), v2.6.3 Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + L3 leg,
+   v2.6.1 nvram-guard, v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node
+   classification, v2.5.8 UPnP. → [Pending verification](#pending-verification)
+2. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
 3. **[P2] Policy Routing: commit-confirm (I4), WireGuard targets, IPv6.** → [Features](#features-to-add)
-4. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
-5. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
+4. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-6. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RTRF_45/75/76, IPv6-proto labels). → [Documentation](#documentation)
-7. **Addons** Create reserved spaces for addons if used.
+5. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RTRF_45/75/76, IPv6-proto labels). → [Documentation](#documentation)
 
 ---
 
 ## Open bugs / under investigation
+
+---
+
+- **Addons** Need to carve out a reserved space for addons in the nav menu and the tabs within those menus.
 
 ---
 
@@ -124,20 +124,13 @@ The ordered short list. Each line points at its full entry below.
 
 *Do not patch unilaterally.*
 
-- **[P2] Gatekeeper multi-network — what v2.6.2 deliberately left out.** v2.6.2 shipped the L3 leg,
-  the per-network DNS carve-out and multi-lease hostnames. Still open, each a product call because it
-  touches ASUS-owned chains or service orchestration:
-  - **Captive "waiting" page on an isolated SDN.** The DNAT targets `$LANIP:80` (br0). On an SDN with
-    *Access Intranet* off, ASUS's `SDN_FI -i brN -d <lan_ipaddr> -j logdrop` (`firewall_sdn.c:371`,
-    rebuilt on every SDN event) drops it — a pending device gets a hung connection, and the admin
-    escape hatch on that SDN dies with it. Fix = per-interface DNAT to the ingress network's own
-    router IP (also needs `REAPER_GKI` to admit it), or accept "hatch lives on br0 only".
-  - **A newly created SDN is not hooked until `restart_gk` or reboot.** `restart_sdn`
-    (`services.c:20222`) never regenerates `apply.sh`; the firewall hook and gkd only *re-run* it,
-    and `self_heal()` probes chain existence, not per-interface coverage. Either call `start_gk()`
-    from `restart_sdn` or have self-heal diff live hooks against `get_mtlan()`.
-  - **IPv6 GUA.** The L3 leg drops ULA (`fc00::/7`); delegated GUA prefixes change on WAN reconnect
-    and are not baked in. Needs an ipv6-event regeneration hook to close.
+- **Gatekeeper multi-network — CLOSED in v2.6.5.** All three deferred pieces shipped: SDN
+  create/edit/delete re-applies Gatekeeper (plus a self-heal bridge diff); captive page on an
+  isolated SDN via one ctstate-DNAT admit rule in `SDN_FI` (self-healed when ASUS rebuilds it); IPv6
+  GUA prefixes resolved live with a prefix-change re-apply. **Standing decision recorded:** the
+  admin escape hatch stays main-LAN-only on an *Access Intranet = off* SDN — that switch means "no
+  router UI", and opening it would contradict it. Confirmation is under
+  [Pending verification](#pending-verification).
 - **[owner] QoS WRR: fix the queue layout vs. keep the option removed.** The hardware cannot place a
   WRR queue (all 8 scheduler slots are strict-priority — see B-1 under
   [Blocked by closed-source components](#blocked-by-closed-source-components--for-asus--broadcom)).
@@ -161,6 +154,23 @@ with what the attempt ruled out.*
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
 
 ---
+
+### v2.6.5 (2026-08-22) — Gatekeeper multi-network close-out
+
+- **[P1] A new SDN is protected immediately.** **Settles when**, with Gatekeeper on, creating a
+  Guest Network Pro profile logs `gatekeeper: network set changed - enforcement re-applied on every
+  bridge` within seconds and `iptables -nL REAPER_HOOK_F` shows a `REAPER_GKF` jump for the new
+  bridge; deleting it removes the jump. Also: `iptables -D REAPER_HOOK_F -i brN -j REAPER_GKF` by
+  hand must be repaired by gkd within ~2 min with the `bridge(s) … not hooked` line. **[owed — metal, needs an SDN]**
+- **[P1] Captive page on an isolated SDN.** **Settles when** an unknown device on an SDN with
+  *Access Intranet off* gets the "awaiting approval" page (not a hang), while an *approved* device
+  on the same SDN still cannot open the router UI. `iptables -nL SDN_FI | head -3` shows the
+  `ctstate DNAT … dpt:80 ACCEPT` rule at the top, and it is back within 30 s after
+  `service restart_sdn`. **[owed — metal, needs an SDN]**
+- **[P2] IPv6 GUA covered.** **Settles when** on an IPv6-delegated box `ip6tables -nL REAPER_GKF |
+  grep <mac>` for an internet-only device lists a DROP to the bridge's global prefix, and after a
+  WAN reconnect (new prefix) the rule follows within ~1 min with the `IPv6 prefix changed` log line.
+  **[owed — metal, needs IPv6]**
 
 ### v2.6.4 (2026-08-22) — diagnostics report v1.3.0
 

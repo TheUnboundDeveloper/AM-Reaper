@@ -24,6 +24,16 @@ node, not only on the primary router.
 
 ---
 
+## v2.6.5 — Gatekeeper multi-network, finished
+*Built on RT-BE96U (pending). Closes the three pieces v2.6.2 deliberately left open. Not yet cut as a public CI release.*
+
+- **A new guest/IoT network is protected the moment you create it.** Until now a network created while Gatekeeper was on was not hooked until the next Gatekeeper restart or reboot — nothing told you. Creating, editing or deleting an SDN now re-applies Gatekeeper on every bridge immediately (logged), and the watcher also checks every 30 s for a bridge that carries an address but is not hooked and re-applies if it finds one.
+- **The "awaiting approval" page now works on an isolated guest network.** The page is served from the main LAN address, which an SDN with *Access Intranet* off drops by design, so an unknown device there got a hung connection instead of the page — and kept re-trying. Gatekeeper now admits exactly one thing through that isolation: the captive-redirected request of an *unknown* device. A device you have already approved on that network still cannot reach the router's pages, and the admin escape hatch remains main-LAN only — that is what the Access Intranet switch means, so it is kept. ASUS rebuilds that chain on every network change; the watcher puts the rule back.
+- **Internet-only now also covers IPv6 global addresses.** The v2.6.2 block covered private IPv6 (ULA) only, because delegated prefixes change on WAN reconnect. They are now read live from each bridge when the rules are built, and rebuilt automatically when the prefix changes.
+- Gatekeeper's generated scripts now use the v2.6.1 `nvram` hang guard (missed in that release).
+
+---
+
 ## v2.6.4 — the diagnostics report learns to find things itself
 *Built on RT-BE96U (pending). Diagnostics-only rung; no behaviour change. Not yet cut as a public CI release.*
 

@@ -1,0 +1,414 @@
+From f8620c599e459937dd5c64d3225b00932a89b10f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 09:53:31 -0400
+Subject: [PATCH] reaper_diag v1.3.0: findings header, syslog history/churn,
+ process health, Reaper layers, data plane, nvram hygiene, network inventory
+
+Everything the last three field investigations had to gather by hand, as
+sanitized sections (counts, names, states - never contents, never a raw
+MAC/host/public address; all inside the existing single sanitizer pass):
+- 0b FINDINGS (printed first; prepended BEFORE the sanitizer so pseudonyms
+  match the sections): nvram values near the 1 KB kernel tuple cap, gk_rl
+  not migrated, stuck nvram/netfilter readers, D-state, enabled-but-dead
+  daemons, missing cron lines, legacy direct firewall jumps / missing
+  REAPER_HOOK_F, rules-engine load failures, conntrack >=80%, WAN at
+  10/100 Mb/s, a station with >=200 disassociations.
+- 3b NVRAM HYGIENE: names + sizes of values >900 bytes (the 45-device wall
+  class), total size.
+- 4b NETWORKS: every bridge (subnet, state, ports), SDN profile/link counts,
+  DHCP option-6 DNS per dnsmasq instance, SDN chain sizes.
+- 5 WAN detail: link speed/carrier/MTU, proto state, DHCP lease age or the
+  PPPoE "up with MTU" line + MTU/MRU, upstream resolvers, DoT, wanduck.
+- 9: flow-cache learning/eviction line.
+- 11b CONNTRACK: entries/max, per-protocol, unreplied/syn_sent/hw-accel
+  counts, distinct LAN sources, all timeouts + ct_tcp_timeout.
+- 12b PROCESS HEALTH: nvram/iptables/ipset/wl/tmctl/fc readers older than
+  60 s with wchan + parent, D-state, zombies, top-5 CPU (comm only), memory.
+- 12c REAPER SERVICES vs switches + cru l.
+- 14c FIREWALL LAYER ORDER: REAPER_HOOK/_F/_O contents and base position,
+  legacy direct jumps count; rules-engine knobs, list counts, chain sizes,
+  rwfw_* set sizes, failcount, commit-confirm deadline.
+- 14d POLICY ROUTING + VPN: PBR knobs/rule count, ip rule 9000-19999 band,
+  OpenVPN client/server states, WireGuard peer COUNTS only (never `wg show`
+  keys), IPsec, tunnel ifaces, VPN Director rule count.
+- 19b SYSLOG HISTORY over live log + the rwatch mirror: top stations by
+  disassoc/assoc, DEAUTHORIZE/ocv counts, top DHCPDISCOVER sources, Reaper
+  event counters, noise profile by source tag, boot count, panic/oom, WAN
+  link-down, tainted; dmesg error summary; run time.
+- SDN lease files added to the hostname redaction list.
+Host dry-run: sh/dash clean, report generated, tripwire CLEAN, churn MACs
+pseudonymized consistently, 7 s.
+---
+ release/src/router/others/reaper_diag | 253 +++++++++++++++++++++++++-
+ 1 file changed, 248 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 821b76096f..dd24d9ff58 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.0 (2026-07-20) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.0 (2026-08-22) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -23,6 +23,17 @@
+ #  report says CLEAN; anything else says REVIEW BEFORE SHARING. This is what
+ #  keeps "sanitized" from silently degrading as new sections are added.
+ #
++#  v1.3.0 adds what the last three field investigations each had to gather by
++#  hand: syslog CHURN and noise profile (per-station assoc/disassoc counts,
++#  reboot lineage, the rwatch mirror for days instead of hours), PROCESS HEALTH
++#  (stuck nvram/iptables readers, D-state, top CPU), the Reaper LAYERS that
++#  post-date v1.2 (front-chain order, rules engine, policy routing, VPN state,
++#  multi-network inventory), DATA PLANE (conntrack, timeouts, WAN link detail),
++#  NVRAM HYGIENE (values near the 1 KB kernel tuple cap - the 45-device
++#  Gatekeeper wall) and a FINDINGS block at the top with one-line verdicts the
++#  script can derive itself. Every new line is a count, a name or a state;
++#  MACs/hosts/public addresses go through the same sanitizer as before.
++#
+ #  TWO RULES FOR ANYONE ADDING A SECTION BELOW:
+ #    1. Never emit a container's CONTENTS when its SIZE answers the question.
+ #       ipset member lists are dumped with `ipset list -t` (header only) for
+@@ -37,7 +48,8 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.2.0"
++VER="REAPER-DIAG v1.3.0"
++T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+ STAMP="$(date +%Y%m%d_%H%M%S)"
+@@ -46,9 +58,12 @@ SLIST="/tmp/.rdiag_secrets.$$"
+ AWKP="/tmp/.rdiag_awk.$$"
+ BODY="/tmp/.rdiag_body.$$"
+ LEDG="/tmp/.rdiag_ledger.$$"
++FIND="/tmp/.rdiag_find.$$"
++RAW2="/tmp/.rdiag_raw2.$$"
+ OUT="/tmp/reaper_diag_${MODEL}_${STAMP}.txt"
+ umask 077
+-trap 'rm -f $RAW $SLIST $SLIST.s $AWKP $BODY $LEDG' EXIT
++trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $BODY $LEDG $FIND' EXIT
++: > "$FIND"
+ 
+ sec() { echo ""; echo "#### $1 ####"; }
+ have() { type "$1" >/dev/null 2>&1; }  # v1.0.1: on-router busybox ash lacks "command -v"
+@@ -83,6 +98,23 @@ probe() {
+   echo "  $_l : loss=${_loss:-100}%  avg_rtt=${_rtt:-n/a}ms"
+ }
+ 
++# v1.3.0: one-line verdicts collected during the gather and printed FIRST.
++# Written raw and prepended to the body BEFORE the sanitizer runs, so a MAC or
++# host named in a finding gets the same pseudonym it has in the sections.
++finding() { echo "  [$1] $2" >> "$FIND"; }
++
++# syslog history: the live file plus the rwatch mirror when the durable store
++# has one (days of history instead of hours). Read-only; bounded by file size.
++slog_files() {
++  _m=""; _b="$(nvram get reaper_store 2>/dev/null)"
++  case "$_b" in
++    jffs) [ -s /jffs/reaper/syslog.mirror ] && _m=/jffs/reaper/syslog.mirror ;;
++    usb) for d in /tmp/mnt/*/; do [ -s "${d}.reaper/syslog.mirror" ] && { _m="${d}.reaper/syslog.mirror"; break; }; done ;;
++  esac
++  [ -n "$_m" ] && echo "$_m"
++  [ -s /tmp/syslog.log ] && echo /tmp/syslog.log
++}
++
+ # ---------------------------------------------------------------------------
+ # 1. Collect sensitive literals -> $SLIST as "CLASS<TAB>value" (never printed)
+ # ---------------------------------------------------------------------------
+@@ -102,6 +134,11 @@ nvram show 2>/dev/null | awk -F= '
+ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases /jffs/nmp/dnsmasq.leases; do
+   [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 5) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null && break
+ done
++# v1.3.0: every SDN runs its own dnsmasq with its own lease file - their
++# hostnames must be on the redaction list too (they appear in the churn section)
++for LF in /var/lib/misc/dnsmasq-*.leases; do
++  [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 5) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null
++done
+ # longest-first so partial overlaps can not leak (dedupe must PRESERVE that order).
+ # v1.0.1 protect list: never treat the model name or the ASUS brand as a secret
+ # literal - lan_hostname defaults to the model, which redacted productid and
+@@ -249,6 +286,24 @@ echo "  -- storage --"; df -h 2>/dev/null | sed 's/^/  /'
+ echo "  -- jffs/usb mounts --"; mount 2>/dev/null | grep -E "jffs|/mnt|usb|sd[a-z]" | sed 's/^/  /'
+ echo "  -- top (snapshot) --"; top -bn1 2>/dev/null | head -12 | sed 's/^/  /'
+ 
++sec "3b. NVRAM HYGIENE (names and sizes only - values never printed)"
++# The HND kernel nvram store rejects any name+value tuple over 1024 bytes and
++# libnvram reports nothing (the v2.6.3 Gatekeeper 45-device wall). Names whose
++# value is within reach of that cap are the next silent failure; the ones
++# Asuswrt-Merlin already routes to /jffs (custom_clientlist, dhcp_staticlist,
++# vpn lists...) are safe and listed only for completeness.
++NVTOT="$(nvram show 2>/dev/null | wc -c)"; NVSZ="$(nvram show 2>/dev/null | sed -n 's/^size: \([0-9]*\) bytes.*/\1/p' | head -1)"
++echo "  nvram total       : ${NVTOT:-?} bytes of text$( [ -n "$NVSZ" ] && echo " (reported size: $NVSZ)")"
++NVBIG="$(nvram show 2>/dev/null | awk -F= '/^[A-Za-z0-9_.]+=/ { if (length($0) > 900) print "  " $1 " (" length($0) " bytes)" }')"
++if [ -n "$NVBIG" ]; then
++  echo "  values >900 bytes (1 KB tuple cap):"; echo "$NVBIG"
++  echo "$NVBIG" | grep -vE "custom_clientlist|dhcp_staticlist|vpn_|ipsec_|MULTIFILTER|captive_portal|filter_|autofw|vts_rulelist|wl[0-9._]*maclist|sshd_authkeys|pptpd_clientlist|nvram_" | grep -q . && \
++    finding WARN "nvram value(s) within reach of the 1 KB kernel tuple cap - see 3b (non-whitelisted names silently stop saving)"
++else
++  echo "  values >900 bytes : none"
++fi
++GKNV="$(nvram get gk_rl 2>/dev/null | wc -c)"; [ "$GKNV" -gt 1 ] && finding INFO "gk_rl still in nvram ($GKNV bytes) - Gatekeeper list not migrated to /jffs yet (pre-v2.6.3 or Gatekeeper never restarted)"
++
+ sec "4. LAN / BRIDGE"
+ for k in lan_proto lan_ipaddr lan_netmask lan_ifname lan_ifnames lanports wanports dhcp_enable_x dhcp_start dhcp_end; do
+   echo "  $k = $(nvram get $k 2>/dev/null)"
+@@ -256,6 +311,28 @@ done
+ echo "  -- brctl show --"; brctl show 2>/dev/null | sed 's/^/  /'
+ echo "  -- br0 addrs --"; ifconfig br0 2>/dev/null | grep -E "inet|HWaddr" | sed 's/^/  /'
+ 
++sec "4b. NETWORKS (every bridge: subnet, DHCP DNS, SDN links; no clients)"
++# What Gatekeeper's L3 leg, the SDN firewall and per-network DHCP all key on.
++for B in $(ls /sys/class/net 2>/dev/null | grep '^br' | sort); do
++  A="$(ip -4 addr show dev "$B" 2>/dev/null | sed -n 's/.*inet \([0-9./]*\).*/\1/p' | head -1)"
++  ST="$(cat /sys/class/net/$B/operstate 2>/dev/null)"
++  PN="$(ls /sys/class/net/$B/brif 2>/dev/null | wc -l)"
++  echo "  $B  ${A:-no-v4}  state=$ST  ports=$PN"
++done
++SDNN="$(nvram get sdn_rl 2>/dev/null | tr '<' '\n' | awk -F'>' 'NF>2 && $3==1' | wc -l)"
++echo "  SDN profiles enabled : ${SDNN:-0}   (sdn_rl)"
++SDNA="$(nvram get sdn_access_rl 2>/dev/null)"
++echo "  linked SDN pairs     : $( [ -n "$SDNA" ] && echo "$SDNA" | tr '<' '\n' | grep -c '>' || echo 0)   (sdn_access_rl - linked networks route to each other)"
++echo "  -- DHCP option 6 (advertised DNS) per dnsmasq instance --"
++for C in /etc/dnsmasq.conf /etc/dnsmasq-*.conf; do
++  [ -f "$C" ] || continue
++  D="$(grep -E '^dhcp-option=.*,6,|^dhcp-option=6,' "$C" 2>/dev/null | sed 's/^dhcp-option=//' | tr '\n' ' ')"
++  I="$(grep -E '^interface=' "$C" 2>/dev/null | head -1 | cut -d= -f2)"
++  echo "  $(basename $C)  if=${I:-?}  dns=${D:-(router)}"
++done
++echo "  -- SDN firewall chains present --"
++for CH in SDN_FI SDN_FF SDN_IA; do printf "  %-7s %s\n" "$CH" "$(iptables -nL $CH 2>/dev/null | tail -n +3 | wc -l) rules"; done
++
+ sec "5. WAN"
+ for k in wans_dualwan wan0_proto wan0_state_t wan0_sbstate_t wan0_auxstate_t link_wan switch_wantag; do
+   echo "  $k = $(nvram get $k 2>/dev/null)"
+@@ -281,6 +358,22 @@ for d in $(nvram get wan0_dns 2>/dev/null) $(nvram get wan0_xdns 2>/dev/null) $(
+ done
+ echo "  -- routes --"; ip route 2>/dev/null | sed 's/^/  /'
+ 
++echo "  -- v1.3.0 link / session detail --"
++WANIF="$(nvram get wan0_ifname 2>/dev/null)"; WANIF="${WANIF:-eth0}"
++echo "  wan iface         : $WANIF  speed=$(cat /sys/class/net/$WANIF/speed 2>/dev/null || echo ?)Mb/s  carrier=$(cat /sys/class/net/$WANIF/carrier 2>/dev/null || echo ?)  mtu=$(cat /sys/class/net/$WANIF/mtu 2>/dev/null || echo ?)"
++WPROTO="$(nvram get wan0_proto 2>/dev/null)"
++echo "  proto             : $WPROTO  state_t=$(nvram get wan0_state_t 2>/dev/null) sbstate=$(nvram get wan0_sbstate_t 2>/dev/null) auxstate=$(nvram get wan0_auxstate_t 2>/dev/null)"
++case "$WPROTO" in
++  dhcp) echo "  dhcp lease        : lease=$(nvram get wan0_lease 2>/dev/null)s expires_in=$(nvram get wan0_expires 2>/dev/null)s";;
++  pppoe) echo "  pppoe             : $(grep -i 'up with MTU' /tmp/syslog.log 2>/dev/null | tail -1 | cut -c17- | sed 's/^ *//')"
++         echo "  pppoe mtu/mru     : mtu=$(nvram get wan0_pppoe_mtu 2>/dev/null) mru=$(nvram get wan0_pppoe_mru 2>/dev/null) (both >1492 needed for RFC 4638)";;
++esac
++echo "  upstream resolvers: $(awk '/^nameserver/{print $2}' /tmp/resolv.dnsmasq 2>/dev/null | tr '\n' ' ')"
++echo "  dns-over-tls      : dnspriv_enable=$(nvram get dnspriv_enable 2>/dev/null)"
++echo "  wanduck           : link_internet=$(nvram get link_internet 2>/dev/null) wandog=$(nvram get wandog_enable 2>/dev/null)"
++WSPD="$(cat /sys/class/net/$WANIF/speed 2>/dev/null)"
++case "$WSPD" in 10|100) finding WARN "WAN link is at ${WSPD} Mb/s - check the cable/ONT negotiation (see 5 and 8)";; esac
++
+ sec "6. IPV6"
+ echo "  ipv6_service = $(nvram get ipv6_service 2>/dev/null)"
+ V6="$(ifconfig br0 2>/dev/null | grep -c 'Scope:Global')"
+@@ -336,6 +429,8 @@ done
+ 
+ sec "9. FLOW ACCELERATION"
+ have fc && fc status 2>/dev/null | head -14 | sed 's/^/  /'
++# v1.3.0: the learning line carries the eviction picture (Cumulative [learned - freed], Active)
++have fc && fc status 2>/dev/null | grep -E "Flow (Ucast|Mcast) Learning" | sed 's/^[ \t]*/  /'
+ have fcctl && echo "  active flows: $(fcctl status 2>/dev/null | grep -i -m1 flow)"
+ 
+ sec "10. QOS (engine + hardware readbacks)"
+@@ -377,11 +472,75 @@ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases; do
+   fi
+ done
+ 
++sec "11b. CONNTRACK (counts, timeouts - no flows printed)"
++CT=/proc/net/nf_conntrack
++if [ -r $CT ]; then
++  CTN="$(wc -l < $CT)"; CTMAX="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
++  echo "  entries           : $CTN / ${CTMAX:-?}"
++  echo "  by protocol       : $(awk '{c[$3]++} END {for (k in c) printf "%s=%d ", k, c[k]}' $CT)"
++  echo "  unreplied         : $(grep -c 'UNREPLIED' $CT)   syn_sent: $(grep -c 'SYN_SENT' $CT)   hw-accelerated: $(grep -c 'hwaccel=[1-9]' $CT)"
++  echo "  lan sources       : $(awk '{for(i=1;i<=NF;i++) if ($i ~ /^src=/) {print substr($i,5); break}}' $CT | sort -u | wc -l) distinct"
++  [ -n "$CTMAX" ] && [ "$CTMAX" -gt 0 ] && [ $((CTN * 100 / CTMAX)) -ge 80 ] && finding WARN "conntrack table ${CTN}/${CTMAX} (>=80% full)"
++else
++  echo "  /proc/net/nf_conntrack not readable"
++fi
++echo "  -- timeouts (s) --"
++for k in nf_conntrack_tcp_timeout_established nf_conntrack_tcp_timeout_time_wait nf_conntrack_udp_timeout nf_conntrack_udp_timeout_stream nf_conntrack_generic_timeout nf_conntrack_tcp_loose nf_conntrack_tcp_be_liberal; do
++  printf "  %-40s %s\n" "$k" "$(cat /proc/sys/net/netfilter/$k 2>/dev/null)"
++done
++echo "  ct_tcp_timeout (nvram) : $(nvram get ct_tcp_timeout 2>/dev/null)"
++
+ sec "12. PROCESSES / LISTENING SOCKETS"
+ ps w 2>/dev/null | sed 's/^/  /'
+ echo "  -- listeners --"
+ netstat -tuln 2>/dev/null | sed 's/^/  /'
+ 
++sec "12b. PROCESS HEALTH (stuck readers, D-state, top CPU - command names only)"
++# The libnvram netlink wait-forever hang (v2.6.1 guard) shows up as an `nvram`
++# process that is minutes old and asleep in __skb_wait_for_more_packets.
++UPNOW="$(cut -d. -f1 /proc/uptime)"; STUCK=0; DST=0; ZOMB=0
++for PD in /proc/[0-9]*; do
++  PID="${PD#/proc/}"; [ -r "$PD/stat" ] || continue
++  LINE="$(cat $PD/stat 2>/dev/null)" || continue
++  CMD="${LINE#*(}"; CMD="${CMD%%)*}"; REST="${LINE##*) }"
++  set -- $REST; STATE="$1"; STT="${20}"
++  AGE=$((UPNOW - STT / 100))
++  case "$STATE" in
++    D) DST=$((DST+1)); echo "  D-state   pid=$PID $CMD age=${AGE}s wchan=$(cat $PD/wchan 2>/dev/null)";;
++    Z) ZOMB=$((ZOMB+1));;
++  esac
++  case "$CMD" in
++    nvram|iptables|ip6tables|ipset|ebtables|wl|tmctl|fc)
++      if [ "$AGE" -gt 60 ]; then STUCK=$((STUCK+1)); echo "  STUCK     pid=$PID $CMD age=${AGE}s state=$STATE wchan=$(cat $PD/wchan 2>/dev/null) parent=$(cat /proc/$2/comm 2>/dev/null)"; fi;;
++  esac
++done
++echo "  stuck readers >60s: $STUCK   D-state: $DST   zombies: $ZOMB"
++[ "$STUCK" -gt 0 ] && finding WARN "$STUCK stuck nvram/netfilter reader process(es) older than 60 s - see 12b (libnvram netlink hang signature)"
++[ "$DST" -gt 0 ] && finding WARN "$DST process(es) in uninterruptible D-state - see 12b"
++echo "  -- top 5 by accumulated CPU (utime+stime, seconds) --"
++for PD in /proc/[0-9]*; do
++  LINE="$(cat $PD/stat 2>/dev/null)" || continue
++  CMD="${LINE#*(}"; CMD="${CMD%%)*}"; REST="${LINE##*) }"
++  set -- $REST; echo "$(( ($12 + $13) / 100 )) $CMD ${PD#/proc/}"
++done | sort -rn | head -5 | awk '{printf "  %6ss  %-20s pid=%s\n", $1, $2, $3}'
++echo "  -- memory --"; grep -E '^(MemFree|MemAvailable|Slab|Committed_AS|SwapTotal|SwapFree)' /proc/meminfo 2>/dev/null | sed 's/^/  /'
++
++sec "12c. REAPER SERVICES vs. THEIR SWITCHES"
++svc() { # name knob expected-running-when
++  _on="$(nvram get $2 2>/dev/null)"; _run="$(pidof $1 2>/dev/null | wc -w)"
++  printf "  %-8s %-22s running=%s\n" "$1" "$2=${_on:-unset}" "$_run"
++  if [ "$_on" = "$3" ] && [ "$_run" = 0 ]; then finding WARN "$1 is enabled ($2=$3) but not running"; fi
++}
++svc rtrafd rtraf_enable 1; svc gkd gk_enable 1; svc rchqd rchq_enable 1; svc rmcpd rmcp_port x
++echo "  rwatch            : rwatch_enable=$(nvram get rwatch_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -c '#rwatch#')"
++echo "  warden            : rwarden_enable=$(nvram get rwarden_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -cE '#rwarden')  chain=$(iptables -nL REAPER_WARDEN >/dev/null 2>&1 && echo present || echo absent)"
++echo "  rules engine      : reaper_fw_enable=$(nvram get reaper_fw_enable 2>/dev/null) active=$(nvram get reaper_fw_active 2>/dev/null) armed=$(nvram get reaper_fw_armed 2>/dev/null)"
++echo "  policy routing    : reaper_pbr_enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null)"
++echo "  exporter          : reaper_export_mode=$(nvram get reaper_export_mode 2>/dev/null)"
++echo "  -- cron (cru l) --"; cru l 2>/dev/null | sed 's/^/  /'
++[ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && ! iptables -nL REAPER_WARDEN >/dev/null 2>&1 && finding WARN "Warden enabled but REAPER_WARDEN chain absent"
++[ "$(nvram get rwatch_enable 2>/dev/null)" = 1 ] && [ "$(cru l 2>/dev/null | grep -c '#rwatch#')" = 0 ] && finding WARN "rwatch enabled but its cron line is missing"
++
+ sec "13. ADDONS / JFFS"
+ echo "  jffs scripts: $(ls /jffs/scripts 2>/dev/null | tr '\n' ' ')"
+ echo "  entware: $( [ -d /opt/bin ] && echo present || echo absent )"
+@@ -444,6 +603,52 @@ echo "  seen table        : $( [ -f /tmp/gk/seen.tsv ] && wc -l < /tmp/gk/seen.t
+ echo "  armed stamp       : $( [ -f /tmp/gk/chains.ok ] && echo yes || echo no )"
+ echo "  front-chain jumps : $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) (REAPER_HOOK_F -> REAPER_GKF, one per bridge)"
+ 
++sec "14c. FIREWALL LAYER ORDER + RULES ENGINE (chain order, counts, set sizes)"
++# v2.6.2: one jump per base chain into REAPER_HOOK/_F/_O; inside, the fixed
++# order is Warden -> Gatekeeper -> rules engine. Anything else is a defect.
++LEGACY=0
++for P in INPUT:REAPER_HOOK FORWARD:REAPER_HOOK_F OUTPUT:REAPER_HOOK_O; do
++  H="${P%%:*}"; C="${P##*:}"
++  J="$(iptables -nL $C 2>/dev/null | tail -n +3 | awk '{print $1 ($4 ~ /^(br|eth|wl)/ ? "(" $4 ")" : "")}' | tr '\n' ' ')"
++  POS="$(iptables -nL $H --line-numbers 2>/dev/null | awk -v c="$C" '$2==c {print $1; exit}')"
++  echo "  $H -> $C @pos ${POS:-ABSENT}: ${J:-(empty)}"
++  L="$(iptables -S $H 2>/dev/null | grep -cE -- '-j (REAPER_FW[IFO]|REAPER_WARDEN|REAPER_GK[IF]|RW_SELF)$')"; LEGACY=$((LEGACY + L))
++done
++echo "  legacy direct jumps left in INPUT/FORWARD/OUTPUT: $LEGACY (must be 0 on v2.6.2+)"
++[ "$LEGACY" -gt 0 ] && finding WARN "$LEGACY pre-v2.6.2 direct firewall jump(s) still in the base chains - layer order not guaranteed (see 14c)"
++ANYL=0; for k in rwarden_enable gk_enable reaper_fw_enable; do [ "$(nvram get $k 2>/dev/null)" = 1 ] && ANYL=1; done
++[ "$ANYL" = 1 ] && ! iptables -nL REAPER_HOOK_F >/dev/null 2>&1 && finding WARN "a Reaper firewall layer is enabled but REAPER_HOOK_F is absent (pre-v2.6.2 image, or hook.sh never ran)"
++echo "  -- rules engine (reaper_fw) --"
++cnt() { nvram get "$1" 2>/dev/null | tr -cd '<' | wc -c; }
++echo "  enable=$(nvram get reaper_fw_enable 2>/dev/null) active=$(nvram get reaper_fw_active 2>/dev/null) armed=$(nvram get reaper_fw_armed 2>/dev/null) confirm=$(nvram get reaper_fw_confirm 2>/dev/null)s"
++echo "  objects=$(cnt reaper_fw_obj) groups=$(cnt reaper_fw_grp) services=$(cnt reaper_fw_svc) zones=$(cnt reaper_fw_zone) zone-policies=$(cnt reaper_fw_zpol) rules=$(cnt reaper_fw_rules) egress-defaults=$(cnt reaper_fw_egress) forwards=$(cnt reaper_fw_nat)"
++for CH in REAPER_FWI REAPER_FWF REAPER_FWO; do printf "  %-11s v4=%s rules  v6=%s rules\n" "$CH" "$(iptables -nL $CH 2>/dev/null | tail -n +3 | wc -l)" "$(ip6tables -nL $CH 2>/dev/null | tail -n +3 | wc -l)"; done
++echo "  nat REAPER_FWN    : $(iptables -t nat -nL REAPER_FWN 2>/dev/null | tail -n +3 | wc -l) rules"
++echo "  rwfw_* sets       : $(ipset list -n 2>/dev/null | grep -c '^rwfw') (sizes: $(for S in $(ipset list -n 2>/dev/null | grep '^rwfw' | head -12); do printf "%s=%s " "$S" "$(ipset -t list $S 2>/dev/null | sed -n 's/.*Number of entries: //p')"; done))"
++[ -f /tmp/reaper_fw/failcount ] && echo "  last apply        : $(cat /tmp/reaper_fw/failcount) rule(s) failed to load"
++[ -f /tmp/reaper_fw/deadline ] && echo "  commit-confirm    : ARMED, deadline $(cat /tmp/reaper_fw/deadline) (epoch), now $(date +%s)"
++[ "$(nvram get reaper_fw_enable 2>/dev/null)" = 1 ] && [ "$(cat /tmp/reaper_fw/failcount 2>/dev/null || echo 0)" != 0 ] && finding WARN "rules engine: $(cat /tmp/reaper_fw/failcount) rule(s) failed to load on the last apply (see 14c)"
++
++sec "14d. POLICY ROUTING + VPN (rule bands, tunnel state - no keys, no endpoints)"
++echo "  reaper_pbr        : enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null) rules=$(cnt reaper_pbr_rulelist)"
++echo "  mangle REAPER_PBR : $(iptables -t mangle -nL REAPER_PBR 2>/dev/null | tail -n +3 | wc -l) rules"
++echo "  -- ip rule bands (9000-9999 = Reaper PBR, 10000+ = VPN Director) --"
++ip rule list 2>/dev/null | awk '$1+0 >= 9000 && $1+0 < 20000' | sed 's/^/  /' | head -40
++echo "  -- tunnels --"
++for i in 1 2 3 4 5; do
++  S="$(nvram get vpn_client${i}_state 2>/dev/null)"; E="$(nvram get vpn_client${i}_enable 2>/dev/null)"
++  [ -n "$S$E" ] && echo "  ovpn client $i      : enable=${E:-?} state=${S:-?} ($(nvram get vpn_client${i}_proto 2>/dev/null))"
++done
++for i in 1 2; do S="$(nvram get vpn_server${i}_state 2>/dev/null)"; [ -n "$S" ] && echo "  ovpn server $i      : state=$S"; done
++for i in 1 2 3 4 5; do
++  E="$(nvram get wgc${i}_enable 2>/dev/null)"; [ "$E" = 1 ] || continue
++  echo "  wgc$i               : enable=1 iface=$( [ -d /sys/class/net/wgc$i ] && echo up || echo down ) peers=$(have wg && wg show wgc$i peers 2>/dev/null | wc -l)"
++done
++[ "$(nvram get wgs_enable 2>/dev/null)" = 1 ] && echo "  wg server          : enable=1 iface=$( [ -d /sys/class/net/wgs1 ] && echo up || echo down ) peers=$(have wg && wg show wgs1 peers 2>/dev/null | wc -l)"
++echo "  ipsec             : server=$(nvram get ipsec_server_enable 2>/dev/null) charon=$(pidof charon 2>/dev/null | wc -w)"
++echo "  tunnel ifaces     : $(ls /sys/class/net 2>/dev/null | grep -E '^(tun|tap|wg)' | tr '\n' ' ')"
++echo "  vpn director     : $(nvram get vpndirector_rulelist 2>/dev/null | tr -cd '<' | wc -c) rules"
++
+ sec "15. DATAPLANE ACCELERATOR (one-shot reads)"
+ # ONE-SHOT, on operator demand only. rwatch's equivalent check is opt-in
+ # (rwatch_gdx=1) and default OFF because a PERIODIC kernel-facing /proc reader
+@@ -506,13 +711,51 @@ dmesg 2>/dev/null | tail -120 | sed 's/^/  /'
+ sec "19. SYSLOG (tail)"
+ tail -150 /tmp/syslog.log 2>/dev/null | sed 's/^/  /'
+ 
++sec "19b. SYSLOG HISTORY (churn, noise profile, lineage - counts and pseudonyms only)"
++SLF="$(slog_files | tr '\n' ' ')"
++if [ -n "$SLF" ]; then
++  echo "  sources           : $SLF"
++  echo "  span              : $(cat $SLF 2>/dev/null | head -1 | cut -c1-15) .. $(tail -1 /tmp/syslog.log 2>/dev/null | cut -c1-15)   lines=$(cat $SLF 2>/dev/null | wc -l)"
++  echo "  -- wireless churn: top stations by disassociation (assoc/disassoc) --"
++  cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* (associated|disassociated)' | awk '{m=$7; if ($0 ~ /disassociated/) d[m]++; else a[m]++} END {for (k in d) printf "%6d %6d %s\n", d[k], a[k]+0, k}' | sort -rn | head -10 | awk '{printf "  disassoc=%-5s assoc=%-5s %s\n", $1, $2, $3}'
++  TOPD="$(cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* disassociated' | awk '{print $7}' | sort | uniq -c | sort -rn | head -1)"
++  set -- $TOPD; [ "${1:-0}" -ge 200 ] && finding INFO "station $2 disassociated $1 times over the log span - assoc/deauth churn (see 19b)"
++  echo "  deauthorize -30   : $(cat $SLF 2>/dev/null | grep -c 'DEAUTHORIZE error')   ocv_cap unsupported: $(cat $SLF 2>/dev/null | grep -c 'ocv_cap unsupported')"
++  echo "  -- dhcp: top DISCOVER sources --"
++  cat $SLF 2>/dev/null | grep 'DHCPDISCOVER' | awk '{print $NF}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "  %6d %s\n", $1, $2}'
++  echo "  -- reaper events --"
++  for PAT in 'reaper-nv:' 'reaped hung nvram' 'hwqos:' 'rwatch: FAILURE' 'rwatch: .*bounce' 'gatekeeper: enforcement chains missing' 'gatekeeper: device list' 'rwarden: .*FAILED' 'reaper_fw' 'reaper_pbr' 'REAPER-WARDEN' 'reaper: hook'; do
++    printf "  %-42s %s\n" "$PAT" "$(cat $SLF 2>/dev/null | grep -c "$PAT")"
++  done
++  echo "  -- noise profile: lines by source tag (top 15) --"
++  cat $SLF 2>/dev/null | cut -c17- | sed 's/\[[0-9]*\]//' | cut -d: -f1 | sort | uniq -c | sort -rn | head -15 | awk '{printf "  %7d %s\n", $1, $2}'
++  echo "  -- lineage --"
++  BOOTS="$(cat $SLF 2>/dev/null | grep -c 'syslogd started')"
++  echo "  boots in span     : $BOOTS   last boot line: $(grep 'syslogd started' /tmp/syslog.log 2>/dev/null | tail -1 | cut -c1-15)"
++  echo "  panic/oops/oom    : $(cat $SLF 2>/dev/null | grep -ciE 'kernel panic|Oops|oom-killer|Out of memory')   wan link down: $(cat $SLF 2>/dev/null | grep -c 'WAN(0) link down')   notify_rc reboot: $(cat $SLF 2>/dev/null | grep -c 'notify_rc reboot')"
++  echo "  kernel tainted    : $(cat /proc/sys/kernel/tainted 2>/dev/null)"
++else
++  echo "  no syslog readable"
++fi
++echo "  -- dmesg error summary (counts) --"
++dmesg 2>/dev/null | grep -iE 'error|fail|warn|oops|BUG|timeout|leak|denied' | sed 's/[0-9a-fx]\{6,\}/N/g' | sort | uniq -c | sort -rn | head -12 | awk '{c=$1; $1=""; printf "  %6d %s\n", c, substr($0,2,90)}'
++
++echo ""; echo "  diag run time     : $(( $(date +%s) - ${T0:-0} )) s"
+ echo ""; echo "#### END OF DIAG ####"
+ } > "$RAW" 2>&1
+ 
+ # ---------------------------------------------------------------------------
+ # 4. Sanitize + assemble
+ # ---------------------------------------------------------------------------
+-awk -v SFILE="$SLIST.s" -v FWVER="$(nvram get firmver 2>/dev/null)" -f "$AWKP" "$RAW" > "$BODY" 2> "$LEDG"
++# v1.3.0: FINDINGS first. Prepended BEFORE the sanitizer so any pseudonym used
++# in a finding is the same one the sections use.
++{
++  echo ""; echo "#### 0b. FINDINGS (derived by the script; read these first) ####"
++  if [ -s "$FIND" ]; then cat "$FIND"; else echo "  none - nothing the script checks for was out of range"; fi
++  echo "  (WARN = acts on the fault class the section names; INFO = worth knowing, not a fault)"
++  cat "$RAW"
++} > "$RAW2"
++awk -v SFILE="$SLIST.s" -v FWVER="$(nvram get firmver 2>/dev/null)" -f "$AWKP" "$RAW2" > "$BODY" 2> "$LEDG"
+ 
+ # ---------------------------------------------------------------------------
+ # 4b. POST-SANITIZE TRIPWIRE (v1.2.0)
+@@ -581,7 +824,7 @@ fi
+   echo "  Investigating a connectivity complaint? Read 14 (Warden counters +"
+   echo "  set membership) with 16 (probes): a climbing RW_ODROP or an IN SET"
+   echo "  hit means the router dropped it; flat counters with failing probes"
+-  echo "  means look upstream."
++  echo "  means look upstream. Start with 0b (FINDINGS), then 19b (history)."
+   cat "$BODY"
+   echo "==================== end diag $(date) ===================="
+ } > "$OUT"
+-- 
+2.25.1
+

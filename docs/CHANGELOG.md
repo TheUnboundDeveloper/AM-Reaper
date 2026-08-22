@@ -24,6 +24,13 @@ node, not only on the primary router.
 
 ---
 
+## v2.6.4 — the diagnostics report learns to find things itself
+*Built on RT-BE96U (pending). Diagnostics-only rung; no behaviour change. Not yet cut as a public CI release.*
+
+- **Diagnostics report v1.3.0.** Every one of the last three field investigations needed something the report did not print, and each had to be gathered by hand. It now carries: a **FINDINGS** block at the top — one-line verdicts the script derives itself (an nvram value near the kernel's 1 KB cap, a Gatekeeper list not yet migrated, a stuck `nvram`/`iptables` reader, a process in D-state, a daemon enabled but not running, a missing cron line, an old direct firewall hook left over or the shared front chain missing, rules that failed to load, a conntrack table over 80 %, a WAN link stuck at 10/100 Mb/s, a Wi-Fi station with hundreds of disassociations); **syslog history** over the live log *and* the rwatch mirror (days, not hours) — top stations by connect/disconnect churn, deauth errors, top DHCP discover sources, Reaper event counters, a noise profile by source, boot count, panic/OOM/link-down counts; **process health** (stuck readers with age and wait channel, D-state, zombies, top CPU); the **Reaper layers** added since the report was written — firewall front-chain order and any legacy jumps, rules-engine counts and set sizes, Policy Routing rule band, VPN client/server state with WireGuard *peer counts only*; **data plane** (conntrack by protocol, unreplied, timeouts, WAN link speed/session detail, flow-cache eviction); **nvram hygiene** (names and sizes of values near the cap); and a **network inventory** (every bridge, SDN links, advertised DNS per network). All of it is counts, names and states — MACs, hostnames and public addresses go through the same sanitizer and tripwire as before; guest-network lease hostnames were added to the redaction list. The report ends with its own run time.
+
+---
+
 ## v2.6.3 — Gatekeeper could not hold more than 45 devices
 *Built on RT-BE96U (pending). One field-report fix (RT-BE88U, v2.6.0). Not yet cut as a public CI release.*
 

@@ -39,7 +39,7 @@ was moved to the changelog; only open work and open confirmations remain.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[P2] Confirmations owed on metal** — v2.6.3 Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + Gatekeeper L3 leg, v2.6.1 nvram-guard,
+1. **[P2] Confirmations owed on metal** — v2.6.4 diag v1.3.0 (glance), v2.6.3 Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + Gatekeeper L3 leg, v2.6.1 nvram-guard,
    v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node classification, v2.5.8 UPnP.
    → [Pending verification](#pending-verification)
 2. **[P2] Gatekeeper multi-network — the deferred half**: per-network captive DNAT (collides with
@@ -52,6 +52,7 @@ The ordered short list. Each line points at its full entry below.
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
 6. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RTRF_45/75/76, IPv6-proto labels). → [Documentation](#documentation)
+7. **Addons** Create reserved spaces for addons if used.
 
 ---
 
@@ -160,6 +161,15 @@ with what the attempt ruled out.*
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
 
 ---
+
+### v2.6.4 (2026-08-22) — diagnostics report v1.3.0
+
+- **[P3] The new sections render on a real box and the FINDINGS are sane.** Host dry-run only
+  (no router tools present). **Settles on** one `reaper_diag` run on a current box: every section
+  0b–19b prints, the tripwire still says CLEAN, run time stays under ~15 s (httpd is blocked while it
+  runs), and the FINDINGS block shows nothing false — in particular 14c must read `@pos 1` with
+  `legacy direct jumps … 0`, 12b must show no stuck readers, and 3b must list no value the box
+  actually saves fine. If a finding is wrong, it comes out, not the section. **[owed — glance]**
 
 ### v2.6.3 (2026-08-22) — Gatekeeper device list on /jffs (the 45-device wall)
 

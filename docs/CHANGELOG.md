@@ -24,6 +24,13 @@ node, not only on the primary router.
 
 ---
 
+## v2.6.3 — Gatekeeper could not hold more than 45 devices
+*Built on RT-BE96U (pending). One field-report fix (RT-BE88U, v2.6.0). Not yet cut as a public CI release.*
+
+- **Fixed: the 46th device you approved in Gatekeeper — and every one after it — was never saved.** The WebUI and the audit log both said it succeeded, the device stayed "pending" forever, and on the reporter's box the first attempts also hung the router. The approved-device list was kept in an nvram variable, and on this platform the kernel's nvram store silently refuses any value that would push the entry past 1 KB — no error reaches the caller. At 22 bytes per device that is exactly 45. (The mechanism Asuswrt-Merlin uses to keep big lists like the client names out of that limit is a fixed whitelist inside a closed library; a Reaper variable cannot be added to it.) The list now lives in a plain file on `/jffs` (`/jffs/gatekeeper/rl`, same format, written atomically), so the ceiling is gone — tested to 300 devices; the device tables in the Gatekeeper daemon and the Devices backend were raised to 512 to match. Existing lists migrate automatically on the first boot with this firmware (logged), and any later write failure is now logged instead of swallowed. Approving or removing a device no longer forces a full nvram commit per click. Two side effects to know: a settings backup (which is an nvram export) no longer includes the Gatekeeper list, and a factory reset clears it — which is the correct default-deny outcome. The diagnostics report gains a Gatekeeper section (store location and size, counts per state, enforcement state — never a MAC).
+
+---
+
 ## v2.6.2 — the firewall layers get a fixed order; "Internet only" now means it on every network
 *Built on RT-BE96U (pending). Two architectural fixes from the backlog plus the code-review tail. Not yet cut as a public CI release.*
 

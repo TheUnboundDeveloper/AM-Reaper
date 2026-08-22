@@ -39,7 +39,7 @@ was moved to the changelog; only open work and open confirmations remain.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[P2] Confirmations owed on metal** — v2.6.2 firewall order + Gatekeeper L3 leg, v2.6.1 nvram-guard,
+1. **[P2] Confirmations owed on metal** — v2.6.3 Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + Gatekeeper L3 leg, v2.6.1 nvram-guard,
    v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node classification, v2.5.8 UPnP.
    → [Pending verification](#pending-verification)
 2. **[P2] Gatekeeper multi-network — the deferred half**: per-network captive DNAT (collides with
@@ -59,7 +59,7 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P2] Flash page — cancelling a firmware upgrade leaves the page dead.** If the user answers
+- **[P2] Flash page — cancelling a firmware upgrade during file upload leaves the page dead.** If the user answers
   No/Cancel on the upgrade confirm, the page does not return to its previous state; it has to be
   reloaded before the buttons work again. Not yet investigated. **[owed]**
 
@@ -160,6 +160,18 @@ with what the attempt ruled out.*
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
 
 ---
+
+### v2.6.3 (2026-08-22) — Gatekeeper device list on /jffs (the 45-device wall)
+
+- **[P1] More than 45 devices persist.** **Settles when** the reporter (RT-BE88U, ~58 devices)
+  upgrades, sees `gatekeeper: device list migrated from nvram to /jffs/gatekeeper/rl (45 entries …)`
+  in the log once, then approves the remaining devices and each one leaves "pending" and survives a
+  reboot. Readback: `tr -cd '<' < /jffs/gatekeeper/rl | wc -c` = device count; `nvram get gk_rl`
+  must be empty after migration. `reaper_diag` §14b shows the same numbers. **[owed — reporter]**
+- **[P2] Nothing else changed.** **Settles on** a glance: approve / block / guest / remove still
+  apply immediately (no multi-second stall per click now that the nvram commit is gone), guest
+  expiry still removes the entry, Devices page access chips still agree with the Gatekeeper page.
+  **[owed — glance]**
 
 ### v2.6.2 (2026-08-21) — firewall layer order, Gatekeeper L3 leg, code-review batch A
 

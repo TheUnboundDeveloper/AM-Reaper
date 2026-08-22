@@ -1,0 +1,422 @@
+From 451049d9eaecbb548f891479eb016b4b8aca5024 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 12:54:58 -0400
+Subject: [PATCH] policy routing: the rule list leaves nvram (1 KB kernel cap =
+ ~15 rules)
+
+Same wall the Gatekeeper device list hit at 45 devices (v2.6.3): the HND
+kernel nvram store rejects any tuple over WLCSM_NAMEVALUEPAIR_MAX (1024)
+silently - even a RAM-only set - and the libnvram whitelist is a blob. A
+16th routing rule "saved" and vanished.
+
+- shared/reaper_jfile.c: the gk_rl store shape made generic (rjf_get /
+  rjf_set: atomic tmp+fsync+rename, 0600) + reaper_pbr_rl_get(), the one
+  resolver both rc and httpd use: staged draft > confirmed list > legacy
+  nvram value.
+- The confirmed list IS /jffs/reaper_pbr/lastgood/rulelist (it was already
+  the commit-confirm rollback source); an apply stages the draft in
+  /tmp/reaper_pbr/draft (httpd writes it, never nvram); Keep promotes it;
+  revert/rollback and a boot simply drop the draft. nvram keeps only
+  reaper_pbr_enable.
+- One-shot migration at boot: an nvram-held list seeds the file, then the
+  nvram copy is cleared (and a leftover from a settings restore is dropped)
+  so nothing stale shadows the file - exactly as gk_rl.
+- Page: the list comes from reaper_pbr.cgi?action=cfg, not SSI.
+
+Host test (fake nvram, mock iptables): migration log + nvram cleared,
+arm/rollback/confirm unchanged, a 20-rule 1,222-byte list survives
+apply+confirm and emits 20 mark rules.
+---
+ release/src/router/httpd/web.c               |   9 +-
+ release/src/router/rc/reaper_pbr.c           | 116 +++++++++++--------
+ release/src/router/shared/Makefile           |   1 +
+ release/src/router/shared/reaper_jfile.c     | 104 +++++++++++++++++
+ release/src/router/shared/shared.h           |   7 ++
+ release/src/router/www/Reaper_VPNRouting.asp |   6 +-
+ 6 files changed, 189 insertions(+), 54 deletions(-)
+ create mode 100755 release/src/router/shared/reaper_jfile.c
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 7cf0382373..8993ec348f 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23969,7 +23969,7 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 		websWrite(stream, ",\"err\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_pbr_err"));
+ 		websWrite(stream, ",\"rulelist\":");
+-		gk_json_esc(stream, nvram_safe_get("reaper_pbr_rulelist"));
++		gk_json_esc(stream, reaper_pbr_rl_get());	/* v2.6.7: file store (P8) */
+ 		websWrite(stream, "}");
+ 		return;
+ 	}
+@@ -23999,7 +23999,12 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 			return;
+ 		}
+ 		nvram_set("reaper_pbr_enable", en);       /* RAM only - see the note above */
+-		nvram_set("reaper_pbr_rulelist", rl);
++		/* the list never touches nvram (1 KB kernel cap = ~15 rules): it is
++		 * staged as a file and becomes the confirmed list only on Keep */
++		if (rjf_set(REAPER_PBR_DRAFT, rl, "reaper_pbr") != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"could not stage the rule list\"}");
++			return;
++		}
+ 		nvram_unset("reaper_pbr_err");
+ 		notify_rc("start_reaper_pbr_apply");
+ 		websWrite(stream, "{\"ok\":1}");
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 2d2da6b14e..31bab6a393 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -72,8 +72,20 @@
+  *     is global, so any other page's Apply inside the window would otherwise
+  *     persist an unconfirmed draft. Same shape as rc/reaper_fw.c (R1/R3/R5/R6).
+  *
+- * nvram: reaper_pbr_enable  reaper_pbr_rulelist  (runtime: reaper_pbr_active
+- *        reaper_pbr_armed reaper_pbr_err; timer shared: reaper_fw_confirm)
++ * P8. THE RULE LIST IS NOT IN NVRAM (v2.6.7, backlog "1 KB cap"). The kernel
++ *     nvram store rejects any tuple over 1024 bytes - silently, even a RAM-only
++ *     set - which capped the list at ~15 rules. The confirmed list is the file
++ *     /jffs/reaper_pbr/lastgood/rulelist (it already was the rollback source);
++ *     a pending apply is staged in /tmp/reaper_pbr/draft by httpd and read from
++ *     there by rc. nvram keeps only reaper_pbr_enable (tiny). A box upgrading
++ *     from an nvram-held list is migrated once at boot, then the nvram copy is
++ *     cleared so nothing stale can shadow the file. shared/reaper_jfile.c does
++ *     the bytes; reaper_pbr_rl_get() is the one resolver (draft > confirmed >
++ *     legacy nvram) both rc and httpd use.
++ *
++ * nvram: reaper_pbr_enable  (runtime: reaper_pbr_active reaper_pbr_armed
++ *        reaper_pbr_err; timer shared: reaper_fw_confirm)
++ * files: REAPER_PBR_RL (confirmed), REAPER_PBR_DRAFT (staged), lastgood/enable
+  * RECORD (list sep '<', field sep '>'):
+  *   <en>desc>seltype>selval>proto>port>target
+  *   en=0|1  seltype=ipset|domain|src|mac  target=OVPN1..5|WGC1..5|WAN|BLOCK
+@@ -114,12 +126,8 @@
+ #define PPBR_CONFIRM_DEF 60
+ #define PPBR_CONFIRM_MAX 3600
+ 
+-/* the two persisted keys, one file each in lastgood (P7) */
+-static const struct { const char *nv, *file; } ppbr_keys[] = {
+-	{ "reaper_pbr_enable",   "enable"   },
+-	{ "reaper_pbr_rulelist", "rulelist" },
+-};
+-#define PPBR_NKEYS 2
++#define PPBR_LG_ENABLE  PPBR_LASTGOOD "/enable"
++/* the confirmed rule list is REAPER_PBR_RL = PPBR_LASTGOOD "/rulelist" (shared.h) */
+ 
+ typedef struct {
+ 	int enable;
+@@ -454,22 +462,19 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+  * ------------------------------------------------------------------------- */
+ static int ppbr_cfg_load(ppbr_cfg_t *c, int from_good)
+ {
++	int ex;
+ 	memset(c, 0, sizeof(*c));
+ 	if (from_good) {
+-		char p[128], *buf;
+-		int i;
+-		for (i = 0; i < PPBR_NKEYS; i++) {
+-			snprintf(p, sizeof(p), "%s/%s", PPBR_LASTGOOD, ppbr_keys[i].file);
+-			buf = NULL;
+-			if (f_read_alloc_string(p, &buf, 65536) < 0 || !buf) { free(c->rulelist); c->rulelist = NULL; return 0; }
+-			buf[strcspn(buf, "\r\n")] = 0;
+-			if (i == 0) { c->enable = (strcmp(buf, "1") == 0); free(buf); }
+-			else c->rulelist = buf;
+-		}
+-		return 1;
++		char *en = rjf_get(PPBR_LG_ENABLE, &ex);
++		if (!ex) return 0;
++		c->enable = (strcmp(en, "1") == 0);
++		c->rulelist = strdup(rjf_get(REAPER_PBR_RL, &ex));
++		if (!ex) { free(c->rulelist); c->rulelist = NULL; return 0; }
++		return c->rulelist != NULL;
+ 	}
++	/* the draft: enable from nvram RAM, the list from the staged file (P8) */
+ 	c->enable = nvram_match("reaper_pbr_enable", "1");
+-	c->rulelist = strdup(nvram_safe_get("reaper_pbr_rulelist"));
++	c->rulelist = strdup(reaper_pbr_rl_get());
+ 	return c->rulelist != NULL;
+ }
+ 
+@@ -489,26 +494,16 @@ static int ppbr_lastgood_ok(void)
+ /* persist the CONFIRMED config as the rollback + boot source: per-key temp
+  * file, fsync, rename, then a .committed marker (same discipline as
+  * reaper_fw's rfw_write_lastgood - a half-written snapshot must never boot). */
+-static int ppbr_write_lastgood(void)
++static int ppbr_write_lastgood(const char *rulelist)
+ {
+-	int i, ok = 1;
++	int ok = 1;
+ 	char marker[128];
+ 	mkdir(PPBR_CACHE, 0700);
+ 	mkdir(PPBR_LASTGOOD, 0700);
+ 	snprintf(marker, sizeof(marker), "%s/.committed", PPBR_LASTGOOD);
+ 	unlink(marker);
+-	for (i = 0; i < PPBR_NKEYS; i++) {
+-		char p[128], tmp[140];
+-		FILE *f;
+-		const char *val = nvram_safe_get(ppbr_keys[i].nv);
+-		snprintf(p, sizeof(p), "%s/%s", PPBR_LASTGOOD, ppbr_keys[i].file);
+-		snprintf(tmp, sizeof(tmp), "%s.tmp", p);
+-		if ((f = fopen(tmp, "w")) == NULL) { ok = 0; break; }
+-		if (fputs(val, f) == EOF || fflush(f) != 0 || fsync(fileno(f)) != 0) { fclose(f); unlink(tmp); ok = 0; break; }
+-		if (fclose(f) != 0) { unlink(tmp); ok = 0; break; }
+-		chmod(tmp, 0600);
+-		if (rename(tmp, p) != 0) { unlink(tmp); ok = 0; break; }
+-	}
++	if (rjf_set(PPBR_LG_ENABLE, nvram_match("reaper_pbr_enable", "1") ? "1" : "0", "reaper_pbr") != 0) ok = 0;
++	if (ok && rjf_set(REAPER_PBR_RL, rulelist ? rulelist : "", "reaper_pbr") != 0) ok = 0;
+ 	if (ok) {
+ 		FILE *m = fopen(marker, "w");
+ 		if (!m) ok = 0;
+@@ -538,7 +533,6 @@ static int ppbr_gen_rollback(void)
+ {
+ 	FILE *f;
+ 	ppbr_cfg_t good;
+-	int i;
+ 
+ 	if (!ppbr_cfg_load(&good, 1)) return 0;
+ 	if (!ppbr_gen(PPBR_ROLLBACK ".rules", !good.enable, &good)) { ppbr_cfg_free(&good); return 0; }
+@@ -549,12 +543,12 @@ static int ppbr_gen_rollback(void)
+ 	  "#!/bin/sh\n"
+ 	  "# generated by reaper_pbr - commit-confirm recovery. Restores the last\n"
+ 	  "# CONFIRMED policy-routing config and disarms. Safe to run at any time.\n");
+-	for (i = 0; i < PPBR_NKEYS; i++)
+-		/* "$(cat f)" is expanded once and never re-parsed (operator text cannot execute) */
+-		fprintf(f, "[ -f %s/%s ] && nvram set %s=\"$(cat %s/%s)\"\n",
+-		        PPBR_LASTGOOD, ppbr_keys[i].file, ppbr_keys[i].nv,
+-		        PPBR_LASTGOOD, ppbr_keys[i].file);
++	/* "$(cat f)" is expanded once and never re-parsed (operator text cannot
++	 * execute). Only the enable flag lives in nvram; dropping the staged draft
++	 * file IS the list rollback (P8: the confirmed list never left /jffs). */
+ 	fprintf(f,
++	  "[ -f " PPBR_LG_ENABLE " ] && nvram set reaper_pbr_enable=\"$(cat " PPBR_LG_ENABLE ")\"\n"
++	  "rm -f " REAPER_PBR_DRAFT "\n"
+ 	  "sh " PPBR_ROLLBACK ".rules 2>/dev/null\n"
+ 	  "[ \"$(nvram get reaper_pbr_enable)\" = 1 ] && nvram set reaper_pbr_active=1 || nvram set reaper_pbr_active=0\n"
+ 	  "rm -f " PPBR_DEADLINE " " PPBR_CAND "\n"
+@@ -645,17 +639,32 @@ void start_reaper_pbr(void)
+ 	from_good = ppbr_lastgood_ok();
+ 	if (!from_good) {
+ 		/* first boot on this firmware: what nvram holds IS the confirmed
+-		 * config (flash). Seed the snapshot so a rollback source always exists. */
+-		ppbr_write_lastgood();
++		 * config (flash). Seed the snapshot so a rollback source always
++		 * exists - this is also the one-time migration of an nvram-held list
++		 * (P8): once it is on /jffs the nvram copy is cleared so nothing stale
++		 * can shadow the file, exactly as gk_rl did in v2.6.3. */
++		const char *nv = nvram_safe_get("reaper_pbr_rulelist");
++		char *legacy = strdup(nv);
++		if (legacy && ppbr_write_lastgood(legacy) && legacy[0]) {
++			int n = 0; const char *q;
++			for (q = legacy; (q = strchr(q, '<')) != NULL; q++) n++;
++			logmessage("reaper_pbr", "rule list migrated from nvram to " REAPER_PBR_RL " (%d rules; nvram held a 1 KB cap)", n);
++			nvram_unset("reaper_pbr_rulelist");
++			nvram_commit();
++		}
++		free(legacy);
++		from_good = ppbr_lastgood_ok();
++	} else if (nvram_safe_get("reaper_pbr_rulelist")[0]) {
++		/* migrated box with a leftover nvram value (settings restore): the
++		 * file is authoritative, drop the shadow */
++		nvram_unset("reaper_pbr_rulelist");
++		nvram_commit();
+ 	}
++	unlink(REAPER_PBR_DRAFT);                  /* a draft never survives a boot */
+ 	if (!ppbr_cfg_load(&c, from_good)) return;
+-	if (from_good) {
+-		/* what is live must be what the page shows: an unconfirmed draft that
+-		 * leaked into flash (see P7) would otherwise sit in nvram RAM looking
+-		 * like the active rules. RAM only - a commit here would re-persist it. */
++	if (from_good)
++		/* what is live must be what the page shows (RAM only) */
+ 		nvram_set("reaper_pbr_enable", c.enable ? "1" : "0");
+-		nvram_set("reaper_pbr_rulelist", c.rulelist);
+-	}
+ 
+ 	if (!c.enable) {
+ 		ppbr_cfg_free(&c);
+@@ -745,8 +754,15 @@ void reaper_pbr_confirm(void)
+ 	}
+ 	eval("cru", "d", "reaper_pbr_cc");
+ 	unlink(PPBR_DEADLINE);
+-	nvram_commit();
+-	ppbr_write_lastgood();
++	nvram_commit();                             /* reaper_pbr_enable */
++	{
++		/* the confirmed list = the staged draft (or, for an enable-only
++		 * change with no draft, the list already confirmed) */
++		char *rl = strdup(reaper_pbr_rl_get());
++		ppbr_write_lastgood(rl);
++		free(rl);
++		unlink(REAPER_PBR_DRAFT);
++	}
+ 	if (nvram_match("reaper_pbr_enable", "1"))
+ 		rename(PPBR_CAND, PPBR_APPLY);          /* the confirmed candidate becomes the boot-time script */
+ 	else {
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 74b43ce46d..5a8be5e92e 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -223,6 +223,7 @@ OBJS += mac_name_tbl.o
+ OBJS += stun.o
+ OBJS += scripts.o
+ OBJS += gk_rl.o	# reaper v2.6.3: Gatekeeper device list store (/jffs, not nvram)
++OBJS += reaper_jfile.o	# reaper v2.6.7: generic /jffs text store + Policy Routing rule list
+ OBJS += llist.o
+ ifeq ($(RTCONFIG_HNS),y)
+ OBJS += hns_utils.o
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+new file mode 100755
+index 0000000000..3c950efb10
+--- /dev/null
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -0,0 +1,104 @@
++/*
++ * reaper_jfile.c - reaper v2.6.7: a tiny durable text-value store for lists
++ * that must NOT live in nvram.
++ *
++ * WHY. On the HND platform the kernel nvram store rejects any name+value tuple
++ * over WLCSM_NAMEVALUEPAIR_MAX = 1024 bytes - silently, even for a RAM-only
++ * nvram_set() - and Merlin's JFFS_NVRAM whitelist is baked into the prebuilt
++ * libnvram.so, so a Reaper name cannot be added to it. The Gatekeeper device
++ * list hit that wall at 45 devices (shared/gk_rl.c, v2.6.3); the Policy
++ * Routing rule list hits it at ~15 rules. This is the gk_rl store shape made
++ * reusable: read a whole file, write it atomically (tmp + fsync + rename,
++ * 0600), strip a trailing newline an editor may have left.
++ *
++ * Callers own their paths, their locking and their migration; this only does
++ * the bytes. Values are opaque printable text; nothing here parses them.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <bcmnvram.h>
++#include <shutils.h>
++#include "shared.h"
++
++#define RJF_MAX (256 * 1024)	/* sanity cap on a read, far above any real list */
++
++static char *rjf_buf;	/* last value returned by rjf_get(); replaced on each call */
++
++/* returns "" when the file is absent or empty; -1 via *exists when absent */
++char *rjf_get(const char *path, int *exists)
++{
++	FILE *f = fopen(path, "r");
++	char *nb = NULL;
++	size_t n = 0;
++
++	if (exists) *exists = (f != NULL);
++	if (f) {
++		struct stat st;
++		if (fstat(fileno(f), &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0 && st.st_size < RJF_MAX) {
++			nb = malloc((size_t)st.st_size + 1);
++			if (nb) {
++				n = fread(nb, 1, (size_t)st.st_size, f);
++				nb[n] = 0;
++				while (n && (nb[n - 1] == '\n' || nb[n - 1] == '\r')) nb[--n] = 0;
++			}
++		}
++		fclose(f);
++	}
++	if (!nb) nb = strdup("");
++	if (!nb) return "";
++	free(rjf_buf);
++	rjf_buf = nb;
++	return rjf_buf;
++}
++
++int rjf_set(const char *path, const char *v, const char *tag)
++{
++	FILE *f;
++	char tmp[256], dir[256], *sl;
++	size_t len = v ? strlen(v) : 0;
++
++	/* the parent directory, created if missing (one level - that is all our callers need) */
++	strlcpy(dir, path, sizeof(dir));
++	if ((sl = strrchr(dir, '/')) != NULL && sl != dir) { *sl = 0; mkdir(dir, 0700); }
++	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
++	f = fopen(tmp, "w");
++	if (!f) {
++		logmessage(tag, "cannot write %s - NOT saved", tmp);
++		return -1;
++	}
++	if (len && fwrite(v, 1, len, f) != len) {
++		fclose(f); unlink(tmp);
++		logmessage(tag, "short write to %s - NOT saved", path);
++		return -1;
++	}
++	if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
++		fclose(f); unlink(tmp);
++		logmessage(tag, "flush of %s failed - NOT saved", path);
++		return -1;
++	}
++	fclose(f);
++	chmod(tmp, 0600);
++	if (rename(tmp, path) != 0) {
++		unlink(tmp);
++		logmessage(tag, "rename of %s failed - NOT saved", path);
++		return -1;
++	}
++	return 0;
++}
++
++/* ---- Policy Routing rule list (rc/reaper_pbr.c + httpd share this) ----
++ * Resolution order: the staged draft (an apply awaiting confirmation), then
++ * the last CONFIRMED list, then - on a box that has not migrated yet - the
++ * old nvram value. */
++char *reaper_pbr_rl_get(void)
++{
++	int ex;
++	char *v = rjf_get(REAPER_PBR_DRAFT, &ex);
++	if (ex) return v;
++	v = rjf_get(REAPER_PBR_RL, &ex);
++	if (ex) return v;
++	return nvram_safe_get("reaper_pbr_rulelist");
++}
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 0eaa28c2f8..8a7bf023df 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3603,6 +3603,13 @@ extern int jffs_nvram_getall(int len_nvram, char *buf, int count);
+ extern char *gk_rl_get(void);	/* "" when empty; buffer valid until the next call */
+ extern int gk_rl_set(const char *v);	/* atomic replace; 0 ok, -1 logged failure */
+ extern void gk_rl_migrate(void);	/* one-shot nvram -> file (start_gk) */
++/* reaper v2.6.7: generic durable text-value store for lists that must not live
++ * in nvram (shared/reaper_jfile.c) + the Policy Routing rule-list resolver. */
++extern char *rjf_get(const char *path, int *exists);	/* "" when absent/empty; buffer valid until the next call */
++extern int rjf_set(const char *path, const char *v, const char *tag);	/* atomic replace; 0 ok, -1 logged */
++#define REAPER_PBR_RL    "/jffs/reaper_pbr/lastgood/rulelist"	/* the CONFIRMED list */
++#define REAPER_PBR_DRAFT "/tmp/reaper_pbr/draft"		/* an apply awaiting confirmation */
++extern char *reaper_pbr_rl_get(void);	/* draft > confirmed > legacy nvram */
+ #ifdef RTCONFIG_VAR_NVRAM
+ extern char *var_nvram_get(const char *name);
+ extern int var_nvram_set(const char *name, const char *value);
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index a06904936b..fbe72c829e 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -200,7 +200,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ var NV = {
+   enable:   '<% nvram_get("reaper_pbr_enable"); %>',
+   active:   '<% nvram_get("reaper_pbr_active"); %>',
+-  rulelist: decodeURIComponent('<% nvram_char_to_ascii("", "reaper_pbr_rulelist"); %>')
++  rulelist: ''   /* v2.6.7: loaded from reaper_pbr.cgi (file store, not nvram) */
+ };
+ var masterOn = (NV.enable === '1');
+ var ROWS = [];
+@@ -486,7 +486,9 @@ function objDelete(k){
+   document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(){ setTimeout(function(){ location.reload(); },1500); }); };
+   /* an apply from another tab, or a page reload inside the window */
+   pbrcgi('action=cfg',function(j){
+-    if(j&&j.ok){ WGON=j.wg||WGON; ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.err)showErr(j.err); render(); armUI(); }
++    if(j&&j.ok){ WGON=j.wg||WGON; ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.err)showErr(j.err);
++      NV.rulelist=j.rulelist||''; parseRules(); render(); armUI(); }
++    else showErr(`<#RFW_155#>`);
+   });
+ })();
+ </script>
+-- 
+2.25.1
+

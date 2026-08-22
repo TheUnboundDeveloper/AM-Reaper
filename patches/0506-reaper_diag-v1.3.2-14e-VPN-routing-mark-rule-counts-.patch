@@ -1,0 +1,58 @@
+From a5df2df811b2f8f6ad4fefc01eade0be67dee743 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 12:41:25 -0400
+Subject: [PATCH] reaper_diag v1.3.2: 14e VPN routing - mark rule counts both
+ families, PREROUTING jump, the 9000-9199 ip rule band, WireGuard accel bypass
+ entries, commit-confirm state; WARN when policy routing is enabled with no
+ jump
+
+---
+ release/src/router/others/reaper_diag | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 0ac8082887..4bd0332268 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.1 (2026-08-22) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.2 (2026-08-22) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.1"
++VER="REAPER-DIAG v1.3.2"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -638,7 +638,20 @@ echo "  rwfw_* sets       : $(ipset list -n 2>/dev/null | grep -c '^rwfw') (size
+ [ "$(nvram get reaper_fw_enable 2>/dev/null)" = 1 ] && [ "$(cat /tmp/reaper_fw/failcount 2>/dev/null || echo 0)" != 0 ] && finding WARN "rules engine: $(cat /tmp/reaper_fw/failcount) rule(s) failed to load on the last apply (see 14c)"
+ 
+ sec "14d. POLICY ROUTING + VPN (rule bands, tunnel state - no keys, no endpoints)"
+-echo "  reaper_pbr        : enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null) rules=$(cnt reaper_pbr_rulelist)"
++echo "  reaper_pbr        : enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null) armed=$(nvram get reaper_pbr_armed 2>/dev/null) rules=$(cnt reaper_pbr_rulelist)"
++# v1.3.2 (14e): the routing half of policy routing - the mark rules, the
++# ip-rule band (9000-9199), the WireGuard flow-cache bypass list, and the
++# commit-confirm state. Addresses in rules and the bypass list are sanitized
++# with everything else; targets/tables/marks are not PII.
++echo "  -- VPN routing (reaper_pbr) --"
++[ -f /tmp/reaper_pbr/deadline ] && echo "  commit-confirm    : ARMED, deadline $(cat /tmp/reaper_pbr/deadline) (epoch), now $(date +%s)"
++[ -n "$(nvram get reaper_pbr_err 2>/dev/null)" ] && echo "  last error        : $(nvram get reaper_pbr_err)"
++echo "  mangle REAPER_PBR : $(iptables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') v4 / $(ip6tables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') v6 mark rule(s); PREROUTING jump: $(iptables -t mangle -S PREROUTING 2>/dev/null | grep -c 'j REAPER_PBR')"
++iptables -t mangle -S REAPER_PBR 2>/dev/null | grep 'MARK --set' | sed 's/^/    v4 /'
++ip -4 rule list 2>/dev/null | awk -F: '$1+0>=9000 && $1+0<=9199' | sed 's/^/    rule /'
++ip -6 rule list 2>/dev/null | awk -F: '$1+0>=9000 && $1+0<=9199' | sed 's/^/    rule6 /'
++[ -r /proc/blog/skip_wireguard_network ] && echo "  wg accel bypass   : $(grep -c . /proc/blog/skip_wireguard_network 2>/dev/null) net(s) listed ($(awk '$2=="new"' /tmp/reaper_pbr/skipnets 2>/dev/null | wc -l) added by policy routing)"
++[ "$(nvram get reaper_pbr_enable 2>/dev/null)" = 1 ] && [ "$(iptables -t mangle -S PREROUTING 2>/dev/null | grep -c 'j REAPER_PBR')" = 0 ] && finding WARN "policy routing is enabled but its PREROUTING jump is missing (see 14e)"
+ echo "  mangle REAPER_PBR : $(iptables -t mangle -nL REAPER_PBR 2>/dev/null | tail -n +3 | wc -l) rules"
+ echo "  -- ip rule bands (9000-9999 = Reaper PBR, 10000+ = VPN Director) --"
+ ip rule list 2>/dev/null | awk '$1+0 >= 9000 && $1+0 < 20000' | sed 's/^/  /' | head -40
+-- 
+2.25.1
+

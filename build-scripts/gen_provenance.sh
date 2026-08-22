@@ -64,9 +64,10 @@ var REAPER_PROV = {
 	version: "$(clean "${VER#Reaper_}")",
 	variant: "$(clean "${VARIANT:-}")",
 	patches: "$(clean "$PC")",
+	series:  "$(clean "${PATCH_SERIES:-}")",
 	base:    "$(clean "$BC")",
 	built:   "$(clean "$BUILT")"
 };
 EOF
 
-echo "   provenance: version=${VER#Reaper_} patches=${PC:--} base=${BC:--} built=$BUILT"
+echo "   provenance: version=${VER#Reaper_} patches=${PC:--} series=${PATCH_SERIES:--} base=${BC:--} built=$BUILT"

@@ -1,0 +1,100 @@
+From 351780c3d6ccfcbbfb829ca480dd0af0c0408b24 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 11:43:19 -0400
+Subject: [PATCH] reaper_diag v1.3.1: nvram-cap WARN only for Reaper-owned
+ names (ASUS names INFO), resolver fallback to wan0_dns, ovpn client line
+ without the nonexistent enable key, live bridge count beside the SDN profile
+ count, churn finding carries rate + BSS + the remedy
+
+---
+ release/src/router/others/reaper_diag | 33 +++++++++++++++++++--------
+ 1 file changed, 23 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index dd24d9ff58..0ac8082887 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.0 (2026-08-22) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.1 (2026-08-22) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.0"
++VER="REAPER-DIAG v1.3.1"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -297,8 +297,14 @@ echo "  nvram total       : ${NVTOT:-?} bytes of text$( [ -n "$NVSZ" ] && echo "
+ NVBIG="$(nvram show 2>/dev/null | awk -F= '/^[A-Za-z0-9_.]+=/ { if (length($0) > 900) print "  " $1 " (" length($0) " bytes)" }')"
+ if [ -n "$NVBIG" ]; then
+   echo "  values >900 bytes (1 KB tuple cap):"; echo "$NVBIG"
+-  echo "$NVBIG" | grep -vE "custom_clientlist|dhcp_staticlist|vpn_|ipsec_|MULTIFILTER|captive_portal|filter_|autofw|vts_rulelist|wl[0-9._]*maclist|sshd_authkeys|pptpd_clientlist|nvram_" | grep -q . && \
+-    finding WARN "nvram value(s) within reach of the 1 KB kernel tuple cap - see 3b (non-whitelisted names silently stop saving)"
++  # v1.3.1: a Reaper-owned name near the cap is a real defect (only Merlin's
++  # own whitelist escapes it); an ASUS/Merlin name (wl*_chansps, the client
++  # lists...) is either whitelisted or already proven to save - INFO only.
++  if echo "$NVBIG" | grep -qE "^  (gk_|rwarden_|rwatch_|reaper_|rtraf_|rchq_|rmcp_|rexport_)"; then
++    finding WARN "Reaper nvram value(s) within reach of the 1 KB kernel tuple cap - see 3b (would silently stop saving)"
++  else
++    finding INFO "nvram value(s) >900 bytes - see 3b (ASUS/Merlin names: whitelisted to /jffs or already saving fine)"
++  fi
+ else
+   echo "  values >900 bytes : none"
+ fi
+@@ -320,7 +326,7 @@ for B in $(ls /sys/class/net 2>/dev/null | grep '^br' | sort); do
+   echo "  $B  ${A:-no-v4}  state=$ST  ports=$PN"
+ done
+ SDNN="$(nvram get sdn_rl 2>/dev/null | tr '<' '\n' | awk -F'>' 'NF>2 && $3==1' | wc -l)"
+-echo "  SDN profiles enabled : ${SDNN:-0}   (sdn_rl)"
++echo "  SDN profiles enabled : ${SDNN:-0}   (sdn_rl; approximate)   bridges present: $(ls /sys/class/net 2>/dev/null | grep -c '^br')"
+ SDNA="$(nvram get sdn_access_rl 2>/dev/null)"
+ echo "  linked SDN pairs     : $( [ -n "$SDNA" ] && echo "$SDNA" | tr '<' '\n' | grep -c '>' || echo 0)   (sdn_access_rl - linked networks route to each other)"
+ echo "  -- DHCP option 6 (advertised DNS) per dnsmasq instance --"
+@@ -368,7 +374,9 @@ case "$WPROTO" in
+   pppoe) echo "  pppoe             : $(grep -i 'up with MTU' /tmp/syslog.log 2>/dev/null | tail -1 | cut -c17- | sed 's/^ *//')"
+          echo "  pppoe mtu/mru     : mtu=$(nvram get wan0_pppoe_mtu 2>/dev/null) mru=$(nvram get wan0_pppoe_mru 2>/dev/null) (both >1492 needed for RFC 4638)";;
+ esac
+-echo "  upstream resolvers: $(awk '/^nameserver/{print $2}' /tmp/resolv.dnsmasq 2>/dev/null | tr '\n' ' ')"
++UPR="$(awk '/^nameserver/{print $2}' /tmp/resolv.dnsmasq 2>/dev/null | tr '\n' ' ')"
++[ -n "$UPR" ] || UPR="$(nvram get wan0_dns 2>/dev/null) (from wan0_dns; dnsmasq not forwarding upstream)"
++echo "  upstream resolvers: $UPR"
+ echo "  dns-over-tls      : dnspriv_enable=$(nvram get dnspriv_enable 2>/dev/null)"
+ echo "  wanduck           : link_internet=$(nvram get link_internet 2>/dev/null) wandog=$(nvram get wandog_enable 2>/dev/null)"
+ WSPD="$(cat /sys/class/net/$WANIF/speed 2>/dev/null)"
+@@ -636,8 +644,8 @@ echo "  -- ip rule bands (9000-9999 = Reaper PBR, 10000+ = VPN Director) --"
+ ip rule list 2>/dev/null | awk '$1+0 >= 9000 && $1+0 < 20000' | sed 's/^/  /' | head -40
+ echo "  -- tunnels --"
+ for i in 1 2 3 4 5; do
+-  S="$(nvram get vpn_client${i}_state 2>/dev/null)"; E="$(nvram get vpn_client${i}_enable 2>/dev/null)"
+-  [ -n "$S$E" ] && echo "  ovpn client $i      : enable=${E:-?} state=${S:-?} ($(nvram get vpn_client${i}_proto 2>/dev/null))"
++  S="$(nvram get vpn_client${i}_state 2>/dev/null)"; A="$(nvram get vpn_client${i}_addr 2>/dev/null)"
++  [ -n "$S" ] && echo "  ovpn client $i      : state=$S configured=$( [ -n "$A" ] && echo yes || echo no ) ($(nvram get vpn_client${i}_proto 2>/dev/null))"
+ done
+ for i in 1 2; do S="$(nvram get vpn_server${i}_state 2>/dev/null)"; [ -n "$S" ] && echo "  ovpn server $i      : state=$S"; done
+ for i in 1 2 3 4 5; do
+@@ -718,8 +726,13 @@ if [ -n "$SLF" ]; then
+   echo "  span              : $(cat $SLF 2>/dev/null | head -1 | cut -c1-15) .. $(tail -1 /tmp/syslog.log 2>/dev/null | cut -c1-15)   lines=$(cat $SLF 2>/dev/null | wc -l)"
+   echo "  -- wireless churn: top stations by disassociation (assoc/disassoc) --"
+   cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* (associated|disassociated)' | awk '{m=$7; if ($0 ~ /disassociated/) d[m]++; else a[m]++} END {for (k in d) printf "%6d %6d %s\n", d[k], a[k]+0, k}' | sort -rn | head -10 | awk '{printf "  disassoc=%-5s assoc=%-5s %s\n", $1, $2, $3}'
+-  TOPD="$(cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* disassociated' | awk '{print $7}' | sort | uniq -c | sort -rn | head -1)"
+-  set -- $TOPD; [ "${1:-0}" -ge 200 ] && finding INFO "station $2 disassociated $1 times over the log span - assoc/deauth churn (see 19b)"
++  TOPD="$(cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* disassociated' | awk '{print $7, $5}' | sort | uniq -c | sort -rn | head -1)"
++  set -- $TOPD
++  if [ "${1:-0}" -ge 200 ]; then
++    SPANH="$(cat $SLF 2>/dev/null | wc -l)"; SPANH="$(( $(date +%s) - $(date -d "$(cat $SLF 2>/dev/null | head -1 | cut -c1-15)" +%s 2>/dev/null || echo 0) ))"
++    [ "$SPANH" -gt 0 ] && RATE="$(( $1 * 3600 / SPANH ))/h" || RATE="n/a"
++    finding INFO "station $2 on ${3%:} disassociated $1 times (~$RATE) - assoc/deauth loop; Gatekeeper cannot stop this, a wireless MAC filter can (see 19b)"
++  fi
+   echo "  deauthorize -30   : $(cat $SLF 2>/dev/null | grep -c 'DEAUTHORIZE error')   ocv_cap unsupported: $(cat $SLF 2>/dev/null | grep -c 'ocv_cap unsupported')"
+   echo "  -- dhcp: top DISCOVER sources --"
+   cat $SLF 2>/dev/null | grep 'DHCPDISCOVER' | awk '{print $NF}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "  %6d %s\n", $1, $2}'
+-- 
+2.25.1
+

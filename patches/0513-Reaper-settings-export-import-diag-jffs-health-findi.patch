@@ -1,0 +1,821 @@
+From 6b703970ef488a90f479fba164801664a8a7addd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 15:03:51 -0400
+Subject: [PATCH] Reaper settings export / import; diag: /jffs health finding
+
+The Reaper lists left nvram (v2.6.3 / v2.6.7 / v2.6.9) so the stock nvram
+backup no longer carries them. reaper_cfg.cgi (Storage page, "Reaper
+settings backup") exports one JSON file: Gatekeeper flags + device list,
+Policy Routing flag + rules, the Firewall engine's flags + eight lists, and
+Warden's nvram keys (allowlisted). Import replays each value through the
+path an interactive edit takes - every value passes the same charset /
+length gates as the per-page saves; the firewall and routing lists are
+STAGED as drafts so commit-confirm still gates anything that could lock the
+operator out; Gatekeeper's list and Warden's keys (no confirm step) are
+written and their services restarted. Nothing touches /jffs/configs.
+
+Diag v1.3.4: /jffs total/used/free, read-only state, a write test, and the
+space Reaper's stores take; WARN when unmounted, read-only, under 2 MB free
+/ over 90 %, or the write test fails - the lists live only there now.
+---
+ release/src/router/httpd/web.c            | 177 ++++++++++++++++++++++
+ release/src/router/others/reaper_diag     |  20 ++-
+ release/src/router/www/BR.dict            |  10 ++
+ release/src/router/www/CN.dict            |  10 ++
+ release/src/router/www/CZ.dict            |  10 ++
+ release/src/router/www/DA.dict            |  10 ++
+ release/src/router/www/DE.dict            |  10 ++
+ release/src/router/www/EN.dict            |  10 ++
+ release/src/router/www/ES.dict            |  10 ++
+ release/src/router/www/FI.dict            |  10 ++
+ release/src/router/www/FR.dict            |  10 ++
+ release/src/router/www/HU.dict            |  10 ++
+ release/src/router/www/IT.dict            |  10 ++
+ release/src/router/www/JP.dict            |  10 ++
+ release/src/router/www/KR.dict            |  10 ++
+ release/src/router/www/MS.dict            |  10 ++
+ release/src/router/www/NL.dict            |  10 ++
+ release/src/router/www/NO.dict            |  10 ++
+ release/src/router/www/PL.dict            |  10 ++
+ release/src/router/www/RO.dict            |  10 ++
+ release/src/router/www/RU.dict            |  10 ++
+ release/src/router/www/Reaper_Storage.asp |  61 ++++++++
+ release/src/router/www/SL.dict            |  10 ++
+ release/src/router/www/SV.dict            |  10 ++
+ release/src/router/www/TH.dict            |  10 ++
+ release/src/router/www/TR.dict            |  10 ++
+ release/src/router/www/TW.dict            |  10 ++
+ release/src/router/www/UK.dict            |  10 ++
+ 28 files changed, 506 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index dbb8a36aa3..b59abebd67 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24030,6 +24030,182 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
+ }
+ 
++/* ===================================================================
++ * reaper v2.6.10: Reaper-wide settings export / import (reaper_cfg.cgi).
++ *
++ * The Reaper lists left nvram (v2.6.3 / v2.6.7 / v2.6.9: the 1 KB kernel cap)
++ * so the stock nvram backup no longer carries them. This is the one file
++ * that does: Gatekeeper (flags + device list), Policy Routing (flag +
++ * rules), the Firewall engine (flags + eight lists) and Warden (its nvram
++ * keys). Export is read-only JSON. Import REPLAYS each value through the
++ * same path an interactive edit takes - lists are STAGED as drafts and the
++ * operator applies + keeps them on their page (commit-confirm still gates
++ * anything that could lock them out); Gatekeeper's list and Warden's keys,
++ * which have no confirm step, are written and their services restarted.
++ * Every value passes the same charset/length gates the per-page saves use.
++ * The file carries MACs, addresses and domains - it is the operator's own
++ * backup, kept wherever they keep it; nothing here writes to /jffs/configs.
++ * =================================================================== */
++#define RCFG_LIST_MAX	8192
++#define RCFG_GK_MAX	(64 * 1024)
++
++static int rcfg_ok(const char *v, size_t max)
++{
++	const char *p;
++	if (!v) return 0;
++	if (strlen(v) >= max) return 0;
++	for (p = v; *p; p++)
++		if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7E) return 0;
++	return 1;
++}
++
++/* the nvram flags that travel with each feature (allowlist - nothing else is
++ * ever set from the file). Value charset is the strict one: [A-Za-z0-9 ,._:-] */
++static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags[] = {
++	{ "gk",     "gk_enable",        2   }, { "gk",     "gk_default",     2   },
++	{ "gk",     "gk_guest_hours",   6   }, { "gk",     "gk_captive",     2   },
++	{ "gk",     "gk_notify",        2   },
++	{ "pbr",    "reaper_pbr_enable", 2  },
++	{ "fw",     "reaper_fw_enable", 2   }, { "fw",     "reaper_fw_confirm", 6 },
++	{ "warden", "rwarden_enable",   2   }, { "warden", "rwarden_feeds",  512 },
++	{ "warden", "rwarden_cfeeds",   512 }, { "warden", "rwarden_geo",    512 },
++	{ "warden", "rwarden_dir",      6   }, { "warden", "rwarden_self",   2   },
++	{ "warden", "rwarden_ban",      2048 }, { "warden", "rwarden_allow", 2048 },
++	{ "warden", "rwarden_log",      2   }, { "warden", "rwarden_sched",  64  },
++	{ "warden", "rwarden_stats_save", 2 },
++};
++#define RCFG_NFLAGS ((int)(sizeof(rcfg_flags) / sizeof(rcfg_flags[0])))
++static const char *rcfg_fw_lists[] = { "obj", "grp", "svc", "zone", "zpol", "rules", "edef", "nat" };
++
++static int rcfg_flag_ok(const char *v, size_t max)
++{
++	const char *p;
++	if (!v || strlen(v) >= max) return 0;
++	for (p = v; *p; p++)
++		if (!(isalnum((unsigned char)*p) || strchr(" ,._:-", *p))) return 0;
++	return 1;
++}
++
++static void
++do_reaper_cfg_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++	if (!action) action = "export";
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++			return;
++		}
++	}
++
++	if (strcmp(action, "export") == 0) {
++		int i;
++		const char *last = "";
++		websWrite(stream, "{\"ok\":1,\"reaper_cfg\":1,\"schema\":1,\"model\":");
++		gk_json_esc(stream, nvram_safe_get("productid"));
++		websWrite(stream, ",\"version\":");
++		gk_json_esc(stream, nvram_safe_get("extendno"));
++		websWrite(stream, ",\"when\":%ld", (long)time(NULL));
++		/* flags, grouped by section */
++		for (i = 0; i < RCFG_NFLAGS; i++) {
++			if (strcmp(last, rcfg_flags[i].sect) != 0) {
++				if (last[0]) websWrite(stream, "}");
++				websWrite(stream, ",\"%s\":{", rcfg_flags[i].sect);
++				last = rcfg_flags[i].sect;
++			} else
++				websWrite(stream, ",");
++			websWrite(stream, "\"%s\":", rcfg_flags[i].nv);
++			gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
++		}
++		websWrite(stream, "}");
++		/* the lists */
++		websWrite(stream, ",\"gk_rl\":");
++		gk_json_esc(stream, gk_rl_get());
++		websWrite(stream, ",\"pbr_rulelist\":");
++		gk_json_esc(stream, reaper_pbr_rl_get());
++		websWrite(stream, ",\"fw\":{");
++		for (i = 0; i < 8; i++) {
++			websWrite(stream, "%s\"%s\":", i ? "," : "", rcfg_fw_lists[i]);
++			gk_json_esc(stream, reaper_fw_list_get(rcfg_fw_lists[i]));
++		}
++		websWrite(stream, "}}");
++		return;
++	}
++
++	if (strcmp(action, "import") == 0) {
++		char *body = get_cgi("cfg");
++		json_object *root, *sect, *val;
++		int i, nflags = 0, nlists = 0, rejected = 0;
++		int touch_gk = 0, touch_warden = 0;
++		if (!body || !*body) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"missing parameter\"}");
++			return;
++		}
++		root = json_tokener_parse(body);
++		if (!root || json_object_get_type(root) != json_type_object) {
++			if (root) json_object_put(root);
++			websWrite(stream, "{\"ok\":0,\"error\":\"not a settings file\"}");
++			return;
++		}
++		if (!json_object_object_get_ex(root, "reaper_cfg", &val)) {
++			json_object_put(root);
++			websWrite(stream, "{\"ok\":0,\"error\":\"not a Reaper settings file\"}");
++			return;
++		}
++		/* 1. flags (RAM; committed below only for the features restarted here -
++		 *    the commit-confirm features persist on their own Keep) */
++		for (i = 0; i < RCFG_NFLAGS; i++) {
++			const char *v;
++			if (!json_object_object_get_ex(root, rcfg_flags[i].sect, &sect)) continue;
++			if (!json_object_object_get_ex(sect, rcfg_flags[i].nv, &val)) continue;
++			v = json_object_get_string(val);
++			if (!rcfg_flag_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
++			nvram_set(rcfg_flags[i].nv, v);
++			nflags++;
++			if (!strcmp(rcfg_flags[i].sect, "gk")) touch_gk = 1;
++			if (!strcmp(rcfg_flags[i].sect, "warden")) touch_warden = 1;
++		}
++		/* 2. Gatekeeper list: the same store gk actions write; additive */
++		if (json_object_object_get_ex(root, "gk_rl", &val)) {
++			const char *v = json_object_get_string(val);
++			if (rcfg_ok(v, RCFG_GK_MAX) && gk_rl_set(v) == 0) { nlists++; touch_gk = 1; }
++			else rejected++;
++		}
++		/* 3. Policy Routing rules: staged; the operator applies + keeps */
++		if (json_object_object_get_ex(root, "pbr_rulelist", &val)) {
++			const char *v = json_object_get_string(val);
++			if (rcfg_ok(v, RPBR_LIST_MAX) && rjf_set(REAPER_PBR_DRAFT, v, "reaper_pbr") == 0) nlists++;
++			else rejected++;
++		}
++		/* 4. Firewall lists: staged through the same gate as `save` */
++		if (json_object_object_get_ex(root, "fw", &sect)) {
++			for (i = 0; i < 8; i++) {
++				const char *v, *a, *b;
++				int bad = 0;
++				if (!json_object_object_get_ex(sect, rcfg_fw_lists[i], &val)) continue;
++				v = json_object_get_string(val);
++				if (!rcfg_ok(v, RCFG_LIST_MAX)) { rejected++; continue; }
++				for (a = v; a && *a == '<'; a = b) {
++					b = strchr(a + 1, '<');
++					if ((size_t)((b ? b : v + strlen(v)) - (a + 1)) >= RFW_REC_MAX) { bad = 1; break; }
++				}
++				if (bad || reaper_fw_list_stage(rcfg_fw_lists[i], v) != 0) { rejected++; continue; }
++				nlists++;
++			}
++		}
++		json_object_put(root);
++		if (touch_gk || touch_warden) nvram_commit();
++		if (touch_gk) notify_rc("restart_gk");
++		if (touch_warden) notify_rc("restart_rwarden");
++		logmessage("reaper_cfg", "settings imported: %d flag(s), %d list(s), %d rejected - firewall / routing lists are staged, apply and keep them on their pages", nflags, nlists, rejected);
++		websWrite(stream, "{\"ok\":1,\"flags\":%d,\"lists\":%d,\"rejected\":%d}", nflags, nlists, rejected);
++		return;
++	}
++
++	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
++}
++
+ /* ===================================================================
+  * reaper v1.9.0: Device Identity Manager (Reaper_Devices.asp).
+  *
+@@ -33052,6 +33228,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_warden.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
+ 	{ "reaper_fw.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_fw_cgi, do_auth },
+ 	{ "reaper_pbr.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_pbr_cgi, do_auth },
++	{ "reaper_cfg.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_cfg_cgi, do_auth },
+ 	{ "reaper_dev.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
+ 	{ "reaper_export.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_export_cgi, do_auth },
+ 	/* Prometheus scrape: public (no session) but ?token= gated inside the handler */
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 93584dbc6c..c0c93282c6 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.3 (2026-08-22) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.4 (2026-08-22) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.3"
++VER="REAPER-DIAG v1.3.4"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -284,6 +284,22 @@ echo "  loadavg: $(cat /proc/loadavg 2>/dev/null)"
+ head -4 /proc/meminfo 2>/dev/null | sed 's/^/  /'
+ echo "  -- storage --"; df -h 2>/dev/null | sed 's/^/  /'
+ echo "  -- jffs/usb mounts --"; mount 2>/dev/null | grep -E "jffs|/mnt|usb|sd[a-z]" | sed 's/^/  /'
++# v1.3.4: /jffs health. Since v2.6.3-v2.6.9 the Reaper lists (Gatekeeper devices,
++# routing rules, firewall lists, Warden cache) live ONLY here: a full, read-only
++# or unmounted /jffs means Reaper changes stop persisting (loudly - rjf_set logs
++# "NOT saved"), so say so before anyone chases a phantom.
++JF="$(df -k /jffs 2>/dev/null | awk 'NR==2{print $2, $3, $4, $5}')"; set -- $JF
++if [ -z "$1" ] || ! mount 2>/dev/null | grep -q " /jffs "; then
++  finding WARN "/jffs is not mounted - Reaper lists cannot persist (Gatekeeper devices, routing rules, firewall lists)"
++else
++  JFT=$1; JFU=$2; JFA=$3; JFP=${4%%%}
++  JFRO=$(mount 2>/dev/null | awk '$3=="/jffs"{print $6}' | grep -c "(ro,")
++  echo "  /jffs             : ${JFT}K total, ${JFU}K used (${JFP}%), ${JFA}K free$( [ "$JFRO" = 1 ] && echo ', READ-ONLY')"
++  echo "  reaper on /jffs   : $(du -sk /jffs/gatekeeper /jffs/reaper_pbr /jffs/reaper_fw /jffs/rwarden /jffs/rwatch /jffs/reaper 2>/dev/null | awk '{s+=$1; n=n" "$2":"$1"K"} END{print s"K total;" n}')"
++  [ "$JFRO" = 1 ] && finding WARN "/jffs is mounted READ-ONLY (filesystem error?) - Reaper lists cannot persist; a reboot usually recovers it, else Administration > Format JFFS on next boot"
++  if [ "$JFA" -lt 2048 ] || [ "$JFP" -ge 90 ]; then finding WARN "/jffs nearly full (${JFA}K free, ${JFP}%) - Reaper saves will start failing; see the du line in 11 for what is using it"; fi
++  if ! ( : > /jffs/.reaper_diag_w 2>/dev/null && rm -f /jffs/.reaper_diag_w ); then finding WARN "/jffs write test FAILED - Reaper lists cannot persist"; fi
++fi
+ echo "  -- top (snapshot) --"; top -bn1 2>/dev/null | head -12 | sed 's/^/  /'
+ 
+ sec "3b. NVRAM HYGIENE (names and sizes only - values never printed)"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 812f52954d..de60ad5243 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 4524259126..7ce7b6b8db 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 91a316bd9b..ccdb4acd2d 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 8887557ea0..24c64e621f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 3b6f12e8da..e74b5e5003 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index c2eb9444fa..b3a9323268 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index cfa51605b3..866b538f1d 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index dd59adde78..f6dbe1b4c6 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 4588bb4b44..15f98a38e4 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 047618b89d..8fb6dd6b6a 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 56f0e92dc7..dd0469c0d2 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index fb13e9f085..49678f88de 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 530854472d..dba4fb2bf3 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 4aaa4c4dab..0b093c03fd 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index e866c86328..0ee3c7f82c 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 53f84ec15c..4f6d096790 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index a4505fe864..335f88bdbe 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 7be060d738..a636eda354 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 514921f03c..975d5163c7 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 387ff05e34..45933f9e04 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -95,6 +95,18 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+   <p class="note" id="timeline_note" style="margin-top:12px"><#RDST_36#></p>
+ </div>
+ 
++<div class="card">
++  <h2><#RDST_68#></h2>
++  <p class="note" style="margin-top:0"><#RDST_69#></p>
++  <div class="tblbar" style="margin-top:10px;gap:10px;flex-wrap:wrap">
++    <button class="btn" id="cfg_export"><#RDST_70#></button>
++    <label class="btn" for="cfg_file" style="display:inline-block"><#RDST_71#></label>
++    <input type="file" id="cfg_file" accept=".json,application/json" style="display:none">
++    <span class="note" id="cfg_msg" style="margin:0"></span>
++  </div>
++  <p class="note"><#RDST_72#></p>
++</div>
++
+ <div class="card">
+   <h2><#RDST_50#></h2>
+   <p class="note" style="margin-top:0"><#RDST_54#></p>
+@@ -285,6 +297,55 @@ document.getElementById('saveBtn').onclick = save;
+ function boot(){ loadStatus(); }
+ if(document.readyState !== 'loading') boot();
+ else document.addEventListener('DOMContentLoaded', boot);
++
++/* v2.6.10: Reaper-wide settings backup. Export = a JSON file the browser
++   saves; import = the same file posted back, replayed through each feature's
++   own save path (firewall / routing lists land as drafts - apply + keep them
++   on their pages; Gatekeeper + Warden restart at once). */
++(function(){
++  var HTTPID_CFG = '<% nvram_get("http_id"); %>';
++  function cfgMsg(ok, t){ var m=document.getElementById('cfg_msg'); if(!m) return; m.textContent=t; m.style.color = ok ? 'var(--jade)' : 'var(--danger)'; }
++  var ex = document.getElementById('cfg_export');
++  if(ex) ex.onclick = function(){
++    var x = new XMLHttpRequest();
++    x.open('GET', '/reaper_cfg.cgi?action=export&http_id=' + encodeURIComponent(HTTPID_CFG) + '&_=' + Date.now(), true);
++    x.onreadystatechange = function(){
++      if(x.readyState !== 4) return;
++      var j = null; try{ j = JSON.parse(x.responseText); }catch(e){}
++      if(!j || !j.ok){ cfgMsg(false, `<#RDST_74#>`); return; }
++      var name = 'reaper-settings-' + String(j.model||'router').replace(/[^A-Za-z0-9_-]/g,'') + '-' + String(j.version||'').replace(/[^A-Za-z0-9_.-]/g,'') + '-' + new Date().toISOString().slice(0,10) + '.json';
++      var blob = new Blob([JSON.stringify(j, null, 1)], {type:'application/json'});
++      var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
++      document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 2000);
++      cfgMsg(true, `<#RDST_73#>` + ' ' + name);
++    };
++    x.send();
++  };
++  var fi = document.getElementById('cfg_file');
++  if(fi) fi.onchange = function(){
++    var f = fi.files && fi.files[0]; if(!f) return;
++    if(f.size > 300000){ cfgMsg(false, `<#RDST_75#>`); fi.value=''; return; }
++    var rd = new FileReader();
++    rd.onload = function(){
++      var txt = String(rd.result||''), j = null;
++      try{ j = JSON.parse(txt); }catch(e){}
++      if(!j || !j.reaper_cfg){ cfgMsg(false, `<#RDST_75#>`); fi.value=''; return; }
++      if(!confirm(`<#RDST_76#>`)){ fi.value=''; return; }
++      var x = new XMLHttpRequest();
++      x.open('POST', '/reaper_cfg.cgi', true);
++      x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++      x.onreadystatechange = function(){
++        if(x.readyState !== 4) return;
++        var r = null; try{ r = JSON.parse(x.responseText); }catch(e){}
++        fi.value = '';
++        if(!r || !r.ok){ cfgMsg(false, (r && r.error) || `<#RDST_74#>`); return; }
++        cfgMsg(true, `<#RDST_77#>`.replace('%1', r.flags).replace('%2', r.lists).replace('%3', r.rejected));
++      };
++      x.send('action=import&http_id=' + encodeURIComponent(HTTPID_CFG) + '&cfg=' + encodeURIComponent(JSON.stringify(j)));
++    };
++    rd.readAsText(f);
++  };
++})();
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index f03e4a9590..8b99be1512 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index a7e550f04d..da79c93b5b 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 1d970c6fea..988219fb97 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index a615705f56..d9c2bab701 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4e4a9dcda4..2b28a8fb93 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 651035ae2e..93508ab5a4 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6721,3 +6721,13 @@ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal
+ RVR_59=Not a valid address or CIDR:
+ RVR_60=Too many entries for one rule (64 max). Split it into two rules.
+ RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
++RDST_68=Reaper settings backup
++RDST_69=Everything Reaper keeps outside the stock settings backup: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all its lists) and Warden (countries, feeds, ban/allow lists). One JSON file.
++RDST_70=Export settings
++RDST_71=Import settings
++RDST_72=On import, Gatekeeper and Warden take effect at once. Firewall and Policy Routing lists are loaded as drafts - open each page, Apply and Keep them, so a restored rule that cuts off your own access still reverts. The file contains device addresses and your domain lists; keep it with your other backups.
++RDST_73=Saved as
++RDST_74=That did not work.
++RDST_75=Not a Reaper settings file.
++RDST_76=Import these settings? Gatekeeper and Warden change immediately; the firewall and routing lists are staged for you to apply.
++RDST_77=Imported: %1 setting(s), %2 list(s), %3 rejected. Now apply and keep the firewall and routing lists on their pages.
+-- 
+2.25.1
+

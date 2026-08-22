@@ -1,0 +1,1274 @@
+From 9f60bb7c0173bc3bb6697b4372e2f989fc3d57c4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 12:40:56 -0400
+Subject: [PATCH] policy routing: WireGuard targets, IPv6, commit-confirm
+ (closes the post-MVP backlog)
+
+Closes backlog "Policy Routing - what is left after the MVP", all three parts:
+
+1. WireGuard targets (WGC1-5, mark codes 6-10, tables wgc1-5, fail-closed
+   like OVPN). The BE96U flow cache ignores an ip rule for a WireGuard
+   egress; the fix ASUS shipped and VPN Director uses is the blog skip list
+   (/proc/blog/skip_wireguard_network: a flow whose src or dst is listed is
+   never offered to the accelerator). Fed exactly as VPN Director feeds it:
+   a source selector contributes its CIDR, any other selector (destination
+   set, MAC) needs the LAN skipped - VPN Director's "all LAN" case. That is
+   a real cost (no HW acceleration for LAN-sourced flows while such a rule
+   exists) so it is logged on apply and shown on the rule's chip. The list
+   has no refcount and is shared with VPN Director and the WG server, so
+   the script records which entries IT added (/tmp/reaper_pbr/skipnets)
+   and removes only those on teardown. fc flush after a WG apply.
+2. IPv6. Every rule now also emits into the ip6tables mangle chain
+   (rwfw6_<obj> sets, guarded on the set existing; v6 source CIDRs; MAC on
+   both families) with ip -6 rules in the same 9000/9100 bands. A tunnel
+   table with no v6 routes sends the selected v6 traffic into the
+   fail-closed prohibit, so a v4-only tunnel cannot leak its v6 half.
+3. Commit-confirm (I4), the same shape as reaper_fw: reaper_pbr.cgi
+   stages the draft in nvram RAM (never commits), rc arms a candidate with
+   a cru-owned deadline (timer shared: reaper_fw_confirm) and a PRE-
+   GENERATED rollback built from /jffs/reaper_pbr/lastgood; confirm is the
+   only path that writes flash; boot prefers a complete lastgood snapshot
+   and re-syncs nvram RAM to it. First boot on this build seeds lastgood
+   from nvram so a rollback source always exists. The firewall re-hook
+   re-runs the armed candidate inside a window. Page: Apply-and-confirm
+   button, Keep/Revert card with the router-owned countdown, WireGuard
+   1-5 in the target list, bypass/"client not enabled" chips, IPv6 note.
+
+Verified on the host: the generated apply.sh under mock iptables/ip/ipset
+(v4+v6 marks, ipset guard, both-family rules, skip-list bookkeeping
+pre/new across apply, re-apply and teardown); the commit-confirm state
+machine compiled against a fake nvram (boot seed, arm, second-arm refusal,
+cron deadline rollback, confirm = 1 commit + lastgood, stray confirm no-op,
+armed-flag-without-marker boot, disable via draft); page JS parses with
+all 25 dicts; langcheck 0 breakers.
+---
+ release/src/router/httpd/web.c               | 102 +++
+ release/src/router/rc/firewall.c             |  12 +-
+ release/src/router/rc/rc.h                   |   4 +
+ release/src/router/rc/reaper_pbr.c           | 648 ++++++++++++++++---
+ release/src/router/rc/services.c             |  12 +
+ release/src/router/www/Reaper_VPNRouting.asp | 115 +++-
+ 6 files changed, 771 insertions(+), 122 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 540b049d6a..7cf0382373 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23918,6 +23918,107 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
+ }
+ 
++/* ===================================================================
++ * reaper v2.6.7: Policy Routing commit-confirm (Reaper_VPNRouting.asp).
++ *
++ * Mirrors do_reaper_fw_cgi's three verbs. Everything here edits the DRAFT
++ * only: `apply` writes the two lists into nvram RAM and never commits; the
++ * single path that writes flash is reaper_pbr_confirm() in rc, after the
++ * operator has confirmed rules that are already live. See rc/reaper_pbr.c P7.
++ * =================================================================== */
++#define RPBR_LIST_MAX	8192
++
++static void
++do_reaper_pbr_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++
++	if (!action) action = "cfg";
++
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++			return;
++		}
++	}
++
++	/* the lists plus live commit-confirm state. `active` is what the page
++	 * polls after an apply: `enable` is what was asked for, `active` is written
++	 * by rc once the chain actually changed (rule 42). */
++	if (strcmp(action, "cfg") == 0) {
++		long left = 0;
++		if (nvram_match("reaper_pbr_armed", "1")) {
++			FILE *df = fopen("/tmp/reaper_pbr/deadline", "r");
++			long dl = 0;
++			if (df) {
++				if (fscanf(df, "%ld", &dl) != 1) dl = 0;
++				fclose(df);
++			}
++			left = dl - (long)time(NULL);
++			if (left < 0) left = 0;
++		}
++		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld,\"wg\":[%d,%d,%d,%d,%d]",
++			nvram_match("reaper_pbr_active", "1") ? 1 : 0,
++			nvram_match("reaper_pbr_enable", "1") ? 1 : 0,
++			nvram_get_int("reaper_fw_confirm"),
++			nvram_match("reaper_pbr_armed", "1") ? 1 : 0,
++			left,
++			nvram_get_int("wgc1_enable"), nvram_get_int("wgc2_enable"), nvram_get_int("wgc3_enable"),
++			nvram_get_int("wgc4_enable"), nvram_get_int("wgc5_enable"));
++		websWrite(stream, ",\"err\":");
++		gk_json_esc(stream, nvram_safe_get("reaper_pbr_err"));
++		websWrite(stream, ",\"rulelist\":");
++		gk_json_esc(stream, nvram_safe_get("reaper_pbr_rulelist"));
++		websWrite(stream, "}");
++		return;
++	}
++
++	/* stage the draft (RAM only) and arm. The engine validates every record
++	 * structurally at generation time (rc/reaper_pbr.c P2); what matters HERE
++	 * is that the bytes are printable ASCII and bounded. */
++	if (strcmp(action, "apply") == 0) {
++		char *en = get_cgi("enable"), *rl = get_cgi("rulelist");
++		const char *p;
++		if (!en || !rl || (strcmp(en, "0") && strcmp(en, "1"))) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"missing parameter\"}");
++			return;
++		}
++		if (strlen(rl) >= RPBR_LIST_MAX) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"list too long\"}");
++			return;
++		}
++		for (p = rl; *p; p++) {
++			if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7E) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"unsupported character\"}");
++				return;
++			}
++		}
++		if (nvram_match("reaper_pbr_armed", "1")) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"a change is already awaiting confirmation\"}");
++			return;
++		}
++		nvram_set("reaper_pbr_enable", en);       /* RAM only - see the note above */
++		nvram_set("reaper_pbr_rulelist", rl);
++		nvram_unset("reaper_pbr_err");
++		notify_rc("start_reaper_pbr_apply");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++	if (strcmp(action, "confirm") == 0) {
++		notify_rc("start_reaper_pbr_confirm");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++	if (strcmp(action, "rollback") == 0) {
++		notify_rc("start_reaper_pbr_rollback");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
++}
++
+ /* ===================================================================
+  * reaper v1.9.0: Device Identity Manager (Reaper_Devices.asp).
+  *
+@@ -32939,6 +33040,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_gk.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_gk_cgi, do_auth },
+ 	{ "reaper_warden.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
+ 	{ "reaper_fw.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_fw_cgi, do_auth },
++	{ "reaper_pbr.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_pbr_cgi, do_auth },
+ 	{ "reaper_dev.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
+ 	{ "reaper_export.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_export_cgi, do_auth },
+ 	/* Prometheus scrape: public (no session) but ?token= gated inside the handler */
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index b8425bfa1b..54f9f5df61 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9448,9 +9448,15 @@ leave:
+ 	}
+ 
+ 	/* reaper v2.5.x ipset policy routing: our mangle PREROUTING jump can be
+-	 * unhooked by this rebuild - re-run the idempotent generated script. */
+-	if (nvram_match("reaper_pbr_enable", "1") && f_exists("/tmp/reaper_pbr/apply.sh"))
+-		system("sh /tmp/reaper_pbr/apply.sh");
++	 * unhooked by this rebuild - re-run the idempotent generated script. v2.6.7:
++	 * inside a commit-confirm window the ARMED candidate is the live one, so
++	 * re-apply that (same reasoning as the rules engine above). */
++	if (nvram_match("reaper_pbr_enable", "1")) {
++		if (nvram_match("reaper_pbr_armed", "1") && f_exists("/tmp/reaper_pbr/candidate.sh"))
++			system("sh /tmp/reaper_pbr/candidate.sh");
++		else if (f_exists("/tmp/reaper_pbr/apply.sh"))
++			system("sh /tmp/reaper_pbr/apply.sh");
++	}
+ 
+ 	return 0;
+ }
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index c1ff76fedf..a9b59bca11 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3004,6 +3004,10 @@ extern void reaper_fw_sets_only(void);	/* object ipsets + dnsmasq + resolver, no
+  * VPN Director's pref band so it overrides. Inert unless reaper_pbr_enable=1. */
+ extern void stop_reaper_pbr(void);
+ extern void start_reaper_pbr(void);
++/* v2.6.7: commit-confirm for policy routing (same shape as reaper_fw's) */
++extern void reaper_pbr_apply(void);
++extern void reaper_pbr_confirm(void);
++extern void reaper_pbr_rollback(void);
+ /* The dnsmasq `ipset=` fragment reaper_fw generates for its FQDN objects, so
+  * the resolver drops matching answers straight into the object's ipsets.
+  * reaper_fw.c writes it; services.c splices it into /etc/dnsmasq.conf just
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 1cae508a67..2d2da6b14e 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -1,8 +1,9 @@
+ /*
+  * rc/reaper_pbr.c - Reaper ipset-based Policy Routing ("VPN Director" PBR)
+- * (RT-BE96U "reaper", v2.5.x MVP). Companion to Merlin's source/dest VPN
+- * Director (libovpn/amvpn_routing.c), which this SITS BESIDE and OVERRIDES for
+- * the flows it names - it never edits VPN Director's rules or tables.
++ * (RT-BE96U "reaper", v2.5.x MVP; v2.6.7 completes the deferred parts).
++ * Companion to Merlin's source/dest VPN Director (libovpn/amvpn_routing.c),
++ * which this SITS BESIDE and OVERRIDES for the flows it names - it never
++ * edits VPN Director's rules or tables.
+  *
+  * WHAT THIS IS
+  *   Policy routing keyed on an ipset/domain/src/mac SELECTOR -> a VPN tunnel,
+@@ -20,82 +21,134 @@
+  *                   is WG accel. bwdpi/Adaptive QoS (soft-owns 8-31) is compiled
+  *                   OUT (# RTCONFIG_BWDPI is not set), so this nibble is
+  *                   unconditionally ours.
++ *   mark codes    : 1-5 OVPN1-5, 6-10 WGC1-5, 11 WAN, 15 BLOCK.
+  *   ip rule pref  : PPBR_PRIO_BASE 9000. BELOW VPN Director's 10000 band on
+  *                   purpose - an explicit PBR rule is evaluated FIRST and thus
+  *                   OVERRIDES VPN Director's broad from/to rules (the intended
+  *                   precedence: PBR is the specific override).
+- *   tables        : the EXISTING per-tunnel tables ovpnc1..5 (VPN Director owns
+- *                   them); WAN = table main; BLOCK = prohibit. No new tables.
++ *   tables        : the EXISTING per-tunnel tables ovpnc1..5 / wgc1..5 (VPN
++ *                   Director and the WG client own them); WAN = table main;
++ *                   BLOCK = prohibit. No new tables.
+  *
+  * ============================ INVARIANTS ============================
+  * P1. TOUCH ONLY WHAT WE OWN. Apply/teardown only ever create/flush the
+- *     PPBR_CHAIN mangle chain (+ its one PREROUTING jump) and delete ip rules
+- *     in the 9000-9199 pref band. Never another chain, table, or rule.
++ *     PPBR_CHAIN mangle chain (+ its one PREROUTING jump, v4 and v6), delete
++ *     ip/ip6 rules in the 9000-9199 pref band, and remove the blog skip-net
++ *     entries WE added (never one that was already there - see P6).
+  * P2. INPUT IS UNTRUSTED. Every field from reaper_pbr_rulelist that reaches the
+  *     generated root shell is charset-validated in C first; a bad record is
+  *     DROPPED and logged, never emitted half-formed.
+  * P3. FAIL CLOSED. A tunnel target also emits a lower-priority `prohibit` rule
+  *     for its mark, so when the tunnel drops (its table is flushed) the flow is
+  *     blocked, not silently leaked out the WAN. WAN-force and unmatched traffic
+- *     are unaffected.
++ *     are unaffected. The SAME holds for IPv6: a tunnel table that carries no
++ *     IPv6 routes sends the selected v6 traffic into the prohibit, so a v4-only
++ *     tunnel cannot leak the selected flows' v6 half around itself.
+  * P4. SERIALIZE WITH THE BASE. Apply/teardown take file_lock("firewall") like
+  *     reaper_fw / GK / Warden, so we never interleave with a start_firewall()
+  *     rebuild.
+  * P5. INERT BY DEFAULT. Does nothing unless reaper_pbr_enable=1. No enable ->
+  *     teardown only.
++ * P6. WIREGUARD = THE VPN DIRECTOR CONTRACT (v2.6.7). On HND the flow cache
++ *     does not honour an `ip rule` for a WireGuard egress; ASUS's fix (which
++ *     Merlin's VPN Director uses) is /proc/blog/skip_wireguard_network: a flow
++ *     whose src OR dst is in a listed net is never offered to the accelerator.
++ *     The list is 8 static CIDRs (v4) + 8 (v6), shared with VPN Director and
++ *     the WG server's AllowedIPs. We feed it exactly as VPN Director does: a
++ *     SOURCE selector contributes its CIDR; any other selector (destination
++ *     set, MAC) needs the whole LAN skipped - the same thing VPN Director does
++ *     for a WG rule with no source. That is a real performance cost (no
++ *     hardware acceleration for LAN-sourced flows while such a rule exists),
++ *     so it is logged on every apply and shown on the page. The kernel keeps
++ *     no refcount, so the script records which entries it ADDED and removes
++ *     only those on teardown; one that was already present (VPN Director's,
++ *     or the WG server's) is left alone.
++ * P7. COMMIT-CONFIRM (I4, v2.6.7). The page applies the DRAFT (nvram RAM,
++ *     never committed by httpd); the candidate arms an auto-revert owned by a
++ *     durable cru watcher that runs a PRE-GENERATED rollback built from the
++ *     last CONFIRMED config (/jffs/reaper_pbr/lastgood). Confirm is the only
++ *     path that writes flash. Boot prefers lastgood over nvram when the
++ *     snapshot is complete, for the same reason reaper_fw does: nvram_commit()
++ *     is global, so any other page's Apply inside the window would otherwise
++ *     persist an unconfirmed draft. Same shape as rc/reaper_fw.c (R1/R3/R5/R6).
+  *
+- * KNOWN LIMIT (MVP): WireGuard (WGC*) targets are DEFERRED. On BE96U the WG
+- * data path is hardware-offloaded; the accelerator ignores an `ip rule` unless
+- * the destination is fed to hnd_skip_wg_network() - and that takes static CIDRs,
+- * not a dynamic ipset. Supporting WG PBR needs a mark-aware accel skip that must
+- * be designed against on-box offload behaviour. Until then a WGC target is
+- * parsed, logged, and SKIPPED (never silently "supported"). OVPN is a tun path
+- * and is not fast-pathed the same way, so it works with the plain ip rule.
+- * IPv4-first: v6 selectors are deferred with WG.
+- *
+- * nvram: reaper_pbr_enable  reaper_pbr_rulelist
++ * nvram: reaper_pbr_enable  reaper_pbr_rulelist  (runtime: reaper_pbr_active
++ *        reaper_pbr_armed reaper_pbr_err; timer shared: reaper_fw_confirm)
+  * RECORD (list sep '<', field sep '>'):
+  *   <en>desc>seltype>selval>proto>port>target
+  *   en=0|1  seltype=ipset|domain|src|mac  target=OVPN1..5|WGC1..5|WAN|BLOCK
+- *   (proto/port parsed but not emitted in the MVP - deferred to v2)
++ *   (proto/port parsed but not emitted - deferred)
+  */
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <ctype.h>
+ #include <unistd.h>
++#include <time.h>
+ #include <sys/stat.h>
++#include <sys/wait.h>
++#include <arpa/inet.h>
+ 
+ #include "rc.h"
+ #include <shared.h>
+ 
+ #define PPBR_DIR        "/tmp/reaper_pbr"
+-#define PPBR_APPLY      PPBR_DIR "/apply.sh"
++#define PPBR_APPLY      PPBR_DIR "/apply.sh"       /* the committed ruleset */
++#define PPBR_CAND       PPBR_DIR "/candidate.sh"   /* the armed candidate */
++#define PPBR_ROLLBACK   PPBR_DIR "/rollback.sh"    /* pre-generated recovery (P7) */
++#define PPBR_CC         PPBR_DIR "/cc_check.sh"    /* cru-run deadline checker */
++#define PPBR_ARMED      PPBR_DIR "/armed"          /* single-arm CAS token (a directory) */
++#define PPBR_DEADLINE   PPBR_DIR "/deadline"       /* absolute epoch the arm reverts at */
++#define PPBR_SKIPNETS   PPBR_DIR "/skipnets"       /* blog skip entries we added (P6) */
++#define PPBR_CACHE      "/jffs/reaper_pbr"
++#define PPBR_LASTGOOD   PPBR_CACHE "/lastgood"     /* last CONFIRMED config = rollback + boot source */
+ #define PPBR_CHAIN      "REAPER_PBR"
+ #define PPBR_MASK       "0x000F0000"        /* bits 16-19 */
+ #define PPBR_PRIO_BASE  9000                 /* lookup rules: 9000+code */
+ #define PPBR_PRIO_KS    9100                 /* fail-closed prohibit: 9100+code */
+ #define PPBR_MAX_RULES  50                   /* blast-radius cap, not policy */
+ #define PPBR_NAME_MAX   32
++#define PPBR_BLOG_SKIP  "/proc/blog/skip_wireguard_network"
++
++#define PPBR_CONFIRM_MIN 15                  /* same floor/ceiling as reaper_fw (shared timer) */
++#define PPBR_CONFIRM_DEF 60
++#define PPBR_CONFIRM_MAX 3600
++
++/* the two persisted keys, one file each in lastgood (P7) */
++static const struct { const char *nv, *file; } ppbr_keys[] = {
++	{ "reaper_pbr_enable",   "enable"   },
++	{ "reaper_pbr_rulelist", "rulelist" },
++};
++#define PPBR_NKEYS 2
++
++typedef struct {
++	int enable;
++	char *rulelist;     /* malloc'd */
++} ppbr_cfg_t;
+ 
+ /* Resolve a target token to (mark code, routing action). Returns 1 on success
+  * and fills *code (1-15, the nibble value pre-shift) plus *table (NULL => this
+- * code is realised as a `prohibit`, i.e. BLOCK) and *failclosed (emit a
+- * kill-switch prohibit below the lookup). Returns 0 for an unknown target and
+- * -1 for a recognised-but-deferred target (WGC*) so the caller can log it
+- * distinctly. */
+-static int ppbr_target(const char *t, int *code, const char **table, int *failclosed)
++ * code is realised as a `prohibit`, i.e. BLOCK), *failclosed (emit a
++ * kill-switch prohibit below the lookup) and *wg (1 = a WireGuard client, which
++ * needs the blog bypass of P6). Returns 0 for an unknown target. */
++static int ppbr_target(const char *t, int *code, const char **table, int *failclosed, int *wg)
+ {
+-	*table = NULL; *failclosed = 0;
++	static const char *ov[] = { "ovpnc1","ovpnc2","ovpnc3","ovpnc4","ovpnc5" };
++	static const char *wgt[] = { "wgc1","wgc2","wgc3","wgc4","wgc5" };
++	*table = NULL; *failclosed = 0; *wg = 0;
+ 	if (!strncmp(t, "OVPN", 4) && t[4] >= '1' && t[4] <= '5' && t[5] == '\0') {
+-		static const char *ov[] = { "ovpnc1","ovpnc2","ovpnc3","ovpnc4","ovpnc5" };
+ 		*code = t[4] - '0';                 /* 1..5 */
+ 		*table = ov[t[4] - '1'];
+ 		*failclosed = 1;
+ 		return 1;
+ 	}
+-	if (!strncmp(t, "WGC", 3) && t[3] >= '1' && t[3] <= '5' && t[4] == '\0')
+-		return -1;                          /* deferred - see KNOWN LIMIT */
++	if (!strncmp(t, "WGC", 3) && t[3] >= '1' && t[3] <= '5' && t[4] == '\0') {
++		*code = 5 + (t[3] - '0');           /* 6..10 */
++		*table = wgt[t[3] - '1'];
++		*failclosed = 1;
++		*wg = 1;
++		return 1;
++	}
+ 	if (!strcmp(t, "WAN")) { *code = 11; *table = "main"; *failclosed = 0; return 1; }
+ 	if (!strcmp(t, "BLOCK")) { *code = 15; *table = NULL; *failclosed = 0; return 1; }
+ 	return 0;
+@@ -113,33 +166,123 @@ static int ppbr_ok(const char *s, const char *allowed, int maxlen)
+ 	return 1;
+ }
+ 
+-/* Build the selector match fragment for one rule into buf. Returns 1 if the
+- * selector is valid & supported (v4), 0 to drop the rule. */
+-static int ppbr_selector(char *buf, size_t buflen, const char *seltype, const char *selval)
++/* Normalise a v4 "a.b.c.d[/n]" into the form the kernel's skip-list READ
++ * prints ("A.B.C.D/n", network address masked) so the generated script can
++ * tell "already listed" from "listed by us". Returns 0 on a bad value. */
++static int ppbr_norm_v4(const char *s, char *out, size_t outlen)
++{
++	char ip[32];
++	struct in_addr a;
++	unsigned long pl = 32;
++	const char *sl = strchr(s, '/');
++	size_t n = sl ? (size_t)(sl - s) : strlen(s);
++	if (n == 0 || n >= sizeof(ip)) return 0;
++	memcpy(ip, s, n); ip[n] = 0;
++	if (inet_pton(AF_INET, ip, &a) != 1) return 0;
++	if (sl) {
++		char *e;
++		pl = strtoul(sl + 1, &e, 10);
++		if (*e || pl < 1 || pl > 32) return 0;
++	}
++	if (pl < 32) a.s_addr &= htonl(0xFFFFFFFFu << (32 - pl));
++	snprintf(out, outlen, "%s/%lu", inet_ntoa(a), pl);
++	return 1;
++}
++
++/* Same for v6; the kernel prints "%x:%x:%x:%x:%x:%x:%x:%x/n" (no zero
++ * compression, no leading zeros) and does NOT mask the host bits, so mirror
++ * exactly that. */
++static int ppbr_norm_v6(const char *s, char *out, size_t outlen)
+ {
++	char ip[64];
++	struct in6_addr a;
++	unsigned long pl = 128;
++	const char *sl = strchr(s, '/');
++	size_t n = sl ? (size_t)(sl - s) : strlen(s);
++	if (n == 0 || n >= sizeof(ip)) return 0;
++	memcpy(ip, s, n); ip[n] = 0;
++	if (inet_pton(AF_INET6, ip, &a) != 1) return 0;
++	if (sl) {
++		char *e;
++		pl = strtoul(sl + 1, &e, 10);
++		if (*e || pl < 1 || pl > 128) return 0;
++	}
++#define H16(i) ((unsigned)(a.s6_addr[2*(i)] << 8 | a.s6_addr[2*(i)+1]))
++	snprintf(out, outlen, "%x:%x:%x:%x:%x:%x:%x:%x/%lu",
++	         H16(0), H16(1), H16(2), H16(3), H16(4), H16(5), H16(6), H16(7), pl);
++#undef H16
++	return 1;
++}
++
++/* Build the selector match fragment for one rule. Fills buf4 (iptables) and
++ * buf6 (ip6tables); either may be left empty when the selector has no meaning
++ * in that family. Returns 1 if the selector is valid, 0 to drop the rule.
++ * *skipnet receives the normalised CIDR a WireGuard target must bypass for
++ * this rule ("" => needs the LAN-wide bypass, see P6). */
++static int ppbr_selector(char *buf4, char *buf6, size_t buflen,
++                         const char *seltype, const char *selval,
++                         char *skipnet, size_t skiplen)
++{
++	buf4[0] = buf6[0] = skipnet[0] = 0;
+ 	if (!strcmp(seltype, "ipset") || !strcmp(seltype, "domain")) {
+-		/* reaper_fw object name -> its v4 set rwfw_<name>; destination match. */
++		/* reaper_fw object name -> its v4 set rwfw_<name> / v6 set rwfw6_<name>;
++		 * destination match. The v6 rule is only emitted when its set exists
++		 * (an address object may be v4-only; a missing set is a load failure,
++		 * not an empty match). */
+ 		if (!ppbr_ok(selval, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", PPBR_NAME_MAX))
+ 			return 0;
+-		snprintf(buf, buflen, "-m set --match-set rwfw_%s dst", selval);
++		snprintf(buf4, buflen, "-m set --match-set rwfw_%s dst", selval);
++		snprintf(buf6, buflen, "-m set --match-set rwfw6_%s dst", selval);
+ 		return 1;
+ 	}
+ 	if (!strcmp(seltype, "src")) {
++		if (strchr(selval, ':')) {
++			/* v6 source */
++			if (!ppbr_ok(selval, "0123456789abcdefABCDEF:/", 48)) return 0;
++			if (!ppbr_norm_v6(selval, skipnet, skiplen)) return 0;
++			snprintf(buf6, buflen, "-s %s", selval);
++			return 1;
++		}
+ 		if (!ppbr_ok(selval, "0123456789./", 32)) return 0;
+-		snprintf(buf, buflen, "-s %s", selval);
++		if (!ppbr_norm_v4(selval, skipnet, skiplen)) return 0;
++		snprintf(buf4, buflen, "-s %s", selval);
+ 		return 1;
+ 	}
+ 	if (!strcmp(seltype, "mac")) {
+ 		if (!ppbr_ok(selval, "0123456789abcdefABCDEF:", 17)) return 0;
+-		snprintf(buf, buflen, "-m mac --mac-source %s", selval);
++		snprintf(buf4, buflen, "-m mac --mac-source %s", selval);
++		snprintf(buf6, buflen, "-m mac --mac-source %s", selval);
+ 		return 1;
+ 	}
+-	return 0;   /* unknown selector type (or a v6-only one) - drop */
++	return 0;   /* unknown selector type - drop */
++}
++
++/* the blog skip-list helpers the generated script uses (P6). add: record
++ * whether the entry pre-existed so teardown only removes what we added. */
++static void ppbr_emit_skip_helpers(FILE *f)
++{
++	fprintf(f,
++	  "SKIP=" PPBR_BLOG_SKIP "\n"
++	  "SKIPREC=" PPBR_SKIPNETS "\n"
++	  "pbr_skip_del_ours() {\n"
++	  "  [ -f \"$SKIPREC\" ] || return 0\n"
++	  "  while read N F; do\n"
++	  "    [ \"$F\" = new ] && [ -w \"$SKIP\" ] && echo \"del $N\" > \"$SKIP\" 2>/dev/null\n"
++	  "  done < \"$SKIPREC\"\n"
++	  "  rm -f \"$SKIPREC\"\n"
++	  "}\n"
++	  "pbr_skip_add() {\n"
++	  "  [ -w \"$SKIP\" ] || return 0\n"
++	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 pre\" >> \"$SKIPREC\"; return 0; fi\n"
++	  "  echo \"add $1\" > \"$SKIP\" 2>/dev/null\n"
++	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 new\" >> \"$SKIPREC\"\n"
++	  "  else logger -t reaper_pbr \"blog skip table full - WireGuard rule for $1 may be bypassed by accelerated flows\"; fi\n"
++	  "}\n");
+ }
+ 
+-/* Emit the idempotent teardown+build script. teardown_only=1 stops after the
+- * teardown block (used by stop_reaper_pbr and by the disabled path). */
+-static int ppbr_gen(const char *path, int teardown_only)
++/* Emit the idempotent teardown+build script for cfg. teardown_only=1 stops
++ * after the teardown block (used by stop_reaper_pbr and by the disabled path). */
++static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ {
+ 	FILE *f;
+ 	char tmp[160];
+@@ -148,6 +291,8 @@ static int ppbr_gen(const char *path, int teardown_only)
+ 	int used[16];                /* used[code] => this mark code needs an ip rule */
+ 	const char *used_tbl[16];    /* table for that code (NULL => prohibit/BLOCK) */
+ 	int used_fc[16];             /* fail-closed for that code */
++	int wg_lanwide = 0;          /* a WG rule with a non-source selector (P6) */
++	int wg_rules = 0;
+ 
+ 	memset(used, 0, sizeof(used));
+ 	memset(used_fc, 0, sizeof(used_fc));
+@@ -161,15 +306,23 @@ static int ppbr_gen(const char *path, int teardown_only)
+ 	  "#!/bin/sh\n"
+ 	  "# generated by reaper_pbr - do not edit; idempotent (teardown then rebuild)\n"
+ 	  "MASK=" PPBR_MASK "\n"
++	  "\n");
++	ppbr_emit_skip_helpers(f);
++	fprintf(f,
+ 	  "\n"
+-	  "# ---- teardown (P1: only our chain + our pref band) ----\n"
+-	  "while iptables -t mangle -D PREROUTING -j " PPBR_CHAIN " 2>/dev/null; do :; done\n"
+-	  "iptables -t mangle -F " PPBR_CHAIN " 2>/dev/null\n"
+-	  "iptables -t mangle -X " PPBR_CHAIN " 2>/dev/null\n"
+-	  "for P in 9001 9002 9003 9004 9005 9011 9015 "
+-	  "9101 9102 9103 9104 9105 9111 9115; do\n"
+-	  "  while ip rule del pref $P 2>/dev/null; do :; done\n"
++	  "# ---- teardown (P1: only our chain + our pref band + our skip entries) ----\n"
++	  "for T in iptables ip6tables; do\n"
++	  "  while $T -t mangle -D PREROUTING -j " PPBR_CHAIN " 2>/dev/null; do :; done\n"
++	  "  $T -t mangle -F " PPBR_CHAIN " 2>/dev/null\n"
++	  "  $T -t mangle -X " PPBR_CHAIN " 2>/dev/null\n"
+ 	  "done\n"
++	  "for V in -4 -6; do\n"
++	  "  for P in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010 9011 9015 "
++	  "9101 9102 9103 9104 9105 9106 9107 9108 9109 9110 9111 9115; do\n"
++	  "    while ip $V rule del pref $P 2>/dev/null; do :; done\n"
++	  "  done\n"
++	  "done\n"
++	  "pbr_skip_del_ours\n"
+ 	  "\n");
+ 
+ 	if (teardown_only) {
+@@ -181,19 +334,21 @@ static int ppbr_gen(const char *path, int teardown_only)
+ 
+ 	/* ---- build: the chain, marked from the ipset/selector matches ---- */
+ 	fprintf(f,
+-	  "iptables -t mangle -N " PPBR_CHAIN " 2>/dev/null\n"
+-	  "iptables -t mangle -F " PPBR_CHAIN "\n"
++	  "for T in iptables ip6tables; do\n"
++	  "  $T -t mangle -N " PPBR_CHAIN " 2>/dev/null\n"
++	  "  $T -t mangle -F " PPBR_CHAIN "\n"
+ 	  /* restore a prior verdict so only the first packet of a flow is matched */
+-	  "iptables -t mangle -A " PPBR_CHAIN " -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n"
+-	  "iptables -t mangle -A " PPBR_CHAIN " -m mark ! --mark 0x0/$MASK -j RETURN\n");
++	  "  $T -t mangle -A " PPBR_CHAIN " -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n"
++	  "  $T -t mangle -A " PPBR_CHAIN " -m mark ! --mark 0x0/$MASK -j RETURN\n"
++	  "done\n");
+ 
+-	list = strdup(nvram_safe_get("reaper_pbr_rulelist"));
++	list = cfg->rulelist ? strdup(cfg->rulelist) : NULL;
+ 	if (list) {
+ 		listp = list;
+ 		while ((rec = strsep(&listp, "<")) != NULL) {
+ 			char *en, *desc, *seltype, *selval, *proto, *port, *target;
+-			char sel[128];
+-			int code, fc, tr;
++			char sel4[128], sel6[128], skipnet[64];
++			int code, fc, tr, wg;
+ 			const char *tbl;
+ 
+ 			if (!*rec) continue;                    /* empty record between separators */
+@@ -205,25 +360,33 @@ static int ppbr_gen(const char *path, int teardown_only)
+ 			 * (strtok would collapse them and misalign the record). */
+ 			if (vstrsep(rec, ">", &en, &desc, &seltype, &selval, &proto, &port, &target) != 7)
+ 				continue;
+-			(void)desc; (void)proto; (void)port;   /* MVP: proto/port deferred */
++			(void)desc; (void)proto; (void)port;   /* proto/port deferred */
+ 			if (strcmp(en, "1") != 0) continue;     /* disabled */
+ 
+-			tr = ppbr_target(target, &code, &tbl, &fc);
+-			if (tr == -1) {
+-				logmessage("reaper_pbr", "WGC target '%s' is not supported yet (HW-offload accel skip needed) - rule skipped", target);
+-				continue;
+-			}
++			tr = ppbr_target(target, &code, &tbl, &fc, &wg);
+ 			if (tr == 0) {
+ 				logmessage("reaper_pbr", "unknown target '%s' - rule dropped", target);
+ 				continue;
+ 			}
+-			if (!ppbr_selector(sel, sizeof(sel), seltype, selval)) {
++			if (!ppbr_selector(sel4, sel6, sizeof(sel4), seltype, selval, skipnet, sizeof(skipnet))) {
+ 				logmessage("reaper_pbr", "bad selector %s/%s - rule dropped", seltype, selval);
+ 				continue;
+ 			}
+-			fprintf(f,
+-			  "iptables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+-			  sel, code);
++			if (sel4[0])
++				fprintf(f, "iptables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++				        sel4, code);
++			if (sel6[0]) {
++				if (!strncmp(sel6, "-m set", 6))
++					/* only when the v6 set exists (see ppbr_selector) */
++					fprintf(f, "ipset list -n rwfw6_%s >/dev/null 2>&1 && ", selval);
++				fprintf(f, "ip6tables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++				        sel6, code);
++			}
++			if (wg) {
++				wg_rules++;
++				if (skipnet[0]) fprintf(f, "pbr_skip_add %s\n", skipnet);
++				else            wg_lanwide = 1;
++			}
+ 			used[code] = 1;
+ 			used_tbl[code] = tbl;
+ 			used_fc[code] = fc;
+@@ -232,60 +395,273 @@ static int ppbr_gen(const char *path, int teardown_only)
+ 		free(list);
+ 	}
+ 
++	if (wg_lanwide) {
++		/* P6: VPN Director's "all LAN" bypass, computed at run time so a LAN
++		 * re-address is followed on the next apply. */
++		fprintf(f,
++		  "LANNET=\"$(ip -4 route show dev \"$(nvram get lan_ifname)\" scope link 2>/dev/null | awk '/proto kernel/{print $1; exit}')\"\n"
++		  "[ -n \"$LANNET\" ] && pbr_skip_add \"$LANNET\"\n");
++	}
++
+ 	fprintf(f,
+-	  "iptables -t mangle -A " PPBR_CHAIN " -j CONNMARK --save-mark --nfmask $MASK --ctmask $MASK\n");
++	  "for T in iptables ip6tables; do\n"
++	  "  $T -t mangle -A " PPBR_CHAIN " -j CONNMARK --save-mark --nfmask $MASK --ctmask $MASK\n"
++	  "done\n");
+ 
+ 	if (nrules > 0)
+-		fprintf(f, "iptables -t mangle -A PREROUTING -j " PPBR_CHAIN "\n");
++		fprintf(f,
++		  "iptables -t mangle -A PREROUTING -j " PPBR_CHAIN "\n"
++		  "ip6tables -t mangle -A PREROUTING -j " PPBR_CHAIN " 2>/dev/null\n");
+ 
+-	/* one ip rule per used mark code (P3 fail-closed for tunnel targets) */
++	/* one ip rule per used mark code, both families (P3 fail-closed for tunnel
++	 * targets; for v6 the prohibit also catches a tunnel with no v6 routes) */
+ 	for (i = 1; i < 16; i++) {
+ 		if (!used[i]) continue;
+ 		if (used_tbl[i]) {
+-			fprintf(f, "ip rule add fwmark 0x%X0000/$MASK lookup %s pref %d\n",
+-			        i, used_tbl[i], PPBR_PRIO_BASE + i);
++			fprintf(f,
++			  "ip -4 rule add fwmark 0x%X0000/$MASK lookup %s pref %d\n"
++			  "ip -6 rule add fwmark 0x%X0000/$MASK lookup %s pref %d 2>/dev/null\n",
++			  i, used_tbl[i], PPBR_PRIO_BASE + i, i, used_tbl[i], PPBR_PRIO_BASE + i);
+ 			if (used_fc[i])
+-				fprintf(f, "ip rule add fwmark 0x%X0000/$MASK prohibit pref %d\n",
+-				        i, PPBR_PRIO_KS + i);
++				fprintf(f,
++				  "ip -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
++				  "ip -6 rule add fwmark 0x%X0000/$MASK prohibit pref %d 2>/dev/null\n",
++				  i, PPBR_PRIO_KS + i, i, PPBR_PRIO_KS + i);
+ 		} else {
+ 			/* BLOCK */
+-			fprintf(f, "ip rule add fwmark 0x%X0000/$MASK prohibit pref %d\n",
+-			        i, PPBR_PRIO_BASE + i);
++			fprintf(f,
++			  "ip -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
++			  "ip -6 rule add fwmark 0x%X0000/$MASK prohibit pref %d 2>/dev/null\n",
++			  i, PPBR_PRIO_BASE + i, i, PPBR_PRIO_BASE + i);
+ 		}
+ 	}
+ 
++	if (wg_rules) {
++		/* flows learnt before the bypass existed keep their old path */
++		fprintf(f, "fc flush >/dev/null 2>&1\n");
++		if (wg_lanwide)
++			fprintf(f, "logger -t reaper_pbr \"%d WireGuard rule(s) with a destination/MAC selector: LAN-wide flow-cache bypass is in place (no hardware acceleration for LAN-sourced flows while they exist - same as a VPN Director all-LAN WireGuard rule)\"\n", wg_rules);
++	}
++
+ 	fprintf(f, "exit 0\n");
+ 	fclose(f);
+ 	if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 	return 1;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * Config load: from nvram (the draft) or from the lastgood snapshot (P7).
++ * ------------------------------------------------------------------------- */
++static int ppbr_cfg_load(ppbr_cfg_t *c, int from_good)
++{
++	memset(c, 0, sizeof(*c));
++	if (from_good) {
++		char p[128], *buf;
++		int i;
++		for (i = 0; i < PPBR_NKEYS; i++) {
++			snprintf(p, sizeof(p), "%s/%s", PPBR_LASTGOOD, ppbr_keys[i].file);
++			buf = NULL;
++			if (f_read_alloc_string(p, &buf, 65536) < 0 || !buf) { free(c->rulelist); c->rulelist = NULL; return 0; }
++			buf[strcspn(buf, "\r\n")] = 0;
++			if (i == 0) { c->enable = (strcmp(buf, "1") == 0); free(buf); }
++			else c->rulelist = buf;
++		}
++		return 1;
++	}
++	c->enable = nvram_match("reaper_pbr_enable", "1");
++	c->rulelist = strdup(nvram_safe_get("reaper_pbr_rulelist"));
++	return c->rulelist != NULL;
++}
++
++static void ppbr_cfg_free(ppbr_cfg_t *c)
++{
++	free(c->rulelist);
++	c->rulelist = NULL;
++}
++
++static int ppbr_lastgood_ok(void)
++{
++	char probe[128];
++	snprintf(probe, sizeof(probe), "%s/.committed", PPBR_LASTGOOD);
++	return f_exists(probe);
++}
++
++/* persist the CONFIRMED config as the rollback + boot source: per-key temp
++ * file, fsync, rename, then a .committed marker (same discipline as
++ * reaper_fw's rfw_write_lastgood - a half-written snapshot must never boot). */
++static int ppbr_write_lastgood(void)
++{
++	int i, ok = 1;
++	char marker[128];
++	mkdir(PPBR_CACHE, 0700);
++	mkdir(PPBR_LASTGOOD, 0700);
++	snprintf(marker, sizeof(marker), "%s/.committed", PPBR_LASTGOOD);
++	unlink(marker);
++	for (i = 0; i < PPBR_NKEYS; i++) {
++		char p[128], tmp[140];
++		FILE *f;
++		const char *val = nvram_safe_get(ppbr_keys[i].nv);
++		snprintf(p, sizeof(p), "%s/%s", PPBR_LASTGOOD, ppbr_keys[i].file);
++		snprintf(tmp, sizeof(tmp), "%s.tmp", p);
++		if ((f = fopen(tmp, "w")) == NULL) { ok = 0; break; }
++		if (fputs(val, f) == EOF || fflush(f) != 0 || fsync(fileno(f)) != 0) { fclose(f); unlink(tmp); ok = 0; break; }
++		if (fclose(f) != 0) { unlink(tmp); ok = 0; break; }
++		chmod(tmp, 0600);
++		if (rename(tmp, p) != 0) { unlink(tmp); ok = 0; break; }
++	}
++	if (ok) {
++		FILE *m = fopen(marker, "w");
++		if (!m) ok = 0;
++		else {
++			if (fputs("1\n", m) == EOF || fflush(m) != 0 || fsync(fileno(m)) != 0) ok = 0;
++			if (fclose(m) != 0) ok = 0;
++			if (ok) chmod(marker, 0600);
++			else unlink(marker);
++		}
++	}
++	if (!ok)
++		logmessage("reaper_pbr", "lastgood snapshot incomplete - boot will fall back to nvram");
++	return ok;
++}
++
++static int ppbr_confirm_secs(void)
++{
++	int n = nvram_get_int("reaper_fw_confirm");       /* one timer for both engines */
++	if (n < PPBR_CONFIRM_MIN) n = (n <= 0) ? PPBR_CONFIRM_DEF : PPBR_CONFIRM_MIN;
++	if (n > PPBR_CONFIRM_MAX) n = PPBR_CONFIRM_MAX;
++	return n;
++}
++
++/* the pre-generated recovery script: restore lastgood into nvram (RAM),
++ * rebuild from it, disarm. Runs from cron with neither httpd nor rc needed. */
++static int ppbr_gen_rollback(void)
++{
++	FILE *f;
++	ppbr_cfg_t good;
++	int i;
++
++	if (!ppbr_cfg_load(&good, 1)) return 0;
++	if (!ppbr_gen(PPBR_ROLLBACK ".rules", !good.enable, &good)) { ppbr_cfg_free(&good); return 0; }
++	ppbr_cfg_free(&good);
++
++	if ((f = fopen(PPBR_ROLLBACK, "w")) == NULL) return 0;
++	fprintf(f,
++	  "#!/bin/sh\n"
++	  "# generated by reaper_pbr - commit-confirm recovery. Restores the last\n"
++	  "# CONFIRMED policy-routing config and disarms. Safe to run at any time.\n");
++	for (i = 0; i < PPBR_NKEYS; i++)
++		/* "$(cat f)" is expanded once and never re-parsed (operator text cannot execute) */
++		fprintf(f, "[ -f %s/%s ] && nvram set %s=\"$(cat %s/%s)\"\n",
++		        PPBR_LASTGOOD, ppbr_keys[i].file, ppbr_keys[i].nv,
++		        PPBR_LASTGOOD, ppbr_keys[i].file);
++	fprintf(f,
++	  "sh " PPBR_ROLLBACK ".rules 2>/dev/null\n"
++	  "[ \"$(nvram get reaper_pbr_enable)\" = 1 ] && nvram set reaper_pbr_active=1 || nvram set reaper_pbr_active=0\n"
++	  "rm -f " PPBR_DEADLINE " " PPBR_CAND "\n"
++	  "rmdir " PPBR_ARMED " 2>/dev/null\n"
++	  "cru d reaper_pbr_cc 2>/dev/null\n"
++	  "nvram set reaper_pbr_armed=0\n"
++	  "logger -t reaper_pbr 'commit-confirm: reverted to the last confirmed routing rules'\n");
++	fclose(f);
++	chmod(PPBR_ROLLBACK, 0700);
++	chmod(PPBR_ROLLBACK ".rules", 0700);
++	return 1;
++}
++
++/* the per-minute deadline watcher */
++static void ppbr_gen_cc(void)
++{
++	FILE *f = fopen(PPBR_CC, "w");
++	if (!f) return;
++	fprintf(f,
++	  "#!/bin/sh\n"
++	  "[ -d " PPBR_ARMED " ] || exit 0\n"
++	  "D=\"$(cat " PPBR_DEADLINE " 2>/dev/null)\"\n"
++	  "case \"$D\" in ''|*[!0-9]*) exit 0;; esac\n"
++	  "N=\"$(date +%%s)\"\n"
++	  "[ \"$N\" -lt \"$D\" ] && exit 0\n"
++	  "sh " PPBR_ROLLBACK "\n");
++	fclose(f);
++	chmod(PPBR_CC, 0700);
++}
++
++static void ppbr_disarm_files(void)
++{
++	eval("cru", "d", "reaper_pbr_cc");
++	unlink(PPBR_DEADLINE);
++	rmdir(PPBR_ARMED);
++	nvram_set("reaper_pbr_armed", "0");
++}
++
++/* run a generated script under the firewall lock; returns the exit code */
++static int ppbr_run(const char *path)
++{
++	char cmd[200];
++	int lock, rc;
++	snprintf(cmd, sizeof(cmd), "sh %s 2>/dev/null", path);
++	lock = file_lock("firewall");                   /* P4 */
++	chmod(path, 0700);
++	rc = system(cmd);
++	file_unlock(lock);
++	return (rc == -1) ? -1 : WEXITSTATUS(rc);
++}
++
++/* ---------------------------------------------------------------------------
++ * Entry points.
++ * ------------------------------------------------------------------------- */
++
+ void stop_reaper_pbr(void)
+ {
+-	int lock;
++	ppbr_cfg_t empty;
++	memset(&empty, 0, sizeof(empty));
+ 	mkdir(PPBR_DIR, 0700);
+-	if (ppbr_gen(PPBR_APPLY, 1)) {
+-		lock = file_lock("firewall");           /* P4 */
+-		chmod(PPBR_APPLY, 0700);
+-		system("sh " PPBR_APPLY " 2>/dev/null");
+-		file_unlock(lock);
+-	}
++	ppbr_disarm_files();
++	if (ppbr_gen(PPBR_APPLY, 1, &empty))
++		ppbr_run(PPBR_APPLY);
+ 	unlink(PPBR_APPLY);
++	unlink(PPBR_CAND);
++	unlink(PPBR_CC);
+ 	nvram_set("reaper_pbr_active", "0");
+ }
+ 
+-/* Apply the ruleset. Boot, the restart_firewall re-hook, and the enable toggle
+- * all land here. Inert unless reaper_pbr_enable=1 (P5). */
++/* Apply the COMMITTED ruleset. Boot, the restart_firewall re-hook, and the
++ * enable toggle all land here. Inert unless enabled (P5). No arm: what boots
++ * has been confirmed (or, before any confirm ever happened, is what flash held). */
+ void start_reaper_pbr(void)
+ {
+-	int lock;
++	ppbr_cfg_t c;
++	int from_good;
+ 
+ 	if (!is_routing_enabled()) return;
+-	if (!nvram_match("reaper_pbr_enable", "1")) {
++	mkdir(PPBR_DIR, 0700);
++
++	/* a change still awaiting confirmation at reboot: the arm marker is tmpfs,
++	 * so flag-without-marker means "never confirmed" - clear the flag so the
++	 * single-arm CAS is not wedged. */
++	if (nvram_match("reaper_pbr_armed", "1") && !d_exists(PPBR_ARMED)) {
++		logmessage("reaper_pbr", "a change was still awaiting confirmation at reboot - booting the last confirmed rules instead");
++		nvram_set("reaper_pbr_armed", "0");
++	}
++	from_good = ppbr_lastgood_ok();
++	if (!from_good) {
++		/* first boot on this firmware: what nvram holds IS the confirmed
++		 * config (flash). Seed the snapshot so a rollback source always exists. */
++		ppbr_write_lastgood();
++	}
++	if (!ppbr_cfg_load(&c, from_good)) return;
++	if (from_good) {
++		/* what is live must be what the page shows: an unconfirmed draft that
++		 * leaked into flash (see P7) would otherwise sit in nvram RAM looking
++		 * like the active rules. RAM only - a commit here would re-persist it. */
++		nvram_set("reaper_pbr_enable", c.enable ? "1" : "0");
++		nvram_set("reaper_pbr_rulelist", c.rulelist);
++	}
++
++	if (!c.enable) {
++		ppbr_cfg_free(&c);
+ 		stop_reaper_pbr();
+ 		return;
+ 	}
+-	mkdir(PPBR_DIR, 0700);
+ 	/* 2026-08-21: the rwfw_<object> sets this chain matches are built by the
+ 	 * firewall engine - and used to exist ONLY while that engine was enabled,
+ 	 * so a policy-routing-only user got routes that matched nothing. Ask the
+@@ -293,10 +669,100 @@ void start_reaper_pbr(void)
+ 	 * BEFORE the chain references them; a `-m set` on a missing set is a
+ 	 * rule-load failure, not an empty match. Idempotent when the engine is on. */
+ 	reaper_fw_sets_only();
+-	if (!ppbr_gen(PPBR_APPLY, 0)) return;
+-	lock = file_lock("firewall");                   /* P4 */
+-	chmod(PPBR_APPLY, 0700);
+-	system("sh " PPBR_APPLY " 2>/dev/null");
+-	file_unlock(lock);
+-	nvram_set("reaper_pbr_active", "1");
++	if (ppbr_gen(PPBR_APPLY, 0, &c)) {
++		ppbr_run(PPBR_APPLY);
++		nvram_set("reaper_pbr_active", "1");
++	}
++	ppbr_cfg_free(&c);
++}
++
++/* Apply the DRAFT (nvram RAM, not committed) and arm the revert (P7). */
++void reaper_pbr_apply(void)
++{
++	ppbr_cfg_t c;
++	FILE *f;
++	int secs;
++
++	if (!is_routing_enabled()) return;
++	mkdir(PPBR_CACHE, 0700);
++	mkdir(PPBR_DIR, 0700);
++	if (!ppbr_lastgood_ok()) {
++		/* no confirmed snapshot yet (pre-v2.6.7 box that never rebooted on this
++		 * build): there is nothing to roll back TO, so this apply is not
++		 * revertible. Refuse rather than arm a timer that cannot do its job. */
++		logmessage("reaper_pbr", "apply REFUSED: no confirmed snapshot exists yet (reboot once on this firmware)");
++		nvram_set("reaper_pbr_err", "no confirmed snapshot exists yet - reboot once on this firmware");
++		return;
++	}
++	/* single-arm compare-and-set: a second apply while one is pending is
++	 * refused rather than silently replacing the pending deadline. */
++	if (mkdir(PPBR_ARMED, 0700) != 0) {
++		logmessage("reaper_pbr", "apply REFUSED: a change is already awaiting confirmation");
++		nvram_set("reaper_pbr_err", "a change is already awaiting confirmation");
++		return;
++	}
++	nvram_unset("reaper_pbr_err");
++	if (!ppbr_cfg_load(&c, 0)) { rmdir(PPBR_ARMED); return; }
++
++	/* recovery path on disk BEFORE the candidate goes live */
++	if (!ppbr_gen_rollback()) {
++		rmdir(PPBR_ARMED);
++		nvram_set("reaper_pbr_err", "could not generate the recovery script - not applied");
++		logmessage("reaper_pbr", "apply REFUSED: could not generate the recovery script");
++		ppbr_cfg_free(&c);
++		return;
++	}
++	ppbr_gen_cc();
++	secs = ppbr_confirm_secs();
++	if ((f = fopen(PPBR_DEADLINE, "w")) != NULL) {
++		fprintf(f, "%ld", (long)time(NULL) + secs);
++		fclose(f);
++	}
++	eval("cru", "a", "reaper_pbr_cc", "* * * * * sh " PPBR_CC);
++
++	if (c.enable) reaper_fw_sets_only();
++	if (!ppbr_gen(PPBR_CAND, !c.enable, &c)) {
++		nvram_set("reaper_pbr_err", "candidate failed to build - rolled back");
++		logmessage("reaper_pbr", "candidate FAILED to build - rolling back now");
++		system("sh " PPBR_ROLLBACK " 2>/dev/null");
++		ppbr_cfg_free(&c);
++		return;
++	}
++	ppbr_run(PPBR_CAND);
++	nvram_set("reaper_pbr_active", c.enable ? "1" : "0");
++	nvram_set("reaper_pbr_armed", "1");
++	logmessage("reaper_pbr", "routing rules applied - reverting in %ds unless confirmed", secs);
++	ppbr_cfg_free(&c);
++}
++
++/* Operator confirmed: keep it. The ONLY path that writes flash. */
++void reaper_pbr_confirm(void)
++{
++	/* test-and-clear: a stray confirm must never persist a config nobody applied */
++	if (rmdir(PPBR_ARMED) != 0) {
++		logmessage("reaper_pbr", "confirm ignored - nothing is awaiting confirmation");
++		return;
++	}
++	eval("cru", "d", "reaper_pbr_cc");
++	unlink(PPBR_DEADLINE);
++	nvram_commit();
++	ppbr_write_lastgood();
++	if (nvram_match("reaper_pbr_enable", "1"))
++		rename(PPBR_CAND, PPBR_APPLY);          /* the confirmed candidate becomes the boot-time script */
++	else {
++		unlink(PPBR_CAND);
++		unlink(PPBR_APPLY);
++	}
++	nvram_set("reaper_pbr_armed", "0");
++	logmessage("reaper_pbr", "routing rules confirmed and saved");
++}
++
++/* Operator declined, or the deadline passed while rc was alive. */
++void reaper_pbr_rollback(void)
++{
++	if (!f_exists(PPBR_ROLLBACK)) {
++		logmessage("reaper_pbr", "rollback requested but no recovery script exists");
++		return;
++	}
++	system("sh " PPBR_ROLLBACK " 2>/dev/null");
+ }
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 9d7594f65d..c423014605 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -22011,6 +22011,18 @@ retry_wps_enr:
+ 	{
+ 		if(action & RC_SERVICE_START) reaper_fw_dryrun();
+ 	}
++	else if (strcmp(script, "reaper_pbr_apply") == 0)	/* v2.6.7: apply the DRAFT and arm commit-confirm */
++	{
++		if(action & RC_SERVICE_START) reaper_pbr_apply();
++	}
++	else if (strcmp(script, "reaper_pbr_confirm") == 0)	/* keep the armed rules (the only path that writes flash) */
++	{
++		if(action & RC_SERVICE_START) reaper_pbr_confirm();
++	}
++	else if (strcmp(script, "reaper_pbr_rollback") == 0)	/* revert to the last confirmed rules */
++	{
++		if(action & RC_SERVICE_START) reaper_pbr_rollback();
++	}
+ 	else if (strcmp(script, "reaper_pbr") == 0)	/* reaper v2.5.x ipset policy routing (boot / rulelist change / enable toggle) */
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_reaper_pbr();
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 3b0f415354..a06904936b 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -61,7 +61,12 @@ td.sel{font-family:ui-monospace,Consolas,monospace;font-size:11.7px;color:var(--
+ .tgt.vpn{color:var(--jade);border-color:rgba(79,178,134,.35)}
+ .tgt.wan{color:var(--amber);border-color:rgba(224,169,59,.35)}
+ .tgt.block{color:var(--danger);border-color:rgba(255,59,48,.4)}
+-.tgt.wgc{color:var(--amber);border-color:rgba(224,169,59,.35);border-style:dashed;opacity:.85}
++.tgt.wgc{color:var(--jade);border-color:rgba(79,178,134,.35)}
++.wgnote{display:block;font-size:10.5px;color:var(--amber);margin-top:3px;text-transform:none;letter-spacing:0;font-weight:400}
++.armcard{border-color:rgba(224,169,59,.45)}
++.armcard .row{display:flex;gap:10px;margin-top:12px}
++.btng{background:transparent;border:1px solid rgba(255,255,255,.18);border-radius:7px;color:var(--bone-dim);padding:7px 14px;cursor:pointer;font-family:var(--body);font-size:12.5px}
++.errnote{font-size:12px;color:var(--danger);margin-top:8px;display:none}
+ .rowdel{color:var(--danger);background:transparent;border:1px solid rgba(255,59,48,.3);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px}
+ .rowedt{color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px;margin-right:6px}
+ .rowedt:hover{color:var(--bone);border-color:var(--crimson-deep)}
+@@ -88,7 +93,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ 
+ <div class="pagehead">
+   <h1><#RVR_00#></h1>
+-  <span class="ver"><#RVR_01#> &middot; v1.0</span>
++  <span class="ver"><#RVR_01#> &middot; v1.1</span>
+   <span class="statuspill off" id="pill"><#RVR_04#></span>
+   <span class="mastertg"><#RVR_05#> <span class="tg" id="tgmaster" onclick="pbrToggle()"></span></span>
+ </div>
+@@ -128,12 +133,17 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+       <input type="text" id="e_val" style="display:none" placeholder="">
+     </div>
+     <div class="fld"><label><#RVR_22#></label>
+-      <select id="e_target">
++      <select id="e_target" onchange="pbrTargetChange()">
+         <option value="OVPN1">OpenVPN 1</option>
+         <option value="OVPN2">OpenVPN 2</option>
+         <option value="OVPN3">OpenVPN 3</option>
+         <option value="OVPN4">OpenVPN 4</option>
+         <option value="OVPN5">OpenVPN 5</option>
++        <option value="WGC1">WireGuard 1</option>
++        <option value="WGC2">WireGuard 2</option>
++        <option value="WGC3">WireGuard 3</option>
++        <option value="WGC4">WireGuard 4</option>
++        <option value="WGC5">WireGuard 5</option>
+         <option value="WAN"><#RVR_23#></option>
+         <option value="BLOCK"><#RVR_24#></option>
+       </select>
+@@ -142,6 +152,8 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+   </div>
+   <div class="hint" id="objhint" style="display:none"><#RVR_37#></div>
+   <div class="hint" id="devhint" style="display:none"><#RVR_38#></div>
++  <div class="hint" id="wghint" style="display:none"><#RVR_54#></div>
++  <div class="hint"><#RVR_58#></div>
+ </div>
+ 
+ <div class="card" id="objcard">
+@@ -166,24 +178,23 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+   <div class="objnote" id="objsaved" style="display:none"></div>
+ </div>
+ 
++<div class="card armcard" id="armcard" style="display:none">
++  <h2><#RFW_145#></h2>
++  <p class="hint" style="margin-top:0"><#RFW_148#> <b id="armleft">&mdash;</b> <#RFW_149#></p>
++  <div class="row">
++    <button class="btn" id="armkeep"><#RFW_146#></button>
++    <button class="btng" id="armrevert"><#RFW_147#></button>
++  </div>
++</div>
++
+ <div class="applybar">
+-  <button class="btn" onclick="applyPBR()"><#RVR_30#></button>
+-  <span class="note"><#RVR_17b#></span>
++  <button class="btn" id="applybtn" onclick="applyPBR()"><#RFW_143#></button>
++  <span class="note"><#RVR_57#></span>
+ </div>
++<div class="errnote" id="pbrerr"></div>
+ 
+ <div class="applying" id="applying"><#RVR_31#></div>
+ 
+-<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+-  <input type="hidden" name="current_page" value="Reaper_VPNRouting.asp">
+-  <input type="hidden" name="next_page" value="Reaper_VPNRouting.asp">
+-  <input type="hidden" name="action_mode" value="apply">
+-  <input type="hidden" name="action_script" value="">
+-  <input type="hidden" name="action_wait" value="10">
+-  <input type="hidden" name="reaper_pbr_enable" value="" disabled>
+-  <input type="hidden" name="reaper_pbr_rulelist" value="" disabled>
+-</form>
+-<iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0" style="display:none"></iframe>
+-
+ <script src="/reaper_util.js"></script>
+ <script>
+ var NV = {
+@@ -208,7 +219,9 @@ function parseRules(){
+ }
+ 
+ var TGTLBL = { OVPN1:'OpenVPN 1',OVPN2:'OpenVPN 2',OVPN3:'OpenVPN 3',OVPN4:'OpenVPN 4',OVPN5:'OpenVPN 5',
++  WGC1:'WireGuard 1',WGC2:'WireGuard 2',WGC3:'WireGuard 3',WGC4:'WireGuard 4',WGC5:'WireGuard 5',
+   WAN:`<#RVR_23#>`, BLOCK:`<#RVR_24#>` };
++var WGON=[0,0,0,0,0];   /* wgcN_enable, from reaper_pbr.cgi?action=cfg */
+ 
+ function selText(r){
+   if(r.seltype==='src') return `<#RVR_19#>` + ': ' + esc(r.selval);
+@@ -216,10 +229,19 @@ function selText(r){
+   return `<#RVR_34#>` + ': ' + esc(r.selval);   // ipset/domain -> object / domain list
+ }
+ function tgtClass(t){ return t==='WAN'?'wan':(t==='BLOCK'?'block':(/^WGC[1-5]$/.test(t)?'wgc':'vpn')); }
+-/* reaper v2.6.1: WireGuard targets are accepted by the parser but DEFERRED by the
+-   engine (rc/reaper_pbr.c logs 'not supported yet' and skips the rule). A rule that
+-   looks armed but does nothing is a trust problem, so flag it in the row. */
+-function tgtLabel(t){ var l=esc(TGTLBL[t]||t); return /^WGC[1-5]$/.test(t) ? l+' &middot; <#RVR_53#>' : l; }
++/* v2.6.7: WireGuard targets are live (rc/reaper_pbr.c P6). The chip carries the
++   one thing the operator must know: which flow-cache bypass the rule costs -
++   its own source, or the whole LAN (destination / MAC selectors). A rule whose
++   WireGuard client is not enabled is shown as such: it is fail-closed, so it
++   BLOCKS the selected traffic until that client comes up. */
++function tgtLabel(t,r){
++  var l=esc(TGTLBL[t]||t), m=/^WGC([1-5])$/.exec(t);
++  if(!m) return l;
++  var n=+m[1]-1, note;
++  if(!WGON[n]) note=`<#RVR_56#>`;
++  else note=(r&&r.seltype==='src')?`<#RVR_55#>`:`<#RVR_54b#>`;
++  return l+'<span class="wgnote">'+esc(note)+'</span>';
++}
+ 
+ var EDIT_RULE = -1;   /* index into ROWS being edited, -1 = adding */
+ function render(){
+@@ -232,7 +254,7 @@ function render(){
+       '<td><span class="tg'+(r.en?' on':'')+'" data-i="'+idx+'"></span></td>'+
+       '<td>'+ (r.desc? esc(r.desc) : '<span style="color:var(--steel)">&mdash;</span>') +'</td>'+
+       '<td class="sel">'+ selText(r) +'</td>'+
+-      '<td><span class="tgt '+tgtClass(r.target)+'"'+(/^WGC[1-5]$/.test(r.target)?' title="<#RVR_53#>"':'')+'>'+ tgtLabel(r.target) +'</span></td>'+
++      '<td><span class="tgt '+tgtClass(r.target)+'"'+'>'+ tgtLabel(r.target,r) +'</span></td>'+
+       '<td style="white-space:nowrap"><button class="rowedt" data-e="'+idx+'">'+esc(`<#CTL_modify#>`)+'</button><button class="rowdel" data-d="'+idx+'">&times;</button></td>';
+     tb.appendChild(tr);
+   })(i); }
+@@ -293,6 +315,7 @@ function pbrAdd(){
+   render();
+ }
+ 
++function pbrTargetChange(){ document.getElementById('wghint').style.display=/^WGC/.test(document.getElementById('e_target').value)?'':'none'; }
+ function pbrToggle(){ masterOn=!masterOn; syncMaster(); }
+ function syncMaster(){
+   document.getElementById('tgmaster').className = 'tg'+(masterOn?' on':'');
+@@ -311,15 +334,44 @@ function serialize(){
+   return out.join('<');
+ }
+ 
++/* v2.6.7 commit-confirm. The rules go live at once and the router reverts them
++   itself (a cru watcher) unless Keep is pressed within the timer shared with the
++   Firewall page. The deadline is the router's: a closed tab still gets reverted. */
++var ARM={armed:0,left:0}, armTimer=null;
++function pbrcgi(q,cb){
++  var x=new XMLHttpRequest();
++  x.open('GET','/reaper_pbr.cgi?'+q+'&http_id='+encodeURIComponent(HTTPID),true);
++  x.timeout=8000;
++  var done=false; function fin(j){ if(done)return; done=true; cb(j); }
++  x.onreadystatechange=function(){ if(x.readyState!==4)return; var j=null; if(x.status===200){try{j=JSON.parse(x.responseText);}catch(e){j=null;}} fin(j); };
++  x.onerror=x.ontimeout=x.onabort=function(){fin(null);};
++  x.send();
++}
++function showErr(m){ var e=document.getElementById('pbrerr'); e.textContent=m||''; e.style.display=m?'block':'none'; }
++function armUI(){
++  document.getElementById('armcard').style.display=ARM.armed?'':'none';
++  document.getElementById('armleft').textContent=ARM.armed?ARM.left:'\u2014';
++  document.getElementById('applybtn').disabled=!!ARM.armed;
++  if(armTimer){clearTimeout(armTimer);armTimer=null;}
++  if(ARM.armed) armTimer=setTimeout(armPoll,2000);
++}
++function armPoll(){
++  pbrcgi('action=cfg',function(j){
++    if(j&&j.ok){ ARM.armed=j.armed?1:0; ARM.left=j.left||0; NV.active=String(j.active); WGON=j.wg||WGON; if(j.err)showErr(j.err); }
++    else ARM.armed=0;
++    syncMaster(); armUI();
++  });
++}
+ function applyPBR(){
+-  var f=document.form;
+-  f.reaper_pbr_enable.disabled=false;   f.reaper_pbr_enable.value = masterOn?'1':'0';
+-  f.reaper_pbr_rulelist.disabled=false; f.reaper_pbr_rulelist.value = serialize();
+-  f.action_script.value = 'restart_reaper_pbr';
+-  f.action_wait.value = '10';
++  var q='action=apply&enable='+(masterOn?'1':'0')+'&rulelist='+encodeURIComponent(serialize());
++  showErr('');
+   document.getElementById('applying').className='applying show';
+-  f.submit();
+-  setTimeout(function(){ location.reload(); }, 14000);
++  pbrcgi(q,function(j){
++    document.getElementById('applying').className='applying';
++    if(!j||!j.ok){ showErr((j&&j.error)||`<#RFW_155#>`); return; }
++    NV.rulelist=serialize(); NV.enable=masterOn?'1':'0';
++    setTimeout(armPoll,1500);
++  });
+ }
+ 
+ /* ---- objects: the Firewall engine's object list (rwfw_<name> sets) ----
+@@ -428,7 +480,14 @@ function objDelete(k){
+   render();
+   syncMaster();
+   pbrTypeChange();
++  pbrTargetChange();
+   loadObjects();
++  document.getElementById('armkeep').onclick=function(){ pbrcgi('action=confirm',function(){ setTimeout(armPoll,800); }); };
++  document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(){ setTimeout(function(){ location.reload(); },1500); }); };
++  /* an apply from another tab, or a page reload inside the window */
++  pbrcgi('action=cfg',function(j){
++    if(j&&j.ok){ WGON=j.wg||WGON; ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.err)showErr(j.err); render(); armUI(); }
++  });
+ })();
+ </script>
+ </body>
+-- 
+2.25.1
+

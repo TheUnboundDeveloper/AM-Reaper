@@ -39,20 +39,35 @@ was moved to the changelog; only open work and open confirmations remain.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[P2] Confirmations owed on metal** — v2.6.5 Gatekeeper multi-network close-out, v2.6.4 diag
-   v1.3.0 (glance), v2.6.3 Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + L3 leg,
-   v2.6.1 nvram-guard, v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node
-   classification, v2.5.8 UPnP. → [Pending verification](#pending-verification)
+1. **[P2] Confirmations owed on metal** — v2.7.1 per-boot token + Referer check (every Reaper
+   page still works; the ASUS app / any script that used the old constant token), v2.7.0 settings
+   export/import + `/jffs` finding,
+   v2.6.9 field-report fixes (40-domain object, address
+   lists, post-reboot mark rules), v2.6.8 USB ext format (a spare stick), v2.6.7 Policy
+   Routing close-out (needs a WireGuard client and/or IPv6), v2.6.5 Gatekeeper multi-network, v2.6.4 diag v1.3.0 (glance), v2.6.3
+   Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + L3 leg, v2.6.1 nvram-guard, v2.6.0
+   QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node classification, v2.5.8 UPnP.
+   → [Pending verification](#pending-verification)
 2. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
-3. **[P2] Policy Routing: commit-confirm (I4), WireGuard targets, IPv6.** → [Features](#features-to-add)
-4. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
+3. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-5. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RTRF_45/75/76, IPv6-proto labels). → [Documentation](#documentation)
+4. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RWDN_89, RTRF_45/75/76, RVR_54–58,
+   RABT_42, IPv6-proto labels). → [Documentation](#documentation)
 
 ---
 
 ## Open bugs / under investigation
+
+- **[P3] Diagnostics report: two cosmetic defects (seen on the v2.7.1 metal run, 2026-08-22).**
+  (a) The client-churn finding prints `~0/h`: the rate divides by a span taken from the first
+  syslog line, which after a reboot is a pre-NTP "Dec 31 19:0x" stamp, so the span is decades.
+  Fix = take the span from the first line whose timestamp is after the NTP sync (or from the
+  mirror's own span line). (b) §14d prints the `mangle REAPER_PBR` line twice — the v1.3.2 block
+  was added above the older one; drop the older line. Both in `others/reaper_diag`; no data is
+  wrong, only the rate figure and a duplicate line. **Settles when** the next diag shows a
+  plausible `~N/h` and one `mangle REAPER_PBR` line.
+
 
 ---
 
@@ -120,7 +135,7 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-## Architectural — owner decision needed
+## Architectural
 
 *Do not patch unilaterally.*
 
@@ -131,209 +146,15 @@ The ordered short list. Each line points at its full entry below.
   admin escape hatch stays main-LAN-only on an *Access Intranet = off* SDN — that switch means "no
   router UI", and opening it would contradict it. Confirmation is under
   [Pending verification](#pending-verification).
-- **[owner] QoS WRR: fix the queue layout vs. keep the option removed.** The hardware cannot place a
-  WRR queue (all 8 scheduler slots are strict-priority — see B-1 under
-  [Blocked by closed-source components](#blocked-by-closed-source-components--for-asus--broadcom)).
-  v2.5.4 removed the weight controls from the UI. A real fix needs a `porttminit`-level layout change
-  that the closed rdpa driver owns; the standing decision is "UI option removed". Revisit only if
-  Broadcom/ASUS expose the split.
-
----
-
-## Pending verification
-
-*A change has been made and is believed to fix the problem. What is missing is **confirmation**,
-and only two things count: a report back from the person who reported it, or on-hardware validation
-of a path the maintainer cannot exercise. Build-verified, replay-verified and gate-passed prove a
-change is **in** the image, not that it **works**.*
-
-*Every item names the evidence that settles it. Items leave in one of two directions: **confirmed**
-→ changelog, deleted from here; **not confirmed** → back to [Open bugs](#open-bugs--under-investigation)
-with what the attempt ruled out.*
-
-> **Nothing in this section is done.** A fix shipped is not a fix proven.
-
----
-
-### v2.6.5 (2026-08-22) — Gatekeeper multi-network close-out
-
-- **[P1] A new SDN is protected immediately.** **Settles when**, with Gatekeeper on, creating a
-  Guest Network Pro profile logs `gatekeeper: network set changed - enforcement re-applied on every
-  bridge` within seconds and `iptables -nL REAPER_HOOK_F` shows a `REAPER_GKF` jump for the new
-  bridge; deleting it removes the jump. Also: `iptables -D REAPER_HOOK_F -i brN -j REAPER_GKF` by
-  hand must be repaired by gkd within ~2 min with the `bridge(s) … not hooked` line. **[owed — metal, needs an SDN]**
-- **[P1] Captive page on an isolated SDN.** **Settles when** an unknown device on an SDN with
-  *Access Intranet off* gets the "awaiting approval" page (not a hang), while an *approved* device
-  on the same SDN still cannot open the router UI. `iptables -nL SDN_FI | head -3` shows the
-  `ctstate DNAT … dpt:80 ACCEPT` rule at the top, and it is back within 30 s after
-  `service restart_sdn`. **[owed — metal, needs an SDN]**
-- **[P2] IPv6 GUA covered.** **Settles when** on an IPv6-delegated box `ip6tables -nL REAPER_GKF |
-  grep <mac>` for an internet-only device lists a DROP to the bridge's global prefix, and after a
-  WAN reconnect (new prefix) the rule follows within ~1 min with the `IPv6 prefix changed` log line.
-  **[owed — metal, needs IPv6]**
-
-### v2.6.4 (2026-08-22) — diagnostics report v1.3.0
-
-- **[P3] The new sections render on a real box and the FINDINGS are sane.** Host dry-run only
-  (no router tools present). **Settles on** one `reaper_diag` run on a current box: every section
-  0b–19b prints, the tripwire still says CLEAN, run time stays under ~15 s (httpd is blocked while it
-  runs), and the FINDINGS block shows nothing false — in particular 14c must read `@pos 1` with
-  `legacy direct jumps … 0`, 12b must show no stuck readers, and 3b must list no value the box
-  actually saves fine. If a finding is wrong, it comes out, not the section. **[owed — glance]**
-
-### v2.6.3 (2026-08-22) — Gatekeeper device list on /jffs (the 45-device wall)
-
-- **[P1] More than 45 devices persist.** **Settles when** the reporter (RT-BE88U, ~58 devices)
-  upgrades, sees `gatekeeper: device list migrated from nvram to /jffs/gatekeeper/rl (45 entries …)`
-  in the log once, then approves the remaining devices and each one leaves "pending" and survives a
-  reboot. Readback: `tr -cd '<' < /jffs/gatekeeper/rl | wc -c` = device count; `nvram get gk_rl`
-  must be empty after migration. `reaper_diag` §14b shows the same numbers. **[owed — reporter]**
-- **[P2] Nothing else changed.** **Settles on** a glance: approve / block / guest / remove still
-  apply immediately (no multi-second stall per click now that the nvram commit is gone), guest
-  expiry still removes the entry, Devices page access chips still agree with the Gatekeeper page.
-  **[owed — glance]**
-
-### v2.6.2 (2026-08-21) — firewall layer order, Gatekeeper L3 leg, code-review batch A
-
-- **[P1] Firewall layer order is fixed and survives every restart.** **Settles when**, on a box with
-  Warden + Gatekeeper + the Firewall engine all enabled, `iptables -nvL REAPER_HOOK_F` lists
-  `REAPER_WARDEN`, then `REAPER_GKF` (one per bridge), then `REAPER_FWF` — in that order — and
-  `iptables -nvL FORWARD | head -3` shows exactly ONE Reaper jump (`REAPER_HOOK_F`) at position 1
-  with no direct `REAPER_FWF`/`REAPER_WARDEN`/`REAPER_GKF` jumps left; then after each of
-  `service restart_gk`, `service restart_rwarden`, `service restart_reaper_fw`,
-  `service restart_firewall` the same listing is unchanged. The decisive behaviour test: a Firewall
-  *allow* rule for a port must NOT let a geo-blocked source (`ipset test rw_g_<cc> <ip>`) or a
-  Gatekeeper-blocked device through. Also: a hung-hook scenario (`iptables -D REAPER_HOOK_F -j
-  REAPER_GKF` by hand) must be repaired by gkd within 30 s with the "enforcement chains missing"
-  log line. **[owed — metal]**
-- **[P1] "Internet only" device cannot reach another network.** **Settles when** a state-2 device on
-  an SDN that is *linked* to the main LAN in Guest Network Pro cannot ping/SMB a main-LAN host,
-  still has WAN, and still resolves via a main-LAN AdGuard advertised by that SDN; a full-approved
-  device on the same SDN is unchanged. `iptables -nvL REAPER_GKF | grep <mac>` shows the 53-RETURN,
-  per-subnet DROP, RETURN sequence. **[owed — metal, needs an SDN]**
-- **[P3] SDN devices show hostnames in Gatekeeper.** **Settles on** a glance at a guest-network
-  device row. **[owed — glance]**
-- **[P3] Batch A is behaviour-neutral.** **Settles on** a glance: Advisor `get_overview` still
-  returns the three meminfo lines; Policy Routing and Traffic pages render; first-boot language
-  picker works. **[owed — glance]**
-
-### v2.6.1 (2026-08-21) — nvram-read guard, diag store section, kp v6, WGC flag
-
-- **[P2] A hung `nvram get` no longer pins a Warden/rwatch script.** `_nv` 5 s guard in every
-  generated script + rwatch reaping `nvram` processes older than 2 min. **Settles when** a box that
-  previously showed a stuck `nvram get` (PID asleep in `__skb_wait_for_more_packets`, as on the lab
-  RT-BE96U 2026-08-21) instead logs `reaper-nv: nvram get <key> hung >5 s - killed` or `rwatch:
-  reaped hung nvram pid …`, and `ps w | grep "nvram get"` never shows one older than a few minutes.
-  Each logged line is also field evidence for the underlying libnvram netlink bug. **[owed — metal]**
-- **[P3] Diag section 17 reports the durable store.** **Settles on** a glance: `reaper_diag` §17 on a
-  USB-store box prints the `syslog.mirror` path/size/span and "incident bundles: none (… absence is
-  healthy)". **[owed — glance]**
-- **[P3] Warden nightly update no longer logs `geo v6 fetch FAILED for kp`.** **Settles on** the next
-  04:30 update log. **[owed — glance]**
-- **[P3] Policy Routing shows a WGC rule as inactive.** **Settles on** a glance at a rule targeting
-  WireGuard: amber dashed chip "not supported yet — rule inactive". **[owed — glance]**
-
-### v2.6.0 (2026-08-21) — QoS Classful queue rebuild
-
-- **[P1] GT-BE98 (and any port that rejects the recreate) keeps IPv4 with QoS Classful on.**
-  `rq_rebuild()` in the generated `/tmp/qos_hwc.sh`. **Settles when** the reporter, on a v2.6.0
-  GT-BE98 image with `qos_type=11`, has IPv4 after boot AND `tmctl getqcfg --devtype 0 --if eth0
-  --qid N` answers for N=1..5. Expected syslog: `hwqos: setqcfg qid 1 priority 5 REJECTED` + `class
-  queues restored at the stock priority layout`, with NO `FATAL` line (a `FATAL` means even the bare
-  recreate failed — report it). Also worth capturing WHY the recreate is rejected there (run the
-  failing `tmctl setqcfg` by hand without `2>/dev/null`). **[owed — reporter, GT-BE98 metal]**
-- **[P2] RT-BE96U unchanged in behaviour.** **Settles when** a v2.6.0+ BE96U shows qid 1..5 at
-  priority 5..1 after `restart_qos` and no `hwqos` fallback line. **[owed — metal]**
-
-### v2.5.9 (2026-08-21) — the trusted tester's batch
-
-- **[P1] Warden country sets populated after a reboot.** **Settles when** a box with countries
-  selected reboots on this image and `ipset -t list rw_g_<cc>` shows a non-zero entry count for every
-  selected country, no `rwarden: cache restore for set` lines, and the Warden tile reads the prefix
-  count (not amber). First boot after upgrading from a pre-v2.5.9 cache is the interesting case.
-  **[owed — reporter, reboot + ipset readback]**
-- **[P2] Wireless AiMesh node shows its backhaul band on Devices, with the AiMesh Node chip.**
-  **Settles when** the reporter's node row shows the band and the orphan backhaul-STA row is gone; a
-  *cabled* node must still read Wired. (The maintainer has no mesh.) **[owed — reporter]**
-- **[P2] Addons rail identical on dashboard and shell.** **Settles when** a box with amtm-style
-  addons shows the same entries/labels/order on both, including an external Help link opening in a
-  new tab on both. **[owed — reporter with addons]**
-- **[P2] Policy Routing works with the Firewall engine OFF.** **Settles when** a domain-list rule
-  steers traffic with `reaper_fw_enable=0`: `ipset list rwfw_<list>` populated, `iptables -t mangle
-  -vnL REAPER_PBR` shows the match loading, `cru l` shows `reaper_fw_dns`. **[owed — metal]**
-- **[P2] Domain lists survive a reboot.** **Settles when** after a reboot, before any client lookup,
-  `ipset -t list rwfw_<list>` is already non-empty. **[owed — metal]**
-- **[P3] Edit flows on the Firewall page (8 lists) and Policy Routing — page check.** Modify → Save
-  replaces in place, Cancel restores Add, a renamed domain list updates the rules that referenced
-  it. **[owed — page check]**
-
-### v2.5.8 (2026-08-20) — upstream 3006.102.8_4 alignment
-
-- **[P2] UPnP gaming fix (completed revert of the Asus jump patch).** **Settles when** a game that
-  forwards its port via UPnP (the PS5 is the known reproducer) accepts inbound connections.
-  `iptables -t nat -vnL PREROUTING | grep VUPNP` and `iptables -vnL FORWARD | grep FUPNP` should both
-  be empty, with the VSERVER→VUPNP jump present. **[owed — metal]**
-- **[P3] miniupnpd 2.3.11 / OpenVPN 2.7.6 report their real versions.** **Settles on** a glance at
-  the System Log / VPN page version lines on the flashed image. **[owed — glance]**
-
-### v2.5.4 / v2.5.5 — staged batch
-
-- **[P2] QoS strict-priority order corrected — drain-under-load owed.** Queue config read back
-  correct on the lab RT-BE96U (q1=5…q5=1). **Settles when** a type-11 upload under real classified
-  congestion shows the higher classes draining ahead of the catch-all. **[owed — metal, load]**
-- **[P2] Speed test no longer ends on a brief stall.** `level_err_cnt` was consumed once per 200 ms
-  poll (so `LEVEL_ERR_MAX=50` meant "10 s of a stalled tail"); now counted once per new buffer entry
-  with consecutive-error semantics, run still bounded by `test_timeout`. **Settles when** several
-  back-to-back runs — including one that stalls mid-transfer — complete or fail on the real timeout.
-  This is the multi-run-on-metal test the item always needed; it slipped three rungs before the fix
-  landed. **[owed — metal, multi-run]**
-- **[P3] Wireless Auto-Scan reports instead of auto-pinning.** A sweep now always restores the
-  pre-sweep channel/width; only "Pin best" commits. (This reversed a deliberate v2.3.7 choice —
-  owner decision 2026-08-13; do not "fix" it back.) **Settles on** a glance: run a scan, Control
-  Channel unchanged afterwards, "Pin best" still applies. **[owed — glance]**
-- **[P2] PPPoE stale-session bounce (v2.5.5).** See the ONT item under Open bugs. **Settles when** a
-  box that reproduces logs the `rwatch` bounce line and regains connectivity without an ONT reboot.
-  **[owed — tester]**
-- **[P2] chpass CSRF gate — validate on a real factory-reset flow.** The `http_id` check is gated to
-  the default-password window and `Reaper_FirstBoot.asp` sends the token; the first-boot credential
-  path has a lockout history. **Settles when** a clean factory-reset setup completes. **[owed — metal]**
-
-### Older, still unconfirmed
-
-- **[P1] IPSec — a client actually establishes a tunnel.** Server side is metal-confirmed on v2.5.4
-  (charon up, UDP 500/4500 bound, both profiles loaded). **Settles when** a phone/laptop SA goes
-  `up`; also un-exercised: the IPSec *client* (connect-out) and Instant Guard pairing. **[owed]**
-- **[P2] The v2.5.3 firewall-emission changes owe a metal glance** (admin-management RETURN scoped to
-  INPUT, port-forward guards, atomic GK/Warden `apply.sh`, zone-matrix cap). **[owed — glance]**
-- **[P2] Warden country counters attribute after the geo-first reorder** (2026-08-18). `iptables
-  -nvxL REAPER_WARDEN | head -20` → the `rw_g_<cc>` rules sit above `rw_threat` and carry non-zero
-  counts on a box that previously attributed everything to the feed; the Top Blocked Countries table
-  moves with the total. A discontinuity in banked history at this version is expected. **[owed]**
-- **[P2] The 1500-byte PPPoE MTU fix against the line that reported it** (v2.4.9 + v2.5.0 VLAN-parent
-  widening). `grep -i "up with MTU" /tmp/syslog.log` → `MTU 1500` = negotiated; `MTU 1492 (requested
-  >1492; peer declined RFC 4638)` = provider refused (not ours). WAN iface should read mtu **1508**
-  while up; `ip link show vlan6` should read 1508 on a tagged line. Do not use `logread`. **[owed]**
-- **[P2] The Call of Duty / UPnP report** (v2.4.6 removed the phantom `WANPPPConnection` and the
-  IGD:2 description on the default daemon). `grep -i "IGD desc" /tmp/syslog.log` → shows whether the
-  console fetched the description, which version, and its User-Agent. Also confirm the reporter's
-  `upnp_pinhole_enable` (pinholes on = IGD:2 served, the configuration that broke the PS5). **[owed]**
-- **[P2] The AiMesh-node theming fix** (`bb580b6370`, three-line guard) has never been flashed on a
-  node; a node already stuck in the loop must be updated from the main router's AiMesh flow. **[owed]**
-- **[P2] IPv6 per-device attribution (v2.4.4) on a box that has IPv6** — the reporting RT-BE88U
-  (native /56). With a large download: the device row tracks the WAN line (not just ACKs), a
-  dual-stack device stays one row, and the collector's `nd_n` agrees with `ip -6 neigh show dev br0`.
-  **[owed]**
-- **[P3] Local-build provenance wiring** — the `gen_provenance.sh` call in `_rb_variant()` has now
-  run through `build_be96u.sh` (v2.5.8+ builds print the "provenance stamp" line). **Closes on** the
-  next look at a build log; drop this entry then. **[owed — glance]**
-- **[P3] Dashboard logo no longer jumps vs other menus (v2.5.1/v2.5.3 rail geometry)** and
-  **Firmware page Mesh Nodes card at the bottom (v2.5.1)** — two glances at the built image. **[owed]**
 
 ---
 
 ## UI / UX polish
 
 ---
+
+- **USB Format Confirm** The confirmation modal for formatting a USB using the router tools needs 
+  updating to the proper Reaper theme.
 
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage and viewport
   re-anchoring (`--rv-top`/`--rv-h`) exist since v2.3.3, but **owner 2026-08-12: several overlays
@@ -363,20 +184,29 @@ with what the attempt ruled out.*
 
 ---
 
-- **[P2] Policy Routing — what is left after the MVP.** Shipped: engine (`rc/reaper_pbr.c`, v2.5.5,
-  metal-validated), editor page (`Reaper_VPNRouting.asp`, v2.5.6), Edit/Domain-lists usability and
-  decoupling from the firewall engine (v2.5.9), WGC-inactive chip (v2.6.1). Contract: fwmark bits
-  16–19 / `0x000F0000`, `ip rule` pref 9000 band (below VPN Director's 10000 so PBR overrides it),
-  `ovpnc1-5` tables, `rwfw_<obj>` sets, CONNMARK restore/save, fail-closed `prohibit` below each
-  tunnel lookup. Remaining:
-  - **(I4) route apply through `reaper_fw`'s commit-confirm / auto-revert.** The daemon is inert by
-    default and bad rules are dropped + logged, so this is not lockout-class — but it is the
-    designed shape. **[owed]**
-  - **WireGuard (`WGC*`) targets.** The BE96U WG data path is HW-offloaded and the accelerator
-    ignores an `ip rule` unless the destination is fed to `hnd_skip_wg_network()` (static CIDRs, not
-    an ipset). Needs a mark-aware accel-skip designed against on-box offload behaviour. **[owed — design]**
-  - **IPv6.** IPv4-first by design (VPN Director is v4-only). **[owed]**
-  - A "VPN routing" section in `reaper_diag` (`ip rule list`, mangle `REAPER_PBR`). **[nice]**
+- **Policy Routing — CLOSED in v2.6.7.** The MVP's three deferrals shipped: WireGuard targets via
+  the same accelerator-bypass contract VPN Director uses (source rule → that CIDR; destination/MAC
+  rule → whole LAN, logged + shown on the rule; entries recorded so only ours are removed), IPv6 on
+  every selector with the fail-closed prohibit catching a v4-only tunnel, and apply-and-confirm with a
+  cru-owned revert and a `/jffs` lastgood snapshot. **Standing decisions recorded:** the bypass is the
+  documented ASUS/Merlin mechanism, not a kernel change (rule: no new kernel-facing code without
+  field lineage); WG rules with a non-source selector cost LAN-wide acceleration by design — a
+  mark-aware bypass would need a blog.c change and on-box proof. Proto/port matching remains
+  deferred (never promised). Confirmation under [Pending verification](#pending-verification).
+
+---
+
+- **[P2] Sign the firmware-update manifest.** (Security review 2026-08-22.) The update check pins
+  the host, verifies TLS against the system CA bundle, checks model/variant and the SHA-256 from the
+  manifest, and nothing flashes without a click — but the manifest and the image come from the same
+  repository, so a compromised repository/account could offer a matching pair. Fix = sign the manifest
+  with an offline key (minisign / ed25519 through the existing OpenSSL) and verify on-box before
+  honouring any field; key rotation and a bundled public key are the design questions. **[owner —
+  key custody decision]**
+- **[P3] rwatch's routing self-heal runs outside the firewall lock.** It re-runs the idempotent
+  `apply.sh` (teardown + rebuild), so a concurrent `start_firewall()` rebuild can only produce a
+  transient inconsistency, never a lockout or a leak; taking the same lock from a shell tick needs a
+  `flock` on the lock file rc uses. Low value, recorded so it is not re-found.
 
 ---
 
@@ -411,13 +241,369 @@ with what the attempt ruled out.*
 
 ---
 
-- **[P3] NIST-grade auditing** aligned to a NIST baseline. **[idea]**
-
----
-
 - **[P3] Diag: regulatory-mismatch warning** — `reaper_diag` prints `WARN: territory_code=EU/xx but
   wlX_country_code=US` when they disagree. Read-only; firmware must never auto-alter regulatory
   nvram. **[shelved]**
+
+---
+
+## Documentation
+
+---
+
+- **[P2] [owed] Translations.** All English-seeded in lockstep (nothing renders as a raw `<#KEY#>`);
+  the 24 non-English packs simply show English for these until translated:
+  - `RTRF_45` / `RTRF_75` / `RTRF_76` (Traffic Analyzer accounting strings, v2.4.4) — the old
+    `RTRF_45` translations were **deliberately discarded** because they asserted the opposite of what
+    the code now does. Precedent: the DE `RQOS_117` drift double-derated users' download cap.
+  - `RABT_00`–`RABT_40` (About page, 41 keys) — mostly prose and jokes; a mechanical pass is worse
+    than English. Needs a human.
+  - `RTWK_03` / `RTWK_04` (bind-shim labels), `RWDN_69`–`RWDN_72` (Warden router-self filter).
+  - v2.6.7: `RVR_54`/`54b`/`55`/`56`/`57`/`58` (Policy Routing WireGuard + confirm + IPv6 copy),
+    `RABT_42` ("series as of"), `RWDN_89` ("Prefixes loaded:").
+  - v2.6.8: `RDST_65`–`RDST_67` (USB format filesystem hints).
+  - v2.6.9: `RVR_59`–`RVR_61` (address-list validation + placeholder).
+  - v2.7.0: `RDST_68`–`RDST_77` (settings backup card).
+  - v2.7.1: `RANL_51/52`, `RCON_41–43`, `RDEV_92`, `RFW_256`, `RFWU_48`, `RVR_62`, `RWDN_90`,
+    `RWIF_83/84` (i18n sweep) and the refreshed `RDST_01`, `RWIF_31`, `RWIF_33` (English in all packs).
+  - **IPv6 protocol select labels on `Reaper_Firewall.asp`** — `RFW_252` ("Both") exists; **"Other"
+    still needs a key.** Safe now (the `value="TCP|UDP|BOTH|OTHER"` attributes are pinned — **do not
+    remove them**: `rc/firewall.c` `strcmp`s the submitted value, so an unpinned translated label
+    would have broken the rule format in 24 languages). Do the `RFW_*` namespace as one job, not
+    piecemeal. **Do not reuse ASUS's `option_both_direction`** for "Both" — JP/CN/TW render it as
+    *bidirectional*.
+  - *Deliberately left literal (verified 2026-08-15, do not re-raise):* Splunk placeholders, the Diag
+    ledger preview, Broadcom counter names on the Wireless page, the firewall schedule placeholder
+    (`Mon,Tue|09:00|17:00` is parsed), product names, `title="hidden"` on hidden iframes.
+
+---
+
+- **[P3] Make `cut_rung` own the version/count restatements** so doc drift cannot recur: the
+  `patches/README.md` header count, the `CI-PUBLIC-BUILD.md` pin row, the `RELEASE-NOTES.md`
+  "current head" line, and writing image hashes into `provenance/manifest.json` on publish.
+  Two findings that must not be re-derived:
+  - **`provenance/manifest.json` is NOT a "did it ship" signal** — image hashes are populated only
+    sporadically; the authoritative record is the GitHub Releases API.
+  - **"Current version" = newest PUBLISHED release; "current head" = newest source rung.** Each is
+    stated in exactly one place.
+  Automation would not have caught the worst instance (a *false technical justification* copied into
+  two docs); a reason is written by hand and can only be caught by re-deriving it.
+
+---
+
+- **[P3]** Document the non-functional retained features (stock pieces of the firmware update-check
+  UI, the removed security-check UI) kept only for potential future use.
+- **[P3]** Annotate the system defaults.
+- **[P3]** User guides. [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) covers the eleven firewall tabs
+  (every tab's **?** links to its section; extended with the allowlist recipe after a field request
+  turned out to be a documentation gap). The same treatment is owed for **Warden, Gatekeeper, QoS,
+  Traffic, Devices** and **Policy Routing** (`VPN-ROUTING-GUIDE.md`, linked from the page's ? dot —
+  404s until written and pushed). **[owed]**
+
+---
+
+## Pending verification
+
+*A change has been made and is believed to fix the problem. What is missing is **confirmation**,
+and only two things count: a report back from the person who reported it, or on-hardware validation
+of a path the maintainer cannot exercise. Build-verified, replay-verified and gate-passed prove a
+change is **in** the image, not that it **works**.*
+
+*Every item names the evidence that settles it. Items leave in one of two directions: **confirmed**
+→ changelog, deleted from here; **not confirmed** → back to [Open bugs](#open-bugs--under-investigation)
+with what the attempt ruled out.*
+
+> **Nothing in this section is done.** A fix shipped is not a fix proven.
+
+---
+
+### v2.7.1 (2026-08-22) — security review, i18n sweep
+
+- **[P1] Per-boot `http_id` + Referer check.** **Settles when** after a reboot `nvram get http_id`
+  is `TID` + 24 hex (not `TIDe855a6487043d70a`), every Reaper page's controls work (Gatekeeper
+  actions, Firewall save/apply/keep, Policy Routing apply/keep, Storage export/import, Diag run),
+  a stock page such as Wireless still applies, and a cross-site GET of
+  `/reaper_gk.cgi?action=config&enable=0&http_id=<value>` from another origin is refused with
+  `cross-site request refused` in the log. **Also check** anything external that talked to the
+  router with the old constant (ASUS Router app, amtm/scripts): those read the token from a rendered
+  page or use their own login, and must still work. **Partly confirmed 2026-08-22 (owner, v2.7.1
+  metal):** `nvram get http_id` = `TID` + 24 hex after boot, and *Collect diagnostics* ran from the
+  page through the new token + Referer check. Still owed: the other pages' controls (Gatekeeper
+  actions, Firewall Apply/Keep, Storage export/import), a stock-page Apply, the cross-site GET
+  refusal, and the ASUS app / scripts. **[owed — metal]**
+- **[P2] Diag on a device named `HOST-`.** **Settles when** a client with hostname `HOST-` is on the
+  LAN and *Collect diagnostics* completes in the usual ~12 s with the name shown as `[HOST-n]`.
+  **[owed — metal]**
+- **[P3] Translations glance.** **Settles on** switching the language selector to any non-English
+  pack: every Reaper page renders (no blank page, no raw `<#...#>`), with the 12 new strings and the
+  three refreshed ones in English. **[owed — glance]**
+
+### v2.7.0 (2026-08-22) — Reaper settings backup, /jffs health
+
+- **[P2] Export / import round-trip.** **Settles when** Export on the Storage page downloads
+  `reaper-settings-<model>-<version>-<date>.json`, and importing it on a reset box logs
+  `reaper_cfg: settings imported: N flag(s), M list(s), 0 rejected`, Gatekeeper's device list and
+  Warden's country selection are back immediately, and the Firewall / Policy Routing pages show the
+  lists as drafts that Apply + Keep make live. **[owed — metal]**
+
+### v2.6.9 (2026-08-22) — field feedback (Policy Routing + Firewall objects)
+
+- **[P1] Firewall lists on /jffs.** **Settles when** the first boot logs `N list(s) migrated from
+  nvram to /jffs/reaper_fw/lastgood`, `nvram get reaper_fw_obj` is empty afterwards, a 40-domain
+  object saves in one paste and is still there after a reboot, and the Firewall page's Keep still
+  writes `/jffs/reaper_fw/lastgood/.committed`. With the Firewall engine OFF, a domain list edited
+  on the Policy Routing page must survive a reboot once the routing Keep is pressed. **Partly
+  confirmed 2026-08-22 (owner, v2.7.1 metal):** engine ON with an empty config migrated to
+  `store=/jffs` cleanly (nothing to move, nothing logged - correct). The 40-domain object, the
+  after-reboot persistence and the engine-OFF routing-Keep path are still **[owed - reporter]**
+- **[P1] Address-list source rule.** **Settles when** a rule with three addresses shows
+  `a.b.c.d +2` in the table, `iptables -t mangle -S REAPER_PBR` carries three `-s` mark rules, and a
+  bad entry in the paste is refused by the page with the entry named. **[owed — reporter]**
+- **[P2] Post-reboot self-heal.** **Settles when** a fresh boot either shows all mark rules or logs
+  `rwatch: policy routing: N of M mark rule(s) live - re-applying` followed by a full chain, with no
+  Apply from the UI. Diag §14e shows `expected M live M`. **[owed — reporter]**
+
+### v2.6.8 (2026-08-22) — USB format: ext4 / ext3 / ext2
+
+- **[P2] ext format round-trip.** **Settles when** a spare stick formatted as ext4 from the USB
+  page comes back mounted (partition line shows `ext4`, the label given), `/tmp/disk_format/<dev>.log`
+  holds mke2fs output, and Samba/the store can use it; ext3 and ext2 likewise. **[owed — metal]**
+- **[P2] NTFS from the Reaper page.** **Settles when** formatting as NTFS from the Reaper USB page
+  produces an NTFS disk (before v2.6.8 it silently did nothing). **[owed — metal]**
+
+### v2.6.7 (2026-08-22) — Policy Routing close-out
+
+- **[P1] Apply-and-confirm.** **Settles when** Apply on the Policy Routing page shows the Keep /
+  Revert card with a live countdown, `cru l` lists `reaper_pbr_cc`, letting it expire restores the
+  previous rules (log: `commit-confirm: reverted to the last confirmed routing rules`) and Keep
+  writes `/jffs/reaper_pbr/lastgood/.committed`. A reboot inside the window must boot the last
+  confirmed rules (log: `a change was still awaiting confirmation at reboot`). **[owed — metal]**
+
+- **[P1] WireGuard target actually diverts.** **Settles when** a rule `src <host> → WGC1` makes that
+  host's public IP become the tunnel's exit (and `cat /proc/blog/skip_wireguard_network` lists the
+  host's /32), and a destination-list rule → WGC1 diverts the list with the LAN /24 listed and the
+  `LAN-wide flow-cache bypass` log line present. Stopping the WG client must BLOCK the selected
+  traffic (prohibit), not leak it. **[owed — metal, needs a WireGuard client]**
+
+- **[P2] IPv6 leg.** **Settles when** `ip6tables -t mangle -S REAPER_PBR` carries a MARK per rule
+  and `ip -6 rule` shows the 900x/910x pair; an IPv6-capable destination in a list routed to a
+  v4-only tunnel is unreachable (blocked), not leaked. **[owed — metal, needs IPv6]**
+
+- **[P2] Rule list on /jffs.** **Settles when** the first boot on v2.6.7 logs `rule list migrated
+  from nvram to /jffs/reaper_pbr/lastgood/rulelist`, `nvram get reaper_pbr_rulelist` is empty
+  afterwards, and a 20-rule list survives Keep + reboot (diag §14b-style check: file present,
+  nvram value absent). **[owed — metal]**
+
+- **[P2] About / Warden field items.** **Settles on** a glance: About shows `501 — series as of
+  v2.6.5` (or the plain count after the cut); Warden's count bar carries `Prefixes loaded: N`.
+  **[owed — glance]**
+
+### v2.6.6 (2026-08-22) — diagnostics report v1.3.1
+
+- **[P3] Report tuning.** **Settles on** a glance at the next diag: `wl2_chansps` reported as INFO
+  not WARN; resolver line populated; churn finding shows `~N/h` and the band. **[owed — glance]**
+
+### v2.6.5 (2026-08-22) — Gatekeeper multi-network close-out
+
+- **[P1] A new SDN is protected immediately.** **Settles when**, with Gatekeeper on, creating a
+  Guest Network Pro profile logs `gatekeeper: network set changed - enforcement re-applied on every
+  bridge` within seconds and `iptables -nL REAPER_HOOK_F` shows a `REAPER_GKF` jump for the new
+  bridge; deleting it removes the jump. Also: `iptables -D REAPER_HOOK_F -i brN -j REAPER_GKF` by
+  hand must be repaired by gkd within ~2 min with the `bridge(s) … not hooked` line. **[owed — metal, needs an SDN]**
+
+- **[P1] Captive page on an isolated SDN.** **Settles when** an unknown device on an SDN with
+  *Access Intranet off* gets the "awaiting approval" page (not a hang), while an *approved* device
+  on the same SDN still cannot open the router UI. `iptables -nL SDN_FI | head -3` shows the
+  `ctstate DNAT … dpt:80 ACCEPT` rule at the top, and it is back within 30 s after
+  `service restart_sdn`. **[owed — metal, needs an SDN]**
+
+- **[P2] IPv6 GUA covered.** **Settles when** on an IPv6-delegated box `ip6tables -nL REAPER_GKF |
+  grep <mac>` for an internet-only device lists a DROP to the bridge's global prefix, and after a
+  WAN reconnect (new prefix) the rule follows within ~1 min with the `IPv6 prefix changed` log line.
+  **[owed — metal, needs IPv6]**
+
+### v2.6.4 (2026-08-22) — diagnostics report v1.3.0
+
+- **[P3] The new sections render on a real box and the FINDINGS are sane.** Host dry-run only
+  (no router tools present). **Settles on** one `reaper_diag` run on a current box: every section
+  0b–19b prints, the tripwire still says CLEAN, run time stays under ~15 s (httpd is blocked while it
+  runs), and the FINDINGS block shows nothing false — in particular 14c must read `@pos 1` with
+  `legacy direct jumps … 0`, 12b must show no stuck readers, and 3b must list no value the box
+  actually saves fine. If a finding is wrong, it comes out, not the section. **[owed — glance]**
+
+### v2.6.3 (2026-08-22) — Gatekeeper device list on /jffs (the 45-device wall)
+
+- **[P1] More than 45 devices persist.** **Settles when** the reporter (RT-BE88U, ~58 devices)
+  upgrades, sees `gatekeeper: device list migrated from nvram to /jffs/gatekeeper/rl (45 entries …)`
+  in the log once, then approves the remaining devices and each one leaves "pending" and survives a
+  reboot. Readback: `tr -cd '<' < /jffs/gatekeeper/rl | wc -c` = device count; `nvram get gk_rl`
+  must be empty after migration. `reaper_diag` §14b shows the same numbers. **[owed — reporter]**
+
+- **[P2] Nothing else changed.** **Settles on** a glance: approve / block / guest / remove still
+  apply immediately (no multi-second stall per click now that the nvram commit is gone), guest
+  expiry still removes the entry, Devices page access chips still agree with the Gatekeeper page.
+  **[owed — glance]**
+
+### v2.6.2 (2026-08-21) — firewall layer order, Gatekeeper L3 leg, code-review batch A
+
+- **[P1] Firewall layer order is fixed and survives every restart.** **Settles when**, on a box with
+  Warden + Gatekeeper + the Firewall engine all enabled, `iptables -nvL REAPER_HOOK_F` lists
+  `REAPER_WARDEN`, then `REAPER_GKF` (one per bridge), then `REAPER_FWF` — in that order — and
+  `iptables -nvL FORWARD | head -3` shows exactly ONE Reaper jump (`REAPER_HOOK_F`) at position 1
+  with no direct `REAPER_FWF`/`REAPER_WARDEN`/`REAPER_GKF` jumps left; then after each of
+  `service restart_gk`, `service restart_rwarden`, `service restart_reaper_fw`,
+  `service restart_firewall` the same listing is unchanged. The decisive behaviour test: a Firewall
+  *allow* rule for a port must NOT let a geo-blocked source (`ipset test rw_g_<cc> <ip>`) or a
+  Gatekeeper-blocked device through. Also: a hung-hook scenario (`iptables -D REAPER_HOOK_F -j
+  REAPER_GKF` by hand) must be repaired by gkd within 30 s with the "enforcement chains missing"
+  log line. **[owed — metal]**
+
+- **[P1] "Internet only" device cannot reach another network.** **Settles when** a state-2 device on
+  an SDN that is *linked* to the main LAN in Guest Network Pro cannot ping/SMB a main-LAN host,
+  still has WAN, and still resolves via a main-LAN AdGuard advertised by that SDN; a full-approved
+  device on the same SDN is unchanged. `iptables -nvL REAPER_GKF | grep <mac>` shows the 53-RETURN,
+  per-subnet DROP, RETURN sequence. **[owed — metal, needs an SDN]**
+
+- **[P3] SDN devices show hostnames in Gatekeeper.** **Settles on** a glance at a guest-network
+  device row. **[owed — glance]**
+
+- **[P3] Batch A is behaviour-neutral.** **Settles on** a glance: Advisor `get_overview` still
+  returns the three meminfo lines; Policy Routing and Traffic pages render; first-boot language
+  picker works. **[owed — glance]**
+
+### v2.6.1 (2026-08-21) — nvram-read guard, diag store section, kp v6, WGC flag
+
+- **[P2] A hung `nvram get` no longer pins a Warden/rwatch script.** `_nv` 5 s guard in every
+  generated script + rwatch reaping `nvram` processes older than 2 min. **Settles when** a box that
+  previously showed a stuck `nvram get` (PID asleep in `__skb_wait_for_more_packets`, as on the lab
+  RT-BE96U 2026-08-21) instead logs `reaper-nv: nvram get <key> hung >5 s - killed` or `rwatch:
+  reaped hung nvram pid …`, and `ps w | grep "nvram get"` never shows one older than a few minutes.
+  Each logged line is also field evidence for the underlying libnvram netlink bug. **[owed — metal]**
+
+- **[P3] Diag section 17 reports the durable store.** **Settles on** a glance: `reaper_diag` §17 on a
+  USB-store box prints the `syslog.mirror` path/size/span and "incident bundles: none (… absence is
+  healthy)". **[owed — glance]**
+
+- **[P3] Warden nightly update no longer logs `geo v6 fetch FAILED for kp`.** **Settles on** the next
+  04:30 update log. **[owed — glance]**
+
+- **[P3] Policy Routing shows a WGC rule as inactive.** **Settles on** a glance at a rule targeting
+  WireGuard: amber dashed chip "not supported yet — rule inactive". **[owed — glance]**
+
+### v2.6.0 (2026-08-21) — QoS Classful queue rebuild
+
+- **[P1] GT-BE98 (and any port that rejects the recreate) keeps IPv4 with QoS Classful on.**
+  `rq_rebuild()` in the generated `/tmp/qos_hwc.sh`. **Settles when** the reporter, on a v2.6.0
+  GT-BE98 image with `qos_type=11`, has IPv4 after boot AND `tmctl getqcfg --devtype 0 --if eth0
+  --qid N` answers for N=1..5. Expected syslog: `hwqos: setqcfg qid 1 priority 5 REJECTED` + `class
+  queues restored at the stock priority layout`, with NO `FATAL` line (a `FATAL` means even the bare
+  recreate failed — report it). Also worth capturing WHY the recreate is rejected there (run the
+  failing `tmctl setqcfg` by hand without `2>/dev/null`). **[owed — reporter, GT-BE98 metal]**
+
+- **[P2] RT-BE96U unchanged in behaviour.** **Settles when** a v2.6.0+ BE96U shows qid 1..5 at
+  priority 5..1 after `restart_qos` and no `hwqos` fallback line. **[owed — metal]**
+
+### v2.5.9 (2026-08-21) — the trusted tester's batch
+
+- **[P1] Warden country sets populated after a reboot.** **Settles when** a box with countries
+  selected reboots on this image and `ipset -t list rw_g_<cc>` shows a non-zero entry count for every
+  selected country, no `rwarden: cache restore for set` lines, and the Warden tile reads the prefix
+  count (not amber). First boot after upgrading from a pre-v2.5.9 cache is the interesting case.
+  **[owed — reporter, reboot + ipset readback]**
+
+- **[P2] Wireless AiMesh node shows its backhaul band on Devices, with the AiMesh Node chip.**
+  **Settles when** the reporter's node row shows the band and the orphan backhaul-STA row is gone; a
+  *cabled* node must still read Wired. (The maintainer has no mesh.) **[owed — reporter]**
+
+- **[P2] Addons rail identical on dashboard and shell.** **Settles when** a box with amtm-style
+  addons shows the same entries/labels/order on both, including an external Help link opening in a
+  new tab on both. **[owed — reporter with addons]**
+
+- **[P2] Policy Routing works with the Firewall engine OFF.** **Settles when** a domain-list rule
+  steers traffic with `reaper_fw_enable=0`: `ipset list rwfw_<list>` populated, `iptables -t mangle
+  -vnL REAPER_PBR` shows the match loading, `cru l` shows `reaper_fw_dns`. **[owed — metal]**
+
+- **[P2] Domain lists survive a reboot.** **Settles when** after a reboot, before any client lookup,
+  `ipset -t list rwfw_<list>` is already non-empty. **[owed — metal]**
+
+- **[P3] Edit flows on the Firewall page (8 lists) and Policy Routing — page check.** Modify → Save
+  replaces in place, Cancel restores Add, a renamed domain list updates the rules that referenced
+  it. **[owed — page check]**
+
+### v2.5.8 (2026-08-20) — upstream 3006.102.8_4 alignment
+
+- **[P2] UPnP gaming fix (completed revert of the Asus jump patch).** **Settles when** a game that
+  forwards its port via UPnP (the PS5 is the known reproducer) accepts inbound connections.
+  `iptables -t nat -vnL PREROUTING | grep VUPNP` and `iptables -vnL FORWARD | grep FUPNP` should both
+  be empty, with the VSERVER→VUPNP jump present. **[owed — metal]**
+
+- **[P3] miniupnpd 2.3.11 / OpenVPN 2.7.6 report their real versions.** **Settles on** a glance at
+  the System Log / VPN page version lines on the flashed image. **[owed — glance]**
+
+### v2.5.4 / v2.5.5 — staged batch
+
+- **[P2] QoS strict-priority order corrected — drain-under-load owed.** Queue config read back
+  correct on the lab RT-BE96U (q1=5…q5=1). **Settles when** a type-11 upload under real classified
+  congestion shows the higher classes draining ahead of the catch-all. **[owed — metal, load]**
+
+- **[P2] Speed test no longer ends on a brief stall.** `level_err_cnt` was consumed once per 200 ms
+  poll (so `LEVEL_ERR_MAX=50` meant "10 s of a stalled tail"); now counted once per new buffer entry
+  with consecutive-error semantics, run still bounded by `test_timeout`. **Settles when** several
+  back-to-back runs — including one that stalls mid-transfer — complete or fail on the real timeout.
+  This is the multi-run-on-metal test the item always needed; it slipped three rungs before the fix
+  landed. **[owed — metal, multi-run]**
+
+- **[P3] Wireless Auto-Scan reports instead of auto-pinning.** A sweep now always restores the
+  pre-sweep channel/width; only "Pin best" commits. (This reversed a deliberate v2.3.7 choice —
+  owner decision 2026-08-13; do not "fix" it back.) **Settles on** a glance: run a scan, Control
+  Channel unchanged afterwards, "Pin best" still applies. **[owed — glance]**
+
+- **[P2] PPPoE stale-session bounce (v2.5.5).** See the ONT item under Open bugs. **Settles when** a
+  box that reproduces logs the `rwatch` bounce line and regains connectivity without an ONT reboot.
+  **[owed — tester]**
+
+- **[P2] chpass CSRF gate — validate on a real factory-reset flow.** The `http_id` check is gated to
+  the default-password window and `Reaper_FirstBoot.asp` sends the token; the first-boot credential
+  path has a lockout history. **Settles when** a clean factory-reset setup completes. **[owed — metal]**
+
+### Older, still unconfirmed
+
+- **[P1] IPSec — a client actually establishes a tunnel.** Server side is metal-confirmed on v2.5.4
+  (charon up, UDP 500/4500 bound, both profiles loaded). **Settles when** a phone/laptop SA goes
+  `up`; also un-exercised: the IPSec *client* (connect-out) and Instant Guard pairing. **[owed]**
+
+- **[P2] The v2.5.3 firewall-emission changes owe a metal glance** (admin-management RETURN scoped to
+  INPUT, port-forward guards, atomic GK/Warden `apply.sh`, zone-matrix cap). **[owed — glance]**
+
+- **[P2] Warden country counters attribute after the geo-first reorder** (2026-08-18). `iptables
+  -nvxL REAPER_WARDEN | head -20` → the `rw_g_<cc>` rules sit above `rw_threat` and carry non-zero
+  counts on a box that previously attributed everything to the feed; the Top Blocked Countries table
+  moves with the total. A discontinuity in banked history at this version is expected. **[owed]**
+
+- **[P2] The 1500-byte PPPoE MTU fix against the line that reported it** (v2.4.9 + v2.5.0 VLAN-parent
+  widening). `grep -i "up with MTU" /tmp/syslog.log` → `MTU 1500` = negotiated; `MTU 1492 (requested
+  >1492; peer declined RFC 4638)` = provider refused (not ours). WAN iface should read mtu **1508**
+  while up; `ip link show vlan6` should read 1508 on a tagged line. Do not use `logread`. **[owed]**
+
+- **[P2] The Call of Duty / UPnP report** (v2.4.6 removed the phantom `WANPPPConnection` and the
+  IGD:2 description on the default daemon). `grep -i "IGD desc" /tmp/syslog.log` → shows whether the
+  console fetched the description, which version, and its User-Agent. Also confirm the reporter's
+  `upnp_pinhole_enable` (pinholes on = IGD:2 served, the configuration that broke the PS5). **[owed]**
+
+- **[P2] The AiMesh-node theming fix** (`bb580b6370`, three-line guard) has never been flashed on a
+  node; a node already stuck in the loop must be updated from the main router's AiMesh flow. **[owed]**
+
+- **[P2] IPv6 per-device attribution (v2.4.4) on a box that has IPv6** — the reporting RT-BE88U
+  (native /56). With a large download: the device row tracks the WAN line (not just ACKs), a
+  dual-stack device stays one row, and the collector's `nd_n` agrees with `ip -6 neigh show dev br0`.
+  **[owed]**
+
+- **[P3] Local-build provenance wiring** — the `gen_provenance.sh` call in `_rb_variant()` has now
+  run through `build_be96u.sh` (v2.5.8+ builds print the "provenance stamp" line). **Closes on** the
+  next look at a build log; drop this entry then. **[owed — glance]**
+
+- **[P3] Dashboard logo no longer jumps vs other menus (v2.5.1/v2.5.3 rail geometry)** and
+  **Firmware page Mesh Nodes card at the bottom (v2.5.1)** — two glances at the built image. **[owed]**
 
 ---
 
@@ -443,15 +629,16 @@ with what the attempt ruled out.*
   shared header); `rtrafd.c:1727` `metrics.prom` scrape-token semantics; `rtrafd` ping-probe
   blocking / `write_live` 10 Hz (timing-sensitive); dashboard client/port-tile `innerHTML` change
   detection (behavioural).
+
   - **`do_reaper_conn_cgi` nested-scan-under-lock restructure** — deferred per owner (2026-08-19):
     too risky to reorder locking on a control under metal-test; wants a dedicated look. **[owed]**
+
   - **Four "orphaned" dashboard CSS blocks** — needs a usage audit (line numbers drifted; most of the
     dashboard CSS is live, no blind removal). **[owed]**
+
   - **§2.1 netfilter fork storms** (Warden/GK → `iptables-restore` batching, double teardowns) —
     **DEFERRED per owner (2026-08-19)**: high blast radius on controls under active metal-test.
     Revisit once Gatekeeper/firewall are validated on hardware.
-
----
 
 - **[P3] Warden custom feeds — two residual ceilings.** `rw_threat` now has `maxelem 524288`
   (v2.5.4); **still owed:** surface the entry count against that limit in the Warden UI. Update
@@ -459,15 +646,11 @@ with what the attempt ruled out.*
   solved (per-run `flock`, shared fold/stats lock); **still owed:** a lower per-feed timeout for
   custom entries so one slow feed cannot stall the window.
 
----
-
 - **[P3] The `/tmp` systemic dir-ownership hardening — deferred per owner (2026-08-19).** `mkdir(,0700)`
   return ignored, owner never checked, rc `umask(0)` → `fopen("w")` is 0666; ~11 sites. Fix = ONE
   shared validate-or-refuse helper (`lstat` → `S_ISDIR && uid==0 && !(mode&077)`), pattern at
   `reaper_fw.c:2071`; targeted `umask(077)` per daemon `main()` is the cheap partial (done for
   rtrafd). The sticky-bit half shipped in v2.5.0 (`chmod("/tmp", 01777)`). **[deferred]**
-
----
 
 - **[P3] `poll_fcache` O(n²)→hash pairing** (`rtrafd.c`) — bounded to ≤1536 flows / 5 s; not worth
   the regression risk. **[shelved]**
@@ -475,14 +658,10 @@ with what the attempt ruled out.*
 - **[P3] `do_reaper_dev_cgi` function-local `static` snapshot arrays aren't re-entrant** — latent
   only (httpd serialises); a malloc refactor adds leak risk for a can't-happen case. **[shelved]**
 
----
-
 - **[P3] Theme-token vocabulary consolidation (remainder of D4).** Same-name/different-value drift
   was canonicalized in v2.2.7; still deferred: `--panel2`/`--red*` → `--panel-2`/`--crimson*` and the
   `--line` cream-vs-red divergence — per-page CSS usage rewrites with visual-regression risk.
   **[owed — to the page migration]**
-
----
 
 - **[P3] Inherited ASUS/Merlin `httpd` core — two pre-auth robustness gaps that ship in stock.**
   Technically remediable but present in every stock Asuswrt-Merlin build; a change there risks the
@@ -493,79 +672,6 @@ with what the attempt ruled out.*
   - `url[128]` unterminated for a path ≥ 128 bytes (`>` not `>=`) → OOB read via the following
     `strstr`/`snprintf`; same for `login_url`. Reachability unproven.
   **[inherited stock; deferred]**
-
----
-
-## Documentation
-
----
-
-- **[P2] [owed] Translations.** All English-seeded in lockstep (nothing renders as a raw `<#KEY#>`);
-  the 24 non-English packs simply show English for these until translated:
-  - `RTRF_45` / `RTRF_75` / `RTRF_76` (Traffic Analyzer accounting strings, v2.4.4) — the old
-    `RTRF_45` translations were **deliberately discarded** because they asserted the opposite of what
-    the code now does. Precedent: the DE `RQOS_117` drift double-derated users' download cap.
-  - `RABT_00`–`RABT_40` (About page, 41 keys) — mostly prose and jokes; a mechanical pass is worse
-    than English. Needs a human.
-  - `RTWK_03` / `RTWK_04` (bind-shim labels), `RWDN_69`–`RWDN_72` (Warden router-self filter).
-  - **IPv6 protocol select labels on `Reaper_Firewall.asp`** — `RFW_252` ("Both") exists; **"Other"
-    still needs a key.** Safe now (the `value="TCP|UDP|BOTH|OTHER"` attributes are pinned — **do not
-    remove them**: `rc/firewall.c` `strcmp`s the submitted value, so an unpinned translated label
-    would have broken the rule format in 24 languages). Do the `RFW_*` namespace as one job, not
-    piecemeal. **Do not reuse ASUS's `option_both_direction`** for "Both" — JP/CN/TW render it as
-    *bidirectional*.
-  - *Deliberately left literal (verified 2026-08-15, do not re-raise):* Splunk placeholders, the Diag
-    ledger preview, Broadcom counter names on the Wireless page, the firewall schedule placeholder
-    (`Mon,Tue|09:00|17:00` is parsed), product names, `title="hidden"` on hidden iframes.
-
----
-
-- **[P3] Make `cut_rung` own the version/count restatements** so doc drift cannot recur: the
-  `patches/README.md` header count, the `CI-PUBLIC-BUILD.md` pin row, the `RELEASE-NOTES.md`
-  "current head" line, and writing image hashes into `provenance/manifest.json` on publish.
-  Two findings that must not be re-derived:
-  - **`provenance/manifest.json` is NOT a "did it ship" signal** — image hashes are populated only
-    sporadically; the authoritative record is the GitHub Releases API.
-  - **"Current version" = newest PUBLISHED release; "current head" = newest source rung.** Each is
-    stated in exactly one place.
-  Automation would not have caught the worst instance (a *false technical justification* copied into
-  two docs); a reason is written by hand and can only be caught by re-deriving it. **[P3]**
-
----
-
-- **[P3] Decide whether two internal docs should be published here** — `GUESTPRO-2.5G-VLAN-PLAN.md`
-  and `CODE-AUDIT-2026-08-05.md` (private working tree; links already removed, nothing 404s). Neither
-  has had a PII/scope review, which is why this is a decision, not a cleanup. **[owner]**
-
----
-
-- **[P3]** Document the non-functional retained features (stock pieces of the firmware update-check
-  UI, the removed security-check UI) kept only for potential future use.
-- **[P3]** Annotate the system defaults.
-- **[P3]** User guides. [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) covers the eleven firewall tabs
-  (every tab's **?** links to its section; extended with the allowlist recipe after a field request
-  turned out to be a documentation gap). The same treatment is owed for **Warden, Gatekeeper, QoS,
-  Traffic, Devices** and **Policy Routing** (`VPN-ROUTING-GUIDE.md`, linked from the page's ? dot —
-  404s until written and pushed). **[owed]**
-
----
-
-## Known issues (cannot remediate — closed-source blob or source)
-
----
-
-- **[P3] Unused BSS/BSSID generated when disabled → RADIUS log spam.** An onboarding/backhaul BSS is
-  created even when every feature that would use it is disabled. Closed-source Broadcom blob; a
-  boot-time suppression script did not work and was reverted. **[blocked — blob; risk-accepted]**
-
----
-
-- **[P3] Guest Network Pro (AP-isolation SDN) breaks the 2.5G-1 LAN port when a manual WAN VLAN is
-  also active — GT-BE98.** The port stops passing untagged main-LAN traffic (VID-52 tag required).
-  On-metal captures proved there is **no userspace interface to read or program the switch VLAN/PVID
-  table**. Workarounds: keep Guest Pro off the 2.5G-1 port, move the device, or tag it VID-52.
-  Almost certainly present on stock too. Investigation: `GUESTPRO-2.5G-VLAN-PLAN.md` (private tree).
-  **[blocked — blob; risk-accepted]**
 
 ---
 
@@ -619,18 +725,49 @@ survives the person who made the call.*
 ### B-1. Classful QoS "WRR" (weighted round-robin) is non-functional on eth ports — every class silently runs strict-priority
 
 - **Symptom.** With `qos_type=11` and any class set to a WRR weight, the weight never takes effect.
+
 - **Reproduced on metal.** `tmctl setqcfg --devtype 0 --if eth0 --qid N --schedmode 2 --weight W`
   fails rc=108: `get_wrr_queue_idx: No free queue index between min[8] and max[8]` / `No place for
   new WRR queue, qid[N]` (chain `get_wrr_queue_idx` → `prepare_set_wrr_q_in_sp_wrr_mode_single_level`
   → `prepare_set_q_in_singel_level` → `prepare_set_q` → `tmctl_RdpaTmQueueSet`).
+
 - **Root cause.** Every port's egress_tm is created with **`num_sp_elements = 8` of `num_queues = 8`**
   (`bdmf_shell … egress_tm` shows `mode: sp_wrr`, `num_queues: 8`, `num_sp_elements: 8` on every
   port), so no scheduler element is left for a WRR queue.
+
 - **Why it is blob-gated.** `num_sp_elements` for eth ports is set inside the closed rdpa driver; the
   `porttminit --flag/--profileid` encoding is not visible. `rdpa_egress_tm.h` documents the valid
   splits (`{0,2,4,8,16,32}`) and marks `rdpa_tm_sched_sp_wrr` `\XRDP_LIMITED`.
+
 - **What ASUS / Broadcom can do.** Create the eth egress_tm with `num_sp_elements = 4` (4 SP + 4 WRR),
   or expose a `porttminit` flag / TM profile that selects it; or document eth egress as SP-only and
   expose a `getportcaps`-style `maxSpQueues` so userspace can detect it.
+
 - **Our mitigation (v2.5.4).** `rc/qos.c` forces strict priority and logs a notice if `qos_sched`
   requested WRR; the per-class scheduler/weight controls were removed from the UI.
+
+- **Blocked by closed-source components**(#blocked-by-closed-source-components--for-asus--broadcom)).
+  v2.5.4 removed the weight controls from the UI. A real fix needs a `porttminit`-level layout change
+  that the closed rdpa driver owns; the standing decision is "UI option removed". Revisit only if
+  Broadcom/ASUS expose the split.
+
+---
+
+### B-2.
+
+- **[P3] Unused BSS/BSSID generated when disabled → RADIUS log spam.** An onboarding/backhaul BSS is
+  created even when every feature that would use it is disabled. Closed-source Broadcom blob; a
+  boot-time suppression script did not work and was reverted. **[blocked — blob; risk-accepted]**
+
+---
+
+### B-3.
+
+- **[P3] Guest Network Pro (AP-isolation SDN) breaks the 2.5G-1 LAN port when a manual WAN VLAN is
+  also active — GT-BE98.** The port stops passing untagged main-LAN traffic (VID-52 tag required).
+  On-metal captures proved there is **no userspace interface to read or program the switch VLAN/PVID
+  table**. Workarounds: keep Guest Pro off the 2.5G-1 port, move the device, or tag it VID-52.
+  Almost certainly present on stock too. Investigation: `GUESTPRO-2.5G-VLAN-PLAN.md` (private tree).
+  **[blocked — blob; risk-accepted]**
+
+---

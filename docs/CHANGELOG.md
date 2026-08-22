@@ -24,8 +24,157 @@ node, not only on the primary router.
 
 ---
 
+## v2.7.1 — security review, every page translatable, the master guide
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+
+**Security review (three independent adversarial passes over everything changed since 2026-07-31,
+plus a regression check of ~40 earlier findings — none regressed).** Fixed in this release:
+
+- **Cross-site requests against Reaper's own pages (HIGH).** The token Reaper's controls check on
+  every request turned out to be ASUS's factory constant — identical on every router ever made — so
+  a web page you happened to visit while logged in could, in principle, switch Gatekeeper off,
+  approve a device, tear down the firewall engine or push a routing list. Two layers now: the token
+  is generated fresh on every boot, and every Reaper control also refuses a request whose browser
+  Referer names another site. Stock pages are untouched. (Tools that drive the router from scripts
+  keep working: a request without a Referer passes on the token alone.)
+- **Firewall: editing during the confirm countdown (MEDIUM).** A list saved while a change was
+  awaiting Keep would have been written as the confirmed config without ever having been compiled or
+  run. Saves and settings imports are refused until you Keep or Revert — the routing page already did
+  this.
+- **Firewall: an over-long rule field silently widened the rule (MEDIUM, admin-only data).** The guard
+  meant to drop such a rule had become dead code on 2026-08-21; restored.
+- **Diagnostics report: a device named `HOST-` hung the router's web server (MEDIUM).** The
+  sanitizer's hostname pass could match its own replacement and loop forever; any LAN device could
+  plant the name. Rewritten so no literal can match inside a token. Also: hostnames are now masked
+  when they appear only in the syslog tail or are cut to 32 characters by Gatekeeper's log line,
+  and the lease dump prints fields only.
+- Smaller hardening: the generated firewall / routing scripts, the Gatekeeper teardown and the
+  watchdog's heal snippet no longer call bare `nvram get` (the v2.6.1 hang guard); a routing
+  candidate that fails to run is rolled back at once; a draft staged before the very first confirm
+  can no longer be promoted to "confirmed" by the migration; settings import accepts Warden's CIDR
+  and feed lists again and snapshots the Gatekeeper baseline when it turns Gatekeeper on.
+- **Recorded, not changed:** the firmware update check verifies the download over TLS against the
+  published hash but carries no author signature (a compromised repository could offer an image —
+  nothing flashes without your click); see BACKLOG. The watchdog's routing self-heal runs the
+  idempotent script without the firewall lock (transient at worst).
+
+**Translations.** Every Reaper page is now fully tokenized for the language packs: 26 remaining
+English literals tokenized and 66 tokens moved out of quoted script strings, where a translation
+containing an apostrophe would have broken the page. Two stale texts corrected (the Storage note that
+said policy "lives in nvram"; the Wireless Auto Scan text that said it pins the channel — it reports,
+*Pin best* commits).
+
+**Documentation.** `docs/REAPER-GUIDE.md` — the master guide: what Reaper is, the requirements and
+rules for running it properly (the `/jffs` store, the two backups, USB and filesystems, Apply and Keep,
+the sanitized report), every feature page, good practice, troubleshooting and a glossary.
+`docs/VPN-ROUTING-GUIDE.md` brought up to v2.6.7+ (WireGuard, IPv6, apply-and-keep, address lists).
+
+---
+
+## v2.7.0 — one backup file for everything Reaper keeps; `/jffs` health in the report
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+
+- **Reaper settings backup (Storage page).** Since v2.6.3–v2.6.9 the Reaper lists live on the
+  internal `/jffs` partition, not in nvram, so the stock settings backup no longer carries them.
+  Export writes one JSON file with Gatekeeper (switches + device list), Policy Routing (switch +
+  rules), the Firewall engine (switches + all eight lists) and Warden (countries, feeds, ban/allow).
+  Import replays it through each feature's own save path: Gatekeeper and Warden take effect at
+  once; firewall and routing lists are loaded as drafts for you to Apply and Keep, so a restored
+  rule that cuts off your own access still reverts. Nothing is written to `/jffs/configs`.
+- **Why this matters / what to know about `/jffs`:** it is the router's internal flash partition
+  (always mounted; the "custom scripts" switch on the Administration page only controls whether
+  `/jffs/scripts` and `/jffs/configs` are honored). Reaper uses well under 4 MB of it. A factory
+  reset or "Format JFFS on next boot" erases the Reaper lists — export first.
+- Diagnostics report v1.3.4 reports `/jffs` size, free space, read-only state, a write test and
+  the space Reaper's stores use, and warns when the partition is unmounted, read-only, nearly full
+  or unwritable — the cases where Reaper changes would stop persisting.
+
+---
+
+## v2.6.9 — field feedback: big domain lists, lists of addresses, rules that survive a reboot
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+
+- **A 40-domain object now saves.** The Firewall's lists (objects, groups, services, zones, zone
+  policies, rules, egress defaults, forwards) were the last ones still held in nvram, where the
+  kernel silently refuses any value over 1 KB — the same wall Gatekeeper hit at 45 devices. They now
+  live on `/jffs` like the routing rules, migrated once at the first boot; the page's own limits
+  (8 KB per list) are now the real ones.
+- **A routing rule can name a list of addresses.** Source rules take one or more IPv4/IPv6
+  addresses or CIDRs (one per line or comma-separated, up to 64), each checked before it is kept.
+  This also closes the report that pasting a list blanked the page: the editor took the value raw,
+  and the newlines broke the page script on every load.
+- **Mark rules that were missing after a reboot come back on their own.** A rule that matches an
+  address set cannot load until that set exists, and at boot the set is sometimes a moment late.
+  The routing script now records how many rules it meant to load; the watchdog compares that with
+  the live chain and re-applies when short (logged, at most every two minutes).
+- By design and unchanged: a long `ipset=` directive is split across lines on purpose (dnsmasq reads
+  ~1 KB per line and would silently drop names past it; several lines naming one set is normal).
+- Diagnostics report v1.3.3: list counts read from the files, the store in use, any staged draft,
+  and expected / live / failed routing mark rules.
+
+---
+
+## v2.6.8 — USB: format as ext4, ext3 or ext2
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+
+- **Format a USB disk as ext4, ext3 or ext2** from the USB page, next to FAT32 (and NTFS / HFS+).
+  The formatter was already in the image; only the dispatch was missing. A one-line hint under the
+  selector says what each choice is for — ext4 for a disk that stays on the router, FAT32 for one
+  you carry between devices.
+- **Field fix in the same change:** NTFS and HFS+ formatting from the Reaper USB page had never
+  worked — the page sent names the formatter did not recognise, the log said "w/o tool" and the
+  disk came back untouched. Corrected.
+
+---
+
+## v2.6.7 — Policy Routing finished: WireGuard, IPv6, apply-and-confirm
+*Built on RT-BE96U 2026-08-22. Closes the three pieces the v2.5.x MVP deferred. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+
+- **WireGuard clients are now routing targets.** On this hardware the traffic accelerator does not
+  honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing now does what VPN
+  Director does: it tells the accelerator to leave the affected flows alone. A rule keyed on a
+  source address excludes just that address; a rule keyed on a destination list or a MAC has to
+  exclude the whole LAN — the same thing VPN Director does for a WireGuard rule with no source —
+  and that costs hardware acceleration for LAN traffic while such a rule exists. The page says so
+  on the rule, and the log says so on every apply. Entries VPN Director or the WireGuard server
+  already placed are never removed. A WireGuard rule whose client is switched off is marked on the
+  page: the rule is fail-closed, so it blocks the selected traffic until that client comes up.
+- **IPv6 is covered.** A destination list matches its IPv6 addresses, a MAC rule follows the device
+  on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no
+  IPv6, the selected IPv6 traffic is blocked rather than leaked around the tunnel.
+- **Apply-and-confirm, like the Firewall page.** Rules go live at once and the router reverts them
+  itself unless you press Keep within the auto-revert timer (the one on the Firewall page). The
+  revert is owned by the router — closing the tab does not cancel it — and a change still waiting
+  at a reboot boots the last confirmed rules instead. Keep is the only thing that writes flash.
+- **About page (field report):** "Patches applied" read a dash on every image you actually
+  flashed, because the count was only stamped once a version had been cut to the public patch
+  series — and a local image is always built before its cut. It now shows the public series count
+  with "series as of vX" when the image is ahead of its cut, and the plain count once it is not.
+- **Warden (field report):** the "prefixes loaded" figure moved from the Countries Blocked tile to
+  the Countries / Threat feeds / Unclassified count bar. The amber "N empty" warning stays on the tile.
+- **The routing rule list no longer lives in nvram.** The kernel's 1 KB per-value cap silently
+  capped it at about 15 rules (the same wall Gatekeeper hit at 45 devices in v2.6.3). It now lives
+  on `/jffs` — the confirmed list is the same snapshot Keep writes — and an existing list is migrated
+  once at the first boot. Twenty rules and more save and survive a reboot.
+- Diagnostics report v1.3.2: a VPN-routing block (mark rules on both families, the rule band, the
+  accelerator bypass list, confirm state) and a finding when Policy Routing is on but not hooked.
+
+---
+
+## v2.6.6 — diagnostics report v1.3.1
+*Built on RT-BE96U 2026-08-22. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+
+- Report tuning from the first v1.3.0 run on metal: the nvram-size warning fires only for
+  Reaper-owned values (ASUS's own long values are whitelisted or already saving — now
+  informational); upstream resolvers fall back to the WAN-assigned servers when dnsmasq is not
+  forwarding; the OpenVPN client line no longer reads a key that does not exist; the SDN profile
+  count sits beside a live bridge count; the client-churn finding carries a rate, the band and
+  the remedy.
+
+---
+
 ## v2.6.5 — Gatekeeper multi-network, finished
-*Built on RT-BE96U (pending). Closes the three pieces v2.6.2 deliberately left open. Not yet cut as a public CI release.*
+*Built on RT-BE96U 2026-08-22. Closes the three pieces v2.6.2 deliberately left open. Cut into the patch series.*
 
 - **A new guest/IoT network is protected the moment you create it.** Until now a network created while Gatekeeper was on was not hooked until the next Gatekeeper restart or reboot — nothing told you. Creating, editing or deleting an SDN now re-applies Gatekeeper on every bridge immediately (logged), and the watcher also checks every 30 s for a bridge that carries an address but is not hooked and re-applies if it finds one.
 - **The "awaiting approval" page now works on an isolated guest network.** The page is served from the main LAN address, which an SDN with *Access Intranet* off drops by design, so an unknown device there got a hung connection instead of the page — and kept re-trying. Gatekeeper now admits exactly one thing through that isolation: the captive-redirected request of an *unknown* device. A device you have already approved on that network still cannot reach the router's pages, and the admin escape hatch remains main-LAN only — that is what the Access Intranet switch means, so it is kept. ASUS rebuilds that chain on every network change; the watcher puts the rule back.
@@ -35,7 +184,7 @@ node, not only on the primary router.
 ---
 
 ## v2.6.4 — the diagnostics report learns to find things itself
-*Built on RT-BE96U (pending). Diagnostics-only rung; no behaviour change. Not yet cut as a public CI release.*
+*Built on RT-BE96U 2026-08-22. Diagnostics-only rung; no behaviour change. Cut into the patch series.*
 
 - **Diagnostics report v1.3.0.** Every one of the last three field investigations needed something the report did not print, and each had to be gathered by hand. It now carries: a **FINDINGS** block at the top — one-line verdicts the script derives itself (an nvram value near the kernel's 1 KB cap, a Gatekeeper list not yet migrated, a stuck `nvram`/`iptables` reader, a process in D-state, a daemon enabled but not running, a missing cron line, an old direct firewall hook left over or the shared front chain missing, rules that failed to load, a conntrack table over 80 %, a WAN link stuck at 10/100 Mb/s, a Wi-Fi station with hundreds of disassociations); **syslog history** over the live log *and* the rwatch mirror (days, not hours) — top stations by connect/disconnect churn, deauth errors, top DHCP discover sources, Reaper event counters, a noise profile by source, boot count, panic/OOM/link-down counts; **process health** (stuck readers with age and wait channel, D-state, zombies, top CPU); the **Reaper layers** added since the report was written — firewall front-chain order and any legacy jumps, rules-engine counts and set sizes, Policy Routing rule band, VPN client/server state with WireGuard *peer counts only*; **data plane** (conntrack by protocol, unreplied, timeouts, WAN link speed/session detail, flow-cache eviction); **nvram hygiene** (names and sizes of values near the cap); and a **network inventory** (every bridge, SDN links, advertised DNS per network). All of it is counts, names and states — MACs, hostnames and public addresses go through the same sanitizer and tripwire as before; guest-network lease hostnames were added to the redaction list. The report ends with its own run time.
 

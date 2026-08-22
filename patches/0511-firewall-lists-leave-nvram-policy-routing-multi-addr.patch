@@ -1,0 +1,929 @@
+From 47100b589d99e5f8eedf63334c13eaaf4092724c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 14:48:45 -0400
+Subject: [PATCH] firewall lists leave nvram; policy routing: multi-address
+ source rules, self-healing chain (field feedback)
+
+Field report (2026-08-22, Policy Routing + Firewall objects):
+
+1. A 40-domain object "would not save and apply"; a few domains at a time
+   eventually did. The firewall engine's eight lists (obj grp svc zone zpol
+   rules edef nat) were still kernel-nvram tuples under the 1 KB cap
+   (v2.6.3 / v2.6.7 all over again) while httpd allowed 8 KB, so the set
+   silently failed. They now use the same file store as the routing list:
+   shared/reaper_jfile.c reaper_fw_list_get(key) resolves the staged draft
+   (/tmp/reaper_fw/draft/<key>, written by httpd `save`) > the confirmed
+   list (/jffs/reaper_fw/lastgood/<key>, written only by confirm) > the
+   legacy nvram value; rfw_migrate_lists() seeds the snapshot from nvram
+   once at boot and clears the nvram copies. The rollback script no longer
+   `nvram set`s (it could not restore a list over 1 KB either): dropping the
+   draft is the rollback. rfw_write_lastgood snapshots all eight BEFORE it
+   invalidates the marker. With the engine OFF nothing would ever have
+   persisted a draft, so a policy-routing confirm now promotes the object /
+   group lists (only those two - additive - and never while the engine's
+   own change is armed).
+2. A pasted list of IPs "blanked the UI": the editor took the value raw, so
+   newlines reached the rule record and the page's inline SSI string. A
+   source rule now takes a list of IPv4/IPv6 addresses or CIDRs (one per
+   line or comma-separated, 64 max), validated per entry in the page and
+   again in rc; the engine emits one mark rule per entry and one WireGuard
+   bypass entry per entry; a bad entry drops only itself.
+3. After a reboot some REAPER_PBR mark rules were missing while the ip
+   rules were present (a `-m set` rule fails when its ipset is not there
+   yet). apply.sh now counts what it meant to load (expect) and what failed
+   (failcount, logged); the rwatch tick compares the live chain with expect
+   and re-runs the script (candidate while armed) once per 2 minutes - before
+   the boot grace, because boot is when it happens.
+
+Diag v1.3.3 counts the lists from the files, shows the store in use, the
+staged draft, and expected/live/failed mark rules; WARN if a list is still
+in nvram after migration.
+
+Host tests: generated script under mock iptables/ip (multi-entry source
+rule -> 2 mark rules + 2 bypass entries, pbr_rule accounting, teardown
+clears the counters); commit-confirm state machine (migration, 20 rules,
+promote called on confirm); page JS x 25 dicts; langcheck 0.
+---
+ release/src/router/httpd/web.c               | 40 +++++----
+ release/src/router/others/reaper_diag        | 15 +++-
+ release/src/router/rc/rc.h                   |  3 +-
+ release/src/router/rc/reaper_fw.c            | 92 ++++++++++++++++++--
+ release/src/router/rc/reaper_pbr.c           | 69 +++++++++++----
+ release/src/router/rc/rwatch.c               | 18 ++++
+ release/src/router/shared/reaper_jfile.c     | 34 ++++++++
+ release/src/router/shared/shared.h           |  5 ++
+ release/src/router/www/BR.dict               |  3 +
+ release/src/router/www/CN.dict               |  3 +
+ release/src/router/www/CZ.dict               |  3 +
+ release/src/router/www/DA.dict               |  3 +
+ release/src/router/www/DE.dict               |  3 +
+ release/src/router/www/EN.dict               |  3 +
+ release/src/router/www/ES.dict               |  3 +
+ release/src/router/www/FI.dict               |  3 +
+ release/src/router/www/FR.dict               |  3 +
+ release/src/router/www/HU.dict               |  3 +
+ release/src/router/www/IT.dict               |  3 +
+ release/src/router/www/JP.dict               |  3 +
+ release/src/router/www/KR.dict               |  3 +
+ release/src/router/www/MS.dict               |  3 +
+ release/src/router/www/NL.dict               |  3 +
+ release/src/router/www/NO.dict               |  3 +
+ release/src/router/www/PL.dict               |  3 +
+ release/src/router/www/RO.dict               |  3 +
+ release/src/router/www/RU.dict               |  3 +
+ release/src/router/www/Reaper_VPNRouting.asp | 33 +++++--
+ release/src/router/www/SL.dict               |  3 +
+ release/src/router/www/SV.dict               |  3 +
+ release/src/router/www/TH.dict               |  3 +
+ release/src/router/www/TR.dict               |  3 +
+ release/src/router/www/TW.dict               |  3 +
+ release/src/router/www/UK.dict               |  3 +
+ 34 files changed, 329 insertions(+), 55 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 8993ec348f..dbb8a36aa3 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23622,12 +23622,12 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			nvram_match("reaper_fw_active", "1") ? 1 : 0,
+ 			nvram_get_int("reaper_fw_confirm"),
+ 			nvram_match("reaper_fw_armed", "1") ? 1 : 0,
+-			fw_list_count(nvram_safe_get("reaper_fw_rules")),
+-			fw_list_count(nvram_safe_get("reaper_fw_obj")),
+-			fw_list_count(nvram_safe_get("reaper_fw_grp")),
+-			fw_list_count(nvram_safe_get("reaper_fw_svc")),
+-			fw_list_count(nvram_safe_get("reaper_fw_zone")),
+-			fw_list_count(nvram_safe_get("reaper_fw_zpol")));
++			fw_list_count(reaper_fw_list_get("rules")),
++			fw_list_count(reaper_fw_list_get("obj")),
++			fw_list_count(reaper_fw_list_get("grp")),
++			fw_list_count(reaper_fw_list_get("svc")),
++			fw_list_count(reaper_fw_list_get("zone")),
++			fw_list_count(reaper_fw_list_get("zpol")));
+ 		websWrite(stream, ",\"fwerr\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_fw_err"));
+ 
+@@ -23742,14 +23742,15 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		gk_json_esc(stream, nvram_safe_get("rwarden_geo"));
+ 		websWrite(stream, ",\"err\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_fw_err"));
+-		websWrite(stream, ",\"obj\":");   gk_json_esc(stream, nvram_safe_get("reaper_fw_obj"));
+-		websWrite(stream, ",\"grp\":");   gk_json_esc(stream, nvram_safe_get("reaper_fw_grp"));
+-		websWrite(stream, ",\"svc\":");   gk_json_esc(stream, nvram_safe_get("reaper_fw_svc"));
+-		websWrite(stream, ",\"zone\":");  gk_json_esc(stream, nvram_safe_get("reaper_fw_zone"));
+-		websWrite(stream, ",\"zpol\":");  gk_json_esc(stream, nvram_safe_get("reaper_fw_zpol"));
+-		websWrite(stream, ",\"rules\":"); gk_json_esc(stream, nvram_safe_get("reaper_fw_rules"));
+-		websWrite(stream, ",\"edef\":");  gk_json_esc(stream, nvram_safe_get("reaper_fw_edef"));
+-		websWrite(stream, ",\"nat\":");   gk_json_esc(stream, nvram_safe_get("reaper_fw_nat"));
++		/* v2.6.9: file store (draft > confirmed > legacy nvram) */
++		websWrite(stream, ",\"obj\":");   gk_json_esc(stream, reaper_fw_list_get("obj"));
++		websWrite(stream, ",\"grp\":");   gk_json_esc(stream, reaper_fw_list_get("grp"));
++		websWrite(stream, ",\"svc\":");   gk_json_esc(stream, reaper_fw_list_get("svc"));
++		websWrite(stream, ",\"zone\":");  gk_json_esc(stream, reaper_fw_list_get("zone"));
++		websWrite(stream, ",\"zpol\":");  gk_json_esc(stream, reaper_fw_list_get("zpol"));
++		websWrite(stream, ",\"rules\":"); gk_json_esc(stream, reaper_fw_list_get("rules"));
++		websWrite(stream, ",\"edef\":");  gk_json_esc(stream, reaper_fw_list_get("edef"));
++		websWrite(stream, ",\"nat\":");   gk_json_esc(stream, reaper_fw_list_get("nat"));
+ 		websWrite(stream, "}");
+ 		return;
+ 	}
+@@ -23803,7 +23804,12 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 						}
+ 					}
+ 				}
+-				nvram_set(tbl[i].nv, v);           /* RAM only - see the note above */
++				/* v2.6.9: staged as a file, never nvram (1 KB kernel cap made a
++				 * 40-domain object silently not save). Same draft semantics. */
++				if (reaper_fw_list_stage(tbl[i].k, v) != 0) {
++					websWrite(stream, "{\"ok\":0,\"error\":\"could not stage the list\"}");
++					return;
++				}
+ 			websWrite(stream, "{\"ok\":1}");
+ 			return;
+ 		}
+@@ -23829,9 +23835,9 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		int i;
+ 		websWrite(stream, "{\"ok\":1,\"cfg\":{");
+ 		for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++) {
+-			snprintf(nv, sizeof(nv), "reaper_fw_%s", keys[i]);
++			(void)nv;
+ 			websWrite(stream, "%s\"%s\":", i ? "," : "", keys[i]);
+-			gk_json_esc(stream, nvram_safe_get(nv));
++			gk_json_esc(stream, reaper_fw_list_get(keys[i]));
+ 		}
+ 		websWrite(stream, "}}");
+ 		return;
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 4bd0332268..93584dbc6c 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.2 (2026-08-22) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.3 (2026-08-22) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.2"
++VER="REAPER-DIAG v1.3.3"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -629,7 +629,13 @@ ANYL=0; for k in rwarden_enable gk_enable reaper_fw_enable; do [ "$(nvram get $k
+ echo "  -- rules engine (reaper_fw) --"
+ cnt() { nvram get "$1" 2>/dev/null | tr -cd '<' | wc -c; }
+ echo "  enable=$(nvram get reaper_fw_enable 2>/dev/null) active=$(nvram get reaper_fw_active 2>/dev/null) armed=$(nvram get reaper_fw_armed 2>/dev/null) confirm=$(nvram get reaper_fw_confirm 2>/dev/null)s"
+-echo "  objects=$(cnt reaper_fw_obj) groups=$(cnt reaper_fw_grp) services=$(cnt reaper_fw_svc) zones=$(cnt reaper_fw_zone) zone-policies=$(cnt reaper_fw_zpol) rules=$(cnt reaper_fw_rules) egress-defaults=$(cnt reaper_fw_egress) forwards=$(cnt reaper_fw_nat)"
++# v1.3.3: the lists live on /jffs since v2.6.9 (nvram held a 1 KB cap); count
++# the confirmed file when it exists, the legacy nvram value otherwise. A draft
++# awaiting confirmation is noted separately.
++cntf() { [ -f "/jffs/reaper_fw/lastgood/$1" ] && grep -o '<' "/jffs/reaper_fw/lastgood/$1" | wc -l || cnt "reaper_fw_$1"; }
++echo "  objects=$(cntf obj) groups=$(cntf grp) services=$(cntf svc) zones=$(cntf zone) zone-policies=$(cntf zpol) rules=$(cntf rules) egress-defaults=$(cntf edef) forwards=$(cntf nat)  store=$([ -f /jffs/reaper_fw/lastgood/.committed ] && echo /jffs || echo nvram-legacy)"
++[ -d /tmp/reaper_fw/draft ] && echo "  draft staged      : $(ls /tmp/reaper_fw/draft 2>/dev/null | tr '\n' ' ')(edited, not yet confirmed)"
++for k in obj grp svc zone zpol rules edef nat; do [ -n "$(nvram get reaper_fw_$k 2>/dev/null)" ] && finding WARN "reaper_fw_$k still holds a value in nvram after the v2.6.9 migration (see 14c)"; done
+ for CH in REAPER_FWI REAPER_FWF REAPER_FWO; do printf "  %-11s v4=%s rules  v6=%s rules\n" "$CH" "$(iptables -nL $CH 2>/dev/null | tail -n +3 | wc -l)" "$(ip6tables -nL $CH 2>/dev/null | tail -n +3 | wc -l)"; done
+ echo "  nat REAPER_FWN    : $(iptables -t nat -nL REAPER_FWN 2>/dev/null | tail -n +3 | wc -l) rules"
+ echo "  rwfw_* sets       : $(ipset list -n 2>/dev/null | grep -c '^rwfw') (sizes: $(for S in $(ipset list -n 2>/dev/null | grep '^rwfw' | head -12); do printf "%s=%s " "$S" "$(ipset -t list $S 2>/dev/null | sed -n 's/.*Number of entries: //p')"; done))"
+@@ -638,7 +644,8 @@ echo "  rwfw_* sets       : $(ipset list -n 2>/dev/null | grep -c '^rwfw') (size
+ [ "$(nvram get reaper_fw_enable 2>/dev/null)" = 1 ] && [ "$(cat /tmp/reaper_fw/failcount 2>/dev/null || echo 0)" != 0 ] && finding WARN "rules engine: $(cat /tmp/reaper_fw/failcount) rule(s) failed to load on the last apply (see 14c)"
+ 
+ sec "14d. POLICY ROUTING + VPN (rule bands, tunnel state - no keys, no endpoints)"
+-echo "  reaper_pbr        : enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null) armed=$(nvram get reaper_pbr_armed 2>/dev/null) rules=$(cnt reaper_pbr_rulelist)"
++echo "  reaper_pbr        : enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null) armed=$(nvram get reaper_pbr_armed 2>/dev/null) rules=$([ -f /jffs/reaper_pbr/lastgood/rulelist ] && grep -o '<' /jffs/reaper_pbr/lastgood/rulelist | wc -l || cnt reaper_pbr_rulelist) store=$([ -f /jffs/reaper_pbr/lastgood/.committed ] && echo /jffs || echo nvram-legacy)"
++[ -f /tmp/reaper_pbr/expect ] && echo "  mark rules        : expected $(cat /tmp/reaper_pbr/expect) live $(( $(iptables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') + $(ip6tables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') )) failed-on-last-apply $(cat /tmp/reaper_pbr/failcount 2>/dev/null || echo ?)"
+ # v1.3.2 (14e): the routing half of policy routing - the mark rules, the
+ # ip-rule band (9000-9199), the WireGuard flow-cache bypass list, and the
+ # commit-confirm state. Addresses in rules and the bypass list are sanitized
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index a9b59bca11..cc9d23d676 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2998,7 +2998,8 @@ extern void reaper_fw_apply(void);
+ extern void reaper_fw_confirm(void);
+ extern void reaper_fw_rollback(void);
+ extern void reaper_fw_dryrun(void);
+-extern void reaper_fw_sets_only(void);	/* object ipsets + dnsmasq + resolver, no chains (policy routing with the engine off) */
++extern void reaper_fw_sets_only(void);
++extern void reaper_fw_promote_objects(void);	/* v2.6.9: policy-routing confirm persists the object/group lists */	/* object ipsets + dnsmasq + resolver, no chains (policy routing with the engine off) */
+ /* reaper v2.5.x ipset policy routing (rc/reaper_pbr.c): marks ipset/selector
+  * matches in mangle and steers them via `ip rule fwmark lookup <tunnel>`, BELOW
+  * VPN Director's pref band so it overrides. Inert unless reaper_pbr_enable=1. */
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 13f3c23fc1..a026a5f762 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -524,7 +524,9 @@ static int rfw_cfg_load(rfw_cfg_t *c, int from_lastgood)
+ 			*slot = rfw_slurp(p);
+ 			if (!*slot) *slot = strdup("");
+ 		} else {
+-			*slot = strdup(nvram_safe_get(rfw_keys[i].nv));
++			/* v2.6.9: draft file > confirmed file > legacy nvram (P8 of
++			 * reaper_pbr.c applies here too - the lists are NOT in nvram). */
++			*slot = strdup(reaper_fw_list_get(rfw_keys[i].file));
+ 		}
+ 		if (!*slot) { rfw_cfg_free(c); return 0; }
+ 	}
+@@ -1936,12 +1938,20 @@ static int rfw_write_lastgood(void)
+ 	char marker[128];
+ 	mkdir(RFW_CACHE, 0700);
+ 	mkdir(RFW_LASTGOOD, 0700);
++	char *vals[RFW_NKEYS];
+ 	snprintf(marker, sizeof(marker), "%s/.committed", RFW_LASTGOOD);
++	/* v2.6.9: resolve all eight BEFORE the marker goes - the resolver reads
++	 * the confirmed files for keys with no draft only while the marker is
++	 * present, so snapshotting after the unlink would write them back empty. */
++	for (i = 0; i < RFW_NKEYS; i++) {
++		vals[i] = strdup(reaper_fw_list_get(rfw_keys[i].file));
++		if (!vals[i]) { while (i--) free(vals[i]); logmessage("reaper_fw", "lastgood snapshot: out of memory"); return 0; }
++	}
+ 	unlink(marker);		/* invalidate the old marker until this one completes */
+ 	for (i = 0; i < RFW_NKEYS; i++) {
+ 		char p[128], tmp[140];
+ 		FILE *f;
+-		const char *val = nvram_safe_get(rfw_keys[i].nv);
++		const char *val = vals[i];
+ 		snprintf(p, sizeof(p), "%s/%s", RFW_LASTGOOD, rfw_keys[i].file);
+ 		snprintf(tmp, sizeof(tmp), "%s.tmp", p);
+ 		if ((f = fopen(tmp, "w")) == NULL) { ok = 0; break; }
+@@ -1951,6 +1961,7 @@ static int rfw_write_lastgood(void)
+ 		chmod(tmp, 0600);
+ 		if (rename(tmp, p) != 0) { unlink(tmp); ok = 0; break; }
+ 	}
++	for (i = 0; i < RFW_NKEYS; i++) free(vals[i]);
+ 	if (ok) {
+ 		FILE *m = fopen(marker, "w");
+ 		if (!m) ok = 0;
+@@ -1984,12 +1995,11 @@ static void rfw_gen_rollback(void)
+ 	  "#!/bin/sh\n"
+ 	  "# generated by reaper_fw - commit-confirm recovery. Restores the last\n"
+ 	  "# CONFIRMED ruleset and disarms. Safe to run at any time.\n");
+-	for (i = 0; i < RFW_NKEYS; i++)
+-		/* "$(cat f)" is expanded once and never re-parsed, so an operator
+-		 * comment containing shell metacharacters cannot execute (S2). */
+-		fprintf(f, "[ -f %s/%s ] && nvram set %s=\"$(cat %s/%s)\"\n",
+-		        RFW_LASTGOOD, rfw_keys[i].file, rfw_keys[i].nv,
+-		        RFW_LASTGOOD, rfw_keys[i].file);
++	/* v2.6.9: the lists live in files - dropping the staged draft IS the
++	 * config rollback (the confirmed lists never left /jffs). The old
++	 * per-key `nvram set` could not have restored a list over 1 KB anyway. */
++	(void)i;
++	fprintf(f, "rm -rf " REAPER_FW_DRAFT_DIR "\n");
+ 	fprintf(f,
+ 	  "sh " RFW_ROLLBACK ".rules 2>/dev/null || {\n"
+ 	  /* S3 last resort: if even the known-good ruleset will not build, remove
+@@ -2154,6 +2164,70 @@ void reaper_fw_sets_only(void)
+ 	rfw_cfg_free(&c);
+ }
+ 
++/* v2.6.9: the eight lists live in files (see shared/reaper_jfile.c). First
++ * boot on this build seeds the confirmed snapshot from nvram and clears the
++ * nvram copies; runs whether or not the engine is enabled, because the object
++ * lists are read by policy routing too. Returns 1 when a committed snapshot
++ * exists afterwards. */
++static int rfw_migrate_lists(void)
++{
++	char probe[128];
++	int from_good;
++	snprintf(probe, sizeof(probe), "%s/.committed", RFW_LASTGOOD);
++	from_good = f_exists(probe) ? 1 : 0;
++	/* v2.6.9: first boot on this build - what nvram holds IS the confirmed
++	 * config. Seed the snapshot from it (rfw_write_lastgood reads through the
++	 * resolver, which falls back to nvram while no snapshot exists), then
++	 * clear the nvram copies so nothing stale shadows the files - the gk_rl /
++	 * reaper_pbr migration shape. A leftover nvram value on a migrated box (a
++	 * settings restore) is dropped the same way. */
++	if (!from_good) {
++		int i, n = 0;
++		for (i = 0; i < RFW_NKEYS; i++) if (nvram_safe_get(rfw_keys[i].nv)[0]) n++;
++		if (rfw_write_lastgood()) {
++			for (i = 0; i < RFW_NKEYS; i++) nvram_unset(rfw_keys[i].nv);
++			if (n) { nvram_commit(); logmessage("reaper_fw", "%d list(s) migrated from nvram to %s (nvram held a 1 KB cap per list)", n, RFW_LASTGOOD); }
++			from_good = 1;
++		}
++	} else {
++		int i, n = 0;
++		for (i = 0; i < RFW_NKEYS; i++) if (nvram_safe_get(rfw_keys[i].nv)[0]) { nvram_unset(rfw_keys[i].nv); n++; }
++		if (n) nvram_commit();
++	}
++	/* (no draft cleanup here: /tmp is tmpfs so none survives a boot, and this
++	 * also runs on the enable toggle, where an unsaved edit must be kept) */
++	return from_good;
++}
++
++/* Policy routing confirmed: the object / group lists it edits become
++ * confirmed too. With the engine OFF nothing else would ever persist them
++ * (they would live in the tmpfs draft and vanish at reboot); with it ON only
++ * the two additive lists are promoted - a set existing filters nothing - and
++ * never while the engine's own change is awaiting confirmation. */
++void reaper_fw_promote_objects(void)
++{
++	static const char *keys[] = { "obj", "grp" };
++	int i;
++	if (d_exists(RFW_ARMED)) {
++		logmessage("reaper_fw", "object lists left in the draft - a firewall change is awaiting confirmation");
++		return;
++	}
++	if (!nvram_match("reaper_fw_enable", "1")) {
++		if (rfw_write_lastgood()) eval("rm", "-rf", REAPER_FW_DRAFT_DIR);
++		return;
++	}
++	for (i = 0; i < 2; i++) {
++		char d[128], p[128];
++		int ex;
++		char *v;
++		snprintf(d, sizeof(d), REAPER_FW_DRAFT_DIR "/%s", keys[i]);
++		v = rjf_get(d, &ex);
++		if (!ex) continue;
++		snprintf(p, sizeof(p), "%s/%s", RFW_LASTGOOD, keys[i]);
++		if (rjf_set(p, v, "reaper_fw") == 0) unlink(d);
++	}
++}
++
+ /* Apply the COMMITTED ruleset. Boot, restart_firewall re-hook, and the enable
+  * toggle all land here. No arm: what is in flash has already been confirmed. */
+ void start_reaper_fw(void)
+@@ -2164,6 +2238,7 @@ void start_reaper_fw(void)
+ 	int from_good = 0;	/* P2-H2: boot the confirmed snapshot, not nvram */
+ 
+ 	if (!is_routing_enabled()) return;
++	rfw_migrate_lists();				/* v2.6.9: nvram -> /jffs, once; drops any draft */
+ 	if (!nvram_match("reaper_fw_enable", "1")) {
+ 		if (f_exists(RFW_APPLY) || nvram_match("reaper_fw_armed", "1")) {
+ 			stop_reaper_fw();          /* clears reaper_fw_active itself */
+@@ -2373,6 +2448,7 @@ void reaper_fw_confirm(void)
+ 	unlink(RFW_DEADLINE);
+ 	nvram_commit();
+ 	rfw_write_lastgood();
++	eval("rm", "-rf", REAPER_FW_DRAFT_DIR);	/* v2.6.9: consumed into lastgood */
+ 	/* the confirmed candidate becomes the boot-time ruleset */
+ 	rename(RFW_CAND, RFW_APPLY);
+ 	nvram_set("reaper_fw_armed", "0");
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 31bab6a393..bdb411ce27 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -244,6 +244,7 @@ static int ppbr_selector(char *buf4, char *buf6, size_t buflen,
+ 		return 1;
+ 	}
+ 	if (!strcmp(seltype, "src")) {
++		/* ONE entry (the caller splits a v2.6.9 comma list and calls per entry) */
+ 		if (strchr(selval, ':')) {
+ 			/* v6 source */
+ 			if (!ppbr_ok(selval, "0123456789abcdefABCDEF:/", 48)) return 0;
+@@ -279,6 +280,11 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "  done < \"$SKIPREC\"\n"
+ 	  "  rm -f \"$SKIPREC\"\n"
+ 	  "}\n"
++	  "# v2.6.9: count the mark rules that were meant to load and the ones that\n"
++	  "# did not (a `-m set` rule fails when its set is not there yet at boot);\n"
++	  "# rwatch compares the live chain against EXPECT and re-runs this script.\n"
++	  "NEXPECT=0; NFAIL=0\n"
++	  "pbr_rule() { NEXPECT=$((NEXPECT+1)); \"$@\" || NFAIL=$((NFAIL+1)); }\n"
+ 	  "pbr_skip_add() {\n"
+ 	  "  [ -w \"$SKIP\" ] || return 0\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 pre\" >> \"$SKIPREC\"; return 0; fi\n"
+@@ -334,7 +340,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "\n");
+ 
+ 	if (teardown_only) {
+-		fprintf(f, "exit 0\n");
++		fprintf(f, "rm -f " PPBR_DIR "/expect " PPBR_DIR "/failcount\n" "exit 0\n");
+ 		fclose(f);
+ 		if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 		return 1;
+@@ -376,24 +382,46 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 				logmessage("reaper_pbr", "unknown target '%s' - rule dropped", target);
+ 				continue;
+ 			}
+-			if (!ppbr_selector(sel4, sel6, sizeof(sel4), seltype, selval, skipnet, sizeof(skipnet))) {
+-				logmessage("reaper_pbr", "bad selector %s/%s - rule dropped", seltype, selval);
+-				continue;
++			{
++			/* v2.6.9 (field): a source rule may carry a comma-separated list of
++			 * IPs / CIDRs (the page also accepts one per line and joins them).
++			 * One mangle rule per entry, one bypass entry per entry for a WG
++			 * target; a bad entry drops only itself. Other selector types are
++			 * single values - the loop runs once. */
++			char *ents = strdup(selval), *ep = ents, *ent;
++			int nent = 0, nbad = 0;
++			if (!ents) continue;
++			while ((ent = strsep(&ep, ",")) != NULL) {
++				while (*ent == ' ') ent++;
++				if (!*ent) continue;
++				if (strcmp(seltype, "src") != 0 && nent) break;   /* single-valued types */
++				if (!ppbr_selector(sel4, sel6, sizeof(sel4), seltype, ent, skipnet, sizeof(skipnet))) {
++					logmessage("reaper_pbr", "bad selector %s/%s - entry dropped", seltype, ent);
++					nbad++;
++					continue;
++				}
++				if (sel4[0])
++					fprintf(f, "pbr_rule iptables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++					        sel4, code);
++				if (sel6[0]) {
++					if (!strncmp(sel6, "-m set", 6))
++						/* only when the v6 set exists (see ppbr_selector) */
++						fprintf(f, "ipset list -n rwfw6_%s >/dev/null 2>&1 && ", ent);
++					fprintf(f, "pbr_rule ip6tables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++					        sel6, code);
++				}
++				if (wg) {
++					if (skipnet[0]) fprintf(f, "pbr_skip_add %s\n", skipnet);
++					else            wg_lanwide = 1;
++				}
++				nent++;
+ 			}
+-			if (sel4[0])
+-				fprintf(f, "iptables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+-				        sel4, code);
+-			if (sel6[0]) {
+-				if (!strncmp(sel6, "-m set", 6))
+-					/* only when the v6 set exists (see ppbr_selector) */
+-					fprintf(f, "ipset list -n rwfw6_%s >/dev/null 2>&1 && ", selval);
+-				fprintf(f, "ip6tables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+-				        sel6, code);
++			free(ents);
++			if (!nent) {
++				logmessage("reaper_pbr", "rule '%s' has no usable selector entry - rule dropped", desc);
++				continue;
+ 			}
+-			if (wg) {
+-				wg_rules++;
+-				if (skipnet[0]) fprintf(f, "pbr_skip_add %s\n", skipnet);
+-				else            wg_lanwide = 1;
++			if (wg) wg_rules++;
+ 			}
+ 			used[code] = 1;
+ 			used_tbl[code] = tbl;
+@@ -451,7 +479,11 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 			fprintf(f, "logger -t reaper_pbr \"%d WireGuard rule(s) with a destination/MAC selector: LAN-wide flow-cache bypass is in place (no hardware acceleration for LAN-sourced flows while they exist - same as a VPN Director all-LAN WireGuard rule)\"\n", wg_rules);
+ 	}
+ 
+-	fprintf(f, "exit 0\n");
++	fprintf(f,
++	  "echo $NEXPECT > " PPBR_DIR "/expect\n"
++	  "echo $NFAIL > " PPBR_DIR "/failcount\n"
++	  "[ \"$NFAIL\" -gt 0 ] && logger -t reaper_pbr \"$NFAIL of $NEXPECT mark rule(s) failed to load - the watchdog will retry\"\n"
++	  "exit 0\n");
+ 	fclose(f);
+ 	if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 	return 1;
+@@ -763,6 +795,7 @@ void reaper_pbr_confirm(void)
+ 		free(rl);
+ 		unlink(REAPER_PBR_DRAFT);
+ 	}
++	reaper_fw_promote_objects();	/* v2.6.9: the domain lists edited on this page persist too */
+ 	if (nvram_match("reaper_pbr_enable", "1"))
+ 		rename(PPBR_CAND, PPBR_APPLY);          /* the confirmed candidate becomes the boot-time script */
+ 	else {
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 22ae6d6876..6c52a87ed2 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -98,6 +98,24 @@ static void rwatch_gen(void)
+ 	  "  kill -9 $_p 2>/dev/null && logger -t rwatch \"reaped hung nvram pid $_p ($_cl) age ${_age}s - libnvram netlink wait\"\n"
+ 	  "done\n"
+ 	  "\n"
++	  /* reaper v2.6.9 (field): after a reboot some REAPER_PBR mark rules were
++	   * missing while the ip rules were present - a `-m set` rule fails to
++	   * load when its ipset is not there yet at the instant apply.sh runs.
++	   * apply.sh records how many mark rules it meant to load (expect); when
++	   * the live chain is short, re-run it (idempotent) - once per 2 minutes,
++	   * logged. Runs before the boot grace on purpose: boot is when it happens. */
++	  "if [ \"$(_nv reaper_pbr_active)\" = 1 ] && [ -s /tmp/reaper_pbr/expect ]; then\n"
++	  "  _ex=$(cat /tmp/reaper_pbr/expect 2>/dev/null); case \"$_ex\" in ''|*[!0-9]*) _ex=0;; esac\n"
++	  "  _sh=/tmp/reaper_pbr/apply.sh; [ -d /tmp/reaper_pbr/armed ] && [ -f /tmp/reaper_pbr/candidate.sh ] && _sh=/tmp/reaper_pbr/candidate.sh\n"
++	  "  _live=$(( $(iptables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') + $(ip6tables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') ))\n"
++	  "  _last=$(cat /tmp/reaper_pbr/heal.at 2>/dev/null || echo 0)\n"
++	  "  if [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ $((UP-_last)) -ge 120 ] && [ -x \"$_sh\" ]; then\n"
++	  "    echo $UP > /tmp/reaper_pbr/heal.at\n"
++	  "    logger -t rwatch \"policy routing: $_live of $_ex mark rule(s) live - re-applying\"\n"
++	  "    sh \"$_sh\" >/dev/null 2>&1\n"
++	  "  fi\n"
++	  "fi\n"
++	  "\n"
+ 	  "# boot grace: the WAN is legitimately down for the first minutes\n"
+ 	  "[ \"$UP\" -lt 300 ] && exit 0\n"
+ 	  "\n"
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+index 3c950efb10..59ca77d7f9 100755
+--- a/release/src/router/shared/reaper_jfile.c
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -89,6 +89,40 @@ int rjf_set(const char *path, const char *v, const char *tag)
+ 	return 0;
+ }
+ 
++/* ---- Firewall engine lists (rc/reaper_fw.c + httpd share this) ----
++ * key = obj|grp|svc|zone|zpol|rules|edef|nat. Resolution order as for the
++ * routing list: the staged draft (httpd `save`, an edit not yet applied or
++ * applied-and-awaiting-confirm), then the last CONFIRMED list (/jffs, written
++ * only by reaper_fw_confirm), then - on a box that has not migrated - the old
++ * nvram value. The eight lists hit the same 1 KB kernel cap the device and
++ * routing lists did (v2.6.3 / v2.6.7): a 40-domain object silently never
++ * saved. */
++char *reaper_fw_list_get(const char *key)
++{
++	char p[128], nv[40];
++	int ex;
++	char *v;
++	snprintf(p, sizeof(p), REAPER_FW_DRAFT_DIR "/%s", key);
++	v = rjf_get(p, &ex);
++	if (ex) return v;
++	snprintf(p, sizeof(p), REAPER_FW_LASTGOOD_DIR "/.committed");
++	if (f_exists(p)) {
++		snprintf(p, sizeof(p), REAPER_FW_LASTGOOD_DIR "/%s", key);
++		v = rjf_get(p, &ex);
++		if (ex) return v;
++		return "";		/* a committed snapshot with no file for this key = empty list */
++	}
++	snprintf(nv, sizeof(nv), "reaper_fw_%s", key);
++	return nvram_safe_get(nv);
++}
++
++int reaper_fw_list_stage(const char *key, const char *v)
++{
++	char p[128];
++	snprintf(p, sizeof(p), REAPER_FW_DRAFT_DIR "/%s", key);
++	return rjf_set(p, v, "reaper_fw");
++}
++
+ /* ---- Policy Routing rule list (rc/reaper_pbr.c + httpd share this) ----
+  * Resolution order: the staged draft (an apply awaiting confirmation), then
+  * the last CONFIRMED list, then - on a box that has not migrated yet - the
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 8a7bf023df..75865c9e71 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3610,6 +3610,11 @@ extern int rjf_set(const char *path, const char *v, const char *tag);	/* atomic
+ #define REAPER_PBR_RL    "/jffs/reaper_pbr/lastgood/rulelist"	/* the CONFIRMED list */
+ #define REAPER_PBR_DRAFT "/tmp/reaper_pbr/draft"		/* an apply awaiting confirmation */
+ extern char *reaper_pbr_rl_get(void);	/* draft > confirmed > legacy nvram */
++/* v2.6.9: the firewall engine's eight lists, same store + order */
++#define REAPER_FW_DRAFT_DIR    "/tmp/reaper_fw/draft"
++#define REAPER_FW_LASTGOOD_DIR "/jffs/reaper_fw/lastgood"
++extern char *reaper_fw_list_get(const char *key);	/* key: obj grp svc zone zpol rules edef nat */
++extern int reaper_fw_list_stage(const char *key, const char *v);
+ #ifdef RTCONFIG_VAR_NVRAM
+ extern char *var_nvram_get(const char *name);
+ extern int var_nvram_set(const char *name, const char *value);
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 0ebe035123..812f52954d 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 18992f7872..4524259126 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 24bd3a4471..91a316bd9b 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index a3e3d96dc2..8887557ea0 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index bca4c3e592..3b6f12e8da 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 42d6f1ef11..c2eb9444fa 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 17ffca750d..cfa51605b3 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index f2a42506f6..dd59adde78 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index dabdfea8b9..4588bb4b44 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index aa91559917..047618b89d 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 976982a643..56f0e92dc7 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 6158cae58d..fb13e9f085 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 303e987de7..530854472d 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 104d454c24..4aaa4c4dab 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 7d9d630a0d..e866c86328 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 30eb1ffa5d..53f84ec15c 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 41911f9547..a4505fe864 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index fa434e6ab1..7be060d738 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index d4a835f823..514921f03c 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index fbe72c829e..413a3b06d1 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -131,6 +131,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+     <div class="fld"><label><#RVR_21#></label>
+       <select id="e_obj"><option value=""><#RVR_26#></option></select>
+       <input type="text" id="e_val" style="display:none" placeholder="">
++      <textarea id="e_vals" style="display:none" rows="2" spellcheck="false" placeholder="<#RVR_28#>"></textarea>
+     </div>
+     <div class="fld"><label><#RVR_22#></label>
+       <select id="e_target" onchange="pbrTargetChange()">
+@@ -224,7 +225,7 @@ var TGTLBL = { OVPN1:'OpenVPN 1',OVPN2:'OpenVPN 2',OVPN3:'OpenVPN 3',OVPN4:'Open
+ var WGON=[0,0,0,0,0];   /* wgcN_enable, from reaper_pbr.cgi?action=cfg */
+ 
+ function selText(r){
+-  if(r.seltype==='src') return `<#RVR_19#>` + ': ' + esc(r.selval);
++  if(r.seltype==='src'){ var n=(r.selval||'').split(',').filter(Boolean); return `<#RVR_19#>` + ': ' + esc(n.length>1 ? (n[0]+' +'+(n.length-1)) : r.selval); }
+   if(r.seltype==='mac') return `<#RVR_20#>` + ': ' + esc(r.selval);
+   return `<#RVR_34#>` + ': ' + esc(r.selval);   // ipset/domain -> object / domain list
+ }
+@@ -275,7 +276,8 @@ function ruleEdit(i){
+   document.getElementById('e_desc').value=r.desc||'';
+   document.getElementById('e_type').value=(r.seltype==='domain')?'ipset':r.seltype;
+   pbrTypeChange();
+-  if(r.seltype==='src'||r.seltype==='mac') document.getElementById('e_val').value=r.selval||'';
++  if(r.seltype==='src') document.getElementById('e_vals').value=(r.selval||'').split(',').join('\n');
++  else if(r.seltype==='mac') document.getElementById('e_val').value=r.selval||'';
+   else { var sel=document.getElementById('e_obj'); sel.value=r.selval||''; if(sel.value!==r.selval){ var op=document.createElement('option'); op.value=r.selval; op.textContent=r.selval; sel.appendChild(op); sel.value=r.selval; } }
+   document.getElementById('e_target').value=r.target||'OVPN1';
+   document.getElementById('e_add').textContent=`<#CTL_onlysave#>`;
+@@ -293,12 +295,13 @@ function ruleEditCancel(){
+ 
+ function pbrTypeChange(){
+   var t = document.getElementById('e_type').value;
+-  var sel = document.getElementById('e_obj'), val = document.getElementById('e_val');
++  var sel = document.getElementById('e_obj'), val = document.getElementById('e_val'), vals = document.getElementById('e_vals');
+   var hint = document.getElementById('objhint');
+   var dh = document.getElementById('devhint');
+-  if(t==='ipset'){ sel.style.display=''; val.style.display='none'; hint.style.display=''; dh.style.display='none'; }
+-  else { sel.style.display='none'; val.style.display=''; hint.style.display='none'; dh.style.display='';
+-    val.placeholder = (t==='src') ? `<#RVR_28#>` : `<#RVR_29#>`; }
++  sel.style.display='none'; val.style.display='none'; vals.style.display='none';
++  if(t==='ipset'){ sel.style.display=''; hint.style.display=''; dh.style.display='none'; }
++  else if(t==='src'){ vals.style.display=''; vals.placeholder=`<#RVR_61#>`; hint.style.display='none'; dh.style.display=''; }
++  else { val.style.display=''; val.placeholder=`<#RVR_29#>`; hint.style.display='none'; dh.style.display=''; }
+ }
+ 
+ function pbrAdd(){
+@@ -306,12 +309,28 @@ function pbrAdd(){
+   var desc = document.getElementById('e_desc').value.trim();
+   var val = (t==='ipset') ? document.getElementById('e_obj').value : document.getElementById('e_val').value.trim();
+   var target = document.getElementById('e_target').value;
++  if(t==='src') val = document.getElementById('e_vals').value;
+   if(!val){ alert(`<#RVR_32b#>`); return; }
+   if(/[<>]/.test(desc)||/[<>]/.test(val)){ alert('< >'); return; }
++  /* v2.6.9 (field): a pasted list of IPs used to go in raw and break the page.
++     Source = a list of IPv4/IPv6 addresses or CIDRs, one per line or comma-
++     separated; every entry is checked here (and again in rc) before it is kept. */
++  if(t==='src'){
++    var ents = val.split(/[\s,;]+/).filter(Boolean), bad = [], i;
++    var v4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}(\/(3[0-2]|[12]?\d))?$/;
++    var v6 = /^[0-9a-fA-F:]{2,39}(\/(12[0-8]|1[01]\d|[1-9]?\d))?$/;
++    for(i=0;i<ents.length;i++) if(!(v4.test(ents[i]) || (ents[i].indexOf(':')>=0 && v6.test(ents[i])))) bad.push(ents[i]);
++    if(!ents.length){ alert(`<#RVR_32b#>`); return; }
++    if(bad.length){ alert(`<#RVR_59#>` + ' ' + bad.slice(0,3).join(', ')); return; }
++    if(ents.length > 64){ alert(`<#RVR_60#>`); return; }
++    val = ents.join(',');
++  } else if(t==='mac'){
++    if(!/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(val)){ alert(`<#RVR_59#>` + ' ' + val); return; }
++  }
+   var rec = { en:true, desc:desc, seltype:t, selval:val, proto:'', port:'', target:target };
+   if(EDIT_RULE>=0 && ROWS[EDIT_RULE]){ rec.en=ROWS[EDIT_RULE].en; ROWS[EDIT_RULE]=rec; ruleEditCancel(); }
+   else { ROWS.push(rec); }
+-  document.getElementById('e_desc').value=''; document.getElementById('e_val').value='';
++  document.getElementById('e_desc').value=''; document.getElementById('e_val').value=''; document.getElementById('e_vals').value='';
+   render();
+ }
+ 
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index a330be096c..f03e4a9590 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 27ae5df63a..a7e550f04d 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 1b029cb1a7..1d970c6fea 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index fbc3253e69..a615705f56 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 436d37d059..4e4a9dcda4 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 738d9730d9..651035ae2e 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6718,3 +6718,6 @@ RWDN_89=Prefixes loaded:
+ RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
+ RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
+ RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
++RVR_59=Not a valid address or CIDR:
++RVR_60=Too many entries for one rule (64 max). Split it into two rules.
++RVR_61=One or more IPv4 / IPv6 addresses or CIDRs, one per line or comma-separated
+-- 
+2.25.1
+

@@ -1,0 +1,699 @@
+From 930be3714321500ce8fbccc76d962b733b7c3c6d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 16:09:27 -0400
+Subject: [PATCH] security review 2026-08-22 (3 adversarial passes over
+ everything since 2026-07-31): 7 fixes
+
+httpd (HIGH): http_id - the token every Reaper CGI compared requests
+against - was ASUS's factory constant from shared/defaults.c, the same on
+every router, so the "CSRF token" defended against nothing: a page the
+admin visited could drive any Reaper action by a top-level GET (disable
+Gatekeeper, approve a device, tear down the rules engine, apply+confirm a
+routing list, import settings). Two layers: rc generates http_id per boot
+from /dev/urandom (start_httpd; pages read it at render time so nothing
+else changes) and every Reaper CGI now also requires that a Referer, when
+the browser sent one, names this router (Host header, else the LAN
+address); httpd clears referer_url per request so a previous request's
+value can never be reused.
+
+httpd (MEDIUM): a firewall `save` (or a settings import) inside the
+commit-confirm window made Keep snapshot a draft that was never compiled
+or run. Refused while armed, as the routing engine already did.
+
+httpd (LOW): settings import - the three Warden list keys (CIDRs, feed
+records) could never be re-imported under the flag charset (rc
+re-validates them structurally, so the gate is printable-ASCII for those);
+gk_enable turned on by import now snapshots the baseline exactly as the
+interactive path does; the page's file limit matches httpd's POST buffer.
+
+rc (MEDIUM): rfw_emit_rule's over-length-field guard tested `< 0` but
+rfw_field() has returned 0 for "does not fit" since 2026-08-21 - dead
+code; a truncated match field silently WIDENED the rule instead of dropping
+it. Admin/root-gated (the lists are root-only), fixed to `!`.
+rc (LOW): the firewall and routing generated scripts, the Gatekeeper
+teardown and the gkd heal snippet called bare `nvram get` (the v2.6.1 rule:
+a libnvram netlink hang would pin the firewall lock / a cron tick) - now
+_nv / a C-side read. reaper_pbr_apply rolls back a candidate that fails to
+run instead of arming a timer on nothing. rfw_migrate_lists holds a
+pre-confirm draft aside so it cannot be promoted to "confirmed".
+
+diag (MEDIUM): a DHCP client named "HOST-" (dnsmasq accepts it) made
+sanitizer pass 1 loop forever - the token [HOST-n] contained the literal -
+pinning the httpd that runs the report. Pass 1 now builds left-to-right and
+tokens carry a \001 sentinel while the passes run (stripped at print) so no
+literal can match inside a token. PII: hostnames seeded from the syslog
+DHCPACK / gatekeeper lines too (a released lease is still in the tail), the
+32-character prefix gatekeeper logs is on the list, and the lease dump
+prints fields only.
+
+Not changed, recorded in BACKLOG: the update chain verifies TLS + the
+manifest hash but carries no author signature (design item); rwatch's
+self-heal runs the idempotent routing script without the firewall lock.
+Regression check of ~40 prior findings: all still closed.
+
+Verified: sanitizer harness under busybox awk and gawk (terminates, tokens
+intact); commit-confirm + generated-script host tests; langcheck; shlint
+of the rwatch/gatekeeper scripts.
+---
+ release/src/router/gkd/gkd.c              | 13 ++-
+ release/src/router/httpd/httpd.c          |  1 +
+ release/src/router/httpd/web.c            | 96 +++++++++++++++++++----
+ release/src/router/others/reaper_diag     | 42 +++++++---
+ release/src/router/rc/gatekeeper.c        |  3 +-
+ release/src/router/rc/reaper_fw.c         | 58 ++++++++------
+ release/src/router/rc/reaper_pbr.c        | 22 ++++--
+ release/src/router/rc/services.c          | 21 +++++
+ release/src/router/www/Reaper_Storage.asp |  2 +-
+ 9 files changed, 198 insertions(+), 60 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 9be38b7e2f..eec6681ed3 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -420,18 +420,25 @@ static void heal_networks(void)
+ 	static time_t last_restart = 0, last_v6 = 0;
+ 	static int sdnfi_logged = 0;
+ 	char out[512] = "";
++	char cmd[2048], nvbuf[64];
+ 	FILE *p;
+ 	time_t now = time(NULL);
+ 
+-	p = popen("IFS_=\"$(cat " GK_DIR "/ifs 2>/dev/null)\"; MISS=\"\"; "
++	/* security review 2026-08-22: the nvram reads happen HERE (libnvram from a
++	 * daemon, same as every other gkd read), not in the root shell snippet -
++	 * a bare `nvram get` in a generated script is the v2.6.1 rule violation. */
++	snprintf(nvbuf, sizeof(nvbuf), "GKCAP=%d; HTTPEN=%d; ", nvram_get_int("gk_captive"), nvram_get_int("http_enable"));
++	snprintf(cmd, sizeof(cmd), "%s%s", nvbuf,
++	          "IFS_=\"$(cat " GK_DIR "/ifs 2>/dev/null)\"; MISS=\"\"; "
+ 	          "for B in $(ls /sys/class/net 2>/dev/null | grep '^br'); do "
+ 	          "ip -4 addr show dev $B 2>/dev/null | grep -q inet || continue; "
+ 	          "case \" $IFS_ \" in *\" $B \"*) ;; *) MISS=\"$MISS $B\";; esac; done; "
+ 	          "echo \"MISS=$MISS\"; "
+-	          "if iptables -nL SDN_FI >/dev/null 2>&1 && [ \"$(nvram get gk_captive)\" != 0 ] && [ \"$(nvram get http_enable)\" != 0 ]; then "
++	          "if iptables -nL SDN_FI >/dev/null 2>&1 && [ \"$GKCAP\" != 0 ] && [ \"$HTTPEN\" != 0 ]; then "
+ 	          "iptables -nL SDN_FI 2>/dev/null | grep -q 'ctstate DNAT' && echo SDNFI=ok || echo SDNFI=missing; else echo SDNFI=n/a; fi; "
+ 	          "CUR=\"$(for B in $IFS_; do ip -6 addr show dev $B scope global 2>/dev/null | awk '/inet6/{print $2}'; done | sort -u | tr '\\n' ' ')\"; "
+-	          "[ \"$CUR\" = \"$(cat " GK_DIR "/v6pfx 2>/dev/null)\" ] && echo V6=same || echo V6=changed", "r");
++	          "[ \"$CUR\" = \"$(cat " GK_DIR "/v6pfx 2>/dev/null)\" ] && echo V6=same || echo V6=changed");
++	p = popen(cmd, "r");
+ 	if (!p) return;
+ 	while (fgets(out, sizeof(out), p)) {
+ 		char *nl = strchr(out, '\n'); if (nl) *nl = 0;
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 5adf3b32d9..98e26360c3 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1471,6 +1471,7 @@ handle_request(void)
+ 	url_do_auth = 0;
+ 	boundary = cookies = referer = useragent = NULL;
+ 	host_name[0] = '\0';
++	referer_url[0] = '\0';	/* security review 2026-08-22: never carry a previous request's Referer */
+ 	bzero( line, sizeof line );
+ 
+ 	/* Parse the first line of the request. */
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b59abebd67..92886353b4 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21636,6 +21636,48 @@ do_set_ASUS_NEW_EULA_cgi(char *url, FILE *stream)
+  * after 180 s) rejects overlapping runs - the page also disables the button
+  * client-side. No request input is consumed (url ignored). On failure the
+  * body starts with ERROR: which the page JS surfaces instead of saving. */
++
++/* ---------------------------------------------------------------------------
++ * reaper security review 2026-08-22 (F1): the http_id the Reaper CGIs check
++ * was ASUS's factory constant (shared/defaults.c), identical on every unit -
++ * a cross-site page could drive any Reaper action by a top-level GET. Two
++ * fixes: rc now generates http_id per boot (start_httpd), and every Reaper
++ * CGI additionally requires that, WHEN the browser sent a Referer, its host
++ * is this router (the Host header of this very request, else the LAN
++ * address). A cross-site navigation carries the attacker's origin as Referer
++ * (browsers' default referrer policy), so it is refused; same-origin pages
++ * always pass. No Referer at all is allowed through (curl, scripts) - the
++ * per-boot token is the defence there. Stock pages are unaffected: this is
++ * only called from the Reaper handlers.
++ * ------------------------------------------------------------------------- */
++static int reaper_referer_ok(void)
++{
++	const char *r = referer_url, *h, *e;
++	char rhost[128], want[128];
++	size_t n;
++	if (!r[0]) return 1;
++	h = strstr(r, "://");
++	h = h ? h + 3 : r;
++	e = h + strcspn(h, "/?#");
++	n = (size_t)(e - h);
++	if (n == 0 || n >= sizeof(rhost)) return 0;
++	memcpy(rhost, h, n); rhost[n] = 0;
++	/* bracketed IPv6 literal: compare as-is */
++	strlcpy(want, host_name[0] ? host_name : referer_host, sizeof(want));
++	if (!want[0]) return 1;
++	if (strcasecmp(rhost, want) == 0) return 1;
++	/* allow host without port vs host:port either way */
++	{
++		char a[128], b[128], *p;
++		strlcpy(a, rhost, sizeof(a)); strlcpy(b, want, sizeof(b));
++		if (a[0] != '[' && (p = strrchr(a, ':')) != NULL) *p = 0;
++		if (b[0] != '[' && (p = strrchr(b, ':')) != NULL) *p = 0;
++		if (strcasecmp(a, b) == 0) return 1;
++	}
++	logmessage("httpd", "reaper: cross-site request refused (referer host %s, expected %s)", rhost, want);
++	return 0;
++}
++
+ static void
+ do_reaper_diag_cgi(char *url, FILE *stream)
+ {
+@@ -21650,7 +21692,7 @@ do_reaper_diag_cgi(char *url, FILE *stream)
+ 	 * cannot trigger a diagnostic run. */
+ 	{
+ 		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "ERROR: invalid request token.\n");
+ 			return;
+ 		}
+@@ -21773,7 +21815,7 @@ do_reaper_qdiag_cgi(char *url, FILE *stream)
+ 	 * cannot trigger the subprocess. */
+ 	{
+ 		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+ 			return;
+ 		}
+@@ -22630,7 +22672,7 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	    strcmp(act, "scandata") != 0 && strcmp(act, "chq") != 0) {
+ 		char *hid = get_cgi("http_id");
+ 		char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"err\":\"token\"}");
+ 			return;
+ 		}
+@@ -23217,7 +23259,7 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 	if (strcmp(action, "status") != 0) {
+ 		char *hid = get_cgi("http_id");
+ 		char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+ 			return;
+ 		}
+@@ -23401,7 +23443,7 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 	 * trigger the subprocess. */
+ 	{
+ 		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+ 			return;
+ 		}
+@@ -23571,7 +23613,7 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 	 * readers, on ALL actions. */
+ 	{
+ 		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+ 			return;
+ 		}
+@@ -23778,6 +23820,14 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"missing parameter\"}");
+ 			return;
+ 		}
++		/* security review 2026-08-22 (F2): a save inside the confirm window
++		 * would make Keep snapshot a draft that was never compiled or run
++		 * (confirm reads the draft first) - the live-tested candidate and the
++		 * confirmed config would differ. Refuse, as the routing engine does. */
++		if (nvram_match("reaper_fw_armed", "1")) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"a change is awaiting confirmation - keep or revert it first\"}");
++			return;
++		}
+ 		for (i = 0; i < (int)(sizeof(tbl) / sizeof(tbl[0])); i++) {
+ 			if (strcmp(k, tbl[i].k) != 0) continue;
+ 			if (strlen(v) >= tbl[i].max) {
+@@ -23943,7 +23993,7 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 
+ 	{
+ 		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+ 			return;
+ 		}
+@@ -24093,7 +24143,7 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 	if (!action) action = "export";
+ 	{
+ 		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+ 			return;
+ 		}
+@@ -24155,16 +24205,31 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 		}
+ 		/* 1. flags (RAM; committed below only for the features restarted here -
+ 		 *    the commit-confirm features persist on their own Keep) */
++		{
++			int gk_was = nvram_match("gk_enable", "1");
++			int fw_armed = nvram_match("reaper_fw_armed", "1");
+ 		for (i = 0; i < RCFG_NFLAGS; i++) {
+ 			const char *v;
+ 			if (!json_object_object_get_ex(root, rcfg_flags[i].sect, &sect)) continue;
+ 			if (!json_object_object_get_ex(sect, rcfg_flags[i].nv, &val)) continue;
+ 			v = json_object_get_string(val);
+-			if (!rcfg_flag_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
++			/* security review 2026-08-22 (F4): the three Warden list keys carry
++			 * CIDRs (`/`) and name>url>url6 feed records (`>`); rc re-validates
++			 * each structurally (rw_valid_cidr / rw_valid_feedurl), so the gate
++			 * here is "printable ASCII, bounded" for those. */
++			if (!strcmp(rcfg_flags[i].nv, "rwarden_ban") || !strcmp(rcfg_flags[i].nv, "rwarden_allow") ||
++			    !strcmp(rcfg_flags[i].nv, "rwarden_cfeeds")) {
++				if (!rcfg_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
++			} else if (!rcfg_flag_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
++			if (!strcmp(rcfg_flags[i].sect, "fw") && fw_armed) { rejected++; continue; }	/* F2 */
+ 			nvram_set(rcfg_flags[i].nv, v);
+ 			nflags++;
+ 			if (!strcmp(rcfg_flags[i].sect, "gk")) touch_gk = 1;
+ 			if (!strcmp(rcfg_flags[i].sect, "warden")) touch_warden = 1;
++		}
++			/* F3: the interactive enable path snapshots the baseline so the
++			 * admin's own devices are admitted; an import turning it on must too */
++			if (!gk_was && nvram_match("gk_enable", "1")) gk_baseline_snapshot();
+ 		}
+ 		/* 2. Gatekeeper list: the same store gk actions write; additive */
+ 		if (json_object_object_get_ex(root, "gk_rl", &val)) {
+@@ -24178,8 +24243,9 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 			if (rcfg_ok(v, RPBR_LIST_MAX) && rjf_set(REAPER_PBR_DRAFT, v, "reaper_pbr") == 0) nlists++;
+ 			else rejected++;
+ 		}
+-		/* 4. Firewall lists: staged through the same gate as `save` */
+-		if (json_object_object_get_ex(root, "fw", &sect)) {
++		/* 4. Firewall lists: staged through the same gate as `save` (and, like
++		 *    save, not while a firewall change is awaiting confirmation - F2) */
++		if (json_object_object_get_ex(root, "fw", &sect) && !nvram_match("reaper_fw_armed", "1")) {
+ 			for (i = 0; i < 8; i++) {
+ 				const char *v, *a, *b;
+ 				int bad = 0;
+@@ -24769,7 +24835,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 	if (strcmp(action, "store_status") != 0) {
+ 		char *hid = get_cgi("http_id");
+ 		char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+ 			return;
+ 		}
+@@ -25441,7 +25507,7 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 	/* CSRF guard on every state-changing / subprocess action (status is read-only) */
+ 	if (strcmp(action, "status") != 0) {
+ 		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\"}");
+ 			return;
+ 		}
+@@ -25780,7 +25846,7 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 	if (strcmp(action, "status") != 0) {
+ 		char *hid = get_cgi("http_id");
+ 		char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0) {
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RADVE_1\"}");
+ 			return;
+ 		}
+@@ -33949,7 +34015,7 @@ static int ej_safely_remove_disk(int eid, webs_t wp, int argc, char_t **argv){
+ 	{
+ 		char *hid = get_cgi_json("http_id", root);
+ 		const char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0)
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok())
+ 			goto END;
+ 	}
+ 
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index c0c93282c6..76ed3c0333 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.4 (2026-08-22) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.5 (2026-08-22) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.4"
++VER="REAPER-DIAG v1.3.5"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -139,6 +139,14 @@ done
+ for LF in /var/lib/misc/dnsmasq-*.leases; do
+   [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 5) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null
+ done
++# v1.3.5 (security review): hostnames that are no longer in a lease file still
++# sit in the syslog tail (DHCPACK, gatekeeper "new device"), and gatekeeper
++# logs only the first 32 characters - so seed from those lines too and add the
++# 32-character prefix of every long literal.
++grep -hE 'DHCPACK\(|gatekeeper: new device' /tmp/syslog.log /tmp/syslog.log-1 2>/dev/null | \
++  awk '/DHCPACK\(/ { h=$NF; if (h !~ /^[0-9a-f:]{17}$/ && length(h) >= 5) print "HOST\t" h }
++       /gatekeeper: new device/ { for (i=1;i<=NF;i++) if ($i=="host") { h=$(i+1); gsub(/^\(|\)$/,"",h); if (length(h) >= 5) print "HOST\t" h } }' >> "$SLIST" 2>/dev/null
++awk -F'\t' 'length($2) > 32 { print $1 "\t" substr($2, 1, 32) }' "$SLIST" >> "$SLIST" 2>/dev/null
+ # longest-first so partial overlaps can not leak (dedupe must PRESERVE that order).
+ # v1.0.1 protect list: never treat the model name or the ASUS brand as a secret
+ # literal - lan_hostname defaults to the model, which redacted productid and
+@@ -161,10 +169,13 @@ BEGIN {
+ }
+ function toklit(cls, v) {
+   if (v in LMAP) return LMAP[v]
+-  if (cls=="SEC")  { cS++; LMAP[v]="[REDACTED-SECRET-" cS "]" }
+-  else if (cls=="USR")  { cU++; LMAP[v]="[USER-" cU "]" }
+-  else if (cls=="SSID") { cW++; LMAP[v]="[SSID-" cW "]" }
+-  else { cH++; LMAP[v]="[HOST-" cH "]" }
++  # v1.3.5: a \001 sentinel inside the word keeps a later literal (a hostname
++  # "HOST-", a user "USER-") from matching inside an earlier token; stripped
++  # before the line is printed.
++  if (cls=="SEC")  { cS++; LMAP[v]="[R\001EDACTED-SECRET-" cS "]" }
++  else if (cls=="USR")  { cU++; LMAP[v]="[U\001SER-" cU "]" }
++  else if (cls=="SSID") { cW++; LMAP[v]="[S\001SID-" cW "]" }
++  else { cH++; LMAP[v]="[H\001OST-" cH "]" }
+   return LMAP[v]
+ }
+ function privip(ip,  a) {
+@@ -181,10 +192,17 @@ function privip(ip,  a) {
+ {
+   line = $0
+   # pass 1: sensitive literal values (longest first from sorted list)
++  # v1.3.5 (security review): build left-to-right and never re-scan the
++  # replacement - a hostname such as "HOST-" matched its own token "[HOST-n]"
++  # and looped forever, pinning httpd (the report runs inside it).
+   for (i = 1; i <= n; i++) {
+     v = VAL[i]
+-    while ((p = index(line, v)) > 0)
+-      line = substr(line, 1, p-1) toklit(CLS[i], v) substr(line, p + length(v))
++    out = ""
++    while ((p = index(line, v)) > 0) {
++      out = out substr(line, 1, p-1) toklit(CLS[i], v)
++      line = substr(line, p + length(v))
++    }
++    line = out line
+   }
+   # pass 1b (v1.2.0): e-mail addresses -> [EMAIL-n]. The nvram key classifier
+   # above only catches values whose KEY looks sensitive; an address that turns
+@@ -243,7 +261,9 @@ function privip(ip,  a) {
+     out = out substr(line, 1, RSTART-1) rep
+     line = substr(line, RSTART + RLENGTH)
+   }
+-  print out line
++  line = out line
++  gsub("\001", "", line)
++  print line
+ }
+ END {
+   print "  secrets redacted           : " cS   > "/dev/stderr"
+@@ -491,7 +511,9 @@ sec "11. DHCP LEASES (identities pseudonymized)"
+ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases; do
+   if [ -f "$LF" ]; then
+     echo "  lease count: $(wc -l < $LF)"
+-    sed 's/^/  /' "$LF"
++    # v1.3.5: fields only (expiry mac ip host); hostnames under 5 characters
++    # are not on the redaction list, so they are shown as their length
++    awk '{ h=$4; if (h != "*" && length(h) < 5) h="[host-" length(h) "ch]"; print "  " $1, $2, $3, h }' "$LF"
+     break
+   fi
+ done
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index d163d979dc..f90de74963 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -514,6 +514,7 @@ void gk_teardown_rules(void)
+ 	 * (2026-08-06), leaving a stray empty chain and skipping the accelerator
+ 	 * flush. A string literal cannot truncate. */
+ 	system(
++		REAPER_NV_HELPER	/* _nv for the one nvram read below (security review 2026-08-22) */
+ 		"for I in $(ls /sys/class/net 2>/dev/null | grep '^br'); do "
+ 		"for T in iptables ip6tables; do "
+ 		"while $T -D " REAPER_HOOK_FWD " -i $I -j REAPER_GKF 2>/dev/null; do :; done; "
+@@ -529,7 +530,7 @@ void gk_teardown_rules(void)
+ 		"iptables -t nat -F REAPER_GKN 2>/dev/null; iptables -t nat -X REAPER_GKN 2>/dev/null; "
+ 		"ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null; "
+ 		/* v2.6.5: our one rule in ASUS's SDN_FI */
+-		"L=\"$(nvram get lan_ipaddr)\"; case \"$L\" in ''|*[!0-9.]*) ;; *) while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $L -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done;; esac; "
++		"L=\"$(_nv lan_ipaddr)\"; case \"$L\" in ''|*[!0-9.]*) ;; *) while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $L -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done;; esac; "
+ 		"fc flush 2>/dev/null");
+ }
+ 
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index a026a5f762..96eb599a42 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -95,6 +95,7 @@
+ #include "rc.h"
+ #include <shared.h>
+ #include "reaper_hook.h"
++#include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling (security review 2026-08-22 F2) */
+ 
+ #define RFW_DIR      "/tmp/reaper_fw"
+ #define RFW_APPLY    RFW_DIR "/apply.sh"          /* idempotent teardown+build (committed set) */
+@@ -1253,17 +1254,20 @@ static void rfw_emit_rule(FILE *f, const rfw_cfg_t *c, const char *rec, int ridx
+ 	if (d != want) return;                    /* not this chain's pass */
+ 	if (!rfw_field(rec,  2, action, sizeof(action)) || !rfw_valid_action(action)) return;
+ 	/* A field longer than its buffer truncates to empty and would read as
+-	   "no constraint" - silently WIDENING the rule. rfw_field() returns -1
+-	   on truncation (0 = a genuinely absent optional field, still fine as
+-	   empty); drop the whole rule rather than emit a broader one. */
+-	if (rfw_field(rec, 3, szone, sizeof(szone)) < 0 ||
+-	    rfw_field(rec, 4, sobj,  sizeof(sobj))  < 0 ||
+-	    rfw_field(rec, 5, dzone, sizeof(dzone)) < 0 ||
+-	    rfw_field(rec, 6, dobj,  sizeof(dobj))  < 0 ||
+-	    rfw_field(rec, 7, svc,   sizeof(svc))   < 0 ||
+-	    rfw_field(rec, 8, sched, sizeof(sched)) < 0 ||
+-	    rfw_field(rec, 9, rate,  sizeof(rate))  < 0 ||
+-	    rfw_field(rec, 10, logf, sizeof(logf))  < 0) {
++	   "no constraint" - silently WIDENING the rule. Since 2026-08-21
++	   rfw_field() returns 0 for "does not fit" exactly as for "absent" (the
++	   -1 it used to return passed every `!rfw_field()` caller as TRUE); a
++	   13-field record always HAS these fields, so 0 here means truncated -
++	   drop the whole rule rather than emit a broader one. (Security review
++	   2026-08-22 F1: the old `< 0` test had become dead code.) */
++	if (!rfw_field(rec, 3, szone, sizeof(szone)) ||
++	    !rfw_field(rec, 4, sobj,  sizeof(sobj))  ||
++	    !rfw_field(rec, 5, dzone, sizeof(dzone)) ||
++	    !rfw_field(rec, 6, dobj,  sizeof(dobj))  ||
++	    !rfw_field(rec, 7, svc,   sizeof(svc))   ||
++	    !rfw_field(rec, 8, sched, sizeof(sched)) ||
++	    !rfw_field(rec, 9, rate,  sizeof(rate))  ||
++	    !rfw_field(rec, 10, logf, sizeof(logf))) {
+ 		logmessage("reaper_fw", "rule %d: a field exceeds its limit - DROPPED", ridx);
+ 		return;
+ 	}
+@@ -1696,11 +1700,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	keep[0] = 0;
+ 
+ 	fprintf(f,
+-	  "#!/bin/sh\n"
++	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "# generated by reaper_fw - do not edit; idempotent (teardown then rebuild)\n"
+-	  "LANIF=\"$(nvram get lan_ifname)\"\n"
+-	  "LANIP=\"$(nvram get lan_ipaddr)\"\n"
+-	  "LANMASK=\"$(nvram get lan_netmask)\"\n"
++	  "LANIF=\"$(_nv lan_ifname)\"\n"
++	  "LANIP=\"$(_nv lan_ipaddr)\"\n"
++	  "LANMASK=\"$(_nv lan_netmask)\"\n"
+ 	  /* S2: these run-time values are spliced into root iptables commands.
+ 	   * Reject anything outside the expected charset before use. */
+ 	  "case \"$LANIF\" in ''|*[!A-Za-z0-9._-]*) logger -t reaper_fw 'bad lan_ifname'; exit 1;; esac\n"
+@@ -1717,19 +1721,19 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	   * guarded with [ -n "$WANIF" ], so a box whose WAN is not up simply emits
+ 	   * no egress/forward lines rather than emitting unanchored ones - an
+ 	   * unanchored "-o ''" would match LAN-to-LAN traffic too. */
+-	  "WANIF=\"$(nvram get wan0_ifname)\"\n"
+-	  "[ -z \"$WANIF\" ] && WANIF=\"$(nvram get wan_ifname)\"\n"
++	  "WANIF=\"$(_nv wan0_ifname)\"\n"
++	  "[ -z \"$WANIF\" ] && WANIF=\"$(_nv wan_ifname)\"\n"
+ 	  "case \"$WANIF\" in *[!A-Za-z0-9._-]*) WANIF=\"\";; esac\n"
+ 	  /* the arming session's address, written by the CGI (S1/S3) */
+ 	  "ADM=\"\"; ADMV6=0\n"
+ 	  "[ -f " RFW_ADMIN " ] && ADM=\"$(cat " RFW_ADMIN " 2>/dev/null)\"\n"
+ 	  "case \"$ADM\" in *[!0-9a-fA-F.:]*) ADM=\"\";; esac\n"
+ 	  "case \"$ADM\" in *:*) ADMV6=1;; esac\n"
+-	  "MGMT=\"$(nvram get https_lanport)\"\n"
+-	  "[ \"$(nvram get http_enable)\" = \"0\" ] && MGMT=\"$(nvram get http_lanport)\"\n"
++	  "MGMT=\"$(_nv https_lanport)\"\n"
++	  "[ \"$(_nv http_enable)\" = \"0\" ] && MGMT=\"$(_nv http_lanport)\"\n"
+ 	  "case \"$MGMT\" in ''|0|*[!0-9]*) MGMT=443;; esac\n"
+-	  "SSHEN=\"$(nvram get sshd_enable)\"\n"
+-	  "SSHP=\"$(nvram get sshd_port)\"\n"
++	  "SSHEN=\"$(_nv sshd_enable)\"\n"
++	  "SSHP=\"$(_nv sshd_port)\"\n"
+ 	  "case \"$SSHP\" in ''|0|*[!0-9]*) SSHP=22;; esac\n"
+ 	  "\n");
+ 
+@@ -1992,7 +1996,7 @@ static void rfw_gen_rollback(void)
+ 
+ 	if ((f = fopen(RFW_ROLLBACK, "w")) == NULL) return;
+ 	fprintf(f,
+-	  "#!/bin/sh\n"
++	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "# generated by reaper_fw - commit-confirm recovery. Restores the last\n"
+ 	  "# CONFIRMED ruleset and disarms. Safe to run at any time.\n");
+ 	/* v2.6.9: the lists live in files - dropping the staged draft IS the
+@@ -2030,7 +2034,7 @@ static void rfw_gen_cc(void)
+ 	FILE *f = fopen(RFW_CC, "w");
+ 	if (!f) return;
+ 	fprintf(f,
+-	  "#!/bin/sh\n"
++	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "[ -d " RFW_ARMED " ] || exit 0\n"
+ 	  "D=\"$(cat " RFW_DEADLINE " 2>/dev/null)\"\n"
+ 	  "case \"$D\" in ''|*[!0-9]*) exit 0;; esac\n"
+@@ -2182,13 +2186,19 @@ static int rfw_migrate_lists(void)
+ 	 * reaper_pbr migration shape. A leftover nvram value on a migrated box (a
+ 	 * settings restore) is dropped the same way. */
+ 	if (!from_good) {
+-		int i, n = 0;
++		int i, n = 0, held = 0;
+ 		for (i = 0; i < RFW_NKEYS; i++) if (nvram_safe_get(rfw_keys[i].nv)[0]) n++;
++		/* security review 2026-08-22 (latent): with no committed snapshot the
++		 * resolver falls through to nvram only when no draft exists - a draft
++		 * staged before the first confirm would otherwise be promoted to
++		 * "confirmed" and booted live without commit-confirm. Hold it aside. */
++		if (d_exists(REAPER_FW_DRAFT_DIR)) { held = (rename(REAPER_FW_DRAFT_DIR, REAPER_FW_DRAFT_DIR ".hold") == 0); }
+ 		if (rfw_write_lastgood()) {
+ 			for (i = 0; i < RFW_NKEYS; i++) nvram_unset(rfw_keys[i].nv);
+ 			if (n) { nvram_commit(); logmessage("reaper_fw", "%d list(s) migrated from nvram to %s (nvram held a 1 KB cap per list)", n, RFW_LASTGOOD); }
+ 			from_good = 1;
+ 		}
++		if (held) rename(REAPER_FW_DRAFT_DIR ".hold", REAPER_FW_DRAFT_DIR);
+ 	} else {
+ 		int i, n = 0;
+ 		for (i = 0; i < RFW_NKEYS; i++) if (nvram_safe_get(rfw_keys[i].nv)[0]) { nvram_unset(rfw_keys[i].nv); n++; }
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index bdb411ce27..2ae3257875 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -103,6 +103,7 @@
+ 
+ #include "rc.h"
+ #include <shared.h>
++#include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling (security review 2026-08-22 F2) */
+ 
+ #define PPBR_DIR        "/tmp/reaper_pbr"
+ #define PPBR_APPLY      PPBR_DIR "/apply.sh"       /* the committed ruleset */
+@@ -317,7 +318,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	if (!f) return 0;
+ 
+ 	fprintf(f,
+-	  "#!/bin/sh\n"
++	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "# generated by reaper_pbr - do not edit; idempotent (teardown then rebuild)\n"
+ 	  "MASK=" PPBR_MASK "\n"
+ 	  "\n");
+@@ -435,7 +436,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 		/* P6: VPN Director's "all LAN" bypass, computed at run time so a LAN
+ 		 * re-address is followed on the next apply. */
+ 		fprintf(f,
+-		  "LANNET=\"$(ip -4 route show dev \"$(nvram get lan_ifname)\" scope link 2>/dev/null | awk '/proto kernel/{print $1; exit}')\"\n"
++		  "LANNET=\"$(ip -4 route show dev \"$(_nv lan_ifname)\" scope link 2>/dev/null | awk '/proto kernel/{print $1; exit}')\"\n"
+ 		  "[ -n \"$LANNET\" ] && pbr_skip_add \"$LANNET\"\n");
+ 	}
+ 
+@@ -572,7 +573,7 @@ static int ppbr_gen_rollback(void)
+ 
+ 	if ((f = fopen(PPBR_ROLLBACK, "w")) == NULL) return 0;
+ 	fprintf(f,
+-	  "#!/bin/sh\n"
++	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "# generated by reaper_pbr - commit-confirm recovery. Restores the last\n"
+ 	  "# CONFIRMED policy-routing config and disarms. Safe to run at any time.\n");
+ 	/* "$(cat f)" is expanded once and never re-parsed (operator text cannot
+@@ -582,7 +583,7 @@ static int ppbr_gen_rollback(void)
+ 	  "[ -f " PPBR_LG_ENABLE " ] && nvram set reaper_pbr_enable=\"$(cat " PPBR_LG_ENABLE ")\"\n"
+ 	  "rm -f " REAPER_PBR_DRAFT "\n"
+ 	  "sh " PPBR_ROLLBACK ".rules 2>/dev/null\n"
+-	  "[ \"$(nvram get reaper_pbr_enable)\" = 1 ] && nvram set reaper_pbr_active=1 || nvram set reaper_pbr_active=0\n"
++	  "[ \"$(_nv reaper_pbr_enable)\" = 1 ] && nvram set reaper_pbr_active=1 || nvram set reaper_pbr_active=0\n"
+ 	  "rm -f " PPBR_DEADLINE " " PPBR_CAND "\n"
+ 	  "rmdir " PPBR_ARMED " 2>/dev/null\n"
+ 	  "cru d reaper_pbr_cc 2>/dev/null\n"
+@@ -600,7 +601,7 @@ static void ppbr_gen_cc(void)
+ 	FILE *f = fopen(PPBR_CC, "w");
+ 	if (!f) return;
+ 	fprintf(f,
+-	  "#!/bin/sh\n"
++	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "[ -d " PPBR_ARMED " ] || exit 0\n"
+ 	  "D=\"$(cat " PPBR_DEADLINE " 2>/dev/null)\"\n"
+ 	  "case \"$D\" in ''|*[!0-9]*) exit 0;; esac\n"
+@@ -769,7 +770,16 @@ void reaper_pbr_apply(void)
+ 		ppbr_cfg_free(&c);
+ 		return;
+ 	}
+-	ppbr_run(PPBR_CAND);
++	if (ppbr_run(PPBR_CAND) != 0) {
++		/* security review 2026-08-22: a candidate that did not run is not a
++		 * candidate - roll back now rather than arm a timer on nothing
++		 * (reaper_fw_apply does the same). */
++		nvram_set("reaper_pbr_err", "candidate failed to run - rolled back");
++		logmessage("reaper_pbr", "candidate FAILED to run - rolling back now");
++		system("sh " PPBR_ROLLBACK " 2>/dev/null");
++		ppbr_cfg_free(&c);
++		return;
++	}
+ 	nvram_set("reaper_pbr_active", c.enable ? "1" : "0");
+ 	nvram_set("reaper_pbr_armed", "1");
+ 	logmessage("reaper_pbr", "routing rules applied - reverting in %ds unless confirmed", secs);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index c423014605..a14977b2ae 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7434,6 +7434,27 @@ start_httpd(void)
+ 		return;
+ 	}
+ 
++	/* reaper security review 2026-08-22 (F1): http_id - the token every
++	 * Reaper CGI (and several stock handlers) compares requests against - was
++	 * the factory constant from shared/defaults.c, the same on every router
++	 * ever shipped, so it defended against nothing. Generate it once per boot
++	 * from /dev/urandom. RAM only: a global nvram_commit may persist it, which
++	 * is harmless - the next boot replaces it. Pages read it at render time
++	 * (<% nvram_get("http_id") %>), so nothing else changes. */
++	if (!f_exists("/tmp/.http_id_boot")) {
++		unsigned char rnd[12];
++		FILE *uf = fopen("/dev/urandom", "r");
++		if (uf && fread(rnd, 1, sizeof(rnd), uf) == sizeof(rnd)) {
++			char tid[4 + sizeof(rnd) * 2];
++			int k;
++			strcpy(tid, "TID");
++			for (k = 0; k < (int)sizeof(rnd); k++) sprintf(tid + 3 + k * 2, "%02x", rnd[k]);
++			nvram_set("http_id", tid);
++			f_write_string("/tmp/.http_id_boot", "1", 0, 0);
++		}
++		if (uf) fclose(uf);
++	}
++
+ 	cur_dir = getcwd(NULL, 0);
+ #ifdef RTCONFIG_UIDEBUG // Left for UI debug
+ 	httpd_dir = nvram_safe_get("httpd_dir");
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 45933f9e04..1eb8c3c500 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -324,7 +324,7 @@ else document.addEventListener('DOMContentLoaded', boot);
+   var fi = document.getElementById('cfg_file');
+   if(fi) fi.onchange = function(){
+     var f = fi.files && fi.files[0]; if(!f) return;
+-    if(f.size > 300000){ cfgMsg(false, `<#RDST_75#>`); fi.value=''; return; }
++    if(f.size > 60000){ cfgMsg(false, `<#RDST_75#>`); fi.value=''; return; }
+     var rd = new FileReader();
+     rd.onload = function(){
+       var txt = String(rd.result||''), j = null;
+-- 
+2.25.1
+

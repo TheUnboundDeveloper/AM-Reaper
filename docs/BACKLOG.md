@@ -39,18 +39,19 @@ was moved to the changelog; only open work and open confirmations remain.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[HIGH] Firewall layer ordering** — `reaper_fw` hooked ahead of Warden/Gatekeeper with a terminal
-   `ACCEPT`; order non-deterministic. *Being triaged for v2.6.2.* → [Architectural](#architectural--owner-decision-needed)
-2. **[HIGH/MED] Gatekeeper multi-network** — per-network DNS carve-out / captive / "internet-only"
-   logic is br0-only. *Being triaged for v2.6.2.* → [Architectural](#architectural--owner-decision-needed)
-3. **[P2] Code-review MEDIUM/LOW tail** (CODE-REVIEW-2026-08-18) — dead code, redundant nvram
-   re-reads, fork loops. *Being triaged for v2.6.2; only reachable, low-risk items get patched.*
+1. **[P2] Confirmations owed on metal** — v2.6.2 firewall order + Gatekeeper L3 leg, v2.6.1 nvram-guard,
+   v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node classification, v2.5.8 UPnP.
+   → [Pending verification](#pending-verification)
+2. **[P2] Gatekeeper multi-network — the deferred half**: per-network captive DNAT (collides with
+   ASUS's `SDN_FI -d lan_ipaddr logdrop` on isolated SDNs), `restart_sdn → start_gk` regeneration
+   (a new SDN is unhooked until the next restart_gk/reboot), v6 GUA prefixes.
+   → [Architectural](#architectural--owner-decision-needed)
+3. **[P2] Policy Routing: commit-confirm (I4), WireGuard targets, IPv6.** → [Features](#features-to-add)
+4. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
+5. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
+   `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-4. **[P2] Policy Routing: commit-confirm (I4), WireGuard targets, IPv6.** → [Features](#features-to-add)
-5. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
-6. **Confirmations owed on metal** — v2.6.1 nvram-guard, v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9
-   Warden country sets + node classification, v2.5.8 UPnP. → [Pending verification](#pending-verification)
-7. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RTRF_45/75/76, IPv6-proto labels). → [Documentation](#documentation)
+6. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RTRF_45/75/76, IPv6-proto labels). → [Documentation](#documentation)
 
 ---
 
@@ -120,17 +121,22 @@ The ordered short list. Each line points at its full entry below.
 
 ## Architectural — owner decision needed
 
-*Do not patch unilaterally. Both are in triage for v2.6.2 (2026-08-21); the investigation reports
-will propose a concrete option for each.*
+*Do not patch unilaterally.*
 
-- **[HIGH] Firewall layer ordering.** `reaper_fw` is hooked (`-I` pos 1) AHEAD of Warden + Gatekeeper
-  (last `-I` wins), and it emits terminal `ACCEPT` (they mostly `RETURN`), so an allow rule silently
-  disables both — and the order is non-deterministic (`restart_gk` re-inserts at pos 1). Options: a
-  shared `REAPER_HOOK` front chain with a defined order, OR convert `reaper_fw` user-ACCEPT to
-  RETURN+allow-mark.
-- **[HIGH/MED] Gatekeeper multi-network** (broader than the P2-H1 rework): even with the right bridge
-  field, the per-network DNS carve-out / captive DNAT / L3 "internet-only" logic is all br0-only, and
-  "internet-only" has no L3 leg so linked SDNs defeat it. A coupled redesign.
+- **[P2] Gatekeeper multi-network — what v2.6.2 deliberately left out.** v2.6.2 shipped the L3 leg,
+  the per-network DNS carve-out and multi-lease hostnames. Still open, each a product call because it
+  touches ASUS-owned chains or service orchestration:
+  - **Captive "waiting" page on an isolated SDN.** The DNAT targets `$LANIP:80` (br0). On an SDN with
+    *Access Intranet* off, ASUS's `SDN_FI -i brN -d <lan_ipaddr> -j logdrop` (`firewall_sdn.c:371`,
+    rebuilt on every SDN event) drops it — a pending device gets a hung connection, and the admin
+    escape hatch on that SDN dies with it. Fix = per-interface DNAT to the ingress network's own
+    router IP (also needs `REAPER_GKI` to admit it), or accept "hatch lives on br0 only".
+  - **A newly created SDN is not hooked until `restart_gk` or reboot.** `restart_sdn`
+    (`services.c:20222`) never regenerates `apply.sh`; the firewall hook and gkd only *re-run* it,
+    and `self_heal()` probes chain existence, not per-interface coverage. Either call `start_gk()`
+    from `restart_sdn` or have self-heal diff live hooks against `get_mtlan()`.
+  - **IPv6 GUA.** The L3 leg drops ULA (`fc00::/7`); delegated GUA prefixes change on WAN reconnect
+    and are not baked in. Needs an ipv6-event regeneration hook to close.
 - **[owner] QoS WRR: fix the queue layout vs. keep the option removed.** The hardware cannot place a
   WRR queue (all 8 scheduler slots are strict-priority — see B-1 under
   [Blocked by closed-source components](#blocked-by-closed-source-components--for-asus--broadcom)).
@@ -154,6 +160,30 @@ with what the attempt ruled out.*
 > **Nothing in this section is done.** A fix shipped is not a fix proven.
 
 ---
+
+### v2.6.2 (2026-08-21) — firewall layer order, Gatekeeper L3 leg, code-review batch A
+
+- **[P1] Firewall layer order is fixed and survives every restart.** **Settles when**, on a box with
+  Warden + Gatekeeper + the Firewall engine all enabled, `iptables -nvL REAPER_HOOK_F` lists
+  `REAPER_WARDEN`, then `REAPER_GKF` (one per bridge), then `REAPER_FWF` — in that order — and
+  `iptables -nvL FORWARD | head -3` shows exactly ONE Reaper jump (`REAPER_HOOK_F`) at position 1
+  with no direct `REAPER_FWF`/`REAPER_WARDEN`/`REAPER_GKF` jumps left; then after each of
+  `service restart_gk`, `service restart_rwarden`, `service restart_reaper_fw`,
+  `service restart_firewall` the same listing is unchanged. The decisive behaviour test: a Firewall
+  *allow* rule for a port must NOT let a geo-blocked source (`ipset test rw_g_<cc> <ip>`) or a
+  Gatekeeper-blocked device through. Also: a hung-hook scenario (`iptables -D REAPER_HOOK_F -j
+  REAPER_GKF` by hand) must be repaired by gkd within 30 s with the "enforcement chains missing"
+  log line. **[owed — metal]**
+- **[P1] "Internet only" device cannot reach another network.** **Settles when** a state-2 device on
+  an SDN that is *linked* to the main LAN in Guest Network Pro cannot ping/SMB a main-LAN host,
+  still has WAN, and still resolves via a main-LAN AdGuard advertised by that SDN; a full-approved
+  device on the same SDN is unchanged. `iptables -nvL REAPER_GKF | grep <mac>` shows the 53-RETURN,
+  per-subnet DROP, RETURN sequence. **[owed — metal, needs an SDN]**
+- **[P3] SDN devices show hostnames in Gatekeeper.** **Settles on** a glance at a guest-network
+  device row. **[owed — glance]**
+- **[P3] Batch A is behaviour-neutral.** **Settles on** a glance: Advisor `get_overview` still
+  returns the three meminfo lines; Policy Routing and Traffic pages render; first-boot language
+  picker works. **[owed — glance]**
 
 ### v2.6.1 (2026-08-21) — nvram-read guard, diag store section, kp v6, WGC flag
 
@@ -371,9 +401,16 @@ with what the attempt ruled out.*
   remains is the discrete efficiency/data-flow tail — dead code, redundant nvram re-reads, per-device
   fork loops. **Each item needs reachability verification first**: `reload_upnp()` full restart was
   **REFUTED** (deliberate 2026-08-11 field fix — reverting reintroduces "UPnP dies after a while"),
-  `rmcpd tool_firewall` `-S`+`-nvxL` carry different data, `rexport.c` `mins<1` clamp is a kept
-  defensive bound, the `get_settings_audit` redaction `sed` is defense-in-depth. **In triage for
-  v2.6.2 (2026-08-21).**
+  `rmcpd tool_firewall` `-S`+`-nvxL` carry different data, the `get_settings_audit` redaction `sed`
+  is defense-in-depth, `Reaper_QoSDiag` `fmtBytes` 1024-base is *correct* (queue buffer sizes).
+  **Batch A (10 mechanical items) shipped in v2.6.2.** Batch B, deferred with reasons:
+  `Reaper_Wireless.asp:547` `pinTarget()` is an identity function (the "← original" annotation is
+  dead) — the intended 20→80 MHz block substitution was never implemented: implement (metal) or
+  delete the annotation; `rexport.c:77` O(devices) MAC-mask rewrite; `rwarden.c:1117` stats.sh chain
+  re-lists (shell contract with `web.c`); `rchqd`↔`web.c` duplicate `chanim_stats` parser (needs a
+  shared header); `rtrafd.c:1727` `metrics.prom` scrape-token semantics; `rtrafd` ping-probe
+  blocking / `write_live` 10 Hz (timing-sensitive); dashboard client/port-tile `innerHTML` change
+  detection (behavioural).
   - **`do_reaper_conn_cgi` nested-scan-under-lock restructure** — deferred per owner (2026-08-19):
     too risky to reorder locking on a control under metal-test; wants a dedicated look. **[owed]**
   - **Four "orphaned" dashboard CSS blocks** — needs a usage audit (line numbers drifted; most of the

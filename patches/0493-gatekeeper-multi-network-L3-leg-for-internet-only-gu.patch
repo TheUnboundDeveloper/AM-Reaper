@@ -1,0 +1,322 @@
+From 155d332a27a85011bb8cd1f7110e8a9c89e2f4fa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 21 Aug 2026 22:47:53 -0400
+Subject: [PATCH] gatekeeper: multi-network - L3 leg for internet-only/guest,
+ per-network DNS carve-out, SDN lease files
+
+Backlog "[HIGH/MED] Gatekeeper multi-network". P2-H1 (v2.5.0) hooked the
+chains on every MTLAN bridge but the RULES were still single-LAN:
+
+- "Internet only" (state 2) / guest (3) was enforced ONLY by the ebtables
+  source-MAC DROP on bridge FORWARD. Traffic to ANOTHER network is routed
+  (bridge-local INPUT -> IP -> other bridge) and never traverses ebtables
+  FORWARD; in iptables the device just met REAPER_GKF's RETURN. Two
+  networks linked in sdn_access_rl (SDN_IA ACCEPT) therefore gave an
+  internet-only device full L3 access to the other LAN; unlinked ones were
+  safe only by ASUS's br+ -> br+ drop, which the GUI can lift silently.
+  NOW: before the RETURN, `-d <cidr> -j DROP` for every enumerated LAN
+  subnet (br0 + each enabled SDN), preceded by port-53 RETURNs to every
+  DHCP-advertised LAN resolver (an SDN commonly advertises the main LAN's
+  AdGuard - a routed flow that must keep working). v6: fc00::/7 DROP; GUA
+  prefixes are dynamic and deliberately not baked in.
+- DNS carve-out was br0-only: SDN DHCP option 6 comes from subnet_rl's
+  dns[], not dhcp_dns1_x, and gk_same_net tested against br0's subnet - so
+  an SDN with a LAN-hosted resolver got no carve-out (the 2026-08-06 bug on
+  every non-primary network). NOW per network: each record's resolvers
+  against its own subnet.
+- GKNETS: one "if|addr|mask|cidr|dns1|dns2" record per enabled network from
+  get_mtlan() (br0 via get_default_lan), charset-gated in C ("-" = empty),
+  deduped by bridge; gk_net_fields() splits a record; gk_same_net() takes
+  the network explicitly (name kept - reaper_verify marker).
+- gkd: read every /var/lib/misc/dnsmasq*.leases (each SDN's dnsmasq has its
+  own), so SDN devices get hostnames instead of "unknown".
+
+Deferred (touch ASUS-owned chains / service orchestration): per-network
+captive DNAT target (collides with SDN_FI -d lan_ipaddr logdrop on
+ahs_sw=0), restart_sdn -> start_gk regeneration, v6 GUA prefixes.
+
+Verified by extracting the generated shell and running it under mock
+iptables/ebtables/nvram with br0 + br1: per-MAC rule order is
+53-RETURN x resolvers, DROP x subnets, fc00::/7 DROP, RETURN; bridge
+carve-out only for an in-subnet resolver.
+
+(cherry picked from commit bf70f78f88044134deac3684381e41ea09f4777d)
+---
+ release/src/router/gkd/gkd.c       |  25 ++++-
+ release/src/router/rc/gatekeeper.c | 155 +++++++++++++++++++++++------
+ 2 files changed, 148 insertions(+), 32 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index f55110da08..eb142874df 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -49,7 +49,7 @@
+ #define HEAL_EVERY    3        /* self-heal probe every POLL_SECS * HEAL_EVERY (v1.7.1 L5) */
+ #define MAX_DEV       256
+ #define DEV_TTL       (24*3600) /* evict a device unseen this long (v1.7.1 L4) */
+-#define LEASE_FILE    "/var/lib/misc/dnsmasq.leases"
++#define LEASE_DIR     "/var/lib/misc"   /* dnsmasq.leases + dnsmasq-<sdn>.leases (v2.6.2) */
+ 
+ typedef struct {
+ 	char mac[18];
+@@ -178,9 +178,9 @@ static void scan_ndp(long now)
+ 	pclose(p);
+ }
+ 
+-static void scan_leases(void)
++static void scan_lease_file(const char *path)
+ {
+-	FILE *f = fopen(LEASE_FILE, "r");
++	FILE *f = fopen(path, "r");
+ 	char line[512];
+ 	if (!f) return;
+ 	while (fgets(line, sizeof(line), f)) {
+@@ -195,6 +195,25 @@ static void scan_leases(void)
+ 	fclose(f);
+ }
+ 
++/* v2.6.2: every SDN runs its own dnsmasq with its own lease file
++ * (dnsmasq-<idx>.leases, rc/sdn.c), so a device on a guest/IoT network
++ * showed as "unknown hostname" while br0 devices were named. Read them all. */
++static void scan_leases(void)
++{
++	DIR *dir = opendir(LEASE_DIR);
++	struct dirent *de;
++	char path[PATH_MAX];
++	if (!dir) return;
++	while ((de = readdir(dir)) != NULL) {
++		size_t n = strlen(de->d_name);
++		if (strncmp(de->d_name, "dnsmasq", 7) != 0) continue;
++		if (n < 7 || strcmp(de->d_name + n - 7, ".leases") != 0) continue;
++		snprintf(path, sizeof(path), "%s/%s", LEASE_DIR, de->d_name);
++		scan_lease_file(path);
++	}
++	closedir(dir);
++}
++
+ static const char *unit_band(int unit)
+ {
+ 	char key[24];
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index f63ac497c8..d05725919f 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -88,6 +88,45 @@ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ 		break;
+ 	case 2:	/* internet-only */
+ 	case 3:	/* guest (internet-only + expiry, gkd handles the clock) */
++		/* v2.6.2 - THE L3 LEG (backlog "[HIGH/MED] Gatekeeper multi-network").
++		 * "Internet-only" used to be enforced ONLY by the ebtables source-MAC
++		 * DROP below, which sits on the bridge FORWARD path. Traffic from this
++		 * device to ANOTHER network (br1 -> br0) is addressed to the router's
++		 * MAC: bridge-local INPUT, IP routing, egress on the other bridge - it
++		 * never traverses ebtables FORWARD, and in iptables the only Gatekeeper
++		 * rule it met was the RETURN below. If the two networks are linked in
++		 * sdn_access_rl (SDN_IA ACCEPTs them), an "Internet only" device had
++		 * full L3 access to the other LAN - SMB, RDP, printers. If they were
++		 * not linked it was dropped by ASUS's br+ -> br+ rule: safe by
++		 * accident, and the admin can lift that from the GUI with no warning.
++		 *
++		 * So: before the RETURN, DROP this MAC to every enumerated LAN subnet
++		 * (GKNETS, from get_mtlan: br0 + every enabled SDN). Enumerated, not a
++		 * blanket RFC1918 drop - a blanket would also cut a legitimately
++		 * routed private WAN or a VPN-provided corporate subnet, and would
++		 * change behaviour for double-NAT installs. v6: ULA (fc00::/7); GUA
++		 * prefixes are delegated and dynamic, so they are NOT baked in here
++		 * (accepted gap, see reaper backlog). Link-local is unroutable.
++		 *
++		 * Exception, placed FIRST: port 53 to any DHCP-advertised LAN resolver
++		 * (every network's, not just this one's) - an SDN commonly advertises
++		 * the main LAN's AdGuard/Pi-hole, which is exactly a routed br1 -> br0
++		 * flow and must keep working (same intent as the 2026-08-06 bridge
++		 * carve-out below, one layer up). Everything else on-LAN is sealed. */
++		fprintf(f, "for N in $GKNETS; do\n"
++			   "  gk_net_fields \"$N\"\n"
++			   "  for D in $ND1 $ND2; do\n"
++			   "    [ \"$D\" = - ] && continue\n"
++			   "    iptables -A REAPER_GKF -m mac --mac-source %s -d \"$D\" -p udp --dport 53 -j RETURN\n"
++			   "    iptables -A REAPER_GKF -m mac --mac-source %s -d \"$D\" -p tcp --dport 53 -j RETURN\n"
++			   "  done\n"
++			   "done\n"
++			   "for N in $GKNETS; do\n"
++			   "  gk_net_fields \"$N\"\n"
++			   "  [ \"$NCIDR\" = - ] || iptables -A REAPER_GKF -m mac --mac-source %s -d \"$NCIDR\" -j DROP\n"
++			   "done\n"
++			   "ip6tables -A REAPER_GKF -m mac --mac-source %s -d fc00::/7 -j DROP\n",
++			   mac, mac, mac, mac);
+ 		fprintf(f, "for T in iptables ip6tables; do\n"
+ 			   "  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
+ 			   "  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
+@@ -103,11 +142,22 @@ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ 		 * approved-full device, or its replies die on ITS source-MAC rule.
+ 		 * Empty GKDNS vars make the loop a no-op (router/public DNS need no
+ 		 * bridge rule - see the preamble note). */
+-		fprintf(f, "for D in $GKDNS1 $GKDNS2; do\n"
+-			   "  gk_same_net \"$D\" || continue\n"
+-			   "  ebtables -A REAPER_GK -s %s -p ARP --arp-ip-dst \"$D\" -j RETURN\n"
+-			   "  ebtables -A REAPER_GK -s %s -p IPv4 --ip-dst \"$D\" --ip-proto udp --ip-dport 53 -j RETURN\n"
+-			   "  ebtables -A REAPER_GK -s %s -p IPv4 --ip-dst \"$D\" --ip-proto tcp --ip-dport 53 -j RETURN\n"
++		/* v2.6.2: per NETWORK - each network's own advertised resolvers tested
++		 * against ITS OWN subnet (SDN DHCP option 6 comes from subnet_rl, not
++		 * dhcp_dns1_x, and the old gk_same_net tested against br0's subnet, so
++		 * an SDN with a LAN-hosted resolver got no carve-out at all: the 2026-
++		 * 08-06 bug reproduced on every non-primary network). REAPER_GK is one
++		 * chain shared by every --logical-in hook; --ip-dst keeps a rule for
++		 * another network's resolver inert on this one. */
++		fprintf(f, "for N in $GKNETS; do\n"
++			   "  gk_net_fields \"$N\"\n"
++			   "  for D in $ND1 $ND2; do\n"
++			   "    [ \"$D\" = - ] && continue\n"
++			   "    gk_same_net \"$D\" \"$NIP\" \"$NMASK\" || continue\n"
++			   "    ebtables -A REAPER_GK -s %s -p ARP --arp-ip-dst \"$D\" -j RETURN\n"
++			   "    ebtables -A REAPER_GK -s %s -p IPv4 --ip-dst \"$D\" --ip-proto udp --ip-dport 53 -j RETURN\n"
++			   "    ebtables -A REAPER_GK -s %s -p IPv4 --ip-dst \"$D\" --ip-proto tcp --ip-dport 53 -j RETURN\n"
++			   "  done\n"
+ 			   "done\n"
+ 			   "ebtables -A REAPER_GK -s %s -j DROP\n", mac, mac, mac, mac);
+ 		break;
+@@ -117,12 +167,56 @@ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ 		fprintf(f, "iptables -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN\n", mac);
+ }
+ 
++/* v2.6.2: charset gates for the GKNETS fields. Each value is spliced into
++ * root iptables/ebtables commands (quoted, but still), so anything outside
++ * the dotted-decimal alphabet becomes "-" = "no such field". */
++static const char *gk_ip_or_dash(const char *v, char *out, size_t n, int allow_slash)
++{
++	const char *q;
++	if (!v || !*v) return "-";
++	for (q = v; *q; q++)
++		if (!isdigit((unsigned char)*q) && *q != '.' && !(allow_slash && *q == '/'))
++			return "-";
++	snprintf(out, n, "%s", v);
++	return out;
++}
++
++/* append one "if|addr|mask|cidr|dns1|dns2" record, deduped by interface */
++static void gk_add_net(char *nets, size_t n, const char *ifn, const SUBNET_T *nw)
++{
++	char a[INET_ADDRSTRLEN], m[INET_ADDRSTRLEN], c[INET_ADDRSTRLEN + 4], d1[INET_ADDRSTRLEN], d2[INET_ADDRSTRLEN];
++	char cidr[INET_ADDRSTRLEN + 4], rec[256], key[IFNAMSIZ + 3], hay[2056];
++
++	snprintf(key, sizeof(key), " %s|", ifn);
++	snprintf(hay, sizeof(hay), " %s", nets);
++	if (strstr(hay, key)) return;                 /* IoT-on-br0 style duplicate */
++	if (nw->subnet[0] && nw->prefixlen > 0 && nw->prefixlen <= 32)
++		snprintf(cidr, sizeof(cidr), "%s/%u", nw->subnet, nw->prefixlen);
++	else
++		cidr[0] = 0;
++	snprintf(rec, sizeof(rec), "%s%s|%s|%s|%s|%s|%s", nets[0] ? " " : "", ifn,
++	         gk_ip_or_dash(nw->addr, a, sizeof(a), 0),
++	         gk_ip_or_dash(nw->netmask, m, sizeof(m), 0),
++	         gk_ip_or_dash(cidr, c, sizeof(c), 1),
++	         gk_ip_or_dash(nw->dns[0], d1, sizeof(d1), 0),
++	         gk_ip_or_dash(nw->dns[1], d2, sizeof(d2), 0));
++	if (strlen(nets) + strlen(rec) + 1 >= n) return;
++	strcat(nets, rec);
++}
++
+ static void gk_gen_apply(void)
+ {
+ 	FILE *f;
+ 	char *rl, *buf, *tok, *sp = NULL;
+ 	int quarantine = !nvram_match("gk_default", "1");
+ 	char gkifs[512];
++	/* v2.6.2: one record per enabled network - "if|addr|mask|cidr|dns1|dns2",
++	 * space-separated, "-" for an empty field. br0 is record 0 via
++	 * get_default_lan() (lan_ipaddr/lan_netmask/dhcp_dns1_x/dhcp_dns2_x), SDNs
++	 * from subnet_rl. Static nvram config, so baking it at generation time is
++	 * consistent with GKIFS; only the bridge's EXISTENCE is a run-time question
++	 * and that gate (LANIF) is unchanged. */
++	char gknets[2048];
+ 
+ 	/* P2-H1: the enforcement hooks below used to bind $LANIF - br0 - alone,
+ 	 * while gkd accepts an ARP row from any br* and sweeps every wlN.M VIF,
+@@ -147,6 +241,7 @@ static void gk_gen_apply(void)
+ 		int k;
+ 
+ 		gkifs[0] = 0;
++		gknets[0] = 0;
+ 		if (pmtl) {
+ 			get_mtlan(pmtl, &mtl_sz);
+ 			for (k = 0; k < (int)mtl_sz; k++) {
+@@ -155,11 +250,12 @@ static void gk_gen_apply(void)
+ 				 * enforcement must hook the bridge, not the chilli tunnel. */
+ 				const char *nm = pmtl[k].nw_t.br_ifname[0] ? pmtl[k].nw_t.br_ifname : pmtl[k].nw_t.ifname, *q;
+ 				if (!pmtl[k].enable || !nm[0]) continue;
+-				if (!strcmp(nm, lanif)) continue;      /* $LANIF already covers it */
+ 				for (q = nm; *q; q++)
+ 					if (!isalnum((unsigned char)*q) && *q != 0x2e && *q != 0x5f && *q != 0x2d)
+ 						break;
+ 				if (*q) continue;                      /* same gate as LANIF */
++				gk_add_net(gknets, sizeof(gknets), nm, &pmtl[k].nw_t);
++				if (!strcmp(nm, lanif)) continue;      /* $LANIF already covers it */
+ 				/* dedup: pad BOTH sides of the accumulator so the trailing element
+ 				 * matches too - gkifs has no trailing space, so a bare strstr for
+ 				 * " nm " missed a repeat of the most recently added interface. */
+@@ -216,30 +312,31 @@ static void gk_gen_apply(void)
+ 		    * gets its stale hook torn down. */
+ 		   "GKIFS=\"$LANIF%s\"\n"
+ 		   "GKALL=\"$GKIFS $(ls /sys/class/net 2>/dev/null | grep '^br')\"\n"
+-		   /* DNS carve-out inputs (2026-08-06 field report: an internet-only
+-		    * device had no usable internet). dhcp_dns1_x/dhcp_dns2_x are the
+-		    * servers dnsmasq advertises to clients via DHCP option 6
+-		    * (services.c). When one lives ON the LAN (AdGuard/Pi-hole style),
+-		    * the bridge seal below cuts a restricted device off from its own
+-		    * assigned resolver and every lookup dies. Resolved at RUN time
+-		    * like the rest of the identity (v1.7.3 rule); charset-gated (S7)
+-		    * because the values are spliced into ebtables commands. Rules are
+-		    * emitted only for an IN-SUBNET server (gk_same_net): router DNS
+-		    * is bridge INPUT (already open via REAPER_GKI) and public DNS is
+-		    * routed (already open via REAPER_GKF), so an empty/foreign value
+-		    * degrades to a no-op on networks without a LAN DNS. */
+-		   "GKDNS1=\"$(nvram get dhcp_dns1_x)\"\n"
+-		   "GKDNS2=\"$(nvram get dhcp_dns2_x)\"\n"
+-		   "GKMASK=\"$(nvram get lan_netmask)\"\n"
+-		   "case \"$GKDNS1\" in ''|*[!0-9.]*) GKDNS1=;; esac\n"
+-		   "case \"$GKDNS2\" in ''|*[!0-9.]*) GKDNS2=;; esac\n"
+-		   "case \"$GKMASK\" in ''|*[!0-9.]*) GKMASK=255.255.255.0;; esac\n"
+-		   "gk_same_net() {\n"		/* $1 inside LANIP/GKMASK? malformed -> 1 (fail-closed: no rule) */
+-		   "  GKD=\"$1\"; [ -n \"$GKD\" ] || return 1\n"
++		   /* v2.6.2 network records (see gk_add_net): consumed by gk_emit_mac's
++		    * per-network DNS carve-out and L3 leg. gk_net_fields splits one. */
++		   "GKNETS=\"%s\"\n"
++		   "gk_net_fields() {\n"
++		   "  oIFS=\"$IFS\"; IFS='|'; set -- $1; IFS=\"$oIFS\"\n"
++		   "  NIF=\"${1:--}\"; NIP=\"${2:--}\"; NMASK=\"${3:--}\"; NCIDR=\"${4:--}\"; ND1=\"${5:--}\"; ND2=\"${6:--}\"\n"
++		   "}\n"
++		   /* DNS carve-out (2026-08-06 field report: an internet-only device
++		    * had no usable internet). When a DHCP-advertised resolver lives ON
++		    * the LAN (AdGuard/Pi-hole style), the bridge seal cuts a restricted
++		    * device off from its own resolver and every lookup dies. Rules are
++		    * emitted only for an IN-SUBNET server (gk_same_net): router DNS is
++		    * bridge INPUT (already open via REAPER_GKI) and public DNS is routed
++		    * (open via REAPER_GKF), so an empty/foreign value degrades to a
++		    * no-op. v2.6.2: inputs come per network from GKNETS (below). */
++		   /* v2.6.2: the per-network resolvers now ride GKNETS (SDN DHCP option 6
++		    * is subnet_rl's dns[], not dhcp_dns1_x); gk_same_net takes the network
++		    * explicitly: $1 inside $2/$3? malformed -> 1 (fail-closed: no rule) */
++		   "gk_same_net() {\n"
++		   "  GKD=\"$1\"; GKN=\"$2\"; GKM=\"$3\"; [ -n \"$GKD\" ] && [ -n \"$GKN\" ] && [ -n \"$GKM\" ] || return 1\n"
++		   "  case \"$GKD$GKN$GKM\" in *[!0-9.]*) return 1;; esac\n"
+ 		   "  oIFS=\"$IFS\"; IFS=.\n"
+ 		   "  set -- $GKD; gd1=$1; gd2=$2; gd3=$3; gd4=$4\n"
+-		   "  set -- $LANIP; gl1=$1; gl2=$2; gl3=$3; gl4=$4\n"
+-		   "  set -- $GKMASK; gm1=$1; gm2=$2; gm3=$3; gm4=$4\n"
++		   "  set -- $GKN; gl1=$1; gl2=$2; gl3=$3; gl4=$4\n"
++		   "  set -- $GKM; gm1=$1; gm2=$2; gm3=$3; gm4=$4\n"
+ 		   "  IFS=\"$oIFS\"\n"
+ 		   "  [ -n \"$gd4\" ] && [ -n \"$gl4\" ] && [ -n \"$gm4\" ] || return 1\n"
+ 		   "  [ $((gd1&gm1)) -eq $((gl1&gm1)) ] && [ $((gd2&gm2)) -eq $((gl2&gm2)) ] && "
+@@ -271,7 +368,7 @@ static void gk_gen_apply(void)
+ 		   "  $T -N REAPER_GKI\n"
+ 		   "done\n"
+ 		   "iptables -t nat -N REAPER_GKN\n"
+-		   "ebtables -N REAPER_GK -P RETURN\n", gkifs);
++		   "ebtables -N REAPER_GK -P RETURN\n", gkifs, gknets);
+ 
+ 	/* per-device rules */
+ 	rl = nvram_safe_get("gk_rl");
+-- 
+2.25.1
+

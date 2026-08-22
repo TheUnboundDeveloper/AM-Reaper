@@ -1,0 +1,495 @@
+From 0dde784bdda19c7468ce15eecd69e56d12f9d611 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 21 Aug 2026 22:40:38 -0400
+Subject: [PATCH] firewall: shared REAPER_HOOK front chains - fixed layer order
+ Warden -> Gatekeeper -> rules engine
+
+Closes backlog "[HIGH] Firewall layer ordering". Warden, Gatekeeper and the
+rules engine each hooked their own chain with `-I <base> 1`, so the LAST
+layer to apply sat on top (cold boot and every restart_firewall: reaper_fw).
+reaper_fw is the only layer emitting terminal ACCEPT (user allow, zone
+policy, egress defaults, DNAT companion); the other two only DROP/RETURN.
+An ACCEPT inside a chain jumped from INPUT/FORWARD ends traversal of the
+table, so one allow rule silently re-admitted every threat-feed / geo-
+blocked source and every quarantined device. Same race on OUTPUT
+(REAPER_FWO vs RW_SELF); the order changed with every restart_gk /
+restart_rwarden / gkd self-heal.
+
+- rc/reaper_hook.[ch]: reaper_hook_gen() writes /tmp/reaper/hook.sh once;
+  it flushes REAPER_HOOK / REAPER_HOOK_F / REAPER_HOOK_O, appends a jump for
+  each layer chain that EXISTS in the invariant order Warden (REAPER_WARDEN,
+  RW_SELF) -> Gatekeeper (REAPER_GKI/GKF per -i, list from /tmp/gk/ifs,
+  charset-gated) -> rules engine (REAPER_FWI/FWF/FWO), then re-pins one base
+  jump per chain with delete-all-then-`-I 1` (never `-C || -I`: position-
+  blind). Logs when GK chains exist without an interface list.
+- Every layer's apply script calls hook.sh at its tail, so the order
+  converges whichever service restarted. Direct `-I <base>` emissions
+  removed: reaper_fw.c (filter), gatekeeper.c (GKF/GKI; nat + ebtables
+  unchanged), rwarden.c (REAPER_WARDEN v4/v6, RW_SELF).
+- Teardowns strip the front-chain jumps and STILL strip the pre-v2.6.2
+  direct jumps (upgrade path). rwarden's single `-D` became loops (a raced
+  apply could leave a duplicate that kept the chain referenced).
+- firewall.c: reaper_hook_gen() before the three re-applies; start_gk /
+  start_rwarden / start_reaper_fw also call it.
+- gkd.c: the armed probe now asserts the REAPER_HOOK_F jump, not just chain
+  existence (a lost jump with a live chain read "armed" forever).
+- reaper_fw.c: rfw_hook_of() removed (unused).
+
+Host-verified: hook.sh passes sh -n / dash -n / shellcheck; mock-iptables
+dry-run confirms order, per-interface GK jumps, disabled layers skipped,
+bad interface list rejected, duplicate base jumps all removed.
+
+(cherry picked from commit b04dcf0ae0d59f8eef2349acd3ce01d84f88cfed)
+---
+ release/src/router/gkd/gkd.c        |  5 ++
+ release/src/router/rc/Makefile      |  2 +
+ release/src/router/rc/firewall.c    |  5 ++
+ release/src/router/rc/gatekeeper.c  | 21 +++++++--
+ release/src/router/rc/rc.h          |  3 ++
+ release/src/router/rc/reaper_fw.c   | 24 +++++++---
+ release/src/router/rc/reaper_hook.c | 73 +++++++++++++++++++++++++++++
+ release/src/router/rc/reaper_hook.h | 57 ++++++++++++++++++++++
+ release/src/router/rc/rwarden.c     | 36 +++++++++-----
+ 9 files changed, 201 insertions(+), 25 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_hook.c
+ create mode 100644 release/src/router/rc/reaper_hook.h
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 2a6ff8e6ac..f55110da08 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -423,10 +423,15 @@ static void self_heal(void)
+ 	 * ebtables chain, so any one missing means a flush occurred - reapply. */
+ 	/* one shell fork for the whole armed check (was five); the && chain
+ 	 * short-circuits identically and 'armed' is still true iff all five pass. */
++	/* v2.6.2: chain EXISTENCE is not enforcement - the jump that reaches the
++	 * chain lives in the shared front chain REAPER_HOOK_F (rc/reaper_hook.h),
++	 * so assert that too; a lost jump with a live chain used to read "armed"
++	 * forever. */
+ 	armed = (system("iptables -nL REAPER_GKF >/dev/null 2>&1 && "
+ 	                "iptables -nL REAPER_GKI >/dev/null 2>&1 && "
+ 	                "iptables -t nat -nL REAPER_GKN >/dev/null 2>&1 && "
+ 	                "ip6tables -nL REAPER_GKF >/dev/null 2>&1 && "
++	                "iptables -nL REAPER_HOOK_F 2>/dev/null | grep -q REAPER_GKF && "
+ 	                "ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0);
+ 
+ 	if (armed) {
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 67b1b40e3c..41ff47808f 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -443,6 +443,8 @@ OBJS += rwarden.o
+ # Unconditional like rwarden.o (no new RTCONFIG flag); runtime-gated by
+ # reaper_fw_enable, which defaults to 0.
+ OBJS += reaper_fw.o
++# v2.6.2 shared front chains for the three layers above (rc/reaper_hook.h)
++OBJS += reaper_hook.o
+ # reaper v2.5.x: ipset-based policy routing (VPN Director PBR). Unconditional
+ # like reaper_fw.o; runtime-gated by reaper_pbr_enable, which defaults to 0.
+ OBJS += reaper_pbr.o
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 1c7c983d84..b8425bfa1b 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9418,6 +9418,11 @@ leave:
+ 
+ 	run_custom_script("firewall-start", 0, wan_if, NULL);
+ 
++	/* reaper v2.6.2: the three layers below register into shared front chains
++	 * (rc/reaper_hook.h); make sure the generator script exists on this tmpfs
++	 * before any of them runs. Each apply.sh calls it at its tail. */
++	reaper_hook_gen();
++
+ 	/* reaper v1.6.8 Gatekeeper: this rebuild just deleted our chains - re-apply
+ 	 * immediately (gkd's 10s self-heal is only the backstop, not the primary). */
+ 	if (nvram_match("gk_enable", "1") && f_exists("/tmp/gk/apply.sh"))
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 23ce3cc3a5..f63ac497c8 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -46,6 +46,7 @@
+ 
+ #include "rc.h"
+ #include <shared.h>
++#include "reaper_hook.h"
+ 
+ #define GK_DIR    "/tmp/gk"
+ #define GK_APPLY  GK_DIR "/apply.sh"
+@@ -247,6 +248,10 @@ static void gk_gen_apply(void)
+ 		   "# ---- teardown ----\n"
+ 		   "for I in $GKALL; do\n"
+ 		   "  for T in iptables ip6tables; do\n"
++		   /* v2.6.2: jumps live in the shared front chains (reaper_hook.h); the
++		    * direct base-chain deletes stay for the upgrade path */
++		   "    while $T -D " REAPER_HOOK_FWD " -i $I -j REAPER_GKF 2>/dev/null; do :; done\n"
++		   "    while $T -D " REAPER_HOOK_IN " -i $I -j REAPER_GKI 2>/dev/null; do :; done\n"
+ 		   "    while $T -D FORWARD -i $I -j REAPER_GKF 2>/dev/null; do :; done\n"
+ 		   "    while $T -D INPUT -i $I -j REAPER_GKI 2>/dev/null; do :; done\n"
+ 		   "  done\n"
+@@ -320,16 +325,19 @@ static void gk_gen_apply(void)
+ 			"fi\n");
+ 	}
+ 
+-	/* hooks at position 1: revocation must beat any ESTABLISHED shortcut */
++	/* hooks at position 1: revocation must beat any ESTABLISHED shortcut.
++	 * v2.6.2: the filter-table jumps (GKF/GKI) are registered by hook.sh into
++	 * the shared front chains, in the fixed order Warden -> Gatekeeper ->
++	 * rules engine, so the rules engine's ACCEPTs can no longer bypass a
++	 * quarantine (reaper_hook.h). The per-interface list is handed over via
++	 * GK_IFS_FILE. nat and ebtables are different tables: unchanged. */
+ 	fprintf(f, "# ---- hooks ----\n"
++		   "printf '%%s' \"$GKIFS\" > " GK_IFS_FILE "\n"
+ 		   "for I in $GKIFS; do\n"
+-		   "  for T in iptables ip6tables; do\n"
+-		   "    $T -I FORWARD 1 -i $I -j REAPER_GKF\n"
+-		   "    $T -I INPUT 1 -i $I -j REAPER_GKI\n"
+-		   "  done\n"
+ 		   "  iptables -t nat -I PREROUTING 1 -i $I -j REAPER_GKN\n"
+ 		   "  ebtables -I FORWARD 1 --logical-in $I -j REAPER_GK\n"
+ 		   "done\n"
++		   REAPER_HOOK_RUN
+ 		   "# offloaded flows must re-traverse the fresh rules\n"
+ 		   "fc flush 2>/dev/null\n");
+ 
+@@ -360,6 +368,8 @@ void gk_teardown_rules(void)
+ 	system(
+ 		"for I in $(ls /sys/class/net 2>/dev/null | grep '^br'); do "
+ 		"for T in iptables ip6tables; do "
++		"while $T -D " REAPER_HOOK_FWD " -i $I -j REAPER_GKF 2>/dev/null; do :; done; "
++		"while $T -D " REAPER_HOOK_IN " -i $I -j REAPER_GKI 2>/dev/null; do :; done; "
+ 		"while $T -D FORWARD -i $I -j REAPER_GKF 2>/dev/null; do :; done; "
+ 		"while $T -D INPUT -i $I -j REAPER_GKI 2>/dev/null; do :; done; done; "
+ 		"while iptables -t nat -D PREROUTING -i $I -j REAPER_GKN 2>/dev/null; do :; done; "
+@@ -392,6 +402,7 @@ void start_gk(void)
+ 	if (!nvram_match("gk_enable", "1"))
+ 		return;
+ 	mkdir(GK_DIR, 0700);
++	reaper_hook_gen();	/* v2.6.2 front chains */
+ 	gk_gen_apply();
+ 	/* apply.sh exits non-zero when the LAN bridge is not up yet (cold boot):
+ 	 * that is expected, not an error - gkd's self-heal and the firewall hook
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 606d2f8a7f..420b8ea9c0 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2990,6 +2990,9 @@ extern void start_rwarden(void);
+  * commit-confirm state machine; dryrun compiles a preview and executes nothing. */
+ extern void stop_reaper_fw(void);
+ extern void start_reaper_fw(void);
++/* v2.6.2 shared REAPER_HOOK front chains (rc/reaper_hook.c) */
++extern void reaper_hook_gen(void);
++extern void reaper_hook_rebuild(void);
+ extern void reaper_fw_apply(void);
+ extern void reaper_fw_confirm(void);
+ extern void reaper_fw_rollback(void);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index f09384a63c..13f3c23fc1 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -94,6 +94,7 @@
+ 
+ #include "rc.h"
+ #include <shared.h>
++#include "reaper_hook.h"
+ 
+ #define RFW_DIR      "/tmp/reaper_fw"
+ #define RFW_APPLY    RFW_DIR "/apply.sh"          /* idempotent teardown+build (committed set) */
+@@ -1071,10 +1072,7 @@ static const char *rfw_chain_of(int dir)
+ {
+ 	return (dir == RFW_D_IN) ? RFW_CHAIN_IN : (dir == RFW_D_OUT) ? RFW_CHAIN_OUT : RFW_CHAIN_FWD;
+ }
+-static const char *rfw_hook_of(int dir)
+-{
+-	return (dir == RFW_D_IN) ? "INPUT" : (dir == RFW_D_OUT) ? "OUTPUT" : "FORWARD";
+-}
++/* (rfw_hook_of() removed in v2.6.2: the base-chain jump is owned by hook.sh) */
+ 
+ static void rfw_emit_head(FILE *f, int v6, int dir)
+ {
+@@ -1738,7 +1736,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "for T in iptables ip6tables; do\n"
+ 	  "  for P in INPUT:" RFW_CHAIN_IN " FORWARD:" RFW_CHAIN_FWD " OUTPUT:" RFW_CHAIN_OUT "; do\n"
+ 	  "    H=\"${P%%%%:*}\"; C=\"${P##*:}\"\n"
+-	  /* loop: a previous apply that raced could have left more than one jump */
++	  /* loop: a previous apply that raced could have left more than one jump.
++	   * v2.6.2: our jump lives in the shared front chain (reaper_hook.h); the
++	   * direct base-chain delete stays for the upgrade path. */
++	  "    case \"$H\" in INPUT) FC=" REAPER_HOOK_IN ";; FORWARD) FC=" REAPER_HOOK_FWD ";; *) FC=" REAPER_HOOK_OUT ";; esac\n"
++	  "    while $T -D \"$FC\" -j \"$C\" 2>/dev/null; do :; done\n"
+ 	  "    while $T -D \"$H\" -j \"$C\" 2>/dev/null; do :; done\n"
+ 	  "    $T -F \"$C\" 2>/dev/null\n"
+ 	  "    $T -X \"$C\" 2>/dev/null\n"
+@@ -1834,8 +1836,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 			}
+ 			/* No final default: the chain RETURNs and the base firewall still
+ 			 * gets its say. This engine ADDS policy, it does not replace the
+-			 * stock one - a "default deny" is expressed with a zone policy. */
+-			fprintf(f, "RFWH %s -I %s -j %s\n\n", ipt, rfw_hook_of(d), ch);
++			 * stock one - a "default deny" is expressed with a zone policy.
++			 * v2.6.2: the chain is no longer hooked here with `-I <base> 1`;
++			 * hook.sh (called at the tail of this script) registers it LAST in
++			 * the shared front chain, behind Warden and Gatekeeper. */
++			fprintf(f, "\n");
+ 		}
+ 	}
+ 
+@@ -1861,6 +1866,8 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	 * the LAN-readiness exit 1 the callers already understand, so a partial
+ 	 * load can no longer be mistaken for a deferral. */
+ 	fprintf(f, "fc flush 2>/dev/null\n");
++	/* v2.6.2: register the chains in the shared front chains (fixed order) */
++	fprintf(f, REAPER_HOOK_RUN);
+ 	fprintf(f,
+ 	  "echo \"$RFW_FAIL\" > " RFW_FAILCOUNT "\n"
+ 	  "if [ \"$RFW_HARD\" -gt 0 ]; then\n"
+@@ -1992,6 +1999,8 @@ static void rfw_gen_rollback(void)
+ 	  "  for T in iptables ip6tables; do\n"
+ 	  "    for P in INPUT:" RFW_CHAIN_IN " FORWARD:" RFW_CHAIN_FWD " OUTPUT:" RFW_CHAIN_OUT "; do\n"
+ 	  "      H=\"${P%%%%:*}\"; C=\"${P##*:}\"\n"
++	  "      case \"$H\" in INPUT) FC=" REAPER_HOOK_IN ";; FORWARD) FC=" REAPER_HOOK_FWD ";; *) FC=" REAPER_HOOK_OUT ";; esac\n"
++	  "      while $T -D \"$FC\" -j \"$C\" 2>/dev/null; do :; done\n"
+ 	  "      while $T -D \"$H\" -j \"$C\" 2>/dev/null; do :; done\n"
+ 	  "    done\n"
+ 	  "  done\n"
+@@ -2215,6 +2224,7 @@ void start_reaper_fw(void)
+ 	 * start; without this a confirmed-but-restrictive ruleset comes back after a
+ 	 * power cut with no exemption and no timer to undo it. */
+ 	rfw_write_admin();
++	reaper_hook_gen();                                  /* v2.6.2 front chains */
+ 	lock = file_lock("firewall");                       /* S6 */
+ 	if (rfw_gen_apply(RFW_APPLY, &c, 0)) {
+ 		int rc, code;
+diff --git a/release/src/router/rc/reaper_hook.c b/release/src/router/rc/reaper_hook.c
+new file mode 100644
+index 0000000000..5b6fcf0d4e
+--- /dev/null
++++ b/release/src/router/rc/reaper_hook.c
+@@ -0,0 +1,73 @@
++/*
++ * reaper_hook.c - v2.6.2 shared front chains for the Reaper firewall layers.
++ * Rationale and contract: reaper_hook.h.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include "rc.h"
++#include <shared.h>
++#include "reaper_hook.h"
++
++void reaper_hook_gen(void)
++{
++	FILE *f;
++	struct stat st;
++
++	if (stat(REAPER_HOOK_SH, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
++		return;
++	mkdir(REAPER_HOOK_DIR, 0700);
++	f = fopen(REAPER_HOOK_SH ".tmp", "w");
++	if (!f) return;
++	fputs(
++	  "#!/bin/sh\n"
++	  "# generated by reaper_hook_gen - do not edit. See rc/reaper_hook.h.\n"
++	  "# Rebuilds the Reaper front chains in the FIXED order\n"
++	  "#   Warden -> Gatekeeper -> rules engine\n"
++	  "# and pins one jump per base chain at position 1. Idempotent; called by\n"
++	  "# every layer's apply.sh at its tail, so the order converges no matter\n"
++	  "# which layer restarted.\n"
++	  "GKIFS=\"\"; [ -r " GK_IFS_FILE " ] && GKIFS=\"$(head -c 512 " GK_IFS_FILE " 2>/dev/null)\"\n"
++	  /* charset gate: interface names only (the file is ours, but it is on tmpfs) */
++	  "[ -n \"$(printf '%s' \"$GKIFS\" | tr -d -- '-A-Za-z0-9_. ')\" ] && GKIFS=\"\"\n"
++	  "if [ -z \"$GKIFS\" ] && iptables -nL REAPER_GKF >/dev/null 2>&1; then logger -t reaper 'hook: Gatekeeper chains present but no interface list - gkd self-heal will re-apply'; fi\n"
++	  "for T in iptables ip6tables; do\n"
++	  "  for P in INPUT:" REAPER_HOOK_IN " FORWARD:" REAPER_HOOK_FWD " OUTPUT:" REAPER_HOOK_OUT "; do\n"
++	  "    H=\"${P%%:*}\"; C=\"${P##*:}\"\n"
++	  "    $T -N \"$C\" 2>/dev/null; $T -F \"$C\" 2>/dev/null\n"
++	  "    case \"$H\" in\n"
++	  "      INPUT)\n"
++	  "        $T -nL REAPER_WARDEN >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_WARDEN\n"
++	  "        if $T -nL REAPER_GKI >/dev/null 2>&1; then for I in $GKIFS; do $T -A \"$C\" -i \"$I\" -j REAPER_GKI; done; fi\n"
++	  "        $T -nL REAPER_FWI >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_FWI\n"
++	  "        ;;\n"
++	  "      FORWARD)\n"
++	  "        $T -nL REAPER_WARDEN >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_WARDEN\n"
++	  "        if $T -nL REAPER_GKF >/dev/null 2>&1; then for I in $GKIFS; do $T -A \"$C\" -i \"$I\" -j REAPER_GKF; done; fi\n"
++	  "        $T -nL REAPER_FWF >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_FWF\n"
++	  "        ;;\n"
++	  "      OUTPUT)\n"
++	  "        $T -nL RW_SELF >/dev/null 2>&1 && $T -A \"$C\" -j RW_SELF\n"
++	  "        $T -nL REAPER_FWO >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_FWO\n"
++	  "        ;;\n"
++	  "    esac\n"
++	  "    # delete-all-then-insert: -C is position-blind, and a raced apply\n"
++	  "    # could have left two jumps\n"
++	  "    while $T -D \"$H\" -j \"$C\" 2>/dev/null; do :; done\n"
++	  "    $T -I \"$H\" 1 -j \"$C\" 2>/dev/null || logger -t reaper \"hook: $T -I $H -j $C FAILED\"\n"
++	  "  done\n"
++	  "done\n"
++	  "exit 0\n", f);
++	fclose(f);
++	chmod(REAPER_HOOK_SH ".tmp", 0700);
++	if (rename(REAPER_HOOK_SH ".tmp", REAPER_HOOK_SH) != 0)
++		unlink(REAPER_HOOK_SH ".tmp");
++}
++
++void reaper_hook_rebuild(void)
++{
++	reaper_hook_gen();
++	system("sh " REAPER_HOOK_SH);
++}
+diff --git a/release/src/router/rc/reaper_hook.h b/release/src/router/rc/reaper_hook.h
+new file mode 100644
+index 0000000000..08348eabdb
+--- /dev/null
++++ b/release/src/router/rc/reaper_hook.h
+@@ -0,0 +1,57 @@
++/*
++ * reaper_hook.h - v2.6.2: ONE front chain per base chain for every Reaper
++ * firewall layer, with a FIXED evaluation order.
++ *
++ * THE DEFECT THIS CLOSES (backlog "[HIGH] Firewall layer ordering"): Warden,
++ * Gatekeeper and the rules engine each hooked their own chain with
++ * `-I <base> 1`, so whichever layer applied LAST sat on top. reaper_fw is the
++ * only layer that emits a terminal ACCEPT (user allow rules, zone policy,
++ * egress defaults, the DNAT companion) - the other two only DROP or RETURN.
++ * An ACCEPT inside a chain jumped from INPUT/FORWARD ends traversal of the
++ * whole table, so with reaper_fw on top (cold boot and every restart_firewall)
++ * a single allow rule silently re-admitted every threat-feed / geo-blocked
++ * source and every quarantined device. The same race existed on OUTPUT
++ * (REAPER_FWO vs RW_SELF) and the order changed with every restart_gk /
++ * restart_rwarden / gkd self-heal.
++ *
++ * THE FIX: the base chains carry exactly one Reaper jump each -
++ *   INPUT   -> REAPER_HOOK
++ *   FORWARD -> REAPER_HOOK_F
++ *   OUTPUT  -> REAPER_HOOK_O
++ * and inside each front chain the layers are appended in the invariant order
++ *   Warden (REAPER_WARDEN / RW_SELF)  ->  Gatekeeper (REAPER_GKI/GKF, per -i)
++ *   ->  rules engine (REAPER_FWI/FWF/FWO)
++ * i.e. every deny-only layer before the one allow-capable layer. A layer's
++ * RETURN now lands back in the front chain and continues to the next layer;
++ * a DROP/ACCEPT inside a layer chain is exactly as terminal as before.
++ *
++ * MECHANISM: rc generates /tmp/reaper/hook.sh once (reaper_hook_gen). Every
++ * layer's apply script calls it at its tail, so the order converges no matter
++ * which service restarted; it flushes the front chains, appends a jump for
++ * each layer chain that currently EXISTS (a disabled layer has no chain), then
++ * re-inserts the base jump with delete-all-then-`-I 1`. Never `-C || -I`:
++ * `-C` is position-blind. Gatekeeper's per-interface list is read from
++ * /tmp/gk/ifs, written by its own apply.sh.
++ *
++ * Teardowns strip a layer's jumps from the front chains (and still strip the
++ * pre-v2.6.2 direct base-chain jumps, so an upgrade from a running box cleans
++ * itself on the first apply). nat PREROUTING (REAPER_FWN / REAPER_GKN),
++ * ebtables and mangle are different tables and are NOT routed through this.
++ */
++#ifndef REAPER_HOOK_H
++#define REAPER_HOOK_H
++
++#define REAPER_HOOK_DIR  "/tmp/reaper"
++#define REAPER_HOOK_SH   REAPER_HOOK_DIR "/hook.sh"
++#define REAPER_HOOK_IN   "REAPER_HOOK"
++#define REAPER_HOOK_FWD  "REAPER_HOOK_F"
++#define REAPER_HOOK_OUT  "REAPER_HOOK_O"
++#define GK_IFS_FILE      "/tmp/gk/ifs"
++
++/* shell line for the tail of a generated apply script (never fails the script) */
++#define REAPER_HOOK_RUN  "if [ -x " REAPER_HOOK_SH " ]; then sh " REAPER_HOOK_SH "; else logger -t reaper 'hook.sh missing - layer chain built but not hooked'; fi\n"
++
++extern void reaper_hook_gen(void);      /* write hook.sh if absent (idempotent) */
++extern void reaper_hook_rebuild(void);  /* gen + run */
++
++#endif
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index f7e201c22e..0a5bddfe88 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -76,6 +76,7 @@
+ #include "rc.h"
+ #include <shared.h>
+ #include "reaper_nv.h"
++#include "reaper_hook.h"
+ 
+ #define RW_DIR    "/tmp/rwarden"
+ #define RW_APPLY  "/tmp/rwarden/apply.sh"
+@@ -372,9 +373,14 @@ void rw_teardown_rules(void)
+ 	const char *ipt[2] = { "iptables", "ip6tables" };
+ 	int i;
+ 	for (i = 0; i < 2; i++) {
+-		doSystem("%s -D INPUT -j REAPER_WARDEN 2>/dev/null", ipt[i]);
+-		doSystem("%s -D FORWARD -j REAPER_WARDEN 2>/dev/null", ipt[i]);
+-		doSystem("%s -D OUTPUT -j RW_SELF 2>/dev/null", ipt[i]);
++		/* v2.6.2: front-chain jumps first, legacy direct jumps for the
++		 * upgrade path; loops so a raced duplicate cannot survive */
++		doSystem("while %s -D " REAPER_HOOK_IN " -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
++		doSystem("while %s -D " REAPER_HOOK_FWD " -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
++		doSystem("while %s -D " REAPER_HOOK_OUT " -j RW_SELF 2>/dev/null; do :; done", ipt[i]);
++		doSystem("while %s -D INPUT -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
++		doSystem("while %s -D FORWARD -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
++		doSystem("while %s -D OUTPUT -j RW_SELF 2>/dev/null; do :; done", ipt[i]);
+ 		doSystem("%s -F REAPER_WARDEN 2>/dev/null", ipt[i]);
+ 		doSystem("%s -X REAPER_WARDEN 2>/dev/null", ipt[i]);
+ 		doSystem("%s -F RW_SELF 2>/dev/null", ipt[i]);
+@@ -528,7 +534,7 @@ static void rw_emit_self_chain(FILE *f, const char *ipt, int v6)
+ 	  "%s -A RW_SELF -p udp --dport 123 -j RETURN\n",
+ 	  v6 ? "" : "continue", v6 ? "continue" : "", ipt, ipt);
+ 	rw_emit_dst_group(f, ipt, "RW_SELF", "RW_SDROP", v6);
+-	fprintf(f, "%s -I OUTPUT -j RW_SELF\n", ipt);
++	/* v2.6.2: hooked by hook.sh into REAPER_HOOK_O, ahead of REAPER_FWO */
+ }
+ 
+ static void rw_gen_apply(void)
+@@ -593,9 +599,16 @@ static void rw_gen_apply(void)
+ 	/* ---- teardown ---- both stacks (dispatch chain before its RW_DROP dep) */
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+-	  "  $T -D INPUT -j REAPER_WARDEN 2>/dev/null\n"
+-	  "  $T -D FORWARD -j REAPER_WARDEN 2>/dev/null\n"
+-	  "  $T -D OUTPUT -j RW_SELF 2>/dev/null\n"
++	  /* v2.6.2: jumps live in the shared front chains (reaper_hook.h); the
++	   * direct base-chain deletes stay for the upgrade path. Loops, not single
++	   * -D: a raced apply could have left two jumps, and one survivor kept the
++	   * chain referenced (-X failed) and re-hooked with stale rules. */
++	  "  while $T -D " REAPER_HOOK_IN " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D " REAPER_HOOK_FWD " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D " REAPER_HOOK_OUT " -j RW_SELF 2>/dev/null; do :; done\n"
++	  "  while $T -D INPUT -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D FORWARD -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D OUTPUT -j RW_SELF 2>/dev/null; do :; done\n"
+ 	  "  $T -F REAPER_WARDEN 2>/dev/null; $T -X REAPER_WARDEN 2>/dev/null\n"
+ 	  "  $T -F RW_SELF 2>/dev/null; $T -X RW_SELF 2>/dev/null\n"
+ 	  "  $T -F RW_OUT 2>/dev/null; $T -X RW_OUT 2>/dev/null\n"
+@@ -749,9 +762,7 @@ static void rw_gen_apply(void)
+ 	rw_emit_country_rules(f, "iptables", "REAPER_WARDEN", "src", "RW_DROP", 0);
+ 	fprintf(f,
+ 	  "iptables -A REAPER_WARDEN -m set --match-set rw_threat src -j RW_DROP\n");
+-	fprintf(f,
+-	  "iptables -I INPUT -j REAPER_WARDEN\n"
+-	  "iptables -I FORWARD -j REAPER_WARDEN\n");
++	/* v2.6.2: hooked by hook.sh (front chains, Warden first) - see tail */
+ 	/* ===== IPv6 chain ===== */
+ 	fprintf(f,
+ 	  "ip6tables -N RW_DROP; ip6tables -F RW_DROP\n");
+@@ -794,9 +805,7 @@ static void rw_gen_apply(void)
+ 	rw_emit_country_rules(f, "ip6tables", "REAPER_WARDEN", "src", "RW_DROP", 1);
+ 	fprintf(f,
+ 	  "ip6tables -A REAPER_WARDEN -m set --match-set rw_threat6 src -j RW_DROP\n");
+-	fprintf(f,
+-	  "ip6tables -I INPUT -j REAPER_WARDEN\n"
+-	  "ip6tables -I FORWARD -j REAPER_WARDEN\n");
++	fprintf(f, REAPER_HOOK_RUN);	/* v2.6.2: register both stacks in the front chains */
+ 	/* Offloaded/established flows bypass the freshly-hooked chain in the HW
+ 	 * accelerator, so a peer banned via rw_ban keeps its existing flows until
+ 	 * they age out. Flush the flow cache so they re-traverse (mirrors the
+@@ -1402,6 +1411,7 @@ void start_rwarden(void)
+ 	if (!nvram_match("rwarden_enable", "1"))
+ 		return;
+ 	mkdir(RW_DIR, 0700);
++	reaper_hook_gen();	/* v2.6.2 front chains */
+ 	rw_gen_apply();
+ 	rw_gen_update();
+ 	rw_gen_stats();
+-- 
+2.25.1
+

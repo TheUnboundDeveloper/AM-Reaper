@@ -1,0 +1,364 @@
+From d161b41e629be2d7a037aaf08af89c1da40f27a7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 21 Aug 2026 23:09:17 -0400
+Subject: [PATCH] code-review tail (batch A): dead code, redundant work, one
+ fork removed
+
+Mechanical items from CODE-REVIEW-2026-08-18, each re-verified reachable at
+HEAD before the edit; no behavioural change intended.
+- httpd/reaper_inject.c: the three nvram reads (reaper_inject, re_mode,
+  disable_ui) ran on EVERY request before the free mime/extension tests;
+  now evaluated only for injectable pages. Query string stripped once
+  (reaper_page_ext takes the stripped name); over-long names still never
+  injected.
+- rc/reaper_fw.c: dead rfw_cfg_t.confirm field (rfw_confirm_secs() reads
+  nvram directly); stype4/stype6 always identical -> one stype.
+- rc/rexport.c: unreachable `mins < 1` clamp (iv>0 forces mins>=1).
+- rtrafd/rtrafd.c: struct fcf .dip/.dport were write-only; dst still
+  parsed for line validation.
+- rmcpd/rmcpd.c: get_overview meminfo via in-process sb_addfile_lines()
+  instead of a `grep -E` fork; output byte-identical (file order, newlines,
+  256-byte cap).
+- www: Reaper_VPNRouting.asp uses the shared esc() from reaper_util.js
+  (last local copy); Reaper_Traffic.asp stackChart() drops its unused
+  `labels` param; Reaper_FirstBoot.asp drops a shadowed $() redeclaration.
+---
+ release/src/router/httpd/reaper_inject.c     | 52 +++++++++++---------
+ release/src/router/rc/reaper_fw.c            | 21 ++++----
+ release/src/router/rc/rexport.c              |  3 +-
+ release/src/router/rmcpd/rmcpd.c             | 29 ++++++++++-
+ release/src/router/rtrafd/rtrafd.c           |  9 +---
+ release/src/router/www/Reaper_FirstBoot.asp  |  2 +-
+ release/src/router/www/Reaper_Traffic.asp    |  6 +--
+ release/src/router/www/Reaper_VPNRouting.asp |  3 +-
+ 8 files changed, 75 insertions(+), 50 deletions(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 00c25b72ac..077680f912 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -222,18 +222,13 @@ static const char *reaper_css_only[] = {
+  * (login.cgi/login_v2.cgi meta-refresh, QIS_default.cgi, page_default.cgi);
+  * injecting the bounce there hijacks the post-login redirect into
+  * reaper_shell.asp#login_v2.cgi before the meta-refresh can fire. */
+-static int reaper_page_ext(const char *b)
++/* name = basename with any query string already stripped (see caller) */
++static int reaper_page_ext(const char *name)
+ {
+-	char name[128];
+ 	const char *dot;
+-	size_t n;
+ 
+-	n = strcspn(b, "?");
+-	if (n == 0 || n >= sizeof(name))
++	if (!*name)
+ 		return 0;
+-	memcpy(name, b, n);
+-	name[n] = '\0';
+-
+ 	dot = strrchr(name, '.');
+ 	if (!dot)
+ 		return 0;
+@@ -249,11 +244,6 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 	size_t n;
+ 	int i;
+ 
+-	/* runtime kill-switch: unset/nonzero = inject, explicit "0" = skip */
+-	v = nvram_get("reaper_inject");
+-	if (v && *v && atoi(v) == 0)
+-		return 0;
+-
+ 	/* reaper 2026-08-17 field fix: "flashing a NODE gives a blank page whose URL
+ 	 * loops". On an AiMesh node httpd locks the web UI down to a whitelist
+ 	 * (httpd.c, the RTCONFIG_AMAS branch): with re_mode=1 (or disable_ui=1) and
+@@ -280,9 +270,14 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 	 * AiMesh_Node_FirmwareUpgrade.asp / Updating.asp into the shell iframe,
+ 	 * where the progress page is not meant to live. There is no node state in
+ 	 * which bouncing into the Reaper shell is the right answer, so the guard is
+-	 * unconditional. */
+-	if (nvram_match("re_mode", "1") || nvram_match("disable_ui", "1"))
+-		return 0;
++	 * unconditional.
++	 *
++	 * reaper v2.6.2 (code review P1-LOW): the three nvram reads in this guard
++	 * and the kill-switch below used to run FIRST, on every request httpd
++	 * served - images, css, js, json polls. They are now evaluated only after
++	 * the free tests (mime type, basename, extension) have already said "this
++	 * is an injectable page". Pure reorder of side-effect-free predicates;
++	 * the decision is identical for every input. */
+ 
+ 	/* only text/html; this alone excludes state.js, **.js/json/xml/css */
+ 	if (!h || !h->mime_type || strncasecmp(h->mime_type, "text/html", 9) != 0)
+@@ -292,17 +287,26 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 
+ 	b = strrchr(file, '/');
+ 	b = b ? b + 1 : file;
+-	if (!reaper_page_ext(b))
+-		return 0;
+-	/* Strip any query string before the skip-list match: reaper_page_ext
+-	 * compares on the query-stripped name, so the skip list must too, else
+-	 * "Main_Login.asp?x"/"Captive_Portal.asp?x" evade the list and get the
+-	 * bounce injected (breaks login; corrupts the captive splash script). */
++	/* Strip the query string ONCE, up front: both the extension test and the
++	 * skip-list match must see the bare name, else "Main_Login.asp?x" /
++	 * "Captive_Portal.asp?x" evade the list and get the bounce injected
++	 * (breaks login; corrupts the captive splash script). */
+ 	n = strcspn(b, "?");
+-	if (n >= sizeof(name))
+-		n = sizeof(name) - 1;
++	if (n == 0 || n >= sizeof(name))
++		return 0;			/* unchanged: over-long names were never injected */
+ 	memcpy(name, b, n);
+ 	name[n] = '\0';
++	if (!reaper_page_ext(name))
++		return 0;
++
++	/* AiMesh node / UI-disabled: serve pristine stock (see the block above) */
++	if (nvram_match("re_mode", "1") || nvram_match("disable_ui", "1"))
++		return 0;
++	/* runtime kill-switch: unset/nonzero = inject, explicit "0" = skip */
++	v = nvram_get("reaper_inject");
++	if (v && *v && atoi(v) == 0)
++		return 0;
++
+ 	for (i = 0; reaper_skip[i]; i++)
+ 		if (strcasecmp(name, reaper_skip[i]) == 0)
+ 			return 0;
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index bb8b5a9bed..f09384a63c 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -454,7 +454,7 @@ static int rfw_valid_rate(const char *s)
+  * ------------------------------------------------------------------------- */
+ 
+ typedef struct {
+-	char *enable, *confirm, *obj, *grp, *svc, *zone, *zpol, *rules;
++	char *enable, *obj, *grp, *svc, *zone, *zpol, *rules;	/* reaper_fw_confirm is read by rfw_confirm_secs() directly */
+ 	/* Phase 2 (egress) and Phase 3 (NAT). Both are ordinary '<'-separated
+ 	 * lists carried through the same loader / lastgood / rollback path as the
+ 	 * originals, so commit-confirm covers them for free. */
+@@ -498,12 +498,12 @@ static void rfw_cfg_free(rfw_cfg_t *c)
+ {
+ 	int i;
+ 	if (!c) return;
+-	free(c->enable); free(c->confirm);
++	free(c->enable);
+ 	for (i = 0; i < RFW_NKEYS; i++) {
+ 		char **slot = (char **)((char *)c + rfw_keys[i].off);
+ 		free(*slot); *slot = NULL;
+ 	}
+-	c->enable = c->confirm = NULL;
++	c->enable = NULL;
+ }
+ 
+ /* from_lastgood: read the last CONFIRMED config off /jffs instead of nvram.
+@@ -514,8 +514,7 @@ static int rfw_cfg_load(rfw_cfg_t *c, int from_lastgood)
+ 	int i;
+ 	memset(c, 0, sizeof(*c));
+ 	c->enable  = strdup(nvram_safe_get("reaper_fw_enable"));
+-	c->confirm = strdup(nvram_safe_get("reaper_fw_confirm"));
+-	if (!c->enable || !c->confirm) { rfw_cfg_free(c); return 0; }
++	if (!c->enable) { rfw_cfg_free(c); return 0; }
+ 	for (i = 0; i < RFW_NKEYS; i++) {
+ 		char **slot = (char **)((char *)c + rfw_keys[i].off);
+ 		if (from_lastgood) {
+@@ -702,12 +701,12 @@ static int rfw_ref_is_mac(const rfw_cfg_t *c, const char *ref)
+ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+                              const char *val, char *keep, size_t keeplen)
+ {
+-	const char *stype4 = "hash:net", *stype6 = "hash:net";
++	const char *stype = "hash:net";	/* same type both families */
+ 	char *dup, *tok, *save = NULL;
+ 	int bad = 0;
+ 
+-	if (!strcmp(type, "range")) { stype4 = "hash:ip"; stype6 = "hash:ip"; }
+-	if (!strcmp(type, "mac"))   { stype4 = "hash:mac"; stype6 = "hash:mac"; }
++	if (!strcmp(type, "range")) stype = "hash:ip";
++	if (!strcmp(type, "mac"))   stype = "hash:mac";
+ 
+ 	/* FQDN sets are filled at run time - by dnsmasq on every matching lookup
+ 	 * (rfw_gen_dnsmasq) and by the timer as a floor (rfw_gen_resolve) - so they
+@@ -735,7 +734,7 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 			  "ipset list -t %s%s 2>/dev/null | grep -q '^Header:.*timeout' || "
+ 			  "ipset destroy %s%s 2>/dev/null\n", s[i], name, s[i], name);
+ 			fprintf(f, "ipset create %s%s %s%s timeout %d -exist\n",
+-			        s[i], name, stype4, i ? " family inet6" : "", RFW_FQDN_TTL);
++			        s[i], name, stype, i ? " family inet6" : "", RFW_FQDN_TTL);
+ 			/* 2026-08-21: sets are kernel-resident and come back EMPTY after a
+ 			 * reboot; until the first resolver pass / dnsmasq answer a rule or a
+ 			 * policy route keyed on this object matched nothing. The resolver
+@@ -751,10 +750,10 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 		return;
+ 	}
+ 
+-	fprintf(f, "ipset create %s%s %s -exist\n", RFW_SET4, name, stype4);
++	fprintf(f, "ipset create %s%s %s -exist\n", RFW_SET4, name, stype);
+ 	fprintf(f, "ipset flush %s%s\n", RFW_SET4, name);
+ 	if (strcmp(type, "mac") != 0) {
+-		fprintf(f, "ipset create %s%s %s family inet6 -exist\n", RFW_SET6, name, stype6);
++		fprintf(f, "ipset create %s%s %s family inet6 -exist\n", RFW_SET6, name, stype);
+ 		fprintf(f, "ipset flush %s%s\n", RFW_SET6, name);
+ 	}
+ 	strlcat(keep, " ", keeplen); strlcat(keep, RFW_SET4, keeplen); strlcat(keep, name, keeplen);
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index 066a9c70d9..fbfc3d6fcf 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -173,8 +173,7 @@ void start_rexport(void)
+ 
+ 	iv = nvram_get_int("reaper_export_interval");
+ 	if (iv <= 0) iv = 60;
+-	mins = (iv + 59) / 60;				/* cron granularity is 1 minute */
+-	if (mins < 1) mins = 1;
++	mins = (iv + 59) / 60;				/* cron granularity is 1 minute; iv>0 => mins>=1 */
+ 	if (mins > 60) mins = 60;
+ 	snprintf(line, sizeof(line), "*/%d * * * * sh %s", mins, REXPORT_SH);
+ 	eval("cru", "a", "rexport", line);
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index f3d53aa357..53a1126cf7 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -406,6 +406,29 @@ static FILE *popen_pid(const char *cmd, pid_t *pid_out)
+  * straight past the arming timeout and past a USB-key removal. An ephemeral,
+  * session-scoped daemon must not have an unbounded wait anywhere in it.
+  */
++/* Append the lines of `path` whose prefix is one of the NUL-separated,
++ * double-NUL-terminated `prefixes`, in file order, up to `cap` bytes. The
++ * in-process replacement for "grep -E '^(A|B|C):' file" (v2.6.2). */
++static void sb_addfile_lines(sbuf_t *s, const char *path, const char *prefixes, size_t cap)
++{
++	FILE *f = fopen(path, "r");
++	char line[512];
++	size_t got = 0;
++	if (!f) { sb_puts(s, "(unavailable)"); return; }
++	while (fgets(line, sizeof(line), f)) {
++		const char *pfx = prefixes;
++		size_t n = strlen(line), match = 0;
++		for (; *pfx; pfx += strlen(pfx) + 1)
++			if (strncmp(line, pfx, strlen(pfx)) == 0) { match = 1; break; }
++		if (!match) continue;
++		if (got + n > cap) n = cap - got;
++		sb_add(s, line, n);
++		got += n;
++		if (got >= cap) break;
++	}
++	fclose(f);
++}
++
+ static void sb_addcmd(sbuf_t *s, const char *cmd, size_t cap)
+ {
+ 	FILE *p;
+@@ -685,7 +708,11 @@ static void tool_overview(sbuf_t *s)
+ 		sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
+ 	sb_puts(s, ",\"loadavg\":"); { sbuf_t t; sb_init(&t); sb_addfile(&t, "/proc/loadavg", 96);
+ 		if (t.p) { char *nl = strchr(t.p, '\n'); if (nl) *nl = 0; } sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
+-	sb_puts(s, ",\"meminfo\":"); { sbuf_t t; sb_init(&t); sb_puts(&t, ""); sb_addcmd(&t, "grep -E '^(MemTotal|MemFree|MemAvailable):' /proc/meminfo", 256);
++	sb_puts(s, ",\"meminfo\":"); { sbuf_t t; sb_init(&t); sb_puts(&t, "");
++		/* v2.6.2: the three lines read in-process (was a grep fork per call);
++		 * output byte-identical to the grep: matching lines, file order,
++		 * trailing newlines kept, capped at 256 bytes like the old sb_addcmd. */
++		sb_addfile_lines(&t, "/proc/meminfo", "MemTotal:\0MemFree:\0MemAvailable:\0", 256);
+ 		sb_json_str(s, t.p ? t.p : ""); sb_free(&t); }
+ 	sb_puts(s, "}");
+ }
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index d6da517230..f4eaa25a86 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -888,8 +888,8 @@ static void poll_conntrack(void);	/* fwd decl - fallback */
+ struct fcf {
+ 	uint64_t nfc;		/* nf_conn[0] pointer (connection correlation key) */
+ 	uint64_t delta;		/* TotalBytes delta this poll */
+-	uint32_t sip, dip;
+-	int dport, lan;		/* lan = source is a LAN address (upload dir) */
++	uint32_t sip;		/* dst ip/port are parsed for validation only, never read */
++	int lan;		/* lan = source is a LAN address (upload dir) */
+ 	char mac[20], dev[16];	/* client MAC (upload SA); LAN-side dev */
+ };
+ 
+@@ -995,10 +995,6 @@ static void poll_fcache(void)
+ 		if (sscanf(sips, "%d.%d.%d.%d", &a, &b, &c, &d) != 4 ||
+ 		    ((a | b | c | d) & ~0xff)) continue;	/* reject octet >255 / negative */
+ 		fl[nfl].sip = ((uint32_t)a << 24) | (b << 16) | (c << 8) | d;
+-		if (sscanf(dips, "%d.%d.%d.%d", &a, &b, &c, &d) == 4 && !((a | b | c | d) & ~0xff))
+-			fl[nfl].dip = ((uint32_t)a << 24) | (b << 16) | (c << 8) | d;
+-		else
+-			fl[nfl].dip = 0;
+ 
+ 		last = fc_last[flowid];
+ 		delta = (tbytes >= last) ? (tbytes - last) : tbytes;	/* recycle-safe */
+@@ -1007,7 +1003,6 @@ static void poll_fcache(void)
+ 
+ 		fl[nfl].nfc = strtoull(nfcs, NULL, 16);
+ 		fl[nfl].delta = delta;
+-		fl[nfl].dport = dport;
+ 		fl[nfl].lan = ((fl[nfl].sip & lan_mask) == lan_net);
+ 		strlcpy(fl[nfl].mac, macs, sizeof(fl[0].mac));
+ 		strlcpy(fl[nfl].dev, fl[nfl].lan ? rxdev : txdev, sizeof(fl[0].dev));
+diff --git a/release/src/router/www/Reaper_FirstBoot.asp b/release/src/router/www/Reaper_FirstBoot.asp
+index 9e6d0903cc..d5fe261583 100644
+--- a/release/src/router/www/Reaper_FirstBoot.asp
++++ b/release/src/router/www/Reaper_FirstBoot.asp
+@@ -340,7 +340,7 @@ input:focus{border-color:var(--crimson)}
+    titleForm and reload - the wizard then renders in the new language and preferred_lang
+    (nvram) carries the choice into the rest of the UI after the wizard is done. */
+ (function(){
+-  function $(id){return document.getElementById(id);}
++  /* $() from the enclosing script scope */
+   var src=$("lang_src"), sel=$("fb_lang"); if(!src||!sel) return;
+   var cur=""; try{ cur=document.titleForm.preferred_lang.value; }catch(e){}
+   var curName=""; try{ curName=($("lang_cur_name").textContent||"").replace(/\s+/g," ").trim(); }catch(e){}
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 32ad12a143..4c768519db 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -407,7 +407,7 @@ function lineChart(id, series, maxv, unit){
+     body+='<path d="'+d+'" fill="none" stroke="'+series[s].color+'" stroke-width="2"/>'; }
+   svg.innerHTML=body;
+ }
+-function stackChart(id, layers, labels, colors){
++function stackChart(id, layers, colors){
+   var svg=document.getElementById(id), H=+svg.getAttribute('viewBox').split(' ')[3];
+   var n=layers.length?layers[0].length:0, i, s, tot=[], maxv=1;
+   for(i=0;i<n;i++){ tot[i]=0; for(s=0;s<layers.length;s++) tot[i]+=layers[s][i]; if(tot[i]>maxv)maxv=tot[i]; }
+@@ -701,14 +701,14 @@ function renderHist(d){
+   var cl=d.class||{}, clsLays=[], clsCols=[], clsLeg='';
+   for(var c=1;c<=5;c++){ var arr=(cl['q'+c]||[]).map(function(p){return p[0];}); if(arr.length){ clsLays.push(arr); clsCols.push(CLSCOLOR[c]); clsLeg+='<span><i style="background:'+CLSCOLOR[c]+'"></i>'+esc(CLSNAME[c-1]||('Q'+c))+'</span>'; } }
+   document.getElementById('clslegend').innerHTML = clsLeg || `<span style="color:var(--steel)"><#RTRF_67#></span>`;
+-  if(clsLays.length) stackChart('clschart', clsLays, null, clsCols); else document.getElementById('clschart').innerHTML='';
++  if(clsLays.length) stackChart('clschart', clsLays, clsCols); else document.getElementById('clschart').innerHTML='';
+   }
+ 
+   /* network stack */
+   var nets=d.nets||{}, netLays=[], netCols=[], netLeg='', ni=0;
+   for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; var narr=nets[nm].map(function(p){return p[0]+p[1];}); var col=NETCOLOR[ni%NETCOLOR.length]; netLays.push(narr); netCols.push(col); netLeg+='<span title="'+esc(netTitle(nm))+'"><i style="background:'+col+'"></i>'+esc(netLabel(nm))+'</span>'; ni++; }
+   document.getElementById('netlegend').innerHTML = netLeg || `<span style="color:var(--steel)"><#RTRF_68#></span>`;
+-  if(netLays.length) stackChart('netchart', netLays, null, netCols); else document.getElementById('netchart').innerHTML='';
++  if(netLays.length) stackChart('netchart', netLays, netCols); else document.getElementById('netchart').innerHTML='';
+ 
+   /* top devices (sum window) */
+   var cli=d.clients||{}, rows=[];
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 76121415a8..3b0f415354 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -184,6 +184,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ </form>
+ <iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0" style="display:none"></iframe>
+ 
++<script src="/reaper_util.js"></script>
+ <script>
+ var NV = {
+   enable:   '<% nvram_get("reaper_pbr_enable"); %>',
+@@ -193,7 +194,7 @@ var NV = {
+ var masterOn = (NV.enable === '1');
+ var ROWS = [];
+ 
+-function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
++/* esc() = shared window.esc from reaper_util.js (loaded in <head>); the last local copy was removed in v2.6.2 */
+ 
+ function parseRules(){
+   ROWS = [];
+-- 
+2.25.1
+

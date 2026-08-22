@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.5.8** — `3006.102.8_Reaper_v2.5.8`, built on RT-BE96U. The line since v2.5.3 adds, in order: **v2.5.4** (the hardware-QoS priority fix, an honest QoS page, the speed-test / channel-scan / Warden-blocklist / SDN-key fixes, and the Firewall + About + Warden translations); **v2.5.5** (ipset **Policy Routing** — a companion to VPN Director — plus a post-boot PPPoE re-dial for lines that go quiet after a reboot); **v2.5.6** (the Policy Routing editor page); **v2.5.7** (the audit-remainder security-hardening batch); and **v2.5.8** (upstream Merlin 3006.102.8_4 alignment: the UPnP gaming fix, OpenVPN 2.7.6, miniupnpd 2.3.11). **None is yet cut as a public CI release or pushed**, and the four sibling models have not taken v2.5.8. Note: v2.5.3 first staged the strongSwan IPSec runtime, and **IPSec Server / client / Instant Guard are now confirmed working on metal** for the first time in the lineage. Published images still come from the clean-room CI build. |
-| **Newest published** | **v2.5.3**, on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). It carries the IPSec resurrection (Server / client / Instant Guard now work), the Gatekeeper first-seen fix, the QoS shaper restore, and the pre-public hardening folded in from v2.5.1 / v2.5.2. |
+| **Current rung** | **v2.7.1** — `3006.102.8_Reaper_v2.7.1`, built on RT-BE96U and running on the maintainer's router (diag clean). The line since v2.6.0 adds, in order: **v2.6.1** (nvram-hang guard in every generated script, Warden kp fix); **v2.6.2** (one shared front chain so the layer order is fixed: Warden → Gatekeeper → rules engine; Gatekeeper on every network); **v2.6.3** (the Gatekeeper 45-device wall — the device list moves off nvram); **v2.6.4–v2.6.6** (the diagnostics report learns to find things itself); **v2.6.7** (Policy Routing finished: WireGuard targets, IPv6, apply-and-confirm); **v2.6.8** (USB format as ext4/ext3/ext2); **v2.6.9** (field fixes: 40-domain objects, address-list rules, self-healing routing chain); **v2.7.0** (one Reaper settings backup file; `/jffs` health in the report); **v2.7.1** (security review: the cross-site-request fix, every page translatable, the master guide). v2.6.2–v2.6.5 are cut into the patch series; **v2.6.6–v2.7.1 are cut as one rung (patches 0502–0517) and await the maintainer's push**. |
+| **Newest published** | **v2.5.7** (2026-08-20), on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). It carries the audit-remainder hardening batch on top of v2.5.3's IPSec resurrection, Gatekeeper first-seen fix and QoS shaper restore. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8, v2.3.9, v2.4.0 — the firewall spanned all three, and shipping a half-built rules engine was not worth doing — plus the intermediate firewall rungs v2.4.2–v2.4.8, and v2.5.0, v2.5.1, v2.5.2, and v2.5.4–v2.5.8. **v2.4.9 and v2.5.3 both published** on all five models — v2.5.3 is the current newest (above). v2.4.1–v2.4.4 and v2.4.8 are built on RT-BE96U, both variants; v2.5.2 is a compile-check build additionally metal-validated for its Gatekeeper + QoS fixes. v2.5.1 and v2.5.2 were never cut as their own lean-repo rungs — v2.5.3 is the cut that carries them. **v2.5.4 through v2.5.7 are each built on RT-BE96U and validated on hardware** (v2.5.4 QoS on metal, v2.5.5 policy-routing data path on the lab link, v2.5.6 the routing page on hardware, v2.5.7 verified in the image) but are not yet cut as public CI releases. **v2.5.8** is built on RT-BE96U; its UPnP gaming fix owes an on-metal check (a UPnP-forwarding game accepting inbound connections). |
+| **Rungs without images** | v2.3.8–v2.4.0, v2.4.2–v2.4.8, v2.5.0–v2.5.2, v2.5.4–v2.5.6, v2.5.8–v2.7.0 — intermediate rungs that were cut (or folded into the next cut) without a published image. **Published:** v2.4.9, v2.5.3 and v2.5.7 on all five models. Every rung from v2.5.4 on is built on RT-BE96U, both variants; v2.6.x–v2.7.1 were each validated on the maintainer's router through the diagnostics report, with the items that need a second box or a reporter listed under *Pending verification* in [`BACKLOG.md`](BACKLOG.md). |
 | **Prior full-fleet releases** | **v2.4.9**, **v2.3.7**, **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
@@ -15,6 +15,126 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.7.1 — security review, every page translatable, the master guide
+
+*Built on RT-BE96U and running on the maintainer's router. Cut with v2.6.6–v2.7.0 as one rung.*
+
+**Three independent adversarial reviews** went over everything changed since the 2026-07-31 audit,
+plus a regression check of about forty earlier findings (none had come back). The one that matters:
+the token Reaper's own controls checked on every request turned out to be **ASUS's factory constant,
+identical on every router ever made** — so a web page you happened to visit while logged in could,
+in principle, have switched Gatekeeper off, approved a device, torn down the firewall engine or
+pushed a routing list. The token is now generated fresh on every boot, and every Reaper control also
+refuses a request whose browser *Referer* names another site. Stock pages are untouched; scripts
+that talk to the router without a Referer still work on the token. Also fixed: a firewall list saved
+during the Keep countdown could become the confirmed config without ever having run (refused now);
+an over-long rule field silently widened the rule instead of dropping it (the guard had gone dead);
+and a LAN device named `HOST-` could hang the web server through the diagnostics sanitizer
+(rewritten; any device could plant that name). Recorded for a decision rather than changed: the
+update check verifies the download over TLS against the published hash, but the manifest carries no
+author signature.
+
+**Every Reaper page is now fully translatable** — 26 remaining English literals tokenized and 66
+tokens moved out of quoted script strings, where a translation with an apostrophe would have broken
+the page. **`docs/REAPER-GUIDE.md`** is the new master guide: what Reaper is, the rules for running
+it properly (the `/jffs` store, the two backups, USB and filesystems, Apply and Keep, the sanitized
+report), every feature page, good practice, troubleshooting, glossary.
+
+---
+
+## What's new in v2.7.0 — one backup file for everything Reaper keeps; /jffs health
+
+*Built on RT-BE96U.*
+
+Since v2.6.3–v2.6.9 the Reaper lists live on the router's internal `/jffs` partition, not in nvram,
+so the stock settings backup no longer carries them. The Storage page now has **Reaper settings
+backup**: one JSON file with Gatekeeper (switches + device list), Policy Routing (switch + rules), the
+Firewall engine (switches + all eight lists) and Warden (countries, feeds, ban/allow). Import replays
+it through each feature's own save path — Gatekeeper and Warden take effect at once; firewall and
+routing lists land as drafts for you to Apply and Keep, so a restored rule that cuts off your own
+access still reverts. The diagnostics report gains a `/jffs` health line (size, free, read-only
+state, a write test, Reaper's usage) and warns when the partition is unmounted, read-only, nearly
+full or unwritable. `/jffs` is always mounted (the "custom scripts" switch only controls whether
+`/jffs/scripts` and `/jffs/configs` are honored); a factory reset or "Format JFFS on next boot"
+erases the Reaper lists — export first.
+
+---
+
+## What's new in v2.6.9 — a field report becomes three fixes
+
+*Built on RT-BE96U.*
+
+A 40-domain object would not save: the Firewall's lists were the last ones still held in nvram,
+where the kernel silently refuses any value over 1 KB — the same wall Gatekeeper hit at 45 devices.
+They now live on `/jffs` like the routing rules, migrated once at the first boot. A pasted list of
+IP addresses blanked the page: the rule editor took the value raw. A source rule now takes **a list
+of addresses or CIDRs** (one per line or comma-separated, up to 64), each checked before it is kept.
+And some routing mark rules were missing after a reboot (the address set they match was a moment
+late): the routing script now records what it meant to load, and the watchdog re-applies it when the
+live chain is short.
+
+---
+
+## What's new in v2.6.8 — USB: format as ext4, ext3 or ext2
+
+*Built on RT-BE96U.*
+
+The USB page can format a disk as **ext4, ext3 or ext2** next to FAT32 (and NTFS / HFS+), with a
+one-line hint per choice — ext4 for a disk that stays on the router, FAT32 for one you carry between
+devices. The formatter was already in the image; only the dispatch was missing. Found on the way:
+NTFS and HFS+ formatting from the Reaper USB page had never worked (the page sent names the
+formatter did not recognise; the disk came back untouched). Corrected.
+
+---
+
+## What's new in v2.6.7 — Policy Routing finished: WireGuard, IPv6, apply-and-confirm
+
+*Built on RT-BE96U.*
+
+**WireGuard clients are routing targets.** The hardware accelerator does not honour a routing rule
+whose exit is a WireGuard tunnel, so Policy Routing now does what VPN Director does and tells the
+accelerator to leave the affected flows alone: a source rule excludes just that address; a
+destination-list or MAC rule has to exclude the whole LAN, which costs hardware acceleration for LAN
+traffic while such a rule exists — the page says so on the rule. A WireGuard rule whose client is
+off blocks the selected traffic until it comes up (fail-closed). **IPv6 is covered** on every
+selector; if the tunnel carries no IPv6 the selected IPv6 traffic is blocked rather than leaked.
+**Apply-and-confirm**: rules go live at once and the router reverts them itself unless you press Keep
+within the timer — the same protection the Firewall page has. The routing rule list also moved off
+nvram (it was capped at about 15 rules). Two field items in the same rung: the About page's "patches
+applied" now shows the public series count with "series as of vX" on a local image, and Warden's
+"prefixes loaded" figure moved to the count bar.
+
+---
+
+## What's new in v2.6.4 – v2.6.6 — the diagnostics report learns to find things itself
+
+*Built on RT-BE96U.*
+
+The one-shot sanitized report (v1.3.x) now opens with a **FINDINGS** block derived by the script —
+WARN for a fault in the section named, INFO for worth-knowing — and adds: syslog history and
+wireless-churn ranking, process health (stuck readers, D-state, top CPU), each Reaper service against
+its switch, the firewall layer order, Gatekeeper / routing / VPN state, data-plane accelerator
+counters, nvram hygiene (names and sizes near the 1 KB cap), and the network inventory per bridge.
+Everything still passes the same sanitizer; the ledger at the top says what was withheld.
+
+---
+
+## What's new in v2.6.1 – v2.6.3 — the hang guard, one front chain, the 45-device wall
+
+*Built on RT-BE96U. v2.6.2–v2.6.5 are cut into the patch series.*
+
+**v2.6.1:** every Reaper-generated script reads nvram through a guard with a five-second ceiling —
+the closed nvram library can wait forever on a netlink socket (the long-standing "stuck nvram" bug),
+and a stuck reader used to take a cron tick or the firewall lock with it; the watchdog also reaps
+readers stuck longer than two minutes. **v2.6.2:** one shared front chain in INPUT / FORWARD /
+OUTPUT so the layer order is fixed and cannot be reshuffled by a rebuild — Warden first, then
+Gatekeeper, then the rules engine — and Gatekeeper enforces on every network (guest/IoT/SDN), with a
+per-network DNS carve-out. **v2.6.3:** a field report from an RT-BE88U: the 46th approved device
+silently never saved. The kernel's nvram store refuses any value over 1 KB and the library reports
+nothing; the Gatekeeper device list now lives on `/jffs` (cap raised to 512), migrated once.
 
 ---
 

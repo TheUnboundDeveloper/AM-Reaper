@@ -572,3 +572,25 @@ is the correct posture here; **A6-REL-001** — needs upstream feed signatures t
 Deferred: **A6-PERF-001**, an rtrafd viewer-gate that is a performance item only validatable on a
 live page, held for a focused follow-up. Already resolved earlier and re-confirmed: A6-PERF-002,
 B4-SEC-001, A2-QUALITY-004, and the `0700` directory-mode item (A3-REL-005).
+
+## Adversarial review 2026-08-22 (v2.7.1)
+
+Three independent passes over everything changed since the 2026-07-31 audit (httpd CGIs + pages;
+the rc script generators; daemons, the diagnostics report and the update check), plus a regression
+check of about forty earlier findings — **none regressed**. Fixed in **v2.7.1**:
+
+| ID | Severity | Component | Issue | Fix |
+|---|---|---|---|---|
+| R7-SEC-001 | **High** | `httpd/web.c`, `httpd/httpd.c`, `rc/services.c` | The `http_id` token every Reaper CGI compared requests against was ASUS's factory constant (`shared/defaults.c`), identical on every router and never regenerated; Reaper CGIs are not in the prebuilt referer whitelist, so a cross-site top-level GET could drive any Reaper action with a live admin session. | `http_id` generated per boot from `/dev/urandom` in `start_httpd`; every Reaper CGI additionally refuses a request whose Referer host is not this router (`reaper_referer_ok`); `referer_url` cleared per request. |
+| R7-SEC-002 | Medium | `httpd/web.c` (`reaper_fw.cgi save`, `reaper_cfg.cgi import`) | A list saved during the commit-confirm window was snapshotted by Keep as the confirmed config without ever having been compiled or run. | Save and import of firewall lists refused while `reaper_fw_armed=1`. |
+| R7-SEC-003 | Medium | `rc/reaper_fw.c` `rfw_emit_rule` | The over-length-field guard tested `< 0` but `rfw_field()` had returned 0 for "does not fit" since 2026-08-21 — dead code; a truncated match field silently widened the rule. Admin/root-gated data. | Guard tests `!rfw_field()`. |
+| R7-SEC-004 | Medium | `others/reaper_diag` | A DHCP client named `HOST-` made sanitizer pass 1 loop forever (its token contained the literal), pinning the httpd that runs the report. Any LAN device could plant the name. | Pass 1 builds left-to-right; tokens carry a `\001` sentinel during the passes, stripped at print. |
+| R7-SEC-005 | Low | `rc/reaper_fw.c`, `rc/reaper_pbr.c`, `rc/gatekeeper.c`, `gkd/gkd.c` | Generated root scripts / snippets called bare `nvram get` (the v2.6.1 hang guard rule). | `_nv` helper / C-side reads. |
+| R7-SEC-006 | Low | `rc/reaper_pbr.c`, `rc/reaper_fw.c` | A routing candidate that failed to run still armed a timer; the list migration could promote a pre-confirm draft to "confirmed". | Exit status checked, rollback on failure; draft held aside during migration. |
+| R7-SEC-007 | Low | `httpd/web.c` (`reaper_cfg.cgi`), `others/reaper_diag` | Import rejected Warden's CIDR / feed keys under the flag charset and skipped the Gatekeeper baseline snapshot when enabling it; the sanitizer missed hostnames present only in the syslog tail or truncated to 32 characters by Gatekeeper's log line. | Per-key charset (rc re-validates structurally), baseline on 0→1, 60 KB client cap; syslog seeding, 32-char prefixes, lease dump fields only. |
+
+Recorded, not changed: **R7-DESIGN-001** — the firmware-update chain verifies TLS against the system
+CA bundle, host pin, model/variant and the manifest's SHA-256, and nothing flashes without a click,
+but the manifest carries no author signature (a compromised repository could offer a matching pair);
+a key-custody decision, tracked in `BACKLOG.md`. **R7-REL-001** — the watchdog's routing self-heal
+runs the idempotent apply script without the firewall lock (transient inconsistency at worst).

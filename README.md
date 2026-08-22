@@ -1,6 +1,6 @@
 # AM-Reaper
 
-**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x** — branded `reaper`. Current: **v2.5.3** (newest published release — see §"Current version" below). Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** (metal validation owed on the four siblings).
+**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x** — branded `reaper`. Current: **v2.5.7** (newest published release — see §"Current version" below); the source tree sits at **v2.7.1**. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** (metal validation owed on the four siblings).
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — remove cloud-coupled/AI-branded attack surface, and produce a flashable image that can be shared with other security-conscious BE-series owners.
 
@@ -51,6 +51,7 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 
 ## Documentation — read in this order
 
+0. **[docs/REAPER-GUIDE.md](docs/REAPER-GUIDE.md)** — **the owner's guide: start here.** What Reaper is, the requirements and rules for running it properly (the `/jffs` store, the two backups, USB, Apply and Keep, the sanitized report), every feature page, good practice, troubleshooting, glossary.
 1. **[docs/PROJECT.md](docs/PROJECT.md)** — what this fork is, scope, hard rules, threat model, flashing, legal. (The collapsed version of the upstream READMEs.)
 2. **[docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)** — what the current release contains, the two build variants, and how to flash it.
 3. **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — big changes per version, v1.0 → the current release.
@@ -71,7 +72,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 ## Base & status
 
 - Base: Asuswrt-Merlin **3006.102.8** (patches apply on tag `3006.102.8-beta2`; the sibling-model strip is optional — see [`patches/README.md`](patches/README.md)).
-- Current version: **v2.5.3** (firmware line `3006.102.8_Reaper_v2.5.3`) — *current* means the newest
+- Current version: **v2.5.7** (firmware line `3006.102.8_Reaper_v2.5.7`) — *current* means the newest
   **published release**, i.e. the newest image you can actually download from
   [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all five models.
   Source rungs are cut more often than releases are published (v2.3.3, v2.3.5 and v2.3.6 exist in the

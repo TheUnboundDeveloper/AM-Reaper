@@ -49,10 +49,12 @@ each with its own enable checkbox so you can park a rule without deleting it.
 
 **The add-rule form** builds one rule: pick the selector type, fill in its value, choose the target,
 and add it. Every row also has **Modify**: it loads the rule back into the form, the Add button
-becomes Save, and saving replaces the rule in place. **Apply** writes the whole list to the router and
-puts it into effect immediately. There is no countdown here (unlike the Firewall Rules tab) — see
-[Fail-closed](#fail-closed) for why the risky direction is defended a different way, and
-[Worth knowing](#worth-knowing) for the honest limit of that.
+becomes Save, and saving replaces the rule in place. **Apply and confirm** puts the whole list into
+effect at once and starts the same auto-revert countdown the Firewall Rules tab uses (the timer is
+set on the Firewall page): press **Keep** to make it permanent, or let it expire / press **Revert**
+and the previous rules come back on their own — the router owns that deadline, so closing the tab
+does not cancel it. Keep is the only thing that writes flash. A source rule may name **a list of
+addresses** (IPv4/IPv6, one per line or comma-separated, up to 64).
 
 **The Domain lists card** is where you build and maintain the lists the rules point at — see
 [Domain lists](#domain-lists) below. You no longer have to go to the Firewall page for this.
@@ -128,14 +130,17 @@ Every rule has one target:
 - **Block** — matched traffic is dropped. Useful as a hard "this device / this destination goes
   nowhere" that does not depend on the firewall rule order.
 
-**WireGuard clients are not offered as a target yet.** The router's hardware accelerator forwards
-WireGuard traffic in a way that bypasses the routing rule this feature relies on, so a WireGuard
-target would silently not work — and silently-not-working is worse than absent. A rule that names a
-WireGuard client is skipped and a line saying so is written to the system log, rather than pretending
-to route it. OpenVPN, WAN and Block work today; WireGuard is deferred until the accelerator side is
-handled properly.
+- **WireGuard 1–5** — supported since v2.6.7. The router's hardware accelerator does not honour a
+  routing rule whose exit is a WireGuard tunnel, so Reaper does what VPN Director does and tells the
+  accelerator to leave the affected flows alone: a **source** rule excludes just those addresses; a
+  **destination-list or MAC** rule has to exclude the whole LAN, which costs hardware acceleration for
+  LAN traffic while such a rule exists. The rule's chip says which applies, and the log says so on
+  every apply. A WireGuard rule whose client is switched off is fail-closed: it blocks the selected
+  traffic until that client comes up.
 
-This first version is **IPv4 only.**
+**IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the
+device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no
+IPv6, the selected IPv6 traffic is blocked rather than leaked around the tunnel.
 
 ---
 
@@ -197,13 +202,12 @@ it sits in the firewall's own rule order.
   Firewall page and simply show up in the dropdown. A list that has not resolved yet, or an emptied
   group, produces no rule rather than a rule that matches everything — the same fail-to-nothing
   behaviour the firewall uses.
-- **No commit-confirm countdown here.** The Firewall's Rules tab reverts on its own unless you press
-  Keep, because a bad firewall rule can lock you out of the router. Policy Routing does not carry that
-  countdown in this version: the engine stays inert until enabled, and a malformed rule is dropped and
-  logged rather than applied. It is still worth adding rules from a device that is **not** itself
-  being routed by the rule you are testing, so a mistake cannot cut off the browser you are using.
-- **WireGuard targets are not available yet** — see above; a WireGuard rule is skipped and logged,
-  never silently ignored.
-- **IPv4 only** in this version.
+- **Apply and confirm.** Rules go live at once and revert on their own unless you press Keep within
+  the timer — the same protection the Firewall Rules tab has. It is still worth adding rules from a
+  device that is **not** itself being routed by the rule you are testing.
+- **WireGuard costs acceleration** for the flows it must bypass — see the target list above. Prefer a
+  source rule (one address excluded) over a destination-list rule (whole LAN excluded) when you can.
+- **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup: use
+  *Reaper settings backup* on the Storage page.
 - **To check what actually loaded**, the rules appear as routing-policy entries and a marking chain on
   the router; if something is not behaving, the system log names any rule that was skipped and why.

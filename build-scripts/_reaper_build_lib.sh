@@ -99,18 +99,24 @@ _rb_variant() {   # $1 = MCP|noMCP
     local _pd="$(dirname "${BASH_SOURCE[0]}")/../patches"
     [ -n "$(ls "$_pd"/*.patch 2>/dev/null | head -1)" ] \
       || _pd="${WIN_ASUS_ROOT:-/mnt/c/Users/natha/AppData/Roaming/VSC/ASUS}/ASUS-Merlin-Reaper/patches"
+    # 2026-08-22 (field, v2.6.7): the owner runs the LOCAL images, so "dash
+    # until cut" showed a dash on every image that was ever flashed. Now the
+    # series count is ALWAYS stamped together with the version the series is
+    # AS OF (its tip); the page prints the plain count when that equals the
+    # running version, and "N - series as of vX" when the image is ahead of
+    # its cut. Still never the previous cut's count passed off as this one's.
     local _pc="" _tip="" _sv="" _cv=""
     _cv=$(grep '^EXTENDNO=' "$R/release/src-rt/version.conf" 2>/dev/null \
           | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | head -1)
     _tip=$(ls "$_pd"/*.patch 2>/dev/null | tail -1)
     if [ -n "$_tip" ]; then
       _sv=$(basename "$_tip" | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | tail -1)
-      [ -n "$_sv" ] && [ "$_sv" = "$_cv" ] && _pc=$(ls "$_pd"/*.patch 2>/dev/null | wc -l)
+      [ -n "$_sv" ] && _pc=$(ls "$_pd"/*.patch 2>/dev/null | wc -l)
     fi
     # VARIANT must be passed explicitly: the generator's .config fallback
     # reads the PREVIOUS variant's config at stamp time (we run before make).
-    echo "=== [$label] provenance stamp (patches=${_pc:--}) ==="
-    VARIANT="$label" bash "$_gp" "$R" "$_pc" a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3 \
+    echo "=== [$label] provenance stamp (patches=${_pc:--} series=${_sv:--} build=${_cv:--}) ==="
+    VARIANT="$label" PATCH_SERIES="$_sv" bash "$_gp" "$R" "$_pc" a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3 \
       || echo "    ! provenance stamp failed - the About page will show dashes"
   fi
 

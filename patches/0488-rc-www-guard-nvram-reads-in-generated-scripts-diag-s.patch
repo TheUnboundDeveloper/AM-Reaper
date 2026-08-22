@@ -1,0 +1,683 @@
+From 0ed7d3b7bcac1ea08e4687cf7bafce9e8abb22ac Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 21 Aug 2026 21:47:38 -0400
+Subject: [PATCH] rc/www: guard nvram reads in generated scripts, diag store
+ section, kp v6 skip, WGC rule flag
+
+- rc/reaper_nv.h: REAPER_NV_HELPER - `_nv` = nvram get with a 5 s ceiling
+  (background + 20 ms poll, SIGKILL + one `reaper-nv` syslog line on hang).
+  Emitted after the shebang of every generated Warden script (apply/fold/
+  stats/update) and rwatch.sh; all $(nvram get x) in those scripts -> $(_nv x).
+  Metal-tested on busybox ash: 28 ms/call normal, hung reader killed at 5 s,
+  empty value, no temp leftovers.
+- rc/rwatch.c: per-tick reaper for any `nvram` process older than 120 s
+  (libnvram netlink wait-forever), logged with cmdline + age.
+  Field case 2026-08-21 v2.6.0: fold.sh's `nvram get rwarden_stats_save`
+  asleep in __skb_wait_for_more_packets for 5 h with wlcsm_bindfix=1,
+  holding ctr.lock.
+- others/reaper_diag: section 17 resolves the durable store like rwatch.sh
+  (reaper_store/jffs/usb) and reports the syslog mirror path/size/span,
+  history logs and the incident dir; /jffs/rwatch absence = healthy.
+- rc/rwarden.c: skip the ipdeny v6 zone fetch for countries that publish
+  none (kp) instead of logging "geo v6 fetch FAILED" nightly.
+- www/Reaper_VPNRouting.asp: WGC1-5 targets render as an amber dashed chip
+  with RVR_53 ("not supported yet - rule inactive"); 25 dicts lockstep.
+---
+ release/src/router/others/reaper_diag        | 33 ++++++++++--
+ release/src/router/rc/reaper_nv.h            | 35 +++++++++++++
+ release/src/router/rc/rwarden.c              | 54 +++++++++++++++-----
+ release/src/router/rc/rwatch.c               | 43 +++++++++++-----
+ release/src/router/www/BR.dict               |  1 +
+ release/src/router/www/CN.dict               |  1 +
+ release/src/router/www/CZ.dict               |  1 +
+ release/src/router/www/DA.dict               |  1 +
+ release/src/router/www/DE.dict               |  1 +
+ release/src/router/www/EN.dict               |  1 +
+ release/src/router/www/ES.dict               |  1 +
+ release/src/router/www/FI.dict               |  1 +
+ release/src/router/www/FR.dict               |  1 +
+ release/src/router/www/HU.dict               |  1 +
+ release/src/router/www/IT.dict               |  1 +
+ release/src/router/www/JP.dict               |  1 +
+ release/src/router/www/KR.dict               |  1 +
+ release/src/router/www/MS.dict               |  1 +
+ release/src/router/www/NL.dict               |  1 +
+ release/src/router/www/NO.dict               |  1 +
+ release/src/router/www/PL.dict               |  1 +
+ release/src/router/www/RO.dict               |  1 +
+ release/src/router/www/RU.dict               |  1 +
+ release/src/router/www/Reaper_VPNRouting.asp |  9 +++-
+ release/src/router/www/SL.dict               |  1 +
+ release/src/router/www/SV.dict               |  1 +
+ release/src/router/www/TH.dict               |  1 +
+ release/src/router/www/TR.dict               |  1 +
+ release/src/router/www/TW.dict               |  1 +
+ release/src/router/www/UK.dict               |  1 +
+ 30 files changed, 164 insertions(+), 35 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_nv.h
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 26d3ab1c0d..7f9172e319 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -451,12 +451,35 @@ if [ -n "$GW" ]; then probe "default gateway   " "$GW"; else echo "  default gat
+ probe "Cloudflare-DNS-v4 " 1.1.1.1
+ probe "Google-DNS-v4     " 8.8.8.8
+ 
+-sec "17. RWATCH (self-monitor state)"
+-nvram show 2>/dev/null | grep '^rwatch_' | sort | sed 's/^/  /'
+-if [ -d /jffs/rwatch ]; then
+-  echo "  -- captured failure bundles --"; ls -l /jffs/rwatch 2>/dev/null | sed 's/^/     /'
++sec "17. RWATCH (self-monitor state + durable store)"
++nvram show 2>/dev/null | grep -E '^(rwatch_|reaper_store)' | sort | sed 's/^/  /'
++# reaper v2.6.1: resolve the durable store the way rwatch.sh / rdev_store_base()
++# do, and report the syslog mirror. The old section only looked at /jffs/rwatch,
++# which is the INCIDENT-DUMP dir (created on first incident) - "none" there was
++# read as "rwatch broken / no mirror" twice during triage when the mirror was
++# sitting on the USB store the whole time.
++RS_BASE=/tmp/reaper
++case "$(nvram get reaper_store 2>/dev/null)" in
++  jffs) [ -d /jffs/reaper ] && RS_BASE=/jffs/reaper ;;
++  usb)  for d in /tmp/mnt/*/; do [ -d "$d" ] || continue; m="${d%/}"; grep -qF " $m " /proc/mounts 2>/dev/null || continue; [ -d "${d}.reaper" ] && { RS_BASE="${d}.reaper"; break; }; done ;;
++esac
++echo "  durable store     : $RS_BASE$( [ "$RS_BASE" = /tmp/reaper ] && echo ' (VOLATILE - lost at reboot)')"
++echo "  datastore opt-ins : $(nvram get reaper_store_ds 2>/dev/null)"
++if [ -s "$RS_BASE/syslog.mirror" ]; then
++  echo "  syslog mirror     : $RS_BASE/syslog.mirror $(wc -c < "$RS_BASE/syslog.mirror" 2>/dev/null) bytes, $(wc -l < "$RS_BASE/syslog.mirror" 2>/dev/null) lines"
++  echo "     spans          : $(head -1 "$RS_BASE/syslog.mirror" 2>/dev/null | cut -c1-15) .. $(tail -1 "$RS_BASE/syslog.mirror" 2>/dev/null | cut -c1-15)"
++  [ -s "$RS_BASE/syslog.mirror.1" ] && echo "     rotated        : syslog.mirror.1 $(wc -c < "$RS_BASE/syslog.mirror.1" 2>/dev/null) bytes"
++else
++  echo "  syslog mirror     : none (needs 'slog' in reaper_store_ds and a non-volatile store)"
++fi
++for h in devhist.log chqhist.log healthhist.log; do
++  [ -s "$RS_BASE/$h" ] && echo "  $h : $(wc -l < "$RS_BASE/$h" 2>/dev/null) lines"
++done
++RW_DUMP=/jffs/rwatch; case ",$(nvram get reaper_store_ds 2>/dev/null)," in *,watch,*) [ "$RS_BASE" != /tmp/reaper ] && RW_DUMP="$RS_BASE/rwatch";; esac
++if [ -d "$RW_DUMP" ] && [ -n "$(ls -A "$RW_DUMP" 2>/dev/null)" ]; then
++  echo "  -- captured failure bundles ($RW_DUMP) --"; ls -l "$RW_DUMP" 2>/dev/null | sed 's/^/     /'
+ else
+-  echo "  /jffs/rwatch : none"
++  echo "  incident bundles  : none ($RW_DUMP is created on the first incident - absence is healthy)"
+ fi
+ 
+ sec "18. KERNEL LOG (tail)"
+diff --git a/release/src/router/rc/reaper_nv.h b/release/src/router/rc/reaper_nv.h
+new file mode 100644
+index 0000000000..8383df77e2
+--- /dev/null
++++ b/release/src/router/rc/reaper_nv.h
+@@ -0,0 +1,35 @@
++/*
++ * reaper_nv.h - reaper v2.6.1: the `_nv` shell helper emitted into every
++ * generated Reaper shell script (Warden apply/fold/stats/update, rwatch).
++ *
++ * WHY: libnvram can block forever inside a netlink recv (the wlcsm port-
++ * aliasing bug, see docs/ and memory "wlcsm-netlink-bug"). A bare
++ * `$(nvram get x)` in a cron script then pins that script - and anything it
++ * holds, e.g. fold.sh's ctr.lock - until reboot. Observed live 2026-08-21 on
++ * v2.6.0: `nvram get rwarden_stats_save` asleep in __skb_wait_for_more_packets
++ * for five hours with wlcsm_bindfix=1.
++ *
++ * The helper runs `nvram get` in the background and polls it at 20 ms for up
++ * to 5 s (250 ticks); a hung reader is SIGKILLed and logged (tag reaper-nv),
++ * and the caller sees an empty value - every emitter already treats empty as
++ * "unset/default". Cost on the normal path is one 20 ms tick. busybox here has
++ * usleep but no `timeout`, hence the hand-rolled loop.
++ *
++ * Emit this string right after the "#!/bin/sh" line of each generated script
++ * and write `$(_nv name)` instead of `$(nvram get name)`. Plain fputs-safe
++ * (no % characters).
++ */
++#ifndef REAPER_NV_H
++#define REAPER_NV_H
++#define REAPER_NV_HELPER \
++	"# _nv: nvram get with a 5 s ceiling (libnvram netlink wait-forever guard)\n" \
++	"_nv() {\n" \
++	"  _f=/tmp/.nv.$$.$1; nvram get \"$1\" >\"$_f\" 2>/dev/null & _p=$!; _i=0\n" \
++	"  while kill -0 \"$_p\" 2>/dev/null; do\n" \
++	"    _i=$((_i+1))\n" \
++	"    if [ \"$_i\" -gt 250 ]; then kill -9 \"$_p\" 2>/dev/null; logger -t reaper-nv \"nvram get $1 hung >5 s - killed (netlink wait)\"; break; fi\n" \
++	"    usleep 20000\n" \
++	"  done\n" \
++	"  wait \"$_p\" 2>/dev/null; cat \"$_f\" 2>/dev/null; rm -f \"$_f\"\n" \
++	"}\n"
++#endif
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 9cb22df294..f7e201c22e 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -75,6 +75,7 @@
+ 
+ #include "rc.h"
+ #include <shared.h>
++#include "reaper_nv.h"
+ 
+ #define RW_DIR    "/tmp/rwarden"
+ #define RW_APPLY  "/tmp/rwarden/apply.sh"
+@@ -181,6 +182,17 @@ static int rw_valid_cidr6(const char *s)
+ }
+ 
+ /* country code: exactly two ascii letters (ipdeny filenames / set-name suffix). */
++/* reaper v2.6.1: countries with no IPv6 aggregated zone at ipdeny.com (the
++ * fetch is a permanent 404, not a transient failure). Lower-case cc. */
++static int rw_geo_no_v6(const char *cc)
++{
++	static const char *none[] = { "kp", NULL };
++	int i;
++	for (i = 0; none[i]; i++)
++		if (!strcmp(cc, none[i])) return 1;
++	return 0;
++}
++
+ static int rw_valid_cc(const char *s)
+ {
+ 	return s && strlen(s) == 2 && isalpha((int)s[0]) && isalpha((int)s[1]);
+@@ -531,10 +543,11 @@ static void rw_gen_apply(void)
+ 	do_self = nvram_match("rwarden_self", "1");
+ 	fprintf(f,
+ 	  "#!/bin/sh\n"
++	  REAPER_NV_HELPER
+ 	  "# generated by start_rwarden - do not edit; idempotent (teardown+rebuild)\n"
+-	  "LANIF=\"$(nvram get lan_ifname)\"\n"
+-	  "LANIP=\"$(nvram get lan_ipaddr)\"\n"
+-	  "LANMASK=\"$(nvram get lan_netmask)\"\n"
++	  "LANIF=\"$(_nv lan_ifname)\"\n"
++	  "LANIP=\"$(_nv lan_ipaddr)\"\n"
++	  "LANMASK=\"$(_nv lan_netmask)\"\n"
+ 	  "if [ -z \"$LANIP\" ]; then logger -t rwarden 'lan not ready - deferred'; exit 1; fi\n");
+ 	/* Derive LAN CIDR from the netmask (standard class values); /24 fallback. */
+ 	fprintf(f,
+@@ -547,8 +560,8 @@ static void rw_gen_apply(void)
+ 	/* IPv6 LAN prefixes for the anti-lockout RETURN: link-local + ULA always,
+ 	 * plus the delegated global prefix if the WAN handed one out. */
+ 	fprintf(f,
+-	  "V6PFX=\"$(nvram get ipv6_prefix)\"\n"
+-	  "V6LEN=\"$(nvram get ipv6_prefix_length)\"\n"
++	  "V6PFX=\"$(_nv ipv6_prefix)\"\n"
++	  "V6LEN=\"$(_nv ipv6_prefix_length)\"\n"
+ 	  "[ -n \"$V6PFX\" ] && [ -n \"$V6LEN\" ] && V6LAN=\"${V6PFX}/${V6LEN}\" || V6LAN=\"\"\n");
+ 	/* The router's own WAN addresses. These are DESTINATIONS for inbound traffic,
+ 	 * never an outbound destination, so RW_OUT must never drop on them (a user
+@@ -556,8 +569,8 @@ static void rw_gen_apply(void)
+ 	 * apply.sh re-runs from restart_firewall, so these stay current across a
+ 	 * DHCP renew / WAN bounce. */
+ 	fprintf(f,
+-	  "WANIPS=\"$(nvram get wan0_ipaddr) $(nvram get wan1_ipaddr)\"\n"
+-	  "V6WAN=\"$(nvram get ipv6_wan_addr) $(nvram get ipv6_rtr_addr)\"\n");
++	  "WANIPS=\"$(_nv wan0_ipaddr) $(_nv wan1_ipaddr)\"\n"
++	  "V6WAN=\"$(_nv ipv6_wan_addr) $(_nv ipv6_rtr_addr)\"\n");
+ 	/* reaper (v2.1.x, field: "block count doesn't track actual blocks"): the
+ 	 * live iptables packet counters are the ONLY source of "total blocked" and
+ 	 * "top blocked countries", but the teardown below destroys both chains - and
+@@ -811,6 +824,7 @@ static void rw_gen_update(void)
+ 	if (!f) return;
+ 	fprintf(f,
+ 	  "#!/bin/sh\n"
++	  REAPER_NV_HELPER
+ 	  "# generated by start_rwarden - fetch feeds -> ipset, cache to jffs\n"
+ 	  /* SERIALIZE runs. The cron refresh and an on-demand "update now" can fire
+ 	   * together; without a lock they share $NEW/$NEW6 and the fixed
+@@ -982,7 +996,17 @@ static void rw_gen_update(void)
+ 			  "  OK=1\n"
+ 				  "else logger -t rwarden \"geo v4 fetch FAILED for %s - keeping last-good\"; fi\n",
+ 			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
+-			/* IPv6 (same batch + fallback shape) */
++			/* IPv6 (same batch + fallback shape). reaper v2.6.1: a few
++			 * countries have NO v6 zone upstream (ipdeny 404s for kp), which
++			 * logged "geo v6 fetch FAILED ... keeping last-good" on every
++			 * nightly update forever. Keep the (empty) set so the rules still
++			 * reference something, but skip the fetch + the misleading line. */
++			if (rw_geo_no_v6(cc)) {
++				fprintf(f,
++				  "ipset create rw_g6_%s hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist\n"
++				  "# %s: no IPv6 zone published upstream - fetch skipped\n", cc, cc);
++				continue;
++			}
+ 			fprintf(f,
+ 			  "ipset create rw_g6_%s hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist\n"
+ 			  "if $CURL \"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
+@@ -1086,6 +1110,7 @@ static void rw_gen_fold(void)
+ 	if (!f) return;
+ 	fputs(
+ 	  "#!/bin/sh\n"
++	  REAPER_NV_HELPER
+ 	  "# generated by start_rwarden - do not edit; idempotent (banks, then zeroes)\n"
+ 	  "CTR=" RW_CTRS "\n"
+ 	  "DIR=" RW_CACHE "\n"
+@@ -1118,7 +1143,7 @@ static void rw_gen_fold(void)
+ 	  "# interval IS the reset, and is INDEPENDENT of whether stats are persisted -\n"
+ 	  "# so it runs BEFORE the rwarden_stats_save opt-out below. The -Z loop is\n"
+ 	  "# unconditional; only the window-anchor write to $CTR is best-effort.\n"
+-	  "case \"$(nvram get rwarden_reset)\" in\n"
++	  "case \"$(_nv rwarden_reset)\" in\n"
+ 	  "  24h) IV=86400;; 7d) IV=604800;; 30d) IV=2592000;; 90d) IV=7776000;; *) IV=0;;\n"
+ 	  "esac\n"
+ 	  "if [ \"$IV\" -gt 0 ] && [ $((NOW-SINCE)) -ge \"$IV\" ]; then\n"
+@@ -1132,7 +1157,7 @@ static void rw_gen_fold(void)
+ 	  "# STATISTICS PERSISTENCE (rwarden_stats_save opt-out): everything below banks\n"
+ 	  "# the accumulating counters to /jffs. Skipped when save is off; live counting\n"
+ 	  "# in iptables and the retention reset above are unaffected.\n"
+-	  "[ \"$(nvram get rwarden_stats_save)\" = 0 ] && exit 0\n"
++	  "[ \"$(_nv rwarden_stats_save)\" = 0 ] && exit 0\n"
+ 	  "{ [ -d \"$DIR\" ] && [ -w \"$DIR\" ]; } || exit 0\n"
+ 	  "# Read the counters, WRITE the store, and only then zero what was banked.\n"
+ 	  "# Ordering matters both ways round:\n"
+@@ -1207,10 +1232,11 @@ static void rw_gen_stats(void)
+ 	if (!f) return;
+ 	fputs(
+ 	  "#!/bin/sh\n"
++	  REAPER_NV_HELPER
+ 	  "# generated by start_rwarden - emit warden block stats as JSON (read-only)\n"
+ 	  "CTR=" RW_CTRS "\n"
+-	  "EN=$(nvram get rwarden_enable); [ \"$EN\" = 1 ] || EN=0\n"
+-	  "LU=$(nvram get rwarden_lastupd); [ -n \"$LU\" ] || LU=0\n"
++	  "EN=$(_nv rwarden_enable); [ \"$EN\" = 1 ] || EN=0\n"
++	  "LU=$(_nv rwarden_lastupd); [ -n \"$LU\" ] || LU=0\n"
+ 	  "ARMED=0; iptables -nL REAPER_WARDEN >/dev/null 2>&1 && ARMED=1\n"
+ 	  "V6=0; ip6tables -nL REAPER_WARDEN >/dev/null 2>&1 && V6=1\n"
+ 	  "TN=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN\" ] || TN=0\n"
+@@ -1225,8 +1251,8 @@ static void rw_gen_stats(void)
+ 	  "  n=$(ipset -t list $s 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$n\" ] || n=0\n"
+ 	  "  GE=$((GE+n)); case $s in rw_g_*) [ \"$n\" -eq 0 ] && GZ=$((GZ+1));; esac\n"
+ 	  "done\n"
+-	  "SV=1; [ \"$(nvram get rwarden_stats_save)\" = 0 ] && SV=0\n"
+-	  "RI=$(nvram get rwarden_reset)\n"
++	  "SV=1; [ \"$(_nv rwarden_stats_save)\" = 0 ] && SV=0\n"
++	  "RI=$(_nv rwarden_reset)\n"
+ 	  "case \"$RI\" in 24h|7d|30d|90d) ;; *) RI=off;; esac\n"
+ 	  /* Shared lock (see fold.sh): hold it across the banked $CTR reads and the
+ 	   * live counter reads so a fold.sh checkpoint cannot mv+zero between them and
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 82a2eb0cde..22ae6d6876 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -45,6 +45,7 @@
+ 
+ #include "rc.h"
+ #include <shared.h>
++#include "reaper_nv.h"
+ 
+ #define RWATCH_SH    "/tmp/rwatch.sh"
+ #define RWATCH_STATE "/tmp/rwatch.state"
+@@ -60,20 +61,21 @@ static void rwatch_gen(void)
+ 	fputs(
+ 	  "#!/bin/sh\n"
+ 	  "# generated by start_rwatch - do not edit\n"
++	  REAPER_NV_HELPER
+ 	  "STATE=" RWATCH_STATE "\n"
+ 	  "\n"
+ 	  "# reaper v1.9.1 (Rung B): durable-store resolver - MIRRORS rdev_store_base()\n"
+ 	  "# in httpd/web.c (keep the two in lockstep). Re-resolved every tick so a USB\n"
+ 	  "# hotplug/removal is picked up without re-arming. Never follows a symlink.\n"
+ 	  "rstore_base() {\n"
+-	  "  M=\"$(nvram get reaper_store)\"\n"
++	  "  M=\"$(_nv reaper_store)\"\n"
+ 	  "  case \"$M\" in\n"
+ 	  "    jffs) mkdir -p /jffs/reaper 2>/dev/null; [ -d /jffs/reaper ] && [ -w /jffs/reaper ] && { echo /jffs/reaper; return; } ;;\n"
+ 	  "    usb)  for d in /tmp/mnt/*/; do [ -d \"$d\" ] || continue; m=\"${d%/}\"; grep -qF \" $m \" /proc/mounts 2>/dev/null || continue; b=\"${d}.reaper\"; mkdir -p \"$b\" 2>/dev/null; [ -d \"$b\" ] && [ -w \"$b\" ] && { echo \"$b\"; return; }; done ;;\n"
+ 	  "  esac\n"
+ 	  "  mkdir -p /tmp/reaper 2>/dev/null; echo /tmp/reaper\n"
+ 	  "}\n"
+-	  "DS=\",$(nvram get reaper_store_ds),\"\n"
++	  "DS=\",$(_nv reaper_store_ds),\"\n"
+ 	  "BASE=\"$(rstore_base)\"\n"
+ 	  "VOLATILE=0; [ \"$BASE\" = /tmp/reaper ] && VOLATILE=1\n"
+ 	  "\n"
+@@ -82,14 +84,27 @@ static void rwatch_gen(void)
+ 	  "DUMPROOT=/jffs/rwatch\n"
+ 	  "case \"$DS\" in *,watch,*) [ \"$VOLATILE\" = 0 ] && DUMPROOT=\"$BASE/rwatch\";; esac\n"
+ 	  "\n"
+-	  "# boot grace: the WAN is legitimately down for the first minutes\n"
+ 	  "UP=$(cut -d. -f1 /proc/uptime)\n"
++	  /* reaper v2.6.1: reap `nvram` readers stuck in the libnvram netlink
++	   * wait-forever (see reaper_nv.h). _nv guards OUR scripts; this catches
++	   * every other caller (stock cron jobs, httpd children, ad-hoc shells).
++	   * No legitimate nvram call runs for two minutes - a commit is seconds.
++	   * Runs BEFORE the boot grace so a boot-time hang is cleared too. Each
++	   * kill is one logger line = field lineage for the bug. */
++	  "for _p in $(pidof nvram 2>/dev/null); do\n"
++	  "  _st=$(awk '{print int($22/100)}' /proc/$_p/stat 2>/dev/null); [ -n \"$_st\" ] || continue\n"
++	  "  _age=$((UP-_st)); [ \"$_age\" -gt 120 ] || continue\n"
++	  "  _cl=$(tr '\\0' ' ' </proc/$_p/cmdline 2>/dev/null)\n"
++	  "  kill -9 $_p 2>/dev/null && logger -t rwatch \"reaped hung nvram pid $_p ($_cl) age ${_age}s - libnvram netlink wait\"\n"
++	  "done\n"
++	  "\n"
++	  "# boot grace: the WAN is legitimately down for the first minutes\n"
+ 	  "[ \"$UP\" -lt 300 ] && exit 0\n"
+ 	  "\n"
+-	  "GW=\"$(nvram get wan0_gateway)\"\n"
+-	  "{ [ -n \"$GW\" ] && [ \"$GW\" != \"0.0.0.0\" ]; } || GW=\"$(nvram get wan_gateway)\"\n"
+-	  "LANIP=\"$(nvram get lan_ipaddr)\"\n"
+-	  "GDX=\"$(nvram get rwatch_gdx)\"\n"
++	  "GW=\"$(_nv wan0_gateway)\"\n"
++	  "{ [ -n \"$GW\" ] && [ \"$GW\" != \"0.0.0.0\" ]; } || GW=\"$(_nv wan_gateway)\"\n"
++	  "LANIP=\"$(_nv lan_ipaddr)\"\n"
++	  "GDX=\"$(_nv rwatch_gdx)\"\n"
+ 	  "FAIL=\"\"; CRIT=\"\"\n"
+ 	  "\n"
+ 	  "# 1) first-hop reachability (by IP, two tries). A failed ping is NOT proof\n"
+@@ -105,7 +120,7 @@ static void rwatch_gen(void)
+ 	  "  if ping -c1 -W3 \"$GW\" >/dev/null 2>&1 || ping -c1 -W3 \"$GW\" >/dev/null 2>&1; then\n"
+ 	  "    rm -f \"$ICMPMARK\"\n"
+ 	  "  else\n"
+-	  "    WS=\"$(nvram get wan0_state_t)\"; [ \"$WS\" = 2 ] || WS=\"$(nvram get wan_state_t)\"\n"
++	  "    WS=\"$(_nv wan0_state_t)\"; [ \"$WS\" = 2 ] || WS=\"$(_nv wan_state_t)\"\n"
+ 	  "    if [ \"$WS\" = 2 ]; then\n"
+ 	  "      if [ ! -f \"$ICMPMARK\" ]; then\n"
+ 	  "        logger -t rwatch \"note: first hop $GW is not answering ICMP, but the WAN is connected - the first hop filters ICMP; this is normal, not a fault\"\n"
+@@ -184,7 +199,7 @@ static void rwatch_gen(void)
+ 	  "  [ \"$GDX\" = 1 ] && [ -r /proc/driver/fpm/fpm ] && head -80 /proc/driver/fpm/fpm > \"$D/fpm.txt\" 2>&1\n"
+ 	  "  fcctl status > \"$D/fcache.txt\" 2>&1\n"
+ 	  "  bpmctl status > \"$D/bpm.txt\" 2>&1\n"
+-	  "  WANIF=\"$(nvram get wan0_ifname)\"\n"
++	  "  WANIF=\"$(_nv wan0_ifname)\"\n"
+ 	  "  [ -n \"$WANIF\" ] && tmctl getqstats --devtype 0 --if \"$WANIF\" --qid 0 > \"$D/tmctl-q0.txt\" 2>&1\n"
+ 	  "  dmesg | tail -120 > \"$D/dmesg.txt\" 2>&1\n"
+ 	  "  tail -200 /tmp/syslog.log > \"$D/syslog-tail.txt\" 2>/dev/null\n"
+@@ -241,14 +256,14 @@ static void rwatch_gen(void)
+   "# probe (not the gateway ping above, which cannot tell a stale session from a\n"
+   "# first hop that merely ICMP-filters).\n"
+   "BOUNCE_MARK=/tmp/reaper_wan_bounced\n"
+-  "if [ \"$(nvram get reaper_wanbounce_enable)\" != 0 ] && [ ! -f \"$BOUNCE_MARK\" ]; then\n"
+-  "  BU=\"$(nvram get wan_primary)\"; case \"$BU\" in ''|*[!0-9]*) BU=0 ;; esac\n"
+-  "  BPROTO=\"$(nvram get wan${BU}_proto)\"; [ -n \"$BPROTO\" ] || BPROTO=\"$(nvram get wan_proto)\"\n"
+-  "  BWS=\"$(nvram get wan${BU}_state_t)\"; [ -n \"$BWS\" ] || BWS=\"$(nvram get wan_state_t)\"\n"
++  "if [ \"$(_nv reaper_wanbounce_enable)\" != 0 ] && [ ! -f \"$BOUNCE_MARK\" ]; then\n"
++  "  BU=\"$(_nv wan_primary)\"; case \"$BU\" in ''|*[!0-9]*) BU=0 ;; esac\n"
++  "  BPROTO=\"$(_nv wan${BU}_proto)\"; [ -n \"$BPROTO\" ] || BPROTO=\"$(_nv wan_proto)\"\n"
++  "  BWS=\"$(_nv wan${BU}_state_t)\"; [ -n \"$BWS\" ] || BWS=\"$(_nv wan_state_t)\"\n"
+   "  if [ \"$BPROTO\" = pppoe ] && [ \"$BWS\" = 2 ]; then\n"
+   "    # real-internet reachability: only a bounce if EVERY target is unreachable,\n"
+   "    # so a single host being down or ICMP-filtered cannot trigger a false redial.\n"
+-  "    BT=\"$(nvram get wandog_target)\"; case \"$BT\" in ''|0.0.0.0) BT=1.1.1.1 ;; esac\n"
++  "    BT=\"$(_nv wandog_target)\"; case \"$BT\" in ''|0.0.0.0) BT=1.1.1.1 ;; esac\n"
+   "    if ! ping -c1 -W3 \"$BT\" >/dev/null 2>&1 && \\\n"
+   "       ! ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && \\\n"
+   "       ! ping -c1 -W3 8.8.8.8 >/dev/null 2>&1; then\n"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index f0467aa98b..e9a38a0a5b 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Informe pelo menos um domínio.
+ RVR_50=Nome de domínio inválido:
+ RVR_51=Essa lista é longa demais para um único objeto. Divida-a em duas listas.
+ RVR_52=Uma regra ainda usa esta lista. Excluir mesmo assim?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 82351497a2..17e91a6fc2 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6705,4 +6705,5 @@ RVR_49=请至少输入一个域名。
+ RVR_50=无效的域名：
+ RVR_51=该列表对于单个对象来说过长。请将其拆分为两个列表。
+ RVR_52=仍有规则在使用此列表。仍要删除吗？
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 29303f3c03..51bbc1111a 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Zadejte alespoň jednu doménu.
+ RVR_50=Neplatný název domény:
+ RVR_51=Tento seznam je pro jeden objekt příliš dlouhý. Rozdělte jej do dvou seznamů.
+ RVR_52=Tento seznam stále používá některé pravidlo. Přesto jej odstranit?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 342d2d6cf9..dbeeb4ca81 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Angiv mindst ét domæne.
+ RVR_50=Ikke et gyldigt domænenavn:
+ RVR_51=Den liste er for lang til ét objekt. Del den op i to lister.
+ RVR_52=En regel bruger stadig denne liste. Slet den alligevel?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index f11ace75a0..ad6c68606a 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Geben Sie mindestens eine Domain ein.
+ RVR_50=Kein gültiger Domainname:
+ RVR_51=Diese Liste ist zu lang für ein Objekt. Teilen Sie sie in zwei Listen auf.
+ RVR_52=Eine Regel verwendet diese Liste noch. Trotzdem löschen?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 46d68ca094..5dd8b601c9 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Enter at least one domain.
+ RVR_50=Not a valid domain name:
+ RVR_51=That list is too long for one object. Split it into two lists.
+ RVR_52=A rule still uses this list. Delete it anyway?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index e2fa11e1d5..e388d2b6da 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Introduzca al menos un dominio.
+ RVR_50=Nombre de dominio no válido:
+ RVR_51=Esa lista es demasiado larga para un solo objeto. Divídala en dos listas.
+ RVR_52=Una regla todavía usa esta lista. ¿Eliminarla de todos modos?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 338105afae..64b5b90b2c 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Anna vähintään yksi verkkotunnus.
+ RVR_50=Virheellinen verkkotunnus:
+ RVR_51=Luettelo on liian pitkä yhteen objektiin. Jaa se kahteen luetteloon.
+ RVR_52=Jokin sääntö käyttää yhä tätä luetteloa. Poistetaanko silti?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 120cea9329..2dcb07d69e 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Saisissez au moins un domaine.
+ RVR_50=Nom de domaine non valide :
+ RVR_51=Cette liste est trop longue pour un seul objet. Divisez-la en deux listes.
+ RVR_52=Une règle utilise encore cette liste. La supprimer quand même ?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 0513a1026f..6d95a33db6 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Adjon meg legalább egy domaint.
+ RVR_50=Érvénytelen domainnév:
+ RVR_51=Ez a lista túl hosszú egy objektumhoz. Ossza fel két listára.
+ RVR_52=Egy szabály még használja ezt a listát. Mégis törli?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index fb89a0d0c5..aa597c4f52 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Inserire almeno un dominio.
+ RVR_50=Nome dominio non valido:
+ RVR_51=L'elenco è troppo lungo per un solo oggetto. Suddividerlo in due elenchi.
+ RVR_52=Una regola usa ancora questo elenco. Eliminarlo comunque?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 2ac1ed9267..120d836875 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6705,4 +6705,5 @@ RVR_49=少なくとも1つのドメインを入力してください。
+ RVR_50=無効なドメイン名:
+ RVR_51=このリストは1つのオブジェクトには長すぎます。2つのリストに分割してください。
+ RVR_52=このリストはまだルールで使用されています。それでも削除しますか?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 3461f9ea4d..ab515b4ca9 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6705,4 +6705,5 @@ RVR_49=도메인을 하나 이상 입력하십시오.
+ RVR_50=유효하지 않은 도메인 이름:
+ RVR_51=이 목록은 하나의 객체에 담기에 너무 깁니다. 두 개의 목록으로 나누십시오.
+ RVR_52=규칙이 아직 이 목록을 사용합니다. 그래도 삭제하시겠습니까?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 3627b75f56..03d84584a3 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Masukkan sekurang-kurangnya satu domain.
+ RVR_50=Bukan nama domain yang sah:
+ RVR_51=Senarai itu terlalu panjang untuk satu objek. Bahagikan kepada dua senarai.
+ RVR_52=Satu peraturan masih menggunakan senarai ini. Padam juga?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 3956b5821f..e0740c43a1 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Voer ten minste een domein in.
+ RVR_50=Geen geldige domeinnaam:
+ RVR_51=Die lijst is te lang voor een object. Splits deze in twee lijsten.
+ RVR_52=Een regel gebruikt deze lijst nog. Toch verwijderen?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 659d6d6079..dfa40fd5ad 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Skriv inn minst ett domene.
+ RVR_50=Ikke et gyldig domenenavn:
+ RVR_51=Listen er for lang for ett objekt. Del den i to lister.
+ RVR_52=En regel bruker fortsatt denne listen. Slette likevel?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 3d46d8b6c7..9809fd24ba 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Wprowadź co najmniej jedną domenę.
+ RVR_50=Nieprawidłowa nazwa domeny:
+ RVR_51=Ta lista jest za długa dla jednego obiektu. Podziel ją na dwie listy.
+ RVR_52=Reguła nadal używa tej listy. Usunąć mimo to?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 57ab2d1167..38a9934442 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Introduceți cel puțin un domeniu.
+ RVR_50=Nume de domeniu invalid:
+ RVR_51=Lista este prea lungă pentru un singur obiect. Împărțiți-o în două liste.
+ RVR_52=O regulă folosește încă această listă. Ștergeți oricum?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index b359a32b23..c2517a1bb4 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Введите хотя бы один домен.
+ RVR_50=Недопустимое доменное имя:
+ RVR_51=Список слишком длинный для одного объекта. Разделите его на два списка.
+ RVR_52=Этот список ещё используется правилом. Всё равно удалить?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 3cf0adfe33..76121415a8 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -61,6 +61,7 @@ td.sel{font-family:ui-monospace,Consolas,monospace;font-size:11.7px;color:var(--
+ .tgt.vpn{color:var(--jade);border-color:rgba(79,178,134,.35)}
+ .tgt.wan{color:var(--amber);border-color:rgba(224,169,59,.35)}
+ .tgt.block{color:var(--danger);border-color:rgba(255,59,48,.4)}
++.tgt.wgc{color:var(--amber);border-color:rgba(224,169,59,.35);border-style:dashed;opacity:.85}
+ .rowdel{color:var(--danger);background:transparent;border:1px solid rgba(255,59,48,.3);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px}
+ .rowedt{color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px;margin-right:6px}
+ .rowedt:hover{color:var(--bone);border-color:var(--crimson-deep)}
+@@ -213,7 +214,11 @@ function selText(r){
+   if(r.seltype==='mac') return `<#RVR_20#>` + ': ' + esc(r.selval);
+   return `<#RVR_34#>` + ': ' + esc(r.selval);   // ipset/domain -> object / domain list
+ }
+-function tgtClass(t){ return t==='WAN'?'wan':(t==='BLOCK'?'block':'vpn'); }
++function tgtClass(t){ return t==='WAN'?'wan':(t==='BLOCK'?'block':(/^WGC[1-5]$/.test(t)?'wgc':'vpn')); }
++/* reaper v2.6.1: WireGuard targets are accepted by the parser but DEFERRED by the
++   engine (rc/reaper_pbr.c logs 'not supported yet' and skips the rule). A rule that
++   looks armed but does nothing is a trust problem, so flag it in the row. */
++function tgtLabel(t){ var l=esc(TGTLBL[t]||t); return /^WGC[1-5]$/.test(t) ? l+' &middot; <#RVR_53#>' : l; }
+ 
+ var EDIT_RULE = -1;   /* index into ROWS being edited, -1 = adding */
+ function render(){
+@@ -226,7 +231,7 @@ function render(){
+       '<td><span class="tg'+(r.en?' on':'')+'" data-i="'+idx+'"></span></td>'+
+       '<td>'+ (r.desc? esc(r.desc) : '<span style="color:var(--steel)">&mdash;</span>') +'</td>'+
+       '<td class="sel">'+ selText(r) +'</td>'+
+-      '<td><span class="tgt '+tgtClass(r.target)+'">'+ esc(TGTLBL[r.target]||r.target) +'</span></td>'+
++      '<td><span class="tgt '+tgtClass(r.target)+'"'+(/^WGC[1-5]$/.test(r.target)?' title="<#RVR_53#>"':'')+'>'+ tgtLabel(r.target) +'</span></td>'+
+       '<td style="white-space:nowrap"><button class="rowedt" data-e="'+idx+'">'+esc(`<#CTL_modify#>`)+'</button><button class="rowdel" data-d="'+idx+'">&times;</button></td>';
+     tb.appendChild(tr);
+   })(i); }
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index c2bc09a65f..50de8b2640 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Vnesite vsaj eno domeno.
+ RVR_50=Neveljavno ime domene:
+ RVR_51=Ta seznam je predolg za en objekt. Razdelite ga na dva seznama.
+ RVR_52=Ta seznam še uporablja neko pravilo. Vseeno izbrišem?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 6033054b6d..4d33cf96de 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Ange minst en domän.
+ RVR_50=Ogiltigt domännamn:
+ RVR_51=Listan är för lång för ett objekt. Dela upp den i två listor.
+ RVR_52=En regel använder fortfarande den här listan. Ta bort ändå?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index e7ab3a5851..0e82f7b488 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6705,4 +6705,5 @@ RVR_49=กรุณาป้อนโดเมนอย่างน้อยห
+ RVR_50=ชื่อโดเมนไม่ถูกต้อง:
+ RVR_51=รายการนี้ยาวเกินไปสำหรับหนึ่งออบเจ็กต์ ให้แบ่งเป็นสองรายการ
+ RVR_52=ยังมีกฎที่ใช้รายการนี้อยู่ ต้องการลบอยู่หรือไม่?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index c6ba45feb3..fc9ba013e5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6705,4 +6705,5 @@ RVR_49=En az bir alan adı girin.
+ RVR_50=Geçerli bir alan adı değil:
+ RVR_51=Bu liste tek bir nesne için çok uzun. İki listeye bölün.
+ RVR_52=Bir kural hâlâ bu listeyi kullanıyor. Yine de silinsin mi?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 7e91db76f4..9b04f958d2 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6705,4 +6705,5 @@ RVR_49=請至少輸入一個網域。
+ RVR_50=無效的網域名稱：
+ RVR_51=此清單對單一物件而言過長。請拆分為兩個清單。
+ RVR_52=仍有規則使用此清單。仍要刪除嗎？
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index c16e652d14..6661bac549 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6705,4 +6705,5 @@ RVR_49=Введіть принаймні один домен.
+ RVR_50=Недійсне доменне ім'я:
+ RVR_51=Цей список задовгий для одного об'єкта. Розділіть його на два списки.
+ RVR_52=Цей список ще використовується правилом. Усе одно видалити?
++RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+-- 
+2.25.1
+

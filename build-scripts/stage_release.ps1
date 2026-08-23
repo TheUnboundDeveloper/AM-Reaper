@@ -244,6 +244,34 @@ $manifestTxt = Join-Path $updDir 'manifest_3006.txt'
 [System.IO.File]::WriteAllText($manifestTxt, (($txtLines -join "`n")) + "`n")
 Write-Host "wrote updates/manifest_3006.txt"
 
+# --- 3b. Sign the manifest (v2.7.3: routers verify it fail-closed) ---------------
+# Gated by build-scripts/signing.conf (owner shelved enforcement 2026-08-23;
+# the machinery stays intact and this step re-arms when the switch is 'on').
+# sign_manifest.sh signs with the OFFLINE key (reaper-keys / REAPER_MANIFEST_KEY)
+# and self-verifies against build-scripts/manifest_pub.pem. A failure here is
+# only a WARNING for the staging flow - the stage itself is still good - but an
+# UNSIGNED manifest must not be pushed while enforcement is on: every fielded
+# enforcing box would report "check failed" until the .sig lands (repo-hygiene
+# enforces this on push too).
+$signingOn = (Test-Path (Join-Path $PSScriptRoot 'signing.conf')) -and
+             ((Get-Content (Join-Path $PSScriptRoot 'signing.conf')) -match '^MANIFEST_SIGNING=on')
+if ($signingOn) {
+    wsl -d Ubuntu-20.04 -u reaper bash "$((Join-Path $PSScriptRoot 'sign_manifest.sh') -replace '\\','/' -replace '^C:','/mnt/c')"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "signed updates/manifest_3006.txt.sig" -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "##### MANIFEST NOT SIGNED #####" -ForegroundColor Red
+        Write-Host "The update manifest changed but could not be signed (private key" -ForegroundColor Red
+        Write-Host "missing? see reaper-keys / REAPER_MANIFEST_KEY). Do NOT push until" -ForegroundColor Red
+        Write-Host "build-scripts/sign_manifest.sh has produced updates/manifest_3006.txt.sig" -ForegroundColor Red
+        Write-Host "- fielded routers refuse an unsigned manifest (fail closed)." -ForegroundColor Red
+        Write-Host ""
+    }
+} else {
+    Write-Host "manifest signing: disabled (build-scripts/signing.conf) - skipped" -ForegroundColor DarkGray
+}
+
 # --- 4. Stage in git, then PROVE it is CI-clean before committing ----------------
 git -C $RepoRoot add -- releases updates
 Write-Host ""

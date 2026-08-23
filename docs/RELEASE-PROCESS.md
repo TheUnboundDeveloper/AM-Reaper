@@ -103,6 +103,20 @@ the rung is not shippable.
 
 8. MANIFEST           the refresh_manifest job rewrites updates/manifest_3006.txt,
                       latest.json and the release note from the PUBLISHED assets
+
+9. SIGN               CURRENTLY SHELVED (owner, 2026-08-23): while
+                      build-scripts/signing.conf says MANIFEST_SIGNING=off,
+                      every flow skips signing and no box enforces it - this
+                      step is a no-op. WHEN RE-ENABLED (signing.conf=on +
+                      REAPER_SIG_ENFORCE=1 in reaper_webs_update.sh + rebuild):
+                      pull, run build-scripts/sign_manifest.sh (private key
+                      from offline media, REAPER_MANIFEST_KEY to override),
+                      commit updates/manifest_3006.txt.sig, push. Enforcing
+                      routers verify against the baked-in public key and
+                      REFUSE an unsigned/stale-signed manifest (fail closed) -
+                      a publish is then not finished until this step runs.
+                      The key is deliberately NOT in the repo or CI secrets;
+                      rotation = ship firmware with the new public key first.
 ```
 
 Publishing is gated **twice**: `github.ref == 'refs/heads/main'` *and* the

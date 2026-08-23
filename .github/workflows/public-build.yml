@@ -109,7 +109,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v2.7.1'
+    ${{ inputs.version == '' && 'Reaper_v2.7.3'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -568,6 +568,8 @@ jobs:
             /releases/latest.json
             /docs/CHANGELOG.md
             /build-scripts/refresh_manifest.py
+            /build-scripts/manifest_pub.pem
+            /build-scripts/signing.conf
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
@@ -582,6 +584,8 @@ jobs:
             /releases/latest.json
             /docs/CHANGELOG.md
             /build-scripts/refresh_manifest.py
+            /build-scripts/manifest_pub.pem
+            /build-scripts/signing.conf
 
       - name: Regenerate manifest, latest.json and notes from the published releases
         env:
@@ -618,4 +622,45 @@ jobs:
             git rebase origin/main || { git rebase --abort || true; }
           done
           echo "::error::could not push the manifest refresh after 3 attempts"
+          exit 1
+
+      # v2.7.3: routers verify the manifest signature FAIL-CLOSED against a
+      # public key baked into the firmware. The private key is deliberately
+      # OFFLINE-ONLY - never a repo file and never a CI secret, because the
+      # signature exists precisely so a compromised repository/account cannot
+      # mint a valid manifest. CI therefore CANNOT sign; what it can do is
+      # refuse to look finished. This step goes red exactly when the refreshed
+      # manifest still needs the owner's offline signature - the releases
+      # above are already live, and this red X is the reminder that fielded
+      # >=v2.7.3 boxes report "check failed" until the .sig is pushed.
+      - name: Signature status (offline key - manual step when red)
+        if: always() && steps.checkout.outcome != 'failure'
+        run: |
+          # Gated by build-scripts/signing.conf: while the owner has manifest
+          # signing shelved (MANIFEST_SIGNING=off) this step is a green no-op.
+          if ! grep -qx 'MANIFEST_SIGNING=on' build-scripts/signing.conf 2>/dev/null; then
+            echo "manifest signing: disabled (build-scripts/signing.conf) - nothing to enforce" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          MAN=updates/manifest_3006.txt
+          SIG=$MAN.sig
+          PUB=build-scripts/manifest_pub.pem
+          if [ -s "$SIG" ] && openssl base64 -d -A -in "$SIG" -out /tmp/sig.bin 2>/dev/null \
+             && openssl dgst -sha256 -verify "$PUB" -signature /tmp/sig.bin "$MAN" >/dev/null 2>&1; then
+            echo "manifest signature VALID - update channel fully published" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Manifest is UNSIGNED - one manual step left"
+            echo ""
+            echo "The refreshed \`updates/manifest_3006.txt\` is not (or no longer) signed."
+            echo "Fielded routers on >= v2.7.3 refuse it (fail closed) until you:"
+            echo ""
+            echo '```'
+            echo "git pull"
+            echo "build-scripts/sign_manifest.sh   # offline key: reaper-keys / REAPER_MANIFEST_KEY"
+            echo "git add updates/manifest_3006.txt.sig && git commit -m 'updates: sign manifest' && git push"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::manifest is unsigned/stale-signed - run build-scripts/sign_manifest.sh locally and push the .sig (see the job summary)"
           exit 1

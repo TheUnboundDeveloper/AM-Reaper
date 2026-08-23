@@ -200,11 +200,76 @@ def write_note():
         fh.write(note)
 
 
+def sign_manifest():
+    """v2.7.3: routers verify updates/manifest_3006.txt.sig against the pubkey
+    baked into the firmware and REFUSE an unsigned manifest (fail closed) - so
+    a refreshed manifest is not publishable until it is re-signed.
+
+    The private key is deliberately OFFLINE-ONLY (never in the repo, never in
+    CI secrets - the signature exists precisely so a compromised repository or
+    account cannot mint a valid manifest). So: sign here when a key is
+    reachable (a LOCAL run - REAPER_MANIFEST_KEY, or the reaper-keys folder
+    next to the repos), and otherwise print the loud reminder (a CI run - the
+    workflow's signature-status step and repo-hygiene both enforce it).
+
+    Gated by build-scripts/signing.conf (owner shelved enforcement
+    2026-08-23): while MANIFEST_SIGNING=off this is a silent no-op."""
+    import subprocess
+    try:
+        with open("build-scripts/signing.conf") as fh:
+            if not any(l.strip() == "MANIFEST_SIGNING=on" for l in fh):
+                print("manifest signing: disabled (build-scripts/signing.conf) - skipped")
+                return
+    except OSError:
+        print("manifest signing: no signing.conf - skipped")
+        return
+    key = os.environ.get("REAPER_MANIFEST_KEY", "")
+    if not key:
+        for cand in ("../reaper-keys/manifest_rsa4096.pem",
+                     os.path.expanduser("~/reaper-keys/manifest_rsa4096.pem")):
+            if os.path.isfile(cand):
+                key = cand
+                break
+    pub = "build-scripts/manifest_pub.pem"
+    man = "updates/manifest_3006.txt"
+    sig = man + ".sig"
+    if key and os.path.isfile(key) and os.path.isfile(pub):
+        raw = subprocess.run(["openssl", "dgst", "-sha256", "-sign", key, man],
+                             capture_output=True)
+        if raw.returncode == 0:
+            import tempfile
+            b64 = subprocess.run(["openssl", "base64", "-A"], input=raw.stdout,
+                                 capture_output=True)
+            with open(sig, "wb") as fh:
+                fh.write(b64.stdout + b"\n")
+            tf = tempfile.NamedTemporaryFile(delete=False)
+            tf.write(raw.stdout)
+            tf.close()
+            ver = subprocess.run(["openssl", "dgst", "-sha256", "-verify", pub,
+                                  "-signature", tf.name, man],
+                                 capture_output=True)
+            os.unlink(tf.name)
+            if ver.returncode == 0:
+                print("signed %s (self-verified against %s)" % (sig, pub))
+                return
+            os.unlink(sig)
+            print("ERROR: signature did not verify against %s - key/pubkey "
+                  "mismatch; sig removed" % pub)
+            sys.exit(1)
+        print("ERROR: openssl signing failed: %s"
+              % raw.stderr.decode(errors="replace").strip())
+        sys.exit(1)
+    print("NOTE: no signing key reachable - %s is now STALE. Run "
+          "build-scripts/sign_manifest.sh (offline key) and commit the .sig, "
+          "or every fielded >=v2.7.3 router reports 'check failed'." % sig)
+
+
 def main():
     new_lines, new_latest = gather()
     write_manifest(new_lines)
     write_latest(new_latest)
     write_note()
+    sign_manifest()
     print("refreshed manifest / latest.json / notes for %s (models: %s)"
           % (V, " ".join(MODELS)))
 

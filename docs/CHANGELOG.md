@@ -24,6 +24,106 @@ node, not only on the primary router.
 
 ---
 
+## v2.7.3 — polish pass + Gatekeeper learns AiMesh exists *(in progress, not yet built)*
+
+**Firmware-update manifest signing — built, and shelved inert for now (owner decision).** The
+full machinery exists: the manifest can be signed (RSA-4096/SHA-256) with a key that exists only
+offline — deliberately not in the repository and not in CI — and the router can verify the
+signature against a public key baked into the firmware before honouring a single field, refusing a
+missing or invalid signature outright. For this release the enforcement ships **disabled**: the
+verify code, embedded public key, signing tooling and CI checks are all present but inert behind
+two explicit switches (`REAPER_SIG_ENFORCE` in the check script — a rebuild, deliberately — and
+`build-scripts/signing.conf` for the tooling/CI side), so it can be turned on end-to-end later
+without rework.
+(Key note: the shipped OpenSSL 1.1.1 CLI has no one-shot Ed25519, so RSA via `dgst` is the
+primitive; if the tree later moves to Merlin's OpenSSL 3.x-with-shim arrangement, the documented
+rotation path can move the key to Ed25519.)
+
+A refused signature **explains itself**: instead of the generic "check failed", the Firmware page
+says the update list failed authentication, that this is briefly expected right after a release is
+published, and that a persistent failure can mean a compromised source. Beside it, an explicit
+**Override** exists for the operator who knows what they are doing: a danger dialog whose confirm
+button only unlocks after typing `OVERRIDE`, arming a one-shot flag the next check consumes — the
+overridden offer then stays visibly branded *UNVERIFIED*, and the override is loudly logged. It can
+never happen by accident, and it never persists.
+
+**rwatch's self-heals now run under the firewall lock.** The policy-routing and Warden chain
+re-asserts used to run the (idempotent) apply scripts outside rc's firewall lock — at worst a
+transient inconsistency, but shell `flock` can't take rc's POSIX fcntl lock, so a small rc applet
+now takes the real lock and runs the (allow-listed) heal script; a heal that races a firewall
+rebuild serializes behind it.
+
+
+**AiMesh onboarding and mesh nodes are now exempt from Gatekeeper.** A full review of the
+add-node/search path (prompted by contradictory field reports) proved the search/add chain itself
+is byte-for-byte stock — but no Reaper enforcement layer knew AiMesh existed: with Gatekeeper in
+default-deny mode, a joining node got its DHCP lease and then every packet to the router's mesh
+controller was dropped, so adding a node stalled right after association — and enabling
+default-deny on an existing mesh silently cut the nodes' control traffic. Now the mesh's own
+pairing registry exempts node MACs from every Gatekeeper surface (ahead of per-device rules, so a
+mis-filed entry can never sever a live backhaul), the exemptions refresh automatically when a node
+joins or leaves, and while an add is actually in progress the quarantine gate is held open for
+router-bound traffic only — time-boxed, and closed within seconds of the add finishing. The
+diagnostic's Gatekeeper section now shows the registry and window state.
+
+
+
+- **Full-backup card alignment:** the new card on the Administration page now sits flush with the
+  stock table under it instead of floating centered.
+- **USB format confirmation** (and Safely Remove) now use a Reaper-themed dialog instead of the
+  browser's stock popup. Formatting requires a deliberate click — Enter does not confirm it. The
+  themed dialog is a shared helper other pages will adopt over time.
+- **The owner's guide is one click away everywhere:** a `?` in the shell and dashboard topbars opens
+  `docs/REAPER-GUIDE.md`; the Firewall, Gatekeeper, Warden, Storage and USB pages deep-link their own
+  guide sections beside the page title; the About page carries an "Owner's Guide" button; the
+  first-boot page mentions it. External links only — the router never fetches anything.
+- **Flash page "Cancel leaves the buttons dead":** a harness executing the page's real script shows
+  every Cancel path in current firmware leaves the page fully usable — the report matches the
+  pre-v2.3.4 polling bug that was fixed then. One residual wedge (an error thrown between arming
+  and the overlay painting) is now cleared automatically. If it recurs on v2.7.x, exact steps
+  would pin it.
+
+---
+
+## v2.7.2 — Traffic Analyzer history made restore-proof *(built; not yet published)*
+
+**Traffic Analyzer: month-to-date no longer resets on a firmware update, and stale device rows no
+longer read as "stuck" year totals** (field report: some IPv6 devices' 1-year totals frozen; the
+Month tab reset across a flash). Root causes and fixes:
+
+- **The clock jump after a restore wiped the restored history.** The collector cleared a history
+  slot whenever its ring index changed — so on any boot where the history store attached before NTP
+  set the clock (jffs always; USB whenever the stick mounts before the WAN comes up, which is
+  typical right after a firmware flash), the 1970→now time step looked like a rollover and erased
+  the just-restored current month, day and hour. Slot lifecycle is now driven by the absolute
+  calendar period and by the database's own save timestamp: a restore from the same month/day keeps
+  accumulating in place, only periods that genuinely elapsed are cleared (downtime gaps included),
+  and nothing is zeroed while the clock is still pre-sync.
+- **A device's history could strand in a dead row.** A device first seen before its MAC resolved
+  left an IP-keyed row; when the MAC-keyed row took over, the old row's history was discarded on
+  dedup, and until then the page showed the same device twice — the dead row frozen at its last
+  total (the "stuck at 186 MB" report). The dedup now folds the old row's rings into the surviving
+  row, and the page merges rows that resolve to the same MAC before ranking Top Devices.
+- The history-window tabs now run 24 h → 14 d → Month → 1 Year (Year rightmost, owner request).
+
+**One-file full backup and restore (settings + Reaper data).** The stock Save-setting file is only
+the nvram blob, and every Reaper list moved to `/jffs` in v2.6.3–v2.6.9 — so a stock backup, reset
+and restore silently lost the Gatekeeper device list, firewall lists, routing rules and Warden
+cache. A new card on the familiar *Administration → Restore/Save/Upload Setting* page downloads one
+`.rbk` archive carrying the stock settings file (unchanged format — still readable by stock and
+Merlin), the Reaper settings, and the firewall's resolved domain-set cache. Restore checks the file
+matches this router model and that `/jffs` is healthy before touching anything, restores the router
+settings through the stock path, and reboots; one click after logging back in completes the Reaper
+half — firewall and routing lists are staged for review on their pages, never applied blind. The
+lightweight Reaper-only export on the Storage page is unchanged.
+
+**Diagnostic v1.3.6:** the wireless-churn rate no longer reads ~0/h when the log's first lines carry
+pre-NTP boot timestamps (the span now starts at the first credible timestamp, and a slow loop is
+shown per-day instead of rounding to zero); the duplicated `mangle REAPER_PBR` line in section 14d
+is gone.
+
+---
+
 ## v2.7.1 — security review, every page translatable, the master guide
 *Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
 

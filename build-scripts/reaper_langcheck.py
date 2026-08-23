@@ -31,7 +31,12 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # (target map / renderRule / placeholders) and two double-quoted HTML
        # attributes; English values are all backtick/quote-safe, and the RVR
        # translation pass must keep every value free of ` ${ and ".
-       'Reaper_VPNRouting.asp']
+       'Reaper_VPNRouting.asp',
+       # Added 2026-08-23 with v2.7.2's full-backup card. Its RBKP_ tokens sit
+       # only in HTML text contexts (hidden string spans included) - never in
+       # a JS string of any quoting - so any translation is structurally safe;
+       # the entry exists so the coverage assertion stays green.
+       'Reaper_BackupCard.asp']
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is
 # shelved and the file is not in the tree, so the entry only ever hit the

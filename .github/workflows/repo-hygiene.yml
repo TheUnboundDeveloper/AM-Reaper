@@ -105,3 +105,32 @@ jobs:
             (cd "$dir" && sha256sum -c "$(basename "$sums")")
           done < <(find releases -name 'SHA256SUMS-*.txt' -print0 | sort -z)
           [ "$found" -eq 1 ] && echo "OK: all checksum files verified" || echo "no checksum files found (nothing to verify)"
+
+      # v2.7.3: routers verify the update manifest against the public key baked
+      # into the firmware and refuse an unsigned one (fail closed). The private
+      # key is offline-only - never in this repo, never in CI - so this check
+      # cannot fix a stale signature; it exists so main can never SIT with an
+      # unsigned manifest unnoticed: every push re-proves the pair. (The CI
+      # refresh_manifest commit carries [skip ci], so the expected unsigned
+      # window between a CI publish and the owner's sign+push doesn't trip this
+      # on the bot's own commit - the publish workflow's own signature-status
+      # step covers that window.)
+      - name: Verify update-manifest signature
+        run: |
+          set -euo pipefail
+          # Gated by build-scripts/signing.conf (owner shelved enforcement
+          # 2026-08-23): while MANIFEST_SIGNING=off this check is a no-op.
+          if ! grep -qx 'MANIFEST_SIGNING=on' build-scripts/signing.conf 2>/dev/null; then
+            echo "manifest signing: disabled (build-scripts/signing.conf) - check skipped"
+            exit 0
+          fi
+          MAN=updates/manifest_3006.txt
+          SIG=$MAN.sig
+          PUB=build-scripts/manifest_pub.pem
+          if [ ! -f "$MAN" ]; then echo "no manifest (nothing to verify)"; exit 0; fi
+          [ -f "$PUB" ] || { echo "::error::$PUB missing - the routers' trust anchor must be committed"; exit 1; }
+          [ -s "$SIG" ] || { echo "::error::$MAN is UNSIGNED - run build-scripts/sign_manifest.sh (offline key) and commit $SIG; fielded >=v2.7.3 routers refuse an unsigned manifest"; exit 1; }
+          openssl base64 -d -A -in "$SIG" -out /tmp/sig.bin
+          openssl dgst -sha256 -verify "$PUB" -signature /tmp/sig.bin "$MAN" \
+            || { echo "::error::manifest signature INVALID (stale after a manifest edit?) - re-run build-scripts/sign_manifest.sh and commit the fresh $SIG"; exit 1; }
+          echo "OK: manifest signature verifies against $PUB"

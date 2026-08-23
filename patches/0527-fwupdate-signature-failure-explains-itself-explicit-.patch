@@ -1,0 +1,581 @@
+From e5d9dbbc5b9463c504826364d8574197b317d094 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 08:50:01 -0400
+Subject: [PATCH] fwupdate: signature failure explains itself + explicit
+ type-to-confirm override
+
+Owner asks: fail loudly with an explanation, and allow an override that
+cannot happen by accident.
+
+- A refused signature surfaced as the same generic check-failed text as a
+  network error. The check script now sets webs_state_error=9 (stock uses
+  1-3) on a signature refusal and the page shows RFWU_49: the list was
+  refused because its signature is missing/wrong, briefly expected right
+  after a publish (the list is signed as a final step), and if persistent
+  the source may be compromised. (First attempt reused RFWU_48, which
+  already means 'Standard' on the variant card - caught, renumbered.)
+
+- Beside that message an Override... button opens the themed danger
+  dialog with a NEW reaperConfirm typed-gate (opts.typed): the confirm
+  button stays disabled until the user types OVERRIDE exactly - no Enter,
+  no accidental click-through. Confirming sets reaper_fwsig_override=1
+  (defaults.c-registered so saveNvram accepts it) and re-runs the check;
+  the script consumes the flag ONE-SHOT (cleared whether needed or not),
+  logs 'SIGNATURE OVERRIDE - proceeding with an UNVERIFIED manifest at
+  the admin's explicit request', and proceeds. The page then brands the
+  offer persistently: 'Signature override active - the update information
+  below is UNVERIFIED' - the warning does not clear on success.
+
+Dicts RFWU_49-53, lockstep 6767 x25. Host-validated: typed-gate harness
+(locked initially, locked click inert, wrong case stays locked, exact
+word unlocks, teardown clean), modal regression still passes, page +
+util JS parse clean, ASCII 0, check script sh -n clean.
+---
+ .../rom/webs_scripts/reaper_webs_update.sh    | 30 ++++++++++++----
+ release/src/router/shared/defaults.c          |  4 +++
+ release/src/router/www/BR.dict                |  5 +++
+ release/src/router/www/CN.dict                |  5 +++
+ release/src/router/www/CZ.dict                |  5 +++
+ release/src/router/www/DA.dict                |  5 +++
+ release/src/router/www/DE.dict                |  5 +++
+ release/src/router/www/EN.dict                |  5 +++
+ release/src/router/www/ES.dict                |  5 +++
+ release/src/router/www/FI.dict                |  5 +++
+ release/src/router/www/FR.dict                |  5 +++
+ release/src/router/www/HU.dict                |  5 +++
+ release/src/router/www/IT.dict                |  5 +++
+ release/src/router/www/JP.dict                |  5 +++
+ release/src/router/www/KR.dict                |  5 +++
+ release/src/router/www/MS.dict                |  5 +++
+ release/src/router/www/NL.dict                |  5 +++
+ release/src/router/www/NO.dict                |  5 +++
+ release/src/router/www/PL.dict                |  5 +++
+ release/src/router/www/RO.dict                |  5 +++
+ release/src/router/www/RU.dict                |  5 +++
+ release/src/router/www/Reaper_Firmware.asp    | 28 +++++++++++++--
+ release/src/router/www/SL.dict                |  5 +++
+ release/src/router/www/SV.dict                |  5 +++
+ release/src/router/www/TH.dict                |  5 +++
+ release/src/router/www/TR.dict                |  5 +++
+ release/src/router/www/TW.dict                |  5 +++
+ release/src/router/www/UK.dict                |  5 +++
+ release/src/router/www/reaper_util.js         | 35 +++++++++++++++----
+ 29 files changed, 207 insertions(+), 15 deletions(-)
+ mode change 100755 => 100644 release/src/router/www/reaper_util.js
+
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index 8c76bb3f72..32040d1485 100644
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -85,15 +85,31 @@ if [ "$?" = "0" ] && [ -s "$SIGB64" ]; then
+ 	fi
+ fi
+ rm -f "$SIGB64" "$SIGBIN" "$PUBKEY"
++# One-shot, admin-explicit override (v2.7.3): the page sets this ONLY from a
++# type-to-confirm dialog after the signature failure was shown. It is consumed
++# here whether or not it was needed, so it can never linger armed. An
++# overridden check is loudly logged - it means the operator chose to trust an
++# update list the router could not authenticate.
++SIG_OVERRIDE="$(nvram get reaper_fwsig_override)"
++[ "$SIG_OVERRIDE" = "1" ] && nvram set reaper_fwsig_override=0
+ if [ "$sig_ok" != "1" ]; then
+-	echo "---- manifest signature MISSING or INVALID - refusing (fail closed) ----" >> "$LOG"
+-	logger -t reaper-fw "update check: manifest signature missing or invalid - refusing the manifest"
+-	rm -f "$TMP"
+-	nvram set webs_state_error=1
+-	nvram set webs_state_update=1
+-	exit 0
++	if [ "$SIG_OVERRIDE" = "1" ]; then
++		echo "---- manifest signature MISSING/INVALID but ADMIN OVERRIDE is set - proceeding UNVERIFIED ----" >> "$LOG"
++		logger -t reaper-fw "update check: SIGNATURE OVERRIDE - proceeding with an UNVERIFIED manifest at the admin's explicit request"
++	else
++		echo "---- manifest signature MISSING or INVALID - refusing (fail closed) ----" >> "$LOG"
++		logger -t reaper-fw "update check: manifest signature missing or invalid - refusing the manifest"
++		rm -f "$TMP"
++		# error 9 = OUR code (stock uses 1-3): the page shows the authentication
++		# explanation instead of the generic "check failed", so the user knows
++		# WHY nothing is offered and what it can mean.
++		nvram set webs_state_error=9
++		nvram set webs_state_update=1
++		exit 0
++	fi
++else
++	echo "---- manifest signature verified ----" >> "$LOG"
+ fi
+-echo "---- manifest signature verified ----" >> "$LOG"
+ 
+ # manifest line: MODEL#VARIANT#X.Y.Z#<download-url>[#SHA256[#SIZE]]
+ # (fields 5/6 arrived with Phase 2; older manifests lack them - the page then
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index b86aaf8a22..0c8cab2058 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5312,6 +5312,10 @@ struct nvram_tuple router_defaults[] = {
+ 
+ #ifdef RTCONFIG_MERLINUPDATE
+ 	{ "firmware_check_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* v2.7.3: ONE-SHOT admin override for a signature-refused update manifest.
++	 * Set only by the Firmware page's type-to-confirm dialog; consumed and
++	 * cleared by reaper_webs_update.sh on its next run, needed or not. */
++	{ "reaper_fwsig_override", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* reaper 2026-08-17: which HOUR the scheduled update check runs in. Empty =
+ 	   automatic, which is the behaviour that shipped before this key existed:
+ 	   02:00 plus a random 0-3 h offset drawn at boot. A value of 0-23 pins the
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 4a40490410..ad7daff955 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index c773909b94..69112a5ee2 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 31ce8082fc..9e349bf322 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index a65963c960..dcae4e0e1e 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 9d28087146..5ecbb135e1 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 9208fe4593..5a0620f0a2 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 85f0b3bfed..61a999e42a 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 25fdaf6bb1..aae039ef87 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 27dcd5665b..aa913d7dab 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index dc591867d2..a091339fc3 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4d3e24c883..80185855ae 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 94e072d6bd..57ce325258 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 2d2f59e1ad..9ebfce3937 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index dc6d279ff8..b6dda109d6 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index c976d268b1..c10d375c0f 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index a50c4afaf8..0a0c02780f 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 86f8793e63..15c9f7f391 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index cd225582a0..04769a233c 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index df81163696..81a80f9b0e 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 90218dfdd8..638872432a 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -105,6 +105,7 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+   <div class="acts">
+     <button class="btn2" id="btnCheck" onclick="doCheck()"><#RFWU_3#></button>
+     <span class="stat" id="chkStat" style="margin-top:0"></span>
++    <button class="btn2" id="btnSigOv" style="display:none;border-color:#E10600;color:#E10600" onclick="sigOverride()"><#RFWU_50#></button>
+   </div>
+   <div class="avail" id="availBox">
+     <div class="avtag"><#RFWU_6#></div>
+@@ -394,16 +395,39 @@ function checkDone(r){
+   FW.info = r['webs_state_info'] || '';
+   FW.url  = r['webs_state_url'] || '';
+   FW.sha  = r['webs_state_sha256'] || '';
++  $id('btnSigOv').style.display = (FW.err === '9') ? '' : 'none';
+   if(FW.err !== '' && FW.err !== '0'){
+-    setStat('chkStat', esc(`<#RFWU_7#>`), 'err');
++    /* v2.7.3: error 9 = the manifest failed its signature check. Say so
++       plainly - it is the one check failure with a security meaning, and
++       hiding it behind the generic message would teach users to shrug at it.
++       The override button beside it opens the type-to-confirm gate. */
++    setStat('chkStat', esc(FW.err === '9' ? `<#RFWU_49#>` : `<#RFWU_7#>`), 'err');
+     return;
+   }
+   if(FW.flag === '1'){ showAvail(); }
+   else setStat('chkStat', esc(`<#RFWU_5#>`), 'ok');
+ }
+ 
++/* v2.7.3: explicit override for a signature-refused manifest. Deliberately
++   heavy: a danger dialog that only unlocks after typing OVERRIDE, then a
++   ONE-SHOT nvram flag the check script consumes (and clears) on its next
++   run. If the re-check then offers an update, the status line keeps saying
++   the information is UNVERIFIED - the warning does not go away on success. */
++var sigOverrode = 0;
++function sigOverride(){
++  if(busy) return;
++  reaperConfirm(`<#RFWU_51#>`, { danger: true, typed: 'OVERRIDE', okLabel: `<#RFWU_52#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++    if(!go) return;
++    sigOverrode = 1;
++    post({ action_script: 'saveNvram', reaper_fwsig_override: '1' });
++    setTimeout(doCheck, 1500);
++  });
++}
++
+ function showAvail(){
+-  setStat('chkStat', '', '');
++  /* after a signature override the offer stays visibly branded UNVERIFIED */
++  if(sigOverrode) setStat('chkStat', esc(`<#RFWU_53#>`), 'err');
++  else setStat('chkStat', '', '');
+   $id('availVer').textContent = prettyVer(FW.info);
+   $id('btnInstall').disabled = !FW.sha;
+   $id('shaNote').innerHTML = FW.sha ? ('SHA-256 ' + esc(FW.sha.substring(0, 16)) + '&hellip;') : esc(`<#RFWU_22#>`);
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 6ec6fa1140..4cebf28876 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 733774d4c9..38b42c5853 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index c0f59c4d2d..4dc02e43de 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 202e18b301..2a50dd5c9a 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 85ad3e742e..db5a5a0e79 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index c08bbc8bde..ef1870c10a 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6760,3 +6760,8 @@ RBKP_14=The restore failed. Nothing was changed.
+ RABT_43=Owner's Guide
+ RABT_44=how every Reaper feature works, in plain language
+ RABT_46=New to Reaper? Every feature is explained in the
++RFWU_49=Update list refused: its digital signature is missing or wrong, so it was not trusted. This can happen briefly right after a release is published (the list is signed as a final step). If it persists, the download source may be compromised - do not install firmware from links you did not verify.
++RFWU_50=Override...
++RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
++RFWU_52=Trust it anyway
++RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+old mode 100755
+new mode 100644
+index 5b2dc2c66f..a2da8d8b7e
+--- a/release/src/router/www/reaper_util.js
++++ b/release/src/router/www/reaper_util.js
+@@ -124,7 +124,7 @@ window.esc = window.ReaperEsc;
+  * on reaper-native pages (field ask: the USB format confirm looked stock).
+  *
+  *   reaperConfirm(message, opts, cb)  ->  cb(true|false)
+- *   opts: { okLabel, cancelLabel, danger }
++ *   opts: { okLabel, cancelLabel, danger, typed }
+  *
+  * Label strings come from the CALLER (dict tokens resolve in the caller's
+  * markup context; the bare 'OK'/'Cancel' here are last-resort fallbacks, not
+@@ -132,7 +132,12 @@ window.esc = window.ReaperEsc;
+  * shell re-anchors it to the visible slice of a framed page (reaper-ui rule
+  * 35: position:fixed alone centres on the whole grown document). message is
+  * rendered with textContent - never HTML. A danger dialog does not accept
+- * Enter as confirmation; destruction takes a deliberate click. */
++ * Enter as confirmation; destruction takes a deliberate click.
++ *
++ * opts.typed (v2.7.3): the EXPLICIT gate for actions that must never happen
++ * by accident - the confirm button stays disabled until the user types the
++ * given word exactly (the message text should tell them the word). Used for
++ * the unsigned-manifest override; reuse it for anything of that severity. */
+ window.reaperConfirm = function(msg, opts, cb){
+   opts = opts || {};
+   var old = document.getElementById('rcfm');
+@@ -159,6 +164,21 @@ window.reaperConfirm = function(msg, opts, cb){
+   }
+   var bC = mkbtn(opts.cancelLabel || 'Cancel', false);
+   var bO = mkbtn(opts.okLabel || 'OK', true);
++  var ti = null;
++  if(opts.typed){
++    ti = document.createElement('input');
++    ti.type = 'text';
++    ti.autocomplete = 'off';
++    ti.spellcheck = false;
++    ti.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin:0 0 14px;padding:8px 10px;background:#0b0b0d;border:1px solid #555;border-radius:5px;color:#ECE7DB;font:600 13px Inter,Arial,sans-serif;letter-spacing:.08em';
++    bO.disabled = true;
++    bO.style.opacity = '.4';
++    ti.oninput = function(){
++      var okNow = (ti.value === String(opts.typed));
++      bO.disabled = !okNow;
++      bO.style.opacity = okNow ? '1' : '.4';
++    };
++  }
+   function done(v){
+     document.removeEventListener('keydown', onkey, true);
+     if(ov.parentNode) ov.parentNode.removeChild(ov);
+@@ -166,17 +186,20 @@ window.reaperConfirm = function(msg, opts, cb){
+   }
+   function onkey(e){
+     if(e.key === 'Escape'){ e.stopPropagation(); done(false); }
+-    else if(e.key === 'Enter' && !opts.danger){ e.stopPropagation(); done(true); }
++    else if(e.key === 'Enter' && !opts.danger && !opts.typed){ e.stopPropagation(); done(true); }
+   }
+   bC.onclick = function(){ done(false); };
+-  bO.onclick = function(){ done(true); };
++  bO.onclick = function(){ if(!bO.disabled) done(true); };
+   ov.onclick = function(e){ if(e.target === ov) done(false); };
+   document.addEventListener('keydown', onkey, true);
+   row.appendChild(bC); row.appendChild(bO);
+-  p.appendChild(m); p.appendChild(row);
++  p.appendChild(m);
++  if(ti) p.appendChild(ti);
++  p.appendChild(row);
+   ov.appendChild(p);
+   document.body.appendChild(ov);
+-  (opts.danger ? bC : bO).focus();
++  if(ti) ti.focus();
++  else (opts.danger ? bC : bO).focus();
+ };
+ 
+ /* ---------------------------------------------------------------------------
+-- 
+2.25.1
+

@@ -49,10 +49,11 @@ The ordered short list. Each line points at its full entry below.
    QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node classification, v2.5.8 UPnP.
    → [Pending verification](#pending-verification)
 2. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
-3. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
+3. **[P2] Link the owner's guide from the UI** so people know it exists. → [Features](#features-to-add)
+4. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-4. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RWDN_89, RTRF_45/75/76, RVR_54–58,
+5. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RWDN_89, RTRF_45/75/76, RVR_54–58,
    RABT_42, IPv6-proto labels). → [Documentation](#documentation)
 
 ---
@@ -181,6 +182,18 @@ The ordered short list. Each line points at its full entry below.
 ---
 
 ## Features to add
+
+---
+
+- **[P2] Surface `docs/REAPER-GUIDE.md` in the UI.** The master guide exists (v2.7.1) but nothing on
+  the router points at it; a user only finds it by browsing the repository. Put a "Guide" link where
+  people already look: the About page (next to the provenance block), the dashboard topbar help
+  entry, and the per-page `?` help dots (Firewall, Policy Routing, Warden, Gatekeeper, Storage, USB)
+  pointing at the matching section anchor. Same shape as the existing `helpdot` on the Policy Routing
+  page (an external `https://github.com/.../docs/REAPER-GUIDE.md#...` link, `rel="noopener"`, opens a
+  new tab; the router never fetches it). Dict token for the label (English in all 25 packs) and a
+  one-line mention on the first-boot page. **Settles when** every Reaper page has a visible route to
+  the guide and the About page names it. **[owed]**
 
 ---
 

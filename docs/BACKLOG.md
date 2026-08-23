@@ -50,10 +50,12 @@ The ordered short list. Each line points at its full entry below.
    → [Pending verification](#pending-verification)
 2. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
 3. **[P2] Link the owner's guide from the UI** so people know it exists. → [Features](#features-to-add)
-4. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
+4. **[P2] Overhaul Save/Restore settings** so one backup carries the stock settings AND every Reaper
+   store. → [Features](#features-to-add)
+5. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-5. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RWDN_89, RTRF_45/75/76, RVR_54–58,
+6. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RWDN_89, RTRF_45/75/76, RVR_54–58,
    RABT_42, IPv6-proto labels). → [Documentation](#documentation)
 
 ---
@@ -76,9 +78,15 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P2] Flash page — cancelling a firmware upgrade during file upload leaves the page dead.** If the user answers
-  No/Cancel on the upgrade confirm, the page does not return to its previous state; it has to be
-  reloaded before the buttons work again. Not yet investigated. **[owed]**
+- **[P2] Flash page — cancelling a firmware upgrade during file upload leaves the page dead.**
+  **INVESTIGATED (v2.7.3): not reproducible in current source.** A node:vm harness executing the
+  page's real script proved every Cancel path clean — install confirm, both upload confirms, the
+  node-push confirm, and a veil dismiss all leave `busy=0`, every button enabled, no overlay. The
+  symptom matches the pre-`a0c115dc45` (v2.3.4) doubled-poll freeze that was fixed then; the report
+  likely predates it. One theoretical wedge remained — an uncaught throw after `busy=1` but before
+  the veil paints (nothing on screen to dismiss, all buttons no-op) — v2.7.3's global error handler
+  now clears the gate in that case. **Closes when** v2.7.3 ships and no recurrence is reported; a
+  repro on v2.7.x with exact steps reopens it. **[hardened — watch]**
 
 ---
 
@@ -97,6 +105,23 @@ The ordered short list. Each line points at its full entry below.
   or, on a failure, the `aimesh:` log lines name which gate dropped it. Runtime triage if it recurs:
   `nvram get cfg_obstatus` before (1) / during (2) search, `cat /tmp/onboarding.json` after,
   `ps w | grep -E "cfg_server|obd|wlceventd"`. **[owed — one field confirmation, then close]**
+
+  **2026-08-23 full-path review (owner ask, "works for some / not at all for others"):** the
+  CAP-side search/add chain was verified **100 % stock** (the only Reaper code in it is the three
+  logging lines above and two icon de-cloud edits that cannot affect list membership;
+  `cfg_string.h` confirms the blob's `onboarding.json` keys match the gates exactly, identical
+  across all four models' `cfg_server` binaries). **A real, proven defect was found one layer
+  down: no Reaper enforcement layer knew AiMesh existed.** With Gatekeeper in quarantine
+  (`gk_default != 1`), `REAPER_GKI`'s allow-list (DHCP/DNS/80/admin → DROP) at INPUT position 1
+  killed an unapproved node's cfg_server traffic the moment it had a lease — onboarding stalls
+  right after association, and enabling quarantine on an established mesh kills node heartbeats
+  (ebtables DROP + captive port-80 hijack too). Warden / rules engine / PBR / de-cloud each
+  checked and proven safe. This cleanly explains the mixed reports: it tracks whether quarantine
+  is on. **FIXED for v2.7.3:** `cfg_relist` MACs (cfg_server's own pairing registry) exempt from
+  all four surfaces ahead of per-device rules; `gkd` re-applies when the registry changes and
+  holds the INPUT gate open only while an onboarding is actually in progress; diag 14b shows the
+  registry/exempt counts and window state. **[fix coded — build + metal owed: onboard a node with
+  quarantine ON]**
 
 ---
 
@@ -128,11 +153,24 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P3] Traffic Analyzer: some devices' "1 year" totals stopped updating (IPv6 devices).** The
-  Month tab resets on a firmware update but updates IPv6 devices; 24 h / 14 d are fine. The reporter
-  moved the store from USB to jffs and the sticky device then updated — so this looks like a USB
-  store issue, not the IPv6 attribution path. **Closes when** one more report confirms the year tab
-  tracks after the store move, or reproduces on jffs. **[owed — watch]**
+- **[P3] Traffic Analyzer: some devices' "1 year" totals stopped updating (IPv6 devices) — FIX
+  CODED for v2.7.2, host-tested, build pending.** Two real defects found. **(a) Clock-jump slot
+  wipe** (the confirmed "Month tab resets on a firmware update"): rtrafd zeroed a history slot
+  whenever its ring *index* changed, so on any boot where the store attached before NTP sync (jffs
+  always; USB when hotplug beats WAN-up — typical right after a flash) the 1970→now step read as a
+  rollover and wiped the just-restored current month/day/hour slots. Now the boundary is driven by
+  the **absolute period**, `rtraf.db`'s own `saved` stamp re-seeds the cursors on restore
+  (`db_align`), and only periods that truly elapsed are cleared (`ring_span_zero`) — a same-month /
+  same-day restore keeps accumulating in place, downtime gaps are still cleared, pre-NTP ticks never
+  zero anything. **(b) Stale duplicate device rows** (the "stuck at 186 MB" presentation): one
+  device can own several collector keys over time (IP-keyed before its MAC resolved, rows from an
+  older db); all resolve to the same display name, so the dead row reads as the device frozen on the
+  Year tab while the live row carries the traffic. `cli_dedup_ipkeys` now **merges** the phantom's
+  rings into the MAC row instead of discarding them, and the page folds rows that resolve to the
+  same MAC into one before ranking. 9-scenario host harness passes (pre-NTP restore, DST day-walk,
+  month rollover, dedup merge, steady-state regression). Also: Year tab moved to the right of Month
+  (owner request). **Closes when** a reporter confirms month survives a firmware update and year
+  totals track on USB. **[fix coded — build + metal owed]**
 
 ---
 
@@ -185,15 +223,35 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P2] Surface `docs/REAPER-GUIDE.md` in the UI.** The master guide exists (v2.7.1) but nothing on
-  the router points at it; a user only finds it by browsing the repository. Put a "Guide" link where
-  people already look: the About page (next to the provenance block), the dashboard topbar help
-  entry, and the per-page `?` help dots (Firewall, Policy Routing, Warden, Gatekeeper, Storage, USB)
-  pointing at the matching section anchor. Same shape as the existing `helpdot` on the Policy Routing
-  page (an external `https://github.com/.../docs/REAPER-GUIDE.md#...` link, `rel="noopener"`, opens a
-  new tab; the router never fetches it). Dict token for the label (English in all 25 packs) and a
-  one-line mention on the first-boot page. **Settles when** every Reaper page has a visible route to
-  the guide and the About page names it. **[owed]**
+- **[P2] Overhaul Save / Restore settings to carry the Reaper stores too — IMPLEMENTED for
+  v2.7.2, build + metal owed.** One `.rbk` archive now carries both halves: a text header
+  (`REAPER-BACKUP 1` + a meta line with model/version/part lengths) followed by the stock nvram
+  `.CFG` (byte-identical HDR2+JCFG format, produced exactly as `prf_file`'s default branch — still
+  restorable by stock/Merlin if carved out), the v2.7.0 `reaper_cfg` JSON, and the fqdn ipset cache
+  (`/jffs/reaper_fw/sets/*`, so domain objects come back populated before the resolver's first
+  pass). Download = one button on the Administration page (`/REAPER_<model>_<ver>_settings.rbk`;
+  the stock page stays byte-pristine — a mode-4 injection block fetches the tokenized fragment
+  `Reaper_BackupCard.asp` and wires it). Restore = multipart `reaper_restore.cgi`: validates
+  everything first (magic, meta, **model vs productid**, **/jffs health gate**, the CFG part's own
+  HDR magic, JSON parse, fqdn well-formedness — a failed check changes nothing), then parks the
+  JSON at `/jffs/reaper/restore_pending.json` (the fw/pbr drafts it stages live on tmpfs and would
+  not survive the reboot), lays the fqdn cache down, and hands the CFG to the stock
+  `do_upload_config()` path (jffs cfgs + nvram restore + commit + reboot). After the reboot a
+  banner on the Administration card **and** the Storage page offers one-click *Complete restore* —
+  the import core replays the JSON exactly as an interactive import (gk/warden applied + restarted,
+  firewall/routing lists staged as drafts behind commit-confirm, counts reported). Storage-page
+  lightweight export/import unchanged. **Closes when** a metal pass confirms: backup downloads,
+  restore on the same model round-trips (settings + gk list + fw lists + pbr rules + fqdn sets),
+  a foreign-model archive is refused, and the pending banner completes. **[built? → metal owed]**
+- **[P2] Surface `docs/REAPER-GUIDE.md` in the UI — DONE for v2.7.3 (build + metal owed).** Every
+  Reaper page now has a visible route: a `?` button in the shell topbar **and** the dashboard topbar
+  opens the guide from anywhere; Firewall / Gatekeeper / Warden / Storage / USB carry a `?` dot
+  beside the page title deep-linking the matching section (4.1/4.2/4.3/4.11/4.12 — Policy Routing
+  keeps its dedicated VPN-ROUTING-GUIDE dot); the About page has an "Owner's Guide" button in the
+  links row; the first-boot page mentions it under the credential form. All external
+  `rel="noopener"` new-tab links — the router never fetches anything. Tokens RABT_43/44/46 (English
+  in all 25 packs, translations owed). **Closes when** a metal pass eyeballs the dots and the
+  GitHub anchors land on the right sections. **[built? → metal owed]**
 
 ---
 
@@ -209,17 +267,36 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P2] Sign the firmware-update manifest.** (Security review 2026-08-22.) The update check pins
-  the host, verifies TLS against the system CA bundle, checks model/variant and the SHA-256 from the
-  manifest, and nothing flashes without a click — but the manifest and the image come from the same
-  repository, so a compromised repository/account could offer a matching pair. Fix = sign the manifest
-  with an offline key (minisign / ed25519 through the existing OpenSSL) and verify on-box before
-  honouring any field; key rotation and a bundled public key are the design questions. **[owner —
-  key custody decision]**
-- **[P3] rwatch's routing self-heal runs outside the firewall lock.** It re-runs the idempotent
-  `apply.sh` (teardown + rebuild), so a concurrent `start_firewall()` rebuild can only produce a
-  transient inconsistency, never a lockout or a leak; taking the same lock from a shell tick needs a
-  `flock` on the lock file rc uses. Low value, recorded so it is not re-found.
+- **[P2] Sign the firmware-update manifest — IMPLEMENTED for v2.7.3, then SHELVED INERT (owner
+  decision 2026-08-23).** All machinery ships but nothing enforces: `REAPER_SIG_ENFORCE=0` in
+  `reaper_webs_update.sh` skips the whole verify (no sig fetch, no refusal, error 9 / the
+  type-to-confirm override UI stay dormant), and `build-scripts/signing.conf`
+  (`MANIFEST_SIGNING=off`) makes stage_release / refresh_manifest / the CI signature-status step /
+  repo-hygiene all skip quietly. **Re-enable = flip both switches + rebuild** — keypair (owner's
+  offline media), sign_manifest.sh, embedded pubkey, verify code, override flow and docs all remain
+  ready. Original implementation detail below for that day:
+  RSA-4096/SHA-256 (the shipped OpenSSL 1.1.1 CLI has no one-shot Ed25519 — `pkeyutl -rawin` is a
+  3.0 feature, verified empirically; Merlin's OpenSSL 3.x-with-shim port is the future path to an
+  Ed25519 key via the rotation procedure). The check script verifies
+  `updates/manifest_3006.txt.sig` against a public key baked into the firmware BEFORE parsing any
+  field; missing/invalid signature refuses the whole manifest, **fail closed**, logged. Signing =
+  `build-scripts/sign_manifest.sh` (signs + self-verifies against the shipped pubkey); the private
+  key lives at `…\ASUS\reaper-keys\` **outside every repository** and must never enter one or CI —
+  **owner: move it to offline media and point `REAPER_MANIFEST_KEY` at it when signing.**
+  **RELEASE-FLOW CHANGE: every publish that touches the manifest (CI `refresh_manifest` included)
+  must be followed by `sign_manifest.sh` + a commit of the `.sig`, or every fielded ≥v2.7.3 box
+  reports "check failed".** The current manifest is already signed (sig staged uncommitted).
+  Rotation: new pair → replace `manifest_pub.pem` + the embedded key in `reaper_webs_update.sh` →
+  ship that firmware → then switch signing keys. Tamper-tested on host (genuine=pass;
+  tampered/garbage/empty sig=refused). **Closes when** a fielded box verifies a signed manifest
+  (check succeeds) and refuses an unsigned one. **[built? → metal owed]**
+- **[P3] rwatch's routing self-heal runs outside the firewall lock — FIXED for v2.7.3.** Note the
+  originally suggested fix was wrong: rc's `file_lock()` is a POSIX fcntl lock and shell `flock(1)`
+  takes flock(2) locks — the two never interact on Linux, so a shell-side `flock` would have locked
+  nothing. Instead a small rc applet (`rc reaper_lockrun <script>`, rc/rwatch.c) takes the real
+  `file_lock("firewall")` and runs the script; only the three Reaper heal scripts are allow-listed
+  (this is a heal wrapper, not a general lock-run tool). Both rwatch heal sites converted (the PBR
+  mark-rule re-apply and the Warden CRITICAL re-assert). **[build owed]**
 
 ---
 

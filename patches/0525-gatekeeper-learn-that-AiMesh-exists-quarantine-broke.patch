@@ -1,0 +1,247 @@
+From 9f0641b72fdd5be08f064dcbb79d5bafe0cbd56d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 07:53:05 -0400
+Subject: [PATCH] gatekeeper: learn that AiMesh exists (quarantine broke
+ onboarding + mesh heartbeats)
+
+Owner asked for a full review of the AiMesh add-node/search path (mixed
+field reports: works great for some, not at all for others). Findings,
+each verified against source before touching anything:
+
+- The CAP-side search/add chain is 100% stock ASUS: the only Reaper code
+  in it is the three v2.3.7 aimesh: log lines (verified logging-only) and
+  two cosmetic icon de-cloud edits that cannot affect list membership.
+  The v2.3.x 'search finds no node' gates remain blob-side questions the
+  instrumentation answers from field logs; cfg_string.h confirms the
+  blob's onboarding.json keys match the gates exactly, and all four
+  models' cfg_server binaries carry the identical key set.
+
+- THE REAL, PROVEN DEFECT: no Reaper enforcement layer had any AiMesh
+  awareness (zero amas/relist/backhaul references). In quarantine mode
+  (gk_default != 1), REAPER_GKI is an allow-list (DHCP/DNS/80/admin)
+  ending in DROP, hooked at INPUT position 1 on every LAN bridge - so an
+  unapproved node's traffic to cfg_server died the moment it had a lease:
+  onboarding stalls right after association, and enabling quarantine on
+  an ESTABLISHED mesh kills the nodes' control heartbeats (their bridged
+  frames also hit the ebtables DROP; their port 80 was captive-hijacked).
+  Warden, the rules engine, PBR and the de-cloud removals were each
+  checked and proven safe. This cleanly explains the works/doesn't-work
+  split: it tracks whether Gatekeeper quarantine is on.
+
+Fix, minimal and scoped:
+- rc/gatekeeper.c gk_emit_relist(): every MAC in cfg_relist/cfg_relist_x
+  (cfg_server's own pairing registry - the STA MACs paired nodes connect
+  with) is exempted from all four surfaces (GKI/GKF v4+v6, nat captive,
+  ebtables), emitted AHEAD of per-device rules so a mis-filed gk_rl entry
+  can never sever a live backhaul. MACs pass the strict gk_valid_mac gate
+  (shell-injection-proof), deduped, capped at 64.
+- gkd amas_watch() (10 s tick): re-runs restart_gk when the registry
+  changes (a node joined/left - the baked exemptions are stale), and
+  while an onboarding is actually in progress (cfg_obstatus != idle,
+  quarantine mode) holds the INPUT gate open with a position-1 RETURN -
+  the joining node is not in the registry yet. Admin-initiated,
+  time-boxed by cfg_server, closed within one tick of ending, re-asserted
+  through mid-window chain rebuilds, cleaned up once at daemon start.
+  FORWARD and the bridge chain stay enforced throughout.
+- reaper_diag 14b: aimesh registry / exempt-rule counts + the onboarding
+  window state, so the field can verify this in one look.
+
+Host-validated: gk_emit_relist compiled from the real source against
+realistic + hostile cfg_relist samples (dedup across lists, junk and
+injection tokens rejected, empty lists no-op, emitted script sh -n
+clean); gkd.c syntax-checked; diag sh -n clean.
+---
+ release/src/router/gkd/gkd.c          | 69 +++++++++++++++++++++++++++
+ release/src/router/others/reaper_diag |  3 ++
+ release/src/router/rc/gatekeeper.c    | 67 ++++++++++++++++++++++++++
+ 3 files changed, 139 insertions(+)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index eec6681ed3..ed4d0d876f 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -522,6 +522,74 @@ static void self_heal(void)
+ 	system("sh " APPLY_SH);
+ }
+ 
++/* v2.7.3: AiMesh awareness (see rc/gatekeeper.c gk_emit_relist).
++ * (a) cfg_relist changed - a node joined or left - so the exemption set
++ *     baked into apply.sh is stale: regenerate via restart_gk (throttled;
++ *     the regen kills+respawns this daemon, which is fine).
++ * (b) while an onboarding is IN PROGRESS the joining node is not in the
++ *     registry yet; in quarantine mode its router-bound traffic dies on
++ *     REAPER_GKI's terminal DROP between its DHCP lease and cfg_server's
++ *     pairing write - which is exactly "search finds the node but adding
++ *     it times out". Hold the INPUT gate open for that window only
++ *     (cfg_obstatus != idle): it is admin-initiated, time-boxed by
++ *     cfg_server, and closed again within one tick of ending. FORWARD and
++ *     the bridge chain stay enforced - a joining node needs only the
++ *     router itself. */
++static unsigned long relist_sig(void)
++{
++	unsigned long h = 5381;
++	const char *s;
++	int x;
++	for (x = 0; x < 2; x++) {
++		for (s = nvram_safe_get(x ? "cfg_relist_x" : "cfg_relist"); *s; s++)
++			h = ((h << 5) + h) ^ (unsigned char)*s;
++		h = ((h << 5) + h) ^ '|';
++	}
++	return h;
++}
++
++static void amas_watch(long now)
++{
++	static unsigned long sig;
++	static int have_sig = 0;
++	static long last_regen = 0;
++	static int ob_open = -1;	/* -1 = unknown at startup: clean up once */
++	unsigned long cur = relist_sig();
++	const char *ob = nvram_safe_get("cfg_obstatus");
++	int active;
++
++	if (!have_sig) {
++		sig = cur;
++		have_sig = 1;
++	} else if (cur != sig) {
++		sig = cur;
++		if (now - last_regen >= 30) {
++			last_regen = now;
++			logmessage("gatekeeper", "AiMesh registry changed - refreshing infrastructure exemptions");
++			notify_rc("restart_gk");	/* regen respawns this gkd */
++			return;
++		}
++	}
++
++	active = !nvram_match("gk_default", "1") && ob[0] && strcmp(ob, "1") != 0;
++	if (active) {
++		/* re-asserted every tick while active: an apply.sh rebuild mid-window
++		 * flushes the chain and the -C guard re-inserts within POLL_SECS */
++		system("iptables -C REAPER_GKI -j RETURN 2>/dev/null || iptables -I REAPER_GKI 1 -j RETURN 2>/dev/null; "
++		       "ip6tables -C REAPER_GKI -j RETURN 2>/dev/null || ip6tables -I REAPER_GKI 1 -j RETURN 2>/dev/null");
++		if (ob_open != 1) {
++			logmessage("gatekeeper", "AiMesh onboarding active - quarantine gate held open for router-bound traffic");
++			ob_open = 1;
++		}
++	} else if (ob_open != 0) {
++		system("iptables -D REAPER_GKI -j RETURN 2>/dev/null; "
++		       "ip6tables -D REAPER_GKI -j RETURN 2>/dev/null");
++		if (ob_open == 1)
++			logmessage("gatekeeper", "AiMesh onboarding finished - quarantine gate closed");
++		ob_open = 0;
++	}
++}
++
+ int main(int argc, char **argv)
+ {
+ 	int tick = 0;
+@@ -553,6 +621,7 @@ int main(int argc, char **argv)
+ 		expire_guests();	/* M2: reads gk_rl fresh under lock (rl above is snapshot for notify_new only) */
+ 		write_seen();
+ 		if ((tick % HEAL_EVERY) == 0) self_heal();	/* L5: throttle the probe forks */
++		amas_watch(now);	/* v2.7.3: mesh registry + onboarding window */
+ 		tick++;
+ 
+ 		for (i = 0; i < POLL_SECS && !g_stop; i++) sleep(1);
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 5b404790d6..9e133e5a47 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -648,6 +648,9 @@ for st in 0 1 2 3; do n=0; [ -f "$GK_RL" ] && n=$(tr '<' '
+ echo "  seen table        : $( [ -f /tmp/gk/seen.tsv ] && wc -l < /tmp/gk/seen.tsv || echo 0 ) rows"
+ echo "  armed stamp       : $( [ -f /tmp/gk/chains.ok ] && echo yes || echo no )"
+ echo "  front-chain jumps : $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) (REAPER_HOOK_F -> REAPER_GKF, one per bridge)"
++# v2.7.3: AiMesh infrastructure exemptions (cfg_relist MACs, sanitized as counts)
++echo "  aimesh registry   : $(nvram get cfg_relist 2>/dev/null | grep -o ':..:..:..:..:' | wc -l) record MAC(s) in cfg_relist; exempt input rules: $(iptables -S REAPER_GKI 2>/dev/null | grep -c 'mac-source')"
++echo "  onboarding window : status=$(nvram get cfg_obstatus 2>/dev/null) gate=$(iptables -C REAPER_GKI -j RETURN 2>/dev/null && echo OPEN || echo closed)"
+ 
+ sec "14c. FIREWALL LAYER ORDER + RULES ENGINE (chain order, counts, set sizes)"
+ # v2.6.2: one jump per base chain into REAPER_HOOK/_F/_O; inside, the fixed
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index f90de74963..e7757a0058 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -235,6 +235,67 @@ static void gk_gen_sdnfi(void)
+ 		unlink(GK_DIR "/sdnfi.sh.tmp");
+ }
+ 
++#ifdef RTCONFIG_CFGSYNC
++/* v2.7.3 (field: "AiMesh works great for some, not at all for others" -
++ * adversarial review of the whole onboarding path): AiMesh nodes are
++ * INFRASTRUCTURE, not clients, but nothing in any Reaper enforcement layer
++ * knew AiMesh existed. In quarantine mode (gk_default != 1) an unapproved
++ * node's traffic to cfg_server on the router hit REAPER_GKI's allow-list
++ * terminal DROP the moment it had its DHCP lease - so onboarding stalled
++ * right after association, and an established node's control heartbeats
++ * died the moment Gatekeeper quarantine came on (its bridged frames also
++ * hit the ebtables DROP). cfg_relist / cfg_relist_x is cfg_server's own
++ * pairing registry - every STA MAC a paired node connects with - so exempt
++ * every MAC in it from all four enforcement surfaces, AHEAD of the
++ * per-device rules so a mis-filed gk_rl entry can never sever a live
++ * backhaul. gkd re-runs restart_gk when the registry changes (a node
++ * joins/leaves) and holds the INPUT gate open while an onboarding is
++ * actually in progress - the joining node is not in the registry yet
++ * (gkd.c amas_watch). */
++static void gk_emit_relist(FILE *f)
++{
++	char *lists[2];
++	char seen[64][18];
++	int nseen = 0, i, li;
++
++	lists[0] = get_cfg_relist(0);
++	lists[1] = get_cfg_relist(1);
++	fprintf(f, "# ---- AiMesh infrastructure (cfg_relist): never held at the gate ----\n");
++	for (li = 0; li < 2; li++) {
++		char *p = lists[li];
++		if (!p) continue;
++		for (; *p; p++) {
++			char mac[18];
++			int dup = 0;
++			if (!isxdigit((unsigned char)p[0])) continue;
++			if (strlen(p) < 17) break;
++			memcpy(mac, p, 17);
++			mac[17] = '\0';
++			if (!gk_valid_mac(mac)) continue;
++			for (i = 0; i < nseen; i++)
++				if (strcasecmp(seen[i], mac) == 0) { dup = 1; break; }
++			if (!dup && nseen < 64) {
++				strlcpy(seen[nseen], mac, sizeof(seen[0]));
++				nseen++;
++				fprintf(f,
++					"for T in iptables ip6tables; do\n"
++					"  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
++					"  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
++					"done\n"
++					"iptables -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN\n"
++					"ebtables -A REAPER_GK -s %s -j RETURN\n",
++					mac, mac, mac, mac);
++			}
++			p += 16;	/* the loop's ++ completes the 17-char skip */
++		}
++	}
++	free(lists[0]);
++	free(lists[1]);
++	if (nseen)
++		fprintf(f, "logger -t gatekeeper 'AiMesh registry: %d infrastructure MAC(s) exempt'\n", nseen);
++}
++#endif /* RTCONFIG_CFGSYNC */
++
+ static void gk_gen_apply(void)
+ {
+ 	FILE *f;
+@@ -410,6 +471,12 @@ static void gk_gen_apply(void)
+ 		   "iptables -t nat -N REAPER_GKN\n"
+ 		   "ebtables -N REAPER_GK -P RETURN\n", gkifs, gknets);
+ 
++#ifdef RTCONFIG_CFGSYNC
++	/* AiMesh infrastructure first: ahead of per-device rules AND the
++	 * quarantine tail, so neither can touch a paired node's traffic */
++	gk_emit_relist(f);
++#endif
++
+ 	/* per-device rules */
+ 	rl = gk_rl_get();	/* v2.6.3: /jffs store, see shared/gk_rl.c */
+ 	buf = strdup(rl);
+-- 
+2.25.1
+

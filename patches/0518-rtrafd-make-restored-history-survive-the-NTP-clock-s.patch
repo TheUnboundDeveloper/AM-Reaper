@@ -1,0 +1,475 @@
+From 851f3dc30a9c89a0171b255725e6cb3cb8870655 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 05:24:35 -0400
+Subject: [PATCH] rtrafd: make restored history survive the NTP clock step;
+ merge phantom client rows
+
+Field report (v2.5.x, USB store): some IPv6 devices' 1-year totals frozen,
+and the Month tab reset across a firmware update.
+
+(a) Slot zeroing was keyed on the wrapped ring INDEX, so on any boot where
+the store attached before NTP sync (jffs always; USB when hotplug beats
+WAN-up, typical right after a flash) the 1970->now step read as a rollover
+and wiped the just-restored current month/day/hour slots. The boundary is
+now driven by the ABSOLUTE period (slots_periods_for), rtraf.db's own saved
+stamp re-seeds the cursors on restore (db_align), and ring_span_zero clears
+exactly the periods that elapsed - downtime gaps included, same-period
+restored data preserved, nothing zeroed while the clock is pre-sync
+(hist_tick publishes on a tick cadence until it is).
+
+(b) cli_dedup_ipkeys discarded an IP-keyed phantom's rings when its
+MAC-keyed twin appeared - history accumulated before the MAC resolved was
+lost, and until the dedup fired the page showed the device twice, the dead
+row frozen at its old total (the 'stuck at 186 MB' presentation). The rings
+are now folded into the MAC row (ring_merge), and Reaper_Traffic.asp merges
+rows resolving to the same MAC before ranking Top Devices.
+
+Also: history tabs reordered so 1 Year sits rightmost (owner request).
+
+Host-validated: 9-scenario harness (pre-NTP restore + NTP step, 2-day and
+19-month late restores, month rollover, DST fall-back day walk, pre-NTP RAM
+sweep, dedup merge, steady-state 5-min rollover, bogus-clock save stamp)
+compiled against the real rtrafd.c; page JS parse clean, ASCII clean.
+---
+ release/src/router/rtrafd/rtrafd.c        | 272 +++++++++++++++++-----
+ release/src/router/www/Reaper_Traffic.asp |  22 +-
+ 2 files changed, 232 insertions(+), 62 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index f4eaa25a86..de8cb42003 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -356,8 +356,25 @@ static uint64_t fnv64(const char *s)
+ 
+ /* ---------- slot indexing ---------- */
+ static int i5cur, ihcur, idcur, imcur;
+-
+-static void slots_for(time_t t, int *i5, int *ih, int *id, int *im)
++/* v2.7.2: the ABSOLUTE period behind each current index (5-min count, hour
++ * count, day count since the epoch, months since 1900). The indices wrap;
++ * these do not, so "did we actually enter a new period" stays decidable
++ * across a clock step or a db restore. Zeroing keyed on the wrapped index
++ * alone treated the NTP jump of a pre-sync boot as a rollover and WIPED the
++ * just-restored current hour/day/month slots whenever the store attached
++ * before NTP (jffs always; USB when hotplug beats WAN-up, typical right
++ * after a firmware flash) - the field "Month tab resets on a firmware
++ * update", plus a silent loss of today's restored history each such boot. */
++static int64_t p5cur, phcur, pdcur, pmcur;
++static time_t pt_cur;	/* the instant the cursors above were computed for */
++
++/* This firmware did not exist before 2025, so any earlier clock is a
++ * pre-NTP boot still counting from the epoch/build stamp. */
++#define TIME_SANE 1735689600	/* 2025-01-01 UTC */
++static int clock_sane(time_t t) { return t >= (time_t)TIME_SANE; }
++
++static void slots_periods_for(time_t t, int *i5, int *ih, int *id, int *im,
++			      int64_t *p5, int64_t *ph, int64_t *pd, int64_t *pm)
+ {
+ 	struct tm tm, gm;
+ 	localtime_r(&t, &tm);
+@@ -376,6 +393,19 @@ static void slots_for(time_t t, int *i5, int *ih, int *id, int *im)
+ 	*ih = (int)((lt / 3600) % NH);
+ 	*id = tm.tm_yday % ND;
+ 	*im = ((tm.tm_year * 12) + tm.tm_mon) % NM;
++	*p5 = (int64_t)(lt / 300);
++	*ph = (int64_t)(lt / 3600);
++	*pd = (int64_t)(lt / 86400);
++	*pm = (int64_t)tm.tm_year * 12 + tm.tm_mon;
++}
++
++/* the day RING index is yday-based (resets at new year), so it cannot be
++ * derived from the absolute day count by modulo - resolve it per instant */
++static int day_index(time_t t)
++{
++	struct tm tm;
++	localtime_r(&t, &tm);
++	return tm.tm_yday % ND;
+ }
+ 
+ static void ring_zero_slot(ring_t *r, int which, int idx)
+@@ -399,6 +429,51 @@ static void all_zero_slot(int which, int idx)
+ 	ring_zero_slot(r_prb, which, idx);
+ }
+ 
++/* Zero every slot whose PERIOD elapsed in (from, to] - the slots a wall-clock
++ * advance passes through, downtime gaps included, each of which still holds
++ * data from the ring's PREVIOUS wrap. A granularity whose period did NOT
++ * change is left entirely alone: after a db restore that is the current
++ * hour / today / month-to-date, which the old index-keyed zeroing wiped the
++ * moment the clock stepped. Spans of a full wrap or more clear the whole
++ * ring (everything in it predates the window). */
++static void ring_span_zero(time_t from, time_t to)
++{
++	int a5, ah, ad, am, b5, bh, bd, bm, i;
++	int64_t pa5, pah, pad, pam, pb5, pbh, pbd, pbm, k;
++	time_t t;
++
++	if (to <= from) return;
++	slots_periods_for(from, &a5, &ah, &ad, &am, &pa5, &pah, &pad, &pam);
++	slots_periods_for(to,   &b5, &bh, &bd, &bm, &pb5, &pbh, &pbd, &pbm);
++	if (pb5 > pa5) {
++		if (pb5 - pa5 >= N5) for (i = 0; i < N5; i++) all_zero_slot(0, i);
++		else for (k = pa5 + 1; k <= pb5; k++) all_zero_slot(0, (int)(k % N5));
++	}
++	if (pbh > pah) {
++		if (pbh - pah >= NH) for (i = 0; i < NH; i++) all_zero_slot(1, i);
++		else for (k = pah + 1; k <= pbh; k++) all_zero_slot(1, (int)(k % NH));
++	}
++	if (pbd > pad) {
++		if (pbd - pad >= ND) { for (i = 0; i < ND; i++) all_zero_slot(2, i); }
++		else {
++			/* walk real instants at half-day steps (DST-proof: a slot
++			 * zeroed twice is fine, none can be skipped) and clear each
++			 * day index entered after `from`'s own */
++			for (t = from + 43200; ; t += 43200) {
++				int di;
++				if (t > to) t = to;
++				di = day_index(t);
++				if (di != ad) all_zero_slot(2, di);
++				if (t >= to) break;
++			}
++		}
++	}
++	if (pbm > pam) {
++		if (pbm - pam >= NM) for (i = 0; i < NM; i++) all_zero_slot(3, i);
++		else for (k = pam + 1; k <= pbm; k++) all_zero_slot(3, (int)(k % NM));
++	}
++}
++
+ static void ring_add(ring_t *r, uint64_t rx, uint64_t tx)
+ {
+ 	if (!r) return;
+@@ -408,6 +483,18 @@ static void ring_add(ring_t *r, uint64_t rx, uint64_t tx)
+ 	r->bm[imcur].rx += rx; r->bm[imcur].tx += tx;
+ }
+ 
++/* fold one client's history into another's, slot for slot - the rings share
++ * their timeline, so a straight sum is the lossless merge */
++static void ring_merge(ring_t *dst, ring_t *src)
++{
++	int i;
++	if (!dst || !src) return;
++	for (i = 0; i < N5; i++) { dst->b5[i].rx += src->b5[i].rx; dst->b5[i].tx += src->b5[i].tx; }
++	for (i = 0; i < NH; i++) { dst->bh[i].rx += src->bh[i].rx; dst->bh[i].tx += src->bh[i].tx; }
++	for (i = 0; i < ND; i++) { dst->bd[i].rx += src->bd[i].rx; dst->bd[i].tx += src->bd[i].tx; }
++	for (i = 0; i < NM; i++) { dst->bm[i].rx += src->bm[i].rx; dst->bm[i].tx += src->bm[i].tx; }
++}
++
+ /* ---------- helpers ---------- */
+ static int ifname_ok(const char *s)
+ {
+@@ -1859,6 +1946,15 @@ static void cli_dedup_ipkeys(void)
+ 		for (j = 0; j < NCLI; j++) {
+ 			if (j == i || !cli[j].used) continue;
+ 			if (strchr(cli[j].key, ':') && strcmp(cli[j].ip, cli[i].ip) == 0) {
++				/* v2.7.2: FOLD the phantom's history into the MAC row
++				 * before dropping it. It used to be discarded - a device
++				 * that accumulated under its IP before the MAC resolved
++				 * (boot-window conntrack, or a row restored from an old
++				 * db) lost that history outright, and until this pass
++				 * fired the page showed the same device twice, the old
++				 * row frozen at its last total (the field "1 year total
++				 * stopped updating" presentation). */
++				ring_merge(r_cli[j], r_cli[i]);
+ 				cli[i].used = 0;	/* MAC slot is authoritative; drop the IP twin */
+ 				memset(r_cli[i], 0, sizeof(ring_t));
+ 				memset(&chealth[i], 0, sizeof(chealth[i]));
+@@ -1986,6 +2082,8 @@ static const char *resolve_store(char *buf, size_t len)
+ 	return "ram";
+ }
+ 
++static time_t db_saved = 0;	/* h.saved of the restored db (0 = none loaded) */
++
+ static void db_save(const char *path)
+ {
+ 	dbhdr_t h;
+@@ -1993,7 +2091,12 @@ static void db_save(const char *path)
+ 	char tmp[160];
+ 	int i;
+ 	int fd;
++	time_t st = time(NULL);
+ 	if (!path[0]) return;
++	/* never REGRESS the file's timestamp: a save on a box whose clock hasn't
++	 * synced would stamp 1970 over a sane restored stamp, and the next boot's
++	 * db_align() would then have nothing to align to */
++	if (!clock_sane(st) && db_saved > st) st = db_saved;
+ 	snprintf(tmp, sizeof(tmp), "%s.new", path);
+ 	/* On an attacker-controlled USB mount, tmp could be a pre-planted symlink;
+ 	 * clear it, then create exclusively without following (O_EXCL|O_NOFOLLOW)
+@@ -2004,7 +2107,7 @@ static void db_save(const char *path)
+ 	if (fd < 0) return;
+ 	if ((o = fdopen(fd, "w")) == NULL) { close(fd); unlink(tmp); return; }
+ 	memset(&h, 0, sizeof(h));
+-	h.magic = DB_MAGIC; h.ver = DB_VER; h.saved = time(NULL); h.nnet = nnet;
++	h.magic = DB_MAGIC; h.ver = DB_VER; h.saved = st; h.nnet = nnet;
+ 	memcpy(h.netname, netname, sizeof(netname));
+ 	memcpy(h.cli, cli, sizeof(cli));
+ 	fwrite(&h, sizeof(h), 1, o);
+@@ -2071,13 +2174,104 @@ static int db_load(const char *path)
+ 	if (fread(r_prb, sizeof(ring_t), 1, o) != 1) goto trunc;	/* guard the last ring too */
+ 	syslog(LOG_INFO, "rtrafd: history restored from %s (saved %lld)", path, (long long)h.saved);
+ 	fclose(o);
++	db_saved = (time_t)h.saved;
+ 	return 1;
+ trunc:
+ 	syslog(LOG_WARNING, "rtrafd: %s truncated - partial history restored", path);
+ 	fclose(o);
++	db_saved = (time_t)h.saved;
+ 	return 1;
+ }
+ 
++/* Align the ring cursors with a just-restored db. The rings now hold the
++ * SAVED timeline, so the cursors must describe it: slots whose period is
++ * unchanged since the save (the current hour / today / month-to-date) keep
++ * accumulating in place, and periods that elapsed while we were down are
++ * zeroed - they still hold the ring's previous wrap. Works pre-NTP too: the
++ * cursors adopt the SAVED clock, adds land in the saved timeline's slots,
++ * and the eventual NTP step is resolved by the same period math in the main
++ * loop instead of being mistaken for a rollover that wipes the restore. */
++static void db_align(void)
++{
++	time_t now = time(NULL);
++	if (!clock_sane(db_saved)) return;	/* stamp unusable: leave cursors alone */
++	slots_periods_for(db_saved, &i5cur, &ihcur, &idcur, &imcur,
++			  &p5cur, &phcur, &pdcur, &pmcur);
++	pt_cur = db_saved;
++	if (clock_sane(now) && now > db_saved) {
++		ring_span_zero(db_saved, now);
++		slots_periods_for(now, &i5cur, &ihcur, &idcur, &imcur,
++				  &p5cur, &phcur, &pdcur, &pmcur);
++		pt_cur = now;
++	}
++}
++
++/* Republish EVERY window at each 5-min boundary, not just the ones whose
++ * index happened to roll over. Gating the writes on their own index (nh/nd/nm)
++ * meant day.json was rewritten once per 24 h and month.json once per calendar
++ * month - so the 1y and month views served stale or absent data for up to a
++ * day / a month after boot, even though the rings behind them had been
++ * updating all along.
++ * H4: the four writes together cost ~212,000 fprintf calls at a full client
++ * table (json_ring emits one per slot: 288 + 336 + 366 + 24 slots across ~209
++ * rings), inside a loop budgeted at 100 ms. The result was a 150-350 ms stall
++ * every 5 minutes that dropped live samples. m5 still goes out every boundary:
++ * it is the window that actually changes at this cadence and the one the page
++ * opens on. The three slow windows take turns, so each is refreshed at least
++ * every 15 minutes - far inside a single bucket of its own step (1 h, 1 d,
++ * 1 month), so nothing renders any staler than it did. The first boundary
++ * still writes all four, so no window is missing while the rotation starts. */
++static void publish_hist(void)
++{
++	static int hrot = 0;	/* H4: which slow window is due this boundary */
++	static int hfirst = 1;	/* publish all four once, so none is missing */
++
++	write_hist(0, "m5.json", 300);
++	if (hfirst) {
++		write_hist(1, "hour.json", 3600);
++		write_hist(2, "day.json", 86400);
++		write_hist(3, "month.json", 0);
++		hfirst = 0;
++	} else {
++		if (hrot == 0)      write_hist(1, "hour.json", 3600);
++		else if (hrot == 1) write_hist(2, "day.json", 86400);
++		else                write_hist(3, "month.json", 0);
++		hrot = (hrot + 1) % 3;
++	}
++}
++
++/* The history boundary. v2.7.2: driven by the ABSOLUTE period, and only once
++ * the clock is sane. Keying on the wrapped index made the NTP time-step of a
++ * pre-sync boot look like a rollover, and the zeroing then wiped the
++ * hour/day/month slots a store restored before sync (jffs always loads
++ * pre-NTP; USB does whenever hotplug beats WAN-up, typical right after a
++ * firmware flash) - the field "Month tab resets on a firmware update".
++ * ring_span_zero() clears exactly the slots whose period elapsed - downtime
++ * gaps included - and leaves a restored current period accumulating in
++ * place. */
++static void hist_tick(time_t now, unsigned long tick)
++{
++	if (clock_sane(now)) {
++		int n5, nh, nd, nm;
++		int64_t q5, qh, qd, qm;
++		slots_periods_for(now, &n5, &nh, &nd, &nm, &q5, &qh, &qd, &qm);
++		if (q5 != p5cur) {
++			probe_close_bucket();
++			publish_hist();
++			if (now > pt_cur) ring_span_zero(pt_cur, now);
++			i5cur = n5; ihcur = nh; idcur = nd; imcur = nm;
++			p5cur = q5; phcur = qh; pdcur = qd; pmcur = qm;
++			pt_cur = now;
++		}
++	} else if (tick && tick % (300UL * TPS) == 0) {
++		/* pre-NTP: keep the history windows published on a tick cadence,
++		 * but never advance or zero a slot - the coming clock step must
++		 * not be mistaken for a rollover */
++		probe_close_bucket();
++		publish_hist();
++	}
++}
++
+ /* ---------- main ---------- */
+ int main(int argc, char **argv)
+ {
+@@ -2141,11 +2335,19 @@ int main(int argc, char **argv)
+ 	 * until then keep retrying from the main loop for STORE_RETRY_SECS, and NEVER
+ 	 * save over a file we did not load (see the clobber guard at the save site). */
+ 	cli_index_clear();	/* v2.2.3: empty the O(1) client index before any cli_slot / db_load */
++	/* seed the cursors BEFORE any restore - db_align() re-seeds them from the
++	 * db's own timestamp when a file is loaded */
++	slots_periods_for(time(NULL), &i5cur, &ihcur, &idcur, &imcur,
++			  &p5cur, &phcur, &pdcur, &pmcur);
++	pt_cur = time(NULL);
+ 	store = resolve_store(dbpath, sizeof(dbpath));
+ 	set_store_dir(dbpath);
+ 	if (dbpath[0]) {
+-		if (db_load(dbpath) < 0)
++		int lr = db_load(dbpath);
++		if (lr < 0)
+ 			db_park_prev(dbpath);	/* unreadable/foreign file: never save over it */
++		else if (lr > 0)
++			db_align();
+ 		db_attached = 1;
+ 	} else if (nvram_safe_get("rtraf_path")[0]) {
+ 		syslog(LOG_NOTICE,
+@@ -2154,7 +2356,6 @@ int main(int argc, char **argv)
+ 	}
+ 	boot_t = time(NULL);
+ 	last_save = time(NULL);
+-	slots_for(time(NULL), &i5cur, &ihcur, &idcur, &imcur);
+ 	refresh_cfg();		/* seed cached config before the first live write */
+ 	/* LOG_NOTICE so it clears the default syslog threshold and shows in logread */
+ 	syslog(LOG_NOTICE, "rtrafd: started (store=%s wan=%s lan=%s/%08x)",
+@@ -2170,62 +2371,13 @@ int main(int argc, char **argv)
+ 	int h_phase = HP_IDLE;			/* v2.2.4 health-cycle phase (was: single h_open flag) */
+ 	while (running) {
+ 		time_t now = time(NULL);
+-		int n5, nh, nd, nm;
+ 		uint64_t wrx0, wtx0;
+ 		struct timespec t0, tsamp, tcls;
+ 
+ 		clock_gettime(CLOCK_MONOTONIC, &t0);
+ 
+ 		/* history boundary - fires every 5 min regardless of tick rate */
+-		slots_for(now, &n5, &nh, &nd, &nm);
+-		if (n5 != i5cur) {
+-			static int hrot = 0;	/* H4: which slow window is due this boundary */
+-			static int hfirst = 1;	/* publish all four once, so none is missing */
+-			probe_close_bucket();
+-			/* Republish EVERY window at each 5-min boundary, not just the ones
+-			 * whose index happened to roll over. Gating the writes on their own
+-			 * index (nh/nd/nm) meant day.json was rewritten once per 24 h and
+-			 * month.json once per calendar month - so the 1y and month views
+-			 * served stale or absent data for up to a day / a month after boot,
+-			 * even though the rings behind them had been updating all along.
+-			 * Four small JSON files every 5 minutes is nothing.
+-			 * The all_zero_slot() calls below STAY index-gated: those clear a
+-			 * newly-entered slot and must fire only on an actual rollover. */
+-			/* H4: those four writes together cost ~212,000 fprintf calls at a
+-			 * full client table (json_ring emits one per slot: 288 + 336 + 366
+-			 * + 24 slots across ~209 rings), inside a loop budgeted at 100 ms.
+-			 * The result was a 150-350 ms stall every 5 minutes that dropped
+-			 * live samples - the graph the user is watching pausing so that
+-			 * windows nobody has open can be rewritten.
+-			 *
+-			 * m5 still goes out every boundary: it is the window that actually
+-			 * changes at this cadence and the one the page opens on. The three
+-			 * slow windows take turns, so each is refreshed at least every 15
+-			 * minutes - far inside a single bucket of its own step (1 h, 1 d,
+-			 * 1 month), so nothing renders any staler than it did. This keeps
+-			 * the republish-everything behaviour described above, which exists
+-			 * because index-gating these writes left the 1y and month views
+-			 * empty for up to a day or a month after boot; it only spreads the
+-			 * cost out. The first boundary still writes all four, so no window
+-			 * is missing while the rotation gets going. */
+-			write_hist(0, "m5.json", 300);
+-			if (hfirst) {
+-				write_hist(1, "hour.json", 3600);
+-				write_hist(2, "day.json", 86400);
+-				write_hist(3, "month.json", 0);
+-				hfirst = 0;
+-			} else {
+-				if (hrot == 0)      write_hist(1, "hour.json", 3600);
+-				else if (hrot == 1) write_hist(2, "day.json", 86400);
+-				else                write_hist(3, "month.json", 0);
+-				hrot = (hrot + 1) % 3;
+-			}
+-			all_zero_slot(0, n5);
+-			if (nh != ihcur) all_zero_slot(1, nh);
+-			if (nd != idcur) all_zero_slot(2, nd);
+-			if (nm != imcur) all_zero_slot(3, nm);
+-			i5cur = n5; ihcur = nh; idcur = nd; imcur = nm;
+-		}
++		hist_tick(now, tick);
+ 
+ 		/* WAN: every tick (the lively graph). Rate = this-tick delta scaled
+ 		 * to bits/sec by the MEASURED interval since the previous sample.
+@@ -2359,8 +2511,11 @@ int main(int argc, char **argv)
+ 					store = resolve_store(dbpath, sizeof(dbpath));
+ 					set_store_dir(dbpath);
+ 					if (dbpath[0]) {
+-						if (db_load(dbpath) < 0)
++						int lr = db_load(dbpath);
++						if (lr < 0)
+ 							db_park_prev(dbpath);
++						else if (lr > 0)
++							db_align();
+ 						db_attached = 1;
+ 						syslog(LOG_NOTICE, "rtrafd: store came up late - attached %s", dbpath);
+ 					}
+@@ -2386,9 +2541,10 @@ int main(int argc, char **argv)
+ 			 * box up for hours, the RAM data wins: park the file as .prev,
+ 			 * then own the path. Either way never overwrite unread history. */
+ 			if (dbpath[0] && !db_attached) {
+-				if (now - boot_t <= LATE_LOAD_SECS && db_load(dbpath) > 0)
++				if (now - boot_t <= LATE_LOAD_SECS && db_load(dbpath) > 0) {
++					db_align();
+ 					syslog(LOG_NOTICE, "rtrafd: store appeared late - history restored from %s", dbpath);
+-				else
++				} else
+ 					db_park_prev(dbpath);
+ 				db_attached = 1;
+ 			}
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 7f14c66ef7..8687f6976a 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -164,8 +164,8 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+   <div class="win on" data-w="live" data-step="live"><#RTRF_02#></div>
+   <div class="win" data-w="m5" data-step="300"><#RTRF_08#></div>
+   <div class="win" data-w="hour" data-step="3600"><#RTRF_09#></div>
+-  <div class="win" data-w="day" data-step="86400"><#RTRF_10#></div>
+   <div class="win" data-w="month" data-step="0"><#RTRF_11#></div>
++  <div class="win" data-w="day" data-step="86400"><#RTRF_10#></div>
+ </div>
+ 
+ <div class="panel span">
+@@ -710,9 +710,23 @@ function renderHist(d){
+   document.getElementById('netlegend').innerHTML = netLeg || `<span style="color:var(--steel)"><#RTRF_68#></span>`;
+   if(netLays.length) stackChart('netchart', netLays, netCols); else document.getElementById('netchart').innerHTML='';
+ 
+-  /* top devices (sum window) */
+-  var cli=d.clients||{}, rows=[];
+-  for(var k in cli){ if(!cli.hasOwnProperty(k))continue; var dn=0,up=0; var cd=Array.isArray(cli[k].d)?cli[k].d:[]; cd.forEach(function(p){dn+=p[0];up+=p[1];}); rows.push({name:k,ip:cli[k].ip,dn:dn,up:up,tot:dn+up}); }
++  /* top devices (sum window). Rows are keyed by the collector's raw key, but
++     one physical device can own several keys over time (an IP-keyed row from
++     before its MAC resolved, a row restored from an older db) - they all
++     resolve to the same display name, so the stale one reads as the device
++     "stuck" at an old total while the live one carries the current traffic
++     (the field "1 year total stopped updating" report). Fold rows that
++     resolve to the same MAC into one before ranking. */
++  var cli=d.clients||{}, rows=[], agg={};
++  for(var k in cli){ if(!cli.hasOwnProperty(k))continue; var dn=0,up=0; var cd=Array.isArray(cli[k].d)?cli[k].d:[]; cd.forEach(function(p){dn+=p[0];up+=p[1];});
++    var kl=String(k).toLowerCase(), ip=cli[k].ip||'';
++    var id=kl.indexOf(':')>=0 ? kl : String(ReaperNames.macForIp(ip||k)||kl).toLowerCase();
++    var a=agg[id];
++    if(!a){ a={name:k,ip:ip,dn:0,up:0}; agg[id]=a; rows.push(a); }
++    else if(kl.indexOf(':')>=0){ a.name=k; if(ip)a.ip=ip; }  /* the MAC-keyed row names the merged entry */
++    else if(!a.ip&&ip){ a.ip=ip; }
++    a.dn+=dn; a.up+=up; }
++  rows.forEach(function(r){ r.tot=r.dn+r.up; });
+   rows.sort(function(a,b){return b.tot-a.tot;});
+   var maxTot=rows.length?rows[0].tot:1, tb='';
+   rows.slice(0,15).forEach(function(r){ tb+='<tr><td>'+devCell(r.ip,r.name)+'<div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'; });
+-- 
+2.25.1
+

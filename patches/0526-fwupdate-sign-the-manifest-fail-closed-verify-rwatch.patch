@@ -1,0 +1,191 @@
+From b6ecf81b6f55458aa92b0703cc621e6c2668fa24 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 08:10:31 -0400
+Subject: [PATCH] fwupdate: sign the manifest (fail-closed verify); rwatch
+ heals under the firewall lock
+
+Two security-review items (2026-08-22):
+
+- The update check pinned the host, verified TLS, and checked the image
+  sha256 from the manifest - but manifest and image live in the same
+  repository, so a compromised repository/account could offer a matching
+  pair. The manifest is now RSA-4096/SHA-256 signed with a key that exists
+  ONLY offline (never in a repo, never in CI - build-scripts/
+  sign_manifest.sh signs and self-verifies) and the check script verifies
+  updates/manifest_3006.txt.sig against the public key embedded in this
+  script BEFORE parsing any field. Missing or invalid signature refuses
+  the whole manifest, fail closed, logged. Note: RSA via `openssl dgst`
+  because the shipped openssl 1.1.1 CLI has no one-shot EdDSA (-rawin is
+  3.0-only - verified empirically); if the tree later adopts Merlin's
+  OpenSSL 3.x-with-shim arrangement, the documented rotation path moves
+  the key to Ed25519. Host-validated: genuine manifest verifies; tampered
+  manifest, garbage sig, empty sig, missing sig all refused; embedded
+  pubkey byte-matches build-scripts/manifest_pub.pem.
+
+- rwatch's PBR mark-rule re-apply and Warden CRITICAL re-assert ran the
+  (idempotent) apply scripts with no firewall lock. The backlog's
+  suggested flock(1) would have locked NOTHING - rc's file_lock() is a
+  POSIX fcntl lock and flock(2) locks never interact with it - so a small
+  rc applet (`rc reaper_lockrun <script>`) takes the real
+  file_lock("firewall") and runs the script; only the three Reaper heal
+  scripts are allow-listed. Both rwatch sites converted: a heal that
+  races a firewall rebuild now serializes behind it.
+---
+ release/src/router/rc/rc.c                    |  2 +
+ release/src/router/rc/rc.h                    |  1 +
+ release/src/router/rc/rwatch.c                | 41 +++++++++++++++-
+ .../rom/webs_scripts/reaper_webs_update.sh    | 47 +++++++++++++++++++
+ 4 files changed, 89 insertions(+), 2 deletions(-)
+ mode change 100755 => 100644 release/src/router/rom/webs_scripts/reaper_webs_update.sh
+
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index cd7836578b..944645f301 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -3095,6 +3095,8 @@ typedef struct {
+ static const applets_t applets[] = {
+ 	{ "preinit",			init_main				},
+ 	{ "init",			init_main				},
++	/* v2.7.3: rwatch self-heals under the firewall fcntl lock (rc/rwatch.c) */
++	{ "reaper_lockrun",		reaper_lockrun_main			},
+ 	{ "console",			console_main				},
+ #ifdef DEBUG_RCTEST
+ 	{ "rc",				rctest_main				},
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index cc9d23d676..75327fcac2 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3018,6 +3018,7 @@ extern void reaper_pbr_rollback(void);
+ extern void rw_teardown_rules(void);
+ extern void stop_rwatch(void);	/* reaper v1.8.8 watchdog: WAN/DNS/Warden/accelerator health probe (rc/rwatch.c) */
+ extern void start_rwatch(void);
++extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
+ #ifdef RTCONFIG_REAPER_MCP
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 6c52a87ed2..70c6445d39 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -112,7 +112,10 @@ static void rwatch_gen(void)
+ 	  "  if [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ $((UP-_last)) -ge 120 ] && [ -x \"$_sh\" ]; then\n"
+ 	  "    echo $UP > /tmp/reaper_pbr/heal.at\n"
+ 	  "    logger -t rwatch \"policy routing: $_live of $_ex mark rule(s) live - re-applying\"\n"
+-	  "    sh \"$_sh\" >/dev/null 2>&1\n"
++	  /* v2.7.3 (code-review P3): under rc's firewall lock. shell flock(1)
++	   * cannot take rc's POSIX fcntl lock, so call back into rc for it -
++	   * a concurrent start_firewall now serializes instead of interleaving. */
++	  "    rc reaper_lockrun \"$_sh\" >/dev/null 2>&1\n"
+ 	  "  fi\n"
+ 	  "fi\n"
+ 	  "\n"
+@@ -232,7 +235,8 @@ static void rwatch_gen(void)
+ 	  "# re-assert the chain (apply.sh is idempotent).\n"
+ 	  "if [ -n \"$CRIT\" ]; then\n"
+ 	  "  logger -t rwatch \"CRITICAL:$CRIT - LAN/loopback found in a Warden block set (ingest filter breached); re-applied warden chain\"\n"
+-	  "  [ -f /tmp/rwarden/apply.sh ] && sh /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
++	  /* v2.7.3: same firewall-lock discipline as the PBR heal above */
++	  "  [ -f /tmp/rwarden/apply.sh ] && rc reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  "if [ -n \"$FAIL$CRIT\" ]; then\n"
+@@ -389,3 +393,36 @@ void start_rwatch(void)
+ 			    "/jffs/rwatch, or <durable store>/rwatch when reaper_store "
+ 			    "is set and 'watch' is enabled)", iv);
+ }
++
++/* v2.7.3 (code-review P3 "rwatch heals outside the firewall lock"): run a
++ * Reaper self-heal script under the SAME lock rc's start_firewall() holds.
++ * file_lock() is a POSIX fcntl lock, which shell flock(1) cannot take, so
++ * the rwatch shell tick calls back into rc for it: a heal that races a
++ * firewall rebuild now serializes behind it instead of interleaving with
++ * it. Allowlisted scripts only - this is a heal wrapper for our own
++ * watchdog, not a general lock-run tool. Invoked as
++ * `rc reaper_lockrun <script>` (the rc base handler shifts argv). */
++int reaper_lockrun_main(int argc, char *argv[])
++{
++	static const char * const ok[] = {
++		"/tmp/reaper_pbr/apply.sh",
++		"/tmp/reaper_pbr/candidate.sh",
++		"/tmp/rwarden/apply.sh",
++		NULL
++	};
++	int i, lock, rv;
++	char cmd[64];
++
++	if (argc < 2 || !argv[1])
++		return 1;
++	for (i = 0; ok[i]; i++)
++		if (strcmp(argv[1], ok[i]) == 0)
++			break;
++	if (!ok[i])
++		return 1;
++	lock = file_lock("firewall");
++	snprintf(cmd, sizeof(cmd), "sh %s", argv[1]);
++	rv = system(cmd);
++	file_unlock(lock);
++	return rv ? 1 : 0;
++}
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+old mode 100755
+new mode 100644
+index da2f335493..8c76bb3f72
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -48,6 +48,53 @@ if [ "$?" != "0" ] || [ ! -s "$TMP" ]; then
+ 	exit 0
+ fi
+ 
++# v2.7.3 (security review 2026-08-22): the manifest and the images live in the
++# same repository, so TLS + host-pin + sha256 cannot stop a compromised
++# repository/account from offering a matching manifest+image pair. The
++# manifest is therefore RSA-4096/SHA-256-signed with a key that exists ONLY
++# offline (build-scripts/sign_manifest.sh; the shipped openssl 1.1.1 CLI has
++# no one-shot EdDSA, so RSA via `dgst` is the primitive the box can verify)
++# and checked here against the public key baked into this firmware, BEFORE
++# any field is parsed or honoured. Missing or invalid signature = the whole
++# manifest is refused (fail closed).
++SIGB64=/tmp/reaper_update.sig.b64
++SIGBIN=/tmp/reaper_update.sig.bin
++PUBKEY=/tmp/reaper_manifest_pub.pem
++cat > "$PUBKEY" <<'RPUBEOF'
++-----BEGIN PUBLIC KEY-----
++MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2580Rl/Emjw0vWK+zFn6
++/pOhPgDYzJIvx0t4OsHCvYcrcPtbFGCCg2Fwphnwof8WyQPb58nWf24F4EraaSIr
++CAGXAsipLxl920XBD+LL2Xyn+AUXtHkaARB6WBKZkF1mYAqNLUGRuh8IN1f14bzJ
++oRxm4+6oIiD6aGkztsfROJHJjK8FqoYfw325y7iK4JmzTibeTW7ZFgnE3tOZE5wA
++wwOwZ1b+dMaFBR9gJIKKWSI9vod76e9Ft/vuH9SGBKL6H6qrlzhGsz1YhUUwd4I7
++D0yaYUMei1SWmLkYdyqXtolmMFjUdlbJ1cO6j8LCA7iK1MqrKgnJBopGXpzRYpwF
++AiI3ck6DAKo1F5bszTRFVmw5+vfAk/egeORbK8iEKuK9CRRiKCccdSRSF9zAtUMs
++PUMOthuN8gT2vUxz2bXihP4ZN2oRx7HOSez2q30TMHg+gnbZHw10StptXSFuMrju
++L3BeN+BXfZgMJ5qJ1ur/asDcUZ4jkpd3ZZA0Vznwr+gjlc7vDfOPRIxGyySqEUOW
++9zn9HiQxJz6qWHfdn/wlbjOr3HOF0C44Kb0BOqUo6EhTw3HiwcRPRDo2fSFj3eBP
++ZZU94cpqPhVa7KrZHEUTsmhSG3mGgkiqzjnxiGirHdT/iNxby0DH4iz2AnrmE/Z1
++xT3epDbHIWuCdMX4gU0X1eMCAwEAAQ==
++-----END PUBLIC KEY-----
++RPUBEOF
++sig_ok=0
++/usr/sbin/wget $wget_options "${MANIFEST_URL}.sig" -O "$SIGB64"
++if [ "$?" = "0" ] && [ -s "$SIGB64" ]; then
++	if /usr/sbin/openssl base64 -d -A -in "$SIGB64" -out "$SIGBIN" 2>/dev/null &&
++	   /usr/sbin/openssl dgst -sha256 -verify "$PUBKEY" -signature "$SIGBIN" "$TMP" >/dev/null 2>&1; then
++		sig_ok=1
++	fi
++fi
++rm -f "$SIGB64" "$SIGBIN" "$PUBKEY"
++if [ "$sig_ok" != "1" ]; then
++	echo "---- manifest signature MISSING or INVALID - refusing (fail closed) ----" >> "$LOG"
++	logger -t reaper-fw "update check: manifest signature missing or invalid - refusing the manifest"
++	rm -f "$TMP"
++	nvram set webs_state_error=1
++	nvram set webs_state_update=1
++	exit 0
++fi
++echo "---- manifest signature verified ----" >> "$LOG"
++
+ # manifest line: MODEL#VARIANT#X.Y.Z#<download-url>[#SHA256[#SIZE]]
+ # (fields 5/6 arrived with Phase 2; older manifests lack them - the page then
+ # offers notify-only and the upgrade script refuses to flash unverified)
+-- 
+2.25.1
+

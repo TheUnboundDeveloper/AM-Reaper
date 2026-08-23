@@ -1,0 +1,54 @@
+From eb49dcdfe38e04cd85c6d120f4fd6533e0106b76 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 09:04:02 -0400
+Subject: [PATCH] fwupdate: shelve manifest-signature enforcement (owner
+ decision) - machinery kept inert
+
+REAPER_SIG_ENFORCE=0 gates the whole verify block: no sig fetch, no
+refusal, error 9 and the type-to-confirm override stay dormant, and a
+stray override flag is still consumed so it can never linger armed. The
+embedded public key, the verify code and the page/override flow all
+remain in place - re-enabling is this one constant (a rebuild,
+deliberately: the trust anchor lives in the flashed image) plus
+MANIFEST_SIGNING=on in the lean repo signing.conf, which re-arms
+stage_release / refresh_manifest / the CI signature-status step /
+repo-hygiene in one flip.
+---
+ .../router/rom/webs_scripts/reaper_webs_update.sh  | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index 32040d1485..7a8d93a34f 100644
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -57,6 +57,14 @@ fi
+ # and checked here against the public key baked into this firmware, BEFORE
+ # any field is parsed or honoured. Missing or invalid signature = the whole
+ # manifest is refused (fail closed).
++#
++# OWNER DECISION 2026-08-23: enforcement SHELVED for now - the machinery is
++# kept intact but inert. Re-enabling = flip REAPER_SIG_ENFORCE to 1 here (a
++# rebuild, deliberately: the trust anchor must live in the flashed image,
++# never in runtime config) + set MANIFEST_SIGNING=on in the lean repo's
++# build-scripts/signing.conf so the tooling and CI enforce the .sig again.
++REAPER_SIG_ENFORCE=0
++if [ "$REAPER_SIG_ENFORCE" = "1" ]; then
+ SIGB64=/tmp/reaper_update.sig.b64
+ SIGBIN=/tmp/reaper_update.sig.bin
+ PUBKEY=/tmp/reaper_manifest_pub.pem
+@@ -110,6 +118,12 @@ if [ "$sig_ok" != "1" ]; then
+ else
+ 	echo "---- manifest signature verified ----" >> "$LOG"
+ fi
++else
++	# enforcement shelved (REAPER_SIG_ENFORCE=0): no sig fetch, no refusal.
++	# Consume a stray override flag anyway so it can never linger armed.
++	[ "$(nvram get reaper_fwsig_override)" = "1" ] && nvram set reaper_fwsig_override=0
++	echo "---- manifest signature enforcement disabled in this build ----" >> "$LOG"
++fi
+ 
+ # manifest line: MODEL#VARIANT#X.Y.Z#<download-url>[#SHA256[#SIZE]]
+ # (fields 5/6 arrived with Phase 2; older manifests lack them - the page then
+-- 
+2.25.1
+

@@ -1,0 +1,1636 @@
+From dda56bfbf7f62db9eb0c23b633b4a4d5e618fbe1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 05:52:58 -0400
+Subject: [PATCH] httpd: one-file full backup/restore (settings + Reaper
+ stores); diag v1.3.6
+
+Backlog P2: the stock Save-setting file is only the nvram blob, and every
+Reaper list moved to /jffs (v2.6.3-v2.6.9) - a stock backup + reset +
+restore silently lost the Gatekeeper device list, firewall lists, routing
+rules and Warden cache. One archive now carries both halves:
+
+  REAPER-BACKUP 1 + meta line + the stock .CFG (byte-identical HDR2+JCFG
+  format, still restorable by stock/Merlin) + the v2.7.0 reaper_cfg JSON +
+  the fqdn ipset cache (domain objects come back populated).
+
+- Download: GET /REAPER_<model>_<ver>_settings.rbk (do_reaper_fullbak_file;
+  the URL names the file, same trick as Settings_<model>.CFG; .rbk added to
+  httpd's handler-generated whitelist). CFG produced exactly as prf_file's
+  default branch (rbk_make_cfg).
+- Restore: multipart reaper_restore.cgi validates EVERYTHING first (magic,
+  meta, model vs productid, /jffs health gate, the CFG part's own HDR
+  magic, the JSON parses, the fqdn part is well-formed) and only then
+  writes: JSON parked at /jffs/reaper/restore_pending.json (fw/pbr drafts
+  live on tmpfs and would not survive the reboot), fqdn cache laid down,
+  CFG to /tmp/settings_u.prf and the stock do_upload_config() path replays
+  it (jffs cfgs + nvram restore + commit + reboot). A failed check changes
+  nothing.
+- After the reboot one click completes the Reaper half (action=pending /
+  import_pending, the import core refactored into rcfg_import_json; lists
+  stage as drafts behind commit-confirm exactly as an interactive import).
+- UI: injected card on the stock Administration page (mode-4 block in
+  reaper_inject.c fetches the tokenized fragment Reaper_BackupCard.asp and
+  wires it - stock page stays byte-pristine); pending-restore banner also
+  on the Storage page. 14 new RBKP_ tokens, 25 dicts lockstep 6759.
+- reaper_diag v1.3.6: churn rate no longer ~0/h when the log head carries
+  pre-NTP timestamps (span starts at the first credible timestamp; slow
+  loops shown per-day); duplicate 14d mangle REAPER_PBR line removed.
+- rtrafd: db_align logs the cursor alignment (field diagnostic + verify
+  marker).
+
+Host-validated: injected card JS + Storage page JS parse clean; rtrafd
+harness still 9/9; diag sh -n clean; dicts lockstep 6759 x25.
+---
+ release/src/router/httpd/httpd.c             |   2 +-
+ release/src/router/httpd/reaper_inject.c     |  84 +++
+ release/src/router/httpd/web.c               | 671 +++++++++++++++++--
+ release/src/router/others/reaper_diag        |  22 +-
+ release/src/router/rtrafd/rtrafd.c           |   2 +
+ release/src/router/www/BR.dict               |  14 +
+ release/src/router/www/CN.dict               |  14 +
+ release/src/router/www/CZ.dict               |  14 +
+ release/src/router/www/DA.dict               |  14 +
+ release/src/router/www/DE.dict               |  14 +
+ release/src/router/www/EN.dict               |  14 +
+ release/src/router/www/ES.dict               |  14 +
+ release/src/router/www/FI.dict               |  14 +
+ release/src/router/www/FR.dict               |  14 +
+ release/src/router/www/HU.dict               |  14 +
+ release/src/router/www/IT.dict               |  14 +
+ release/src/router/www/JP.dict               |  14 +
+ release/src/router/www/KR.dict               |  14 +
+ release/src/router/www/MS.dict               |  14 +
+ release/src/router/www/NL.dict               |  14 +
+ release/src/router/www/NO.dict               |  14 +
+ release/src/router/www/PL.dict               |  14 +
+ release/src/router/www/RO.dict               |  14 +
+ release/src/router/www/RU.dict               |  14 +
+ release/src/router/www/Reaper_BackupCard.asp |  44 ++
+ release/src/router/www/Reaper_Storage.asp    |  34 +
+ release/src/router/www/SL.dict               |  14 +
+ release/src/router/www/SV.dict               |  14 +
+ release/src/router/www/TH.dict               |  14 +
+ release/src/router/www/TR.dict               |  14 +
+ release/src/router/www/TW.dict               |  14 +
+ release/src/router/www/UK.dict               |  14 +
+ 32 files changed, 1139 insertions(+), 70 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_BackupCard.asp
+
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 98e26360c3..2cb480f8d3 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -2022,7 +2022,7 @@ handle_request(void)
+ 				}
+ #endif
+ 			}
+-			if(!strstr(file, ".cgi") && !strstr(file, "syslog.txt") && !(strstr(file,"uploadIconFile.tar")) && (fnmatch("backup_jffs*.tar",file,0) == FNM_NOMATCH) && !(strstr(file,"networkmap.tar")) && !(strstr(file,".CFG")) && !(strstr(file,".log")) && !check_if_file_exist(file)
++			if(!strstr(file, ".cgi") && !strstr(file, "syslog.txt") && !(strstr(file,"uploadIconFile.tar")) && (fnmatch("backup_jffs*.tar",file,0) == FNM_NOMATCH) && !(strstr(file,"networkmap.tar")) && !(strstr(file,".CFG")) && !(strstr(file,".rbk")) /* reaper v2.7.2: full-backup download is handler-generated, not on disk */ && !(strstr(file,".log")) && !check_if_file_exist(file)
+ #ifdef RTCONFIG_USB_MODEM
+ 					&& !strstr(file, "modemlog.txt")
+ #endif
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 077680f912..0ecbc91982 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -102,8 +102,82 @@
+ 	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}" \
+ 	"if(self===top){location.replace(\"/reaper_shell.asp#\"+rp+location.search);}})();</script>"
+ 
++/* v2.7.2 full-backup card (backlog P2): injected ONLY into the stock
++ * Administration > Restore/Save/Upload page (mode 4). The stock file stays
++ * byte-pristine; this script fetches the tokenized fragment
++ * Reaper_BackupCard.asp (do_ej resolves its dict tokens server-side) and
++ * inserts it above the stock form, then wires the buttons. All user-visible
++ * strings live in the fragment's hidden spans - this block is pure logic, so
++ * i18n rule 24 is satisfied without putting a single literal here. Scripts
++ * inside innerHTML never execute, which is exactly why the wiring lives here.
++ *
++ * NOTE: every line must end in a backslash, comments included (see the
++ * REAPER_BOUNCE_JS note above). */
++#define REAPER_BKCARD_JS \
++	"<script>(function(){" \
++	"function t(i){var e=document.getElementById(i);return e?e.textContent:\"\";}" \
++	"function msg(ok,s){var m=document.getElementById(\"rbk_msg\");if(!m)return;" \
++	"m.style.display=\"\";m.className=ok?\"rbk_ok\":\"rbk_err\";m.textContent=s;}" \
++	"function wire(){" \
++	"var hid=t(\"rbk_hid\"),model=t(\"rbk_model\"),ver=t(\"rbk_ver\");" \
++	"var dl=document.getElementById(\"rbk_dl\");" \
++	"if(dl)dl.onclick=function(){location.href=\"/REAPER_\"+model.replace(/[^A-Za-z0-9._-]/g,\"\")+\"_\"+ver.replace(/[^A-Za-z0-9._-]/g,\"\")+\"_settings.rbk?http_id=\"+encodeURIComponent(hid);};" \
++	"var up=document.getElementById(\"rbk_up\"),fi=document.getElementById(\"rbk_file\");" \
++	"if(up&&fi){up.onclick=function(){fi.click();};" \
++	"fi.onchange=function(){" \
++	"var f=fi.files&&fi.files[0];if(!f)return;" \
++	"if(f.size>16777216||f.size<64){msg(0,t(\"rbk_s_badfile\"));fi.value=\"\";return;}" \
++	"var rd=new FileReader();" \
++	"rd.onload=function(){" \
++	"var head=String(rd.result||\"\");" \
++	"if(head.indexOf(\"REAPER-BACKUP 1\\n\")!==0){msg(0,t(\"rbk_s_badfile\"));fi.value=\"\";return;}" \
++	"var meta=null;try{meta=JSON.parse(head.split(\"\\n\")[1]);}catch(e){}" \
++	"if(!meta){msg(0,t(\"rbk_s_badfile\"));fi.value=\"\";return;}" \
++	"if(String(meta.model)!==model){msg(0,t(\"rbk_s_model\"));fi.value=\"\";return;}" \
++	"if(!confirm(t(\"rbk_s_confirm\"))){fi.value=\"\";return;}" \
++	"var fd=new FormData();fd.append(\"http_id\",hid);fd.append(\"file\",f);" \
++	"var p=new XMLHttpRequest();p.open(\"POST\",\"/reaper_restore.cgi\",true);" \
++	"p.onloadend=function(){" \
++	"var r=null;try{r=JSON.parse(p.responseText);}catch(e){}" \
++	"fi.value=\"\";" \
++	"if(!r||!r.ok){var ek=r&&r.ek;" \
++	"msg(0,ek===\"model\"?t(\"rbk_s_model\"):ek===\"jffs\"?t(\"rbk_s_jffs\"):ek===\"file\"?t(\"rbk_s_badfile\"):t(\"rbk_s_fail\"));return;}" \
++	"msg(1,t(\"rbk_s_reboot\"));};" \
++	"p.send(fd);};" \
++	"rd.readAsText(f.slice(0,2048));};}" \
++	"var x2=new XMLHttpRequest();" \
++	"x2.open(\"GET\",\"/reaper_cfg.cgi?action=pending&http_id=\"+encodeURIComponent(hid)+\"&_=\"+Date.now(),true);" \
++	"x2.onload=function(){var j=null;try{j=JSON.parse(x2.responseText);}catch(e){}" \
++	"if(j&&j.ok&&j.pending){var b=document.getElementById(\"rbk_pending\");if(b)b.style.display=\"\";}};" \
++	"x2.send();" \
++	"var cp=document.getElementById(\"rbk_complete\");" \
++	"if(cp)cp.onclick=function(){cp.disabled=true;" \
++	"var q=new XMLHttpRequest();q.open(\"POST\",\"/reaper_cfg.cgi\",true);" \
++	"q.setRequestHeader(\"Content-Type\",\"application/x-www-form-urlencoded\");" \
++	"q.onloadend=function(){var r=null;try{r=JSON.parse(q.responseText);}catch(e){}" \
++	"cp.disabled=false;" \
++	"if(!r||!r.ok){msg(0,t(\"rbk_s_fail\"));return;}" \
++	"var b=document.getElementById(\"rbk_pending\");if(b)b.style.display=\"none\";" \
++	"msg(1,t(\"rbk_s_done\").replace(\"%1\",r.flags).replace(\"%2\",r.lists).replace(\"%3\",r.rejected));};" \
++	"q.send(\"action=import_pending&http_id=\"+encodeURIComponent(hid));};" \
++	"}" \
++	"function boot(){" \
++	"var x=new XMLHttpRequest();" \
++	"x.open(\"GET\",\"/Reaper_BackupCard.asp\",true);" \
++	"x.onload=function(){" \
++	"if(x.status!==200)return;" \
++	"var host=document.createElement(\"div\");host.innerHTML=x.responseText;" \
++	"var a=document.getElementById(\"FormTitle\")||document.forms[0]||null;" \
++	"if(a&&a.parentNode)a.parentNode.insertBefore(host,a);else document.body.insertBefore(host,document.body.firstChild);" \
++	"wire();};" \
++	"x.send();}" \
++	"if(document.readyState===\"loading\")document.addEventListener(\"DOMContentLoaded\",boot);else boot();" \
++	"})();</script>"
++
+ /* stock pages: theme <link> + bounce */
+ static const char REAPER_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS;
++/* the Administration backup page: the stock block + the full-backup card loader */
++static const char REAPER_BKCARD_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_BKCARD_JS;
+ /* reaper-native pages: bounce only, no reaper_content.css <link> (see reaper_native[]) */
+ static const char REAPER_NATIVE_BLOCK[] = REAPER_BOUNCE_JS;
+ /* first-run gate pages: reaper_content.css <link> only, NO bounce (see reaper_css_only[]) */
+@@ -162,6 +236,9 @@ static const char *reaper_skip[] = {
+ 	"offline.htm",
+ 	"gotoHomePage.htm",
+ 	"blocking.asp",
++	/* v2.7.2: the full-backup card FRAGMENT (no <head>, fetched by the
++	   injected loader and inserted via innerHTML) - serve it pristine */
++	"Reaper_BackupCard.asp",
+ 	NULL
+ };
+ 
+@@ -328,6 +405,11 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 		if (strcasecmp(name, reaper_css_only[i]) == 0)
+ 			return 3;
+ 
++	/* the Administration backup page additionally gets the full-backup card
++	   loader (v2.7.2). Signalled by return value 4. */
++	if (strcasecmp(name, "Advanced_SettingBackup_Content.asp") == 0)
++		return 4;
++
+ 	return 1;
+ }
+ 
+@@ -390,6 +472,8 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 		block = REAPER_NATIVE_BLOCK;  blocklen = sizeof(REAPER_NATIVE_BLOCK) - 1;  break;
+ 	case 3:
+ 		block = REAPER_CSSONLY_BLOCK; blocklen = sizeof(REAPER_CSSONLY_BLOCK) - 1; break;
++	case 4:
++		block = REAPER_BKCARD_BLOCK;  blocklen = sizeof(REAPER_BKCARD_BLOCK) - 1;  break;
+ 	default:
+ 		block = REAPER_BLOCK;         blocklen = sizeof(REAPER_BLOCK) - 1;         break;
+ 	}
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 92886353b4..0895feab54 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24136,73 +24136,63 @@ static int rcfg_flag_ok(const char *v, size_t max)
+ 	return 1;
+ }
+ 
+-static void
+-do_reaper_cfg_cgi(char *url, FILE *stream)
++/* v2.7.2: the export writer, shared by action=export (bare JSON reply) and
++ * the full-backup archive (the same JSON embedded as one part). */
++static void rcfg_export_json(FILE *stream)
+ {
+-	char *action = get_cgi("action");
+-	if (!action) action = "export";
+-	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
+-			return;
+-		}
++	int i;
++	const char *last = "";
++	websWrite(stream, "{\"ok\":1,\"reaper_cfg\":1,\"schema\":1,\"model\":");
++	gk_json_esc(stream, nvram_safe_get("productid"));
++	websWrite(stream, ",\"version\":");
++	gk_json_esc(stream, nvram_safe_get("extendno"));
++	websWrite(stream, ",\"when\":%ld", (long)time(NULL));
++	/* flags, grouped by section */
++	for (i = 0; i < RCFG_NFLAGS; i++) {
++		if (strcmp(last, rcfg_flags[i].sect) != 0) {
++			if (last[0]) websWrite(stream, "}");
++			websWrite(stream, ",\"%s\":{", rcfg_flags[i].sect);
++			last = rcfg_flags[i].sect;
++		} else
++			websWrite(stream, ",");
++		websWrite(stream, "\"%s\":", rcfg_flags[i].nv);
++		gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
+ 	}
+-
+-	if (strcmp(action, "export") == 0) {
+-		int i;
+-		const char *last = "";
+-		websWrite(stream, "{\"ok\":1,\"reaper_cfg\":1,\"schema\":1,\"model\":");
+-		gk_json_esc(stream, nvram_safe_get("productid"));
+-		websWrite(stream, ",\"version\":");
+-		gk_json_esc(stream, nvram_safe_get("extendno"));
+-		websWrite(stream, ",\"when\":%ld", (long)time(NULL));
+-		/* flags, grouped by section */
+-		for (i = 0; i < RCFG_NFLAGS; i++) {
+-			if (strcmp(last, rcfg_flags[i].sect) != 0) {
+-				if (last[0]) websWrite(stream, "}");
+-				websWrite(stream, ",\"%s\":{", rcfg_flags[i].sect);
+-				last = rcfg_flags[i].sect;
+-			} else
+-				websWrite(stream, ",");
+-			websWrite(stream, "\"%s\":", rcfg_flags[i].nv);
+-			gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
+-		}
+-		websWrite(stream, "}");
+-		/* the lists */
+-		websWrite(stream, ",\"gk_rl\":");
+-		gk_json_esc(stream, gk_rl_get());
+-		websWrite(stream, ",\"pbr_rulelist\":");
+-		gk_json_esc(stream, reaper_pbr_rl_get());
+-		websWrite(stream, ",\"fw\":{");
+-		for (i = 0; i < 8; i++) {
+-			websWrite(stream, "%s\"%s\":", i ? "," : "", rcfg_fw_lists[i]);
+-			gk_json_esc(stream, reaper_fw_list_get(rcfg_fw_lists[i]));
+-		}
+-		websWrite(stream, "}}");
+-		return;
++	websWrite(stream, "}");
++	/* the lists */
++	websWrite(stream, ",\"gk_rl\":");
++	gk_json_esc(stream, gk_rl_get());
++	websWrite(stream, ",\"pbr_rulelist\":");
++	gk_json_esc(stream, reaper_pbr_rl_get());
++	websWrite(stream, ",\"fw\":{");
++	for (i = 0; i < 8; i++) {
++		websWrite(stream, "%s\"%s\":", i ? "," : "", rcfg_fw_lists[i]);
++		gk_json_esc(stream, reaper_fw_list_get(rcfg_fw_lists[i]));
++	}
++	websWrite(stream, "}}");
++}
++
++/* v2.7.2: the import core, shared by action=import (posted file) and
++ * action=import_pending (the /jffs half of a full-backup restore, replayed
++ * after the reboot). Returns 0 and fills the counters on success; -1 = body
++ * is not JSON, -2 = JSON but not a Reaper settings file. Behavior is the
++ * v2.6.10/v2.7.1 import unchanged: allowlisted flags, per-value charset
++ * gates, firewall / routing lists staged as drafts behind commit-confirm. */
++static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int *rejected_o)
++{
++	json_object *root, *sect, *val;
++	int i, nflags = 0, nlists = 0, rejected = 0;
++	int touch_gk = 0, touch_warden = 0;
++
++	root = json_tokener_parse(body);
++	if (!root || json_object_get_type(root) != json_type_object) {
++		if (root) json_object_put(root);
++		return -1;
++	}
++	if (!json_object_object_get_ex(root, "reaper_cfg", &val)) {
++		json_object_put(root);
++		return -2;
+ 	}
+-
+-	if (strcmp(action, "import") == 0) {
+-		char *body = get_cgi("cfg");
+-		json_object *root, *sect, *val;
+-		int i, nflags = 0, nlists = 0, rejected = 0;
+-		int touch_gk = 0, touch_warden = 0;
+-		if (!body || !*body) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"missing parameter\"}");
+-			return;
+-		}
+-		root = json_tokener_parse(body);
+-		if (!root || json_object_get_type(root) != json_type_object) {
+-			if (root) json_object_put(root);
+-			websWrite(stream, "{\"ok\":0,\"error\":\"not a settings file\"}");
+-			return;
+-		}
+-		if (!json_object_object_get_ex(root, "reaper_cfg", &val)) {
+-			json_object_put(root);
+-			websWrite(stream, "{\"ok\":0,\"error\":\"not a Reaper settings file\"}");
+-			return;
+-		}
+ 		/* 1. flags (RAM; committed below only for the features restarted here -
+ 		 *    the commit-confirm features persist on their own Keep) */
+ 		{
+@@ -24265,6 +24255,85 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 		if (touch_gk) notify_rc("restart_gk");
+ 		if (touch_warden) notify_rc("restart_rwarden");
+ 		logmessage("reaper_cfg", "settings imported: %d flag(s), %d list(s), %d rejected - firewall / routing lists are staged, apply and keep them on their pages", nflags, nlists, rejected);
++	*nflags_o = nflags; *nlists_o = nlists; *rejected_o = rejected;
++	return 0;
++}
++
++/* v2.7.2: the Reaper half of a full-backup restore, parked on /jffs by
++ * reaper_restore.cgi so it survives the nvram-restore reboot (the firewall /
++ * routing drafts it stages live on tmpfs and would not). The operator
++ * completes it with one click after logging back in. */
++#define RCFG_PENDING	"/jffs/reaper/restore_pending.json"
++#define RCFG_PENDING_MAX	(256 * 1024)
++
++static void
++do_reaper_cfg_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++	if (!action) action = "export";
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++			return;
++		}
++	}
++
++	if (strcmp(action, "export") == 0) {
++		rcfg_export_json(stream);
++		return;
++	}
++
++	if (strcmp(action, "import") == 0) {
++		char *body = get_cgi("cfg");
++		int nflags = 0, nlists = 0, rejected = 0, r;
++		if (!body || !*body) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"missing parameter\"}");
++			return;
++		}
++		r = rcfg_import_json(body, &nflags, &nlists, &rejected);
++		if (r == -1) { websWrite(stream, "{\"ok\":0,\"error\":\"not a settings file\"}"); return; }
++		if (r == -2) { websWrite(stream, "{\"ok\":0,\"error\":\"not a Reaper settings file\"}"); return; }
++		websWrite(stream, "{\"ok\":1,\"flags\":%d,\"lists\":%d,\"rejected\":%d}", nflags, nlists, rejected);
++		return;
++	}
++
++	if (strcmp(action, "pending") == 0) {
++		struct stat st;
++		int p = (lstat(RCFG_PENDING, &st) == 0 && S_ISREG(st.st_mode) &&
++			 st.st_size > 0 && st.st_size <= RCFG_PENDING_MAX);
++		websWrite(stream, "{\"ok\":1,\"pending\":%d}", p ? 1 : 0);
++		return;
++	}
++
++	if (strcmp(action, "import_pending") == 0) {
++		struct stat st;
++		char *body;
++		FILE *f;
++		int nflags = 0, nlists = 0, rejected = 0, r;
++		int fd = open(RCFG_PENDING, O_RDONLY | O_NOFOLLOW);
++		if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
++		    st.st_size <= 0 || st.st_size > RCFG_PENDING_MAX) {
++			if (fd >= 0) close(fd);
++			websWrite(stream, "{\"ok\":0,\"error\":\"nothing pending\"}");
++			return;
++		}
++		if ((body = malloc(st.st_size + 1)) == NULL) { close(fd); websWrite(stream, "{\"ok\":0,\"error\":\"out of memory\"}"); return; }
++		f = fdopen(fd, "r");
++		if (!f || fread(body, 1, st.st_size, f) != (size_t)st.st_size) {
++			if (f) fclose(f); else close(fd);
++			free(body);
++			websWrite(stream, "{\"ok\":0,\"error\":\"read failed\"}");
++			return;
++		}
++		body[st.st_size] = '\0';
++		fclose(f);
++		r = rcfg_import_json(body, &nflags, &nlists, &rejected);
++		free(body);
++		/* consumed either way: a corrupt pending file must not banner forever */
++		unlink(RCFG_PENDING);
++		if (r != 0) { websWrite(stream, "{\"ok\":0,\"error\":\"not a Reaper settings file\"}"); return; }
++		logmessage("reaper_cfg", "full-backup restore completed from %s", RCFG_PENDING);
+ 		websWrite(stream, "{\"ok\":1,\"flags\":%d,\"lists\":%d,\"rejected\":%d}", nflags, nlists, rejected);
+ 		return;
+ 	}
+@@ -24272,6 +24341,475 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
+ }
+ 
++/* ===================================================================
++ * reaper v2.7.2: FULL backup / restore (backlog P2 "one backup that
++ * carries both halves").
++ *
++ * The stock Save-setting file is only the nvram blob; every Reaper list
++ * moved to /jffs (v2.6.3-v2.6.9) so a stock backup+reset+restore silently
++ * loses them all. The full backup is one additive archive:
++ *
++ *   REAPER-BACKUP 1\n
++ *   {"model":...,"fw":...,"when":...,"cfg":N,"rcfg":N,"fqdn":N}\n
++ *   <N bytes: the stock Settings .CFG, byte-identical format (HDR2+JCFG),
++ *             produced the same way prf_file does - still restorable by
++ *             stock/Merlin if carved out>
++ *   <N bytes: the v2.7.0 reaper_cfg export JSON>
++ *   <N bytes: the fqdn ipset cache - "#set <name>" + that set's add-lines,
++ *             so domain objects come back populated before the resolver's
++ *             first pass>
++ *
++ * Restore validates everything FIRST (magic, meta, model vs productid,
++ * /jffs health, the CFG part's own HDR magic) and only then writes: the
++ * JSON is parked at RCFG_PENDING (the fw/pbr drafts it stages live on
++ * tmpfs and would not survive the reboot - the operator completes that
++ * half with one click after logging back in), the fqdn cache files are
++ * laid back down, the CFG part goes to /tmp/settings_u.prf and the stock
++ * do_upload_config() path replays it exactly as the stock Restore button
++ * would (jffs cfgs + nvram restore + commit + reboot). A failed check
++ * changes nothing.
++ * =================================================================== */
++#define RBK_MAGIC	"REAPER-BACKUP 1\n"
++#define RBK_TMP_CFG	"/tmp/reaper_full.cfg"
++#define RBK_UPLOAD	"/tmp/reaper_restore.rbk"
++#define RBK_SETDIR	"/jffs/reaper_fw/sets"	/* = rc's RFW_SETCACHE */
++#define RBK_CFG_MAX	(8 * 1024 * 1024)
++#define RBK_FQDN_MAX	(512 * 1024)
++#define RBK_SET_MAX	(64 * 1024)
++#define RBK_META_MAX	512
++
++static int rbk_setname_ok(const char *n)
++{
++	const char *p;
++	if (strncmp(n, "rwfw_", 5) != 0 && strncmp(n, "rwfw6_", 6) != 0) return 0;
++	if (strlen(n) > 40) return 0;
++	for (p = n; *p; p++)
++		if (!(isalnum((unsigned char)*p) || strchr("_.-", *p))) return 0;
++	return 1;
++}
++
++/* the fqdn set cache as one text part; add-lines only, same filter the
++ * resolver's persist step applies */
++static char *rbk_fqdn_part(size_t *lenp)
++{
++	char *buf = NULL;
++	size_t blen = 0;
++	FILE *o = open_memstream(&buf, &blen);
++	DIR *d;
++	struct dirent *e;
++
++	*lenp = 0;
++	if (!o) return NULL;
++	if ((d = opendir(RBK_SETDIR)) != NULL) {
++		while ((e = readdir(d)) != NULL) {
++			char p[160], line[512];
++			FILE *f;
++			int fd;
++			size_t got = 0;
++			if (!rbk_setname_ok(e->d_name)) continue;
++			snprintf(p, sizeof(p), RBK_SETDIR "/%s", e->d_name);
++			fd = open(p, O_RDONLY | O_NOFOLLOW);
++			if (fd < 0 || (f = fdopen(fd, "r")) == NULL) { if (fd >= 0) close(fd); continue; }
++			fprintf(o, "#set %s\n", e->d_name);
++			while (fgets(line, sizeof(line), f) && got < RBK_SET_MAX && blen + got < RBK_FQDN_MAX) {
++				if (strncmp(line, "add ", 4) != 0) continue;
++				fputs(line, o);
++				got += strlen(line);
++			}
++			fclose(f);
++			fflush(o);
++			if (blen >= RBK_FQDN_MAX) break;
++		}
++		closedir(d);
++	}
++	fclose(o);
++	*lenp = blen;
++	return buf;	/* caller frees; may be empty (no cache = empty part) */
++}
++
++/* produce the stock Settings .CFG at `path`, replicating prf_file's default
++ * branch (Router mode, passwords kept, DDNS not transferred) so the embedded
++ * file is byte-format-identical to the stock download */
++static int rbk_make_cfg(const char *path)
++{
++	char ddns_hostname_tmp[128];
++#if defined(RTCONFIG_SAVEJFFS)
++	char *lists[] = {
++#if defined(RTCONFIG_PERMISSION_MANAGEMENT)
++		".sys/Permission",
++#endif
++#if defined(RTCONFIG_COOVACHILLI)
++		"customized_splash",
++#endif
++#if defined(RTCONFIG_JFFS2USERICON)
++		"usericon",
++#endif
++#ifdef RTCONFIG_HTTPS
++		"cert.tgz",
++		".cert",
++#ifdef RTCONFIG_LETSENCRYPT
++		".le",
++#endif
++#endif
++		NULL
++	};
++#endif
++	struct stat st;
++
++	snprintf(ddns_hostname_tmp, sizeof(ddns_hostname_tmp), "%s", nvram_safe_get("ddns_hostname_x"));
++	nvram_set("ddns_transfer", "");
++	nvram_set("ddns_hostname_x", "");
++	nvram_unset("asus_device_list");
++	httpd_nvram_commit();
++	unlink(path);
++	sys_download((char *)path);
++	nvram_set("ddns_hostname_x", ddns_hostname_tmp);
++	httpd_nvram_commit();
++#if defined(RTCONFIG_SAVEJFFS)
++	if (lists[0] != NULL) {
++		int i, r;
++		FILE *fp;
++		char cmd[512];
++		snprintf(cmd, sizeof(cmd), "tar czvf - -C /jffs");
++		for (i = 0; i < ARRAY_SIZE(lists) && lists[i] != NULL; ++i) {
++			strlcat(cmd, " ", sizeof(cmd));
++			strlcat(cmd, lists[i], sizeof(cmd));
++		}
++		fp = popen(cmd, "r");
++		if (fp != NULL) {
++			r = append_jffs_cfgs(fp, (char *)path);
++			pclose(fp);
++			if (r != 0)
++				logmessage("reaper_cfg", "full backup: /jffs cfg append failed (%d)", r);
++		}
++	}
++#endif
++	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 8 || st.st_size > RBK_CFG_MAX)
++		return -1;
++	return (int)st.st_size;
++}
++
++/* GET /REAPER_<model>_<ver>_settings.rbk?http_id=... - the one-file backup */
++static void
++do_reaper_fullbak_file(char *url, FILE *stream)
++{
++	char *buf_rcfg = NULL, *buf_fqdn = NULL;
++	size_t len_rcfg = 0, len_fqdn = 0;
++	int len_cfg;
++	FILE *m, *cf;
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
++			websWrite(stream, "invalid request token");
++			return;
++		}
++	}
++	if ((len_cfg = rbk_make_cfg(RBK_TMP_CFG)) < 0) {
++		websWrite(stream, "settings snapshot failed");
++		return;
++	}
++	m = open_memstream(&buf_rcfg, &len_rcfg);
++	if (m) { rcfg_export_json(m); fclose(m); }
++	buf_fqdn = rbk_fqdn_part(&len_fqdn);
++
++	websWrite(stream, "%s", RBK_MAGIC);
++	websWrite(stream, "{\"model\":");
++	gk_json_esc(stream, nvram_safe_get("productid"));
++	websWrite(stream, ",\"fw\":");
++	gk_json_esc(stream, nvram_safe_get("extendno"));
++	websWrite(stream, ",\"when\":%ld,\"cfg\":%d,\"rcfg\":%zu,\"fqdn\":%zu}\n",
++		  (long)time(NULL), len_cfg, len_rcfg, len_fqdn);
++	if ((cf = fopen(RBK_TMP_CFG, "r")) != NULL) {
++		char cbuf[4096];
++		size_t n;
++		while ((n = fread(cbuf, 1, sizeof(cbuf), cf)) > 0)
++			fwrite(cbuf, 1, n, stream);
++		fclose(cf);
++	}
++	if (buf_rcfg) fwrite(buf_rcfg, 1, len_rcfg, stream);
++	if (buf_fqdn) fwrite(buf_fqdn, 1, len_fqdn, stream);
++	free(buf_rcfg);
++	free(buf_fqdn);
++	unlink(RBK_TMP_CFG);
++	logmessage("reaper_cfg", "full backup downloaded (cfg %d, reaper %zu, fqdn %zu bytes)",
++		   len_cfg, len_rcfg, len_fqdn);
++}
++
++/* upload state handed from the POST half to the reply half (httpd serves one
++ * request at a time, same pattern as do_upload_post's F_SETOWN channel but
++ * with room for the parsed meta) */
++static struct {
++	int err;		/* 0 ok; else the ek the reply half reports */
++	char hid[80];
++	char model[32];
++	long cfg, rcfg, fqdn;
++} rbk_up;
++
++static void
++do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
++{
++	char buf[1024];
++	FILE *fifo = NULL;
++	long want;
++	int ch, count;
++	json_object *meta = NULL, *jv;
++
++	memset(&rbk_up, 0, sizeof(rbk_up));
++	rbk_up.err = 1;	/* "file" until everything below succeeds */
++
++	/* walk the parts: capture http_id, stop at the file */
++	while (len > 0) {
++		if (!fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++		len -= strlen(buf);
++		if (strncasecmp(buf, "Content-Disposition:", 20) != 0) continue;
++		if (strstr(buf, "name=\"file\"")) break;
++		if (strstr(buf, "name=\"http_id\"")) {
++			/* blank line then the value line */
++			while (len > 0) {
++				if (!fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++				len -= strlen(buf);
++				if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n")) break;
++			}
++			if (len > 0 && fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) {
++				len -= strlen(buf);
++				buf[strcspn(buf, "\r\n")] = '\0';
++				strlcpy(rbk_up.hid, buf, sizeof(rbk_up.hid));
++			}
++		}
++	}
++	if (len <= 0) goto out;
++
++	/* skip the file part's remaining headers */
++	while (len > 0) {
++		if (!fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++		len -= strlen(buf);
++		if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n")) break;
++	}
++
++	/* magic line, then the meta line (both short text) */
++	if (len <= 0 || !fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++	len -= strlen(buf);
++	if (strcmp(buf, RBK_MAGIC) != 0) goto out;
++	if (len <= 0 || !fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++	len -= strlen(buf);
++	if (strlen(buf) >= RBK_META_MAX) goto out;
++	meta = json_tokener_parse(buf);
++	if (!meta || json_object_get_type(meta) != json_type_object) goto out;
++	if (json_object_object_get_ex(meta, "model", &jv)) {
++		const char *mv = json_object_get_string(jv);
++		strlcpy(rbk_up.model, mv ? mv : "", sizeof(rbk_up.model));
++	}
++	rbk_up.cfg = json_object_object_get_ex(meta, "cfg", &jv) ? json_object_get_int64(jv) : -1;
++	rbk_up.rcfg = json_object_object_get_ex(meta, "rcfg", &jv) ? json_object_get_int64(jv) : -1;
++	rbk_up.fqdn = json_object_object_get_ex(meta, "fqdn", &jv) ? json_object_get_int64(jv) : -1;
++	if (rbk_up.cfg < 8 || rbk_up.cfg > RBK_CFG_MAX ||
++	    rbk_up.rcfg < 2 || rbk_up.rcfg > RCFG_PENDING_MAX ||
++	    rbk_up.fqdn < 0 || rbk_up.fqdn > RBK_FQDN_MAX)
++		goto out;
++
++	/* stream exactly the declared bytes to the staging file */
++	want = rbk_up.cfg + rbk_up.rcfg + rbk_up.fqdn;
++	unlink(RBK_UPLOAD);
++	{
++		int ufd = open(RBK_UPLOAD, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++		if (ufd < 0 || (fifo = fdopen(ufd, "w")) == NULL) { if (ufd >= 0) close(ufd); goto out; }
++	}
++	while (len > 0 && want > 0) {
++#ifdef RTCONFIG_HTTPS
++		if (do_ssl) {
++			if (waitfor(ssl_stream_fd, (len >= 0x4000) ? 3 : 1) <= 0) break;
++		} else
++#endif
++		if (waitfor(fileno(stream), 10) <= 0) break;
++		{
++			long chunk = want;
++			if (chunk > (long)sizeof(buf)) chunk = (long)sizeof(buf);
++			if (chunk > (long)len) chunk = (long)len;
++			count = fread(buf, 1, (size_t)chunk, stream);
++		}
++		if (count <= 0) goto out;
++		len -= count;
++		want -= count;
++		fwrite(buf, 1, count, fifo);
++	}
++	if (want > 0) goto out;	/* short body */
++	fclose(fifo);
++	fifo = NULL;
++	rbk_up.err = 0;
++out:
++	if (meta) json_object_put(meta);
++	if (fifo) { fclose(fifo); unlink(RBK_UPLOAD); }
++	/* slurp the trailing boundary + anything else */
++	while (len-- > 0)
++		if ((ch = fgetc(stream)) == EOF) break;
++}
++
++/* the /jffs gate the backlog item requires: mounted, writable, not
++ * critically full - mirrors reaper_diag section 14's checks */
++static int rbk_jffs_ok(void)
++{
++	struct statvfs sf;
++	char t[] = "/jffs/.rbk_wtest";
++	int fd;
++	if (statvfs("/jffs", &sf) != 0) return 0;
++	if ((long long)sf.f_bavail * sf.f_frsize < 2LL * 1024 * 1024) return 0;
++	unlink(t);
++	fd = open(t, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++	if (fd < 0) return 0;
++	if (write(fd, "x", 1) != 1) { close(fd); unlink(t); return 0; }
++	close(fd);
++	unlink(t);
++	return 1;
++}
++
++static void
++do_reaper_restore_cgi(char *url, FILE *stream)
++{
++	FILE *in = NULL, *out = NULL;
++	char buf[4096];
++	char *rcfg = NULL, *fqdn = NULL;
++	long left;
++	size_t n;
++	int ok = 0;
++
++	/* same CSRF discipline as every Reaper control (the token traveled as a
++	 * multipart field, captured by the POST half) */
++	{
++		char *want = nvram_safe_get("http_id");
++		if (!want[0] || strcmp(rbk_up.hid, want) != 0 || !reaper_referer_ok()) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++			goto done;
++		}
++	}
++	if (rbk_up.err) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}"); goto done; }
++	if (strcmp(rbk_up.model, nvram_safe_get("productid")) != 0) {
++		websWrite(stream, "{\"ok\":0,\"ek\":\"model\"}");
++		goto done;
++	}
++	if (!rbk_jffs_ok()) { websWrite(stream, "{\"ok\":0,\"ek\":\"jffs\"}"); goto done; }
++
++	if ((in = fopen(RBK_UPLOAD, "r")) == NULL) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}"); goto done; }
++
++	/* ---- validate everything before writing anything ---- */
++	/* the CFG part must itself carry the stock profile magic */
++	if (fread(buf, 1, 8, in) != 8 ||
++	    (strncmp(buf, PROFILE_HEADER, 4) != 0 && strncmp(buf, PROFILE_HEADER_NEW, 4) != 0)) {
++		websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}");
++		goto done;
++	}
++	/* the Reaper JSON must parse and be ours */
++	if (fseek(in, rbk_up.cfg, SEEK_SET) != 0 ||
++	    (rcfg = malloc(rbk_up.rcfg + 1)) == NULL ||
++	    fread(rcfg, 1, rbk_up.rcfg, in) != (size_t)rbk_up.rcfg) {
++		websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}");
++		goto done;
++	}
++	rcfg[rbk_up.rcfg] = '\0';
++	{
++		json_object *jr = json_tokener_parse(rcfg), *jv;
++		int good = (jr && json_object_get_type(jr) == json_type_object &&
++			    json_object_object_get_ex(jr, "reaper_cfg", &jv));
++		if (jr) json_object_put(jr);
++		if (!good) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}"); goto done; }
++	}
++	/* the fqdn part must be well-formed (set headers + add lines only) */
++	if (rbk_up.fqdn > 0) {
++		char *p, *line;
++		if ((fqdn = malloc(rbk_up.fqdn + 1)) == NULL ||
++		    fread(fqdn, 1, rbk_up.fqdn, in) != (size_t)rbk_up.fqdn) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}");
++			goto done;
++		}
++		fqdn[rbk_up.fqdn] = '\0';
++		for (line = fqdn; line && *line; line = p ? p + 1 : NULL) {
++			p = strchr(line, '\n');
++			if (p) *p = '\0';
++			if (line[0] == '\0') { if (p) *p = '\n'; continue; }
++			if (strncmp(line, "#set ", 5) == 0) {
++				if (!rbk_setname_ok(line + 5)) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}"); goto done; }
++			} else if (strncmp(line, "add ", 4) != 0) {
++				websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}");
++				goto done;
++			}
++			if (p) *p = '\n';
++		}
++	}
++
++	/* ---- all checks passed: lay the pieces down ---- */
++	/* 1. the Reaper half, parked to survive the reboot */
++	mkdir("/jffs/reaper", 0700);
++	unlink(RCFG_PENDING);
++	{
++		int pfd = open(RCFG_PENDING, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++		if (pfd < 0 || (out = fdopen(pfd, "w")) == NULL) {
++			if (pfd >= 0) close(pfd);
++			websWrite(stream, "{\"ok\":0,\"ek\":\"jffs\"}");
++			goto done;
++		}
++		fwrite(rcfg, 1, rbk_up.rcfg, out);
++		fclose(out);
++		out = NULL;
++	}
++	/* 2. the fqdn set cache */
++	if (fqdn && rbk_up.fqdn > 0) {
++		char *p, *line, path[160];
++		mkdir(RBK_SETDIR, 0700);
++		for (line = fqdn; line && *line; line = p ? p + 1 : NULL) {
++			p = strchr(line, '\n');
++			if (p) *p = '\0';
++			if (strncmp(line, "#set ", 5) == 0) {
++				if (out) fclose(out);
++				out = NULL;
++				snprintf(path, sizeof(path), RBK_SETDIR "/%s", line + 5);
++				unlink(path);
++				{
++					int sfd = open(path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++					if (sfd >= 0 && (out = fdopen(sfd, "w")) == NULL) close(sfd);
++				}
++			} else if (out && line[0]) {
++				fputs(line, out);
++				fputc('\n', out);
++			}
++			if (p) *p = '\n';
++		}
++		if (out) { fclose(out); out = NULL; }
++	}
++	/* 3. the stock CFG, staged where the stock restore path expects it */
++	if (fseek(in, 0, SEEK_SET) != 0) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}"); goto done; }
++	{
++		FILE *cf = fopen("/tmp/settings_u.prf", "w");
++		if (!cf) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}"); goto done; }
++		left = rbk_up.cfg;
++		while (left > 0 && (n = fread(buf, 1, MIN(left, (long)sizeof(buf)), in)) > 0) {
++			fwrite(buf, 1, n, cf);
++			left -= n;
++		}
++		fclose(cf);
++		if (left > 0) { unlink("/tmp/settings_u.prf"); websWrite(stream, "{\"ok\":0,\"ek\":\"file\"}"); goto done; }
++	}
++	ok = 1;
++	logmessage("reaper_cfg", "full-backup restore: settings staged, Reaper half parked at %s - restoring and rebooting", RCFG_PENDING);
++	websWrite(stream, "{\"ok\":1,\"reboot\":1}");
++done:
++	if (in) fclose(in);
++	if (out) fclose(out);
++	free(rcfg);
++	free(fqdn);
++	unlink(RBK_UPLOAD);
++	if (ok) {
++		/* mirror do_upload_cgi: get the reply out, then hand the CFG to the
++		 * stock restore path (jffs cfgs + nvram restore + commit + reboot) */
++		fflush(stream);
++#ifdef RTCONFIG_HTTPS
++		if (do_ssl)
++			shutdown(ssl_stream_fd, SHUT_RDWR);
++		else
++#endif
++			shutdown(fileno(stream), SHUT_RDWR);
++		do_upload_config();
++	}
++}
++
+ /* ===================================================================
+  * reaper v1.9.0: Device Identity Manager (Reaper_Devices.asp).
+  *
+@@ -33295,6 +33833,11 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_fw.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_fw_cgi, do_auth },
+ 	{ "reaper_pbr.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_pbr_cgi, do_auth },
+ 	{ "reaper_cfg.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_cfg_cgi, do_auth },
++	/* v2.7.2 full backup: the URL carries model+version so the browser names
++	 * the file (same trick as Settings_<model>.CFG); restore is a multipart
++	 * upload mirroring upload.cgi */
++	{ "REAPER_*.rbk*", "application/octet-stream", NULL, do_html_post_and_get, do_reaper_fullbak_file, do_auth },
++	{ "reaper_restore.cgi*", "application/json", no_cache_IE7, do_reaper_restore_post, do_reaper_restore_cgi, do_auth },
+ 	{ "reaper_dev.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_dev_cgi, do_auth },
+ 	{ "reaper_export.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_export_cgi, do_auth },
+ 	/* Prometheus scrape: public (no session) but ?token= gated inside the handler */
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 76ed3c0333..5b404790d6 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.5 (2026-08-22) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.6 (2026-08-23) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.5"
++VER="REAPER-DIAG v1.3.6"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -697,7 +697,6 @@ ip -4 rule list 2>/dev/null | awk -F: '$1+0>=9000 && $1+0<=9199' | sed 's/^/
+ ip -6 rule list 2>/dev/null | awk -F: '$1+0>=9000 && $1+0<=9199' | sed 's/^/    rule6 /'
+ [ -r /proc/blog/skip_wireguard_network ] && echo "  wg accel bypass   : $(grep -c . /proc/blog/skip_wireguard_network 2>/dev/null) net(s) listed ($(awk '$2=="new"' /tmp/reaper_pbr/skipnets 2>/dev/null | wc -l) added by policy routing)"
+ [ "$(nvram get reaper_pbr_enable 2>/dev/null)" = 1 ] && [ "$(iptables -t mangle -S PREROUTING 2>/dev/null | grep -c 'j REAPER_PBR')" = 0 ] && finding WARN "policy routing is enabled but its PREROUTING jump is missing (see 14e)"
+-echo "  mangle REAPER_PBR : $(iptables -t mangle -nL REAPER_PBR 2>/dev/null | tail -n +3 | wc -l) rules"
+ echo "  -- ip rule bands (9000-9999 = Reaper PBR, 10000+ = VPN Director) --"
+ ip rule list 2>/dev/null | awk '$1+0 >= 9000 && $1+0 < 20000' | sed 's/^/  /' | head -40
+ echo "  -- tunnels --"
+@@ -787,8 +786,21 @@ if [ -n "$SLF" ]; then
+   TOPD="$(cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* disassociated' | awk '{print $7, $5}' | sort | uniq -c | sort -rn | head -1)"
+   set -- $TOPD
+   if [ "${1:-0}" -ge 200 ]; then
+-    SPANH="$(cat $SLF 2>/dev/null | wc -l)"; SPANH="$(( $(date +%s) - $(date -d "$(cat $SLF 2>/dev/null | head -1 | cut -c1-15)" +%s 2>/dev/null || echo 0) ))"
+-    [ "$SPANH" -gt 0 ] && RATE="$(( $1 * 3600 / SPANH ))/h" || RATE="n/a"
++    # v1.3.6: span from the first CREDIBLE timestamp, not line 1 - the head of
++    # the log is stamped by the pre-NTP boot clock (months off, and the format
++    # has no year), which inflated the span and reported a hot loop as ~0/h.
++    # Pseudo-epoch with 30.4-day months is fine: only the difference is used.
++    AWKPE='BEGIN{split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",A," ");for(i=1;i<=12;i++)mn[A[i]]=i}
++function pe(m,d,t){split(t,T,":");return mn[m]*2629800+d*86400+T[1]*3600+T[2]*60+T[3]}
++'
++    LP="$(tail -1 /tmp/syslog.log 2>/dev/null | awk "$AWKPE"'mn[$1]{print pe($1,$2,$3)}')"
++    FEP="$(cat $SLF 2>/dev/null | awk -v L="$LP" "$AWKPE"'mn[$1]{e=pe($1,$2,$3); if(e>L)e-=31557600; if(L-e<=5184000){print e; exit}}')"
++    if [ -n "$LP" ] && [ -n "$FEP" ] && [ "$LP" -gt "$FEP" ]; then
++      R="$(( $1 * 3600 / (LP - FEP) ))"
++      [ "$R" -gt 0 ] && RATE="$R/h" || RATE="$(( $1 * 86400 / (LP - FEP) ))/d"
++    else
++      RATE="n/a"
++    fi
+     finding INFO "station $2 on ${3%:} disassociated $1 times (~$RATE) - assoc/deauth loop; Gatekeeper cannot stop this, a wireless MAC filter can (see 19b)"
+   fi
+   echo "  deauthorize -30   : $(cat $SLF 2>/dev/null | grep -c 'DEAUTHORIZE error')   ocv_cap unsupported: $(cat $SLF 2>/dev/null | grep -c 'ocv_cap unsupported')"
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index de8cb42003..90b971e203 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -2204,6 +2204,8 @@ static void db_align(void)
+ 				  &p5cur, &phcur, &pdcur, &pmcur);
+ 		pt_cur = now;
+ 	}
++	syslog(LOG_INFO, "rtrafd: ring cursors aligned to db stamp %lld (clock %s)",
++	       (long long)db_saved, clock_sane(now) ? "synced" : "pre-sync");
+ }
+ 
+ /* Republish EVERY window at each 5-min boundary, not just the ones whose
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 6180dc580d..0361ba6b25 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 99aa3d05b4..8a6daa30af 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index a546a14772..c2fc483b94 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 071f19e81f..85aad5a66b 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 5c91c3bfef..0bd271bd2c 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 5b110aa415..9c49acd931 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index a1e194b173..2f38752fb2 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 56f698d22b..17b1be454c 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 89146b9cbf..57bb62597e 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 4894513966..fc34810a4c 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 768753166c..cfc08b8704 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 9133a2ddef..547be65918 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index bc498605a3..aeb83b300f 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index e8ed1a1731..e24dc9c8fe 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index cdcd3e81be..344daae04c 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 39117744d3..8ac02b9e6a 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 7bdbe474f9..00e657c8fa 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 118245e9ec..25439eccc3 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index f785628501..2f94d5b014 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/Reaper_BackupCard.asp b/release/src/router/www/Reaper_BackupCard.asp
+new file mode 100644
+index 0000000000..2f878b49b2
+--- /dev/null
++++ b/release/src/router/www/Reaper_BackupCard.asp
+@@ -0,0 +1,44 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only -->
++<!-- Reaper v2.7.2: full-backup card, fetched by the injected script and
++     inserted into the stock Administration > Restore/Save/Upload page.
++     This is a FRAGMENT (no head/body): tokens resolve server-side through
++     do_ej, all behavior JS lives in reaper_inject.c's block (scripts inside
++     innerHTML never execute), and every string the JS needs is carried in a
++     hidden span so no translation ever sits inside an attribute or a JS
++     string. Listed in reaper_skip[] - served pristine, never re-injected. -->
++<div id="rbk_card">
++<style>
++#rbk_card{margin:0 auto 14px;width:760px;max-width:96%;border:1px solid #3a3a3e;border-radius:6px;padding:14px 18px;background:#101012;color:#ECE7DB;font-family:Arial,Helvetica,sans-serif;text-align:left}
++#rbk_card .rbk_h{font-size:15px;font-weight:bold;color:#ECE7DB;margin:0 0 6px}
++#rbk_card .rbk_h em{font-style:normal;color:#E10600}
++#rbk_card .rbk_d{font-size:12px;line-height:1.55;color:#b8b3a7;margin:0 0 10px}
++#rbk_card .rbk_row{margin:0 0 8px}
++#rbk_card button{background:#1c1c1f;color:#ECE7DB;border:1px solid #555;border-radius:4px;padding:7px 14px;font-size:12px;cursor:pointer;margin-right:8px}
++#rbk_card button:hover{border-color:#E10600}
++#rbk_card .rbk_note{font-size:11px;color:#8d897f;line-height:1.5;margin:6px 0 0}
++#rbk_card #rbk_pending{display:none;margin:10px 0 2px;padding:8px 10px;border:1px solid #E10600;border-radius:4px;background:#1a0d0d;font-size:12px}
++#rbk_card #rbk_msg{display:none;margin:8px 0 0;font-size:12px}
++#rbk_card .rbk_ok{color:#4FB286}
++#rbk_card .rbk_err{color:#E10600}
++</style>
++<div class="rbk_h"><em>REAPER</em> &middot; <#RBKP_1#></div>
++<div class="rbk_d"><#RBKP_2#></div>
++<div class="rbk_row">
++  <button id="rbk_dl" type="button"><#RBKP_3#></button>
++  <button id="rbk_up" type="button"><#RBKP_4#></button>
++  <input id="rbk_file" type="file" accept=".rbk" style="display:none">
++</div>
++<div class="rbk_note"><#RBKP_5#></div>
++<div id="rbk_pending"><span><#RBKP_6#></span> <button id="rbk_complete" type="button"><#RBKP_7#></button></div>
++<div id="rbk_msg"></div>
++<span id="rbk_hid" style="display:none"><% nvram_get("http_id"); %></span>
++<span id="rbk_model" style="display:none"><% nvram_get("productid"); %></span>
++<span id="rbk_ver" style="display:none"><% nvram_get("extendno"); %></span>
++<span id="rbk_s_badfile" style="display:none"><#RBKP_12#></span>
++<span id="rbk_s_model" style="display:none"><#RBKP_8#></span>
++<span id="rbk_s_jffs" style="display:none"><#RBKP_9#></span>
++<span id="rbk_s_reboot" style="display:none"><#RBKP_10#></span>
++<span id="rbk_s_done" style="display:none"><#RBKP_11#></span>
++<span id="rbk_s_confirm" style="display:none"><#RBKP_13#></span>
++<span id="rbk_s_fail" style="display:none"><#RBKP_14#></span>
++</div>
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 1eb8c3c500..d1ff1ef2d6 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -105,6 +105,13 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+     <span class="note" id="cfg_msg" style="margin:0"></span>
+   </div>
+   <p class="note"><#RDST_72#></p>
++  <!-- v2.7.2: a full-backup restore (Administration page) leaves its Reaper half
++       pending across the reboot; surface it here too so the operator finds it
++       wherever they land first -->
++  <div id="cfg_pending" style="display:none;margin-top:10px;padding:8px 12px;border:1px solid var(--crimson);border-radius:6px">
++    <span class="note" style="margin:0"><#RBKP_6#></span>
++    <button class="btn" id="cfg_complete" style="margin-left:10px"><#RBKP_7#></button>
++  </div>
+ </div>
+ 
+ <div class="card">
+@@ -345,6 +352,33 @@ else document.addEventListener('DOMContentLoaded', boot);
+     };
+     rd.readAsText(f);
+   };
++  /* v2.7.2: full-backup restore pending across the reboot (written by
++     reaper_restore.cgi) - offer to complete it here as well as on the
++     Administration page card */
++  (function(){
++    var x = new XMLHttpRequest();
++    x.open('GET', '/reaper_cfg.cgi?action=pending&http_id=' + encodeURIComponent(HTTPID_CFG) + '&_=' + Date.now(), true);
++    x.onload = function(){
++      var j = null; try{ j = JSON.parse(x.responseText); }catch(e){}
++      if(j && j.ok && j.pending){ var b = document.getElementById('cfg_pending'); if(b) b.style.display = ''; }
++    };
++    x.send();
++  })();
++  var cp = document.getElementById('cfg_complete');
++  if(cp) cp.onclick = function(){
++    cp.disabled = true;
++    var x = new XMLHttpRequest();
++    x.open('POST', '/reaper_cfg.cgi', true);
++    x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++    x.onloadend = function(){
++      var r = null; try{ r = JSON.parse(x.responseText); }catch(e){}
++      cp.disabled = false;
++      if(!r || !r.ok){ cfgMsg(false, (r && r.error) || `<#RBKP_14#>`); return; }
++      var b = document.getElementById('cfg_pending'); if(b) b.style.display = 'none';
++      cfgMsg(true, `<#RBKP_11#>`.replace('%1', r.flags).replace('%2', r.lists).replace('%3', r.rejected));
++    };
++    x.send('action=import_pending&http_id=' + encodeURIComponent(HTTPID_CFG));
++  };
+ })();
+ </script>
+ </body>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 4db194b46a..fef67ced94 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 2eaa24db13..bace86964d 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ca454d17f1..dbec87d4a8 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index e00806090d..0ff7fda2e5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 96717d2730..cb8b0075ad 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 558b64613b..619b047fe5 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6743,3 +6743,17 @@ RVR_62=group
+ RWDN_90=(unnamed)
+ RWIF_83=Error
+ RWIF_84=block
++RBKP_1=Full backup (settings + Reaper data)
++RBKP_2=One file that carries everything: the router settings file the buttons above save, plus the Reaper stores that live outside it - the Gatekeeper device list, the firewall lists and their domain-set cache, the routing rules, and the Warden lists. The stock file inside stays readable by stock and Merlin firmware.
++RBKP_3=Download full backup
++RBKP_4=Restore full backup...
++RBKP_5=Restore checks that the file matches this router model, restores the router settings, and reboots. After the reboot, log back in and click Complete restore when prompted - firewall and routing lists are staged for review on their pages, never applied blind.
++RBKP_6=A full-backup restore is waiting to finish its Reaper half.
++RBKP_7=Complete restore
++RBKP_8=That backup was made on a different router model.
++RBKP_9=The /jffs storage is not healthy, so the Reaper half cannot be restored. Run the diagnostic, fix storage, then try again.
++RBKP_10=Restoring - the router settings are being applied and the router will reboot. Log back in and click Complete restore when prompted.
++RBKP_11=Restore completed: %1 setting(s), %2 list(s), %3 rejected. Firewall and routing lists are staged - apply and keep them on their pages.
++RBKP_12=Not a Reaper full-backup file.
++RBKP_13=Restore this full backup? The router settings will be replaced and the router will reboot.
++RBKP_14=The restore failed. Nothing was changed.
+-- 
+2.25.1
+

@@ -1,0 +1,93 @@
+Reaper v2.7.1
+
+Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.
+
+Security review (three independent adversarial passes over everything changed since 2026-07-31,
+
+plus a regression check of ~40 earlier findings — none regressed). Fixed in this release:
+
+> Cross-site requests against Reaper's own pages (HIGH)
+
+The token Reaper's controls check on
+
+every request turned out to be ASUS's factory constant — identical on every router ever made — so
+
+a web page you happened to visit while logged in could, in principle, switch Gatekeeper off,
+
+approve a device, tear down the firewall engine or push a routing list. Two layers now: the token
+
+is generated fresh on every boot, and every Reaper control also refuses a request whose browser
+
+Referer names another site. Stock pages are untouched. (Tools that drive the router from scripts
+
+keep working: a request without a Referer passes on the token alone.)
+
+> Firewall: editing during the confirm countdown (MEDIUM)
+
+A list saved while a change was
+
+awaiting Keep would have been written as the confirmed config without ever having been compiled or
+
+run. Saves and settings imports are refused until you Keep or Revert — the routing page already did
+
+this.
+
+> Firewall: an over-long rule field silently widened the rule (MEDIUM, admin-only data)
+
+The guard
+
+meant to drop such a rule had become dead code on 2026-08-21; restored.
+
+> Diagnostics report: a device named HOST- hung the router's web server (MEDIUM)
+
+The
+
+sanitizer's hostname pass could match its own replacement and loop forever; any LAN device could
+
+plant the name. Rewritten so no literal can match inside a token. Also: hostnames are now masked
+
+when they appear only in the syslog tail or are cut to 32 characters by Gatekeeper's log line,
+
+and the lease dump prints fields only.
+
+> Smaller hardening: the generated firewall / routing scripts, the Gatekeeper teardown and the
+
+watchdog's heal snippet no longer call bare nvram get (the v2.6.1 hang guard); a routing
+
+candidate that fails to run is rolled back at once; a draft staged before the very first confirm
+
+can no longer be promoted to "confirmed" by the migration; settings import accepts Warden's CIDR
+
+and feed lists again and snapshots the Gatekeeper baseline when it turns Gatekeeper on.
+
+> Recorded, not changed:
+
+the firmware update check verifies the download over TLS against the
+
+published hash but carries no author signature (a compromised repository could offer an image —
+
+nothing flashes without your click); see BACKLOG. The watchdog's routing self-heal runs the
+
+idempotent script without the firewall lock (transient at worst).
+
+Translations. Every Reaper page is now fully tokenized for the language packs: 26 remaining
+
+English literals tokenized and 66 tokens moved out of quoted script strings, where a translation
+
+containing an apostrophe would have broken the page. Two stale texts corrected (the Storage note that
+
+said policy "lives in nvram"; the Wireless Auto Scan text that said it pins the channel — it reports,
+
+Pin best commits).
+
+Documentation. docs/REAPER-GUIDE.md — the master guide: what Reaper is, the requirements and
+
+rules for running it properly (the /jffs store, the two backups, USB and filesystems, Apply and Keep,
+
+the sanitized report), every feature page, good practice, troubleshooting and a glossary.
+
+docs/VPN-ROUTING-GUIDE.md brought up to v2.6.7+ (WireGuard, IPv6, apply-and-keep, address lists).
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

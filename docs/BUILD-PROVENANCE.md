@@ -99,7 +99,8 @@ build-commit column will never match, by design.
 | *(base)* | — | none | — | `91ac46a9fde7714dbed651d02c04898b4e134be0` | upstream |
 
 > Generated from [`../provenance/manifest.json`](../provenance/manifest.json) rather than
-> transcribed. Note the patch ranges for **v2.1.0 – v2.1.5** are the **post-repair** numbers: the
+> transcribed. This table lists rungs through v2.4.3; the manifest itself is the complete, current
+> ledger (through v2.7.6). Note the patch ranges for **v2.1.0 – v2.1.5** are the **post-repair** numbers: the
 > 2026-08-09 series repair restored three never-extracted commits and shifted everything after
 > `0245` by +3, so an older copy of this table showing `0289`/`0310`/`0322` was describing the same
 > releases under the pre-repair numbering.
@@ -114,9 +115,9 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0428` (v2.4.3, RT-BE96U-only), while the newest **published** release is
-v2.3.7. The RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro images (current at v2.3.7) are produced by
+to `0535` (v2.7.6, RT-BE96U-only), while the newest **published** release is
+v2.7.3. The RT-BE86U /
+RT-BE88U / GT-BE98 / GT-BE98 Pro images (published at v2.7.3) are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob
 overlay); the patch series is RT-BE96U-only, so the tree hash above is the
 RT-BE96U reference and the siblings are not independently patch-reproducible
@@ -150,8 +151,9 @@ The [manifest](../provenance/manifest.json) covers it back to **v1.8.6**:
   inference is what produced a documented contradiction on 2026-08-12. The
   authoritative record of what shipped is the
   [Releases page](https://github.com/TheUnboundDeveloper/AM-Reaper/releases).
-- **v2.3.3, v2.3.5, v2.3.6 and v2.3.8 – v2.4.3 are source rungs that published no
-  images.** They are still exported, replay-verified and CI-covered; they simply
+- **Many rungs are source rungs that published no images** — v2.3.3, v2.3.5, v2.3.6,
+  v2.3.8–v2.4.2, and a large share of the v2.4.x–v2.7.x line (e.g. v2.6.1–v2.6.9, v2.7.0,
+  v2.7.2, v2.7.4–v2.7.6). They are still exported, replay-verified and CI-covered; they simply
   never became a download. v2.3.8, v2.3.9 and v2.4.0 in particular were the
   intermediate steps of the native-firewall work and were folded into the single
   v2.4.1 rung (`0407`–`0424`). v2.4.2 (`0425`–`0426`) is likewise folded into

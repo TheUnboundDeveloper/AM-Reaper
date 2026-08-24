@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.7.1** — `3006.102.8_Reaper_v2.7.1`, built on RT-BE96U and running on the maintainer's router (diag clean). The line since v2.6.0 adds, in order: **v2.6.1** (nvram-hang guard in every generated script, Warden kp fix); **v2.6.2** (one shared front chain so the layer order is fixed: Warden → Gatekeeper → rules engine; Gatekeeper on every network); **v2.6.3** (the Gatekeeper 45-device wall — the device list moves off nvram); **v2.6.4–v2.6.6** (the diagnostics report learns to find things itself); **v2.6.7** (Policy Routing finished: WireGuard targets, IPv6, apply-and-confirm); **v2.6.8** (USB format as ext4/ext3/ext2); **v2.6.9** (field fixes: 40-domain objects, address-list rules, self-healing routing chain); **v2.7.0** (one Reaper settings backup file; `/jffs` health in the report); **v2.7.1** (security review: the cross-site-request fix, every page translatable, the master guide). v2.6.2–v2.6.5 are cut into the patch series; **v2.6.6–v2.7.1 are cut as one rung (patches 0502–0517) and await the maintainer's push**. |
-| **Newest published** | **v2.5.7** (2026-08-20), on all five models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). It carries the audit-remainder hardening batch on top of v2.5.3's IPSec resurrection, Gatekeeper first-seen fix and QoS shaper restore. |
+| **Current rung** | **v2.7.6** — `3006.102.8_Reaper_v2.7.6`, built on RT-BE96U (and RT-BE92U). The line since v2.7.1 adds, in order: **v2.7.2** (Traffic Analyzer history survives a firmware update; a one-file `.rbk` full backup/restore); **v2.7.3** (Gatekeeper learns AiMesh exists, so default-deny no longer blocks node onboarding/heartbeats; the owner's guide surfaced from every page; themed dialogs; manifest signing built then shelved inert); **v2.7.4** (drop the first-boot gate that flashed "Secure Your Router" on boxes with no guest network); **v2.7.5** (one dedicated Addons rail section); **v2.7.6** (Policy Routing's mark chain comes up complete after a reboot with no UI Apply; the Warden status page never fails silently; firewall-lock re-apply; owner-aware PBR teardown). Patches 0518–0528 (v2.7.3) and 0529–0535 (v2.7.4–v2.7.6) are cut into the series and **await the maintainer's push**. |
+| **Newest published** | **v2.7.3** (2026-08-23), on all five main models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). The newer **RT-BE92U** ships as experimental prereleases (v2.7.4, v2.7.6). |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
-| **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings — WiFi 7, Broadcom BCM4916 |
+| **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | v2.3.8–v2.4.0, v2.4.2–v2.4.8, v2.5.0–v2.5.2, v2.5.4–v2.5.6, v2.5.8–v2.7.0 — intermediate rungs that were cut (or folded into the next cut) without a published image. **Published:** v2.4.9, v2.5.3 and v2.5.7 on all five models. Every rung from v2.5.4 on is built on RT-BE96U, both variants; v2.6.x–v2.7.1 were each validated on the maintainer's router through the diagnostics report, with the items that need a second box or a reporter listed under *Pending verification* in [`BACKLOG.md`](BACKLOG.md). |
-| **Prior full-fleet releases** | **v2.4.9**, **v2.3.7**, **v2.3.4**, **v2.3.2**, **v2.3.1**, **v2.3.0** |
+| **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.6. **Published on all five models:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1 and **v2.7.3** (newest). Every rung from v2.5.4 on is built on RT-BE96U, both variants; v2.6.x–v2.7.x were each validated on the maintainer's router through the diagnostics report, with the items that need a second box or a reporter listed under *Pending verification* in [`BACKLOG.md`](BACKLOG.md). |
+| **Prior full-fleet releases** | **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
 > RT-BEXXU. This document is the release summary; the exhaustive security detail
@@ -1180,7 +1180,7 @@ that includes it.
 
 > Naming note: the build artifacts are `…_Reaper_v<version>_nand_squashfs.pkgtb`
 > (**with** the Advisor) and `…_Reaper_v<version>_noMCP_…` (**without**); the filenames
-> above show the newest published version, **v2.5.3**. §8 lists the exact filenames and
+> above are illustrated with **v2.5.3**. §8 lists the exact filenames and
 > their hashes per release.
 
 ---
@@ -1613,8 +1613,10 @@ Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
-**v2.5.3 flashable-image hashes (SHA-256)** — the **newest published release**, built and
+**v2.5.3 flashable-image hashes (SHA-256)** — built and
 shipped on all five models (both variants each) through the public clean-room CI pipeline.
+*(This section records the v2.5.3 release; newer published releases through **v2.7.3** — the current
+newest — carry their own `SHA256SUMS-*.txt` on the [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases) page.)*
 These are the values in the on-router update manifest
 ([`releases/latest.json`](../releases/latest.json)), which the Firmware page checks before it
 flashes anything.
@@ -1766,8 +1768,10 @@ on the `reaper-firmware/` ladder.
 | **v2.4.1, v2.4.2** | Built on RT-BE96U, both variants, and run on hardware. |
 | **v2.4.3** | Built on RT-BE96U, both variants (20 pass / 0 warn / 0 FAIL each). Siblings ported, for CI. |
 | **v2.4.4 – v2.4.9** | RT-BE96U builds; **v2.4.9 published full-fleet** (all five models, both variants). |
-| **v2.5.0 – v2.5.3** | RT-BE96U builds; **v2.5.3 is the cut published full-fleet on all five models — the current newest published release**, folding v2.5.1 / v2.5.2. |
-| **v2.5.4 – v2.5.7** | RT-BE96U only, built + validated on hardware (QoS priority, IPSec confirmed working, ipset Policy Routing, the audit-remainder batch); **not yet cut as a public release**, sibling fan-out owed. |
+| **v2.5.0 – v2.5.3** | RT-BE96U builds; **v2.5.3 was the cut published full-fleet on all five models**, folding v2.5.1 / v2.5.2. |
+| **v2.5.4 – v2.5.7** | RT-BE96U builds; **v2.5.7 published full-fleet** (QoS priority, IPSec confirmed working, ipset Policy Routing, the audit-remainder batch). |
+| **v2.5.8 – v2.7.3** | RT-BE96U builds; **v2.6.0, v2.7.1 and v2.7.3 published full-fleet** (v2.7.3 = Gatekeeper learns AiMesh, the owner's guide everywhere, themed dialogs). Siblings ported per rung. |
+| **v2.7.4 – v2.7.6** | RT-BE96U + RT-BE92U builds; source cut (patches 0529–0535), sibling fan-out + push owed. RT-BE92U ships as experimental prereleases. |
 
 ---
 

@@ -18,9 +18,13 @@
 # ============================================================================
 set -u
 MODEL="${1:?MODEL}"; VARIANT="${2:?VARIANT}"; VERSION="${3:?VERSION}"
-R=/home/reaper/asuswrt-be96u
+# REAPER_TREE / REAPER_TDIR let a sibling that builds in a worktree and/or to a
+# different target profile be verified in place. Defaults keep the 5 canon-tree
+# models (96813GW) unchanged; RT-BE92U sets REAPER_TREE=/home/reaper/port/rt-be92u
+# and REAPER_TDIR=.../targets/96765GW (build_be92u.sh exports both).
+R=${REAPER_TREE:-/home/reaper/asuswrt-be96u}
 P=$R/release/src-rt-5.04behnd.4916
-TDIR=$P/targets/96813GW
+TDIR=${REAPER_TDIR:-$P/targets/96813GW}
 FS="${4:-$TDIR/fs}"
 tag=""; [ "$VARIANT" = "noMCP" ] && tag="_noMCP"
 IMAGE="${5:-$TDIR/${MODEL}_3006_102.8_${VERSION}${tag}_nand_squashfs.pkgtb}"
@@ -160,6 +164,7 @@ case "$MODEL" in
   RT-BE88U)    want_ban=a46320ea1abf53eb4212eb02b1682ed80a91a129f0c7d1ced6a836d832817f27; ban_file=RT-BE88U_REAPER_Header.png;;
   GT-BE98)     want_ban=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; ban_file=GT-BE98_REAPER_Header.png;;
   GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
+  RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"

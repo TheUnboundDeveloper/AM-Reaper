@@ -1,8 +1,8 @@
 # Security Policy
 
 This project exists to harden the RT-BE Series firmware — **RT-BEXXU** (primary, hardware-validated)
-plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (all BCM4916 / WiFi 7),
-so security reports are very welcome.
+plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (BCM4916 / WiFi 7)
+and the newer **RT-BE92U** (BCM6765), so security reports are very welcome.
 
 ## Scope
 

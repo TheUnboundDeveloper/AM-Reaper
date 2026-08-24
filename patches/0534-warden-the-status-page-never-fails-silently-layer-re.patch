@@ -1,0 +1,392 @@
+From f1faad50c6839330cdb46ef7787e633cacfb3b69 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 22:09:22 -0400
+Subject: [PATCH] warden: the status page never fails silently; layer
+ re-applies under the firewall lock; PBR teardown is owner-aware
+
+Field (RT-BE88U v2.7.1 running Skynet + domain_vpn_routing + Diversion +
+unbound): "Warden crashed" after updating amtm and Diversion. Live state showed
+a healthy 77-rule REAPER_WARDEN, no hung nvram, three rwatch incident dumps.
+
+1. The status CGI runs stats.sh synchronously inside single-process httpd, and
+   stats.sh waits up to 5 s on the counter lock that fold.sh holds exclusively
+   at the head of EVERY Warden apply. Under a firewall-start storm the request
+   timed out, JSON.parse threw, and the handler returned having updated
+   nothing - the page sat on its static placeholders ("-" blocked, grey
+   "not armed" pill, empty table), which reads as a crash. The page now shows
+   an explicit "Stats unavailable - retrying" pill on timeout/error/parse
+   failure (new RWDN_91, 25 packs lockstep 6769) and keeps polling; stats.sh
+   waits 2 s, not 5 - every second is a second the whole GUI is frozen.
+2. firewall-start (addon hooks) is forked and not waited on, and the Warden /
+   Gatekeeper / rules-engine re-applies after it ran with NO firewall lock
+   while rwatch's reaper_lockrun takes one - on an iptables that never uses -w
+   that loses individual rules. The block now runs under the lock (the PBR
+   block already did since the previous commit).
+3. The PBR teardown deleted whatever ip rule sat at prefs 9001-9015 /
+   9101-9115, owner-blind - an addon managing its own ip rules (this box's
+   domain_vpn_routing) could lose them on every restart_firewall. Only rules
+   carrying OUR fwmark form (bits 16-19, mask 0xf0000) are deleted now.
+
+Refuted from the code, for the record: rwatch's canary only enumerates rw_*
+sets (a Skynet set can never be mistaken for a Warden set); Warden's
+save/restore/sweep are all ^rw_-prefixed and add-lines-only (cannot touch
+Skynet-*/DVR-*); a feed update through a momentarily-dead resolver fails to
+last-good and never overwrites a populated cache; hook.sh is delete-then-insert
+so a Skynet position-1 fight flips once per firewall event and never loops.
+---
+ release/src/router/rc/firewall.c         | 11 +++++++++++
+ release/src/router/rc/reaper_pbr.c       |  8 +++++++-
+ release/src/router/rc/rwarden.c          |  7 +++++--
+ release/src/router/www/BR.dict           |  1 +
+ release/src/router/www/CN.dict           |  1 +
+ release/src/router/www/CZ.dict           |  1 +
+ release/src/router/www/DA.dict           |  1 +
+ release/src/router/www/DE.dict           |  1 +
+ release/src/router/www/EN.dict           |  1 +
+ release/src/router/www/ES.dict           |  1 +
+ release/src/router/www/FI.dict           |  1 +
+ release/src/router/www/FR.dict           |  1 +
+ release/src/router/www/HU.dict           |  1 +
+ release/src/router/www/IT.dict           |  1 +
+ release/src/router/www/JP.dict           |  1 +
+ release/src/router/www/KR.dict           |  1 +
+ release/src/router/www/MS.dict           |  1 +
+ release/src/router/www/NL.dict           |  1 +
+ release/src/router/www/NO.dict           |  1 +
+ release/src/router/www/PL.dict           |  1 +
+ release/src/router/www/RO.dict           |  1 +
+ release/src/router/www/RU.dict           |  1 +
+ release/src/router/www/Reaper_Warden.asp | 18 +++++++++++++++++-
+ release/src/router/www/SL.dict           |  1 +
+ release/src/router/www/SV.dict           |  1 +
+ release/src/router/www/TH.dict           |  1 +
+ release/src/router/www/TR.dict           |  1 +
+ release/src/router/www/TW.dict           |  1 +
+ release/src/router/www/UK.dict           |  1 +
+ 29 files changed, 65 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index b9b37dcc50..fa4adc680c 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9423,6 +9423,15 @@ leave:
+ 	 * before any of them runs. Each apply.sh calls it at its tail. */
+ 	reaper_hook_gen();
+ 
++	/* v2.7.6: firewall-start (addon hooks such as Skynet) is forked and NOT
++	 * waited on, and this block runs after the firewall lock was released - so
++	 * the layer re-applies below could interleave with rwatch's reaper_lockrun
++	 * (which does take the lock) on an iptables that never uses -w, losing
++	 * individual rules. Take the lock for the whole block; none of the generated
++	 * scripts calls back into rc, and none sleeps. */
++	{
++	int llock = file_lock("firewall");
++
+ 	/* reaper v1.6.8 Gatekeeper: this rebuild just deleted our chains - re-apply
+ 	 * immediately (gkd's 10s self-heal is only the backstop, not the primary). */
+ 	if (nvram_match("gk_enable", "1") && f_exists("/tmp/gk/apply.sh"))
+@@ -9446,6 +9455,8 @@ leave:
+ 		else if (f_exists("/tmp/reaper_fw/apply.sh"))
+ 			system("sh /tmp/reaper_fw/apply.sh");
+ 	}
++	file_unlock(llock);
++	}
+ 
+ 	/* reaper v2.5.x ipset policy routing: our mangle PREROUTING jump can be
+ 	 * unhooked by this rebuild - re-run the idempotent generated script. v2.6.7:
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 6c24055501..48eba25054 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -345,7 +345,13 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "for V in -4 -6; do\n"
+ 	  "  for P in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010 9011 9015 "
+ 	  "9101 9102 9103 9104 9105 9106 9107 9108 9109 9110 9111 9115; do\n"
+-	  "    while ip $V rule del pref $P 2>/dev/null; do :; done\n"
++	  /* v2.7.6 (field: a box also running an addon that manages its own ip
++	   * rules): `rule del pref P` is owner-blind - it removed whatever sat at
++	   * our pref. Only delete a rule that carries OUR fwmark form (bits 16-19,
++	   * mask 0xf0000); anything else at that pref is somebody else's and stays. */
++	  "    while ip $V rule show 2>/dev/null | grep -Eq \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\"; do\n"
++	  "      ip $V rule del pref $P 2>/dev/null || break\n"
++	  "    done\n"
+ 	  "  done\n"
+ 	  "done\n"
+ 	  "pbr_skip_del_ours\n"
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 0a5bddfe88..3571399ff4 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -1266,8 +1266,11 @@ static void rw_gen_stats(void)
+ 	  /* Shared lock (see fold.sh): hold it across the banked $CTR reads and the
+ 	   * live counter reads so a fold.sh checkpoint cannot mv+zero between them and
+ 	   * produce a one-tick backward dip. Reader-shared so concurrent 30 s polls
+-	   * do not serialize; best-effort 5 s wait. */
+-	  "exec 9>/tmp/rwarden/ctr.lock; flock -w 5 -s 9 2>/dev/null\n"
++	   * do not serialize; best-effort wait. v2.7.6: 5 s -> 2 s. httpd runs this
++	   * synchronously in its single process, so every second waited here is a
++	   * second the whole GUI is frozen; a checkpoint holding the exclusive lock
++	   * that long is the rare case, and a one-tick dip beats a dead page. */
++	  "exec 9>/tmp/rwarden/ctr.lock; flock -w 2 -s 9 2>/dev/null\n"
+ 	  "BASE=0; SINCE=0\n"
+ 	  "if [ \"$SV\" = 1 ] && [ -f \"$CTR\" ]; then\n"
+ 	  "  BASE=$(awk '$1==\"TOTAL\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$BASE\" ] || BASE=0\n"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 0d304bbc86..4b93a5e83b 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Complementos
++RWDN_91=Estatísticas indisponíveis - tentando novamente
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index ee427efe14..babfd8bd06 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=插件
++RWDN_91=统计不可用 - 正在重试
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index a7c062daff..900b51f227 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Doplňky
++RWDN_91=Statistiky nedostupné - opakuji
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index bb11beebd0..12a2d04b04 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Tilføjelser
++RWDN_91=Statistik utilgængelig - prøver igen
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 26a8e86fe6..7f2fbc4521 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Add-ons
++RWDN_91=Statistik nicht verfügbar - neuer Versuch
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 7bb34c3503..4a9ba3d8a5 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Addons
++RWDN_91=Stats unavailable - retrying
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index fbd11513cc..85b2ccebad 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Complementos
++RWDN_91=Estadísticas no disponibles - reintentando
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 94db578005..01b44a4bab 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Lisäosat
++RWDN_91=Tilastot eivät ole saatavilla - yritetään uudelleen
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 2ae64992de..145c30bd74 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Modules complémentaires
++RWDN_91=Statistiques indisponibles - nouvelle tentative
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 5fcc7ceedc..152ce9c6e0 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Bővítmények
++RWDN_91=A statisztika nem érhető el - újrapróbálás
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4dc84d0823..c5f6f3977f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Componenti aggiuntivi
++RWDN_91=Statistiche non disponibili - nuovo tentativo
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 9cba17ca5b..2eb72ed8f0 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=アドオン
++RWDN_91=統計を取得できません - 再試行中
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 9199ef98a0..95980195b2 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=애드온
++RWDN_91=통계를 사용할 수 없음 - 재시도 중
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 7ddc182238..f3f541e3c5 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Tambahan
++RWDN_91=Statistik tidak tersedia - mencuba semula
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index adca89204c..78e479e5a2 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Add-ons
++RWDN_91=Statistieken niet beschikbaar - opnieuw proberen
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 6fb8588b1e..7f1edb02ee 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Tillegg
++RWDN_91=Statistikk utilgjengelig - prøver igjen
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index c8f0c52658..99aa838064 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Dodatki
++RWDN_91=Statystyki niedostępne - ponawianie
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index ea9f2042fd..415e8aaaa1 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Suplimente
++RWDN_91=Statistici indisponibile - se reîncearcă
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 62f09ad03e..b8a9dd059e 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Дополнения
++RWDN_91=Статистика недоступна - повтор
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index a101f112cb..a711e39325 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -596,9 +596,25 @@ function rwStats(){
+   var x = new XMLHttpRequest();
+   x.open('GET','/reaper_warden.cgi?action=status&http_id='+encodeURIComponent('<% nvram_get("http_id"); %>'),true);
+   x.timeout = 8000;
++  /* v2.7.6 (field: "Warden crashed" on a box running Skynet + Diversion): the
++     status CGI runs stats.sh synchronously inside single-process httpd, and
++     stats.sh waits on the counter lock that fold.sh holds during every apply -
++     under a firewall-start storm the request timed out, JSON.parse threw, and
++     this handler returned having updated NOTHING. The page then sat on its
++     static placeholders: "-" blocked, a grey "not armed" pill, an empty table -
++     which reads as a crash while iptables shows a healthy chain. Say so instead
++     (and keep polling); one-shot guard per rule 34. */
++  var fired = false;
++  function unavailable(){
++    if(fired) return; fired = true;
++    var pill = document.getElementById('livepill');
++    if(pill){ pill.className = 'livepill stale'; pill.textContent = '\u25cf ' + `<#RWDN_91#>`; }
++  }
++  x.ontimeout = unavailable; x.onerror = unavailable;
+   x.onreadystatechange = function(){
+     if(x.readyState !== 4) return;
+-    var j; try{ j = JSON.parse(x.responseText); }catch(e){ return; }
++    var j; try{ j = JSON.parse(x.responseText); }catch(e){ unavailable(); return; }
++    fired = true;
+     /* no-JFFS disclosure: Warden enforces fine from RAM, but with /jffs off or
+        read-only the feed cache can't persist (no cross-reboot / no-internet-boot
+        protection). Surface it whenever Warden is enabled but jffs isn't writable. */
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 6caf1a3ac9..f2d5822bcf 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Dodatki
++RWDN_91=Statistika ni na voljo - ponovni poskus
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 0238a80823..7d7ecae308 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Tillägg
++RWDN_91=Statistik otillgänglig - försöker igen
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 116c4f3c0a..19392fd419 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=ส่วนเสริม
++RWDN_91=สถิติไม่พร้อมใช้งาน - กำลังลองใหม่
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 5c92ab1c12..13599ce986 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Eklentiler
++RWDN_91=İstatistikler kullanılamıyor - yeniden deneniyor
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4a818f88cd..3c98f8cd6b 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=附加元件
++RWDN_91=統計資料無法取得 - 重試中
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 1c759dfe87..b726a9933f 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6766,3 +6766,4 @@ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
+ Reaper_c_addons=Додатки
++RWDN_91=Статистика недоступна - повторна спроба
+-- 
+2.25.1
+

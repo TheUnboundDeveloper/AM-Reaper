@@ -1,0 +1,212 @@
+From c793b26229a596cbcd6474e861e4a123b5acf31d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 21:55:11 -0400
+Subject: [PATCH] policy routing: apply.sh materialises the object sets itself;
+ 40-domain object fixes
+
+Field (RT-BE88U v2.7.1):
+1. "After a reboot the ipsets and ip rules were there but the REAPER_PBR mangle
+   chain was short; an Apply in the UI fixed it."
+   The -m set mark rules depend on the object sets, which reaper_fw_sets_only()
+   built exactly once at boot (exit status discarded). Every self-heal path
+   (rwatch's re-apply, the restart_firewall re-hook) re-ran apply.sh alone,
+   which creates no sets, so a boot-time shortfall was permanent until
+   reaper_pbr_apply() - the UI - rebuilt them. Worse, the v6 `ipset list &&`
+   guard short-circuits before the counter, so expect shrank in step with live
+   and rwatch saw N of N. apply.sh now runs the (idempotent) sets script first
+   on every apply, names each failed rule in syslog, and the restart_firewall
+   re-apply takes the firewall lock so it cannot interleave with ppbr_run /
+   reaper_lockrun on an iptables that never uses -w. RFW_SETS moves to rc.h so
+   producer and consumer share one path.
+2. "A pasted list of 40 domains would not save; a few at a time did."
+   Cumulative caps cannot explain that - only the all-or-nothing per-domain
+   regex can (one malformed pasted line rejected the whole list, and the
+   reason was a message that erased itself after 5 s). The normaliser now
+   drops comment lines and strips http(s):// prefixes, paths and trailing
+   dots; an error stays until the next attempt and names up to 12 offenders;
+   the textarea cap (4000) can no longer truncate a paste before the 1900
+   joined-value check explains it.
+3. rfw_obj_set()/rfw_ref_is_mac()/the group-list reader sized their record at
+   1024 and value at 768 while the store allows a 2048-byte record and
+   RFW_VAL_MAX values: every FIREWALL rule naming a >=768-byte object (about
+   40 domains) silently matched nothing while its set filled fine. Sized to
+   the store.
+
+Not changed: the dnsmasq ipset= directive splitting across two lines at 800
+bytes is intentional and correct (dnsmasq accumulates same-set directives);
+/jffs/configs/dnsmasq.conf.add is stock Merlin, untouched, gated only on
+jffs2_scripts=1 - our fragment is written to the generated /etc/dnsmasq.conf
+ahead of it on purpose so the operator's file wins.
+---
+ release/src/router/rc/firewall.c             |  7 +++++++
+ release/src/router/rc/rc.h                   |  4 ++++
+ release/src/router/rc/reaper_fw.c            | 12 +++++++----
+ release/src/router/rc/reaper_pbr.c           | 13 +++++++++++-
+ release/src/router/www/Reaper_VPNRouting.asp | 22 ++++++++++++++++----
+ 5 files changed, 49 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 54f9f5df61..b9b37dcc50 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9452,10 +9452,17 @@ leave:
+ 	 * inside a commit-confirm window the ARMED candidate is the live one, so
+ 	 * re-apply that (same reasoning as the rules engine above). */
+ 	if (nvram_match("reaper_pbr_enable", "1")) {
++		/* v2.7.6: this block runs AFTER the firewall lock was released above, so
++		 * it could interleave with ppbr_run() / rwatch's reaper_lockrun on an
++		 * iptables that never uses -w - losing individual rules to the xtables
++		 * lock (a second way to the "short mangle chain" field signature). Take
++		 * the lock for this run; the generated script never calls back into rc. */
++		int plock = file_lock("firewall");
+ 		if (nvram_match("reaper_pbr_armed", "1") && f_exists("/tmp/reaper_pbr/candidate.sh"))
+ 			system("sh /tmp/reaper_pbr/candidate.sh");
+ 		else if (f_exists("/tmp/reaper_pbr/apply.sh"))
+ 			system("sh /tmp/reaper_pbr/apply.sh");
++		file_unlock(plock);
+ 	}
+ 
+ 	return 0;
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 75327fcac2..bf27c8d369 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3015,6 +3015,10 @@ extern void reaper_pbr_rollback(void);
+  * before append_custom_config(). Declared here so producer and consumer cannot
+  * drift onto different paths. */
+ #define RFW_DNSMASQ_CONF "/tmp/reaper_fw/dnsmasq.ipset"
++/* v2.7.6: the object-sets-only script (reaper_fw_sets_only); reaper_pbr's
++ * apply.sh runs it first so a policy-routing rule never references a set
++ * that is not there yet - shared here so the two cannot drift. */
++#define RFW_SETS "/tmp/reaper_fw/sets.sh"
+ extern void rw_teardown_rules(void);
+ extern void stop_rwatch(void);	/* reaper v1.8.8 watchdog: WAN/DNS/Warden/accelerator health probe (rc/rwatch.c) */
+ extern void start_rwatch(void);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 96eb599a42..e1b61864aa 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -101,7 +101,8 @@
+ #define RFW_APPLY    RFW_DIR "/apply.sh"          /* idempotent teardown+build (committed set) */
+ #define RFW_FAILCOUNT RFW_DIR "/failcount"    /* P2-H3: rules that did not load */
+ #define RFW_CAND     RFW_DIR "/candidate.sh"      /* the armed candidate (staged set) */
+-#define RFW_SETS     RFW_DIR "/sets.sh"           /* object sets ONLY (policy routing with the firewall engine off) */
++/* RFW_SETS (object sets ONLY - policy routing with the firewall engine off) is
++ * defined in rc.h: reaper_pbr's apply.sh runs it too. */
+ #define RFW_CC       RFW_DIR "/cc_check.sh"       /* cru-run deadline checker */
+ #define RFW_ARMED    RFW_DIR "/armed"             /* single-arm CAS token (a directory: mkdir/rmdir are atomic) */
+ #define RFW_DEADLINE RFW_DIR "/deadline"          /* absolute epoch the arm reverts at */
+@@ -602,7 +603,10 @@ typedef struct { char name[40]; } rfw_setname_t;
+ static int rfw_obj_set(const rfw_cfg_t *c, const char *name, int v6,
+                        char *out, size_t ol)
+ {
+-	char rec[1024], type[16], val[768];
++	/* v2.7.6 (field): a record is up to 2048 bytes and a value up to RFW_VAL_MAX;
++	 * 1024/768 here made every firewall rule naming a >=768-byte object (about
++	 * 40 domains) silently match nothing while its set filled fine. */
++	char rec[2048], type[16], val[RFW_VAL_MAX];
+ 	/* SECURITY (S2): `name` becomes part of an ipset name that is spliced
+ 	 * UNQUOTED into a root iptables line (rfw_emit_rule -> pre -> the RFWR
+ 	 * iptables emission). The rule emitter reaches here via rfw_resolve()'s
+@@ -688,7 +692,7 @@ static int rfw_resolve(const rfw_cfg_t *c, const char *ref, int v6,
+ /* is this reference a MAC object? (only valid as a source match on in/fwd) */
+ static int rfw_ref_is_mac(const rfw_cfg_t *c, const char *ref)
+ {
+-	char rec[1024], type[16];
++	char rec[2048], type[16];
+ 	if (!rfw_find(c->obj, ref, rec, sizeof(rec))) return 0;
+ 	if (!rfw_field(rec, 1, type, sizeof(type))) return 0;
+ 	return !strcmp(type, "mac");
+@@ -1145,7 +1149,7 @@ static void rfw_emit_head(FILE *f, int v6, int dir)
+ static int rfw_zone_ifaces(const rfw_cfg_t *c, const char *zname,
+                            char ifs[][IFNAMSIZ + 2], int max)
+ {
+-	char rec[1024], list[768], *dup, *tok, *save = NULL;
++	char rec[2048], list[RFW_VAL_MAX], *dup, *tok, *save = NULL;
+ 	int n = 0;
+ 	if (!zname || !*zname) return 0;
+ 	if (!rfw_find(c->zone, zname, rec, sizeof(rec))) return 0;
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 2ae3257875..6c24055501 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -285,7 +285,9 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "# did not (a `-m set` rule fails when its set is not there yet at boot);\n"
+ 	  "# rwatch compares the live chain against EXPECT and re-runs this script.\n"
+ 	  "NEXPECT=0; NFAIL=0\n"
+-	  "pbr_rule() { NEXPECT=$((NEXPECT+1)); \"$@\" || NFAIL=$((NFAIL+1)); }\n"
++	  /* v2.7.6: name the rule that failed - the aggregate count alone could not
++	   * tell a missing set from an xtables-lock collision in the field. */
++	  "pbr_rule() { NEXPECT=$((NEXPECT+1)); \"$@\" || { NFAIL=$((NFAIL+1)); logger -t reaper_pbr \"rule failed: $*\"; }; }\n"
+ 	  "pbr_skip_add() {\n"
+ 	  "  [ -w \"$SKIP\" ] || return 0\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 pre\" >> \"$SKIPREC\"; return 0; fi\n"
+@@ -321,6 +323,15 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "# generated by reaper_pbr - do not edit; idempotent (teardown then rebuild)\n"
+ 	  "MASK=" PPBR_MASK "\n"
++	  /* v2.7.6 (field: after a reboot the ip rules were there but the mangle
++	   * chain was short, and only a UI Apply healed it): every `-m set` rule
++	   * below hard-depends on the object sets, which reaper_fw_sets_only()
++	   * materialised exactly once at boot with its exit status discarded. The
++	   * self-heal paths (rwatch, the restart_firewall re-hook) re-ran THIS script
++	   * alone, which created no sets - so a boot-time shortfall was permanent
++	   * until reaper_pbr_apply() (the UI) rebuilt them. Run the sets script here,
++	   * first, on every apply: idempotent (`-exist`, fqdn sets never flushed). */
++	  "[ -f " RFW_SETS " ] && sh " RFW_SETS " 2>/dev/null\n"
+ 	  "\n");
+ 	ppbr_emit_skip_helpers(f);
+ 	fprintf(f,
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 3500a96bf3..54c4345415 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -172,7 +172,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+   <div class="editor" id="objeditor" style="margin-top:14px">
+     <div class="fld"><label><#RVR_42#></label><input type="text" id="o_name" maxlength="25" placeholder="streaming"></div>
+     <div class="fld"><label><#RVR_11#></label><input type="text" id="o_cmt" maxlength="60"></div>
+-    <div class="fld wide"><label><#RVR_43#> <span style="text-transform:none;letter-spacing:0">(<#RVR_44#>)</span></label><textarea id="o_doms" rows="2" maxlength="1900" spellcheck="false" placeholder="netflix.com&#10;nflxvideo.net&#10;nflximg.net"></textarea></div>
++    <div class="fld wide"><label><#RVR_43#> <span style="text-transform:none;letter-spacing:0">(<#RVR_44#>)</span></label><textarea id="o_doms" rows="2" maxlength="4000" spellcheck="false" placeholder="netflix.com&#10;nflxvideo.net&#10;nflximg.net"></textarea></div>
+     <div class="fld"><label>&nbsp;</label><span><button class="btn" id="o_add" onclick="objSave()"><#RVR_45#></button><button class="btng cancel" onclick="objEditCancel()"><#CTL_Cancel#></button></span></div>
+   </div>
+   <div class="objnote" id="objnote"><#RVR_46#></div>
+@@ -442,11 +442,25 @@ function renderObjects(){
+   var dels=tb.querySelectorAll('.rowdel'); for(i=0;i<dels.length;i++) dels[i].onclick=function(){ objDelete(+this.getAttribute('data-d')); };
+ }
+ function objNormalise(raw){
++  /* v2.7.6 (field: a 40-line paste "would not save", a few at a time did):
++     one malformed line rejected the whole paste, and the reason was a message
++     that erased itself after 5 s at the foot of the card. Tolerate what a paste
++     brings along - comment lines, http(s):// prefixes, paths, a trailing dot -
++     and let the remaining validator name every offender, persistently. */
+   var parts=String(raw||'').split(/[\s,;]+/), out=[], seen={}, i, t;
+-  for(i=0;i<parts.length;i++){ t=parts[i].replace(/[<>]/g,'').toLowerCase(); if(!t||seen[t])continue; seen[t]=1; out.push(t); }
++  for(i=0;i<parts.length;i++){
++    t=parts[i].replace(/[<>]/g,'').toLowerCase();
++    if(!t||t.charAt(0)==='#') continue;
++    t=t.replace(/^[a-z][a-z0-9+.-]*:\/\//,'').replace(/[\/?#].*$/,'').replace(/\.+$/,'');
++    if(!t||seen[t]) continue; seen[t]=1; out.push(t);
++  }
+   return out;
+ }
+-function objMsg(ok,msg){ var e=document.getElementById('objsaved'); e.style.display=''; e.style.color=ok?'var(--jade)':'var(--danger)'; e.textContent=msg; setTimeout(function(){e.style.display='none';},5000); }
++function objMsg(ok,msg){
++  var e=document.getElementById('objsaved'); e.style.display=''; e.style.color=ok?'var(--jade)':'var(--danger)'; e.textContent=msg;
++  clearTimeout(objMsg._t);
++  if(ok) objMsg._t=setTimeout(function(){e.style.display='none';},5000);   /* an error stays until the next attempt */
++}
+ function objEdit(k){
+   var r=OBJ[k]; if(!r) return;
+   EDIT_OBJ=k;
+@@ -475,7 +489,7 @@ function objSave(){
+   if(!/^[A-Za-z0-9_]{1,25}$/.test(n)){ objMsg(false, `<#RFW_157#>`); return; }
+   for(i=0;i<doms.length;i++) if(!/^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/.test(doms[i])) bad.push(doms[i]);
+   if(!doms.length){ objMsg(false, `<#RVR_49#>`); return; }
+-  if(bad.length){ objMsg(false, `<#RVR_50#>` + ' ' + bad.slice(0,3).join(', ')); return; }
++  if(bad.length){ objMsg(false, `<#RVR_50#>` + ' ' + bad.slice(0,12).join(', ') + (bad.length>12 ? ' (+' + (bad.length-12) + ')' : '')); return; }
+   var v=doms.join(','); if(v.length>1900){ objMsg(false, `<#RVR_51#>`); return; }
+   for(i=0;i<OBJ.length;i++) if(i!==EDIT_OBJ && OBJ[i][0]===n){ objMsg(false, `<#RFW_65#>`); return; }
+   for(i=0;i<GRP.length;i++) if(GRP[i][0]===n){ objMsg(false, `<#RFW_65#>`); return; }
+-- 
+2.25.1
+

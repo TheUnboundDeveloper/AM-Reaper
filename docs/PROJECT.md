@@ -1,6 +1,6 @@
 # RT-BEXXU "Reaper" — Project Overview
 
-A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom BCM4916), firmware line **3006.102.x**. The **RT-BEXXU** is the primary, hardware-validated model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** are built from per-model branches of the same tree (metal validation owed on the four siblings). Current version **v2.5.7** — the newest **published** release, on all five models, both variants each. The source tree is normally ahead of that: it currently sits at **v2.7.1** (RT-BE96U built and validated on hardware through v2.7.1; v2.6.2–v2.6.5 cut into the patch series, v2.6.6–v2.7.1 cut as one rung awaiting push; sibling fan-out follows the cut). "Current version" always means the newest published release — the newest image a user can actually install — because source rungs are cut more often than releases are published. See [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
+A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x**. The **RT-BEXXU** is the primary, hardware-validated model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** (BCM4916) are built from per-model branches of the same tree (metal validation owed on the four siblings), with the newer **RT-BE92U** (BCM6765) as an experimental sixth model. Current version **v2.7.3** — the newest **published** release, on all five main models (2026-08-23), both variants each. The source tree is normally ahead of that: it currently sits at **v2.7.6** (RT-BE96U built and validated on hardware; RT-BE92U ships experimental prereleases through v2.7.6; sibling fan-out follows each cut). "Current version" always means the newest published release — the newest image a user can actually install — because source rungs are cut more often than releases are published. See [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
 > This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `ASUS-Merlin_Changelog-3006.txt` in this `docs/` folder.
 
@@ -17,13 +17,13 @@ A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT
 
 ## Scope & hard rules
 
-- **Five-model RT-BE fleet.** RT-BEXXU is primary and hardware-validated; the four siblings build from per-model branches of the same tree. Built from `release/src-rt-5.04behnd.4916` via `make <target>` (`rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`). Each model ships two variants (Standard / + AI Advisor).
+- **Six-model RT-BE fleet.** RT-BEXXU is primary and hardware-validated; the four BCM4916 siblings and the newer BCM6765 **RT-BE92U** build from per-model branches of the same tree. Built from `release/src-rt-5.04behnd.4916` via `make <target>` (`rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `rt-be92u`). Each model ships two variants (Standard / + AI Advisor).
 - **The vendor tree is never redistributed.** The hardening is maintained as patches (this repo's `patches/`) on top of the upstream `3006.102.8-beta2` tag; the multi-GB source checkout stays local to each developer.
 - **Don't modify the closed blobs.** Broadcom WiFi drivers and prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, `spwenc`, the Broadcom `hostapd`/`wpa_supplicant` forks) are out of scope and treated as documented residual risk. Harden the userspace around them.
 
 ## Relationship to upstream Asuswrt-Merlin
 
-Most of the source we patch is **shared across many Broadcom-HND Merlin models**, so the flaws we fix generally exist on those models' stock firmware too — and Reaper images are produced for the RT-BE Series (RT-BEXXU primary, plus the four BCM4916 siblings). We track the **3006.102.x** line (checked out at tag `3006.102.8-beta2`). Upstream project, wiki, and support:
+Most of the source we patch is **shared across many Broadcom-HND Merlin models**, so the flaws we fix generally exist on those models' stock firmware too — and Reaper images are produced for the RT-BE Series (RT-BEXXU primary, plus the four BCM4916 siblings and the newer BCM6765 RT-BE92U). We track the **3006.102.x** line (checked out at tag `3006.102.8-beta2`). Upstream project, wiki, and support:
 
 - Source/wiki: <https://github.com/RMerl/asuswrt-merlin.ng>
 - Support forum (upstream, for *stock* Merlin — not this fork): SNBForums

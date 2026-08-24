@@ -14,7 +14,7 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > leaves [Pending verification](#pending-verification). This file lists only work that is not yet
 > done, which includes work that is *believed* done but unconfirmed.
 
-*Last cleaned 2026-08-21 (after v2.6.1). Everything marked FIXED/DONE/SHIPPED in earlier revisions
+*Last cleaned 2026-08-24 (after v2.7.6). Everything marked FIXED/DONE/SHIPPED in earlier revisions
 was moved to the changelog; only open work and open confirmations remain.*
 
 ---
@@ -39,42 +39,74 @@ was moved to the changelog; only open work and open confirmations remain.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[P2] Confirmations owed on metal** — v2.7.1 per-boot token + Referer check (every Reaper
-   page still works; the ASUS app / any script that used the old constant token), v2.7.0 settings
-   export/import + `/jffs` finding,
-   v2.6.9 field-report fixes (40-domain object, address
-   lists, post-reboot mark rules), v2.6.8 USB ext format (a spare stick), v2.6.7 Policy
-   Routing close-out (needs a WireGuard client and/or IPv6), v2.6.5 Gatekeeper multi-network, v2.6.4 diag v1.3.0 (glance), v2.6.3
-   Gatekeeper 45-device fix (reporter), v2.6.2 firewall order + L3 leg, v2.6.1 nvram-guard, v2.6.0
-   QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node classification, v2.5.8 UPnP.
+1. **[P2] Confirmations owed on metal / from reporters** — v2.7.6 field fixes (PBR chain complete
+   after a reboot with no UI Apply, 40-domain paste in one go, Warden "Stats unavailable —
+   retrying", addon `ip rule`s survive `restart_firewall`), v2.7.5 Addons rail (a box with real
+   addons), v2.7.4 first-boot gate fix (BE92U nav + factory-reset regression), v2.7.3 AiMesh
+   onboard with quarantine ON + guide links + themed USB dialog + backup-card alignment, v2.7.2
+   full-backup round-trip + Analyzer month/year, v2.7.1 per-boot token remainder (the other pages'
+   controls, cross-site refusal, the ASUS app / scripts), v2.7.0 settings export/import, v2.6.9
+   remainder (address lists, /jffs persistence), v2.6.8 USB ext format (a spare stick), v2.6.7
+   Policy Routing close-out (needs a WireGuard client and/or IPv6), v2.6.5 Gatekeeper
+   multi-network, v2.6.3 Gatekeeper 45-device fix (reporter), v2.6.2 firewall-order behaviour
+   tests + L3 leg, v2.6.0 QoS queue rebuild (GT-BE98), v2.5.9 Warden country sets + node
+   classification, v2.5.8 UPnP. (v2.7.4–v2.7.6 images exist for BE96U + BE92U only — the BE88U
+   reporter needs a sibling build first.)
    → [Pending verification](#pending-verification)
-2. **[P2] Flash page: Cancel on the upgrade confirm leaves the buttons dead.** → [Open bugs](#open-bugs--under-investigation)
-3. **[P2] Link the owner's guide from the UI** so people know it exists. → [Features](#features-to-add)
-4. **[P2] Overhaul Save/Restore settings** so one backup carries the stock settings AND every Reaper
-   store. → [Features](#features-to-add)
+2. **[P2] Warden "crash" on the BE92U addon box** (amtm + Diversion update) — hypotheses ranked,
+   tester data requested. → [Open bugs](#open-bugs--under-investigation)
+3. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
+   v2.7.6+. → [Open bugs](#open-bugs--under-investigation)
+4. **[P2] RT-BE92U CI-build registration** — its branch carries v2.7.4–v2.7.6 and it's in
+   port_sibling_v2 + reaper_verify, but not yet in the CI matrix/overlays. → [Features](#features-to-add)
 5. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-6. **Translations owed** (RABT, RTWK_03/04, RWDN_69–72, RWDN_89, RTRF_45/75/76, RVR_54–58,
-   RABT_42, IPv6-proto labels). → [Documentation](#documentation)
+6. **Translations owed** (RABT, RBKP_1–14, RFWU_49–53, RTWK_03/04, RWDN_69–72/89–91,
+   RTRF_45/75/76, RVR_54–61, `Reaper_c_addons`, IPv6-proto labels). → [Documentation](#documentation)
 
 ---
 
 ## Open bugs / under investigation
 
-- **[P3] Diagnostics report: two cosmetic defects (seen on the v2.7.1 metal run, 2026-08-22).**
-  (a) The client-churn finding prints `~0/h`: the rate divides by a span taken from the first
-  syslog line, which after a reboot is a pre-NTP "Dec 31 19:0x" stamp, so the span is decades.
-  Fix = take the span from the first line whose timestamp is after the NTP sync (or from the
-  mirror's own span line). (b) §14d prints the `mangle REAPER_PBR` line twice — the v1.3.2 block
-  was added above the older one; drop the older line. Both in `others/reaper_diag`; no data is
-  wrong, only the rate figure and a duplicate line. **Settles when** the next diag shows a
-  plausible `~N/h` and one `mangle REAPER_PBR` line.
+- **[P2] About page patch count blank — FIXED 2026-08-24 (build-engine).** Root cause: the build's
+  provenance stamp (`_reaper_build_lib.sh`) derived the series version from the **tip** patch's
+  filename via `basename "$_tip" | grep -oE 'v…' | tail -1`. That only yields a version when the
+  rung's last patch IS its version-bump patch. The v2.7.3 rung's tip was `0528-fwupdate-shelve-…`
+  (a feature patch, no version token) — so `_sv` came back empty, the `[ -n "$_sv" ]` guard skipped
+  `_pc`, and `reaper_provenance.js` stamped `patches:""` → the page shows a dash. This hit **both
+  local and CI builds** and is exactly the "regressed before" history (it only works on rungs whose
+  last patch is the bump). Fix: derive `_sv` from the **highest `reaper_v` token across all patch
+  filenames** (`grep -oiE 'reaper[_-]v…' | sort -V | tail -1`) — order-independent, and it skips
+  bare `v5.1`-style tokens inside feature-patch names (e.g. `0162-qos-v5.1-…`). Verified: now stamps
+  `535 — series as of v2.7.6`. Applied to `build-scripts/_reaper_build_lib.sh` (canonical) + synced
+  to the local engine. Not a firmware patch; takes effect on the next build. **Closes when** a
+  rebuilt image's About page shows the count.
 
+- **[P2] Warden "crash" on the BE92U tester after an amtm + Diversion 6.1 update — hypothesis only,
+  tester data requested (2026-08-23).** No fix yet. Ranked: (1) the stuck-nvram wlcsm bug tripped by
+  the addon installers' bare `nvram get` storm (our `_nv` guard covers only our own scripts — look
+  for `rwatch: reaped hung nvram` / `reaper-nv` lines); (2) `restart_firewall` via Diversion's
+  service-event racing `apply.sh` vs `update.sh`/`fold.sh`; (3) Skynet updated by amtm in the same
+  pass (ipset / INPUT position-1 conflict). Data requested from the tester: uptime, syslog greps,
+  `/jffs/rwatch` dumps, `pidof nvram` + ps, ipset/iptables listings, the addon list, and what
+  "crashed" actually means. Note v2.7.6 already hardened the adjacent surfaces (Warden page never
+  fails silently; layer re-applies under the firewall lock; PBR teardown deletes only our fwmark
+  rules). **[owed — tester data]**
 
 ---
 
-- **Addons** Need to carve out a reserved space for addons in the nav menu and the tabs within those menus.
+- **[P2] Firewall hosts rule: pasting an IP list blanks the GUI until httpd restarts (BE88U,
+  v2.7.1).** No crash found in the page or CGI code; best fit is an httpd hang (the stuck-nvram
+  class). v2.7.6's paste-tolerant normaliser may remove the trigger. Needs a repro on v2.7.6+ and,
+  if it recurs, `/proc/<httpd-pid>/wchan`. **[owed — repro]**
+
+---
+
+- **[P3] Diag §14b "exempt input rules" count is over-broad** (seen on v2.7.3 metal): it greps ALL
+  MAC-source rules in `REAPER_GKI`, so it counts the per-device `gk_rl` rules (34 on the owner's
+  box) when the relist registry is 0. Fix on record: `gk_emit_relist` writes `echo N >
+  /tmp/gk/relist.n` into `apply.sh` and the diag reads that file. **[cosmetic]**
 
 ---
 
@@ -85,8 +117,9 @@ The ordered short list. Each line points at its full entry below.
   symptom matches the pre-`a0c115dc45` (v2.3.4) doubled-poll freeze that was fixed then; the report
   likely predates it. One theoretical wedge remained — an uncaught throw after `busy=1` but before
   the veil paints (nothing on screen to dismiss, all buttons no-op) — v2.7.3's global error handler
-  now clears the gate in that case. **Closes when** v2.7.3 ships and no recurrence is reported; a
-  repro on v2.7.x with exact steps reopens it. **[hardened — watch]**
+  now clears the gate in that case. v2.7.3 shipped 2026-08-23 and is running on the owner's BE96U.
+  **Closes when** no recurrence is reported over the field window; a repro on v2.7.x with exact
+  steps reopens it. **[hardened — watch]**
 
 ---
 
@@ -120,7 +153,9 @@ The ordered short list. Each line points at its full entry below.
   is on. **FIXED for v2.7.3:** `cfg_relist` MACs (cfg_server's own pairing registry) exempt from
   all four surfaces ahead of per-device rules; `gkd` re-applies when the registry changes and
   holds the INPUT gate open only while an onboarding is actually in progress; diag 14b shows the
-  registry/exempt counts and window state. **[fix coded — build + metal owed: onboard a node with
+  registry/exempt counts and window state. **Shipped in v2.7.3**, flashed on the owner's BE96U
+  2026-08-23 — diag §14b renders the registry/window lines, and that box runs quarantine with 34
+  devices, exactly the protected configuration. **[shipped — metal owed: onboard a node with
   quarantine ON]**
 
 ---
@@ -153,27 +188,6 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P3] Traffic Analyzer: some devices' "1 year" totals stopped updating (IPv6 devices) — FIX
-  CODED for v2.7.2, host-tested, build pending.** Two real defects found. **(a) Clock-jump slot
-  wipe** (the confirmed "Month tab resets on a firmware update"): rtrafd zeroed a history slot
-  whenever its ring *index* changed, so on any boot where the store attached before NTP sync (jffs
-  always; USB when hotplug beats WAN-up — typical right after a flash) the 1970→now step read as a
-  rollover and wiped the just-restored current month/day/hour slots. Now the boundary is driven by
-  the **absolute period**, `rtraf.db`'s own `saved` stamp re-seeds the cursors on restore
-  (`db_align`), and only periods that truly elapsed are cleared (`ring_span_zero`) — a same-month /
-  same-day restore keeps accumulating in place, downtime gaps are still cleared, pre-NTP ticks never
-  zero anything. **(b) Stale duplicate device rows** (the "stuck at 186 MB" presentation): one
-  device can own several collector keys over time (IP-keyed before its MAC resolved, rows from an
-  older db); all resolve to the same display name, so the dead row reads as the device frozen on the
-  Year tab while the live row carries the traffic. `cli_dedup_ipkeys` now **merges** the phantom's
-  rings into the MAC row instead of discarding them, and the page folds rows that resolve to the
-  same MAC into one before ranking. 9-scenario host harness passes (pre-NTP restore, DST day-walk,
-  month rollover, dedup merge, steady-state regression). Also: Year tab moved to the right of Month
-  (owner request). **Closes when** a reporter confirms month survives a firmware update and year
-  totals track on USB. **[fix coded — build + metal owed]**
-
----
-
 ## Architectural
 
 *Do not patch unilaterally.*
@@ -192,15 +206,13 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **USB Format Confirm** The confirmation modal for formatting a USB using the router tools needs 
-  updating to the proper Reaper theme.
-
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage and viewport
   re-anchoring (`--rv-top`/`--rv-h`) exist since v2.3.3, but **owner 2026-08-12: several overlays
   still centre on the shell viewport**, ignoring the nav rail and header. The `--rv-*` mechanism only
   covers the overlays it was pointed at. Remaining, in order: (i) enumerate **every** overlay/modal and
   re-anchor the rest; (ii) replace **every stock overlay** with a Reaper-themed one; (iii) confirm on
-  the router with real pages, not headless. **[owed]**
+  the router with real pages, not headless. v2.7.3's `reaperConfirm` themed dialog (USB format /
+  eject use it) is the shared replacement for (ii) to adopt page by page. **[owed]**
 
 ---
 
@@ -223,37 +235,19 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P2] Overhaul Save / Restore settings to carry the Reaper stores too — IMPLEMENTED for
-  v2.7.2, build + metal owed.** One `.rbk` archive now carries both halves: a text header
-  (`REAPER-BACKUP 1` + a meta line with model/version/part lengths) followed by the stock nvram
-  `.CFG` (byte-identical HDR2+JCFG format, produced exactly as `prf_file`'s default branch — still
-  restorable by stock/Merlin if carved out), the v2.7.0 `reaper_cfg` JSON, and the fqdn ipset cache
-  (`/jffs/reaper_fw/sets/*`, so domain objects come back populated before the resolver's first
-  pass). Download = one button on the Administration page (`/REAPER_<model>_<ver>_settings.rbk`;
-  the stock page stays byte-pristine — a mode-4 injection block fetches the tokenized fragment
-  `Reaper_BackupCard.asp` and wires it). Restore = multipart `reaper_restore.cgi`: validates
-  everything first (magic, meta, **model vs productid**, **/jffs health gate**, the CFG part's own
-  HDR magic, JSON parse, fqdn well-formedness — a failed check changes nothing), then parks the
-  JSON at `/jffs/reaper/restore_pending.json` (the fw/pbr drafts it stages live on tmpfs and would
-  not survive the reboot), lays the fqdn cache down, and hands the CFG to the stock
-  `do_upload_config()` path (jffs cfgs + nvram restore + commit + reboot). After the reboot a
-  banner on the Administration card **and** the Storage page offers one-click *Complete restore* —
-  the import core replays the JSON exactly as an interactive import (gk/warden applied + restarted,
-  firewall/routing lists staged as drafts behind commit-confirm, counts reported). Storage-page
-  lightweight export/import unchanged. **Closes when** a metal pass confirms: backup downloads,
-  restore on the same model round-trips (settings + gk list + fw lists + pbr rules + fqdn sets),
-  a foreign-model archive is refused, and the pending banner completes. **[built? → metal owed]**
-- **[P2] Surface `docs/REAPER-GUIDE.md` in the UI — DONE for v2.7.3 (build + metal owed).** Every
-  Reaper page now has a visible route: a `?` button in the shell topbar **and** the dashboard topbar
-  opens the guide from anywhere; Firewall / Gatekeeper / Warden / Storage / USB carry a `?` dot
-  beside the page title deep-linking the matching section (4.1/4.2/4.3/4.11/4.12 — Policy Routing
-  keeps its dedicated VPN-ROUTING-GUIDE dot); the About page has an "Owner's Guide" button in the
-  links row; the first-boot page mentions it under the credential form. All external
-  `rel="noopener"` new-tab links — the router never fetches anything. Tokens RABT_43/44/46 (English
-  in all 25 packs, translations owed). **Closes when** a metal pass eyeballs the dots and the
-  GitHub anchors land on the right sections. **[built? → metal owed]**
-
----
+- **[P2] RT-BE92U CI-build registration (owed follow-up).** The RT-BE92U branch (BCM6765 / 96765GW)
+  carries the v2.7.4–v2.7.6 shared commits in parity with canon, and RT-BE92U is now registered in
+  `port_sibling_v2.sh` + `reaper_verify.sh` (banner sha `032fc64c`, `REAPER_TREE`/`REAPER_TDIR`
+  honoured for its 96765GW target). Still owed to make CI build + release it like the other five —
+  and this bundle must be validated together on a **dry-run push**, since none of it is CI-testable
+  locally: (1) `overlays/RT-BE92U.patch` (identity-only file-set: `target.mak`, the 7 banner-ref www
+  files, BE92U banner PNGs, the u-boot `bcmbca/Makefile` rtl8372 gate); (2) `check_overlays.py`
+  `MODEL_BANNER` entry; (3) `build-scripts/ci/container_build.sh` — **parameterise the hardcoded
+  `targets/96813GW`** per model (BE92U = 96765GW) + add the `RT-BE92U`→`rt-be92u` branch case and
+  the `RT-BE92U) UB_SYM=RTBE92U` uboot-rtl8372 case; (4) `public-build.yml` matrix (model options +
+  the two `fromJSON` arrays + the `MODELS` env strings); (5) `cut_fleet.sh` `MODELS` + a
+  hub-missing-branch guard (the hub has no `rt-be92u` yet); (6) push `rt-be92u` to the hub. Placeholder
+  banner art still owed. **[owed — dedicated pass + dry-run]**
 
 - **Policy Routing — CLOSED in v2.6.7.** The MVP's three deferrals shipped: WireGuard targets via
   the same accelerator-bypass contract VPN Director uses (source rule → that CIDR; destination/MAC
@@ -288,16 +282,9 @@ The ordered short list. Each line points at its full entry below.
   reports "check failed".** The current manifest is already signed (sig staged uncommitted).
   Rotation: new pair → replace `manifest_pub.pem` + the embedded key in `reaper_webs_update.sh` →
   ship that firmware → then switch signing keys. Tamper-tested on host (genuine=pass;
-  tampered/garbage/empty sig=refused). **Closes when** a fielded box verifies a signed manifest
-  (check succeeds) and refuses an unsigned one. **[built? → metal owed]**
-- **[P3] rwatch's routing self-heal runs outside the firewall lock — FIXED for v2.7.3.** Note the
-  originally suggested fix was wrong: rc's `file_lock()` is a POSIX fcntl lock and shell `flock(1)`
-  takes flock(2) locks — the two never interact on Linux, so a shell-side `flock` would have locked
-  nothing. Instead a small rc applet (`rc reaper_lockrun <script>`, rc/rwatch.c) takes the real
-  `file_lock("firewall")` and runs the script; only the three Reaper heal scripts are allow-listed
-  (this is a heal wrapper, not a general lock-run tool). Both rwatch heal sites converted (the PBR
-  mark-rule re-apply and the Warden CRITICAL re-assert). **[build owed]**
-
+  tampered/garbage/empty sig=refused). Shipped inert in v2.7.3; nothing is pending while shelved.
+  When re-enabled, closes when a fielded box verifies a signed manifest (check succeeds) and
+  refuses an unsigned one. **[shelved — inert]**
 ---
 
 - **[P2] Native firewall suite — the remaining pieces.** Shipped v2.4.1 (engine, hub, Status posture,
@@ -356,6 +343,10 @@ The ordered short list. Each line points at its full entry below.
   - v2.7.0: `RDST_68`–`RDST_77` (settings backup card).
   - v2.7.1: `RANL_51/52`, `RCON_41–43`, `RDEV_92`, `RFW_256`, `RFWU_48`, `RVR_62`, `RWDN_90`,
     `RWIF_83/84` (i18n sweep) and the refreshed `RDST_01`, `RWIF_31`, `RWIF_33` (English in all packs).
+  - v2.7.2: `RBKP_1`–`RBKP_14` (full-backup card).
+  - v2.7.3: `RABT_43`/`RABT_44`/`RABT_46` (guide links), `RFWU_49`–`RFWU_53` (signature-refusal
+    UX — inert while signing is shelved, but seeded).
+  - v2.7.5: `Reaper_c_addons` (Addons rail group). v2.7.6: `RWDN_91` ("Stats unavailable — retrying").
   - **IPv6 protocol select labels on `Reaper_Firewall.asp`** — `RFW_252` ("Both") exists; **"Other"
     still needs a key.** Safe now (the `value="TCP|UDP|BOTH|OTHER"` attributes are pinned — **do not
     remove them**: `rc/firewall.c` `strcmp`s the submitted value, so an unpinned translated label
@@ -407,6 +398,71 @@ with what the attempt ruled out.*
 
 ---
 
+### v2.7.6 (2026-08-23) — PBR boot self-heal at the root, 40-domain paste, Warden status/lock/teardown
+
+*Built + shipped for BE96U + BE92U only; the reporting RT-BE88U is on public v2.7.1 and needs a
+sibling build (its branch sits at v2.7.3) before it can confirm anything below.*
+
+- **[P1] A reboot brings up the full `REAPER_PBR` mangle chain with no UI Apply** (`apply.sh` now
+  materialises the object sets itself; `firewall.c` re-applies under the firewall lock). **Settles
+  when** a box reboots and `iptables -t mangle -S REAPER_PBR` is complete before anyone touches the
+  UI; diag §14e reads `expected M live M`. Supersedes the v2.6.9 "post-reboot self-heal"
+  confirmation — that attempt FAILED 2026-08-23 (chain short, a UI Apply healed it) and exposed
+  this root cause. **[owed — reporter]**
+- **[P1] A 40-domain object saves in one paste** (paste-tolerant normaliser, persistent error
+  message, textarea/buffer limits raised). Supersedes the v2.6.9 one-paste check — the 2026-08-23
+  attempt on v2.7.1 failed (a few at a time saved; one paste did not). **[owed — reporter]**
+- **[P2] The Warden page under load shows "Stats unavailable — retrying"** (RWDN_91) instead of
+  silent static placeholders; `time sh /tmp/rwarden/stats.sh` returns within the shortened lock
+  wait. **[owed — reporter]**
+- **[P2] An addon's `ip rule` at pref 9001–9115 survives `restart_firewall`** — the PBR teardown
+  now deletes only rules carrying our fwmark/0xf0000, so domain_vpn_routing's rules are left
+  alone. **[owed — reporter]**
+
+### v2.7.5 (2026-08-23) — dedicated Addons rail section
+
+- **[P2] The Addons section renders with a real addon installed** (scMerlin / YazFi on the BE92U
+  tester): one "Addons N" group at the end of both the shell and dashboard rails unfolding the
+  list, auto-open on an addon page; stock menus keep their tab bars with addon tabs stripped; an
+  addon page's tab bar is the addon set. Mock-verified against three injection styles only — never
+  a real addon. Supersedes the v2.5.9 "addons rail identical on dashboard and shell" confirmation:
+  that rail was replaced wholesale by this one. **[owed — reporter with addons]**
+
+### v2.7.4 (2026-08-23) — first-boot gate-3 fix (nav dead / "Secure Your Router" flash)
+
+- **[P1] Nav works on a box with zero guest networks.** The state.js gate keyed on
+  `sdn_rl == default` is gone (`w_Setting` is the only Wi-Fi-configured signal). **Settles when**
+  the BE92U reporter navigates normally on v2.7.4+ after their factory reset. **[owed — reporter]**
+- **[P2] Factory-reset regression:** both wizard steps still fire on a clean box (the `w_Setting`
+  path is untouched, but the gate change owes the check). **[owed — metal]**
+
+### v2.7.3 (2026-08-23) — Gatekeeper learns AiMesh, guide everywhere, themed dialogs
+
+*Flashed on the owner's BE96U 2026-08-23 — diag v1.3.6 ran CLEAN (that run also confirmed the
+v2.7.2 diag fixes: the churn rate reads `~197/h` with the band, and §14d's duplicate line is
+gone). Remaining:*
+
+- **[P1] AiMesh onboarding with quarantine ON.** **Settles when** a node onboards on a
+  quarantine-enabled box, and mesh heartbeats survive quarantine being enabled on an established
+  mesh; diag §14b shows the registry MACs and the onboarding window opening and closing. (The
+  owner's box runs exactly this config — the next node add is the live test.) **[owed — metal]**
+- **[P3] Guide links glance:** the `?` topbar buttons and the five page dots open
+  `REAPER-GUIDE.md` at the right sections; the About button and the first-boot mention render.
+  **[owed — glance]**
+- **[P3] Themed USB format / eject dialog** (Enter must NOT confirm a format) and the
+  **backup-card alignment** on the Administration page. **[owed — glance]**
+
+### v2.7.2 (2026-08-23) — restore-proof Analyzer history, one-file full backup
+
+- **[P2] Analyzer history survives reboots and flashes.** **Settles when** month-to-date survives
+  a firmware flash and year totals track on a USB-store box (the reporter's IPv6 devices, or the
+  owner's box — USB store + pre-NTP boots is exactly the fixed case; watch it across the coming
+  reboots). **[owed — reporter / owner watch]**
+- **[P2] Full backup round-trip.** **Settles when** a metal pass confirms: the `.rbk` downloads,
+  restore on the same model round-trips (settings + gk list + fw lists + pbr rules + fqdn sets),
+  a foreign-model archive is refused, and the post-reboot banner completes the Reaper half.
+  **[owed — metal]**
+
 ### v2.7.1 (2026-08-22) — security review, i18n sweep
 
 - **[P1] Per-boot `http_id` + Referer check.** **Settles when** after a reboot `nvram get http_id`
@@ -439,19 +495,25 @@ with what the attempt ruled out.*
 ### v2.6.9 (2026-08-22) — field feedback (Policy Routing + Firewall objects)
 
 - **[P1] Firewall lists on /jffs.** **Settles when** the first boot logs `N list(s) migrated from
-  nvram to /jffs/reaper_fw/lastgood`, `nvram get reaper_fw_obj` is empty afterwards, a 40-domain
-  object saves in one paste and is still there after a reboot, and the Firewall page's Keep still
-  writes `/jffs/reaper_fw/lastgood/.committed`. With the Firewall engine OFF, a domain list edited
-  on the Policy Routing page must survive a reboot once the routing Keep is pressed. **Partly
-  confirmed 2026-08-22 (owner, v2.7.1 metal):** engine ON with an empty config migrated to
-  `store=/jffs` cleanly (nothing to move, nothing logged - correct). The 40-domain object, the
-  after-reboot persistence and the engine-OFF routing-Keep path are still **[owed - reporter]**
+  nvram to /jffs/reaper_fw/lastgood`, `nvram get reaper_fw_obj` is empty afterwards, and the
+  Firewall page's Keep still writes `/jffs/reaper_fw/lastgood/.committed`. With the Firewall engine
+  OFF, a domain list edited on the Policy Routing page must survive a reboot once the routing Keep
+  is pressed. **Partly confirmed 2026-08-22 (owner, v2.7.1 metal):** engine ON with an empty config
+  migrated to `store=/jffs` cleanly (nothing to move, nothing logged - correct). **The 40-domain
+  one-paste check FAILED 2026-08-23** (reporter, v2.7.1: a few at a time saved, one paste did
+  not) — root-caused to the page's paste handling, fixed in v2.7.6; that check now lives under
+  v2.7.6 above. Still owed here: after-reboot persistence and the engine-OFF routing-Keep path.
+  **[owed - reporter]**
 - **[P1] Address-list source rule.** **Settles when** a rule with three addresses shows
   `a.b.c.d +2` in the table, `iptables -t mangle -S REAPER_PBR` carries three `-s` mark rules, and a
-  bad entry in the paste is refused by the page with the entry named. **[owed — reporter]**
-- **[P2] Post-reboot self-heal.** **Settles when** a fresh boot either shows all mark rules or logs
-  `rwatch: policy routing: N of M mark rule(s) live - re-applying` followed by a full chain, with no
-  Apply from the UI. Diag §14e shows `expected M live M`. **[owed — reporter]**
+  bad entry in the paste is refused by the page with the entry named. (The reporter's IP-list paste
+  on v2.7.1 blanked the page until httpd restarted — tracked as its own entry under
+  [Open bugs](#open-bugs--under-investigation); v2.7.6's paste normaliser may be the cure.)
+  **[owed — reporter]**
+- **[P2] Post-reboot self-heal — NOT CONFIRMED, superseded.** The 2026-08-23 attempt failed (chain
+  short after a reboot; a UI Apply healed it): the heal could not work because the object sets were
+  never materialised at boot. Root cause fixed in v2.7.6 (`apply.sh` builds its own sets); the
+  confirmation moved there.
 
 ### v2.6.8 (2026-08-22) — USB format: ext4 / ext3 / ext2
 
@@ -488,11 +550,6 @@ with what the attempt ruled out.*
   v2.6.5` (or the plain count after the cut); Warden's count bar carries `Prefixes loaded: N`.
   **[owed — glance]**
 
-### v2.6.6 (2026-08-22) — diagnostics report v1.3.1
-
-- **[P3] Report tuning.** **Settles on** a glance at the next diag: `wl2_chansps` reported as INFO
-  not WARN; resolver line populated; churn finding shows `~N/h` and the band. **[owed — glance]**
-
 ### v2.6.5 (2026-08-22) — Gatekeeper multi-network close-out
 
 - **[P1] A new SDN is protected immediately.** **Settles when**, with Gatekeeper on, creating a
@@ -512,22 +569,15 @@ with what the attempt ruled out.*
   WAN reconnect (new prefix) the rule follows within ~1 min with the `IPv6 prefix changed` log line.
   **[owed — metal, needs IPv6]**
 
-### v2.6.4 (2026-08-22) — diagnostics report v1.3.0
-
-- **[P3] The new sections render on a real box and the FINDINGS are sane.** Host dry-run only
-  (no router tools present). **Settles on** one `reaper_diag` run on a current box: every section
-  0b–19b prints, the tripwire still says CLEAN, run time stays under ~15 s (httpd is blocked while it
-  runs), and the FINDINGS block shows nothing false — in particular 14c must read `@pos 1` with
-  `legacy direct jumps … 0`, 12b must show no stuck readers, and 3b must list no value the box
-  actually saves fine. If a finding is wrong, it comes out, not the section. **[owed — glance]**
-
 ### v2.6.3 (2026-08-22) — Gatekeeper device list on /jffs (the 45-device wall)
 
 - **[P1] More than 45 devices persist.** **Settles when** the reporter (RT-BE88U, ~58 devices)
   upgrades, sees `gatekeeper: device list migrated from nvram to /jffs/gatekeeper/rl (45 entries …)`
   in the log once, then approves the remaining devices and each one leaves "pending" and survives a
   reboot. Readback: `tr -cd '<' < /jffs/gatekeeper/rl | wc -c` = device count; `nvram get gk_rl`
-  must be empty after migration. `reaper_diag` §14b shows the same numbers. **[owed — reporter]**
+  must be empty after migration. `reaper_diag` §14b shows the same numbers. (Owner-metal diags
+  2026-08-22/23 read §14b's migrated counts correctly on a 34-device box; the >45-device wall
+  itself still needs the reporter.) **[owed — reporter]**
 
 - **[P2] Nothing else changed.** **Settles on** a glance: approve / block / guest / remove still
   apply immediately (no multi-second stall per click now that the nvram commit is gone), guest
@@ -546,7 +596,9 @@ with what the attempt ruled out.*
   *allow* rule for a port must NOT let a geo-blocked source (`ipset test rw_g_<cc> <ip>`) or a
   Gatekeeper-blocked device through. Also: a hung-hook scenario (`iptables -D REAPER_HOOK_F -j
   REAPER_GKF` by hand) must be repaired by gkd within 30 s with the "enforcement chains missing"
-  log line. **[owed — metal]**
+  log line. **Partly confirmed:** diag §14c on owner metal (2026-08-22/23 runs) reads `@pos 1`
+  with `legacy direct jumps … 0`. Still owed: the restart-survival listing, the decisive behaviour
+  test, and the hung-hook repair. **[owed — metal]**
 
 - **[P1] "Internet only" device cannot reach another network.** **Settles when** a state-2 device on
   an SDN that is *linked* to the main LAN in Guest Network Pro cannot ping/SMB a main-LAN host,
@@ -561,14 +613,10 @@ with what the attempt ruled out.*
   returns the three meminfo lines; Policy Routing and Traffic pages render; first-boot language
   picker works. **[owed — glance]**
 
-### v2.6.1 (2026-08-21) — nvram-read guard, diag store section, kp v6, WGC flag
-
-- **[P2] A hung `nvram get` no longer pins a Warden/rwatch script.** `_nv` 5 s guard in every
-  generated script + rwatch reaping `nvram` processes older than 2 min. **Settles when** a box that
-  previously showed a stuck `nvram get` (PID asleep in `__skb_wait_for_more_packets`, as on the lab
-  RT-BE96U 2026-08-21) instead logs `reaper-nv: nvram get <key> hung >5 s - killed` or `rwatch:
-  reaped hung nvram pid …`, and `ps w | grep "nvram get"` never shows one older than a few minutes.
-  Each logged line is also field evidence for the underlying libnvram netlink bug. **[owed — metal]**
+### v2.6.1 (2026-08-21) — diag store section, kp v6
+*(The nvram-read guard was CONFIRMED on owner metal 2026-08-23 — the diag reads `reaped hung
+nvram: 2`, which is also field evidence for the underlying libnvram netlink bug. The WGC "rule
+inactive" chip was superseded by v2.6.7's real WireGuard support — its confirmation lives there.)*
 
 - **[P3] Diag section 17 reports the durable store.** **Settles on** a glance: `reaper_diag` §17 on a
   USB-store box prints the `syslog.mirror` path/size/span and "incident bundles: none (… absence is
@@ -576,9 +624,6 @@ with what the attempt ruled out.*
 
 - **[P3] Warden nightly update no longer logs `geo v6 fetch FAILED for kp`.** **Settles on** the next
   04:30 update log. **[owed — glance]**
-
-- **[P3] Policy Routing shows a WGC rule as inactive.** **Settles on** a glance at a rule targeting
-  WireGuard: amber dashed chip "not supported yet — rule inactive". **[owed — glance]**
 
 ### v2.6.0 (2026-08-21) — QoS Classful queue rebuild
 
@@ -605,9 +650,6 @@ with what the attempt ruled out.*
   **Settles when** the reporter's node row shows the band and the orphan backhaul-STA row is gone; a
   *cabled* node must still read Wired. (The maintainer has no mesh.) **[owed — reporter]**
 
-- **[P2] Addons rail identical on dashboard and shell.** **Settles when** a box with amtm-style
-  addons shows the same entries/labels/order on both, including an external Help link opening in a
-  new tab on both. **[owed — reporter with addons]**
 
 - **[P2] Policy Routing works with the Firewall engine OFF.** **Settles when** a domain-list rule
   steers traffic with `reaper_fw_enable=0`: `ipset list rwfw_<list>` populated, `iptables -t mangle
@@ -730,6 +772,10 @@ with what the attempt ruled out.*
     **DEFERRED per owner (2026-08-19)**: high blast radius on controls under active metal-test.
     Revisit once Gatekeeper/firewall are validated on hardware.
 
+- **[P3] Sibling port gap: `Tools_Sysinfo.asp` sits in the protect set,** so rt-be88u (and likely
+  every sibling) lags canon's 2026-08-17 temp-chart rewrite and `searchIspNameProfile.js` (found
+  2026-08-23 during the BE92U port). Raise at the next sibling rung. **[owed]**
+
 - **[P3] Warden custom feeds — two residual ceilings.** `rw_threat` now has `maxelem 524288`
   (v2.5.4); **still owed:** surface the entry count against that limit in the Warden UI. Update
   runtime is user-extensible (eight custom feeds at `--retry 2 --max-time 40` ≈ +16 min); overlap is
@@ -803,6 +849,23 @@ survives the person who made the call.*
   would add a second, less visible way to express default-deny. If the narrow "everything except X in
   one condition" case is asked for specifically: single-set objects only, groups refused loudly, the
   inverted match spelled out in Preview.
+
+---
+
+- **`dig` on the Network Tools page — considered, DECLINED (owner, 2026-08-24).** Security review:
+  the Network Analysis page runs through the legacy `apply.cgi`→`SystemCmd` path, guarded by a
+  per-page command whitelist + a strict input-character whitelist (`alnum : - _ . whitespace` only)
+  + CR/LF rejection. Adding `dig` to that page's prefix whitelist induces **no** injection
+  vulnerability — it rides the identical guard as the existing `nslookup`/`ping`/`traceroute`, and
+  every shell metacharacter is already blocked. **But** `@` and `+` are not in the allowed charset,
+  so `dig @server` and `dig +short/+trace/+dnssec` are refused as-is; a *full-featured* dig would
+  require **widening that shared character filter**, which weakens the injection guard protecting
+  the three existing tools — that WOULD be an induced vulnerability, so it is off the table. A
+  restricted dig (record-type + reverse queries via the system resolver, charset unchanged) is safe
+  but adds little over the busybox nslookup (LEDE) already shipped, which does query types
+  (A/AAAA/MX/TXT/NS/SOA/PTR/CNAME/ANY) + retry/timeout/port/stats. And there is **no dig binary in
+  the tree or toolchain** (no BIND, no ldns; busybox has no dig applet), so it would mean vendoring
+  a new upstream package. Owner's call given all that: **don't add it.**
 
 ---
 

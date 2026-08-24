@@ -1,0 +1,585 @@
+From 505f4f5edf6b12b7a51b9aba137851bc5194648d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 19:55:51 -0400
+Subject: [PATCH] www: dedicated Addons section - lift every addon contribution
+ out of the stock menus
+
+Field: Merlin addons rearranged the left rail, swapped icons and turned a stock
+menu into a flat addon list; removing the addon put the rail back.
+
+Cause: ReaperAddons.isAddonMenu() classed a whole menu as an addon menu the
+moment one user<N>.asp tab landed in it (YazFi into Wireless), and addon menus
+pushed mid-list (or under an index of their own) rendered wherever they sat.
+
+Now ReaperAddons.split() is the single rule for both rails: addon menus are
+dropped, addon tabs are stripped out of stock menus (shallow copies; the live
+menuTree is never mutated), and every entry collects in ONE dedicated section
+at the end of the rail - a single "Addons" item with a count that unfolds the
+list (auto-open when an addon page is active). The shell tab bar for an addon
+page is the addon set; stock tab bars no longer carry addon tabs. Nothing is
+emitted when no addon is installed. Dashboard rail mirrors it via the text-mode
+fromText() twin. New dict key Reaper_c_addons in all 25 packs (6768 lockstep).
+
+Mock-verified against three injection styles (menu_Addons block mid-list,
+user<N>.asp tab inside Wireless, foreign menu_Diversion menu): 0 JS errors.
+---
+ release/src/router/www/BR.dict             |   1 +
+ release/src/router/www/CN.dict             |   1 +
+ release/src/router/www/CZ.dict             |   1 +
+ release/src/router/www/DA.dict             |   1 +
+ release/src/router/www/DE.dict             |   1 +
+ release/src/router/www/EN.dict             |   1 +
+ release/src/router/www/ES.dict             |   1 +
+ release/src/router/www/FI.dict             |   1 +
+ release/src/router/www/FR.dict             |   1 +
+ release/src/router/www/HU.dict             |   1 +
+ release/src/router/www/IT.dict             |   1 +
+ release/src/router/www/JP.dict             |   1 +
+ release/src/router/www/KR.dict             |   1 +
+ release/src/router/www/MS.dict             |   1 +
+ release/src/router/www/Main_ReaperDash.asp |  24 ++++-
+ release/src/router/www/NL.dict             |   1 +
+ release/src/router/www/NO.dict             |   1 +
+ release/src/router/www/PL.dict             |   1 +
+ release/src/router/www/RO.dict             |   1 +
+ release/src/router/www/RU.dict             |   1 +
+ release/src/router/www/SL.dict             |   1 +
+ release/src/router/www/SV.dict             |   1 +
+ release/src/router/www/TH.dict             |   1 +
+ release/src/router/www/TR.dict             |   1 +
+ release/src/router/www/TW.dict             |   1 +
+ release/src/router/www/UK.dict             |   1 +
+ release/src/router/www/reaper_shell.asp    |  61 +++++++----
+ release/src/router/www/reaper_util.js      | 115 ++++++++++++++++-----
+ 28 files changed, 174 insertions(+), 51 deletions(-)
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index ad7daff955..0d304bbc86 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Complementos
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 69112a5ee2..ee427efe14 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=插件
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 9e349bf322..a7c062daff 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Doplňky
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index dcae4e0e1e..bb11beebd0 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Tilføjelser
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 5ecbb135e1..26a8e86fe6 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Add-ons
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 5a0620f0a2..7bb34c3503 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Addons
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 61a999e42a..fbd11513cc 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Complementos
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index aae039ef87..94db578005 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Lisäosat
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index aa913d7dab..2ae64992de 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Modules complémentaires
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index a091339fc3..5fcc7ceedc 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Bővítmények
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 80185855ae..4dc84d0823 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Componenti aggiuntivi
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 57ce325258..9cba17ca5b 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=アドオン
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 9ebfce3937..9199ef98a0 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=애드온
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index b6dda109d6..7ddc182238 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Tambahan
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 11d48a6671..79afeb9d82 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -143,6 +143,14 @@ main{min-width:0}
+ .nav a:hover{color:var(--bone);background:var(--panel)}
+ .nav a.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ .nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
++/* Addons section (2026-08-23): one root item that unfolds the installed list */
++.nav a.aroot svg.chev{margin-left:auto;width:14px;height:14px;transition:transform .15s}
++.nav a.aroot.open svg.chev{transform:rotate(90deg)}
++.nav a .cnt{font-size:11px;color:var(--steel);margin-left:4px}
++.nav .sub{display:none;flex-direction:column;gap:2px;padding-left:12px;border-left:1px solid var(--line-soft);margin-left:21px}
++.nav .sub.open{display:flex}
++.nav a.subi{height:34px;font-size:13px;padding:0 10px}
++.nav a.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 6px;opacity:.6}
+ 
+ /* ---------- topbar ----------
+    single row that must NOT wrap on desktop: brand and buttons stay fixed,
+@@ -1594,18 +1602,26 @@ window.addEventListener('resize', function(){ reaperTips(); });
+        ReaperAddons (reaper_util.js), shared with the shell rail, so the two
+        rails render the same entries. Same outcome as the shell when nothing
+        survives: the group stays hidden. */
++    /* 2026-08-23: one dedicated section, one root item that unfolds the list -
++       the same shape the shell rail draws (see ReaperAddons.split there). */
+     function render(res){
+       var h = '', i, e;
+       for(i = 0; i < res.entries.length; i++){
+         e = res.entries[i];
+         h += e.external
+-          ? '<a href="' + esc(e.url) + '" target="_blank" rel="noopener noreferrer">' + ICON + '<span class="nl">' + esc(e.label) + '</span></a>'
+-          : '<a href="/reaper_shell.asp#' + esc(e.url) + '">' + ICON + '<span class="nl">' + esc(e.label) + '</span></a>';
++          ? '<a class="subi" href="' + esc(e.url) + '" target="_blank" rel="noopener noreferrer"><span class="dot"></span><span class="nl">' + esc(e.label) + '</span></a>'
++          : '<a class="subi" href="/reaper_shell.asp#' + esc(e.url) + '"><span class="dot"></span><span class="nl">' + esc(e.label) + '</span></a>';
+       }
+       if(!h) return;
+-      GRP.textContent = res.label;
++      GRP.textContent = `<#Reaper_c_addons#>`;
+       GRP.style.display = '';
+-      NAV.innerHTML = h;
++      NAV.innerHTML = '<a class="aroot" href="#">' + ICON + '<span class="nl">' + `<#Reaper_c_addons#>` + '</span>'
++                    + '<span class="cnt">' + res.entries.length + '</span>'
++                    + '<svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a>'
++                    + '<div class="sub">' + h + '</div>';
++      var r = NAV.querySelector('a.aroot'), s = NAV.querySelector('.sub');
++      r.addEventListener('click', function(ev){ ev.preventDefault(); var o = s.classList.toggle('open'); r.classList.toggle('open', o); });
++      if(window.reaperTips) reaperTips(NAV);
+     }
+ 
+     var x = new XMLHttpRequest();
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index c10d375c0f..adca89204c 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Add-ons
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 0a0c02780f..6fb8588b1e 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Tillegg
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 15c9f7f391..c8f0c52658 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Dodatki
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 04769a233c..ea9f2042fd 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Suplimente
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 81a80f9b0e..62f09ad03e 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Дополнения
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 4cebf28876..6caf1a3ac9 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Dodatki
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 38b42c5853..0238a80823 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Tillägg
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 4dc02e43de..116c4f3c0a 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=ส่วนเสริม
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 2a50dd5c9a..5c92ab1c12 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Eklentiler
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index db5a5a0e79..4a818f88cd 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=附加元件
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index ef1870c10a..1c759dfe87 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6765,3 +6765,4 @@ RFWU_50=Override...
+ RFWU_51=DANGER: you are about to trust an update list that FAILED authentication. If the source is compromised, installing firmware from it can permanently take over your router. This is almost never the right choice - a legitimate release is signed within minutes of publishing. Type OVERRIDE (capital letters) to unlock the button, or press Cancel.
+ RFWU_52=Trust it anyway
+ RFWU_53=Signature override active - the update information below is UNVERIFIED. Install only if you fully trust the source right now.
++Reaper_c_addons=Додатки
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 1b03dbe4ee..3b97a6c9a6 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -141,6 +141,14 @@ a.item>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+ a.item:hover{color:var(--bone);background:var(--panel)}
+ a.item.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ a.item.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
++/* Addons section (2026-08-23): one root item that unfolds the installed list */
++a.item.aroot .chev{margin-left:auto;width:14px;height:14px;flex:0 0 14px;transition:transform .15s}
++a.item.aroot.open .chev{transform:rotate(90deg)}
++a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
++.sub{display:none;flex-direction:column;gap:2px;padding-left:12px;border-left:1px solid var(--line-soft);margin-left:21px}
++.sub.open{display:flex}
++a.item.subi{height:34px;font-size:13px;padding:0 10px}
++a.item.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 6px;opacity:.6}
+ /* content stage: shell-owned tab bar + frame. The frame auto-grows to its
+    content (JS below), so the ONLY scrollbar is the browser's own - no nested
+    iframe scrollbar on long pages (SDN.asp). min-height keeps short pages
+@@ -446,7 +454,8 @@ function loadPage(page){
+   for(var i=0;i<links.length;i++){
+     var pages=(links[i].getAttribute('data-pages')||'').split('|');
+     var hit=(pages.indexOf(page)!==-1);
+-    links[i].className='item'+(hit?' on':'');
++    links[i].classList.toggle('on', hit);   /* never rewrite className: subi/aroot/open must survive */
++    if(hit && links[i].classList.contains('aroot')){ links[i].classList.add('open'); var su=$id('addon_sub'); if(su) su.classList.add('open'); }
+   }
+   renderTabs(page);
+ }
+@@ -471,32 +480,25 @@ function buildRail(menuTree){
+   var exMenus=[], exTabs=[];
+   try{ exMenus=menuTree.exclude.menus()||[]; }catch(e){}
+   try{ exTabs=menuTree.exclude.tabs()||[]; }catch(e){}
+-  var list=menuTree.list||[], h='';
++  /* reaper 2026-08-23 (field: addons rearranged the rail, swapped icons, and
++     turned a stock menu into an addon list; removing the addon restored it):
++     ReaperAddons.split() lifts every addon contribution out of the stock menus
++     - wherever the addon chose to inject itself - so stock menus keep their
++     icon, order and tab bar. The addons collect below in ONE dedicated section:
++     a single rail item that unfolds the installed list. With no addon
++     installed nothing is emitted, not even the header. The synthetic
++     menu_Addons entry appended to MENULIST gives an addon page its siblings as
++     the shell tab bar. */
++  var sp=ReaperAddons.split(menuTree.list||[], exTabs), list=sp.stock, h='';
+   MENULIST=list; EXTABS=exTabs;
++  if(sp.addons.length)
++    MENULIST=list.concat([{menuName:'', index:'menu_Addons', tab:sp.addons.map(function(e){ return {url:e.url, tabName:e.label}; })}]);
+   for(var i=0;i<list.length;i++){
+     var m=list[i];
+     if(!m||!m.index) continue;
+     if(exMenus.indexOf(m.index)!==-1) continue;
+     if(m.index==='menu_QIS') continue;
+     if(m.index==='menu_Split'){ h+='<div class="grp">'+esc(m.menuName)+'</div>'; continue; }
+-    /* reaper 2026-08-17 / 2026-08-21: installed addons are TABS under one
+-       menu, so the one-item-per-menu rule below would render the whole set as a
+-       lone link while the dashboard lists each addon. Both rails now go through
+-       ReaperAddons (reaper_util.js) - same detection (menu_Addons index OR the
+-       user<N>.asp page convention), same filtering, same external-link rule -
+-       so they cannot disagree again; only the markup is the rail's own.
+-       If no entry survives, nothing is emitted, not even the header. */
+-    if(ReaperAddons.isAddonMenu(m)){
+-      var ai='', ae=ReaperAddons.entries(m, exTabs), a;
+-      for(a=0;a<ae.length;a++){
+-        if(ae[a].external)
+-          ai+='<a class="item" href="'+esc(ae[a].url)+'" target="_blank" rel="noopener noreferrer">'+ICONS.menu_Addons+'<span class="rtip">'+esc(ae[a].label)+'</span></a>';
+-        else
+-          ai+='<a class="item" href="/reaper_shell.asp#'+esc(ae[a].url)+'" data-page="'+esc(ae[a].url)+'" data-pages="'+esc(ae[a].url)+'">'+ICONS.menu_Addons+'<span class="rtip">'+esc(ae[a].label)+'</span></a>';
+-      }
+-      if(ai) h+='<div class="grp">'+esc(m.menuName)+'</div>'+ai;
+-      continue;
+-    }
+     var first=-1, pages=[];
+     for(var j=0;j<(m.tab||[]).length;j++){
+       var t=m.tab[j];
+@@ -515,7 +517,26 @@ function buildRail(menuTree){
+     else
+       h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+   }
++  if(sp.addons.length){
++    var ai='', pl=[], ae=sp.addons, a;
++    for(a=0;a<ae.length;a++){
++      if(ae[a].external)
++        ai+='<a class="item subi" href="'+esc(ae[a].url)+'" target="_blank" rel="noopener noreferrer"><span class="dot"></span><span class="rtip">'+esc(ae[a].label)+'</span></a>';
++      else{
++        pl.push(ae[a].url);
++        ai+='<a class="item subi" href="/reaper_shell.asp#'+esc(ae[a].url)+'" data-page="'+esc(ae[a].url)+'" data-pages="'+esc(ae[a].url)+'"><span class="dot"></span><span class="rtip">'+esc(ae[a].label)+'</span></a>';
++      }
++    }
++    h+='<div class="grp">'+`<#Reaper_c_addons#>`+'</div>'
++      +'<a class="item aroot" href="#" data-pages="'+esc(pl.join('|'))+'">'+ICONS.menu_Addons
++      +'<span class="rtip">'+`<#Reaper_c_addons#>`+'</span><span class="cnt">'+ae.length+'</span>'
++      +'<svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a>'
++      +'<div class="sub" id="addon_sub">'+ai+'</div>';
++  }
+   rail.insertAdjacentHTML('beforeend', h);
++  /* the Addons root only unfolds its list; it never navigates */
++  var ar=rail.querySelector('a.item.aroot'), asub=$id('addon_sub');
++  if(ar&&asub) ar.addEventListener('click', function(ev){ ev.preventDefault(); var o=asub.classList.toggle('open'); ar.classList.toggle('open', o); });
+   reaperTips(rail);   /* title-tooltip any nav label the language clipped */
+   var links=rail.querySelectorAll('a.item');
+   for(var k=0;k<links.length;k++){
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+index a2da8d8b7e..32f15f06c8 100644
+--- a/release/src/router/www/reaper_util.js
++++ b/release/src/router/www/reaper_util.js
+@@ -213,9 +213,21 @@ window.reaperConfirm = function(msg, opts, cb){
+  * on the shell) and on what to do when nothing survives. This is the single
+  * set of rules; each rail only supplies its own markup.
+  *
+- *   ReaperAddons.isAddonMenu(menu)            -> bool
++ *   ReaperAddons.isAddonTab(tab)              -> bool  (user<N>.asp page)
++ *   ReaperAddons.isAddonMenu(menu)            -> bool  (menu_Addons, or no stock tab at all)
+  *   ReaperAddons.entries(menu, excludedTabs)  -> [{url,label,external}]
+- *   ReaperAddons.fromText(menuTreeSource)     -> {label, entries} | null
++ *   ReaperAddons.split(list, excludedTabs)    -> {stock:[menus], addons:[entries]}
++ *   ReaperAddons.fromText(menuTreeSource)     -> {entries} | null
++ *
++ * 2026-08-23 (field: "addons rearranged the rail, swapped icons, removing the
++ * addon put it back"): addons inject wherever they like - a menu_Addons block
++ * pushed mid-list, a user<N>.asp tab dropped INTO a stock menu (YazFi into
++ * Wireless), or a whole menu under an index of their own. The old per-menu
++ * test then classed a stock menu as an addon menu the moment one addon tab
++ * landed in it, so it lost its icon and rendered as a flat addon list. Now
++ * split() is the single rule: every addon contribution is lifted out of the
++ * stock menus (which keep icon, position and tab bar) and collected into ONE
++ * dedicated section that both rails draw as a single unfolding item.
+  *
+  * menuTree.js is the file third-party addons bind-mount over, so nothing here
+  * is trusted: callers must esc() every label and url. An entry is either a
+@@ -223,30 +235,72 @@ window.reaperConfirm = function(msg, opts, cb){
+  * tab); anything else is dropped. */
+ window.ReaperAddons = (function(){
+   var PAGE = /^[A-Za-z0-9_.-]+\.(asp|htm|html)$/;
++  var USER = /^user\d*\.asp$/i;
+   function isExternal(u){ return /^(https?:)?\/\//i.test(u) || /^mailto:/i.test(u); }
++  function isAddonTab(t){ return !!(t && USER.test(String(t.url || ''))); }
++  /* A whole menu is an addon block when it says so (menu_Addons) or when none
++     of its real tabs is a stock page - everything is user<N>.asp, an external
++     link, or filler (NULL / javascript:). A stock menu that an addon merely
++     inserted a tab into is NOT an addon menu; only that tab is. */
+   function isAddonMenu(m){
+     if(!m) return false;
+     if(m.index === 'menu_Addons') return true;
+-    var t = m.tab || [], i;
+-    for(i = 0; i < t.length; i++)
+-      if(t[i] && /^user\d*\.asp$/i.test(String(t[i].url || ''))) return true;
+-    return false;
++    var t = m.tab || [], i, u, seen = 0;
++    for(i = 0; i < t.length; i++){
++      if(!t[i] || !t[i].url || t[i].url === 'NULL') continue;
++      u = String(t[i].url);
++      if(/^javascript:/i.test(u)) continue;
++      if(USER.test(u) || isExternal(u)){ seen++; continue; }
++      return false;
++    }
++    return seen > 0;
++  }
++  function entry(ta, exTabs){
++    if(!ta || !ta.url || ta.url === 'NULL') return null;
++    var u = String(ta.url), n = String(ta.tabName || '');
++    if(exTabs.indexOf(u) !== -1) return null;
++    if(!n || n === '__HIDE__' || n === '__INHERIT__') return null;
++    if(isExternal(u)) return { url: u, label: n, external: true };
++    if(PAGE.test(u)) return { url: u, label: n, external: false };
++    return null;   /* scheme-less path, query string, traversal, javascript: */
+   }
+   function entries(m, exTabs){
+-    var out = [], t = (m && m.tab) || [], i, ta, u, n;
++    var out = [], t = (m && m.tab) || [], i, e;
+     exTabs = exTabs || [];
+-    for(i = 0; i < t.length; i++){
+-      ta = t[i];
+-      if(!ta || !ta.url || ta.url === 'NULL') continue;
+-      u = String(ta.url); n = String(ta.tabName || '');
+-      if(exTabs.indexOf(u) !== -1) continue;
+-      if(!n || n === '__HIDE__' || n === '__INHERIT__') continue;
+-      if(isExternal(u)) out.push({ url: u, label: n, external: true });
+-      else if(PAGE.test(u)) out.push({ url: u, label: n, external: false });
+-      /* anything else (scheme-less path, query string, traversal) is dropped */
+-    }
++    for(i = 0; i < t.length; i++){ e = entry(t[i], exTabs); if(e) out.push(e); }
+     return out;
+   }
++  /* The one rule both rails render from:
++       stock  - the menu list with every addon contribution removed: addon
++                menus dropped, addon tabs stripped out of stock menus (those
++                menus are shallow copies; the live menuTree is never mutated)
++       addons - every addon entry in list order, deduplicated by url. */
++  function split(list, exTabs){
++    var stock = [], addons = [], seen = {}, i, j, m, t, keep, c, k;
++    list = list || []; exTabs = exTabs || [];
++    function push(e){ if(e && !seen[e.url]){ seen[e.url] = 1; addons.push(e); } }
++    for(i = 0; i < list.length; i++){
++      m = list[i];
++      if(!m) continue;
++      t = m.tab || [];
++      if(isAddonMenu(m)){
++        for(j = 0; j < t.length; j++) push(entry(t[j], exTabs));
++        continue;
++      }
++      keep = [];
++      for(j = 0; j < t.length; j++){
++        if(isAddonTab(t[j])){ push(entry(t[j], exTabs)); continue; }
++        keep.push(t[j]);
++      }
++      if(keep.length !== t.length){
++        c = {};
++        for(k in m) if(Object.prototype.hasOwnProperty.call(m, k)) c[k] = m[k];
++        c.tab = keep; m = c;
++      }
++      stock.push(m);
++    }
++    return { stock: stock, addons: addons };
++  }
+   /* Balanced {...} that starts at `s`, skipping string literals. '' if unbalanced. */
+   function blockFrom(txt, s){
+     var d = 0, q = '', i, c;
+@@ -270,17 +324,24 @@ window.ReaperAddons = (function(){
+     }
+     return '';
+   }
++  /* Text-mode twin of split() for the one page that cannot require() the
++     module (Main_ReaperDash.asp). Every {url, tabName} pair in the file is
++     considered; it counts as an addon when the url is user<N>.asp, or when it
++     is an external link sitting inside a menu_Addons block. */
+   function fromText(txt){
+     txt = String(txt || '');
+-    var m = /index\s*:\s*["']menu_Addons["']/i.exec(txt)
+-         || /url\s*:\s*["']user\d*\.asp["']/i.exec(txt);
+-    if(!m) return null;
+-    var blk = menuBlockAround(txt, m.index);
+-    if(!blk) return null;
+-    var label = (/menuName\s*:\s*["']([^"']*)["']/.exec(blk) || [])[1] || 'Addons';
+-    var tabs = [], re = /\{\s*url\s*:\s*["']([^"']*)["']\s*,\s*tabName\s*:\s*["']([^"']*)["'][^{}]*\}/g, r;
+-    while((r = re.exec(blk))) tabs.push({ url: r[1], tabName: r[2] });
+-    return { label: label, entries: entries({ tab: tabs }, []) };
++    var out = [], seen = {}, ab = -1, ae = -1, r, e, blk, inA,
++        re = /\{\s*url\s*:\s*["']([^"']*)["']\s*,\s*tabName\s*:\s*["']([^"']*)["'][^{}]*\}/g,
++        am = /index\s*:\s*["']menu_Addons["']/i.exec(txt);
++    if(am){ blk = menuBlockAround(txt, am.index); if(blk){ ab = txt.indexOf(blk); ae = ab + blk.length; } }
++    while((r = re.exec(txt))){
++      inA = (ab >= 0 && r.index >= ab && r.index < ae);
++      if(!USER.test(r[1]) && !(inA && isExternal(r[1]))) continue;
++      e = entry({ url: r[1], tabName: r[2] }, []);
++      if(e && !seen[e.url]){ seen[e.url] = 1; out.push(e); }
++    }
++    return out.length ? { entries: out } : null;
+   }
+-  return { isAddonMenu: isAddonMenu, entries: entries, fromText: fromText, isExternal: isExternal };
++  return { isAddonTab: isAddonTab, isAddonMenu: isAddonMenu, entries: entries,
++           split: split, fromText: fromText, isExternal: isExternal };
+ })();
+-- 
+2.25.1
+

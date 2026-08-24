@@ -71,9 +71,14 @@ model_meta() {
                BSHA=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; BUILD_NAME=GT-BE98;     HAS6G=y; QUAD=y;;
   GT-BE98_PRO) BRANCH=gt-be98-pro; TARGET=gt-be98_pro; BANNER_FILE=GT-BE98P_REAPER_Header.png; MP4_SRC="GT-BE98P Header Animation.mp4";
                BSHA=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; BUILD_NAME=GT-BE98_PRO; HAS6G=y; QUAD=y;;
+  RT-BE92U)    BRANCH=rt-be92u;    TARGET=rt-be92u;    BANNER_FILE=RT-BE92U_REAPER_Header.png; MP4_SRC="RT-BE92U Header Animation.mp4";
+               BSHA=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; BUILD_NAME=RT-BE92U;    HAS6G=y; QUAD=n;;
   *) return 1;; esac
 }
-ALL_MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
+# RT-BE92U (BCM6765, 96765GW profile) is a Tier-A sibling whose banner is a
+# PLACEHOLDER generated from the RT-BE96U art (sha 032fc64c) until the owner
+# supplies real BE92U banner art - re-checksum here when that lands.
+ALL_MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
 model_meta "$MODEL" || { echo "FATAL: unknown model '$MODEL' (valid: $ALL_MODELS)"; exit 2; }
 BANNER_REL="$IMGDIR/$BANNER_FILE"
 ANIM_FILE="${BANNER_FILE%.png}_anim.png"; ANIM_REL="$IMGDIR/$ANIM_FILE"

@@ -57,8 +57,9 @@ The ordered short list. Each line points at its full entry below.
    tester data requested. → [Open bugs](#open-bugs--under-investigation)
 3. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
    v2.7.6+. → [Open bugs](#open-bugs--under-investigation)
-4. **[P2] RT-BE92U CI dry-run** — the CI wiring is in place; dispatch `model: RT-BE92U` to
-   confirm it builds + publishes, then push `rt-be92u` to the hub. → [Features](#features-to-add)
+4. **[P2] RT-BE92U CI dry-run** — the CI wiring is in place (BE92U now builds with `all`, always
+   published as a prerelease); dispatch a run to confirm it builds + publishes, then push
+   `rt-be92u` to the hub. → [Features](#features-to-add)
 5. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
@@ -243,9 +244,9 @@ The ordered short list. Each line points at its full entry below.
   gate ship in the pinned base); `check_overlays.py` `MODEL_BANNER`; `container_build.sh`
   (branch case, `UB_SYM=RTBE92U`, `PROFILE`-parameterised `targets/96765GW`); `build_one.sh` (branch
   /banner/`REAPER_TDIR`/dict-gate profile); `_reaper_build_lib.sh` + `reaper_verify.sh`
-  (`REAPER_TREE`/`REAPER_TDIR` honoured, default 96813GW unchanged); `public-build.yml` (added to the
-  model dropdown — dispatchable on its own, **deliberately NOT in `all`** so the standard five-model
-  fleet fan-out is unchanged and BE92U stays experimental/prerelease); `cut_fleet.sh` `MODELS` + a
+  (`REAPER_TREE`/`REAPER_TDIR` honoured, default 96813GW unchanged); `public-build.yml` (BE92U added to the
+  model dropdown AND to the four `all` fleet arrays — a 12-job `all` run — but **always published
+  as a prerelease** via `release.yml`, so it never lands as a standard release); `cut_fleet.sh` `MODELS` + a
   hub-missing-branch guard. **Owed:** a dry-run dispatch (`model: RT-BE92U`, `prerelease: true`) to
   confirm it builds + publishes end-to-end (not CI-testable locally); push `rt-be92u` to the hub;
   real (non-placeholder) banner art. **[wired — dry-run owed]**

@@ -26,7 +26,7 @@ CANON_DIR=${REAPER_CLONE:-/home/reaper/asuswrt-be96u}
 LEAN=${REAPER_LEAN:-/mnt/c/Users/natha/AppData/Roaming/VSC/ASUS/ASUS-Merlin-Reaper}
 PORTDIR=${REAPER_PORTDIR:-/home/reaper/port}
 CANON=be96u-only
-MODELS="RT-BE86U:rt-be86u RT-BE88U:rt-be88u GT-BE98:gt-be98 GT-BE98_PRO:gt-be98-pro"
+MODELS="RT-BE86U:rt-be86u RT-BE88U:rt-be88u GT-BE98:gt-be98 GT-BE98_PRO:gt-be98-pro RT-BE92U:rt-be92u"
 
 VERSION=""; DO_CUT=1; DO_PORT=1; DO_OVERLAY=1
 while [ $# -gt 0 ]; do
@@ -89,7 +89,14 @@ if [ "$DO_PORT" = 1 ]; then
     # time. Reading one of those is what generated v2.1.4-era overlays in Aug
     # 2026. hub/<branch> is the only truth; move the local ref onto it, but only
     # after proving the local is an ancestor so the force-move loses nothing.
-    if git -C "$CANON_DIR" rev-parse --verify -q "$B" >/dev/null; then
+    if ! git -C "$CANON_DIR" rev-parse --verify -q "hub/$B" >/dev/null; then
+      # A model not yet pushed to the hub (e.g. the experimental RT-BE92U): there
+      # is no hub tip to reconcile against, so keep the local branch as-is. The
+      # owner pushes it to the hub when it graduates; until then the local branch
+      # IS the source of truth for it. (If neither the hub nor a local branch
+      # exists, the worktree assertion below fails loudly, which is correct.)
+      echo "  NOTE: hub has no $B yet - keeping the local branch (not yet pushed to the hub)"
+    elif git -C "$CANON_DIR" rev-parse --verify -q "$B" >/dev/null; then
       if git -C "$CANON_DIR" merge-base --is-ancestor "$B" "hub/$B"; then
         # local is behind (or equal): the stale-clone case - take the hub tip
         git -C "$CANON_DIR" branch -f "$B" "hub/$B" || die "cannot move $B onto hub/$B"

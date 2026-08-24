@@ -42,6 +42,7 @@ case "$MODEL" in
   RT-BE88U)    _WANT_BRANCH=rt-be88u;;
   GT-BE98)     _WANT_BRANCH=gt-be98;;
   GT-BE98_PRO) _WANT_BRANCH=gt-be98-pro;;
+  RT-BE92U)    _WANT_BRANCH=rt-be92u;;
   *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
 esac
 if [ -n "${BUILD_BRANCH:-}" ] && [ "$BUILD_BRANCH" != "$_WANT_BRANCH" ]; then
@@ -52,6 +53,16 @@ fi
 BUILD_BRANCH="$_WANT_BRANCH"
 export BUILD_BRANCH
 echo "build branch for $MODEL: $BUILD_BRANCH"
+
+# Target PROFILE selects the targets/<PROFILE> output dir. The five BCM4916
+# models share 96813GW; RT-BE92U (BCM6765) builds to 96765GW. Derived here (runs
+# in both the root and re-exec'd-reaper halves, so PART 2's collect step sees it)
+# and passed to ci/build_one.sh via REAPER_TDIR, which the build engine honours.
+case "$MODEL" in
+  RT-BE92U) PROFILE=96765GW;;
+  *)        PROFILE=96813GW;;
+esac
+export PROFILE
 
 REAPER_HOME=/home/reaper
 BUILD_SCRIPTS="$REAPER_HOME/reaper_build"
@@ -349,6 +360,7 @@ UB_DIR=release/src-rt-5.04behnd.4916/bootloaders/u-boot-2019.07/drivers/net/bcmb
 case "$MODEL" in
   RT-BE96U) UB_SYM=RTBE96U;;  RT-BE86U) UB_SYM=RTBE86U;;  RT-BE88U) UB_SYM=RTBE88U;;
   GT-BE98)  UB_SYM=GTBE98;;   GT-BE98_PRO) UB_SYM=GTBE98_PRO;;
+  RT-BE92U) UB_SYM=RTBE92U;;
   *) UB_SYM="";;
 esac
 # The literal "$(SYM)" including the closing paren, so GTBE98 never matches
@@ -471,7 +483,7 @@ echo "   finished $(date -u +%FT%TZ) (reaper_build rc=$BUILD_RC)"
 # --- collect -----------------------------------------------------------------
 _ph collect-artifacts
 hr; echo " Collecting artifacts"; hr
-TARGET_DIR="$SRC_DIR/release/src-rt-5.04behnd.4916/targets/96813GW"
+TARGET_DIR="$SRC_DIR/release/src-rt-5.04behnd.4916/targets/${PROFILE:-96813GW}"
 tag=""; [ "$VARIANT" = "noMCP" ] && tag="_noMCP"
 IMG="$TARGET_DIR/${MODEL}_3006_102.8_${VER}${tag}_nand_squashfs.pkgtb"
 [ -f "$IMG" ] || { echo "::error::expected image not found: $IMG"; ls -la "$TARGET_DIR" | head -30; exit 1; }

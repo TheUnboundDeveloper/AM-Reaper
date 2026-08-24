@@ -11,7 +11,7 @@ inlined into 165 pages, do that refactor first (see "Appendix B").
 - **Branch:** `BEXXU-only` (local only, **never pushed** upstream)
 - **Build clone (authoritative):** `/home/reaper/asuswrt-BEXXU` on WSL `Ubuntu-20.04`, user `reaper`
 - **Upstream base of the current stack:** `a7ebfa133a` (the last real Asuswrt-Merlin commit; everything after it is reaper work)
-- **Models:** RT-BEXXU (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro (`release/src-rt-5.04behnd.4916`; targets `make rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`)
+- **Models:** RT-BEXXU (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro, plus the newer RT-BE92U (BCM6765 / 96765GW, experimental) (`release/src-rt-5.04behnd.4916`; targets `make rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `rt-be92u`)
 
 ---
 
@@ -306,12 +306,12 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 424 patches, `0424` = v2.4.1,
-appended + full-replay verified 2026-08-13 — `git am --keep-cr` of all 424 onto a fresh
+**Patch-series regeneration recipe (the series is now at 535 patches, `0535` = v2.7.6,
+appended + full-replay verified 2026-08-24 — `git am --keep-cr` of all 535 onto a fresh
 `a7ebfa133a` worktree returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec
 deliberately excludes. **Cutting a rung is now one command — [`../build-scripts/cut_rung.sh`](../build-scripts/cut_rung.sh)** — which does the export, identity normalization, gapless check, full-series replay, provenance update, overlay-overlap check, CI pin and PII scan in order; the manual recipe below is what it automates, kept for when something needs doing by hand.
-It was 406 at v2.3.7; 379 at v2.3.3; 374 at v2.3.1, repaired + replay-verified 2026-08-09; 325 at v2.1.5 (322 under the pre-repair numbering);
+It was 528 at v2.7.3; 424 at v2.4.1; 406 at v2.3.7; 379 at v2.3.3; 374 at v2.3.1, repaired + replay-verified 2026-08-09; 325 at v2.1.5 (322 under the pre-repair numbering);
 it was 215 at v1.7.7, and the 190-patch v1.6.6 run on 2026-07-19 was validated
 `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching
 `release/src/router` tree hash — as were the 181-patch v1.6.0, 178-patch v1.5.9 and

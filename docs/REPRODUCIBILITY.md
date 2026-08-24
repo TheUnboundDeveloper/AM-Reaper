@@ -72,17 +72,17 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 428 patches (through v2.4.3).
+#   fails without it. This applies all 535 patches (through v2.7.6).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
-#   expected after all 428 patches (v2.4.3):
-#                         81025000fb194ea9b9a289418f07028a691a5fb1
+#   expected after all 535 patches (v2.7.6):
+#                         3852ad7a46b7110fe2fa0a61a903208d961a7927
 #   (this value is releases[].source_tree_from_series["release/src/router"])
 #
-#   For the newest PUBLISHED release, v2.5.3, apply the first 471 instead:
-#                         37e20905d0f8288d00dc129448c2cd6a7a67d2d8
-#   The 428-patch replay was verified clean on 2026-08-14 — `git am --keep-cr`
+#   For the newest PUBLISHED release, v2.7.3, apply the first 528 instead:
+#                         c510f0a6b033ec8054f73fe4a9875f000198d1ba
+#   The 535-patch replay was verified clean on 2026-08-24 — `git am --keep-cr`
 #   returned 0 and the only diff against the build commit was vendored *.md
 #   files, exactly as described below.
 #
@@ -225,8 +225,9 @@ The image SHA-256s are in the release's `SHA256SUMS-*.txt`. They are **also**
 supposed to be in the manifest, but in practice are populated only for
 v2.1.0–v2.1.5, v2.3.1 and v2.4.3 — so treat the `SHA256SUMS` file attached to a
 release as the authoritative image record, and do not infer from an empty `images`
-list that a release never shipped. The newest published release is **v2.5.3** (all
-five models); later rungs such as **v2.4.3** (and the current **v2.5.4–v2.5.7** line)
-are built for the RT-BE96U only, both variants, and their image hashes may be recorded
-in the manifest — but those are locally built artifacts, not published downloads. The published images come from the CI
+list that a release never shipped. The newest published release is **v2.7.3** (all
+five main models, 2026-08-23); later source rungs (the **v2.7.4–v2.7.6** line, and the many
+unpublished v2.5.x–v2.7.x rungs) are built for the RT-BE96U only, both variants, and their
+image hashes may be recorded in the manifest — but those are locally built artifacts, not
+published downloads. The newer RT-BE92U ships as experimental prereleases. The published images come from the CI
 clean-room run and get their own `SHA256SUMS-*.txt` per model at publish time.

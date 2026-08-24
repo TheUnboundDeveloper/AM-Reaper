@@ -24,7 +24,49 @@ node, not only on the primary router.
 
 ---
 
-## v2.7.3 — polish pass + Gatekeeper learns AiMesh exists *(in progress, not yet built)*
+## v2.7.6 — Policy Routing survives a reboot, Warden never fails silently *(built RT-BE96U + RT-BE92U; fleet cut, not yet published)*
+
+*This rung folds the v2.7.4–v2.7.6 field-fix work (patches 0529–0535) into one fleet cut across
+all five 96813GW models; RT-BE92U (BCM6765) carries the same shared changes on its own branch.*
+
+- **Policy Routing comes up complete after a reboot — no UI Apply needed.** A rule that matches an
+  address set could not load until that set existed, and at boot the set was sometimes a moment
+  late, leaving the `REAPER_PBR` mark chain short until someone re-applied from the page. The
+  routing apply script now materialises its own object sets first, and the firewall re-applies the
+  chain under the firewall lock, so a fresh boot brings the whole chain up on its own.
+- **A 40-domain object saves in one paste.** The Firewall/Policy-Routing list editor is now
+  paste-tolerant (whitespace- and newline-normalised), shows a persistent error instead of a
+  silent drop, and its buffers were widened — a large domain object saves in a single paste rather
+  than a few entries at a time.
+- **The Warden page never fails silently.** Under load it now shows “Stats unavailable — retrying”
+  instead of dead placeholder numbers, and the stats collector’s lock wait was shortened. The
+  firewall-layer re-apply (Gatekeeper / Warden / engine) now runs under the firewall lock, and the
+  Policy-Routing teardown deletes only the rules carrying Reaper’s own fwmark, so a co-installed
+  add-on’s routing rules are left alone.
+- **About page “Patches applied” shows a number again (build-side fix).** The count is stamped by
+  the build, which read the series version from the *last* patch’s filename — empty on any rung
+  whose tip is a feature patch rather than the version bump (as this one’s is), so the page showed
+  a dash. The stamp now takes the highest `reaper_v` version across the whole series, so it reads
+  “535 — series as of v2.7.6” on a local image and the plain count on a matching CI image. Fixes
+  both local and CI builds.
+
+## v2.7.5 — one dedicated Addons section in the rail *(built RT-BE96U + RT-BE92U; folded into the v2.7.6 cut)*
+
+- **Merlin add-ons now live in one “Addons” section at the end of the nav rail**, instead of being
+  scattered into (and rearranging) the stock menus. Whether an add-on pushes its own menu, drops a
+  tab into an existing menu, or adds a whole menu of its own, its entries are lifted into a single
+  unfolding Addons group; the stock menus keep their own icons, order and tabs. An add-on page
+  still gets its siblings as its tab bar.
+
+## v2.7.4 — first-boot “Secure Your Router” flash fixed *(built RT-BE96U + RT-BE92U; folded into the v2.7.6 cut)*
+
+- **Every nav item no longer flashes the “Secure Your Router” card on a box with no guest network.**
+  A first-run gate keyed on `sdn_rl` being at its default treated any router that had never created
+  a guest/SDN profile as “Wi-Fi not configured”, bouncing it back to the first-boot page on every
+  navigation. That gate is removed — the `w_Setting` gate already covers a genuinely unconfigured
+  box, and a factory-reset unit still gets both wizard steps. (Surfaced on RT-BE92U in the field.)
+
+## v2.7.3 — polish pass + Gatekeeper learns AiMesh exists *(built RT-BE96U + RT-BE92U; folded into the v2.7.6 cut)*
 
 **Firmware-update manifest signing — built, and shelved inert for now (owner decision).** The
 full machinery exists: the manifest can be signed (RSA-4096/SHA-256) with a key that exists only

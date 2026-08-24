@@ -110,7 +110,21 @@ _rb_variant() {   # $1 = MCP|noMCP
           | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | head -1)
     _tip=$(ls "$_pd"/*.patch 2>/dev/null | tail -1)
     if [ -n "$_tip" ]; then
-      _sv=$(basename "$_tip" | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | tail -1)
+      # 2026-08-24 (field, "patch count not displaying again"): the series
+      # version was read from the LAST patch's filename - which only carries a
+      # version when the rung's tip IS its version-bump patch. A rung that lands
+      # feature patches AFTER the bump (v2.7.3: 0522 bumps, 0523-0528 are
+      # features) has a tip like 0528-fwupdate-shelve-... with NO version token,
+      # so _sv came back empty, the guard below skipped _pc, and the About page
+      # stamped a dash - in BOTH local and CI builds. Derive the series version
+      # from the HIGHEST RELEASE version across ALL patch filenames instead:
+      # release bumps increase monotonically, so the max is always the series
+      # tip regardless of where in the series it sits. Match only tokens that
+      # follow a reaper_v / reaper-v prefix - a bare 'v[0-9]' also appears inside
+      # feature-patch names (e.g. 0162-qos-v5.1-...) and would wrongly win.
+      _sv=$(ls "$_pd"/*.patch 2>/dev/null \
+            | grep -oiE 'reaper[_-]v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' \
+            | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | sort -V | tail -1)
       [ -n "$_sv" ] && _pc=$(ls "$_pd"/*.patch 2>/dev/null | wc -l)
     fi
     # VARIANT must be passed explicitly: the generator's .config fallback

@@ -1,0 +1,58 @@
+From 76778a34a28f0346b32e8a08fffb4f90a94fdb00 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 18:00:34 -0400
+Subject: [PATCH] www: drop state.js first-boot gate 3 (sdn_rl==default) -
+ RT-BE92U nav menu flash
+
+Field (RT-BE92U v2.7.3, dirty flash from stock 40311 and again after a factory
+reset): every left-nav item flashes "Secure Your Router" for ~0.5 s and lands
+back on the dashboard; only the dashboard (which does not load state.js) works.
+
+Root cause: state.js gate 3 treated `sdn_rl === nvram_default_get("sdn_rl")` as
+"Wi-Fi never configured" and top-bounced to Reaper_FirstBoot.asp. sdn_rl is only
+appended when a guest/SDN profile is created (web.c add-profile paths); the stock
+wireless apply flips w_Setting and never touches sdn_rl. So on a box with no guest
+network the test is true forever: framed page -> top -> Reaper_FirstBoot.asp ->
+its leave-guard (creds set, w_Setting==1) -> Main_ReaperDash.asp. Dev units all
+carry guest networks, which is why it was never seen there. Every other gate
+(gate 2, Main_ReaperDash.asp, Reaper_FirstBoot.asp, httpd
+reaper_firstboot_pending()) keys on w_Setting, and gate 2 already covers it, so
+gate 3 is removed rather than re-keyed.
+---
+ release/src/router/www/state.js | 20 +++++++++++---------
+ 1 file changed, 11 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/www/state.js b/release/src/router/www/state.js
+index 600620dd5c..8f8b6856df 100644
+--- a/release/src/router/www/state.js
++++ b/release/src/router/www/state.js
+@@ -953,15 +953,17 @@ if(navigator.userAgent.search("asusrouter") == -1){
+ 	        && window.location.pathname.toUpperCase().search("ADVANCED_WIRELESS_CONTENT") < 0
+ 	        && window.location.pathname.toUpperCase().search("REAPER_FIRSTBOOT") < 0)
+ 		top.location.href = '/Reaper_FirstBoot.asp';
+-	else if(isSupport("sdn_mwl") && (isSwMode("RT") || isSwMode("AP"))){
+-		const sdn_rl = `<% nvram_get("sdn_rl"); %>`;
+-		const sdn_rl_default = `<% nvram_default_get("sdn_rl"); %>`;
+-		// Wi-Fi still at factory default -> hand back to the wizard, which owns step 2.
+-		if(sdn_rl === sdn_rl_default && `<% nvram_get("reaper_fbdone"); %>` != '1'
+-		   && window.location.pathname.toUpperCase().search("ADVANCED_WIRELESS_CONTENT") < 0
+-		   && window.location.pathname.toUpperCase().search("REAPER_FIRSTBOOT") < 0)
+-			top.location.href = '/Reaper_FirstBoot.asp';
+-	}
++	// reaper v2.7.4 (RT-BE92U field: "every nav item flashes 'Secure Your Router' and
++	// lands back on the dashboard"): the former third gate here compared sdn_rl to its
++	// factory default as a "Wi-Fi never configured" test. That is the wrong signal -
++	// sdn_rl only ever changes when a guest/SDN profile is CREATED; the stock wireless
++	// apply flips w_Setting and never touches sdn_rl. So on any box without a guest
++	// network the test stayed true forever: every state.js page top-bounced to
++	// Reaper_FirstBoot.asp, whose leave-guard (creds set, w_Setting==1) immediately sent
++	// it back to the dashboard - the half-second flash - and no framed page could load.
++	// Boxes that had a guest network (the dev units) never saw it. w_Setting is the one
++	// signal every other gate uses (gate 2 above, Main_ReaperDash.asp, Reaper_FirstBoot.asp,
++	// httpd reaper_firstboot_pending()); gate 2 already covers it, so gate 3 is gone.
+ }
+ 
+ var allUsbStatus = "";
+-- 
+2.25.1
+

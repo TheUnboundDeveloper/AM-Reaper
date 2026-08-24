@@ -30,8 +30,20 @@ case "$MODEL" in
   RT-BE88U)    BRANCH=rt-be88u;    TARGET=rt-be88u;    PREFIX=RT-BE88U;;
   GT-BE98)     BRANCH=gt-be98;     TARGET=gt-be98;     PREFIX=GT-BE98;;
   GT-BE98_PRO) BRANCH=gt-be98-pro; TARGET=gt-be98_pro; PREFIX=GT-BE98_PRO;;
+  RT-BE92U)    BRANCH=rt-be92u;    TARGET=rt-be92u;    PREFIX=RT-BE92U;;
   *) echo "FATAL: unknown model '$MODEL'"; exit 2;;
 esac
+
+# RT-BE92U (BCM6765) builds to the 96765GW profile, not the 96813GW the five
+# BCM4916 models share. The build engine + reaper_verify honour REAPER_TDIR
+# (default 96813GW); point it at 96765GW so the image is found and verified in
+# the right place. The tree is the build engine's default (/home/reaper/
+# asuswrt-be96u in CI, or REAPER_TREE for a local worktree build).
+PROFILE=96813GW
+if [ "$MODEL" = "RT-BE92U" ]; then
+  PROFILE=96765GW
+  export REAPER_TDIR="${REAPER_TREE:-/home/reaper/asuswrt-be96u}/release/src-rt-5.04behnd.4916/targets/$PROFILE"
+fi
 
 # All five models are buildable in CI. The published patches/ series reproduces
 # the CANON tree (RT-BE96U); a sibling is that tree plus overlays/<MODEL>.patch
@@ -46,6 +58,7 @@ case "$MODEL" in
   RT-BE88U)    WANT_BANNER=RT-BE88U_REAPER_Header.png;;
   GT-BE98)     WANT_BANNER=GT-BE98_REAPER_Header.png;;
   GT-BE98_PRO) WANT_BANNER=GT-BE98P_REAPER_Header.png;;
+  RT-BE92U)    WANT_BANNER=RT-BE92U_REAPER_Header.png;;
 esac
 if [ ! -f "$BANNER_DIR/$WANT_BANNER" ]; then
   echo "FATAL: $MODEL identity overlay did not land -- $WANT_BANNER is not staged."
@@ -135,7 +148,7 @@ rc=$?
 # non-Latin dictionary that has lost its non-ASCII text is a broken GUI in that
 # language, and must not ship quietly.
 if [ "$rc" -eq 0 ]; then
-  _fsw="$SRC_DIR/release/src-rt-5.04behnd.4916/targets/96813GW/fs/www"
+  _fsw="$SRC_DIR/release/src-rt-5.04behnd.4916/targets/$PROFILE/fs/www"
   if [ -d "$_fsw" ]; then
     _bad=""
     for _d in TH RU JP KR CN TW UK; do

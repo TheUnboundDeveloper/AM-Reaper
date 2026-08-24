@@ -57,8 +57,8 @@ The ordered short list. Each line points at its full entry below.
    tester data requested. → [Open bugs](#open-bugs--under-investigation)
 3. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
    v2.7.6+. → [Open bugs](#open-bugs--under-investigation)
-4. **[P2] RT-BE92U CI-build registration** — its branch carries v2.7.4–v2.7.6 and it's in
-   port_sibling_v2 + reaper_verify, but not yet in the CI matrix/overlays. → [Features](#features-to-add)
+4. **[P2] RT-BE92U CI dry-run** — the CI wiring is in place; dispatch `model: RT-BE92U` to
+   confirm it builds + publishes, then push `rt-be92u` to the hub. → [Features](#features-to-add)
 5. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
@@ -235,19 +235,20 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P2] RT-BE92U CI-build registration (owed follow-up).** The RT-BE92U branch (BCM6765 / 96765GW)
-  carries the v2.7.4–v2.7.6 shared commits in parity with canon, and RT-BE92U is now registered in
-  `port_sibling_v2.sh` + `reaper_verify.sh` (banner sha `032fc64c`, `REAPER_TREE`/`REAPER_TDIR`
-  honoured for its 96765GW target). Still owed to make CI build + release it like the other five —
-  and this bundle must be validated together on a **dry-run push**, since none of it is CI-testable
-  locally: (1) `overlays/RT-BE92U.patch` (identity-only file-set: `target.mak`, the 7 banner-ref www
-  files, BE92U banner PNGs, the u-boot `bcmbca/Makefile` rtl8372 gate); (2) `check_overlays.py`
-  `MODEL_BANNER` entry; (3) `build-scripts/ci/container_build.sh` — **parameterise the hardcoded
-  `targets/96813GW`** per model (BE92U = 96765GW) + add the `RT-BE92U`→`rt-be92u` branch case and
-  the `RT-BE92U) UB_SYM=RTBE92U` uboot-rtl8372 case; (4) `public-build.yml` matrix (model options +
-  the two `fromJSON` arrays + the `MODELS` env strings); (5) `cut_fleet.sh` `MODELS` + a
-  hub-missing-branch guard (the hub has no `rt-be92u` yet); (6) push `rt-be92u` to the hub. Placeholder
-  banner art still owed. **[owed — dedicated pass + dry-run]**
+- **[P2] RT-BE92U in CI/CD — WIRED 2026-08-24 (dry-run + hub push owed).** RT-BE92U (BCM6765 /
+  96765GW) is now fully registered in the CI/CD, locally validated (`bash -n`, YAML load,
+  `check_overlays.py` passes all 6 models, overlay is the identity-only delta from canon):
+  `overlays/RT-BE92U.patch` (12 files: `target.mak` + 6 banner-ref www + `state.js` + the
+  RT-96U→RT-BE92U banner PNGs — no platform archive: its platform + the u-boot `$(RTBE92U)` rtl8372
+  gate ship in the pinned base); `check_overlays.py` `MODEL_BANNER`; `container_build.sh`
+  (branch case, `UB_SYM=RTBE92U`, `PROFILE`-parameterised `targets/96765GW`); `build_one.sh` (branch
+  /banner/`REAPER_TDIR`/dict-gate profile); `_reaper_build_lib.sh` + `reaper_verify.sh`
+  (`REAPER_TREE`/`REAPER_TDIR` honoured, default 96813GW unchanged); `public-build.yml` (added to the
+  model dropdown — dispatchable on its own, **deliberately NOT in `all`** so the standard five-model
+  fleet fan-out is unchanged and BE92U stays experimental/prerelease); `cut_fleet.sh` `MODELS` + a
+  hub-missing-branch guard. **Owed:** a dry-run dispatch (`model: RT-BE92U`, `prerelease: true`) to
+  confirm it builds + publishes end-to-end (not CI-testable locally); push `rt-be92u` to the hub;
+  real (non-placeholder) banner art. **[wired — dry-run owed]**
 
 - **Policy Routing — CLOSED in v2.6.7.** The MVP's three deferrals shipped: WireGuard targets via
   the same accelerator-bypass contract VPN Director uses (source rule → that CIDR; destination/MAC

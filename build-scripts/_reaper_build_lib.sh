@@ -20,9 +20,14 @@
 # MISMATCH when switching models in the shared clone).
 # ============================================================================
 set -u
-R=/home/reaper/asuswrt-be96u
+# REAPER_TREE / REAPER_TDIR let a model that builds in a git worktree and/or to a
+# different target profile be built + verified in place. Defaults keep the five
+# canon-tree BCM4916 models (96813GW) unchanged; RT-BE92U (BCM6765) sets
+# REAPER_TREE=/home/reaper/port/rt-be92u and REAPER_TDIR=.../targets/96765GW
+# (build_be92u.sh locally; ci/build_one.sh sets REAPER_TDIR in the clean room).
+R=${REAPER_TREE:-/home/reaper/asuswrt-be96u}
 P=$R/release/src-rt-5.04behnd.4916
-TDIR=$P/targets/96813GW
+TDIR=${REAPER_TDIR:-$P/targets/96813GW}
 
 # REAPER_JOBS: top-level make parallelism. DEFAULT 1 - PROVEN REQUIRED.
 # 2026-08-04: a -j8 attempt (owner ask, first run) failed deterministically:

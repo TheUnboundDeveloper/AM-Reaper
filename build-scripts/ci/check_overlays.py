@@ -34,6 +34,7 @@ MODEL_BANNER = {
     "RT-BE88U":    "RT-BE88U",
     "GT-BE98":     "GT-BE98",
     "GT-BE98_PRO": "GT-BE98P",
+    "RT-BE92U":    "RT-BE92U",
 }
 
 # The files that embed the banner filename. port_sibling_v2.sh re-points exactly

@@ -56,10 +56,10 @@ on:
         description: 'Model to build (all = every model)'
         type: choice
         default: RT-BE96U
-        # RT-BE92U (BCM6765 / 96765GW) is experimental: dispatchable on its own so
-        # it can be built + published as a prerelease, but deliberately NOT part of
-        # `all` (which stays the five-model BCM4916 standard-release fleet). To ship
-        # it, dispatch model: RT-BE92U with prerelease: true.
+        # RT-BE92U (BCM6765 / 96765GW) is experimental: it now builds with the fleet
+        # in `all` (12 jobs) and can also be dispatched on its own, but it is ALWAYS
+        # published as a prerelease (see release.yml), so it never lands as a standard
+        # release alongside the five BCM4916 models.
         options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
@@ -228,7 +228,7 @@ jobs:
       # model failing should not cancel four healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","RT-BE92U"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -474,7 +474,7 @@ jobs:
           V="${EXPECTED_VERSION#Reaper_}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -527,7 +527,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","RT-BE92U"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
@@ -600,7 +600,7 @@ jobs:
           set -euo pipefail
           export VNUM="${V#v}"
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
+            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
           else
             export MODELS="$MODELSEL"
           fi

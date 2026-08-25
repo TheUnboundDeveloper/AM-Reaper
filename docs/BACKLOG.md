@@ -14,8 +14,10 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
-*Last cleaned 2026-08-24 (after v2.7.6) — the Pending-verification confirmation list was retired and
-all shipped/closed items removed; only genuinely open work remains.*
+*Last cleaned 2026-08-25 (after v2.7.7) — removed what v2.7.7 shipped (Gatekeeper re-list count;
+the translation pass) and added the UPnP key-desync defect found in the field the same day.
+Earlier: 2026-08-24 retired the Pending-verification confirmation list and removed all
+shipped/closed items. Only genuinely open work remains.*
 
 ---
 
@@ -36,20 +38,49 @@ all shipped/closed items removed; only genuinely open work remains.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[P2] Warden "crash" on the BE92U addon box** (amtm + Diversion update) — hypotheses ranked,
+1. **[P1] UPnP silently half-works — daemon and firewall rules gate on different nvram keys**
+   (confirmed on two boxes 2026-08-25; fix in tree, unbuilt).
+   → [Open bugs](#open-bugs--under-investigation)
+2. **[P2] Warden "crash" on the BE92U addon box** (amtm + Diversion update) — hypotheses ranked,
    tester data requested. → [Open bugs](#open-bugs--under-investigation)
-2. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
+3. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
    v2.7.6+. → [Open bugs](#open-bugs--under-investigation)
-3. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
+4. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-4. **Translations** — token pass complete across all 24 languages; residuals only: the RABT
-   credits/jokes stay English pending a human, and the `RFW_*` IPv6 protocol labels need the
-   "Other" key minted first. → [Documentation](#documentation)
+5. **[P3] `RFW_*` IPv6 protocol labels** — the last translation residual: the "Other" label still
+   needs a key minted, and the `RFW_*` proto set must be done as one job.
+   → [Documentation](#documentation)
 
 ---
 
 ## Open bugs / under investigation
+
+- **[P1] UPnP silently half-works: the daemon and the firewall rules gate on different nvram keys
+  (confirmed on two boxes, 2026-08-25).** `start_upnp()` gates on the per-unit
+  `wan<N>_upnp_enable`; `nat_setting()`/`nat_setting2()` gate the `-A VSERVER -j VUPNP` and
+  `PUPNP` hooks on the generic `upnp_enable`. Nothing keeps the two in sync: `wan_defaults()` is
+  "assign none-exist value" and copies the **defaults-table** value rather than the current
+  setting, so once the per-unit key exists it is frozen, and the only writer is httpd's `wan_`
+  propagation (`web.c:4541`), gated on `unit != -1` and on `validate_apply_input_value()` — which
+  lives in the closed `priv_webapi.o`. Either half can be on while the other is off, and every
+  status surface still reports UPnP healthy. Seen both ways:
+  - **RT-BE88U v2.7.6 (field):** daemon up with real console mappings in `VUPNP` (udp 3074/9308),
+    but `VSERVER -j VUPNP` **absent** — nothing was ever DNATed, and the console reported NAT type
+    Moderate with the GUI listing the mappings as healthy. This was the reported bug; Warden was
+    ruled out (filter-only, `INPUT`/`FORWARD`, never the nat table).
+  - **RT-BE96U v2.7.7 (owner):** the jump installed and passing traffic, but the daemon never
+    started — no `/tmp/upnp.leases`, `VUPNP` empty.
+
+  **Fix in tree, not yet built:** both halves now derive from shared `upnp_wan_unit()` /
+  `upnp_enabled()` helpers in `rc/services.c`, with all five gates in `rc/firewall.c` repointed at
+  them, so the two cannot disagree by construction. **Field workaround meanwhile:**
+  `nvram get upnp_enable; nvram get wan0_upnp_enable` — set whichever reads 0, `nvram commit`,
+  then `service restart_firewall` (or `restart_upnp`). **Still owed, separate defect:** on the
+  BE96U the WAN page's UPnP toggle wrote **neither** key — an Apply that persists nothing, which
+  the desync patch does not address. **[owed — build + the httpd Apply defect]**
+
+---
 
 - **[P2] Warden "crash" on the BE92U tester after an amtm + Diversion 6.1 update — hypothesis only,
   tester data requested (2026-08-23).** No fix yet. Ranked: (1) the stuck-nvram wlcsm bug tripped by
@@ -89,16 +120,6 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P3] Diag §14b "exempt input rules" count over-broad — FIXED in-tree 2026-08-24 (rides next
-  build).** The §14b line counted every `--mac-source` rule in `REAPER_GKI`, summing the cfg_relist
-  exemptions with the per-device `gk_rl` rules — so it read the device count (34 on the owner's box)
-  when the AiMesh registry was 0. Fix: `gk_emit_relist` (`rc/gatekeeper.c`) now writes the true
-  exemption count (`nseen`) to `/tmp/gk/relist.n` in the generated `apply.sh`, and `others/reaper_diag`
-  §14b reads that file instead of grepping. **Closes** (→ changelog) when a rebuilt image's §14b shows
-  "exempt input rules" equal to the registry count. **[cosmetic]**
-
----
-
 - **[P2] Field report: heavy ping loss to 8.8.8.8 / 1.1.1.1 after a router reboot, cured only by
   rebooting the ONT (GT-BE98, 10GBASE-T WAN, PPPoE-over-VLAN835).** Investigated from code and two
   sanitized diags; **not a Reaper code path** (no WAN-PHY / session code is patched) and Warden is
@@ -126,6 +147,21 @@ The ordered short list. Each line points at its full entry below.
 ---
 
 ## UI / UX polish
+
+---
+
+- **[P3] RT-BE92U animated header — FIXED in-tree 2026-08-25, rides the next BE92U build.** The
+  BE92U `_anim` slot had carried a 37 KB single-frame PNG with **no `acTL`** since the port, so its
+  login, password, logout and first-boot screens rendered a still where every other model animates
+  (those four pages are the only consumers — `Main_Login.asp`, `Main_Password.asp`, `Logout.asp`,
+  `Reaper_FirstBoot.asp`; the rail/topbar banner is the separate 2172x245 `_Header.png`).
+  Owner regenerated it from `RT-BE92U Header Animation.mp4`; verified a real APNG, 480x54,
+  1,064,235 B, `acTL` + 43 `fcTL` (43 frames = 1 `IDAT` + 42 `fdAT` — a valid encoding, and simply
+  fewer/larger chunks than the other five, which split 48 frames across ~260 `fdAT`).
+  sha256 `e181d406c3093afb…`. Propagated to both places the fix requires: the lean repo's
+  `reaper-mockups/` and the `rt-be92u` branch's `www/images/`. **No sha pin changes** — the pinned
+  `want_ban`/`BSHA` (`032fc64c…`) is on `RT-BE92U_REAPER_Header.png`, which is untouched.
+  **Closes** (→ changelog) when a BE92U image is built and its login screen animates. **[owed — build]**
 
 ---
 
@@ -159,7 +195,11 @@ The ordered short list. Each line points at its full entry below.
 ---
 
 - **[P3] RT-BE92U real banner art** — the shipped BE92U header banner is a generated placeholder;
-  replace it with real art and update the pinned sha in `reaper_verify.sh` + `port_sibling_v2.sh`. **[owed]**
+  replace it with real art and update the pinned sha in `reaper_verify.sh` + `port_sibling_v2.sh`.
+  **Distinct from the animated header above, which is done:** this is the 2172x245
+  `RT-BE92U_REAPER_Header.png` used by the rail/topbar (still `032fc64c…`), not the 480x54
+  `_anim.png` used by the login/logout screens. Replacing it *does* require re-pinning both
+  scripts; the animation fix did not. **[owed]**
 
 ---
 
@@ -230,11 +270,11 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P2] Translations — residuals only.** The functional-token pass across all 24 languages is
-  complete; two pieces remain by decision:
-  - **RABT credits/jokes kept English.** `RABT_16`–`RABT_26` and `RABT_41` ("GOAT whisperer") are
-    prose/humour where a mechanical pass reads worse than English; they stay English pending a human.
-    (`RABT_29/30/32/33` taglines are translated.)
+- **[P3] Translations — one residual left.** The functional-token pass across all 24 languages
+  **shipped in v2.7.7**. The RABT credits and jokes (`RABT_16`–`RABT_26`, `RABT_41` "GOAT
+  whisperer") stay English **by choice** — prose and humour where a mechanical pass reads worse
+  than English; the `RABT_29/30/32/33` taglines are translated. That is a settled decision, not
+  owed work. What remains:
   - **`RFW_*` IPv6 protocol labels on `Reaper_Firewall.asp`.** `RFW_252` ("Both") is translated, but
     the "Other" label **still needs a key minted**; do the `RFW_*` proto set as one job, not piecemeal.
     The `value="TCP|UDP|BOTH|OTHER"` attributes are pinned — **do not remove them**: `rc/firewall.c`
@@ -304,15 +344,71 @@ The ordered short list. Each line points at its full entry below.
     **DEFERRED per owner (2026-08-19)**: high blast radius on controls under active metal-test.
     Revisit once Gatekeeper/firewall are validated on hardware.
 
-- **[P3] Sibling port gap: `Tools_Sysinfo.asp` sits in the protect set,** so rt-be88u (and likely
-  every sibling) lags canon's 2026-08-17 temp-chart rewrite and `searchIspNameProfile.js` (found
-  2026-08-23 during the BE92U port). Raise at the next sibling rung. **[owed]**
+- **[P3] Sibling port gap: `Tools_Sysinfo.asp` — ROOT-CAUSED AND FIXED IN-TREE 2026-08-25, needs a
+  commit per branch + a build.** Investigated 2026-08-25. The page was listed in
+  `_port_protect.sh`'s `PP_PROTECT_GLOB` as one of "the two radio-gated pages", so the port
+  skipped it — but it does not gate per *branch* at all: it gates at **runtime** on
+  `based_modelid`, so one shared copy serves every model. Measured lag against canon:
+  rt-be86u / rt-be88u / gt-be98-pro `11+/76-`, gt-be98 `8+/73-`, **rt-be92u byte-identical**.
+  The sibling-only lines are just the pre-rewrite code (the 20-slot `labels:[0,3,…,57]` category
+  axis, `animation:false`, direct `data:` arrays) plus an *older* subset of the model checks
+  (`GT-AXE16000` only, where canon has `GT-AXE16000 || GT-BE98` **and** `GT-BE98_PRO`) — canon is
+  the strict superset for every model.
+  - **Worse than a plain lag: the four siblings ship HALF of one two-file rewrite.**
+    `Reaper_QoSDiag.asp` is *not* protected and synced normally, so those images render a
+    time-based x axis on the QoS Diagnostics chart and the old sideways-snapping category axis on
+    the Sysinfo temperature chart.
+  - **Proof no divergence is needed:** rt-be92u carries canon's copy byte-for-byte and shipped
+    v2.7.6 + v2.7.7.
+  - **Done:** `Tools_Sysinfo.asp` removed from `PP_PROTECT_GLOB` (now classifies as shared, so the
+    parity check surfaces this instead of hiding it), and canon's copy written into all four
+    lagging worktrees — each now byte-identical to canon, one file changed per branch.
+  - **Still owed:** commit on each of the four branches (`pp_parity_check` compares *commits*, so
+    it reports UNSYNCED until then), rebuild those models, and run `sync_local_engine.sh` so the
+    engine copy of `_port_protect.sh` picks up the new rule. **[owed — commit + build]**
 
-- **[P3] Warden custom feeds — two residual ceilings.** `rw_threat` now has `maxelem 524288`
-  (v2.5.4); **still owed:** surface the entry count against that limit in the Warden UI. Update
-  runtime is user-extensible (eight custom feeds at `--retry 2 --max-time 40` ≈ +16 min); overlap is
-  solved (per-run `flock`, shared fold/stats lock); **still owed:** a lower per-feed timeout for
-  custom entries so one slow feed cannot stall the window.
+  **The `searchIspNameProfile.js` half of this item was wrong — struck.** It is not a sibling lag;
+  canon *deliberately* deleted it in v2.3.3's de-cloud pass (`c2162344cc`, "0 shipped pages
+  included it"), and that justification still holds: the only reference is in the **base**
+  `www/Advanced_WAN_Content.asp:120`, which never ships — `RTCONFIG_MULTISERVICE_WAN=y` means the
+  `sysdep/FUNCTION/MULTISERVICE_WAN` overlay overwrites it at install, and that overlay has no
+  reference. Confirmed against the staged rootfs: no shipped page includes it, so there is no 404.
+  The four older siblings still carry the 3,270 B orphan (rt-be92u correctly does not); harmless,
+  delete it for parity whenever those branches are next touched.
+
+  **`Main_WStatus_Content.asp` — same verdict, also fixed 2026-08-25.** It was the other entry in
+  that protect glob, and it maps radios at runtime too (`GT-AXE16000||GT-BE98` quad-band /
+  `GT-BE98_PRO` / generic tri-band). Four of five siblings were already byte-identical; only
+  gt-be98-pro differed, and only by *missing* canon's `2ea3eafaf2` ("add GT-BE98 to the quad-band
+  radio branch"). That omission is **inert on GT-BE98_PRO hardware** — `based_modelid` takes the
+  `GT-BE98_PRO` branch either way — so nothing was ever visibly wrong; it was drift the port could
+  not heal. Un-protected and synced. `PP_PROTECT_GLOB` is now just the dicts and the GT-BE98
+  chanlist shim.
+
+- **[P3] Warden custom feeds — both residual ceilings FIXED in-tree 2026-08-25, ride the next
+  build.** Confirmed still open before touching anything: `threat_n` was already in the stats JSON
+  but **no page ever read it** (`RWDN_89` "Prefixes loaded" is the *geo* count, not the threat
+  set), and a single `$CURL` served curated, custom **and** ipdeny geo fetches alike.
+  - **Occupancy is now surfaced.** `rwarden.c` gained `RW_THREAT_MAXELEM`/`_S` — the ceiling had
+    been a bare `524288` repeated at six `ipset create` sites, so there was no single number to
+    quote — and the stats JSON now emits `threat_max` from that same define, so the page cannot
+    drift from what the sets are actually built with. `Reaper_Warden.asp` renders
+    `<#RWDN_100#>` = "Threat entries: N / 524,288" in the existing breakdown list, next to the geo
+    prefix count. Entries past `maxelem` are silently dropped by ipset, which is exactly what a
+    user piling on custom feeds could not see before.
+  - **Custom feeds are on a shorter leash.** New `CURLC` (`--retry 1 --max-time 15`) is used at
+    the two custom-feed fetch sites ONLY; curated feeds and the ipdeny geo fetches keep `$CURL`
+    (`--retry 2 --max-time 40`) because those are known-good hosts worth waiting on. Worst case
+    for eight custom feeds drops from 8x3x40s ≈ **16 min** to 8x2x15s ≈ **4 min**. `CURLC` gets
+    the same `--proto/--proto-redir =https` upgrade when curl supports it, so the redirect pin is
+    not weakened. A timeout still logs `custom feed fetch FAILED` and the previous set is kept
+    (swap-if-nonempty), so a slow feed degrades to "no refresh", never "no data".
+  - **i18n:** `RWDN_100` appended to all 25 dicts in lockstep (6744 → 6745). **`RWDN_92`–`RWDN_99`
+    were deliberately SKIPPED** — they are reserved by the shelved port-forward-exemption patch at
+    `/home/reaper/shelved/warden-fwd-exempt-v2.7.8.patch`; reusing them would silently relabel that
+    feature's strings if it is ever restored. Numbering gaps cost nothing (LnxDictPrep re-indexes
+    named tokens at build time).
+  **[owed — build]**
 
 - **[P3] The `/tmp` systemic dir-ownership hardening — deferred per owner (2026-08-19).** `mkdir(,0700)`
   return ignored, owner never checked, rc `umask(0)` → `fopen("w")` is 0666; ~11 sites. Fix = ONE

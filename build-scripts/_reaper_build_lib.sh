@@ -101,36 +101,28 @@ _rb_variant() {   # $1 = MCP|noMCP
     # image up to v2.5.8). In CI, series == EXPECTED_VERSION == build, so
     # the real count shows. Series dir: lean repo layout first, engine-dir
     # fallback via WIN_ASUS_ROOT (set by _reaper_env.sh).
-    local _pd="$(dirname "${BASH_SOURCE[0]}")/../patches"
-    [ -n "$(ls "$_pd"/*.patch 2>/dev/null | head -1)" ] \
-      || _pd="${WIN_ASUS_ROOT:-/mnt/c/Users/natha/AppData/Roaming/VSC/ASUS}/ASUS-Merlin-Reaper/patches"
-    # 2026-08-22 (field, v2.6.7): the owner runs the LOCAL images, so "dash
-    # until cut" showed a dash on every image that was ever flashed. Now the
-    # series count is ALWAYS stamped together with the version the series is
-    # AS OF (its tip); the page prints the plain count when that equals the
-    # running version, and "N - series as of vX" when the image is ahead of
-    # its cut. Still never the previous cut's count passed off as this one's.
-    local _pc="" _tip="" _sv="" _cv=""
+    # 2026-08-25: the count now comes from THE TREE BEING BUILT, via
+    # patch_count.sh - the single source of truth. It used to be scraped out of
+    # the lean repo's patches/ filenames: a downstream artifact that trails the
+    # tree, that encodes a version only when the rung's tip happens to be the
+    # bump patch, and that had to be located in a different repository from
+    # whatever directory the engine was synced to. Three ways to be silently
+    # wrong, and it was - a stale 465 through v2.5.8, a dash in v2.7.6, wrong
+    # again in v2.7.7. Deriving from the commit range is correct the moment a
+    # commit lands. reaper_verify check 18 re-asserts the stamped value after
+    # the build, so a bad stamp can no longer ship quietly.
+    local _pc="" _sv="" _cv=""
+    local _pcs="$(dirname "${BASH_SOURCE[0]}")/patch_count.sh"
     _cv=$(grep '^EXTENDNO=' "$R/release/src-rt/version.conf" 2>/dev/null \
           | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | head -1)
-    _tip=$(ls "$_pd"/*.patch 2>/dev/null | tail -1)
-    if [ -n "$_tip" ]; then
-      # 2026-08-24 (field, "patch count not displaying again"): the series
-      # version was read from the LAST patch's filename - which only carries a
-      # version when the rung's tip IS its version-bump patch. A rung that lands
-      # feature patches AFTER the bump (v2.7.3: 0522 bumps, 0523-0528 are
-      # features) has a tip like 0528-fwupdate-shelve-... with NO version token,
-      # so _sv came back empty, the guard below skipped _pc, and the About page
-      # stamped a dash - in BOTH local and CI builds. Derive the series version
-      # from the HIGHEST RELEASE version across ALL patch filenames instead:
-      # release bumps increase monotonically, so the max is always the series
-      # tip regardless of where in the series it sits. Match only tokens that
-      # follow a reaper_v / reaper-v prefix - a bare 'v[0-9]' also appears inside
-      # feature-patch names (e.g. 0162-qos-v5.1-...) and would wrongly win.
-      _sv=$(ls "$_pd"/*.patch 2>/dev/null \
-            | grep -oiE 'reaper[_-]v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' \
-            | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' | sort -V | tail -1)
-      [ -n "$_sv" ] && _pc=$(ls "$_pd"/*.patch 2>/dev/null | wc -l)
+    if [ -f "$_pcs" ]; then
+      _pc=$(bash "$_pcs" "$R" 2>/dev/null) || _pc=""
+      # The count describes THIS tree, so the series IS this version - the About
+      # page's "series as of vX" qualifier correctly stays hidden.
+      _sv="$_cv"
+    else
+      echo "    ! patch_count.sh not found next to the build lib - re-run"
+      echo "      sync_local_engine.sh; the About page will show a dash"
     fi
     # VARIANT must be passed explicitly: the generator's .config fallback
     # reads the PREVIOUS variant's config at stamp time (we run before make).

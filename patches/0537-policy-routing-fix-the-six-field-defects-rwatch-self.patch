@@ -1,0 +1,250 @@
+From 29fb58af0c5bda4b3cc9a31c066c641af8eb7ef2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 25 Aug 2026 14:24:01 -0400
+Subject: [PATCH] policy routing: fix the six field defects + rwatch self-heals
+ the ip-rule half
+
+- WGC target could reboot the box: the emitted pbr_skip_add now refuses a full
+  8-slot blog skip table BEFORE writing, uses the vendor byte form (printf, no
+  trailing newline), and gates on the wgc interface being up
+- Apply-and-Confirm race: armed=0 is cleared BEFORE nvram_commit so a reboot
+  can never resurrect a phantom "awaiting confirmation"
+- fresh boxes seed an honest disabled baseline (empty lastgood no longer
+  defeats the refuse-apply guard); armed card warns Confirm-to-persist (RVR_63)
+- firewall-start addons run LAST, after the PBR re-apply block, so their rules
+  are not reordered/lost by Reaper re-inserting its chains
+- rwatch now heals lost ip rules too: the generator writes expect_rules and
+  rwatch re-applies under the existing 120s throttle when the live count drops
+- target dropdown hides unconfigured OVPN/WGC (new ov[] in the pbr cfg JSON),
+  flags configured-but-down; bounded arm poll replaces the single 1.5s shot
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c               |  6 ++--
+ release/src/router/rc/firewall.c             |  8 ++++--
+ release/src/router/rc/reaper_pbr.c           | 17 +++++++----
+ release/src/router/rc/rwatch.c               | 11 +++++++
+ release/src/router/www/Reaper_VPNRouting.asp | 30 +++++++++++++++++---
+ 5 files changed, 59 insertions(+), 13 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 0895feab54..75e8985927 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24014,14 +24014,16 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 			left = dl - (long)time(NULL);
+ 			if (left < 0) left = 0;
+ 		}
+-		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld,\"wg\":[%d,%d,%d,%d,%d]",
++		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld,\"wg\":[%d,%d,%d,%d,%d],\"ov\":[%d,%d,%d,%d,%d]",
+ 			nvram_match("reaper_pbr_active", "1") ? 1 : 0,
+ 			nvram_match("reaper_pbr_enable", "1") ? 1 : 0,
+ 			nvram_get_int("reaper_fw_confirm"),
+ 			nvram_match("reaper_pbr_armed", "1") ? 1 : 0,
+ 			left,
+ 			nvram_get_int("wgc1_enable"), nvram_get_int("wgc2_enable"), nvram_get_int("wgc3_enable"),
+-			nvram_get_int("wgc4_enable"), nvram_get_int("wgc5_enable"));
++			nvram_get_int("wgc4_enable"), nvram_get_int("wgc5_enable"),
++		nvram_safe_get("vpn_client1_addr")[0]?1:0, nvram_safe_get("vpn_client2_addr")[0]?1:0, nvram_safe_get("vpn_client3_addr")[0]?1:0,
++		nvram_safe_get("vpn_client4_addr")[0]?1:0, nvram_safe_get("vpn_client5_addr")[0]?1:0);
+ 		websWrite(stream, ",\"err\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_pbr_err"));
+ 		websWrite(stream, ",\"rulelist\":");
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index fa4adc680c..616e26bf5c 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9416,8 +9416,6 @@ add_mtwan:
+ leave:
+ 	file_unlock(lock);
+ 
+-	run_custom_script("firewall-start", 0, wan_if, NULL);
+-
+ 	/* reaper v2.6.2: the three layers below register into shared front chains
+ 	 * (rc/reaper_hook.h); make sure the generator script exists on this tmpfs
+ 	 * before any of them runs. Each apply.sh calls it at its tail. */
+@@ -9476,6 +9474,12 @@ leave:
+ 		file_unlock(plock);
+ 	}
+ 
++	/* reaper (#4): run addon firewall-start LAST, after Reaper's front chains
++	 * and layer re-applies are in place, so an addon (Skynet/Diversion) lays its
++	 * rules on top with nothing racing it - the stock "runs last" contract.
++	 * Still forked/non-blocking. */
++	run_custom_script("firewall-start", 0, wan_if, NULL);
++
+ 	return 0;
+ }
+ 
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 48eba25054..da842075e5 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -290,8 +290,13 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "pbr_rule() { NEXPECT=$((NEXPECT+1)); \"$@\" || { NFAIL=$((NFAIL+1)); logger -t reaper_pbr \"rule failed: $*\"; }; }\n"
+ 	  "pbr_skip_add() {\n"
+ 	  "  [ -w \"$SKIP\" ] || return 0\n"
++	  "  if [ -n \"$2\" ] && [ ! -d /sys/class/net/\"$2\" ]; then logger -t reaper_pbr \"WireGuard iface $2 down - $1 skip-bypass not installed\"; return 0; fi\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 pre\" >> \"$SKIPREC\"; return 0; fi\n"
+-	  "  echo \"add $1\" > \"$SKIP\" 2>/dev/null\n"
++	  "  _u=$(grep -cE '[0-9]' \"$SKIP\" 2>/dev/null); [ -n \"$_u\" ] || _u=0\n"
++	  "  if [ \"$_u\" -ge 8 ]; then\n"
++	  "    logger -t reaper_pbr \"blog skip table full ($_u/8) - WireGuard rule for $1 not installed (free a VPN Director/WireGuard slot)\"; return 0\n"
++	  "  fi\n"
++	  "  printf 'add %%s' \"$1\" > \"$SKIP\" 2>/dev/null\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 new\" >> \"$SKIPREC\"\n"
+ 	  "  else logger -t reaper_pbr \"blog skip table full - WireGuard rule for $1 may be bypassed by accelerated flows\"; fi\n"
+ 	  "}\n");
+@@ -358,7 +363,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "\n");
+ 
+ 	if (teardown_only) {
+-		fprintf(f, "rm -f " PPBR_DIR "/expect " PPBR_DIR "/failcount\n" "exit 0\n");
++		fprintf(f, "rm -f " PPBR_DIR "/expect " PPBR_DIR "/expect_rules " PPBR_DIR "/failcount\n" "exit 0\n");
+ 		fclose(f);
+ 		if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 		return 1;
+@@ -429,7 +434,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 					        sel6, code);
+ 				}
+ 				if (wg) {
+-					if (skipnet[0]) fprintf(f, "pbr_skip_add %s\n", skipnet);
++					if (skipnet[0]) fprintf(f, "pbr_skip_add %s %s\n", skipnet, tbl);
+ 					else            wg_lanwide = 1;
+ 				}
+ 				nent++;
+@@ -499,6 +504,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 
+ 	fprintf(f,
+ 	  "echo $NEXPECT > " PPBR_DIR "/expect\n"
++	  "ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000' > " PPBR_DIR "/expect_rules\n"
+ 	  "echo $NFAIL > " PPBR_DIR "/failcount\n"
+ 	  "[ \"$NFAIL\" -gt 0 ] && logger -t reaper_pbr \"$NFAIL of $NEXPECT mark rule(s) failed to load - the watchdog will retry\"\n"
+ 	  "exit 0\n");
+@@ -695,7 +701,8 @@ void start_reaper_pbr(void)
+ 		 * can shadow the file, exactly as gk_rl did in v2.6.3. */
+ 		const char *nv = nvram_safe_get("reaper_pbr_rulelist");
+ 		char *legacy = strdup(nv);
+-		if (legacy && ppbr_write_lastgood(legacy) && legacy[0]) {
++		if (legacy) ppbr_write_lastgood(legacy);   /* always seed a baseline: empty = "PBR off" = a valid rollback target, so the first Apply is never deadlocked */
++		if (legacy && legacy[0]) {
+ 			int n = 0; const char *q;
+ 			for (q = legacy; (q = strchr(q, '<')) != NULL; q++) n++;
+ 			logmessage("reaper_pbr", "rule list migrated from nvram to " REAPER_PBR_RL " (%d rules; nvram held a 1 KB cap)", n);
+@@ -813,6 +820,7 @@ void reaper_pbr_confirm(void)
+ 	}
+ 	eval("cru", "d", "reaper_pbr_cc");
+ 	unlink(PPBR_DEADLINE);
++	nvram_set("reaper_pbr_armed", "0");   /* clear BEFORE commit: flash must never persist armed=1 (phantom "awaiting confirmation" after reboot) */
+ 	nvram_commit();                             /* reaper_pbr_enable */
+ 	{
+ 		/* the confirmed list = the staged draft (or, for an enable-only
+@@ -829,7 +837,6 @@ void reaper_pbr_confirm(void)
+ 		unlink(PPBR_CAND);
+ 		unlink(PPBR_APPLY);
+ 	}
+-	nvram_set("reaper_pbr_armed", "0");
+ 	logmessage("reaper_pbr", "routing rules confirmed and saved");
+ }
+ 
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 70c6445d39..5370e42c90 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -118,6 +118,17 @@ static void rwatch_gen(void)
+ 	  "    rc reaper_lockrun \"$_sh\" >/dev/null 2>&1\n"
+ 	  "  fi\n"
+ 	  "fi\n"
++	  "if [ \"$(_nv reaper_pbr_active)\" = 1 ] && [ -s /tmp/reaper_pbr/expect_rules ]; then\n"
++	  "  _exr=$(cat /tmp/reaper_pbr/expect_rules 2>/dev/null); case \"$_exr\" in ''|*[!0-9]*) _exr=0;; esac\n"
++	  "  _shr=/tmp/reaper_pbr/apply.sh; [ -d /tmp/reaper_pbr/armed ] && [ -f /tmp/reaper_pbr/candidate.sh ] && _shr=/tmp/reaper_pbr/candidate.sh\n"
++	  "  _lvr=$(ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000')\n"
++	  "  _lstr=$(cat /tmp/reaper_pbr/heal.at 2>/dev/null || echo 0)\n"
++	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ $((UP-_lstr)) -ge 120 ] && [ -x \"$_shr\" ]; then\n"
++	  "    echo $UP > /tmp/reaper_pbr/heal.at\n"
++	  "    logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live - re-applying\"\n"
++	  "    rc reaper_lockrun \"$_shr\" >/dev/null 2>&1\n"
++	  "  fi\n"
++	  "fi\n"
+ 	  "\n"
+ 	  "# boot grace: the WAN is legitimately down for the first minutes\n"
+ 	  "[ \"$UP\" -lt 300 ] && exit 0\n"
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 54c4345415..42c5135234 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -182,6 +182,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ <div class="card armcard" id="armcard" style="display:none">
+   <h2><#RFW_145#></h2>
+   <p class="hint" style="margin-top:0"><#RFW_148#> <b id="armleft">&mdash;</b> <#RFW_149#></p>
++  <p class="hint" id="armwarn" style="margin-top:6px;font-weight:600"><#RVR_63#></p>
+   <div class="row">
+     <button class="btn" id="armkeep"><#RFW_146#></button>
+     <button class="btng" id="armrevert"><#RFW_147#></button>
+@@ -223,6 +224,15 @@ var TGTLBL = { OVPN1:'OpenVPN 1',OVPN2:'OpenVPN 2',OVPN3:'OpenVPN 3',OVPN4:'Open
+   WGC1:'WireGuard 1',WGC2:'WireGuard 2',WGC3:'WireGuard 3',WGC4:'WireGuard 4',WGC5:'WireGuard 5',
+   WAN:`<#RVR_23#>`, BLOCK:`<#RVR_24#>` };
+ var WGON=[0,0,0,0,0];   /* wgcN_enable, from reaper_pbr.cgi?action=cfg */
++var OVON=[0,0,0,0,0];   /* OpenVPN clients configured (vpn_clientN_addr), from cfg */
++function renderTargets(){
++  var sel=document.getElementById('e_target'); if(!sel) return;
++  for(var i=0;i<sel.options.length;i++){ var o=sel.options[i], v=o.value, m, show=true;
++    if((m=/^OVPN([1-5])$/.exec(v))) show=!!OVON[+m[1]-1];
++    else if((m=/^WGC([1-5])$/.exec(v))) show=!!WGON[+m[1]-1];
++    o.hidden=!show; o.disabled=!show;   /* hidden: not offered for a new rule; an existing rule's value still displays */
++  }
++}
+ 
+ function selText(r){
+   if(r.seltype==='src'){ var n=(r.selval||'').split(',').filter(Boolean); return `<#RVR_19#>` + ': ' + esc(n.length>1 ? (n[0]+' +'+(n.length-1)) : r.selval); }
+@@ -241,7 +251,7 @@ function tgtLabel(t,r){
+   var n=+m[1]-1, note;
+   if(!WGON[n]) note=`<#RVR_56#>`;
+   else note=(r&&r.seltype==='src')?`<#RVR_55#>`:`<#RVR_54b#>`;
+-  return l+'<span class="wgnote">'+esc(note)+'</span>';
++  return l+'<span class="wgnote" title="'+esc(`<#RVR_54#>`)+'">'+esc(note)+'</span>';
+ }
+ 
+ var EDIT_RULE = -1;   /* index into ROWS being edited, -1 = adding */
+@@ -376,7 +386,7 @@ function armUI(){
+ }
+ function armPoll(){
+   pbrcgi('action=cfg',function(j){
+-    if(j&&j.ok){ ARM.armed=j.armed?1:0; ARM.left=j.left||0; NV.active=String(j.active); WGON=j.wg||WGON; if(j.err)showErr(j.err); }
++    if(j&&j.ok){ ARM.armed=j.armed?1:0; ARM.left=j.left||0; NV.active=String(j.active); WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); if(j.err)showErr(j.err); }
+     else ARM.armed=0;
+     syncMaster(); armUI();
+   });
+@@ -389,7 +399,19 @@ function applyPBR(){
+     document.getElementById('applying').className='applying';
+     if(!j||!j.ok){ showErr((j&&j.error)||`<#RFW_155#>`); return; }
+     NV.rulelist=serialize(); NV.enable=masterOn?'1':'0';
+-    setTimeout(armPoll,1500);
++document.getElementById('applybtn').disabled=true;
++    var tries=0;
++    (function poll(){
++      pbrcgi('action=cfg',function(j){
++        if(j&&j.ok){
++          if(j.wg)WGON=j.wg; if(j.ov)OVON=j.ov; renderTargets();
++          if(j.err){ showErr(j.err); document.getElementById('applybtn').disabled=false; return; }
++          if(j.armed){ ARM.armed=1; ARM.left=j.left||0; NV.active=String(j.active); syncMaster(); armUI(); return; }
++        }
++        if(++tries<12){ setTimeout(poll,700); return; }
++        document.getElementById('applybtn').disabled=false; showErr(`<#RFW_155#>`);
++      });
++    })();
+   });
+ }
+ 
+@@ -519,7 +541,7 @@ function objDelete(k){
+   document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(){ setTimeout(function(){ location.reload(); },1500); }); };
+   /* an apply from another tab, or a page reload inside the window */
+   pbrcgi('action=cfg',function(j){
+-    if(j&&j.ok){ WGON=j.wg||WGON; ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.err)showErr(j.err);
++    if(j&&j.ok){ WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.err)showErr(j.err);
+       NV.rulelist=j.rulelist||''; parseRules(); render(); armUI(); }
+     else showErr(`<#RFW_155#>`);
+   });
+-- 
+2.25.1
+

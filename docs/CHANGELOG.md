@@ -24,7 +24,38 @@ node, not only on the primary router.
 
 ---
 
-## v2.7.6 — Policy Routing survives a reboot, Warden never fails silently *(built RT-BE96U + RT-BE92U; fleet cut, not yet published)*
+## v2.7.7 — AdGuard removed, and the update check runs again *(built RT-BE96U)*
+
+- **AdGuard has been removed from the firmware entirely.** Users asked for it gone whether or not
+  it was ever configured — an unused third-party DNS service is still a third-party data collector
+  sitting in the GUI, and the feature's own privacy text said your information would be collected.
+  All three places it appeared are gone: the **AdGuard tab under Parental Controls** and its page,
+  the **AdGuard entries in the DNS Director and DNS-over-TLS provider lists**, and the two
+  **AdGuard cards in AiBoard**. The per-network AdGuard switch in SDN profiles goes with them.
+  Nothing else changes — every other DNS provider, SDN setting and AiBoard card is untouched.
+- **“Check for update” works again — and now says something useful when it does not.** The button
+  could report a failed check and point at a log file that did not exist, which made it impossible
+  to diagnose. The cause was not the check itself: the script was being installed into the firmware
+  without its execute bit, so the router's service manager could not run it and gave up silently.
+  Run by hand it had always worked. The build now forces the executable bit on all three update
+  scripts, so the check runs — and a genuine failure leaves a genuine log behind.
+- **Policy Routing: the six problems reported from the field.** A WireGuard target could reboot the
+  router; a rule is now refused, and logged, when the hardware-acceleration bypass table is full or
+  the tunnel interface is down, and it is written exactly the way the vendor's own code writes it.
+  Apply reliably reaches the Confirm step, a confirmed change survives a reboot without leaving a
+  phantom “awaiting confirmation”, and the armed card now says plainly that Keep is what makes a
+  change outlive the timer and a reboot. The target list hides tunnels you have not configured and
+  flags ones that are configured but currently down. `firewall-start` add-on scripts run last, so
+  their rules are no longer reordered underneath them. Lost routing rules now repair themselves the
+  way a lost firewall chain already did.
+- **“Whole LAN” is now just “LAN”.** On the Policy Routing page the acceleration-bypass note read as
+  a warning about something larger than it is. Reworded in all 25 languages.
+- **The translation pass is complete.** The remaining functional interface text is translated across
+  all 24 non-English languages; the credits and their jokes stay in English by choice.
+- **Gatekeeper diagnostics report the real re-list count.** The diagnostic counted by pattern-matching
+  firewall output and undercounted; it now reads the count the service itself records.
+
+## v2.7.6 — Policy Routing survives a reboot, Warden never fails silently *(built RT-BE96U + RT-BE92U; fleet cut)*
 
 *This rung folds the v2.7.4–v2.7.6 field-fix work (patches 0529–0535) into one fleet cut across
 all five 96813GW models; RT-BE92U (BCM6765) carries the same shared changes on its own branch.*
@@ -127,7 +158,7 @@ diagnostic's Gatekeeper section now shows the registry and window state.
 
 ---
 
-## v2.7.2 — Traffic Analyzer history made restore-proof *(built; not yet published)*
+## v2.7.2 — Traffic Analyzer history made restore-proof *(built)*
 
 **Traffic Analyzer: month-to-date no longer resets on a firmware update, and stale device rows no
 longer read as "stuck" year totals** (field report: some IPv6 devices' 1-year totals frozen; the
@@ -167,7 +198,7 @@ is gone.
 ---
 
 ## v2.7.1 — security review, every page translatable, the master guide
-*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517).*
 
 **Security review (three independent adversarial passes over everything changed since 2026-07-31,
 plus a regression check of ~40 earlier findings — none regressed).** Fixed in this release:
@@ -214,7 +245,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.7.0 — one backup file for everything Reaper keeps; `/jffs` health in the report
-*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517).*
 
 - **Reaper settings backup (Storage page).** Since v2.6.3–v2.6.9 the Reaper lists live on the
   internal `/jffs` partition, not in nvram, so the stock settings backup no longer carries them.
@@ -234,7 +265,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.6.9 — field feedback: big domain lists, lists of addresses, rules that survive a reboot
-*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517).*
 
 - **A 40-domain object now saves.** The Firewall's lists (objects, groups, services, zones, zone
   policies, rules, egress defaults, forwards) were the last ones still held in nvram, where the
@@ -257,7 +288,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.6.8 — USB: format as ext4, ext3 or ext2
-*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+*Built on RT-BE96U. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517).*
 
 - **Format a USB disk as ext4, ext3 or ext2** from the USB page, next to FAT32 (and NTFS / HFS+).
   The formatter was already in the image; only the dispatch was missing. A one-line hint under the
@@ -270,7 +301,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.6.7 — Policy Routing finished: WireGuard, IPv6, apply-and-confirm
-*Built on RT-BE96U 2026-08-22. Closes the three pieces the v2.5.x MVP deferred. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+*Built on RT-BE96U 2026-08-22. Closes the three pieces the v2.5.x MVP deferred. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517).*
 
 - **WireGuard clients are now routing targets.** On this hardware the traffic accelerator does not
   honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing now does what VPN
@@ -304,7 +335,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.6.6 — diagnostics report v1.3.1
-*Built on RT-BE96U 2026-08-22. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517); not yet published.*
+*Built on RT-BE96U 2026-08-22. Cut with v2.6.6–v2.7.1 as one rung (patches 0502–0517).*
 
 - Report tuning from the first v1.3.0 run on metal: the nvram-size warning fires only for
   Reaper-owned values (ASUS's own long values are whitelisted or already saving — now
@@ -429,7 +460,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.5.3 — IPSec works again, devices stop reading as first seen years ago, and the firewall, Warden and navigation get quietly more reliable
-*The cut that lands everything since v2.5.0. It folds two rungs that never got their own release — the pre-public hardening batch carried as v2.5.1, and the metal-validated fixes carried as v2.5.2 — into one series alongside its own code-review batch. Cut from RT-BE96U as `3006.102.8_Reaper_v2.5.3` — `patches 0466-0471`, 471 total, replay-verified, provenance stamped. **Built on RT-BE96U** (MCP variant, `sha256 4c45ea36…`) and green, with the IPSec binaries confirmed present in the staged rootfs. **Not yet pushed or released**, and the four sibling models have not taken it. v2.5.2's Gatekeeper and QoS fixes are confirmed on metal; v2.5.3's IPSec resurrection is built and staged but **not yet metal-confirmed**.*
+*The cut that lands everything since v2.5.0. It folds two rungs that never got their own release — the pre-public hardening batch carried as v2.5.1, and the metal-validated fixes carried as v2.5.2 — into one series alongside its own code-review batch. Cut from RT-BE96U as `3006.102.8_Reaper_v2.5.3` — `patches 0466-0471`, 471 total, replay-verified, provenance stamped. **Built on RT-BE96U** (MCP variant, `sha256 4c45ea36…`) and green, with the IPSec binaries confirmed present in the staged rootfs. v2.5.2's Gatekeeper and QoS fixes are confirmed on metal; v2.5.3's IPSec resurrection is built and staged but **not yet metal-confirmed**.*
 
 > **Validation status (2026-08-19).** The Gatekeeper first-seen fix and the QoS shaper behaviour below were **confirmed on RT-BE96U** hardware. The IPSec resurrection is **built and verified present in the staged image but not yet exercised on metal** — the owner is flashing it now. IPSec Server, IPSec client and Instant Guard should function for the first time on this lineage; treat that as pending on-hardware confirmation until it is reported back.
 
@@ -455,9 +486,9 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.5.0 — Bring your own blocklists, honest per-country block counts, and a donate link that can outlive the image
-*Committed on `be96u-only` as v2.5.0 (HEAD `8be2150520`) and **cut into the lean repo** — `patches/0463-0465`, 465 total, replay-verified, provenance stamped. **Built on RT-BE96U** (MCP variant, `sha256 31e02104…`) with every change confirmed present in the staged rootfs. **Not yet pushed or released**, and the four sibling models have not taken it. Beyond the new Warden feature and the block-count change, this rung carries a full three-phase security review (below): five defective fixes from the 2026-08-18 re-review corrected, the QoS priority remap reverted pending a hardware test, and a batch of new hardening fixes.*
+*Committed on `be96u-only` as v2.5.0 (HEAD `8be2150520`) and **cut into the lean repo** — `patches/0463-0465`, 465 total, replay-verified, provenance stamped. **Built on RT-BE96U** (MCP variant, `sha256 31e02104…`) with every change confirmed present in the staged rootfs. Beyond the new Warden feature and the block-count change, this rung carries a full three-phase security review (below): five defective fixes from the 2026-08-18 re-review corrected, the QoS priority remap reverted pending a hardware test, and a batch of new hardening fixes.*
 
-> **✅ Correction resolved (2026-08-19).** The six entries flagged on 2026-08-18 have been worked: five are now corrected (Gatekeeper enforcement, the firewall's partial-failure reporting, analytics/Prometheus staleness, inbound-flow attribution, and the unconfirmed-change-survives-reboot hole) and re-validated by a full RT-BE96U build; the sixth — the QoS priority fix — was **reverted** to the safe baseline because the correct fix needs a hardware validation pass (the router's own tool both confirms the defect and rejects the in-place fix). The QoS follow-up is tracked in the Backlog. This version is **committed locally** (v2.5.0, HEAD `8be2150520`, patches 0463-0465) but **not yet pushed or released**.
+> **✅ Correction resolved (2026-08-19).** The six entries flagged on 2026-08-18 have been worked: five are now corrected (Gatekeeper enforcement, the firewall's partial-failure reporting, analytics/Prometheus staleness, inbound-flow attribution, and the unconfirmed-change-survives-reboot hole) and re-validated by a full RT-BE96U build; the sixth — the QoS priority fix — was **reverted** to the safe baseline because the correct fix needs a hardware validation pass (the router's own tool both confirms the defect and rejects the in-place fix). The QoS follow-up is tracked in the Backlog.
 
 - **New: Warden can use your own blocklists, not just the four built in.** Add up to eight of your own IP or CIDR lists by name and HTTPS address. Each is fetched on the same schedule as the built-in feeds and merged into the same block set, so its entries enforce identically and show up in the same counters — no separate switch, no second set of rules to reason about. **Private, loopback and reserved ranges are stripped from every list before it is loaded**, exactly as they are for the built-in feeds, so a careless or hostile list cannot blackhole your own network; that filter is the guard added after the July 2026 lockout and custom feeds sit behind it too. Lists are HTTPS-only and the address is checked against a deliberately narrow character set — a list is fetched by the router and loaded straight into a blocking set, so this is one of the few places where user-entered text reaches something that runs as root, and it is treated that way. **An adversarial review of that path before release found four defects and all four are fixed:** a stored address was being read back into the page in a form that a single apostrophe could have broken out of; `curl` was following redirects from HTTPS to plain HTTP, so a list that redirected could have been served by anyone in the middle and loaded straight into a blocking set; there was no limit on how much a list could download, and the router's scratch space is memory, so one oversized list was a way to exhaust it; and the eight-feed limit counted feeds accepted rather than entries read, so a malformed setting was still walked from end to end.
 - **Changed: the Top Blocked Countries table now reports what it always should have — and your running totals will visibly change shape.** Warden drops a packet if it matches a threat feed *or* a blocked country, and both jump to the same place, so the order between them never decided whether anything was blocked — only which counter got the credit. The feeds ran first, and because the big open feeds overlap heavily with the countries people tend to block, the feed rule absorbed nearly every hit while the country table sat near zero and the overall total climbed. That is the "block count with no matching country count" report. Countries are now evaluated first, so the per-country numbers are real and the feed number carries only what no country rule already matched. **Nothing about what gets blocked has changed.** What has changed is the meaning of two numbers you may have been watching for months: expect country counts to start climbing much faster and the feed count to flatten, with a visible kink in the history at this version. The breakdown strip added in v2.4.5 shows both figures side by side, which is what makes the change readable rather than mysterious.

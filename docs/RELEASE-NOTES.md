@@ -339,7 +339,7 @@ vendor and no-warranty text are intentionally kept in English.
 
 ---
 
-## What's new in v2.5.3 — cut into the lean repo, not yet pushed or published
+## What's new in v2.5.3
 
 *The rung that lands everything since v2.5.0. It folds two series that never got their own release —
 the pre-public hardening batch (v2.5.1) and the metal-validated fixes (v2.5.2) — into one cut,
@@ -407,11 +407,11 @@ SNMP's `rwuser` policy was reviewed and kept.
 **Validation:** built on RT-BE96U (MCP variant), green, with the IPSec runtime verified present in
 the staged rootfs. The Gatekeeper first-seen fix and the QoS shaper are **confirmed on metal**
 (carried from v2.5.2); the IPSec resurrection is **staged and verified present but not yet
-metal-confirmed**. Not cut to the four siblings; no image published.
+metal-confirmed**.
 
 ---
 
-## What's new in v2.5.0 — cut into the lean repo, not yet pushed or published
+## What's new in v2.5.0
 
 *One new feature, one deliberate change to what an existing statistic means, and four fixes taken
 off the backlog. Built on RT-BE96U so the changes could be exercised; the rung is not cut, so there
@@ -539,7 +539,7 @@ a full RT-BE96U build. The sixth, the QoS priority fix, was **reverted**: the ro
 confirms the priorities really are inverted, but it also rejects the in-place renumber the fix attempted,
 and a correct fix cannot be validated without the hardware, so this release keeps the existing
 (inverted-but-stable) behaviour and the QoS follow-up is tracked in the Backlog. The security pass (Phase
-3) below has since run and been applied. This version is **committed locally** (patches 0463-0465) but **not yet pushed or published**; roughly 96
+3) below has since run and been applied. Roughly 96
 smaller code-quality findings from the earlier passes remain unworked.
 
 ### The security pass (Phase 3) — what it found and what is fixed
@@ -632,7 +632,7 @@ containing an apostrophe — the same fault that broke several European packs in
 
 ---
 
-## What's new in v2.4.9 — cut, ported to the fleet, not published
+## What's new in v2.4.9
 
 *One field report about a PPPoE connection refusing to run at a 1500-byte MTU — and two further
 defects found underneath it while working out why.*
@@ -695,7 +695,7 @@ asked. It has been present for as long as the code has and can only show on a du
 
 ---
 
-## What's new in v2.4.8 — cut with v2.4.9, ported to the fleet, not published
+## What's new in v2.4.8
 
 *Two field reports, two owner requests, and one regression from v2.4.6. Built on RT-BE96U in both
 variants so the changes could be seen working. It was not cut on its own: patches 0455–0460 went out

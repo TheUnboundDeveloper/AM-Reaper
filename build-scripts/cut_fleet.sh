@@ -132,14 +132,31 @@ if [ "$DO_PORT" = 1 ]; then
     # Enumerate from the TREE, not an on-disk glob: www/ carries a gitignored
     # temp.dict scratch file, and globbing the working directory drags it in -
     # `git show <branch>:...temp.dict` then prints a fatal for every model.
+    # Keys canon DELETED since this sibling last synced are an INTENTIONAL
+    # fleet-wide removal (a feature dropped from the firmware), not sibling
+    # data: the sibling has just taken canon's pages in the port above, so a
+    # token canon no longer defines is a token nothing references any more.
+    # Blocking on those would make it impossible to ever delete a dict key.
+    # A key the sibling has that canon NEVER had is the real hazard (model
+    # identity / a translation only that branch carries) and still blocks.
+    MB=$(git -C "$CANON_DIR" merge-base "$CANON" "$B" 2>/dev/null)
     while IFS= read -r d; do
       [ -n "$d" ] || continue
       git -C "$CANON_DIR" show "$CANON:$d" | sed -n 's/^\([A-Za-z0-9_]*\)=.*/\1/p' | sort -u > /tmp/cf_kc
       git -C "$CANON_DIR" show "$B:$d" 2>/dev/null | sed -n 's/^\([A-Za-z0-9_]*\)=.*/\1/p' | sort -u > /tmp/cf_ks
-      # a key the SIBLING has and canon does not would be destroyed by the copy
-      if [ -s /tmp/cf_ks ] && [ -n "$(comm -13 /tmp/cf_kc /tmp/cf_ks)" ]; then
-        echo "    $d: sibling-only key(s): $(comm -13 /tmp/cf_kc /tmp/cf_ks | tr '\n' ' ')"
-        unsafe=1
+      : > /tmp/cf_kr
+      if [ -n "$MB" ]; then
+        git -C "$CANON_DIR" show "$MB:$d" 2>/dev/null \
+          | sed -n 's/^\([A-Za-z0-9_]*\)=.*/\1/p' | sort -u > /tmp/cf_kmb
+        comm -23 /tmp/cf_kmb /tmp/cf_kc > /tmp/cf_kr   # deleted from canon since the sibling synced
+      fi
+      if [ -s /tmp/cf_ks ]; then
+        comm -13 /tmp/cf_kc /tmp/cf_ks > /tmp/cf_so    # sibling-only
+        real=$(comm -23 /tmp/cf_so /tmp/cf_kr)         # minus the intentional deletions
+        if [ -n "$real" ]; then
+          echo "    $d: sibling-only key(s) canon never had: $(printf '%s' "$real" | tr '\n' ' ')"
+          unsafe=1
+        fi
       fi
       # a differing sibling value naming a model would be model identity
       if git -C "$CANON_DIR" diff "$CANON" "$B" -- "$d" | grep -E '^\+' | grep -vE '^\+\+\+' \
@@ -172,7 +189,11 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>" \
       echo "    committed $n dict file(s)"
     fi
 
-    lc=$(for d in "$W"/release/src/router/www/*.dict; do wc -l < "$d"; done | sort -u | wc -l)
+    # From the TREE, not an on-disk glob: www/ carries a gitignored temp.dict
+    # scratch file (0 lines) and globbing the working directory counts it, which
+    # reports a false "not in lockstep" on an otherwise perfect port.
+    lc=$(git -C "$W" ls-tree --name-only HEAD release/src/router/www/ | grep '\.dict$' \
+         | while IFS= read -r _d; do git -C "$W" show "HEAD:$_d" | wc -l; done | sort -u | wc -l)
     [ "$lc" = 1 ] || die "$B dicts are NOT in lockstep ($lc distinct line counts)"
     echo "    $B -> $(git -C "$W" rev-parse --short HEAD), dicts lockstep, EXTENDNO=$(sed -n 's/^EXTENDNO=//p' "$W/release/src-rt/version.conf")"
   done

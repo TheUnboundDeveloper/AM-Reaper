@@ -1,0 +1,43 @@
+From 27012e76bf7cce9258ba0875ae270105c925563a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 25 Aug 2026 14:24:02 -0400
+Subject: [PATCH] gatekeeper/diag: 14b reads the relist count from relist.n,
+ not by grepping REAPER_GKI
+
+gk_emit_relist records the seen-count in /tmp/gk/relist.n; reaper_diag 14b
+reads that instead of a fragile iptables grep that undercounted.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag | 2 +-
+ release/src/router/rc/gatekeeper.c    | 1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 9e133e5a47..f13b331181 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -649,7 +649,7 @@ echo "  seen table        : $( [ -f /tmp/gk/seen.tsv ] && wc -l < /tmp/gk/seen.t
+ echo "  armed stamp       : $( [ -f /tmp/gk/chains.ok ] && echo yes || echo no )"
+ echo "  front-chain jumps : $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) (REAPER_HOOK_F -> REAPER_GKF, one per bridge)"
+ # v2.7.3: AiMesh infrastructure exemptions (cfg_relist MACs, sanitized as counts)
+-echo "  aimesh registry   : $(nvram get cfg_relist 2>/dev/null | grep -o ':..:..:..:..:' | wc -l) record MAC(s) in cfg_relist; exempt input rules: $(iptables -S REAPER_GKI 2>/dev/null | grep -c 'mac-source')"
++echo "  aimesh registry   : $(nvram get cfg_relist 2>/dev/null | grep -o ':..:..:..:..:' | wc -l) record MAC(s) in cfg_relist; exempt input rules: $( [ -f /tmp/gk/relist.n ] && cat /tmp/gk/relist.n || echo 0 )"
+ echo "  onboarding window : status=$(nvram get cfg_obstatus 2>/dev/null) gate=$(iptables -C REAPER_GKI -j RETURN 2>/dev/null && echo OPEN || echo closed)"
+ 
+ sec "14c. FIREWALL LAYER ORDER + RULES ENGINE (chain order, counts, set sizes)"
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index e7757a0058..5462837e42 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -291,6 +291,7 @@ static void gk_emit_relist(FILE *f)
+ 	}
+ 	free(lists[0]);
+ 	free(lists[1]);
++	fprintf(f, "echo %d > " GK_DIR "/relist.n\n", nseen);
+ 	if (nseen)
+ 		fprintf(f, "logger -t gatekeeper 'AiMesh registry: %d infrastructure MAC(s) exempt'\n", nseen);
+ }
+-- 
+2.25.1
+

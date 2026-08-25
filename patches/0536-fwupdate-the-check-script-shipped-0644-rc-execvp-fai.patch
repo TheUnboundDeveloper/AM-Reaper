@@ -1,0 +1,50 @@
+From 9474d12be9391dd13df17409d5f0f1cb12072c9c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 25 Aug 2026 14:15:33 -0400
+Subject: [PATCH] fwupdate: the check script shipped 0644 - rc execvp failed
+ silently (no log, no nvram, generic error); fix the tracked mode and force
+ 0755 at install
+
+Root-caused on metal via rmcpd_lab: /usr/sbin/webs_update.sh was baked into
+the squashfs without the execute bit (git tracked the source 100644 while its
+note/upgrade siblings are 100755, and the rom/Makefile cp -f preserves source
+mode). rc start_script -> _eval -> execvp then fails EACCES with no visible
+error, so the Check button produced the generic failure and never created
+/tmp/webs_upgrade.log. Run via sh the script works unmodified.
+
+- rom/webs_scripts/reaper_webs_update.sh: mode 100644 -> 100755
+- rom/Makefile: chmod 0755 all three installed webs scripts after cp, so a
+  lost git file mode can never silently disable the updater again
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/rom/Makefile                           | 8 ++++++++
+ release/src/router/rom/webs_scripts/reaper_webs_update.sh | 0
+ 2 files changed, 8 insertions(+)
+ mode change 100644 => 100755 release/src/router/rom/webs_scripts/reaper_webs_update.sh
+
+diff --git a/release/src/router/rom/Makefile b/release/src/router/rom/Makefile
+index 673fa95f33..9d95c91f6f 100644
+--- a/release/src/router/rom/Makefile
++++ b/release/src/router/rom/Makefile
+@@ -184,6 +184,14 @@ ifeq ($(RTCONFIG_MERLINUPDATE),y)
+ ifeq ($(RTCONFIG_CFGSYNC),y)
+ 	cp -f webs_scripts/reaper_webs_note.sh $(INSTALLDIR)/usr/sbin/webs_note.sh
+ endif
++# reaper: rc runs these via _eval/execvp - a missing execute bit fails SILENTLY
++# (no log, no nvram, generic GUI error; the v2.7.x "check never runs" field bug
++# was exactly a 0644 webs_update.sh baked into the squashfs). cp preserves the
++# source mode, so force 0755 here instead of trusting git file modes.
++	chmod 0755 $(INSTALLDIR)/usr/sbin/webs_update.sh $(INSTALLDIR)/usr/sbin/webs_upgrade.sh
++ifeq ($(RTCONFIG_CFGSYNC),y)
++	chmod 0755 $(INSTALLDIR)/usr/sbin/webs_note.sh
++endif
+ ifeq ($(or $(RTCONFIG_BWDPI),$(RTCONFIG_HNS)),y)
+ 	cp -f webs_scripts/sig2nd_upgrade.sh $(INSTALLDIR)/usr/sbin/sig_upgrade.sh
+ 	cp -f webs_scripts/sig2nd_update.sh $(INSTALLDIR)/usr/sbin/sig_update.sh
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+old mode 100644
+new mode 100755
+-- 
+2.25.1
+

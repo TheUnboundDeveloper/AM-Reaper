@@ -80,9 +80,9 @@ build-commit column will never match, by design.
 
 | Version | Base | Patches | `release/src/router` **from the series** (what CI compares) | build-commit tree | Release |
 |---|---|---|---|---|---|
-| **v2.4.3** | `a7ebfa133a` | `0001`–`0428` | `81025000fb194ea9b9a289418f07028a691a5fb1` | `e8742938df2766337b2d4c27cb1df4fb047cb6fd` | source rung — not yet published |
+| **v2.4.3** | `a7ebfa133a` | `0001`–`0428` | `81025000fb194ea9b9a289418f07028a691a5fb1` | `e8742938df2766337b2d4c27cb1df4fb047cb6fd` | source rung |
 | **v2.4.2** | `a7ebfa133a` | `0001`–`0426` | `1c8c908a0a7c14b12419a3720f9d5b2007b068a7` | `60e0a1e57e53b1562d01b4e484fcb6c797976864` | source rung — no images; folded into v2.4.3 |
-| **v2.4.1** | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | `545e459661262bf79a3c2ed0aa597005f87e550a` | source rung — not yet published |
+| **v2.4.1** | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | `545e459661262bf79a3c2ed0aa597005f87e550a` | source rung |
 | **v2.3.7** | `a7ebfa133a` | `0001`–`0406` | `7f48393d768d564fe8dbb5722fcfa26a8e6f6181` | `f1e0db6373976ae8740a2484f74bb577ed3efbaf` | ✅ published (all five models) |
 | **v2.3.6** | `a7ebfa133a` | `0001`–`0399` | `3740a7192671ec39854d96f8383e202b46599e90` | `e9cc24c92d938b3abb4c62d06d7da50993c88c99` | source rung — never published |
 | **v2.3.5** | `a7ebfa133a` | `0001`–`0397` | `a8b2d10782a78668a5fba30f53b61d5f0735ccec` | `5743597446a3c32eaeeed681d91473a8dfbf4e68` | source rung — never published |

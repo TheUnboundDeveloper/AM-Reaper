@@ -50,6 +50,7 @@ done
 # at that point. If a file is added to a launcher's source chain, add it here.
 FILES="_reaper_build_lib.sh _reaper_env.sh reaper_verify.sh reaper_stale_configure.sh
        reaper_langcheck.py verify_markers.txt _port_protect.sh gen_provenance.sh
+       patch_count.sh
        build_be96u.sh build_be86u.sh build_be88u.sh build_gtbe98.sh build_gtbe98pro.sh"
 
 [ -d "$DEST" ] || { echo "ERROR: destination $DEST does not exist"; exit 1; }

@@ -258,6 +258,38 @@ else
   fail "i18n-quote" "dict token embedded in a breakable JS string context (see above)"
 fi
 
+# ---- 18. provenance stamp: the About page's patch count must be REAL -------
+# Stamping is deliberately non-fatal, and for three releases nothing downstream
+# ever looked at the result - so a stale 465 shipped through v2.5.8, a dash in
+# v2.7.6, and a wrong figure again in v2.7.7. This is that look. It catches an
+# empty/non-numeric count, a count that disagrees with the tree being built, and
+# a provenance file left over from an earlier rung (it is gitignored, so it
+# survives in the tree and would otherwise ship a previous version's figures).
+PROV="$FS/www/reaper_provenance.js"
+if [ ! -f "$PROV" ]; then
+  fail "provenance-stamp" "no www/reaper_provenance.js in the staged fs"
+else
+  # staged www is minified - read values by regex, never by line shape
+  _pv=$(tr -d '\r' < "$PROV" | grep -oE 'patches:[[:space:]]*"[^"]*"' | sed 's/.*"\(.*\)"/\1/')
+  _vv=$(tr -d '\r' < "$PROV" | grep -oE 'version:[[:space:]]*"[^"]*"' | sed 's/.*"\(.*\)"/\1/')
+  _want_v="${VERSION#Reaper_}"
+  _pcs="$(dirname "${BASH_SOURCE[0]}")/patch_count.sh"
+  if ! printf '%s' "$_pv" | grep -qE '^[0-9]+$'; then
+    fail "provenance-stamp" "patch count is '${_pv:-<empty>}' -- About page shows a dash"
+  elif [ "$_vv" != "$_want_v" ]; then
+    fail "provenance-stamp" "stamped version '$_vv' != build version '$_want_v' (stale provenance file)"
+  elif [ -f "$_pcs" ]; then
+    _tc=$(bash "$_pcs" "$R" 2>/dev/null)
+    if [ -n "$_tc" ] && [ "$_tc" != "$_pv" ]; then
+      fail "provenance-stamp" "stamped $_pv patches, tree has $_tc"
+    else
+      pass "provenance-stamp" "$_pv patches, version $_vv"
+    fi
+  else
+    warn "provenance-stamp" "$_pv patches, version $_vv (patch_count.sh absent, count not cross-checked)"
+  fi
+fi
+
 echo "reaper_verify: $PASSN pass, $WARNN warn, $FAILN FAIL  ($MODEL $VARIANT)"
 [ "$FAILN" -gt 0 ] && { echo "== VERIFY FAILED =="; exit 1; }
 echo "== VERIFY OK =="; exit 0

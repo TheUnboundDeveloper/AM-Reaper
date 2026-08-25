@@ -20,9 +20,30 @@ PP_PROTECT_RE='(release/src/router/(www/)?sysdep/|/prebuild/|/prebuilt/|targets/
 PP_SYNC_ANYWAY_RE='^release/src/router/www/sysdep/FUNCTION/'
 
 # Protected by design (per-model divergence is intentional):
-#   dicts (supplemented separately, lockstep-checked), the two radio-gated
-#   pages, and the GT-BE98 chanlist shim.
-PP_PROTECT_GLOB='[A-Z][A-Z]\.dict$|Main_WStatus_Content\.asp|Tools_Sysinfo\.asp|reaper_chanlist_shim\.c'
+#   dicts (supplemented separately, lockstep-checked) and the GT-BE98 chanlist
+#   shim. Both radio pages have now left this set - see below.
+#
+# 2026-08-25: Tools_Sysinfo.asp REMOVED from this set. It was listed as one of
+# "the two radio-gated pages", but it does not gate per BRANCH at all - it gates
+# at RUNTIME on based_modelid, so one shared copy serves every model. Protecting
+# it meant the port skipped it, and four siblings silently froze at the pre-
+# 2026-08-17 temperature chart while Reaper_QoSDiag.asp - the OTHER half of the
+# same two-file rewrite, and not protected - synced normally. Those images ship
+# a time-based x axis on one chart and the old 20-slot category axis on the
+# other. Proof the file needs no divergence: rt-be92u is BYTE-IDENTICAL to canon
+# and shipped v2.7.6 + v2.7.7, and canon's copy carries the SUPERSET of the model
+# checks (GT-AXE16000 || GT-BE98, plus GT-BE98_PRO) where the stale copies knew
+# only GT-AXE16000. Un-protecting makes the parity check surface the gap instead
+# of hiding it.
+# 2026-08-25: Main_WStatus_Content.asp REMOVED for the same reason as
+# Tools_Sysinfo.asp above - it maps radios at RUNTIME from based_modelid
+# (GT-AXE16000||GT-BE98 quad-band / GT-BE98_PRO / generic tri-band), not per
+# branch. Four of five siblings were already byte-identical to canon; only
+# gt-be98-pro differed, and only by MISSING canon's 2ea3eafaf2 ("add GT-BE98 to
+# the quad-band radio branch"). That omission is inert on GT-BE98_PRO hardware -
+# based_modelid takes the GT-BE98_PRO branch either way - but it is still drift
+# the port could never heal while the file was protected.
+PP_PROTECT_GLOB='[A-Z][A-Z]\.dict$|reaper_chanlist_shim\.c'
 
 # Per-branch identity files (never taken from canon):
 PP_PROTECT_EXACT="release/src-rt/version.conf release/src-rt/target.mak"

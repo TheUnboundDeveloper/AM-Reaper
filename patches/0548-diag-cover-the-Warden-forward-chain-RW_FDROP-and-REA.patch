@@ -1,0 +1,38 @@
+From 98de837d20c767066e672687371a7f5406fa1a0c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 26 Aug 2026 07:29:24 -0400
+Subject: [PATCH] diag: cover the Warden forward chain - RW_FDROP and
+ REAPER-WARDEN-FWD
+
+Adds the forward-side chain and log prefix to section 14's counter dump and
+drop-log volume list, so they are already covered if the shelved port-forward
+exemption lands. A chain that is not present simply reports as not present.
+---
+ release/src/router/others/reaper_diag | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index f13b331181..606621b8dc 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -598,7 +598,7 @@ echo "  -- chain packet/byte counters --"
+ # The counters are the whole point: a climbing RW_ODROP during a reported
+ # outage says Warden dropped it, and a flat one says look upstream. Before
+ # v1.2.0 this could only be read by hand, live, on the box.
+-for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_ODROP RW_SDROP; do
++for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_FDROP RW_ODROP RW_SDROP; do
+   if iptables -nvxL "$C" >/dev/null 2>&1; then
+     echo "  [$C]"; iptables -nvxL "$C" 2>/dev/null | sed 's/^/     /'
+   else
+@@ -626,7 +626,7 @@ echo "  -- Warden drop-log volume (counts only, no addresses) --"
+ # grep -c prints 0 and exits 1 on no-match, but prints NOTHING on a missing
+ # file - so capture first and default, rather than `|| echo 0` which would
+ # emit a second 0 on the ordinary no-match case.
+-for P in "REAPER-WARDEN " "REAPER-WARDEN-OUT " "REAPER-WARDEN-SELF "; do
++for P in "REAPER-WARDEN " "REAPER-WARDEN-FWD " "REAPER-WARDEN-OUT " "REAPER-WARDEN-SELF "; do
+   WC="$(grep -c "$P" /tmp/syslog.log 2>/dev/null)"
+   echo "     '${P}' hits in syslog: ${WC:-0}"
+ done
+-- 
+2.25.1
+

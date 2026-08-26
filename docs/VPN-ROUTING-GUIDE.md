@@ -136,7 +136,11 @@ Every rule has one target:
   **destination-list or MAC** rule has to exclude the whole LAN, which costs hardware acceleration for
   LAN traffic while such a rule exists. The rule's chip says which applies, and the log says so on
   every apply. A WireGuard rule whose client is switched off is fail-closed: it blocks the selected
-  traffic until that client comes up.
+  traffic until that client comes up. Since v2.7.7 the target list also **hides tunnels you have not
+  configured** and flags ones that are configured but currently down, so a rule cannot be pointed at
+  a target that was never going to carry it; and the accelerator-bypass table has only eight slots,
+  so a rule that would overflow it — or that names a tunnel whose interface is absent — is **refused
+  and logged** rather than applied.
 
 **IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the
 device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no
@@ -203,8 +207,12 @@ it sits in the firewall's own rule order.
   group, produces no rule rather than a rule that matches everything — the same fail-to-nothing
   behaviour the firewall uses.
 - **Apply and confirm.** Rules go live at once and revert on their own unless you press Keep within
-  the timer — the same protection the Firewall Rules tab has. It is still worth adding rules from a
+  the timer — the same protection the Firewall Rules tab has. The armed card says plainly that Keep
+  is what makes a change outlive the timer *and* a reboot. It is still worth adding rules from a
   device that is **not** itself being routed by the rule you are testing.
+- **A confirmed set survives a reboot on its own** (v2.7.6/v2.7.7). The marking chain and the routing
+  rules come back complete at boot with no visit to this page, and if the routing half is ever lost
+  the router re-applies it the way it already did for a lost firewall chain.
 - **WireGuard costs acceleration** for the flows it must bypass — see the target list above. Prefer a
   source rule (one address excluded) over a destination-list rule (whole LAN excluded) when you can.
 - **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup: use

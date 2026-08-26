@@ -22,10 +22,11 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # All five models are selectable, and as of 2026-08-10 all five have
-      # completed a green clean-room build.
+      # All six models are selectable. The five BCM4916 models have completed a
+      # green clean-room build as of 2026-08-10; RT-BE92U (BCM6765) was wired into
+      # the same pipeline at v2.7.6 and builds through the same path.
       #
-      # A sibling is the canon tree plus overlays/<MODEL>.patch (14-28 identity
+      # A sibling is the canon tree plus overlays/<MODEL>.patch (12-28 identity
       # files: banner, animated header, the pages referencing them, target.mak),
       # plus overlays/GT-BE98-platform.tar.gz for GT-BE98 alone -- the pinned
       # upstream carries router-sysdep for every other model but not that one.
@@ -48,10 +49,10 @@ on:
       # banner is absent or a foreign one is present, so that failure mode cannot
       # repeat silently.
       #
-      # 'all' fans out to every model. Combined with variant=both that is 10
+      # 'all' fans out to every model. Combined with variant=both that is 12
       # concurrent jobs of ~1.5 h each -- within the 20-job limit for public
       # repos, and fail-fast is off below so one model dying does not cancel
-      # the other four.
+      # the other five.
       model:
         description: 'Model to build (all = every model)'
         type: choice
@@ -113,7 +114,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v2.7.7'
+    ${{ inputs.version == '' && 'Reaper_v2.7.8'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -219,13 +220,13 @@ jobs:
   build:
     name: ${{ matrix.model }} ${{ matrix.variant }}
     # `overlays` is seconds long, so gating the matrix on it costs nothing and
-    # stops a known-bad overlay from consuming 10 x ~1.5 h of runner time.
+    # stops a known-bad overlay from consuming 12 x ~1.5 h of runner time.
     needs: [toolchain, overlays]
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
-      # fail-fast MUST stay false. A fleet run is 10 independent builds; one
-      # model failing should not cancel four healthy ones an hour in.
+      # fail-fast MUST stay false. A fleet run is 12 independent builds; one
+      # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
         model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","RT-BE92U"]') || fromJSON(format('["{0}"]', inputs.model)) }}

@@ -42,7 +42,8 @@ One command does all five, plus the sibling fan-out:
 ```
 
 `cut_fleet.sh` is the entry point. It runs `cut_rung.sh` (the five artifacts
-above), then ports the rung onto the four sibling branches, then handles the
+above), then ports the rung onto the five sibling branches (RT-BE86U, RT-BE88U,
+GT-BE98, GT-BE98 Pro and the RT-BE92U), then handles the
 overlays — **in that order.** Regenerating an overlay before the port produces a
 patch that *reverts* the rung on every sibling, and it applies cleanly, so
 nothing downstream catches it. That is the 2026-08-10 regression, and the order

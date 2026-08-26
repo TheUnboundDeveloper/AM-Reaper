@@ -14,8 +14,10 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
-*Last cleaned 2026-08-25 (after v2.7.7) — removed what v2.7.7 shipped (Gatekeeper re-list count;
-the translation pass) and added the UPnP key-desync defect found in the field the same day.
+*Updated 2026-08-26 — added the QoS live-stats and Gatekeeper dropdown defects (both found on v2.7.7 metal, remediated in tree
+for v2.7.8). Last cleaned 2026-08-25 (after v2.7.7) — removed what v2.7.7 shipped (Gatekeeper
+re-list count; the translation pass) and added the UPnP key-desync defect found in the field the
+same day.
 Earlier: 2026-08-24 retired the Pending-verification confirmation list and removed all
 shipped/closed items. Only genuinely open work remains.*
 
@@ -39,7 +41,8 @@ shipped/closed items. Only genuinely open work remains.*
 The ordered short list. Each line points at its full entry below.
 
 1. **[P1] UPnP silently half-works — daemon and firewall rules gate on different nvram keys**
-   (confirmed on two boxes 2026-08-25; fix in tree, unbuilt).
+   (confirmed on two boxes 2026-08-25; read side *and* the httpd Apply side now fixed in tree,
+   both unbuilt — needs a build and a metal check).
    → [Open bugs](#open-bugs--under-investigation)
 2. **[P2] Warden "crash" on the BE92U addon box** (amtm + Diversion update) — hypotheses ranked,
    tester data requested. → [Open bugs](#open-bugs--under-investigation)
@@ -51,6 +54,9 @@ The ordered short list. Each line points at its full entry below.
 5. **[P3] `RFW_*` IPv6 protocol labels** — the last translation residual: the "Other" label still
    needs a key minted, and the `RFW_*` proto set must be done as one job.
    → [Documentation](#documentation)
+6. **[P2] QoS page live stats blank** — remediated for v2.7.8 (the poll never sent `http_id`, so the
+   stats CGI refused it); needs the build and a look at the page.
+   → [Open bugs](#open-bugs--under-investigation)
 
 ---
 
@@ -76,9 +82,56 @@ The ordered short list. Each line points at its full entry below.
   `upnp_enabled()` helpers in `rc/services.c`, with all five gates in `rc/firewall.c` repointed at
   them, so the two cannot disagree by construction. **Field workaround meanwhile:**
   `nvram get upnp_enable; nvram get wan0_upnp_enable` — set whichever reads 0, `nvram commit`,
-  then `service restart_firewall` (or `restart_upnp`). **Still owed, separate defect:** on the
-  BE96U the WAN page's UPnP toggle wrote **neither** key — an Apply that persists nothing, which
-  the desync patch does not address. **[owed — build + the httpd Apply defect]**
+  then `service restart_firewall` (or `restart_upnp`).
+
+  **The Apply half is now fixed in tree too (unbuilt).** `validate_apply()` gains an explicit
+  `wan_upnp_enable` branch ahead of the generic `wan_` propagation: it resolves the unit from
+  `wan_primary_ifunit()` when `wan_unit` is absent, validates the value as a boolean itself, and
+  writes **both** `wan<N>_upnp_enable` and the generic `upnp_enable` in lockstep. The page only
+  ever posted the unindexed `wan_upnp_enable`, so the generic key had **no writer on this path at
+  all** — that part is proven from source and is fixed. Reading the apply loop also eliminated
+  several suspects: the loop iterates `router_defaults`, so field order in the form is irrelevant
+  and `wan_unit` (defaults.c:2494) is reached before `wan_upnp_enable` (2603); `nvram_check()`
+  rejects only on over-length, so a 1-char boolean passes; and the radios are enabled for
+  dhcp/pppoe/static/bridge by `fixed_change_wan_proto_type()`, so they do post. That leaves
+  `validate_apply_input_value()` (closed `priv_webapi.o`) as the only unexplained gate — the new
+  branch no longer depends on it either way. **Which gate was actually blocking on metal is still
+  unproven**; confirm on the next flash by toggling UPnP and checking that `nvram get upnp_enable`
+  and `nvram get wan0_upnp_enable` both flip. **[owed — build + metal confirmation]**
+
+---
+
+- **[P3] Gatekeeper: the 5 s poll closed an open access-level menu — remediated for v2.7.8
+  (owner report, 2026-08-26).** `gkPaint()` → `gkRender()` rebuilds `#devrows` with a whole-table
+  `innerHTML` assignment every poll, so a row's `.rowsel` `<select>` was destroyed with its row and
+  the native popup shut mid-choice. Same class as rule 40's dashboard dropdown trap, and a
+  signature compare would not have covered it — the rows carry relative "last seen" text that
+  changes on most polls. **Fixed in tree for v2.7.8:** an open `<select>` holds focus, so
+  `gkEditing()` tests focus and `gkRender()` defers the *paint* (never the fetch, so `GK.st` stays
+  current), flushing on `focusout`; `gkAct()` blurs first so a committed choice still repaints at
+  once; and the `s_def` / `s_hours` value writes are guarded the same way. `www`-only, no dict
+  change. Verified without a build: `reaper_langcheck` 0 breakers, both edited pages structurally
+  balanced. **[owed — build + a look at the page]**
+
+---
+
+- **[P2] QoS page: the live per-class stats never populated — remediated for v2.7.8
+  (found 2026-08-26 on RT-BE96U v2.7.7 metal).** The Traffic Manager page showed no rate and no
+  drop figures on any of the five class rows, on a box where the engine was demonstrably working
+  (`qos_type=11` armed, port shaper at `qos_obw`, class queues at `priority` 5→1, live `tmctl
+  getqstats` deltas on qid3 and qid5, zero drops). The engine was never the problem: `pollStats()`
+  in `Reaper_QoS.asp` requested `/reaper_qos_stats.cgi?_=<ts>` with **no `http_id`**, and v2.5.0
+  (`patches/0464`) had added a mandatory `http_id` CSRF gate to `do_reaper_qos_stats_cgi` —
+  matching the other `popen()`ing Reaper readers. Without the token the handler returns
+  `{"enabled":0,"error":"auth"}` before running a single `tmctl`, and the page's `if (!d.enabled)
+  return;` leaves every cell blank. The page-side URL had been unchanged since v1.2.8
+  (`patches/0131`) and was never updated when the gate landed, so the panel had been dead since
+  **v2.5.0**. `Reaper_QoSDiag.asp` already sent the token, which is why the diagnostics page kept
+  showing the same data.
+  **Fixed in tree for v2.7.8:** the poll now sends
+  `?http_id=<% nvram_get("http_id"); %>`, the same idiom as `Reaper_QoSDiag.asp`. `www`-only,
+  no dict change. `Reaper_Conn.asp` polls without a token too but is unaffected —
+  `do_reaper_conn_cgi` reads `/proc` and has no gate. **[owed — build + a look at the page]**
 
 ---
 
@@ -150,21 +203,6 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P3] RT-BE92U animated header — FIXED in-tree 2026-08-25, rides the next BE92U build.** The
-  BE92U `_anim` slot had carried a 37 KB single-frame PNG with **no `acTL`** since the port, so its
-  login, password, logout and first-boot screens rendered a still where every other model animates
-  (those four pages are the only consumers — `Main_Login.asp`, `Main_Password.asp`, `Logout.asp`,
-  `Reaper_FirstBoot.asp`; the rail/topbar banner is the separate 2172x245 `_Header.png`).
-  Owner regenerated it from `RT-BE92U Header Animation.mp4`; verified a real APNG, 480x54,
-  1,064,235 B, `acTL` + 43 `fcTL` (43 frames = 1 `IDAT` + 42 `fdAT` — a valid encoding, and simply
-  fewer/larger chunks than the other five, which split 48 frames across ~260 `fdAT`).
-  sha256 `e181d406c3093afb…`. Propagated to both places the fix requires: the lean repo's
-  `reaper-mockups/` and the `rt-be92u` branch's `www/images/`. **No sha pin changes** — the pinned
-  `want_ban`/`BSHA` (`032fc64c…`) is on `RT-BE92U_REAPER_Header.png`, which is untouched.
-  **Closes** (→ changelog) when a BE92U image is built and its login screen animates. **[owed — build]**
-
----
-
 - **[P3] Loading/Restarting overlay — native redesign remains.** Full-screen coverage and viewport
   re-anchoring (`--rv-top`/`--rv-h`) exist since v2.3.3, but **owner 2026-08-12: several overlays
   still centre on the shell viewport**, ignoring the nav rail and header. The `--rv-*` mechanism only
@@ -194,15 +232,6 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P3] RT-BE92U real banner art** — the shipped BE92U header banner is a generated placeholder;
-  replace it with real art and update the pinned sha in `reaper_verify.sh` + `port_sibling_v2.sh`.
-  **Distinct from the animated header above, which is done:** this is the 2172x245
-  `RT-BE92U_REAPER_Header.png` used by the rail/topbar (still `032fc64c…`), not the 480x54
-  `_anim.png` used by the login/logout screens. Replacing it *does* require re-pinning both
-  scripts; the animation fix did not. **[owed]**
-
----
-
 - **[P2] Sign the firmware-update manifest — IMPLEMENTED for v2.7.3, then SHELVED INERT (owner
   decision 2026-08-23).** All machinery ships but nothing enforces: `REAPER_SIG_ENFORCE=0` in
   `reaper_webs_update.sh` skips the whole verify (no sig fetch, no refusal, error 9 / the
@@ -227,16 +256,6 @@ The ordered short list. Each line points at its full entry below.
   tampered/garbage/empty sig=refused). Shipped inert in v2.7.3; nothing is pending while shelved.
   When re-enabled, closes when a fielded box verifies a signed manifest (check succeeds) and
   refuses an unsigned one. **[shelved — inert]**
----
-
-- **[P2] Native firewall suite — the remaining pieces.** Shipped v2.4.1 (engine, hub, Status posture,
-  Egress defaults, hardened Forwards, backup/restore); dnsmasq `ipset=` FQDN emitter 2026-08-14 (the
-  old "dnsmasq compiled without ipset" blocker was a misreading — do not re-raise).
-  - **Advanced DSL for the Rules tab** — the 2026-08-08 design called for a Basic form *and* a text
-    syntax; only Basic was built. Decide whether it is still wanted; the compile preview may already
-    cover it. **[decision]**
-  - **Rule tracer** ("given a packet like *this*, which rule matches?") — a C simulator over the
-    committed config. Diagnostic aid, nothing is unusable without it. **[P3, owed]**
 
 ---
 

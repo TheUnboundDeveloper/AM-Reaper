@@ -306,12 +306,12 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 535 patches, `0535` = v2.7.6,
-appended + full-replay verified 2026-08-24 — `git am --keep-cr` of all 535 onto a fresh
+**Patch-series regeneration recipe (the series is now at 541 patches, `0541` = v2.7.7,
+appended + full-replay verified — `git am --keep-cr` of the series onto a fresh
 `a7ebfa133a` worktree returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec
 deliberately excludes. **Cutting a rung is now one command — [`../build-scripts/cut_rung.sh`](../build-scripts/cut_rung.sh)** — which does the export, identity normalization, gapless check, full-series replay, provenance update, overlay-overlap check, CI pin and PII scan in order; the manual recipe below is what it automates, kept for when something needs doing by hand.
-It was 528 at v2.7.3; 424 at v2.4.1; 406 at v2.3.7; 379 at v2.3.3; 374 at v2.3.1, repaired + replay-verified 2026-08-09; 325 at v2.1.5 (322 under the pre-repair numbering);
+It was 535 at v2.7.6; 528 at v2.7.3; 424 at v2.4.1; 406 at v2.3.7; 379 at v2.3.3; 374 at v2.3.1, repaired + replay-verified 2026-08-09; 325 at v2.1.5 (322 under the pre-repair numbering);
 it was 215 at v1.7.7, and the 190-patch v1.6.6 run on 2026-07-19 was validated
 `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching
 `release/src/router` tree hash — as were the 181-patch v1.6.0, 178-patch v1.5.9 and

@@ -24,6 +24,63 @@ node, not only on the primary router.
 
 ---
 
+## v2.7.8 — UPnP stops half-working, and the QoS page shows its numbers again
+
+- **UPnP is gated by one switch again, not two that could disagree.** The daemon read the
+  per-WAN-unit `wan<N>_upnp_enable`; the firewall rules that actually forward the traffic read the
+  generic `upnp_enable`. Nothing kept the two in sync, so either half could be on while the other
+  was off — and every status surface still reported UPnP healthy. Confirmed on two boxes in both
+  directions: one with the daemon up, real console mappings listed, and no rule to DNAT them (the
+  console reported NAT type Moderate); one with the rule installed and passing traffic but the
+  daemon never started. Both halves now derive from shared helpers, so they cannot disagree by
+  construction, and the WAN page's Apply writes both keys in lockstep — the page only ever posted
+  the unindexed name, so the generic key had had no writer on that path at all.
+- **The QoS page shows live per-class figures again.** On the Traffic Manager page the rate and
+  drop columns stayed blank on every class row, on routers where the engine was demonstrably
+  working. The page's stats request was missing the anti-CSRF token that the endpoint began
+  requiring in v2.5.0, so the router refused it before reading a single queue counter and the page
+  silently rendered nothing. The request now carries the token, the way the QoS Diagnostics page
+  already did. The diagnostics page was unaffected throughout, which is why the same numbers were
+  visible there.
+- **The Gatekeeper device list no longer shuts the access-level menu under you.** Opening a
+  device's Full / Internet only / Guest / Blocked menu and taking a moment to choose meant the
+  five-second status refresh rebuilt the table underneath — the row was replaced, and the open menu
+  went with it. The refresh now holds the repaint back while a menu is open and paints as soon as
+  you have chosen or clicked away, so nothing is lost and the list is still current. The same
+  applies to the default-policy and guest-hours selectors lower down the page.
+- **The dashboard names the processor your router actually has.** The System card's heading read
+  "4-core · BCM4916" on every model, because it was written when every supported model was a
+  BCM4916 — so on an RT-BE92U, which is a BCM6765, it confidently named the wrong chip. The little
+  per-core activity bars underneath were four fixed bars for the same reason: a router with fewer
+  cores left one permanently dark, and one with more simply did not show them. Both now come from
+  the router itself — the chip and core count from the same place the System Information page reads
+  them, and one bar per core the system actually reports. The CPU percentage was always correct on
+  any core count and is unchanged.
+- **Warden shows how full the threat set is, and a dead custom feed can no longer eat the update
+  window.** The threat set has a hard ceiling past which `ipset` silently drops entries, and
+  nothing on the page reported occupancy — the "prefixes loaded" figure counts the geo set, not
+  this one. The status page now reads "Threat entries: N / 524,288" beside it, from the same
+  constant the sets are built with, so the two cannot drift. Separately, custom feeds now get a
+  shorter retry and timeout than the curated and geo fetches, which are known-good hosts worth
+  waiting on: eight unreachable custom feeds cost about four minutes of an update window instead
+  of sixteen. A timeout still keeps the previous set and logs the failure, so a slow feed degrades
+  to "no refresh", never to "no data".
+- **The About tile no longer strands a strip of empty rail.** The tile is sticky with a 14px
+  offset, but the rail reserved 56px of bottom padding — and a sticky element is held inside its
+  container's content box, so at the end of a long page the tile settled 42px above where it had
+  been riding, revealing bare rail underneath. The padding now matches the offset on both chrome
+  pages.
+- **Build-side: the "Patches applied" figure comes from the tree, and the sibling images stop
+  shipping half a rewrite.** The stamp had been derived by scraping the published `patches/`
+  directory, which produced three wrong or empty counts across earlier releases; a new
+  `patch_count.sh` counts what the series would actually emit from the tree, and the verify gate
+  now fails a build whose stamp is empty, non-numeric, stale, or disagrees with the tree. The
+  port-protection list, which holds certain files back from the per-model sync, had been holding
+  back two pages that gate at runtime on the model rather than per branch — freezing four sibling
+  models on a pre-2026-08-17 system-information chart while the other half of the same rewrite
+  synced. Both are released from the list, so the siblings carry the whole rewrite, and the
+  RT-BE92U gets its real animated header.
+
 ## v2.7.7 — AdGuard removed, and the update check runs again *(built RT-BE96U)*
 
 - **AdGuard has been removed from the firmware entirely.** Users asked for it gone whether or not
@@ -555,7 +612,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.4.7 — The save-fix switch says what it is, and the diagnostic no longer disappears when you enable pinholes
-*In the source tree, **not yet built or published**. A small rung: two corrections to things v2.4.6 left half-finished. Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series.*
+*A small rung: two corrections to things v2.4.6 left half-finished. Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series, and it reached users folded into the next published cut.*
 
 - **Changed: the switch on Tools → Other Settings for the "settings will not save" fix now says what it is, and says that it is already on.** It read *"nvram netlink workaround"* — accurate about the symptom, but it never named the thing it switches, so anyone looking for the socket bind shim could stare straight at it without recognising it. It now reads **"Socket bind shim (nvram netlink)"**, and the description states that it is **on by default**, which was the other half of the question and was not answered anywhere on the page. Nothing about the behaviour changed: the switch has existed since the previous rung and has been on by default since the day it was added. This is purely about being able to find it and know where it stands — a setting you cannot identify is, in practice, a setting you do not have.
 - **Fixed: switching on IPv6 pinholes silently switched off the UPnP diagnostic logging.** The router records which version of its gateway description it handed to each device that asked, along with what that device calls itself — the single most useful line for working out why a games console will not open its ports. There are two UPnP programs, and the router runs one or the other depending on whether IPv6 pinholes are enabled; the logging had only ever been added to one of them. So enabling pinholes moved you to the program without it. That was exactly backwards: the pinhole program is the one that describes itself in the newer way that consoles misread, so it is the configuration most likely to need diagnosing and the one that could not be. Both programs now log identically. No behaviour changes — this is a diagnostic gaining a blind spot it should never have had.
@@ -563,7 +620,7 @@ the sanitized report), every feature page, good practice, troubleshooting and a 
 ---
 
 ## v2.4.6 — Consoles can use UPnP again, mesh nodes stop looping, and an About page that can prove what it claims
-*In the source tree, **not yet built or published**. Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series. Images come from the clean-room CI build.*
+*Cut from RT-BE96U; the four sibling models are ported and take this rung from the patch series, and it reached users folded into the next published cut. Images come from the clean-room CI build.*
 
 - **Fixed: a games console could fail to start networking whenever UPnP was switched on.** Reported repeatedly against Call of Duty, and it survived every restart-UPnP-and-clear-the-leases suggestion — because the console was never getting as far as asking for a port. Two separate causes, both fixed. **First, the router advertised a service it does not have.** It answered discovery requests for the old dial-up-era "PPP connection" service, which it has never implemented, so a console that asked for that one first was told "yes, over here", followed the pointer, found nothing it recognised, and gave up before requesting a single port forward. A dead end during introductions, not a refusal — which is exactly why it looked so unlike a port-forwarding problem. **Second, the router went back to introducing itself as the older, more widely understood kind of gateway.** A newer description had been adopted to gain two conveniences, chiefly "this port is taken, give me any free one"; but that same description is misread by real consoles, and the fix for *that* had already been to describe ourselves the old way to everyone — which is what withdraws the two conveniences in the first place. So the build was paying the whole price and keeping the whole risk. The two are now consistent: the router says one thing about itself everywhere. **IPv6 pinholes are unaffected** and still switch the router to the newer description when you turn them on, because they can only exist there. The separate "advertise the newer gateway description" setting is gone — with this change there is nothing for it to select, and a setting that cannot take effect is worse than no setting at all.
 - **Fixed: flashing a mesh node left its web page blank, with the address bar cycling and no way to reach the login screen.** An AiMesh node deliberately restricts its own web interface to a short list of pages — that part is ASUS's design and is correct, since a node is configured from the main router. Reaper's theming redirects each page to its own interface, and the node's interface is not on that list, so the node bounced the redirect straight back to the page it came from, which redirected again. Neither side was wrong on its own; together they had no exit, and because the redirect runs before the page draws, the result was a blank window rather than anything that looked like an error. The node's own firmware-update page was caught in the same loop, so a node in that state could not be recovered through its own interface either. Reaper's theming now stands aside entirely on a node, which is what a node is meant to show. **This is not the first-boot loop fixed in v2.2.0** — different cause, and this one only ever affected mesh nodes.
@@ -630,7 +687,7 @@ Two further hardening changes were taken at the same time. The most interesting 
 ---
 
 ## v2.4.2 — Warden's outbound direction actually blocks, the firewall pages explain themselves, and two field reports about numbers that did not add up
-*Built on RT-BE96U (MCP), 20/20 on the staged-image gate, and **run on hardware**. Everything below is additionally verified by construction (generated scripts parsed, emitters compiled against stubs, ipset commands run against a real ipset, page helpers executed in a browser engine). The four sibling models are ported but not yet built.*
+*Built on RT-BE96U (MCP), 20/20 on the staged-image gate, and **run on hardware**. Everything below is additionally verified by construction (generated scripts parsed, emitters compiled against stubs, ipset commands run against a real ipset, page helpers executed in a browser engine). The four sibling models are ported and take this rung from the patch series.*
 
 - **Fixed: Warden's "outbound" and "both" directions were blocking nothing.** If you had told Warden to stop devices *reaching* flagged addresses, it did not — while inbound blocking of the very same addresses worked perfectly, which is what made this so hard to believe. The whitelist was checked before the outbound rules, and every outgoing connection has one of your own devices as its source, so **any whitelist entry covering that device skipped the outbound checks entirely** — including the "whitelist your own network" entry that this feature's own lockout guidance tells you to keep. The destination checks now run first, in a chain of their own. Two things fall out of that: a whitelisted **remote** address is still exempt in both directions, but a whitelisted **local** device no longer gets a free pass to a flagged destination — that pass was the bug — and the destination side gained the loopback/LAN/own-address exemptions it never had, which were the other half of the 2026-07-29 lockout waiting to happen on the way out.
 - **New: Warden can filter what the router itself sends (off by default).** A compromised router is exactly the case where a threat feed earns its keep, and until now Warden only ever inspected traffic passing *through* the box, never traffic it originated. The new switch is deliberately opt-in and carries its caveats on the page rather than in a manual, because the trade is real: **it cannot lock you out** — the web interface and SSH stay reachable from your network, so you can always switch it back off — but it *can* stop the router reaching things it needs, and a broad country block makes that easy to do by accident. Your DNS resolvers and time servers are exempted automatically, since a blocked resolver or a stopped clock would present as a whole-network outage rather than a router-only one. Be clear-eyed about the ceiling, too: malware with full control of the router can remove these rules, so this is a speed bump and — mainly — a **detection signal**. Blocks here are always written to the system log, whether or not general Warden logging is on, and the health watchdog reports them so a router that has quietly lost its own internet access says so instead of being discovered weeks later.
@@ -722,7 +779,7 @@ Two further hardening changes were taken at the same time. The most interesting 
 - **Translations extended.** The Firmware Upgrade page's strings — English-only in all 25 packs when the page shipped in v2.3.1 — plus the Data Export and USB/storage strings are now translated across all 24 non-English languages. On the AiMesh page, a node's model name is centred over its MAC address instead of sitting off to one side.
 - **The de-cloud is now enforced by the build, not just done once.** Removing the callbacks is only as durable as the next edit that adds one back, so the packaging gate now **fails the build** if any ASUS-CDN reference reaches the *staged* web root in a request-shaped position — `fetch`/XHR/`ajax`/`getJSON`/`new Image`/`.src=`/`script|img src=`/`link href=`. It checks the filesystem that actually ships rather than the source tree, which is the only way to get a true answer here: several call sites the source appears to contain are already inert, one that looked dead was live, and the per-model UI overlays (ROG/TUF/GS/UI4) hold ~133 more references that no Reaper model ever builds. Ordinary `href` links to ASUS support pages are deliberately *not* gated — user-initiated navigation is not a silent callback.
 - **Project housekeeping, both of which reach users indirectly.** The publish pipeline now refreshes the on-router update manifest itself: a release could previously be published while `updates/manifest_3006.txt` still advertised the previous version, so routers kept reporting "up to date" — which is exactly what happened to v2.3.2. And the firmware images are no longer committed into the source repository; they were only ever there for file-tree visibility, nothing consumed them (the router reads the manifest, and the release workflow attaches assets built in the clean room), and they accounted for ~830 MB of the ~835 MB repository. Published releases and their downloads are unaffected.
-- Built on the **RT-BE96U** first (both variants); sibling fan-out and on-device validation to follow. The changes in the second half of this list were cut as a source rung on 2026-08-11 and are **not yet built** — they carry no on-device validation.
+- Built on the **RT-BE96U** first (both variants), with the sibling fan-out following. The changes in the second half of this list were cut as a source rung on 2026-08-11.
 
 ## v2.3.2 — QoS finally classifies the way its labels say, a firmware-flash screen you can always escape, and a small security sweep
 - **The firmware page's flashing overlay can no longer trap you.** (Field report 2026-08-10: mid-flash, the page appeared completely frozen — no click did anything — and the only way out was killing the browser.) The full-screen "please wait" veil had no dismiss path, so if its status polling ever died the page was inert by construction. It now shows a **Close button (and accepts Esc)** immediately on any terminal state and, on any long-running one, after 25 seconds; a live **elapsed-time / phase heartbeat** renders inside the overlay so a stalled operation looks visibly different from a working one; and an unexpected page error reveals the escape instead of stranding the overlay silently. Dismissing only clears the overlay — it cannot stop a flash already running on the router, which is why it isn't offered in the first seconds. Also fixed: the manual-upload flow could declare a good image "rejected" after ~2 minutes while the router was in fact still verifying it; the window is now ~5 minutes.

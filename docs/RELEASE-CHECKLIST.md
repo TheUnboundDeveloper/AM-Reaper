@@ -46,8 +46,8 @@ wsl -d Ubuntu-20.04 -u reaper -- \
   --version vX.Y.Z
 ```
 
-This runs, in the only safe order: `cut_rung.sh` → port the four siblings →
-**then** the overlays. Order is not negotiable — regenerating overlays before
+This runs, in the only safe order: `cut_rung.sh` → port the five siblings
+(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, RT-BE92U) → **then** the overlays. Order is not negotiable — regenerating overlays before
 the port writes an overlay that *reverts* the rung on every sibling, and it
 applies cleanly, so nothing downstream would catch it.
 
@@ -55,7 +55,7 @@ applies cleanly, so nothing downstream would catch it.
       is **gapless**
 - [ ] The full-series **replay passed** — `EXTENDNO` matches and the only diff
       vs canon HEAD is `*.md`
-- [ ] All four ports report **`post-commit parity: 0 unsynced shared files`**
+- [ ] All five ports report **`post-commit parity: 0 unsynced shared files`**
 - [ ] Dicts committed per model and **lockstep** (one line count across all 25)
 - [ ] The **overlay identity gate passes** at the end
 
@@ -140,8 +140,8 @@ Choose one:
 
 **Actions → Public build → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 10 jobs,
-      ~1.5 h each)
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 jobs,
+      ~1.5 h each — six models since the RT-BE92U joined the fan-out)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.
@@ -154,10 +154,13 @@ shipping anything.
 Watch for:
 
 - [ ] **Overlay identity gate** passes (seconds, before the matrix — it gates the
-      build, so a bad overlay costs seconds instead of 10 × 1.5 h)
+      build, so a bad overlay costs seconds instead of 12 × 1.5 h)
 - [ ] `EXPECTED_VERSION` assertion passes after the series applies
 - [ ] Series tree matches `provenance/manifest.json`
-- [ ] Packaging/verify gate passes for every model × variant
+- [ ] Packaging/verify gate passes for every model × variant — including the
+      provenance-stamp check, which fails a build whose About-page patch count is
+      empty, non-numeric, stale, or disagrees with what the tree would export
+      (`build-scripts/patch_count.sh` is the single source of truth for that number)
 
 ---
 

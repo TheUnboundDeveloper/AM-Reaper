@@ -100,7 +100,7 @@ build-commit column will never match, by design.
 
 > Generated from [`../provenance/manifest.json`](../provenance/manifest.json) rather than
 > transcribed. This table lists rungs through v2.4.3; the manifest itself is the complete, current
-> ledger (through v2.7.6). Note the patch ranges for **v2.1.0 – v2.1.5** are the **post-repair** numbers: the
+> ledger (through v2.7.7). Note the patch ranges for **v2.1.0 – v2.1.5** are the **post-repair** numbers: the
 > 2026-08-09 series repair restored three never-extracted commits and shifted everything after
 > `0245` by +3, so an older copy of this table showing `0289`/`0310`/`0322` was describing the same
 > releases under the pre-repair numbering.
@@ -115,9 +115,10 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0535` (v2.7.6, RT-BE96U-only), while the newest **published** release is
-v2.7.3. The RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro images (published at v2.7.3) are produced by
+to `0541` (v2.7.7, RT-BE96U-only), while the newest **published** release is
+v2.7.6. The RT-BE86U /
+RT-BE88U / GT-BE98 / GT-BE98 Pro images (published at v2.7.6, alongside the
+RT-BE92U's experimental prerelease) are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob
 overlay); the patch series is RT-BE96U-only, so the tree hash above is the
 RT-BE96U reference and the siblings are not independently patch-reproducible
@@ -126,7 +127,8 @@ release ladder).
 
 ## Build & verification logs
 
-Each release's build and `reaper_verify` (19-check packaging gate) logs are
+Each release's build and `reaper_verify` (the packaging gate; its check list grows as
+new classes of packaging defect are found) logs are
 summarized under [`provenance/logs/<version>/`](../provenance/logs) — the
 meaningful lines (configured build profile, `MAKE_EXIT=0`, the "Done! Image"
 marker, every verify check, and the built image hashes), with the build-host

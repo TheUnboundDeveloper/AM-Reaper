@@ -72,16 +72,16 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 535 patches (through v2.7.6).
+#   fails without it. This applies all 541 patches (through v2.7.7).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
-#   expected after all 535 patches (v2.7.6):
-#                         3852ad7a46b7110fe2fa0a61a903208d961a7927
+#   expected after all 541 patches (v2.7.7):
+#                         1c7e12e7e62dbee5e9b880931d86ce2c7c9abd3e
 #   (this value is releases[].source_tree_from_series["release/src/router"])
 #
-#   For the newest PUBLISHED release, v2.7.3, apply the first 528 instead:
-#                         c510f0a6b033ec8054f73fe4a9875f000198d1ba
+#   For the newest PUBLISHED release, v2.7.6, apply the first 535 instead:
+#                         3852ad7a46b7110fe2fa0a61a903208d961a7927
 #   The 535-patch replay was verified clean on 2026-08-24 — `git am --keep-cr`
 #   returned 0 and the only diff against the build commit was vendored *.md
 #   files, exactly as described below.
@@ -170,7 +170,7 @@ enforces that the patch series is gapless and carries no leaked personal data.
 Each release's logs are summarized under
 [`../provenance/logs/<version>/`](../provenance/logs) — the configured build
 profile, the `MAKE_EXIT=0` markers, the "Done! Image" confirmation, the built
-image hashes, and every line of the 19-check `reaper_verify` packaging gate
+image hashes, and every line of the `reaper_verify` packaging gate
 (which confirms, among other things, that the "no-AI" variant contains no trace
 of the AI Advisor, that the dictionaries are language-consistent, and that the
 web server's shared-library closure resolves). Build-host paths are normalized;
@@ -225,9 +225,9 @@ The image SHA-256s are in the release's `SHA256SUMS-*.txt`. They are **also**
 supposed to be in the manifest, but in practice are populated only for
 v2.1.0–v2.1.5, v2.3.1 and v2.4.3 — so treat the `SHA256SUMS` file attached to a
 release as the authoritative image record, and do not infer from an empty `images`
-list that a release never shipped. The newest published release is **v2.7.3** (all
-five main models, 2026-08-23); later source rungs (the **v2.7.4–v2.7.6** line, and the many
+list that a release never shipped. The newest published release is **v2.7.6** (all
+five main models plus the RT-BE92U, 2026-08-24); later source rungs (**v2.7.7**, and the many
 unpublished v2.5.x–v2.7.x rungs) are built for the RT-BE96U only, both variants, and their
 image hashes may be recorded in the manifest — but those are locally built artifacts, not
-published downloads. The newer RT-BE92U ships as experimental prereleases. The published images come from the CI
+published downloads. The RT-BE92U's images are published as experimental prereleases. The published images come from the CI
 clean-room run and get their own `SHA256SUMS-*.txt` per model at publish time.

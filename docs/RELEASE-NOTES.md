@@ -2,19 +2,187 @@
 
 | | |
 |---|---|
-| **Current rung** | **v2.7.6** — `3006.102.8_Reaper_v2.7.6`, built on RT-BE96U (and RT-BE92U). The line since v2.7.1 adds, in order: **v2.7.2** (Traffic Analyzer history survives a firmware update; a one-file `.rbk` full backup/restore); **v2.7.3** (Gatekeeper learns AiMesh exists, so default-deny no longer blocks node onboarding/heartbeats; the owner's guide surfaced from every page; themed dialogs; manifest signing built then shelved inert); **v2.7.4** (drop the first-boot gate that flashed "Secure Your Router" on boxes with no guest network); **v2.7.5** (one dedicated Addons rail section); **v2.7.6** (Policy Routing's mark chain comes up complete after a reboot with no UI Apply; the Warden status page never fails silently; firewall-lock re-apply; owner-aware PBR teardown). Patches 0518–0528 (v2.7.3) and 0529–0535 (v2.7.4–v2.7.6) are cut into the series and **await the maintainer's push**. |
-| **Newest published** | **v2.7.3** (2026-08-23), on all five main models, both variants — the newest image you can actually install, and what "current version" means in [`../README.md`](../README.md). The newer **RT-BE92U** ships as experimental prereleases (v2.7.4, v2.7.6). |
+| **Current rung** | **v2.7.7** — `3006.102.8_Reaper_v2.7.7`, built on RT-BE96U. The line since v2.7.1 adds, in order: **v2.7.2** (Traffic Analyzer history survives a firmware update; a one-file `.rbk` full backup/restore); **v2.7.3** (Gatekeeper learns AiMesh exists, so default-deny no longer blocks node onboarding/heartbeats; the owner's guide surfaced from every page; themed dialogs; manifest signing built then shelved inert); **v2.7.4** (drop the first-boot gate that flashed "Secure Your Router" on boxes with no guest network); **v2.7.5** (one dedicated Addons rail section); **v2.7.6** (Policy Routing's mark chain comes up complete after a reboot with no UI Apply; the Warden status page never fails silently; firewall-lock re-apply; owner-aware PBR teardown); **v2.7.7** (AdGuard removed everywhere; the update check runs again; the six field defects in Policy Routing; the translation pass completed). The series stands at **541 patches** (0518–0528 for v2.7.3, 0529–0535 for v2.7.4–v2.7.6, 0536–0541 for v2.7.7). |
+| **Newest published** | **v2.7.6** (2026-08-24), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.6. **Published on all five models:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1 and **v2.7.3** (newest). Every rung from v2.5.4 on is built on RT-BE96U, both variants; v2.6.x–v2.7.x were each validated on the maintainer's router through the diagnostics report, with the items that need a second box or a reporter listed under *Pending verification* in [`BACKLOG.md`](BACKLOG.md). |
-| **Prior full-fleet releases** | **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
+| **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3 and **v2.7.6** (newest, and the first to include the RT-BE92U). Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
+| **Prior full-fleet releases** | **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
 > RT-BEXXU. This document is the release summary; the exhaustive security detail
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.7.7 — AdGuard removed, the update check runs again, Policy Routing's field batch
+
+*Built on RT-BE96U, both variants. Cut as patches 0536–0541, bringing the series to 541.*
+
+**AdGuard has been removed from the firmware entirely.** Users asked for it gone whether or not it
+was ever configured — an unused third-party DNS service is still a third-party data collector
+sitting in the GUI, and the feature's own privacy text said your information would be collected. All
+three places it appeared are gone: the **AdGuard tab under Parental Controls** and its page, the
+**AdGuard entries in the DNS Director and DNS-over-TLS provider lists**, and the two **AdGuard cards
+in AiBoard**. The per-network AdGuard switch in SDN profiles goes with them. Nothing else changes —
+every other DNS provider, SDN setting and AiBoard card is untouched.
+
+**"Check for update" works again — and now says something useful when it does not.** The button
+could report a failed check and point at a log file that did not exist, which made it impossible to
+diagnose. The cause was not the check itself: the script was being installed into the firmware
+without its execute bit, so the router's service manager could not run it and gave up silently. Run
+by hand it had always worked. The build now forces the executable bit on all three update scripts,
+so the check runs — and a genuine failure leaves a genuine log behind.
+
+**Policy Routing: the six problems reported from the field.** A WireGuard target could reboot the
+router; a rule is now refused, and logged, when the hardware-acceleration bypass table is full or
+the tunnel interface is down, and it is written exactly the way the vendor's own code writes it.
+Apply reliably reaches the Confirm step, a confirmed change survives a reboot without leaving a
+phantom "awaiting confirmation", and the armed card now says plainly that Keep is what makes a
+change outlive the timer and a reboot. The target list hides tunnels you have not configured and
+flags ones that are configured but currently down. `firewall-start` add-on scripts run last, so
+their rules are no longer reordered underneath them. Lost routing rules now repair themselves the
+way a lost firewall chain already did.
+
+Also in this rung: on the Policy Routing page the acceleration-bypass note read as a warning about
+something larger than it is — **"Whole LAN" is now just "LAN"**, reworded in all 25 languages. **The
+translation pass is complete**: the remaining functional interface text is translated across all 24
+non-English languages, with the credits and their jokes left in English by choice. And the
+**Gatekeeper diagnostics report the real re-list count** — the diagnostic counted by pattern-matching
+firewall output and undercounted; it now reads the count the service itself records.
+
+---
+
+## What's new in v2.7.6 — Policy Routing survives a reboot, Warden never fails silently
+
+*Built on RT-BE96U and RT-BE92U. This is the fleet cut that folds the v2.7.4–v2.7.6 field-fix work
+(patches 0529–0535) into one release across all five 96813GW models, with RT-BE92U (BCM6765)
+carrying the same shared changes from its own branch.*
+
+**Policy Routing comes up complete after a reboot — no Apply from the page needed.** A rule that
+matches an address set could not load until that set existed, and at boot the set was sometimes a
+moment late, leaving the routing mark chain short until someone re-applied by hand. The routing
+apply script now builds its own object sets first, and the firewall re-applies the chain under the
+firewall lock, so a fresh boot brings the whole chain up on its own.
+
+**A 40-domain object saves in one paste.** The Firewall and Policy Routing list editor is now
+paste-tolerant — whitespace and newlines are normalised, its buffers were widened, and it shows a
+persistent error instead of silently dropping what it could not take, so a large domain object saves
+in a single paste rather than a few entries at a time.
+
+**The Warden page never fails silently.** Under load it now shows "Stats unavailable — retrying"
+instead of dead placeholder numbers, and the stats collector waits less time for its lock. The
+firewall-layer re-apply (Gatekeeper, Warden, the engine) runs under the firewall lock, and the
+Policy Routing teardown deletes only the rules carrying Reaper's own mark — a co-installed add-on's
+routing rules are left alone. On the About page, **"Patches applied" shows a number again**: the
+build stamps that count and had been reading the series version from the last patch's filename,
+which is empty on any rung whose tip is a feature patch rather than the version bump. The stamp now
+takes the highest version across the whole series.
+
+---
+
+## What's new in v2.7.5 — one dedicated Addons section in the rail
+
+*Built on RT-BE96U and RT-BE92U; folded into the v2.7.6 cut.*
+
+**Merlin add-ons now live in one "Addons" section at the end of the nav rail**, instead of being
+scattered into — and rearranging — the stock menus. Whether an add-on pushes its own menu, drops a
+tab into an existing menu, or adds a whole menu of its own, its entries are lifted into a single
+unfolding Addons group; the stock menus keep their own icons, order and tabs. An add-on page still
+gets its siblings as its tab bar.
+
+---
+
+## What's new in v2.7.4 — the first-boot "Secure Your Router" flash
+
+*Built on RT-BE96U and RT-BE92U; folded into the v2.7.6 cut.*
+
+**Every nav item no longer flashes the "Secure Your Router" card on a box with no guest network.** A
+first-run gate keyed on the SDN list being at its default treated any router that had never created
+a guest or SDN profile as "Wi-Fi not configured", bouncing it back to the first-boot page on every
+navigation. That gate is removed — the existing setting-state gate already covers a genuinely
+unconfigured box, and a factory-reset unit still gets both wizard steps. (Surfaced on the RT-BE92U
+in the field.)
+
+---
+
+## What's new in v2.7.3 — Gatekeeper learns AiMesh exists; the owner's guide, one click away
+
+*Built on RT-BE96U and RT-BE92U; published full-fleet on the five 96813GW models, and folded into
+the v2.7.6 cut.*
+
+**AiMesh onboarding and mesh nodes are now exempt from Gatekeeper.** A full review of the
+add-node/search path — prompted by contradictory field reports — proved the search and add chain
+itself is byte-for-byte stock, but no Reaper enforcement layer knew AiMesh existed: with Gatekeeper
+in default-deny mode a joining node got its DHCP lease and then every packet to the router's mesh
+controller was dropped, so adding a node stalled right after association, and enabling default-deny
+on an existing mesh silently cut the nodes' control traffic. Now the mesh's own pairing registry
+exempts node MACs from every Gatekeeper surface — ahead of per-device rules, so a mis-filed entry can
+never sever a live backhaul — the exemptions refresh as nodes join and leave, and while an add is
+actually in progress the quarantine gate is held open for router-bound traffic only, time-boxed and
+closed within seconds of the add finishing. The diagnostics report shows the registry and window
+state.
+
+**Firmware-update manifest signing — built, and shelved inert for now.** The full machinery exists:
+the manifest can be signed (RSA-4096/SHA-256) with a key that lives only offline — deliberately not
+in the repository and not in CI — and the router can verify that signature against a public key
+baked into the firmware before honouring a single field. For this release the enforcement ships
+**disabled**: verify code, embedded public key, signing tooling and CI checks are all present but
+inert behind two explicit switches, so it can be turned on end-to-end later without rework. A
+refused signature explains itself rather than saying "check failed" — that this is briefly expected
+right after a release is published, and that a persistent failure can mean a compromised source.
+Beside it sits an explicit **Override** for the operator who knows what they are doing: a danger
+dialog whose confirm button only unlocks after typing `OVERRIDE`, arming a one-shot flag the next
+check consumes. The overridden offer stays visibly branded *UNVERIFIED*, the override is loudly
+logged, it can never happen by accident, and it never persists.
+
+**The owner's guide is one click away everywhere:** a `?` in the shell and dashboard topbars opens
+[`REAPER-GUIDE.md`](REAPER-GUIDE.md); the Firewall, Gatekeeper, Warden, Storage and USB pages
+deep-link their own guide sections beside the page title; the About page carries an "Owner's Guide"
+button; the first-boot page mentions it. External links only — the router never fetches anything.
+Smaller items in the same rung: **USB format confirmation** and Safely Remove now use a Reaper-themed
+dialog instead of the browser's stock popup, and formatting takes a deliberate click (Enter does not
+confirm it); the full-backup card on the Administration page sits flush with the stock table under
+it; and rwatch's self-heals for the routing and Warden chains now run under rc's real firewall lock,
+so a heal that races a firewall rebuild serialises behind it instead of overlapping.
+
+---
+
+## What's new in v2.7.2 — Traffic Analyzer history made restore-proof; settings and Reaper data in one file
+
+*Built on RT-BE96U.*
+
+**Month-to-date no longer resets on a firmware update, and stale device rows no longer read as stuck
+year totals.** Two root causes behind one field report. The collector cleared a history slot whenever
+its ring index changed, so on any boot where the history store attached before NTP set the clock —
+`/jffs` always, and USB whenever the stick mounts before the WAN comes up, which is typical right
+after a flash — the 1970-to-now time step looked like a rollover and erased the month, day and hour
+that had just been restored. Slot lifecycle now follows the absolute calendar period and the
+database's own save timestamp: a restore from the same month or day keeps accumulating in place,
+only periods that genuinely elapsed are cleared (downtime gaps included), and nothing is zeroed
+while the clock is still pre-sync. Separately, a device first seen before its MAC resolved left an
+IP-keyed row behind; when the MAC-keyed row took over, the old row's history was discarded and until
+then the page showed the same device twice, the dead one frozen at its last total. The dedup now
+folds the old row's rings into the surviving row, and the page merges rows that resolve to the same
+MAC before ranking Top Devices. The history tabs also run 24 h → 14 d → Month → 1 Year now, Year
+rightmost.
+
+**One file backs up everything — settings and Reaper data together.** The stock Save-setting file is
+only the nvram blob, and every Reaper list moved to `/jffs` in v2.6.3–v2.6.9, so a stock backup,
+reset and restore silently lost the Gatekeeper device list, firewall lists, routing rules and Warden
+cache. A new card on the familiar *Administration → Restore/Save/Upload Setting* page downloads one
+`.rbk` archive carrying the stock settings file (unchanged format — still readable by stock and
+Merlin), the Reaper settings, and the firewall's resolved domain-set cache. Restore checks that the
+file matches this router model and that `/jffs` is healthy before touching anything, restores the
+router settings through the stock path, and reboots; one click after logging back in completes the
+Reaper half, with firewall and routing lists staged for review on their own pages rather than
+applied blind. The lightweight Reaper-only export on the Storage page is unchanged. The diagnostics
+report moved to v1.3.6 in the same rung: the wireless-churn rate no longer reads about 0/h when the
+log's first lines carry pre-NTP boot timestamps, and a duplicated routing line in section 14d is
+gone.
 
 ---
 
@@ -785,7 +953,7 @@ running.
 
 ---
 
-## What's new in v2.4.7 — cut, not yet built or published
+## What's new in v2.4.7 — the save-fix switch says what it is
 
 *A small rung: two things v2.4.6 left half-finished. No behaviour changes at all — one label and
 one log line.*
@@ -817,7 +985,7 @@ identically.
 
 ---
 
-## What's new in v2.4.6 — cut, not yet built or published
+## What's new in v2.4.6 — consoles can use UPnP again, and mesh nodes stop looping
 
 *The rung is cut and the four siblings are ported. No image exists from it yet;
 these notes are written while the reasoning is fresh.*
@@ -1615,7 +1783,7 @@ confirmed free of the AI Advisor.
 
 **v2.5.3 flashable-image hashes (SHA-256)** — built and
 shipped on all five models (both variants each) through the public clean-room CI pipeline.
-*(This section records the v2.5.3 release; newer published releases through **v2.7.3** — the current
+*(This section records the v2.5.3 release; newer published releases through **v2.7.6** — the current
 newest — carry their own `SHA256SUMS-*.txt` on the [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases) page.)*
 These are the values in the on-router update manifest
 ([`releases/latest.json`](../releases/latest.json)), which the Firmware page checks before it
@@ -1771,7 +1939,8 @@ on the `reaper-firmware/` ladder.
 | **v2.5.0 – v2.5.3** | RT-BE96U builds; **v2.5.3 was the cut published full-fleet on all five models**, folding v2.5.1 / v2.5.2. |
 | **v2.5.4 – v2.5.7** | RT-BE96U builds; **v2.5.7 published full-fleet** (QoS priority, IPSec confirmed working, ipset Policy Routing, the audit-remainder batch). |
 | **v2.5.8 – v2.7.3** | RT-BE96U builds; **v2.6.0, v2.7.1 and v2.7.3 published full-fleet** (v2.7.3 = Gatekeeper learns AiMesh, the owner's guide everywhere, themed dialogs). Siblings ported per rung. |
-| **v2.7.4 – v2.7.6** | RT-BE96U + RT-BE92U builds; source cut (patches 0529–0535), sibling fan-out + push owed. RT-BE92U ships as experimental prereleases. |
+| **v2.7.4 – v2.7.6** | RT-BE96U + RT-BE92U builds (patches 0529–0535), folded into one cut; **v2.7.6 published full-fleet** — the five 96813GW models plus the RT-BE92U, which carries it as an experimental prerelease. |
+| **v2.7.7** | RT-BE96U build, both variants; patches 0536–0541, series total 541 (AdGuard removed, the update-check exec-bit fix, the Policy Routing field batch, the completed translation pass). |
 
 ---
 

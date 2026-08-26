@@ -1,0 +1,75 @@
+From 8535c193bc78f16858fd39ae92b8ea2c40d70279 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 26 Aug 2026 07:29:21 -0400
+Subject: [PATCH] httpd: the WAN page's UPnP toggle wrote neither enable key
+
+197d3b8321 made the READ side derive both gates from one helper. This is the
+write side. validate_apply() propagates a posted wan_<name> to wan<N>_<name>
+only once it has seen wan_unit and only if the closed validate_apply_input_value()
+accepts it - and the WAN page posts the UNINDEXED wan_upnp_enable only, so the
+generic upnp_enable had NO WRITER on this path at all. That half is proven from
+source and is what this fixes.
+
+An explicit wan_upnp_enable branch now sits ahead of the generic propagation. It
+resolves the unit from wan_primary_ifunit() when wan_unit is absent, validates
+the value as a boolean itself, and writes wan<N>_upnp_enable and upnp_enable in
+lockstep, so the pair cannot drift back apart through the GUI.
+
+Eliminated while reading the apply loop, recorded so they are not re-chased: the
+loop iterates router_defaults and pulls by name, so field order in the form is
+irrelevant (wan_unit at defaults.c:2494 precedes wan_upnp_enable at 2603);
+nvram_check() rejects only on over-length, so a 1-char boolean passes; and the
+radios ARE enabled for dhcp/pppoe/static/bridge by fixed_change_wan_proto_type().
+That leaves validate_apply_input_value() as the only unexplained gate, and this
+branch does not depend on it either way. Which gate actually blocked on metal is
+still unproven - toggle UPnP after the flash and confirm both keys flip.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index d08220224a..1608d1a130 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4538,6 +4538,36 @@ int validate_apply(webs_t wp, json_object *root)
+ #endif
+ 				}
+ 			}
++			/* UPnP is gated by two nvram keys: the per-unit wan<N>_upnp_enable that
++			 * miniupnpd and the firewall builders read, and the generic upnp_enable
++			 * that older callers and pages still consult. The WAN page posts the
++			 * unindexed wan_upnp_enable, so the generic key was never written here at
++			 * all and the two could drift apart - a box could list UPnP mappings while
++			 * nothing was ever DNATed, or run the jump with no daemon behind it.
++			 * Write both in lockstep. The value is a plain boolean, so it is validated
++			 * here rather than through the generic wan_ path. */
++			else if(!strcmp(name, "wan_upnp_enable")) {
++				int upnp_unit = (unit != -1) ? unit : wan_primary_ifunit();
++
++				if(strcmp(value, "0") && strcmp(value, "1")) {
++					dbg("validate(wan) %s=%s is not boolean\n", name, value);
++					continue;
++				}
++
++				snprintf(prefix, sizeof(prefix), "wan%d_", upnp_unit);
++				(void)strlcat_r(prefix, "upnp_enable", tmp, sizeof(tmp));
++
++				if(strcmp(nvram_safe_get(tmp), value)) {
++					nvram_set(tmp, value);
++					nvram_modified = 1;
++					_dprintf("wan_ set %s=%s\n", tmp, value);
++				}
++				if(strcmp(nvram_safe_get("upnp_enable"), value)) {
++					nvram_set("upnp_enable", value);
++					nvram_modified = 1;
++					_dprintf("wan_ set upnp_enable=%s\n", value);
++				}
++			}
+ 			else if(!strncmp(name, "wan_", 4) && unit != -1 && strcmp(name, "wan_ifname_x")) {
+ 				snprintf(prefix, sizeof(prefix), "wan%d_", unit);
+ 				(void)strlcat_r(prefix, name+4, tmp, sizeof(tmp));
+-- 
+2.25.1
+

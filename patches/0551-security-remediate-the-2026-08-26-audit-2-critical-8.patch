@@ -1,0 +1,1013 @@
+From d6f66dfb8830ac8871f0a2682ce879e21768c586 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 26 Aug 2026 14:30:23 -0400
+Subject: [PATCH] security: remediate the 2026-08-26 audit - 2 critical, 8 high
+
+A six-agent review of the Reaper-authored surface (15 new C files plus the
+deltas in web.c, services.c, qos.c and firewall.c, measured against the
+3006.102.8 base) produced 2 Critical and 8 High findings. All ten are fixed
+here. Every one carries a proven reachability trace - nothing speculative was
+changed - and a recurring shape runs through the severe ones: the mitigation
+already existed and was one step short of covering its own stated threat.
+
+C1  rc/reaper_fw.c - turning the firewall OFF re-applied it, permanently.
+    rfw_gen_apply()'s teardown branch wrote apply.sh.tmp and returned success
+    without ever renaming it into place; the enabled path does exactly that at
+    its own exit. stop_reaper_fw() then chmod+exec'd the PREVIOUS, still-enabled
+    script - rebuilding and re-hooking every chain it had been asked to remove -
+    and unlinked it afterwards. Net: engine enforcing, UI reporting it off, and
+    no script left that could take it down until a reboot. If the ruleset being
+    disabled was the one that locked you out, the escape hatch was gone.
+    Introduced by ea085cdf16 (v2.5.1). The tell on a live box was an
+    accumulating /tmp/reaper_fw/apply.sh.tmp.
+
+C2  rc/gatekeeper.c + httpd/web.c - blocking your own device was a one-click,
+    unrecoverable lockout. Neither Gatekeeper CGI compared the target MAC
+    against the requesting client, though httpd already exports it. The v1.7.3
+    $GKADMIN escape hatch was appended in the quarantine TAIL - after the
+    per-MAC DROP, and not emitted at all when gk_default=1 - so the DROP won in
+    every mode. REAPER_GKI sits at INPUT position 1, above the stock lo ACCEPT,
+    so a self-block severed the admin UI, SSH and LAN together, with the captive
+    page unreachable too: no in-band recovery. The hatch now goes in FIRST,
+    ahead of the per-device rules, and both CGIs refuse a self-block.
+
+H1  rmcpd/rmcpd.c - the slow-read guard did not cover its own documented
+    threat. The header loop's deadline was only tested once fgets returned a
+    COMPLETE line, so bytes dribbled inside one line never tripped it, and the
+    request line was read before the deadline existed at all. serve_conn() runs
+    inline from the accept loop, so a parked connection also stopped the
+    session-expiry and USB-key-removal checks - which run only BETWEEN
+    connections - from ever firing, outliving both revocation paths. Bounded now
+    with SIGALRM installed without SA_RESTART, which covers the TLS path too.
+
+H2  rc/qos.c + rc/reaper_pbr.c - a QoS rebuild deleted policy routing, and it
+    failed open. del_iQosRules() is `iptables -t mangle -F` with no chain
+    argument and add_qos_rules() restores the table without -n, so REAPER_PBR
+    and its PREROUTING jump were removed outright. The ip rule entries survive
+    that, so nothing marked packets any more and every selected flow fell
+    through to main: traffic that should have been tunnelled left over the WAN
+    in clear and BLOCK rules stopped blocking. New reaper_pbr_reassert() is
+    called from the add_iQosRules tail and both HW-QoS teardown returns.
+
+H3  shared/reaper_jfile.c - rjf_set() created only the last directory level, so
+    with the firewall engine off (the shipped default, and the natural order of
+    work) /tmp/reaper_fw did not exist and every list save failed ENOENT. The
+    same sink stages an .rbk restore, so the firewall half was silently counted
+    as rejected while the banner reported success.
+
+H4  shared/+rc/+httpd/+www - rwarden_ban/allow/cfeeds were the last Reaper lists
+    still in nvram and hit the same silent 1 KB kernel cap the device, routing
+    and firewall lists did: the list topped out near 63 CIDRs and the next entry
+    no-opped while the UI reported a successful save. They now live in
+    /jffs/rwarden via the shared store, with a marker-guarded one-shot migration
+    that only unsets nvram after all three files and the marker are written.
+    rw_list_get() returns a caller-owned buffer rather than rjf_get()'s shared
+    static, because allow and ban are resolved in one expression. The page could
+    no longer ride the nvram apply form, so it POSTs the lists to
+    reaper_warden.cgi?action=save_lists and waits for that reply before
+    submitting - submitting first would restart rwarden against the old lists.
+    Settings export and import both route through one predicate so they cannot
+    drift apart.
+
+H5  gkd/gkd.c - the AiMesh onboarding window asserted a bare `-j RETURN` at
+    position 1 of REAPER_GKI, above the cfg_relist exemptions and every
+    per-device rule, so quarantined AND explicitly blocked devices regained full
+    access to the router. It opened on cfg_obstatus=2, which is the ordinary
+    AiMesh SEARCH an admin runs from Network Map, not a join. Now limited to
+    REQ/LOCKED and capped by a local deadline, since cfg_obstatus is written by
+    the closed cfg_server and has no defaults entry to fall back to.
+
+H6  gkd/gkd.c - the self-heal backoff was structurally dead: the throttle was a
+    process-local static and the action it throttled, notify_rc("restart_gk"),
+    kills and respawns this gkd, so the replacement started with the counter at
+    zero and the 120 s guard was true again on its first tick. A persistent MISS
+    (a disabled-but-addressed SDN bridge, or an addon-created br-*) meant an
+    unbounded rebuild plus fc flush every 10-30 s for the life of the box. The
+    throttle now lives in tmpfs and survives the respawn, with a strike limit.
+
+H7  httpd/web.c + rc/rexport.c - one click on Test could hang the web UI until a
+    reboot. doSystem() ran the exporter synchronously and httpd is a
+    single-process select loop; the syslog engine pipes into openssl s_client
+    with no timeout, and -quiet implies -ign_eof, so against a collector that
+    holds the session open it never returned. Now detached with a bounded wait,
+    and s_client exits on EOF.
+
+H8  rtrafd/rtrafd.c - poll_conntrack() had no line cap and, once every slot held
+    a non-zero key, each miss walked all 16384 entries. Bounding the probe was
+    not an option: abandoning a chain early makes the fl->key == key test fail
+    and credits a flow's whole cumulative counter as a single delta. Added an
+    amortised compaction that rebuilds the table when a probe runs long,
+    restoring the empty slots that terminate a chain without touching lookup
+    semantics.
+
+Reviewed against the prior audits so nothing already refuted was re-raised.
+Verified: full rt-be96u build green (MAKE_EXIT=0), and the H4 store confirmed
+present in the staged filesystem rather than inferred from the compile.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c             |  80 ++++++++++-
+ release/src/router/httpd/web.c           | 168 ++++++++++++++++++++++-
+ release/src/router/rc/gatekeeper.c       |   8 ++
+ release/src/router/rc/qos.c              |  10 ++
+ release/src/router/rc/rc.h               |   1 +
+ release/src/router/rc/reaper_fw.c        |   6 +
+ release/src/router/rc/reaper_pbr.c       |  23 ++++
+ release/src/router/rc/rexport.c          |   2 +-
+ release/src/router/rc/rwarden.c          |  20 +--
+ release/src/router/rmcpd/rmcpd.c         |  40 ++++++
+ release/src/router/rtrafd/rtrafd.c       |  31 +++++
+ release/src/router/shared/reaper_jfile.c |  80 ++++++++++-
+ release/src/router/shared/shared.h       |   5 +
+ release/src/router/www/Reaper_Warden.asp |  43 ++++--
+ 14 files changed, 482 insertions(+), 35 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index ed4d0d876f..fbfd6515a7 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -415,10 +415,39 @@ static void expire_guests(void)
+  *  2. ASUS rebuilt SDN_FI and our captive-admit rule is gone -> sdnfi.sh
+  *  3. a bridge's delegated IPv6 prefix set changed since apply.sh ran -> re-run
+  * One shell fork per cycle; each action is logged and throttled. */
++/* The heal throttle CANNOT be a process-local static: the action it throttles is
++ * notify_rc("restart_gk"), which kills and respawns this very gkd, so the
++ * replacement starts with the counter back at 0 and the 120 s guard is true
++ * again on its first armed tick. A persistent MISS therefore produced an
++ * unbounded restart loop - full chain rebuild plus an `fc flush` every 10-30 s
++ * for the life of the box. Both stamps live in tmpfs and survive the respawn. */
++#define GK_HEAL_AT      GK_DIR "/heal.at"
++#define GK_HEAL_N       GK_DIR "/heal.n"
++#define GK_HEAL_STRIKES 5
++
++static long gk_stamp_get(const char *path)
++{
++	FILE *f = fopen(path, "r");
++	long v = 0;
++	if (!f) return 0;
++	if (fscanf(f, "%ld", &v) != 1) v = 0;
++	fclose(f);
++	return v;
++}
++
++static void gk_stamp_set(const char *path, long v)
++{
++	FILE *f = fopen(path, "w");
++	if (!f) return;
++	fprintf(f, "%ld\n", v);
++	fclose(f);
++}
++
+ static void heal_networks(void)
+ {
+-	static time_t last_restart = 0, last_v6 = 0;
++	static time_t last_v6 = 0;
+ 	static int sdnfi_logged = 0;
++	static int heal_gaveup = 0;
+ 	char out[512] = "";
+ 	char cmd[2048], nvbuf[64];
+ 	FILE *p;
+@@ -442,11 +471,29 @@ static void heal_networks(void)
+ 	if (!p) return;
+ 	while (fgets(out, sizeof(out), p)) {
+ 		char *nl = strchr(out, '\n'); if (nl) *nl = 0;
+-		if (!strncmp(out, "MISS=", 5) && out[5] && out[6]) {
+-			if (now - last_restart >= 120) {
+-				last_restart = now;
+-				logmessage("gatekeeper", "bridge(s)%s carry an address but are not hooked - re-applying on every network", out + 5);
+-				notify_rc("restart_gk");	/* kills+respawns this gkd after the regen */
++		if (!strncmp(out, "MISS=", 5)) {
++			if (out[5] && out[6]) {
++				long at = gk_stamp_get(GK_HEAL_AT);
++				long strikes = gk_stamp_get(GK_HEAL_N);
++				if (strikes >= GK_HEAL_STRIKES) {
++					/* Some bridges never converge - /tmp/gk/ifs is built only
++					 * from ENABLED sdn_rl records, so a disabled-but-addressed
++					 * SDN bridge or an addon-created br-* is permanently a
++					 * MISS. Stop re-arming instead of thrashing for ever. */
++					if (!heal_gaveup) {
++						logmessage("gatekeeper", "bridge(s)%s still not hooked after %d re-applies - giving up until the next Gatekeeper restart", out + 5, GK_HEAL_STRIKES);
++						heal_gaveup = 1;
++					}
++				} else if ((long)now - at >= 120) {
++					gk_stamp_set(GK_HEAL_AT, (long)now);
++					gk_stamp_set(GK_HEAL_N, strikes + 1);
++					logmessage("gatekeeper", "bridge(s)%s carry an address but are not hooked - re-applying on every network", out + 5);
++					notify_rc("restart_gk");	/* kills+respawns this gkd after the regen */
++				}
++			} else {
++				/* converged: give a genuinely new drift its full allowance */
++				if (gk_stamp_get(GK_HEAL_N) != 0) gk_stamp_set(GK_HEAL_N, 0);
++				heal_gaveup = 0;
+ 			}
+ 		} else if (!strcmp(out, "SDNFI=missing")) {
+ 			if (!sdnfi_logged) { logmessage("gatekeeper", "captive admit rule missing from SDN_FI (SDN rules rebuilt) - re-inserting"); sdnfi_logged = 1; }
+@@ -554,6 +601,9 @@ static void amas_watch(long now)
+ 	static int have_sig = 0;
+ 	static long last_regen = 0;
+ 	static int ob_open = -1;	/* -1 = unknown at startup: clean up once */
++	static long ob_start = 0;	/* when this window opened (0 = closed) */
++	static int ob_capped = 0;	/* window hit its local deadline */
++#define GK_OB_MAX_SECS 900
+ 	unsigned long cur = relist_sig();
+ 	const char *ob = nvram_safe_get("cfg_obstatus");
+ 	int active;
+@@ -571,7 +621,23 @@ static void amas_watch(long now)
+ 		}
+ 	}
+ 
+-	active = !nvram_match("gk_default", "1") && ob[0] && strcmp(ob, "1") != 0;
++	/* cfg_onboarding.h: 1=OFF 2=AVAILABLE 3=REQ 4=LOCKED. The window used to
++	 * open on anything except 1, which includes AVAILABLE - the ordinary AiMesh
++	 * SEARCH an admin runs from Network Map. Nothing is joining in that state,
++	 * so hold the gate open only once a node actually asks (REQ) or is being
++	 * onboarded (LOCKED). */
++	active = !nvram_match("gk_default", "1") && (!strcmp(ob, "3") || !strcmp(ob, "4"));
++	/* cfg_obstatus is written by the closed cfg_server and has no defaults.c
++	 * entry, so a stuck value would hold the gate open for ever while the UI
++	 * still reported armed. Cap the window locally; it re-arms when the status
++	 * returns to idle. */
++	if (!active) { ob_start = 0; ob_capped = 0; }
++	else if (!ob_start) ob_start = now;
++	else if (!ob_capped && now - ob_start > GK_OB_MAX_SECS) {
++		logmessage("gatekeeper", "AiMesh onboarding window open %ld s - closing the quarantine gate; restart onboarding if a node is still joining", (long)GK_OB_MAX_SECS);
++		ob_capped = 1;
++	}
++	if (ob_capped) active = 0;
+ 	if (active) {
+ 		/* re-asserted every tick while active: an apply.sh rebuild mid-window
+ 		 * flushes the chain and the -C guard re-inserts within POLL_SECS */
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 1608d1a130..1314ca3749 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23277,6 +23277,31 @@ gk_baseline_snapshot(void)
+ 	free(out);
+ }
+ 
++/* MAC of the host that issued this request, from the ARP table. Returns 0 when
++ * the peer cannot be resolved - callers must read that as "unknown", never as
++ * "not the caller", so an unresolvable peer never silently loses the guard. */
++static int
++reaper_requester_mac(char *out, size_t n)
++{
++	char ip[46], line[256], addr[46], mac[32], dev[32];
++	FILE *fp;
++	int got = 0;
++
++	if (!out || n < 18) return 0;
++	out[0] = 0;
++	if (!safe_uaddr_ntop(&login_uip_tmp, ip, sizeof(ip)) || !ip[0]) return 0;
++	if ((fp = fopen("/proc/net/arp", "r")) == NULL) return 0;
++	while (fgets(line, sizeof(line), fp)) {
++		if (sscanf(line, "%45s %*s %*s %31s %*s %31s", addr, mac, dev) != 3) continue;
++		if (strcmp(addr, ip) != 0 || !gk_valid_mac(mac)) continue;
++		strlcpy(out, mac, n);
++		got = 1;
++		break;
++	}
++	fclose(fp);
++	return got;
++}
++
+ static void
+ do_reaper_gk_cgi(char *url, FILE *stream)
+ {
+@@ -23389,6 +23414,21 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		}
+ 		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
+ 		umac[17] = 0;
++		/* Refuse to block the device this request came from. REAPER_GKI sits at
++		 * INPUT position 1, above the stock lo ACCEPT, so a self-DROP takes the
++		 * admin UI, SSH and LAN together - and the captive page with them, so
++		 * there is no in-band way back. The page offers Block on rows it has
++		 * itself flagged as unknown, which is exactly when a randomized MAC is
++		 * the operator's own laptop. An unresolvable peer is allowed through
++		 * here; the admin-port RETURN now emitted ahead of the per-device rules
++		 * is the backstop for that case. */
++		if (state == 0) {
++			char self[18];
++			if (reaper_requester_mac(self, sizeof(self)) && !strcasecmp(self, umac)) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"that is the device you are using - block it from a different device\",\"ek\":\"RDEVE_SELF\"}");
++				return;
++			}
++		}
+ 		if (state == 3) {
+ 			int h = nvram_get_int("gk_guest_hours");
+ 			if (h < 1 || h > 168) h = 24;
+@@ -23458,6 +23498,35 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+  * lives here (config flows through apply.cgi -> restart_rwarden), so no CSRF
+  * token is required. NOT MCP-gated - ships in both builds (kept OUTSIDE the
+  * RTCONFIG_REAPER_MCP block below, same as do_reaper_gk_cgi). */
++
++/* defined with the settings import/export below; the Warden save reuses its
++ * "printable ASCII, bounded" gate rather than inventing a second one */
++static int rcfg_ok(const char *v, size_t max);
++
++#define RW_LIST_MAX 8192	/* /jffs-backed now, so no longer the 1 KB nvram ceiling */
++
++/* The page used to read these with <% nvram_get("rwarden_ban") %>. They are not
++ * in nvram any more, so serve them from the store - percent-encoded, because
++ * cfeeds carries URLs and the page already decodeURIComponent()s that field. */
++static int
++ej_rwarden_list(int eid, webs_t wp, int argc, char_t **argv)
++{
++	char *name, *v, *p;
++
++	if (ejArgs(argc, argv, "%s", &name) < 1) return 0;
++	if (strcmp(name, "ban") && strcmp(name, "allow") && strcmp(name, "cfeeds")) return 0;
++	if ((v = rw_list_get(name)) == NULL) return 0;
++	for (p = v; *p; p++) {
++		unsigned char c = (unsigned char)*p;
++		if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
++			websWrite(wp, "%c", c);
++		else
++			websWrite(wp, "%%%02X", c);
++	}
++	free(v);
++	return 0;
++}
++
+ static void
+ do_reaper_warden_cgi(char *url, FILE *stream)
+ {
+@@ -23479,6 +23548,33 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 		}
+ 	}
+ 
++	/* v2.7.9: ban/allow/cfeeds moved to /jffs (they outgrew nvram's silent 1 KB
++	 * cap - rwarden_ban topped out near 63 CIDRs and the next one no-opped while
++	 * the UI reported success). They can no longer ride the nvram apply form, so
++	 * the page posts them here first and submits the rest of its settings as
++	 * before. rc re-validates every CIDR and feed URL structurally when it
++	 * regenerates; this gate is bounded printable ASCII, as the import uses. */
++	if (!strcmp(action, "save_lists")) {
++		static const char *names[] = { "ban", "allow", "cfeeds", NULL };
++		int i, saved = 0;
++
++		for (i = 0; names[i]; i++) {
++			char *v = get_cgi((char *)names[i]);
++			if (!v) continue;			/* field omitted = leave that list alone */
++			if (!rcfg_ok(v, RW_LIST_MAX)) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"list too long or has unsupported characters\",\"ek\":\"RWDN_L1\"}");
++				return;
++			}
++			if (rw_list_set(names[i], v) != 0) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"could not save the list\",\"ek\":\"RWDN_L2\"}");
++				return;
++			}
++			saved++;
++		}
++		websWrite(stream, "{\"ok\":1,\"saved\":%d}", saved);
++		return;
++	}
++
+ 	if (f_exists("/tmp/rwarden/stats.sh") &&
+ 	    (p = popen("sh /tmp/rwarden/stats.sh 2>/dev/null", "r")) != NULL) {
+ 		while (fgets(buf, sizeof(buf), p) != NULL) {
+@@ -24131,6 +24227,17 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ #define RCFG_LIST_MAX	8192
+ #define RCFG_GK_MAX	(64 * 1024)
+ 
++/* v2.7.9: rwarden_ban/allow/cfeeds are /jffs-backed, not nvram. Export and
++ * import must BOTH route around nvram or a backup silently captures nothing and
++ * a restore silently writes nowhere. One predicate, used by both. */
++static const char *rcfg_rw_list(const char *nv)
++{
++	if (strncmp(nv, "rwarden_", 8) != 0) return NULL;
++	if (!strcmp(nv + 8, "ban") || !strcmp(nv + 8, "allow") || !strcmp(nv + 8, "cfeeds"))
++		return nv + 8;
++	return NULL;
++}
++
+ static int rcfg_ok(const char *v, size_t max)
+ {
+ 	const char *p;
+@@ -24150,9 +24257,13 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "pbr",    "reaper_pbr_enable", 2  },
+ 	{ "fw",     "reaper_fw_enable", 2   }, { "fw",     "reaper_fw_confirm", 6 },
+ 	{ "warden", "rwarden_enable",   2   }, { "warden", "rwarden_feeds",  512 },
+-	{ "warden", "rwarden_cfeeds",   512 }, { "warden", "rwarden_geo",    512 },
++	{ "warden", "rwarden_cfeeds",  4096 }, { "warden", "rwarden_geo",    512 },
+ 	{ "warden", "rwarden_dir",      6   }, { "warden", "rwarden_self",   2   },
+-	{ "warden", "rwarden_ban",      2048 }, { "warden", "rwarden_allow", 2048 },
++	/* v2.7.9: these three moved to the /jffs store, so the old 1 KB nvram ceiling
++	 * (which silently dropped a >63-CIDR list while reporting a successful save)
++	 * no longer applies. Bounded here only so an import cannot stage something
++	 * absurd; rc still re-validates every CIDR structurally. */
++	{ "warden", "rwarden_ban",      8192 }, { "warden", "rwarden_allow", 8192 },
+ 	{ "warden", "rwarden_log",      2   }, { "warden", "rwarden_sched",  64  },
+ 	{ "warden", "rwarden_stats_save", 2 },
+ };
+@@ -24188,7 +24299,15 @@ static void rcfg_export_json(FILE *stream)
+ 		} else
+ 			websWrite(stream, ",");
+ 		websWrite(stream, "\"%s\":", rcfg_flags[i].nv);
+-		gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
++		{
++			const char *ln = rcfg_rw_list(rcfg_flags[i].nv);
++			if (ln) {
++				char *lv = rw_list_get(ln);
++				gk_json_esc(stream, lv ? lv : "");
++				free(lv);
++			} else
++				gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
++		}
+ 	}
+ 	websWrite(stream, "}");
+ 	/* the lists */
+@@ -24244,7 +24363,13 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 				if (!rcfg_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
+ 			} else if (!rcfg_flag_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
+ 			if (!strcmp(rcfg_flags[i].sect, "fw") && fw_armed) { rejected++; continue; }	/* F2 */
+-			nvram_set(rcfg_flags[i].nv, v);
++			{
++				const char *ln = rcfg_rw_list(rcfg_flags[i].nv);
++				if (ln) {
++					if (rw_list_set(ln, v) != 0) { rejected++; continue; }
++				} else
++					nvram_set(rcfg_flags[i].nv, v);
++			}
+ 			nflags++;
+ 			if (!strcmp(rcfg_flags[i].sect, "gk")) touch_gk = 1;
+ 			if (!strcmp(rcfg_flags[i].sect, "warden")) touch_warden = 1;
+@@ -25818,6 +25943,21 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		}
+ 		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
+ 		umac[17] = 0;
++		/* Refuse to block the device this request came from. REAPER_GKI sits at
++		 * INPUT position 1, above the stock lo ACCEPT, so a self-DROP takes the
++		 * admin UI, SSH and LAN together - and the captive page with them, so
++		 * there is no in-band way back. The page offers Block on rows it has
++		 * itself flagged as unknown, which is exactly when a randomized MAC is
++		 * the operator's own laptop. An unresolvable peer is allowed through
++		 * here; the admin-port RETURN now emitted ahead of the per-device rules
++		 * is the backstop for that case. */
++		if (state == 0) {
++			char self[18];
++			if (reaper_requester_mac(self, sizeof(self)) && !strcasecmp(self, umac)) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"that is the device you are using - block it from a different device\",\"ek\":\"RDEVE_SELF\"}");
++				return;
++			}
++		}
+ 		if (state == 3) {
+ 			int h = nvram_get_int("gk_guest_hours");
+ 			if (h < 1 || h > 168) h = 24;
+@@ -26155,11 +26295,28 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"save the configuration first\"}");
+ 			return;
+ 		}
+-		doSystem("sh /tmp/rexport.sh test");
++		/* httpd is a single-process select loop - one request at a time - and
++		 * this script talks to the network. Run it detached and wait a BOUNDED
++		 * time for its result: the syslog engine pipes into `openssl s_client`,
++		 * which against a collector that holds the session open used to never
++		 * return, taking every page and login down until a reboot. The normal
++		 * case still completes inside the wait, so the page contract is
++		 * unchanged; a hang now degrades to "still running" and the existing
++		 * status poll picks the answer up later. */
++		unlink("/tmp/rexport.status");
++		doSystem("sh /tmp/rexport.sh test >/dev/null 2>&1 &");
++		{
++			int waited = 0;
++			while (waited < 8000 && !f_exists("/tmp/rexport.status")) {
++				usleep(200 * 1000);
++				waited += 200;
++			}
++		}
+ 		if ((sf = fopen("/tmp/rexport.status", "r")) != NULL) {
+ 			if (fgets(sbuf, sizeof(sbuf), sf)) { char *nl = strchr(sbuf, '\n'); if (nl) *nl = '\0'; }
+ 			fclose(sf);
+ 		}
++		if (!sbuf[0]) strlcpy(sbuf, "still running", sizeof(sbuf));
+ 		{
+ 			int tok_ok = 0;
+ 			char *sp = strrchr(sbuf, ' ');   /* status line "<epoch> <engine> <resp>" */
+@@ -48251,6 +48408,7 @@ struct ej_handler ej_handlers[] = {
+ #endif
+ 	{ "wl_nband_info", ej_wl_nband_info},
+ 	{ "wlpro_nvram", ej_wlpro_nvram},
++	{ "rwarden_list", ej_rwarden_list},
+ 	{ "wl_nband_list", ej_wl_nband_list},
+ #ifdef RTCONFIG_GEOIP
+ 	{ "geoiplookup", ej_geoiplookup},
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 5462837e42..c7551b99e9 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -468,6 +468,14 @@ static void gk_gen_apply(void)
+ 		   "for T in iptables ip6tables; do\n"
+ 		   "  $T -N REAPER_GKF\n"
+ 		   "  $T -N REAPER_GKI\n"
++		   /* The admin escape hatch goes in FIRST - ahead of the per-device
++		    * rules AND the quarantine tail. It used to be appended only in the
++		    * tail, i.e. after any per-MAC DROP, and was not emitted at all when
++		    * gk_default=1, so blocking the device you were administering from
++		    * severed the UI, SSH and LAN at once with no way back short of a
++		    * factory reset. Reaching the router's own admin port is never what
++		    * a device access-control decision is meant to deny. */
++		   "  $T -A REAPER_GKI -p tcp --dport $GKADMIN -j RETURN\n"
+ 		   "done\n"
+ 		   "iptables -t nat -N REAPER_GKN\n"
+ 		   "ebtables -N REAPER_GK -P RETURN\n", gkifs, gknets);
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 1d1bee809f..0c1e425e7d 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2867,6 +2867,7 @@ int add_iQosRules(char *pcWANIF)
+ 		 * the SKBMARK/SKIPLOG rule at firewall.c:8399 (HND_ROUTER_BE_4916) is
+ 		 * emitted with no nvram gate at all. */
+ 		del_iQosRules();
++		reaper_pbr_reassert();	/* that whole-table flush took REAPER_PBR with it */
+ 		return -1;
+ 	}
+ 
+@@ -2876,6 +2877,7 @@ int add_iQosRules(char *pcWANIF)
+ 	 * state, just in iptables. Tear down and stay out, exactly as IS_HWQOS does. */
+ 	if (IS_HWQOS_CLASSFUL() && strtoul(nvram_safe_get("qos_obw"), NULL, 10) == 0) {
+ 		del_iQosRules();
++		reaper_pbr_reassert();	/* that whole-table flush took REAPER_PBR with it */
+ 		return -1;
+ 	}
+ 
+@@ -2899,6 +2901,14 @@ int add_iQosRules(char *pcWANIF)
+ #endif
+ 	if (status < 0) _dprintf("[%s] status = %d\n", __FUNCTION__, status);
+ 
++	/* Every builder above opens with del_iQosRules(), and add_qos_rules()
++	 * restores the mangle table wholesale from a file that never declares
++	 * REAPER_PBR, so our chain and its PREROUTING jump are gone by now. Entry
++	 * points that do NOT follow with restart_firewall - the app/API bandwidth
++	 * setters and restart_pms_device - would otherwise leave policy routing
++	 * dead until rwatch noticed, up to five minutes later. */
++	reaper_pbr_reassert();
++
+ 	return status;
+ }
+ 
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index c678b29883..d0adcb6d6d 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3009,6 +3009,7 @@ extern void stop_reaper_pbr(void);
+ extern void start_reaper_pbr(void);
+ /* v2.6.7: commit-confirm for policy routing (same shape as reaper_fw's) */
+ extern void reaper_pbr_apply(void);
++extern void reaper_pbr_reassert(void);
+ extern void reaper_pbr_confirm(void);
+ extern void reaper_pbr_rollback(void);
+ /* The dnsmasq `ipset=` fragment reaper_fw generates for its FQDN objects, so
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index e1b61864aa..2e7780012a 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -1779,6 +1779,12 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 			  "done\n");
+ 		fprintf(f, "fc flush 2>/dev/null\nexit 0\n");
+ 		fclose(f);
++		/* Publish the teardown script the same way as the enabled one. Without
++		 * this rename the caller chmod+execs the PREVIOUS, still-enabled
++		 * apply.sh - rebuilding and re-hooking every chain it was asked to
++		 * remove - and then unlinks it, leaving the engine enforcing with no
++		 * script left that can take it down. */
++		if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 		return 1;
+ 	}
+ 
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index da842075e5..0625b78435 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -677,6 +677,29 @@ void stop_reaper_pbr(void)
+ /* Apply the COMMITTED ruleset. Boot, the restart_firewall re-hook, and the
+  * enable toggle all land here. Inert unless enabled (P5). No arm: what boots
+  * has been confirmed (or, before any confirm ever happened, is what flash held). */
++/* Re-assert policy routing after something else rebuilt the mangle table.
++ * del_iQosRules() is `iptables -t mangle -F` with NO chain argument, so it
++ * flushes the whole table - REAPER_PBR and its PREROUTING jump included - and
++ * add_qos_rules() then restores the table from a file that never declares our
++ * chain. The `ip rule` entries survive that (they are not iptables), so nothing
++ * marks packets any more and every selected flow falls through to the main
++ * table: traffic that should be tunnelled egresses the WAN in clear and a BLOCK
++ * rule stops blocking. rwatch heals it, but only on a 5-minute cron and only
++ * when enabled. Same body as start_firewall()'s tail, commit-confirm candidate
++ * preference included. */
++void reaper_pbr_reassert(void)
++{
++	int lock;
++
++	if (!nvram_match("reaper_pbr_enable", "1")) return;
++	lock = file_lock("firewall");
++	if (nvram_match("reaper_pbr_armed", "1") && f_exists("/tmp/reaper_pbr/candidate.sh"))
++		system("sh /tmp/reaper_pbr/candidate.sh");
++	else if (f_exists("/tmp/reaper_pbr/apply.sh"))
++		system("sh /tmp/reaper_pbr/apply.sh");
++	file_unlock(lock);
++}
++
+ void start_reaper_pbr(void)
+ {
+ 	ppbr_cfg_t c;
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index fbfc3d6fcf..56f145b2e4 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -101,7 +101,7 @@ static void rexport_gen(void)
+ 	  "  HOSTP=\"${URL#*://}\"; SH=\"${HOSTP%%:*}\"; SP=\"${HOSTP##*:}\"\n"
+ 	  "  [ \"$SP\" = \"$SH\" ] && SP=6514\n"
+ 	  "  MSG=\"<134>1 $(date -u +%Y-%m-%dT%H:%M:%SZ) $HOST reaper - - - $(cat \"$SRCF\")\"\n"
+-	  "  if printf '%s\\n' \"$MSG\" | openssl s_client -quiet -connect \"$SH:$SP\" >/dev/null 2>&1; then\n"
++	  "  if printf '%s\\n' \"$MSG\" | openssl s_client -quiet -no_ign_eof -connect \"$SH:$SP\" >/dev/null 2>&1; then\n"
+ 	  "    echo \"$NOW syslog ok\" > \"$STAT\"\n"
+ 	  "  else\n"
+ 	  "    echo \"$NOW syslog fail\" > \"$STAT\"; logger -t rexport \"syslog-tls export failed\"\n"
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index c1cf314c51..5b7a5e04ef 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -314,9 +314,12 @@ static const struct rw_feed *rw_feed_by_id(const char *id)
+  * generation time; runtime `ipset add` failures are logged by the generated
+  * script (tokens are charset-validated above, so embedding them in the
+  * double-quoted logger line cannot break out of the shell string). */
+-static void rw_emit_cidrs(FILE *f, const char *v4set, const char *v6set, const char *nvkey)
++static void rw_emit_cidrs(FILE *f, const char *v4set, const char *v6set, const char *listname)
+ {
+-	char *list = strdup(nvram_safe_get(nvkey)), *tok, *save = NULL;
++	/* v2.7.9: these lists left nvram for /jffs (the silent 1 KB cap). rw_list_get
++	 * hands back a caller-owned buffer, so the strdup that used to wrap
++	 * nvram_safe_get is gone - the free() below is unchanged. */
++	char *list = rw_list_get(listname), *tok, *save = NULL;
+ 	int bad = 0;
+ 	if (!list) return;
+ 	for (tok = strtok_r(list, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save)) {
+@@ -335,8 +338,8 @@ static void rw_emit_cidrs(FILE *f, const char *v4set, const char *v6set, const c
+ 	}
+ 	free(list);
+ 	if (bad)
+-		logmessage("rwarden", "%s: %d invalid entr%s IGNORED - fix the list on the Warden page",
+-		           nvkey, bad, bad == 1 ? "y" : "ies");
++		logmessage("rwarden", "rwarden_%s: %d invalid entr%s IGNORED - fix the list on the Warden page",
++		           listname, bad, bad == 1 ? "y" : "ies");
+ }
+ 
+ /* After the manual ban set is (re)populated and the chain is hooked, sever any
+@@ -351,7 +354,7 @@ static void rw_emit_cidrs(FILE *f, const char *v4set, const char *v6set, const c
+  * already drives (time_quota.c). Tokens are re-validated before splicing. */
+ static void rw_emit_ban_conntrack(FILE *f)
+ {
+-	char *list = strdup(nvram_safe_get("rwarden_ban")), *tok, *save = NULL;
++	char *list = rw_list_get("ban"), *tok, *save = NULL;
+ 	if (!list) return;
+ 	for (tok = strtok_r(list, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save)) {
+ 		char ip[64], *slash;
+@@ -660,8 +663,8 @@ static void rw_gen_apply(void)
+ 	  "fi\n");
+ 	/* manual allow/ban from nvram (validated; v4/v6 auto-routed) */
+ 	fprintf(f, "ipset flush rw_allow; ipset flush rw_allow6; ipset flush rw_ban; ipset flush rw_ban6\n");
+-	rw_emit_cidrs(f, "rw_allow", "rw_allow6", "rwarden_allow");
+-	rw_emit_cidrs(f, "rw_ban",   "rw_ban6",   "rwarden_ban");
++	rw_emit_cidrs(f, "rw_allow", "rw_allow6", "allow");
++	rw_emit_cidrs(f, "rw_ban",   "rw_ban6",   "ban");
+ 	/* ---- build ---- the allow/ban/threat set names and country set prefixes
+ 	 * differ per stack, so emit the IPv4 and IPv6 dispatch chains directly.
+ 	 * ORDER (2026-07-29 lockout fix; keeps the audit-L2 property):
+@@ -930,7 +933,7 @@ static void rw_gen_update(void)
+ 	 * simply careless list cannot blackhole the user's own network), the atomic
+ 	 * swap, the jffs cache, the existing rules and the existing counters. No
+ 	 * new set, no new chain, no change to rule ordering. */
+-	list = strdup(nvram_safe_get("rwarden_cfeeds"));
++	list = rw_list_get("cfeeds");
+ 	if (list) {
+ 		int nrec = 0;
+ 		for (tok = strtok_r(list, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+@@ -1415,6 +1418,7 @@ void stop_rwarden(void)
+ 
+ void start_rwarden(void)
+ {
++	rw_list_migrate();	/* v2.7.9: one-shot nvram -> /jffs, before any list is read */
+ 	/* P2-H5: "out" and "both" have always produced a byte-identical
+ 	 * ruleset - do_out gates only the RW_OUT chain, while the inbound source
+ 	 * group and the -I INPUT hook are emitted unconditionally. The choice was
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index c718ce0f44..aa15947062 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -137,6 +137,40 @@ static void cleanup(void)
+ 	unlink(DIAG_OUT);
+ }
+ 
++/* SO_RCVTIMEO bounds one read(), and the header loop's deadline is only tested
++ * once a COMPLETE line has come back from fgets - so a peer dribbling bytes
++ * inside a single line, or inside the request line (which is read before that
++ * deadline exists at all), parks serve_conn() indefinitely. serve_conn() runs
++ * inline from the accept loop, so that also stops the session-expiry and
++ * USB-key-removal checks, which run only BETWEEN connections, from ever firing:
++ * the armed session, its bearer token and the iptables ACCEPT outlive both
++ * revocation paths. SIGALRM is the one mechanism that bounds the phase no
++ * matter which layer is blocking, TLS included. Installed WITHOUT SA_RESTART so
++ * the in-flight read returns EINTR instead of resuming. */
++#define RMCP_READ_MAX_SECS 20
++
++static void on_readclock(int sig)
++{
++	(void)sig;	/* handler exists purely to interrupt the read with EINTR */
++}
++
++static void rmcp_read_clock(int on)
++{
++	struct sigaction sa;
++
++	if (on) {
++		memset(&sa, 0, sizeof(sa));
++		sa.sa_handler = on_readclock;
++		sigemptyset(&sa.sa_mask);
++		sa.sa_flags = 0;		/* deliberately NOT SA_RESTART */
++		sigaction(SIGALRM, &sa, NULL);
++		alarm(RMCP_READ_MAX_SECS);
++	} else {
++		alarm(0);
++		signal(SIGALRM, SIG_IGN);
++	}
++}
++
+ static void on_signal(int sig)
+ {
+ 	(void)sig;
+@@ -1364,6 +1398,10 @@ static void serve_conn(int fd)
+ 	fp = g_https ? ssl_server_fopen(fd) : fdopen(fd, "r+");
+ 	if (!fp) { close(fd); return; }
+ 
++	/* Arm the read clock BEFORE the first read: everything from here to the end
++	 * of the body is pre-auth or auth-critical and must not be able to stall. */
++	rmcp_read_clock(1);
++
+ 	/* request line */
+ 	if (!fgets(line, sizeof(line), fp)) goto done;
+ 	if (!strncmp(line, "POST ", 5) && strstr(line, "/mcp"))
+@@ -1424,9 +1462,11 @@ static void serve_conn(int fd)
+ 	if (!body) { http_error(fp, 500, "Internal Server Error", "mem"); goto done; }
+ 	got = clen ? fread(body, 1, (size_t)clen, fp) : 0;
+ 	body[got] = 0;
++	rmcp_read_clock(0);	/* request is in hand - tool execution has its own bounds */
+ 	handle_rpc(fp, body);
+ 
+ done:
++	rmcp_read_clock(0);	/* every goto done lands here, including the timeouts */
+ 	free(body);
+ 	fclose(fp);
+ 	/* mssl_close() frees the SSL object but does NOT close the socket; fdopen's
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 90b971e203..b29cbd3348 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -162,6 +162,35 @@ static cli_t cli[NCLI];
+ static int cli_hash[CLI_HASH];		/* v2.2.3: fnv(cli.key) -> slot; -1 = empty */
+ static flow_t *flows;			/* conntrack-fallback delta table */
+ static uint32_t flowgen = 0;
++static int flow_strain = 0;		/* a probe ran long this poll - compact after */
++
++/* Open addressing has no cheap delete: zeroing a stale slot in place would cut
++ * a probe chain and orphan any live entry behind it, and the caller would then
++ * re-count that flow from zero (its whole cumulative counter as one delta).
++ * So stale entries are never removed individually - when a probe has had to
++ * walk far, the table is rebuilt wholesale, dropping stale entries and
++ * restoring the EMPTY slots that terminate a chain. Without this the table
++ * reaches a state where every slot holds a non-zero key (permanent after
++ * ~NFLOW distinct flows since boot) and every miss walks all 16384 entries. */
++static void flow_compact(void)
++{
++	flow_t *nt;
++	uint32_t i, j, idx;
++
++	if (!flows) return;
++	if (!(nt = calloc(NFLOW, sizeof(flow_t)))) return;	/* keep the old table */
++	for (i = 0; i < NFLOW; i++) {
++		flow_t *e = &flows[i];
++		if (!e->key || (int)(flowgen - e->gen) > 2) continue;
++		idx = (uint32_t)(e->key & (NFLOW - 1));
++		for (j = 0; j < NFLOW; j++) {
++			flow_t *d = &nt[(idx + j) & (NFLOW - 1)];
++			if (!d->key) { *d = *e; break; }
++		}
++	}
++	free(flows);
++	flows = nt;
++}
+ static uint64_t *fc_last;		/* fcache flow-id -> last cumulative TotalBytes */
+ static int fc_overflow_logged = 0;
+ 
+@@ -1194,6 +1223,7 @@ static void poll_conntrack(void)
+ 	if (!f) return;
+ 	flowgen++;
+ 	ntop = 0;
++	if (flow_strain) { flow_compact(); flow_strain = 0; }
+ 	arp_refresh();		/* load /proc/net/arp ONCE per poll, not per flow */
+ 	nd_refresh();		/* ...and the v6 neighbour cache, same deal */
+ 	self6_refresh();
+@@ -1317,6 +1347,7 @@ static void poll_conntrack(void)
+ 						reuse = e;
+ 					if (e->key == 0) break;
+ 				}
++				if (j > (NFLOW / 64)) flow_strain = 1;	/* chain got long - compact at end of poll */
+ 				if (!fl && reuse) { fl = reuse; fl->key = 0; }
+ 			}
+ 			if (!fl) continue;	/* table full - skip flow */
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+index 59ca77d7f9..3ad9c47a23 100755
+--- a/release/src/router/shared/reaper_jfile.c
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -60,9 +60,23 @@ int rjf_set(const char *path, const char *v, const char *tag)
+ 	char tmp[256], dir[256], *sl;
+ 	size_t len = v ? strlen(v) : 0;
+ 
+-	/* the parent directory, created if missing (one level - that is all our callers need) */
++	/* Every missing parent level, not just the last. A caller can be the first
++	 * to touch the tree: staging a firewall list runs while the engine is off,
++	 * before anything has created /tmp/reaper_fw, and a single-level mkdir then
++	 * fails ENOENT - which lost the save and silently rejected the firewall half
++	 * of an .rbk restore. */
+ 	strlcpy(dir, path, sizeof(dir));
+-	if ((sl = strrchr(dir, '/')) != NULL && sl != dir) { *sl = 0; mkdir(dir, 0700); }
++	if ((sl = strrchr(dir, '/')) != NULL && sl != dir) {
++		char *p;
++		*sl = 0;
++		for (p = dir + 1; *p; p++) {
++			if (*p != '/') continue;
++			*p = 0;
++			mkdir(dir, 0700);
++			*p = '/';
++		}
++		mkdir(dir, 0700);
++	}
+ 	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+ 	f = fopen(tmp, "w");
+ 	if (!f) {
+@@ -136,3 +150,65 @@ char *reaper_pbr_rl_get(void)
+ 	if (ex) return v;
+ 	return nvram_safe_get("reaper_pbr_rulelist");
+ }
++
++
++/* ---- Warden lists (rc/rwarden.c + httpd share this) ----
++ * name = ban|allow|cfeeds. These were the LAST Reaper lists left in nvram, and
++ * they hit the same silent 1 KB kernel cap the device, routing and firewall
++ * lists did (v2.6.3 / v2.6.7 / v2.6.9): rwarden_ban topped out around 63 CIDRs,
++ * the 64th silently no-opped, and the UI reported a successful save while the
++ * previous list stayed live. Warden has no commit-confirm, so there is no draft
++ * tier here - one confirmed file per list, with the pre-migration nvram value as
++ * the fallback. Unlike rjf_get(), this returns a CALLER-OWNED buffer: two Warden
++ * lists are routinely resolved in one expression (allow and ban), which the
++ * single shared static could not survive. */
++char *rw_list_get(const char *name)
++{
++	char p[128], nv[40];
++	int ex;
++	char *v;
++
++	snprintf(p, sizeof(p), REAPER_RW_DIR "/%s", name);
++	v = rjf_get(p, &ex);
++	if (ex) return strdup(v ? v : "");
++	snprintf(nv, sizeof(nv), "rwarden_%s", name);
++	return strdup(nvram_safe_get(nv));
++}
++
++int rw_list_set(const char *name, const char *v)
++{
++	char p[128];
++
++	snprintf(p, sizeof(p), REAPER_RW_DIR "/%s", name);
++	return rjf_set(p, v, "rwarden");
++}
++
++/* One-shot nvram -> /jffs, guarded by a marker so it can never re-import a value
++ * it already unset. Runs from start_rwarden() before anything reads a list. */
++void rw_list_migrate(void)
++{
++	static const char *names[] = { "ban", "allow", "cfeeds", NULL };
++	char marker[128];
++	int i, n = 0;
++
++	snprintf(marker, sizeof(marker), REAPER_RW_DIR "/.committed");
++	if (f_exists(marker)) return;
++
++	mkdir("/jffs/rwarden", 0700);
++	for (i = 0; names[i]; i++) {
++		char nv[40];
++		const char *cur;
++		snprintf(nv, sizeof(nv), "rwarden_%s", names[i]);
++		cur = nvram_safe_get(nv);
++		if (rw_list_set(names[i], cur) != 0) return;	/* leave the marker unwritten; retry next boot */
++		if (cur[0]) n++;
++	}
++	if (rjf_set(marker, "1", "rwarden") != 0) return;
++	for (i = 0; names[i]; i++) {
++		char nv[40];
++		snprintf(nv, sizeof(nv), "rwarden_%s", names[i]);
++		nvram_unset(nv);
++	}
++	nvram_commit();
++	logmessage("rwarden", "%d list(s) migrated from nvram to %s (nvram held a silent 1 KB cap per list)", n, REAPER_RW_DIR);
++}
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 75865c9e71..b2ebeda42b 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3614,6 +3614,11 @@ extern char *reaper_pbr_rl_get(void);	/* draft > confirmed > legacy nvram */
+ #define REAPER_FW_DRAFT_DIR    "/tmp/reaper_fw/draft"
+ #define REAPER_FW_LASTGOOD_DIR "/jffs/reaper_fw/lastgood"
+ extern char *reaper_fw_list_get(const char *key);	/* key: obj grp svc zone zpol rules edef nat */
++/* v2.7.9: the Warden lists - the last three that were still in nvram */
++#define REAPER_RW_DIR "/jffs/rwarden"
++extern char *rw_list_get(const char *name);	/* name: ban allow cfeeds. CALLER FREES. */
++extern int rw_list_set(const char *name, const char *v);
++extern void rw_list_migrate(void);		/* one-shot nvram -> file (start_rwarden) */
+ extern int reaper_fw_list_stage(const char *key, const char *v);
+ #ifdef RTCONFIG_VAR_NVRAM
+ extern char *var_nvram_get(const char *name);
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 549e4a5836..32c36c5e20 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -260,12 +260,9 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <input type="hidden" name="action_wait" value="10">
+   <input type="hidden" name="rwarden_enable" value="">
+   <input type="hidden" name="rwarden_feeds" value="">
+-  <input type="hidden" name="rwarden_cfeeds" value="">
+   <input type="hidden" name="rwarden_geo" value="">
+   <input type="hidden" name="rwarden_dir" value="">
+   <input type="hidden" name="rwarden_self" value="">
+-  <input type="hidden" name="rwarden_ban" value="">
+-  <input type="hidden" name="rwarden_allow" value="">
+   <input type="hidden" name="rwarden_log" value="">
+   <input type="hidden" name="rwarden_stats_save" value="">
+   <input type="hidden" name="rwarden_reset" value="">
+@@ -283,12 +280,12 @@ var NV = {
+      trust boundary. A stored apostrophe - written by a restore, a script, or
+      `nvram set` - would end this string and run whatever followed. Same form
+      Reaper_Firewall.asp uses for its rule lists. */
+-  cfeeds: decodeURIComponent('<% nvram_char_to_ascii("", "rwarden_cfeeds"); %>'),
++  cfeeds: decodeURIComponent('<% rwarden_list("cfeeds"); %>'),
+   geo:    '<% nvram_get("rwarden_geo"); %>',
+   dir:    '<% nvram_get("rwarden_dir"); %>',
+   self:   '<% nvram_get("rwarden_self"); %>',
+-  ban:    '<% nvram_get("rwarden_ban"); %>',
+-  allow:  '<% nvram_get("rwarden_allow"); %>',
++  ban:    decodeURIComponent('<% rwarden_list("ban"); %>'),
++  allow:  decodeURIComponent('<% rwarden_list("allow"); %>'),
+   log:    '<% nvram_get("rwarden_log"); %>',
+   lastupd:'<% nvram_get("rwarden_lastupd"); %>',
+   save:   '<% nvram_get("rwarden_stats_save"); %>',
+@@ -563,12 +560,10 @@ function rwSave(updateNow){
+ 
+   f.rwarden_enable.value = on ? '1' : '0';
+   f.rwarden_feeds.value  = feeds.join(' ');
+-  f.rwarden_cfeeds.value = cfeeds.ok;
++
+   f.rwarden_geo.value    = rwCleanCC(geo);
+   f.rwarden_dir.value    = document.getElementById('dir').value;
+   f.rwarden_self.value   = (document.getElementById('tgself').className.indexOf('on') >= 0) ? '1' : '0';
+-  f.rwarden_ban.value    = ban.ok;
+-  f.rwarden_allow.value  = allow.ok;
+   f.rwarden_log.value    = (document.getElementById('tglog').className.indexOf('on') >= 0) ? '1' : '0';
+   f.rwarden_stats_save.value = (document.getElementById('tgsave').className.indexOf('on') >= 0) ? '1' : '0';
+   var riv = document.getElementById('reset').value;
+@@ -585,9 +580,33 @@ function rwSave(updateNow){
+     f.action_wait.value = '10';
+   }
+   document.getElementById('applying').className = 'applying show';
+-  f.submit();
+-  var wait = (parseInt(f.action_wait.value,10)||10) + 5;
+-  setTimeout(function(){ location.reload(); }, wait*1000);
++
++  /* The three big lists live in /jffs now (they outgrew nvram's 1 KB cap), so
++     they are stored first and the form then applies the remaining settings and
++     restarts the service. Submitting before the store completed would restart
++     rwarden against the PREVIOUS lists, so the submit waits for this reply. */
++  var lf = new FormData();
++  lf.append('action','save_lists');
++  lf.append('http_id','<% nvram_get("http_id"); %>');
++  lf.append('ban', ban.ok);
++  lf.append('allow', allow.ok);
++  lf.append('cfeeds', cfeeds.ok);
++  var lx = new XMLHttpRequest();
++  lx.open('POST','/reaper_warden.cgi',true);
++  lx.onreadystatechange = function(){
++    if(lx.readyState !== 4) return;
++    var r = null;
++    try { r = JSON.parse(lx.responseText); } catch(e){}
++    if(lx.status !== 200 || !r || !r.ok){
++      document.getElementById('applying').className = 'applying';
++      alert((r && r.error) ? r.error : 'Could not save the block/allow lists.');
++      return;
++    }
++    f.submit();
++    var wait = (parseInt(f.action_wait.value,10)||10) + 5;
++    setTimeout(function(){ location.reload(); }, wait*1000);
++  };
++  lx.send(lf);
+ }
+ 
+ /* ---------- live block stats (reaper_warden.cgi) ---------- */
+-- 
+2.25.1
+

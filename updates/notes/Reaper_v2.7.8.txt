@@ -1,0 +1,121 @@
+Reaper v2.7.8
+
+> UPnP is gated by one switch again, not two that could disagree
+
+The daemon read the
+
+per-WAN-unit wan<N>_upnp_enable; the firewall rules that actually forward the traffic read the
+
+generic upnp_enable. Nothing kept the two in sync, so either half could be on while the other
+
+was off — and every status surface still reported UPnP healthy. Confirmed on two boxes in both
+
+directions: one with the daemon up, real console mappings listed, and no rule to DNAT them (the
+
+console reported NAT type Moderate); one with the rule installed and passing traffic but the
+
+daemon never started. Both halves now derive from shared helpers, so they cannot disagree by
+
+construction, and the WAN page's Apply writes both keys in lockstep — the page only ever posted
+
+the unindexed name, so the generic key had had no writer on that path at all.
+
+> The QoS page shows live per-class figures again
+
+On the Traffic Manager page the rate and
+
+drop columns stayed blank on every class row, on routers where the engine was demonstrably
+
+working. The page's stats request was missing the anti-CSRF token that the endpoint began
+
+requiring in v2.5.0, so the router refused it before reading a single queue counter and the page
+
+silently rendered nothing. The request now carries the token, the way the QoS Diagnostics page
+
+already did. The diagnostics page was unaffected throughout, which is why the same numbers were
+
+visible there.
+
+> The Gatekeeper device list no longer shuts the access-level menu under you
+
+Opening a
+
+device's Full / Internet only / Guest / Blocked menu and taking a moment to choose meant the
+
+five-second status refresh rebuilt the table underneath — the row was replaced, and the open menu
+
+went with it. The refresh now holds the repaint back while a menu is open and paints as soon as
+
+you have chosen or clicked away, so nothing is lost and the list is still current. The same
+
+applies to the default-policy and guest-hours selectors lower down the page.
+
+> The dashboard names the processor your router actually has
+
+The System card's heading read
+
+"4-core · BCM4916" on every model, because it was written when every supported model was a
+
+BCM4916 — so on an RT-BE92U, which is a BCM6765, it confidently named the wrong chip. The little
+
+per-core activity bars underneath were four fixed bars for the same reason: a router with fewer
+
+cores left one permanently dark, and one with more simply did not show them. Both now come from
+
+the router itself — the chip and core count from the same place the System Information page reads
+
+them, and one bar per core the system actually reports. The CPU percentage was always correct on
+
+any core count and is unchanged.
+
+> Warden shows how full the threat set is, and a dead custom feed can no longer eat the update
+
+window. The threat set has a hard ceiling past which ipset silently drops entries, and
+
+nothing on the page reported occupancy — the "prefixes loaded" figure counts the geo set, not
+
+this one. The status page now reads "Threat entries: N / 524,288" beside it, from the same
+
+constant the sets are built with, so the two cannot drift. Separately, custom feeds now get a
+
+shorter retry and timeout than the curated and geo fetches, which are known-good hosts worth
+
+waiting on: eight unreachable custom feeds cost about four minutes of an update window instead
+
+of sixteen. A timeout still keeps the previous set and logs the failure, so a slow feed degrades
+
+to "no refresh", never to "no data".
+
+> The About tile no longer strands a strip of empty rail
+
+The tile is sticky with a 14px
+
+offset, but the rail reserved 56px of bottom padding — and a sticky element is held inside its
+
+container's content box, so at the end of a long page the tile settled 42px above where it had
+
+been riding, revealing bare rail underneath. The padding now matches the offset on both chrome
+
+pages.
+
+> Build-side: the "Patches applied" figure comes from the tree, and the sibling images stop
+
+shipping half a rewrite. The stamp had been derived by scraping the published patches/
+
+directory, which produced three wrong or empty counts across earlier releases; a new
+
+patch_count.sh counts what the series would actually emit from the tree, and the verify gate
+
+now fails a build whose stamp is empty, non-numeric, stale, or disagrees with the tree. The
+
+port-protection list, which holds certain files back from the per-model sync, had been holding
+
+back two pages that gate at runtime on the model rather than per branch — freezing four sibling
+
+models on a pre-2026-08-17 system-information chart while the other half of the same rewrite
+
+synced. Both are released from the list, so the siblings carry the whole rewrite, and the
+
+RT-BE92U gets its real animated header.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

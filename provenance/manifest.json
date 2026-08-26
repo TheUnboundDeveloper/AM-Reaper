@@ -21,6 +21,29 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v2.7.9",
+      "firmware": "3006.102.8_Reaper_v2.7.9",
+      "build_commit": "bd04f12dcf",
+      "source_tree": {
+        "release/src/router": "fa123954651a317a42d0c0325c028a01c01eb42c",
+        "release/src-rt": "b69fb0b5e9187937377c9e5739a701a8f6b914f4"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "1eee40730ba37b34870e9254210675ee7ffe8033",
+        "release/src-rt": "b69fb0b5e9187937377c9e5739a701a8f6b914f4"
+      },
+      "images": [],
+      "patch_count": 552,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-08-26",
+      "parent": "v2.7.8",
+      "summary": "Two commits (patches 0551-0552). Remediates a six-agent audit of the Reaper-authored surface - 2 Critical, 8 High, every one with a proven reachability trace. C1: rfw_gen_apply()'s teardown branch wrote apply.sh.tmp and returned success without renaming it into place (the enabled path does), so stop_reaper_fw() exec'd the PREVIOUS still-enabled script, rebuilt and re-hooked every chain it was asked to remove, then unlinked it - firewall enforcing, UI reporting it off, nothing left that could take it down until a reboot; introduced by ea085cdf16 (v2.5.1). C2: neither Gatekeeper CGI compared the target MAC against the requesting client, and the v1.7.3 $GKADMIN hatch was appended in the quarantine tail - after the per-MAC DROP and not at all when gk_default=1 - so blocking your own device severed the UI, SSH and LAN together with the captive page unreachable; the hatch now goes in ahead of the per-device rules and both CGIs refuse a self-block. H1: rmcpd's slow-read deadline was only tested once fgets returned a complete line and the request line preceded it entirely, so a dribbling peer parked the accept loop and held an armed session past both its expiry and a USB-key pull; bounded now with SIGALRM without SA_RESTART, which covers TLS. H2: del_iQosRules() flushes the whole mangle table and add_qos_rules() restores it without -n, deleting REAPER_PBR and its jump while the ip rules survive - selected flows fell through to main and left over the WAN in clear; reaper_pbr_reassert() now runs from the add_iQosRules tail and both HW-QoS teardown returns. H3: rjf_set() created only the last directory level, so with the engine off (the shipped default) every firewall list save failed ENOENT and the firewall half of an .rbk restore was silently rejected under a success banner. H4: rwarden_ban/allow/cfeeds were the last lists in nvram and hit the silent 1 KB cap near 63 CIDRs; they move to /jffs/rwarden behind a marker-guarded migration, the page POSTs them to a new reaper_warden.cgi save action and waits before applying, and export/import share one predicate. H5: the AiMesh window asserted a bare -j RETURN at position 1 of REAPER_GKI - above the cfg_relist exemptions and every per-device rule, so blocked devices regained access - and opened on cfg_obstatus=2, the ordinary AiMesh search; now REQ/LOCKED only and locally deadline-capped. H6: the self-heal throttle was a process-local static and the action it throttled respawns gkd, so the backoff was structurally dead and a persistent MISS meant a rebuild plus fc flush every 10-30s forever; the stamp now lives in tmpfs with a strike limit. H7: the export test ran synchronously from the single-process httpd select loop into an openssl s_client that -quiet makes -ign_eof, so a collector holding the session open took the whole GUI down until a reboot; detached with a bounded wait and s_client now exits on EOF. H8: a full conntrack flow table made every miss walk all 16384 slots - bounding the probe would have mis-credited a flow's whole cumulative counter as one delta, so an amortised compaction restores the empty slots instead. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
+      "models_note": "This rung touches 15 files and step 7 reports NO overlap with any overlays/<MODEL>.patch, so no overlay needed regenerating - the siblings pick these fixes up from the patch series itself. The sibling branches were NOT ported for this rung: the work was cut and built for RT-BE96U only. Port and rebuild the other five before publishing any sibling image at v2.7.9. All ten fixes are in shared code under release/src/router, so nothing here is per-model identity."
+    },
+    {
       "version": "v2.7.8",
       "firmware": "3006.102.8_Reaper_v2.7.8",
       "build_commit": "245c2a8e24",

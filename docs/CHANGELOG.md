@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v2.7.9** · 2026-08-26 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -23,6 +23,52 @@ a runtime setting; the relevant components are excluded from the build entirely.
 AiMesh has been retained because no suitable open-source replacement is currently known. 
 Replacing AiMesh would also require a compatible replacement implementation on every mesh 
 node, not only on the primary router.
+
+---
+
+## v2.7.9 — Turning the firewall off actually turns it off, and Gatekeeper stops locking you out
+
+A review of everything Reaper adds to the firmware turned up two faults that could each leave a
+router unusable, and eight more that mattered. All ten are fixed here. A theme runs through the
+worst of them: the safeguard already existed and stopped one step short of covering the case it
+was written for.
+
+- **The firewall master switch works.** Turning the engine off ran the *previous* build script
+  instead of the teardown it had just generated, so every chain was torn down and then rebuilt and
+  re-hooked — and the one script that could have removed them was deleted on the way out. The
+  result was a firewall still enforcing, a page reporting it switched off, and no way back until a
+  reboot. If the rule you were trying to escape was the reason you reached for the switch, there
+  was no escape. Present since v2.5.1.
+- **Blocking a device can no longer lock you out of your own router.** Nothing checked whether the
+  device you were blocking was the one you were sitting at, and the admin escape hatch was
+  installed *after* the block rule rather than before it — so it never applied. Because the
+  Gatekeeper rules sit at the very top of the input chain, blocking yourself took the web UI, SSH
+  and the LAN at once, and the captive page with them. The router now refuses to block the device
+  making the request, and the escape hatch is installed ahead of every device rule in all modes.
+- **Changing a QoS setting no longer switches Policy Routing off.** Rebuilding QoS rules cleared
+  the whole packet-marking table, which took Policy Routing's rules with it. The routing entries
+  survived, so everything still looked configured — but nothing was being marked, and traffic you
+  had directed down a VPN quietly went out over the plain WAN instead. Bandwidth changes made from
+  the mobile app were the likely trigger. Policy Routing is now re-applied whenever QoS rebuilds.
+- **Firewall objects and rules can be saved before the engine is switched on.** Building your
+  objects and rules first and enabling afterwards — the obvious order — failed every save with a
+  storage error, because the folder they are written to only existed once the engine had run. The
+  same fault silently dropped the firewall half of a settings restore while reporting success.
+- **Warden block and allow lists are no longer capped at about 63 entries.** They were stored in
+  nvram, which discards anything past a hidden 1 KB limit without an error, so beyond roughly 63
+  addresses a save appeared to succeed and changed nothing. They now live in flash storage
+  alongside the Gatekeeper and firewall lists, and existing lists migrate automatically on first
+  boot.
+- **The analytics "Test" button can no longer hang the web interface.** With a syslog destination
+  configured, the test could wait forever on the far end and take every page — including the login
+  — down with it until the router was rebooted.
+- **AiMesh onboarding no longer opens the gate wider than intended.** Searching for a node (not
+  even adding one) briefly restored full router access to every held *and* explicitly blocked
+  device. The window is now limited to an actual join and closes itself if onboarding stalls.
+- **Also:** the Advisor can no longer be held open past its own timeout or a USB-key removal by a
+  slow client; the Gatekeeper self-repair no longer restarts in a loop when a network can never be
+  reconciled; and traffic accounting no longer degrades — and under-reports — on a busy router with
+  many connections.
 
 ---
 

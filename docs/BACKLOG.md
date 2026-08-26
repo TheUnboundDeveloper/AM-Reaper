@@ -1,5 +1,7 @@
 # RT-BE Series "Reaper" — Backlog
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 Working list of what's left to accomplish, grouped by area. Status is noted where
 known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]**
 (deliberately deferred), **[cosmetic]** (polish, non-blocking).

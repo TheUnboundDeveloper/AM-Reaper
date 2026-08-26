@@ -1,5 +1,7 @@
 # Reaper firmware build scripts
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 The reusable toolkit that builds the Reaper images correctly across all six
 models (five on BCM4916, plus the newer BCM6765 RT-BE92U). Canonical build clone lives at `/home/reaper/asuswrt-be96u`
 (WSL Ubuntu-20.04, user `reaper`); these scripts live at
@@ -14,14 +16,15 @@ models (five on BCM4916, plus the newer BCM6765 RT-BE92U). Canonical build clone
 | RT-BE88U      | `rt-be88u`     | `rt-be88u`  | RT-BE88U      | dual (2.4/5)     |
 | GT-BE98       | `gt-be98`      | `gt-be98`   | GT-BE98       | quad (2.4/5/5/6) |
 | GT-BE98 Pro   | `gt-be98-pro`  | `gt-be98_pro` | GT-BE98_PRO | quad (2.4/5/5/6) |
-| RT-BE92U      | `rt-be92u`     | `rt-be92u`  | RT-BE92U      | tri  (2.4/5/6)   |
+| RT-BE92U      | `rt-be92u`     | `rt-be92u`  | RT-BE92U      | tri  (2.4/5/6)   |   <!--@models-->
 
 BE96U is canonical. Siblings = the BE96U shared tree (full diff, **not** a
 whitelist) + a small per-model identity overlay (banner, `target.mak` block,
 `version.conf`, model-only www/blobs). The five BCM4916 models share PROFILE
 `96813GW`; **RT-BE92U** (BCM6765) builds to PROFILE **`96765GW`** instead, in a
-git worktree (`REAPER_TREE`/`REAPER_TDIR`), and is experimental — not yet in the
-CI matrix. Every image is built in both **MCP** and **noMCP** variants; NAND-only.
+git worktree (`REAPER_TREE`/`REAPER_TDIR`). It IS in the CI matrix and in the
+`all` fleet fan-out, but it publishes as a prerelease, so it never lands as a
+standard release alongside the five BCM4916 models. Every image is built in both **MCP** and **noMCP** variants; NAND-only.
 
 ## Files
 

@@ -1,5 +1,7 @@
 # Reaper Policy Routing — user guide
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 This is the reference behind the **?** button on the **Policy Routing** page (VPN menu, next to VPN
 Director).
 

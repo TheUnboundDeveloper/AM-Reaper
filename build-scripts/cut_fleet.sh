@@ -28,13 +28,14 @@ PORTDIR=${REAPER_PORTDIR:-/home/reaper/port}
 CANON=be96u-only
 MODELS="RT-BE86U:rt-be86u RT-BE88U:rt-be88u GT-BE98:gt-be98 GT-BE98_PRO:gt-be98-pro RT-BE92U:rt-be92u"
 
-VERSION=""; DO_CUT=1; DO_PORT=1; DO_OVERLAY=1
+VERSION=""; DO_CUT=1; DO_PORT=1; DO_OVERLAY=1; DO_DOCCHECK=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --version)     VERSION="$2"; shift 2 ;;
     --skip-cut)    DO_CUT=0; shift ;;
     --skip-port)   DO_PORT=0; shift ;;
     --skip-overlay) DO_OVERLAY=0; shift ;;
+    --skip-doccheck) DO_DOCCHECK=0; shift ;;
     -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -64,6 +65,32 @@ echo "  version $EXTEND"
 # silently stay at the previous version.
 if [ ! -w "$LEAN/.github/workflows/public-build.yml" ]; then
   die "public-build.yml is not writable (read-only attribute?) - the EXPECTED_VERSION pin would silently not apply"
+fi
+
+# Documentation claims that disagree with the repo. Costs milliseconds and runs
+# BEFORE the export, the ports and the overlays, so a stale doc is a five-second
+# fix rather than something noticed after the rung is pinned.
+#
+# DELIBERATELY FORGIVING. This is the golden path to a release and it must not
+# become unusable because a checker moved: only a genuine claim mismatch (exit 1)
+# stops a cut. A missing script, an unreadable input, a python that is not there
+# - anything else - WARNS and carries on, exactly like reaper_verify treats
+# patch_count.sh. --skip-doccheck exists for the day that is still not enough.
+if [ "$DO_DOCCHECK" = 1 ]; then
+  step "0b. documentation claims"
+  _dc="$LEAN/build-scripts/reaper_docs.py"
+  if [ ! -f "$_dc" ]; then
+    echo "  WARN: reaper_docs.py not found - skipping the doc check"
+  elif ! command -v python3 >/dev/null 2>&1; then
+    echo "  WARN: python3 not on PATH - skipping the doc check"
+  else
+    python3 "$_dc" --check --root "$LEAN"; _rc=$?
+    case "$_rc" in
+      0) ;;
+      1) die "documentation claims disagree with the repo (see above) - fix them, or run: build-scripts/reaper_docs.py --fix" ;;
+      *) echo "  WARN: reaper_docs.py exited $_rc (not a claim mismatch) - continuing" ;;
+    esac
+  fi
 fi
 
 # ============================================================ 1. cut rung =====
@@ -243,6 +270,22 @@ if [ "$DO_OVERLAY" = 1 ]; then
   step "overlay identity gate (the same check CI runs)"
   python3 "$LEAN/build-scripts/ci/check_overlays.py" "$LEAN/overlays" \
     || die "overlay identity gate FAILED - an overlay carries shared code, not identity"
+fi
+
+# ================================================= doc worklist ===============
+# The claim gate in preflight only proves the MARKED claims are right. What it
+# cannot know is which prose has quietly gone out of date - a guide describing a
+# page this rung changed, a doc with no markers yet. That needs a person, and the
+# natural time to spend on it is while the fleet build is running.
+#
+# Never fails: this is a worklist, not a gate.
+if [ "$DO_DOCCHECK" = 1 ] && [ -f "$LEAN/build-scripts/reaper_docs.py" ] \
+   && command -v python3 >/dev/null 2>&1; then
+  step "doc worklist for $VERSION"
+  _wl="$LEAN/provenance/logs/$VERSION/doc-worklist.json"
+  mkdir -p "$(dirname "$_wl")" 2>/dev/null
+  python3 "$LEAN/build-scripts/reaper_docs.py" --report --root "$LEAN" --json "$_wl" \
+    || echo "  (worklist not written - not a failure)"
 fi
 
 # ============================================================ summary =========

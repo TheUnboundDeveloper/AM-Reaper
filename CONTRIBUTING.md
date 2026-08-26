@@ -1,5 +1,7 @@
 # Contributing
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 Thanks for wanting to help harden the RT-BE Series. The **RT-BEXXU** is the primary,
 hardware-validated model; the same tree also ships **RT-BE86U**, **RT-BE88U**,
 **GT-BE98**, and **GT-BE98 Pro** (BCM4916 / WiFi 7), plus the newer **RT-BE92U**

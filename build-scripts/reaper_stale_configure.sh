@@ -28,6 +28,10 @@
 #   --fix             also remove <pkg>/Makefile + <pkg>/config.status so the
 #                     next build re-runs configure with the current flags
 # ============================================================================
+
+case "${1:-}" in
+  -h|--help) sed -n "2,30 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 set -u
 MODE="${1:---check}"
 ROOT="${2:-/home/reaper/asuswrt-be96u}"

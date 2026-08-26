@@ -16,6 +16,10 @@
 # Exit: 0 = all checks PASS (WARN allowed), non-zero = one or more FAIL.
 # Prints one line per check: [PASS]/[FAIL]/[WARN] <check> -- <detail>
 # ============================================================================
+
+case "${1:-}" in
+  -h|--help) sed -n "2,18 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 set -u
 MODEL="${1:?MODEL}"; VARIANT="${2:?VARIANT}"; VERSION="${3:?VERSION}"
 # REAPER_TREE / REAPER_TDIR let a sibling that builds in a worktree and/or to a

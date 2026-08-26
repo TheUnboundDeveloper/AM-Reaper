@@ -3,6 +3,10 @@
 # Flow:  git checkout be96u-only ; bump+commit version.conf ; build_be96u.sh [ship]
 # NOTE: recent v1.8.x BE96U releases shipped MCP/nand only. Set VARIANTS/STORAGE
 #       to whatever a given release should carry (full matrix is the default).
+
+case "${1:-}" in
+  -h|--help) sed -n "2,5 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 BRANCH=be96u-only
 TARGET=rt-be96u
 PREFIX=RT-BE96U

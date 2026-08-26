@@ -1,5 +1,7 @@
 # Release Process — from source rung to published firmware
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually
 hit came from that step being done by hand and missing a piece.
@@ -41,9 +43,12 @@ One command does all five, plus the sibling fan-out:
 ./build-scripts/cut_fleet.sh --version v2.3.4
 ```
 
-`cut_fleet.sh` is the entry point. It runs `cut_rung.sh` (the five artifacts
-above), then ports the rung onto the five sibling branches (RT-BE86U, RT-BE88U,
-GT-BE98, GT-BE98 Pro and the RT-BE92U), then handles the
+`cut_fleet.sh` is the entry point. Its preflight checks the documentation's
+marked claims against the repo and aborts on a mismatch — milliseconds, and it
+runs before anything is exported, so a stale doc is a five-second fix rather than
+something noticed after the rung is pinned. It then runs `cut_rung.sh` (the five
+artifacts above), then ports the rung onto the five sibling branches (RT-BE86U,
+RT-BE88U, GT-BE98, GT-BE98 Pro and the RT-BE92U), then handles the
 overlays — **in that order.** Regenerating an overlay before the port produces a
 patch that *reverts* the rung on every sibling, and it applies cleanly, so
 nothing downstream catches it. That is the 2026-08-10 regression, and the order

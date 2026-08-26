@@ -36,6 +36,10 @@
 #   3  cannot determine (not a git tree / base commit absent) - prints nothing,
 #      so a caller can stamp an empty field, which renders as an honest dash
 #   4  --verify mismatch (message on stderr)
+
+case "${1:-}" in
+  -h|--help) sed -n "2,38 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 set -uo pipefail
 
 # The upstream pin every Reaper patch is generated against, and the one commit

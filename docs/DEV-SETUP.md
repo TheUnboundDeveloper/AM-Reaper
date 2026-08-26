@@ -1,5 +1,7 @@
 # Contributor Dev Setup — RT-BEXXU "reaper" hardened build
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 This is the **hard-won, known-good** setup for building and modifying this firmware. It exists because getting an Asuswrt-Merlin / Broadcom-HND tree to build is full of non-obvious traps; everything below is something that actually bit us. Follow it and you skip the trial-and-error.
 
 ---

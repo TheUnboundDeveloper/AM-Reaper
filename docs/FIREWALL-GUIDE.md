@@ -1,5 +1,7 @@
 # Reaper Firewall — user guide
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 This is the reference behind the **?** button on every tab of the Firewall page. Each section below
 matches one tab, in the order they appear in the interface.
 

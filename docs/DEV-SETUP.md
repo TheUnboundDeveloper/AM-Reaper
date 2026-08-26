@@ -150,7 +150,7 @@ cd /home/reaper/asuswrt-BEXXU/release/src-rt-5.04behnd.4916
 make rt-BEXXU            # NOTE: -j1 (see below)
 ```
 (For the sibling models, build the corresponding target from that model's branch —
-`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` — same recipe, same caveats.)
+`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `rt-be92u` — same recipe, same caveats.)
 
 The non-obvious parts:
 

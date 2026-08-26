@@ -1,0 +1,44 @@
+From a23ff74c47a34aea71388c294ef514d236337901 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 26 Aug 2026 07:29:22 -0400
+Subject: [PATCH] www: the QoS page's live stats never arrived - the poll sent
+ no http_id
+
+Found on v2.7.7 metal: every class row's rate and drop cell stayed blank on a
+box whose engine was demonstrably working (type 11 armed, port shaper at
+qos_obw, class queues at priority 5..1, live tmctl getqstats deltas on qid3 and
+qid5, zero drops).
+
+The engine was never the problem. v2.5.0 CSRF-gated do_reaper_qos_stats_cgi
+like the other popen()ing Reaper readers, but the page-side URL has been
+unchanged since v1.2.8 and carries no token - so the handler returned
+{"enabled":0,"error":"auth"} before running a single tmctl, and pollStats()'s
+if (!d.enabled) return; left every cell untouched. Dead since v2.5.0.
+Reaper_QoSDiag.asp always sent the token, which is why the same numbers were
+visible there the whole time.
+
+The poll now sends http_id the same way Reaper_QoSDiag.asp does. Reaper_Conn.asp
+polls without a token too but is unaffected - do_reaper_conn_cgi reads /proc and
+has no gate.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_QoS.asp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index fc57b9069a..5ffb3987a2 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -582,7 +582,7 @@ function fmtRate(bps){
+ function pollStats(){
+   if (!(NV.enable==='1' && String(NV.type)==='11')) return;
+   var x = new XMLHttpRequest();
+-  x.open('GET','/reaper_qos_stats.cgi?_='+Date.now(), true);
++  x.open('GET','/reaper_qos_stats.cgi?http_id='+encodeURIComponent('<% nvram_get("http_id"); %>')+'&_='+Date.now(), true);
+   x.onreadystatechange = function(){
+     if (x.readyState!==4 || x.status!==200) return;
+     var d; try{ d = JSON.parse(x.responseText); }catch(e){ return; }
+-- 
+2.25.1
+

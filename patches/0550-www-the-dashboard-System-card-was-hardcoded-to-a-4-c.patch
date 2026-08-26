@@ -1,0 +1,109 @@
+From 245c2a8e2486b70e52a41629b70753effe4614c6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 26 Aug 2026 08:03:09 -0400
+Subject: [PATCH] www: the dashboard System card was hardcoded to a 4-core
+ BCM4916
+
+Field report from a BE92U: the card's eyebrow reads "4-core - BCM4916" on a
+BCM6765 box, because it was a literal string written when every supported model
+was a 4916. #m_cores was the same mistake in markup - four literal <i> bars, so
+the poll's `ci < per.length && ci < bel.length` loop leaves a bar permanently
+dark on a box with fewer cores and hides the rest on a box with more.
+
+Both now come from the box. The eyebrow is filled from sysinfo("cpu.model"),
+which is what Tools_Sysinfo.asp already displays and is correct per model
+without another edit here: the chip half is stamped at compile time
+(sysinfo.c - BCM6765 / BCM4916 / BCM4912 / ...) and the "(Cores: N)" half is
+sysconf(_SC_NPROCESSORS_CONF) at runtime. The bars are built from the live
+cpuInfo object, one per cpuN entry that ej_cpu_usage emits out of /proc/stat.
+
+/proc/stat lists ONLINE cpus while sysinfo counts CONFIGURED ones. They agree
+on a healthy box; where they do not, the bars are the honest number, so the
+label follows the bars rather than the other way round.
+
+The dial needed nothing - it already sums every cpuN entry, so the percentage
+was right on any core count all along.
+
+Parse verified against every string sysinfo.c can produce, including the
+"Rev. b0" variant and the generic implementer fallback: an unnameable chip
+yields "4-core" rather than a wrong chip name, never a stale BCM4916.
+reaper_langcheck: 0 breakers.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 41 ++++++++++++++++++++--
+ 1 file changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index c7ee243efa..5fcd079c46 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -535,12 +535,12 @@ main{min-width:0}
+ 
+         <!-- SYSTEM -->
+         <section class="card col4">
+-          <div class="head"><h3><#menu5_6_2#></h3><span class="eyebrow">4-core &middot; BCM4916</span></div>
++          <div class="head"><h3><#menu5_6_2#></h3><span class="eyebrow" id="m_sysid"></span></div>
+           <div class="meters">
+             <div class="meter">
+               <div class="dial" id="m_cpu" style="--v:0;--c:var(--crimson)"><div class="txt">&mdash;<small><#RDSH_03#></small></div></div>
+               <div class="cap"><#Status_CPU#></div>
+-              <div class="cores" id="m_cores"><i></i><i></i><i></i><i></i></div>
++              <div class="cores" id="m_cores"></div>
+             </div>
+             <div class="meter">
+               <div class="dial" id="m_ram" style="--v:0;--c:var(--bone)"><div class="txt" style="color:var(--bone)">&mdash;<small><#RDSH_04#></small></div></div>
+@@ -1042,6 +1042,35 @@ function pickJSON(text, name){
+   try{ return JSON.parse(m[1]); }catch(e){ return null; }
+ }
+ var _prevCpu=null, _prevCores=null;
++
++/* The eyebrow used to read a literal "4-core - BCM4916", and #m_cores shipped
++   four literal <i> bars. Both are wrong the moment the fleet is not all
++   BCM4916: the RT-BE92U is BCM6765, and a box with a different core count
++   would leave a bar permanently dark (fewer cores) or hide cores entirely
++   (more). sysinfo("cpu.model") is what Tools_Sysinfo.asp already shows and is
++   right per model without another edit here - the chip half is stamped at
++   compile time (sysinfo.c: BCM6765 / BCM4916 / ...) and the "(Cores: N)" half
++   comes from sysconf(_SC_NPROCESSORS_CONF) at runtime. The dial itself was
++   always correct: it sums every cpuN entry, whatever their number. */
++var CPU_MODEL = '<% sysinfo("cpu.model"); %>';
++function sysIdText(cores){
++  var m = CPU_MODEL.replace(/&nbsp;/g, ' ');
++  var chip = (m.match(/BCM[0-9]+[A-Za-z]*/) || [])[0] || '';
++  if(cores == null){
++    var mc = m.match(/Cores:\s*([0-9]+)/);
++    /* sysinfo omits the parenthetical entirely on a single-core box */
++    cores = mc ? Number(mc[1]) : (chip ? 1 : null);
++  }
++  if(!chip && !cores) return '';
++  if(!chip) return cores + '-core';
++  if(!cores) return chip;
++  return cores + '-core \u00b7 ' + chip;
++}
++function setSysId(cores){
++  var el = document.getElementById('m_sysid');
++  if(el) el.textContent = sysIdText(cores);
++}
++setSysId(null);
+ function pollSys(){
+   var x=new XMLHttpRequest();
+   x.open('GET','/cpu_ram_status.asp?_='+(new Date()).getTime(),true);
+@@ -1057,6 +1086,14 @@ function pollSys(){
+         _prevCpu={t:tot,u:use};
+         setDial('m_cpu', pct, `<#RDSH_03#>`);
+         var bars=$id('m_cores');
++        /* /proc/stat lists ONLINE cpus; sysinfo counts CONFIGURED ones. They
++           agree on a healthy box - when they do not, the bars are the honest
++           number, so the label follows them rather than the other way round. */
++        if(bars && bars.children.length!==per.length){
++          bars.innerHTML='';
++          for(var bi=0; bi<per.length; bi++) bars.appendChild(document.createElement('i'));
++          setSysId(per.length);
++        }
+         if(bars && _prevCores && _prevCores.length===per.length){
+           var bel=bars.getElementsByTagName('i');
+           for(var ci=0; ci<per.length && ci<bel.length; ci++){
+-- 
+2.25.1
+

@@ -1,0 +1,425 @@
+From 6c1cce06bfbf8c15958d1308ee52b6f6c11c4acf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 25 Aug 2026 19:52:59 -0400
+Subject: [PATCH] warden: surface threat-set occupancy, and stop a slow custom
+ feed eating the window
+
+Two long-standing residual ceilings, both confirmed still open before touching
+anything.
+
+OCCUPANCY. threat_n was already in the stats JSON and no page ever read it
+(RWDN_89 "Prefixes loaded" is the GEO count, not the threat set), so a user
+piling on custom feeds had no way to see how close rw_threat was to maxelem -
+and ipset silently drops entries past it. The ceiling was a bare 524288 repeated
+at six ipset-create sites, so there was no single number to quote either. Added
+RW_THREAT_MAXELEM/_S, replaced those six sites (the two further mentions are
+prose in comments and stay English), and the stats JSON now emits threat_max
+from that same define, so the page cannot drift from what the sets are actually
+built with. Reaper_Warden.asp renders RWDN_100 "Threat entries: N / 524,288" in
+the existing breakdown list, beside the geo prefix count.
+
+FETCH BUDGET. One $CURL served curated feeds, user feeds and the ipdeny geo
+fetches alike. Eight custom feeds at --retry 2 --max-time 40 is 8x3x40s = up to
+16 minutes of one update window spent on hosts that may simply be gone. New
+CURLC (--retry 1 --max-time 15) is used at the two CUSTOM fetch sites only -
+curated and geo keep $CURL, because those are known-good hosts worth waiting on.
+Same eight now cap at 8x2x15s = 4 minutes. CURLC gets the same
+--proto/--proto-redir =https upgrade when curl supports it, so the redirect pin
+is not weakened, and a timeout still logs "custom feed fetch FAILED" with the
+previous set kept (swap-if-nonempty): a slow feed degrades to "no refresh",
+never to "no data".
+
+i18n: RWDN_100 appended to all 25 dicts in lockstep. RWDN_92-99 are deliberately
+SKIPPED - reserved by an unlanded port-forward-exemption change; reusing them
+would silently relabel its strings. Numbering gaps cost nothing, LnxDictPrep
+re-indexes named tokens at build time.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c          | 36 ++++++++++++++++++------
+ release/src/router/www/BR.dict           |  1 +
+ release/src/router/www/CN.dict           |  1 +
+ release/src/router/www/CZ.dict           |  1 +
+ release/src/router/www/DA.dict           |  1 +
+ release/src/router/www/DE.dict           |  1 +
+ release/src/router/www/EN.dict           |  1 +
+ release/src/router/www/ES.dict           |  1 +
+ release/src/router/www/FI.dict           |  1 +
+ release/src/router/www/FR.dict           |  1 +
+ release/src/router/www/HU.dict           |  1 +
+ release/src/router/www/IT.dict           |  1 +
+ release/src/router/www/JP.dict           |  1 +
+ release/src/router/www/KR.dict           |  1 +
+ release/src/router/www/MS.dict           |  1 +
+ release/src/router/www/NL.dict           |  1 +
+ release/src/router/www/NO.dict           |  1 +
+ release/src/router/www/PL.dict           |  1 +
+ release/src/router/www/RO.dict           |  1 +
+ release/src/router/www/RU.dict           |  1 +
+ release/src/router/www/Reaper_Warden.asp |  9 ++++++
+ release/src/router/www/SL.dict           |  1 +
+ release/src/router/www/SV.dict           |  1 +
+ release/src/router/www/TH.dict           |  1 +
+ release/src/router/www/TR.dict           |  1 +
+ release/src/router/www/TW.dict           |  1 +
+ release/src/router/www/UK.dict           |  1 +
+ 27 files changed, 61 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 3571399ff4..c1cf314c51 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -89,6 +89,13 @@
+ #define RW_CCTMP  "/tmp/rwarden/cc.live"	/* scratch: live per-country deltas being folded */
+ #define RW_CHTMP  "/tmp/rwarden/ch.live"	/* scratch: one chain listing, read by every bucket */
+ #define RW_SAVE   "/jffs/rwarden/sets.ipset"
++/* The threat sets' ceiling. Was a bare literal repeated at six ipset-create
++ * sites AND implicitly assumed by the UI, so "surface the count against the
++ * limit" had no single number to quote. One definition, string form for the
++ * script text, and it is emitted in the stats JSON so the page can never
++ * drift from what the sets are actually built with. */
++#define RW_THREAT_MAXELEM   524288
++#define RW_THREAT_MAXELEM_S "524288"
+ #define RW_GEO_MAXELEM   262144		/* per-country sets; the default 65536 truncates the biggest zones */
+ #define RW_GEO_MAXELEM_S "262144"	/* same value, for string-pasted script text */
+ 
+@@ -625,8 +632,8 @@ static void rw_gen_apply(void)
+ 	fprintf(f,
+ 	  "for s in rw_allow rw_ban; do ipset create $s hash:net -exist; done\n"
+ 	  "for s in rw_allow6 rw_ban6; do ipset create $s hash:net family inet6 -exist; done\n"
+-	  "ipset create rw_threat hash:net maxelem 524288 -exist\n"
+-	  "ipset create rw_threat6 hash:net family inet6 maxelem 524288 -exist\n");
++	  "ipset create rw_threat hash:net maxelem " RW_THREAT_MAXELEM_S " -exist\n"
++	  "ipset create rw_threat6 hash:net family inet6 maxelem " RW_THREAT_MAXELEM_S " -exist\n");
+ 	rw_emit_country_creates(f);
+ 	/* restore cached feed sets from jffs (boot without internet still protected).
+ 	 *
+@@ -849,6 +856,16 @@ static void rw_gen_update(void)
+ 	   * feeds put that URL under user control. 32 MiB is ~20x the largest
+ 	   * curated feed. */
+ 	  "CURL='curl -fsSL --max-filesize 33554432 --retry 2 --max-time 40'\n"
++	  /* CURLC: the same fetch, on a much shorter leash, for USER-supplied
++	   * feeds only. The curated feeds are known-good hosts and are worth
++	   * waiting on; a custom URL is not, and eight of them at --retry 2
++	   * --max-time 40 is 8x3x40s = up to 16 minutes of one update window
++	   * spent on hosts that may simply be gone. --retry 1 --max-time 15
++	   * caps the same eight at 8x2x15s = 4 minutes. A slow custom feed now
++	   * loses its own turn instead of stalling everyone else's; the fetch
++	   * still logs FAILED, and the previous set is kept (swap-if-nonempty),
++	   * so a timeout degrades to "no refresh", never to "no data". */
++	  "CURLC='curl -fsSL --max-filesize 33554432 --retry 1 --max-time 15'\n"
+ 	  /* https-only INCLUDING across redirects. -L follows redirects and curl
+ 	   * permits https->http by default, so an https feed that 302s to http was
+ 	   * still followed - and whatever came back is loaded straight into a DROP
+@@ -860,6 +877,7 @@ static void rw_gen_update(void)
+ 	   * is refused by the pin. */
+ 	  "if curl --proto-redir =https --version >/dev/null 2>&1; then\n"
+ 	  "  CURL=\"$CURL --proto =https --proto-redir =https\"\n"
++	  "  CURLC=\"$CURLC --proto =https --proto-redir =https\"\n"
+ 	  "else\n"
+ 	  "  logger -t rwarden \"curl has no --proto-redir; feed fetches are not redirect-pinned\"\n"
+ 	  "fi\n"
+@@ -873,8 +891,8 @@ static void rw_gen_update(void)
+ 	  "# unspecified/loopback, link-local fe80-febf, ULA fc/fd, multicast ff.\n"
+ 	  "rw_f4() { grep -vE '^(0\\.|10\\.|127\\.|169\\.254\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.|22[4-9]\\.|2[34][0-9]\\.|25[0-5]\\.)'; }\n"
+ 	  "rw_f6() { grep -viE '^(::|0{1,4}:|fe[89ab]|f[cd]|ff)'; }\n"
+-	  "ipset create rw_threat hash:net maxelem 524288 -exist\n"
+-	  "ipset create rw_threat6 hash:net family inet6 maxelem 524288 -exist\n"
++	  "ipset create rw_threat hash:net maxelem " RW_THREAT_MAXELEM_S " -exist\n"
++	  "ipset create rw_threat6 hash:net family inet6 maxelem " RW_THREAT_MAXELEM_S " -exist\n"
+ 	  "NEW=/tmp/rwarden/threat.new; : > $NEW\n"
+ 	  "NEW6=/tmp/rwarden/threat6.new; : > $NEW6\n"
+ 	  "OK=0\n");
+@@ -937,7 +955,7 @@ static void rw_gen_update(void)
+ 				continue;
+ 			}
+ 			fprintf(f,
+-			  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
++			  "if $CURLC '%s' -o $TMP 2>/dev/null; then\n"
+ 			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 >> $NEW\n"
+ 			  "  OK=1\n"
+ 			  "else\n"
+@@ -945,7 +963,7 @@ static void rw_gen_update(void)
+ 			  "fi\n", u4, nm);
+ 			if (rw_field(tok, 2, u6, sizeof(u6)) && *u6 && rw_valid_feedurl(u6))
+ 				fprintf(f,
+-				  "if $CURL '%s' -o $TMP 2>/dev/null; then\n"
++				  "if $CURLC '%s' -o $TMP 2>/dev/null; then\n"
+ 				  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 >> $NEW6\n"
+ 				  "  OK=1\n"
+ 				  "fi\n", u6);
+@@ -961,7 +979,7 @@ static void rw_gen_update(void)
+ 	 * never cost the rest of the set. */
+ 	fprintf(f,
+ 	  "if [ -s $NEW ]; then\n"
+-	  "  ipset create rw_threat_tmp hash:net maxelem 524288 -exist; ipset flush rw_threat_tmp\n"
++	  "  ipset create rw_threat_tmp hash:net maxelem " RW_THREAT_MAXELEM_S " -exist; ipset flush rw_threat_tmp\n"
+ 	  "  sort -u $NEW | sed 's/^/add rw_threat_tmp /' > $TMP.rst\n"
+ 	  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+ 	  "    logger -t rwarden \"threat v4 batch restore hit a bad entry - per-entry fallback\"\n"
+@@ -971,7 +989,7 @@ static void rw_gen_update(void)
+ 	  "  ipset swap rw_threat_tmp rw_threat; ipset destroy rw_threat_tmp\n"
+ 	  "fi\n"
+ 	  "if [ -s $NEW6 ]; then\n"
+-	  "  ipset create rw_threat6_tmp hash:net family inet6 maxelem 524288 -exist; ipset flush rw_threat6_tmp\n"
++	  "  ipset create rw_threat6_tmp hash:net family inet6 maxelem " RW_THREAT_MAXELEM_S " -exist; ipset flush rw_threat6_tmp\n"
+ 	  "  sort -u $NEW6 | sed 's/^/add rw_threat6_tmp /' > $TMP.rst\n"
+ 	  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+ 	  "    logger -t rwarden \"threat v6 batch restore hit a bad entry - per-entry fallback\"\n"
+@@ -1332,7 +1350,7 @@ static void rw_gen_stats(void)
+ 	  "UNCL=$((TOTAL-GEO-THREAT-BAN)); [ \"$UNCL\" -lt 0 ] && UNCL=0\n"
+ 	  "rm -f \"$CH\"\n"
+ 	  "JP=0; [ -w /jffs ] && JP=1\n"
+-	  "printf '{\"enable\":%d,\"armed\":%d,\"v6\":%d,\"lastupd\":%d,\"threat_n\":%d,\"geo_n\":%d,\"geo_e\":%d,\"geo_empty\":%d,"
++	  "printf '{\"enable\":%d,\"armed\":%d,\"v6\":%d,\"lastupd\":%d,\"threat_n\":%d,\"threat_max\":" RW_THREAT_MAXELEM_S ",\"geo_n\":%d,\"geo_e\":%d,\"geo_empty\":%d,"
+ 	  "\"blocked\":{\"total\":%d,\"since\":%d,\"top\":[%s],"
+ 	  "\"geo\":%d,\"threat\":%d,\"ban\":%d,\"uncl\":%d},"
+ 	  "\"save\":%d,\"reset\":\"%s\",\"jffs\":%d,"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 0db06d01c4..941bab6d70 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Substituição de assinatura ativa - as informações de atualização a
+ Reaper_c_addons=Complementos
+ RWDN_91=Estatísticas indisponíveis - tentando novamente
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index b91db76473..8a3456e6af 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=签名覆盖已启用 - 下方的更新信息为未经验证。仅在您
+ Reaper_c_addons=插件
+ RWDN_91=统计不可用 - 正在重试
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index f90314f696..bd7c0bb812 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Přepsání podpisu je aktivní - informace o aktualizaci níže jsou NE
+ Reaper_c_addons=Doplňky
+ RWDN_91=Statistiky nedostupné - opakuji
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 74443d2ac9..588427730b 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Signaturtilsidesættelse aktiv - opdateringsoplysningerne nedenfor er UV
+ Reaper_c_addons=Tilføjelser
+ RWDN_91=Statistik utilgængelig - prøver igen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 92a0daabdc..a1265e010a 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Signaturüberschreibung aktiv - die untenstehenden Aktualisierungsinform
+ Reaper_c_addons=Add-ons
+ RWDN_91=Statistik nicht verfügbar - neuer Versuch
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 447cbc6138..7fa9863bf6 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Signature override active - the update information below is UNVERIFIED.
+ Reaper_c_addons=Addons
+ RWDN_91=Stats unavailable - retrying
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 60dd6f8ddf..b06b2cf427 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Anulación de firma activa - la información de actualización de abajo
+ Reaper_c_addons=Complementos
+ RWDN_91=Estadísticas no disponibles - reintentando
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 28649aeaec..7f4286dd18 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Allekirjoituksen ohitus käytössä - alla olevat päivitystiedot ovat V
+ Reaper_c_addons=Lisäosat
+ RWDN_91=Tilastot eivät ole saatavilla - yritetään uudelleen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index f9435aff82..75a732fc2f 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Contournement de signature actif - les informations de mise à jour ci-d
+ Reaper_c_addons=Modules complémentaires
+ RWDN_91=Statistiques indisponibles - nouvelle tentative
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index bfe5e95ce9..cb44721faa 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Aláírás-felülbírálás aktív - az alábbi frissítési informáci
+ Reaper_c_addons=Bővítmények
+ RWDN_91=A statisztika nem érhető el - újrapróbálás
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index a9fc14f8c9..ab267d0b2e 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Override della firma attivo - le informazioni di aggiornamento qui sotto
+ Reaper_c_addons=Componenti aggiuntivi
+ RWDN_91=Statistiche non disponibili - nuovo tentativo
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index b60251d659..44a74d5dc8 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=署名オーバーライドが有効です - 以下の更新情報は未
+ Reaper_c_addons=アドオン
+ RWDN_91=統計を取得できません - 再試行中
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 98efba1cec..2186d1bb76 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=서명 재정의 활성화됨 - 아래 업데이트 정보는 확인되
+ Reaper_c_addons=애드온
+ RWDN_91=통계를 사용할 수 없음 - 재시도 중
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index fae7c29654..13a480ea99 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Batal ganti tandatangan aktif - maklumat kemas kini di bawah adalah TIDA
+ Reaper_c_addons=Tambahan
+ RWDN_91=Statistik tidak tersedia - mencuba semula
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index a9f46ad78f..2fe3e8ae1e 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Handtekening-overschrijving actief - de bijwerkinformatie hieronder is O
+ Reaper_c_addons=Add-ons
+ RWDN_91=Statistieken niet beschikbaar - opnieuw proberen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 1b11d20b81..6f121ce43c 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Signaturoverstyring aktiv - oppdateringsinformasjonen nedenfor er UBEKRE
+ Reaper_c_addons=Tillegg
+ RWDN_91=Statistikk utilgjengelig - prøver igjen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 80dfc38c6e..93649ee77b 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Zastąpienie podpisu aktywne - poniższe informacje o aktualizacji są N
+ Reaper_c_addons=Dodatki
+ RWDN_91=Statystyki niedostępne - ponawianie
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index abde3b3d41..d63b324c9b 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Suprascrierea semnăturii este activă - informațiile de actualizare de
+ Reaper_c_addons=Suplimente
+ RWDN_91=Statistici indisponibile - se reîncearcă
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 1fbd0eb63b..ea1c6903e1 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Переопределение подписи активно - инфо
+ Reaper_c_addons=Дополнения
+ RWDN_91=Статистика недоступна - повтор
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index a711e39325..549e4a5836 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -669,6 +669,15 @@ function rwStats(){
+         if(b.ban  > 0) pairs.push([`<#RWDN_75#>`, Number(b.ban).toLocaleString(), 0]);
+         if(b.uncl > 0) pairs.push([`<#RWDN_76#>`, Number(b.uncl).toLocaleString(), 0]);
+         if(typeof j.geo_e === 'number') pairs.push([`<#RWDN_89#>`, Number(j.geo_e).toLocaleString(), 0]);
++        /* Threat-set occupancy against its ceiling. The count was already in
++           the stats JSON and simply never displayed, so a user adding custom
++           feeds had no way to see how close the set was to maxelem - entries
++           past it are silently dropped by ipset. threat_max comes from the
++           same #define the sets are created with, so this cannot drift. */
++        if(typeof j.threat_n === 'number' && typeof j.threat_max === 'number')
++          pairs.push([`<#RWDN_100#>`,
++            Number(j.threat_n).toLocaleString() + ' / ' + Number(j.threat_max).toLocaleString(),
++            0]);
+       }
+       if(j.save === 0) pairs.push([`<#RWDN_68#>`, '', 1]);
+       else if(b.since > 0) pairs.push([`<#RWDN_67#>`,
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index cf5b3b4dac..6c41fdbc5f 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Preglasitev podpisa je aktivna - podatki o posodobitvi spodaj so NEPREVE
+ Reaper_c_addons=Dodatki
+ RWDN_91=Statistika ni na voljo - ponovni poskus
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index ec657ef076..0919fd18fb 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Signaturåsidosättning är aktiv - uppdateringsinformationen nedan är
+ Reaper_c_addons=Tillägg
+ RWDN_91=Statistik otillgänglig - försöker igen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index f1a805cd71..2bec4851ae 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=การแทนที่ลายเซ็นทำงานอยู
+ Reaper_c_addons=ส่วนเสริม
+ RWDN_91=สถิติไม่พร้อมใช้งาน - กำลังลองใหม่
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index c3d5947f5b..feb476533d 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=İmza geçersiz kılma etkin - aşağıdaki güncelleme bilgileri DOĞRU
+ Reaper_c_addons=Eklentiler
+ RWDN_91=İstatistikler kullanılamıyor - yeniden deneniyor
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 65e8e01f9b..c7c980ad6a 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=簽章覆寫已啟用 - 下方的更新資訊未經驗證。僅在您此
+ Reaper_c_addons=附加元件
+ RWDN_91=統計資料無法取得 - 重試中
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index fb61b44d12..b088b2f6e4 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6742,3 +6742,4 @@ RFWU_53=Перевизначення підпису активне - інфор
+ Reaper_c_addons=Додатки
+ RWDN_91=Статистика недоступна - повторна спроба
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
++RWDN_100=Threat entries:
+-- 
+2.25.1
+

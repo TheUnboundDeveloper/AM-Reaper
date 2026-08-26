@@ -1,0 +1,108 @@
+From 893bf0c74c30f0e2271639f4a9afeffab75b00dc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 26 Aug 2026 07:29:23 -0400
+Subject: [PATCH] www: the Gatekeeper poll shut an open access-level menu under
+ the user
+
+gkPaint() -> gkRender() assigns #devrows wholesale every 5s, so a row's .rowsel
+<select> is destroyed with its row and the native popup closes mid-choice. Rule
+40's dropdown trap, on the status poll this time. A signature compare would not
+have covered it - the rows carry relative "last seen" text that changes on most
+polls, so the rendered content genuinely differs.
+
+An open <select> holds focus, so focus is the test. gkEditing() reports whether
+focus sits in a control the repaint would replace; gkRender() then defers the
+PAINT only - never the fetch, so GK.st stays current and the deferred paint
+lands complete - and a focusout listener flushes it the moment the control is
+released. gkAct() blurs first, so a committed choice still repaints at once
+instead of waiting for the user to click away. The s_def / s_hours value writes
+are guarded the same way: writing .value into an open <select> shuts it too.
+
+www-only, no dict change. reaper_langcheck: 0 breakers.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_GK.asp | 32 +++++++++++++++++++++++++---
+ 1 file changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+index b5a370f643..cf30aabf60 100644
+--- a/release/src/router/www/Reaper_GK.asp
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -189,7 +189,7 @@ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--
+ <script src="/reaper_util.js"></script>
+ <script>
+ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* F4 CSRF token */
+-(function(){ window.GK = { st:null, filter:'all', busy:false, notArmedSince:0 }; })();
++(function(){ window.GK = { st:null, filter:'all', busy:false, notArmedSince:0, repaintPending:false }; })();
+ /* server-substituted once so gkPaint can swap arming<->fault wording client-side */
+ var GK_TXT = { arming:`<#RGK_57#>`, warm:`<#RGK_58#>`, fault:`<#RGK_59#>`, faultMsg:`<#RGK_60#>` };
+ var GK_STUCK_MS = 60000;  /* enabled-but-not-armed past this = treat as a fault, not warmup */
+@@ -218,6 +218,19 @@ function gkConn(d){
+   return '-';
+ }
+ 
++/* The 5s poll repaints #devrows wholesale, so a row's access-level <select>
++   is destroyed with its row - the native popup shuts under the user mid-choice
++   (rule 40's dropdown trap, here on the status poll). An open select holds
++   focus, so focus is the test: while it sits in a control the repaint would
++   replace, defer the PAINT only. The fetch keeps running and GK.st stays
++   current, so the deferred paint lands complete the moment focus leaves. */
++function gkEditing(){
++  var a = document.activeElement;
++  if(!a || a === document.body) return false;
++  if(String(a.className || '').indexOf('rowsel') >= 0) return true;
++  return a.id === 's_def' || a.id === 's_hours';
++}
++
+ function gkGet(url, cb){
+   var x = new XMLHttpRequest();
+   x.open('GET', url + '&_=' + Date.now(), true);
+@@ -296,8 +309,11 @@ function gkPaint(){
+   }
+   document.getElementById('pendlist').innerHTML = ph || `<div class="nopend"><#RGK_36#></div>`;
+ 
+-  document.getElementById('s_def').value = String(j.def);
+-  document.getElementById('s_hours').value = String(j.guest_hours);
++  /* same trap as the row selects: writing .value into an open <select> shuts it */
++  if(!gkEditing()){
++    document.getElementById('s_def').value = String(j.def);
++    document.getElementById('s_hours').value = String(j.guest_hours);
++  }
+   document.getElementById('s_captive').className = 'tg' + (j.captive === 1 ? ' on' : '');
+   document.getElementById('s_notify').className = 'tg' + (j.notify === 1 ? ' on' : '');
+   gkRender();
+@@ -306,6 +322,8 @@ function gkPaint(){
+ function gkRender(){
+   var j = GK.st;
+   if(!j) return;
++  if(gkEditing()){ GK.repaintPending = true; return; }
++  GK.repaintPending = false;
+   var q = document.getElementById('q').value.toLowerCase();
+   var rows = '';
+   var devs = j.devices || [];
+@@ -342,6 +360,9 @@ function gkFilter(el){
+ function gkAct(url){
+   if(GK.busy) return;
+   GK.busy = true;
++  /* the choice is made, so release the control - otherwise gkEditing() would
++     defer the refresh this very action asks for and the row would look inert */
++  if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
+   gkGet(url + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(){ GK.busy = false; gkRefresh(); });
+ }
+ function gkSet(mac, state){
+@@ -362,6 +383,11 @@ function gkCfg(){
+     + '&guest_hours=' + document.getElementById('s_hours').value);
+ }
+ 
++/* focusout fires before activeElement settles, hence the 0ms hop */
++document.addEventListener('focusout', function(){
++  setTimeout(function(){ if(GK.repaintPending && !gkEditing()) gkRender(); }, 0);
++});
++
+ gkRefresh();
+ var _gkTimer = setInterval(gkRefresh, 5000);
+ /* stop the 5s poll while the tab is backgrounded (mirrors Reaper_QoS/Conn) */
+-- 
+2.25.1
+

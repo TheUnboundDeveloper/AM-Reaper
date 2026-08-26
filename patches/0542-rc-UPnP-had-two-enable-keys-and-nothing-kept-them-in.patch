@@ -1,0 +1,239 @@
+From 197d3b8321a5eeb635f46b6cb866199173a2c8ad Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 25 Aug 2026 19:52:57 -0400
+Subject: [PATCH] rc: UPnP had two enable keys and nothing kept them in sync
+
+start_upnp() gated on the per-unit wan<N>_upnp_enable; nat_setting(),
+nat_setting2() and both mangle builders gated the VUPNP/PUPNP hooks on the
+generic upnp_enable. Either half could be on while the other was off, and every
+status surface still reported UPnP healthy.
+
+Confirmed in the field on two boxes, desynced in OPPOSITE directions:
+
+  RT-BE88U v2.7.6 - daemon up with live console mappings in VUPNP (udp 3074 and
+    9308) but no "-A VSERVER -j VUPNP", so not one packet was ever DNATed and
+    the console sat on NAT type Moderate while the GUI listed the mappings.
+  RT-BE96U v2.7.7 - the jump installed and passing traffic, but the daemon never
+    started: no /tmp/upnp.leases, VUPNP empty.
+
+wan_defaults() cannot resync them - it is "assign none-exist value" and writes
+the DEFAULTS-TABLE value, not the current setting, so once wan<N>_upnp_enable
+exists it is frozen. The only writer is httpd's wan_ propagation (web.c:4541),
+gated on unit != -1 and on validate_apply_input_value(), which lives in the
+closed priv_webapi.o.
+
+Both halves now derive from upnp_wan_unit() / upnp_enabled() in services.c, so
+the daemon and the rules cannot disagree by construction. The unit-selection
+body is lifted VERBATIM from start_upnp(), upstream oddity included (the loop
+builds prefix from `unit` rather than `i`); changing that would change which WAN
+miniupnpd binds on a failed-over dual-WAN box and needs its own field evidence.
+
+Also corrects a stale comment above nat_setting(): it still claimed the
+"-A FORWARD -j FUPNP" hunk was KEPT, but 9c691399d4 removed it to match upstream
+Merlin 3006.102.8_4. An empty FUPNP chain on a live box is expected, not a bug.
+
+NOT fixed here: on the BE96U the WAN page's UPnP toggle persisted neither key.
+That is a separate httpd defect.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/firewall.c | 21 ++++----
+ release/src/router/rc/rc.h       |  2 +
+ release/src/router/rc/services.c | 91 ++++++++++++++++++++++++--------
+ 3 files changed, 84 insertions(+), 30 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 616e26bf5c..1cfc6d4e91 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -1826,10 +1826,13 @@ void nat_setting(char *wan_if, char *wan_ip, char *wanx_if, char *wanx_ip, char
+ 	 * rather than on vts_enable_x, so UPnP redirects were already reachable -
+ 	 * the problem the patch set out to solve did not exist on this path.
+ 	 *
+-	 * The patch's OTHER hunk ("-A FORWARD -j FUPNP", further down) is KEPT: it
+-	 * is the only hook into FUPNP, it carries filter-table ACCEPTs, and it
+-	 * cannot DNAT anything. Dropping it would leave UPnP forwards translated
+-	 * and then dropped in FORWARD. */
++	 * The patch's OTHER hunk ("-A FORWARD -j FUPNP") was ALSO removed, later, by
++	 * 9c691399d4, to match upstream Merlin 3006.102.8_4. This comment used to
++	 * claim that hunk was kept; that was stale from 2026-08-13 to 2026-08-25.
++	 * FUPNP therefore shows "0 references" on a live box and that is EXPECTED,
++	 * not a defect: forwarded UPnP traffic is accepted by the ctstate DNAT rule
++	 * in FORWARD instead (verified on RT-BE88U v2.7.6 metal). Do not re-add the
++	 * jump on the strength of an empty FUPNP chain alone. */
+ 
+ 	/* VSERVER chain */
+ 	if (inet_addr_(wan_ip)) {
+@@ -2054,7 +2057,7 @@ void nat_setting(char *wan_if, char *wan_ip, char *wanx_if, char *wanx_ip, char
+ 	write_port_forwarding(fp, "game_vts_rulelist", "GAME_VSERVER", lan_ip, lan_if);
+ #endif
+ 
+-	if (is_nat_enabled() && nvram_get_int("upnp_enable") && *wan_if)
++	if (is_nat_enabled() && upnp_enabled() && *wan_if)
+ 	{
+ 		/* call UPNP chain */
+ 		fprintf(fp, "-A VSERVER -j VUPNP\n");
+@@ -2563,7 +2566,7 @@ void nat_setting2(char *lan_if, char *lan_ip, char *logaccept, char *logdrop)	//
+ 	write_port_forwarding(fp, "game_vts_rulelist", "GAME_VSERVER", lan_ip, lan_if);
+ #endif
+ 
+-	if (is_nat_enabled() && nvram_get_int("upnp_enable"))
++	if (is_nat_enabled() && upnp_enabled())
+ 	{
+ 		/* call UPNP chain */
+ 		fprintf(fp, "-A VSERVER -j VUPNP\n");
+@@ -5700,7 +5703,7 @@ TRACE_PT("writing Parental Control\n");
+ 		fprintf(fp_ipv6, "-A ICMP_V6_LOCAL -j RETURN\n"); // let the ICMP_V6 chain handle dropping leftover traffic
+ 
+ #ifdef RTCONFIG_IGD2
+-		if (nvram_match("upnp_enable", "1") && nvram_match("upnp_pinhole_enable", "1")) {
++		if (upnp_enabled() && nvram_match("upnp_pinhole_enable", "1")) {
+ 			fprintf(fp_ipv6, "-A FORWARD -j UPNP\n");
+ 		}
+ #endif
+@@ -8386,7 +8389,7 @@ mangle_setting(char *wan_if, char *wan_ip, char *lan_if, char *lan_ip, char *log
+ 
+ 		/* mark VTS loopback connections */
+ 		if (nvram_match("vts_enable_x", "1") || dmz_enabled() ||
+-			(is_nat_enabled() && nvram_get_int("upnp_enable"))) {
++			(is_nat_enabled() && upnp_enabled())) {
+ #ifdef HND_ROUTER
+ 			if (nvram_match("fc_pt_war", "1"))
+ #endif
+@@ -8739,7 +8742,7 @@ mangle_setting2(char *lan_if, char *lan_ip, char *logaccept, char *logdrop)
+ 
+ 		/* mark VTS loopback connections */
+ 		if (nvram_match("vts_enable_x", "1") || dmz_enabled() ||
+-			(is_nat_enabled() && nvram_get_int("upnp_enable"))) {
++			(is_nat_enabled() && upnp_enabled())) {
+ #ifdef HND_ROUTER
+ 			if (nvram_match("fc_pt_war", "1"))
+ #endif
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index bf27c8d369..c678b29883 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2950,6 +2950,8 @@ extern int start_lltdc(void);
+ #endif
+ extern int stop_wps(void);
+ extern int start_wps(void);
++extern int upnp_wan_unit(void);
++extern int upnp_enabled(void);
+ extern void stop_upnp(void);
+ extern void start_upnp(void);
+ extern void reload_upnp(void);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index a14977b2ae..2784db28f1 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7930,6 +7930,72 @@ void start_spectrum(void)
+ 
+ // TODO: so far, support wan0 only
+ 
++/* reaper 2026-08-25: SINGLE SOURCE OF TRUTH for "is UPnP on, and on which WAN".
++ *
++ * Field bug, confirmed on two boxes desynced in OPPOSITE directions:
++ *   RT-BE88U v2.7.6 - daemon up, real console mappings in VUPNP (udp 3074/9308),
++ *     but no "-A VSERVER -j VUPNP": not one packet DNATed, so the console sat
++ *     on NAT type Moderate while every status surface reported UPnP healthy.
++ *   RT-BE96U v2.7.6 - the jump installed and passing traffic, but the daemon
++ *     never started, no /tmp/upnp.leases, VUPNP empty.
++ *
++ * Cause: UPnP was gated by TWO different nvram keys with nothing keeping them
++ * in sync. start_upnp() read the per-unit wan<N>_upnp_enable; nat_setting(),
++ * nat_setting2() and the mangle builders read the bare upnp_enable - which is
++ * wan_upnp_enable with the family prefix stripped (wan_defaults(), init.c).
++ * wan_defaults() cannot resync them: it is "assign none-exist value" and writes
++ * the DEFAULTS-TABLE value, not the current setting, so once wan<N>_upnp_enable
++ * exists it is frozen. The only writer is httpd's wan_ propagation, which is
++ * gated on unit != -1 and on a validator that lives in a closed blob.
++ *
++ * Every consumer now derives from these two helpers, so the daemon and the
++ * rules cannot disagree by construction. Do NOT reintroduce a bare
++ * nvram_get_int("upnp_enable") gate anywhere in the enable path.
++ *
++ * The unit-selection body is lifted VERBATIM from start_upnp(), including the
++ * upstream oddity that the loop builds prefix from 'unit' rather than 'i'.
++ * That is preserved deliberately - changing it would change which WAN
++ * miniupnpd binds on a failed-over dual-WAN box, a separate question that
++ * needs its own field evidence. */
++int upnp_wan_unit(void)
++{
++	char tmp[100], prefix[sizeof("wanXXXXXXXXXX_")];
++	int unit;
++
++	unit = wan_primary_ifunit();
++#ifdef RTCONFIG_DUALWAN
++	if (get_dualwan_by_unit(unit) == WANS_DUALWAN_IF_NONE || !is_wan_connect(unit)) {
++		int i;
++		for (i = WAN_UNIT_FIRST; i < WAN_UNIT_MAX; i++) {
++			if (get_dualwan_by_unit(i) == WANS_DUALWAN_IF_NONE || !is_wan_connect(i))
++				continue;
++			snprintf(prefix, sizeof(prefix), "wan%d_", unit);
++			if (nvram_match(strcat_r(prefix, "proto", tmp), "static")) {
++				snprintf(tmp, sizeof(tmp), i ? "link_wan%d" : "link_wan", i);
++				if (!nvram_get_int(tmp))
++					continue;
++			}
++			if (nvram_get_int(strcat_r(prefix, "upnp_enable", tmp))) {
++				unit = i;
++				break;
++			}
++		}
++	}
++#endif
++	return unit;
++}
++
++/* Non-zero when UPnP/NAT-PMP/PCP is enabled for the WAN miniupnpd would serve.
++ * The firewall builders gate their VUPNP/PUPNP hooks on this so the rules and
++ * the daemon are always in step. */
++int upnp_enabled(void)
++{
++	char tmp[100], prefix[sizeof("wanXXXXXXXXXX_")];
++
++	snprintf(prefix, sizeof(prefix), "wan%d_", upnp_wan_unit());
++	return nvram_get_int(strcat_r(prefix, "upnp_enable", tmp)) ? 1 : 0;
++}
++
+ void start_upnp(void)
+ {
+ 	FILE *f;
+@@ -7963,30 +8029,13 @@ void start_upnp(void)
+ 	if (!is_routing_enabled())
+ 		return;
+ 
+-	unit = wan_primary_ifunit();
+-#ifdef RTCONFIG_DUALWAN
+-	if (get_dualwan_by_unit(unit) == WANS_DUALWAN_IF_NONE || !is_wan_connect(unit)) {
+-		int i;
+-		for (i = WAN_UNIT_FIRST; i < WAN_UNIT_MAX; i++) {
+-			if (get_dualwan_by_unit(i) == WANS_DUALWAN_IF_NONE || !is_wan_connect(i))
+-				continue;
+-			snprintf(prefix, sizeof(prefix), "wan%d_", unit);
+-			if (nvram_match(strcat_r(prefix, "proto", tmp), "static")) {
+-				snprintf(tmp, sizeof(tmp), i ? "link_wan%d" : "link_wan", i);
+-				if (!nvram_get_int(tmp))
+-					continue;
+-			}
+-			if (nvram_get_int(strcat_r(prefix, "upnp_enable", tmp))) {
+-				unit = i;
+-				break;
+-			}
+-		}
+-	}
+-#endif
++	/* reaper: both of these now come from the shared helpers above, so this
++	 * function and the firewall builders can never disagree about UPnP. */
++	unit = upnp_wan_unit();
+ 	snprintf(prefix, sizeof(prefix), "wan%d_", unit);
+ 	upnp_mnp_enable = nvram_get_int("upnp_mnp");
+ 
+-	if (nvram_get_int(strcat_r(prefix, "upnp_enable", tmp)))
++	if (upnp_enabled())
+ 		run_upnpd = 1;
+ #if defined(RTCONFIG_AURASYNC)
+ 	if (run_upnpd) {
+-- 
+2.25.1
+

@@ -134,6 +134,12 @@ zone then reads as plain English and needs no comment.
   hour so a rotating content network does not accumulate stale addresses forever. They only see
   lookups the router's own resolver answers — a device using its own DNS server, or encrypted DNS,
   is invisible to them. A background refresh every ten minutes covers the common case.
+- **A long list pastes in one go.** Domain and address lists take one entry per line or
+  comma-separated, and the editor normalises the whitespace and line endings for you, so a
+  forty-domain object goes in as a single paste rather than a few entries at a time. If something in
+  the paste cannot be accepted the editor says so and keeps saying so — it never silently drops the
+  remainder. These lists live on the router's internal flash (`/jffs`), not in nvram, which is what
+  lifted the old size ceiling.
 - **MAC objects** only work as a *source* on traffic into or through the router. A MAC address does
   not survive being routed, so it cannot be used as a destination or on outbound traffic.
 - **Country objects** are owned by Warden, not by this engine — set them up on the Warden page.

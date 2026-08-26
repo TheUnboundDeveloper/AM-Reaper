@@ -474,8 +474,8 @@ is worth recording as a reminder that one symptom had two independent causes.
 A three-phase review of Reaper's own code: (1) waste, dead and unreachable code, (2) function flow
 and data passing, (3) vulnerabilities — **phase 3 has not started**. Phases 1 and 2 produced 114
 findings, 16 of them high. They were not security-scoped passes, but several findings are security
-in substance and are recorded here; the rest live in
-[`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md).
+in substance and are recorded here; the rest are efficiency and data-flow work, tracked in
+[`BACKLOG.md`](BACKLOG.md).
 
 **This section is appended to as the campaign proceeds. It is not complete.**
 
@@ -545,7 +545,7 @@ said five variants, twelve of fifteen pages, two null-renderers, and implied `es
 **Still open from these phases.** All 16 HIGH findings are fixed. The bulk of the MEDIUM/LOW tail was
 then worked across v2.5.1–v2.5.4 (dead-code and hot-path cleanups, the store-resolver mount guards,
 the MCP arm-time stale-session sweep, the Warden fold/stats shared lock, the analytics staleness
-gate); what remains is catalogued in [`CODE-REVIEW-2026-08-18.md`](CODE-REVIEW-2026-08-18.md) and is
+gate); what remains is tracked in [`BACKLOG.md`](BACKLOG.md) and is
 efficiency / data-flow in nature rather than security. **Phase 3, the dedicated vulnerability pass,
 ran and shipped in v2.5.0** — its corrected defective-reworks and new fixes are recorded in the
 v2.5.0 CHANGELOG and RELEASE-NOTES; the two items it left open are architectural owner-decisions (the

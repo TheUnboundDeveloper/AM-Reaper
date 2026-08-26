@@ -1,0 +1,82 @@
+From f8c76e358b998764731509e1ce8b13b0feb75dfe Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 25 Aug 2026 19:52:58 -0400
+Subject: [PATCH] www: the About tile stranded a strip of empty rail at the
+ bottom of a page
+
+.railabout is position:sticky with bottom:14px, but .rail carried
+padding:14px 12px 56px. A sticky element is constrained to its containing
+block's CONTENT box, which that 56px shrinks - so the tile rode 14px above the
+viewport floor for the whole scroll, then released at the end of a long page and
+settled 56px up, revealing 42px of bare rail underneath it.
+
+Bottom padding is now 14px, equal to the sticky offset, so the resting position
+and the riding position are the same and there is nothing to reveal. Both chrome
+pages move together, per the standing rule.
+
+The old comment justified the 56px as clearance from the browser's URL/status
+tooltip. That was already defeated - the sticky tile rides at 14px for the whole
+scroll, so the clearance only ever existed on the last screen of a page, which is
+exactly where it showed up as a gap. Comment rewritten to say so, and both files
+now state that the two numbers must move together.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 10 +++++++++-
+ release/src/router/www/reaper_shell.asp    | 18 +++++++++++++++---
+ 2 files changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 79afeb9d82..c7ee243efa 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -86,7 +86,15 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+    min-content width and the whole document overflows to the right */
+ main{min-width:0}
+ .rail{background:linear-gradient(180deg,#0c0c0f,#08080a);border-right:1px solid var(--line-soft);
+-  display:flex;flex-direction:column;padding:14px 12px 56px;gap:2px}
++  /* reaper 2026-08-25 (field): this bottom padding MUST stay equal to
++     .railabout's sticky `bottom` offset below (14px). The About tile is
++     position:sticky, so while you scroll it rides 14px above the viewport
++     floor, and at the END of a long page sticky releases and it settles at
++     its flow position - the rail's content-box bottom. At 56px that landing
++     spot was 42px higher than where the tile had been riding, so hitting the
++     bottom of a page dropped an empty strip of rail underneath it. Keep the
++     two numbers in step or the strip comes back. */
++  display:flex;flex-direction:column;padding:14px 12px 14px;gap:2px}
+ .railclock{padding:6px 6px 14px;text-align:center;line-height:1.05}
+ .railclock .rc-time{font-family:var(--hdr);font-weight:700;font-size:23px;letter-spacing:.07em;color:var(--bone);font-variant-numeric:tabular-nums}
+ .railclock .rc-sec{color:var(--crimson)}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 3b97a6c9a6..43743fd746 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -82,10 +82,22 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ /* rail: no scrollbar of its own - the page scrollbar handles overflow */
+ /* rail is locked to the page: NO scrollbar of its own - it scrolls with the
+    body so the only page scrollbar is the one on the far right (the framed
+-   iframe keeps its own internal scrollbar, which is fine). padding-bottom gives
+-   the last item breathing room from the browser URL/status tooltip. */
++   iframe keeps its own internal scrollbar, which is fine). padding-bottom is
++   NOT free to pick - see the note on .rail below; it is pinned to the About
++   tile's sticky offset. It used to be 56px for clearance from the browser's
++   URL/status tooltip, but the sticky tile already rides at 14px for the whole
++   scroll, so that clearance only ever existed on the last screen of a page -
++   which is exactly where it showed up as a gap instead. */
+ .rail{grid-column:1;grid-row:1 / 3;background:linear-gradient(180deg,#0c0c0f,#08080a);border-right:1px solid var(--line-soft);
+-  display:flex;flex-direction:column;padding:14px 12px 56px;gap:2px}
++  /* reaper 2026-08-25 (field): this bottom padding MUST stay equal to
++     .railabout's sticky `bottom` offset below (14px). The About tile is
++     position:sticky, so while you scroll it rides 14px above the viewport
++     floor, and at the END of a long page sticky releases and it settles at
++     its flow position - the rail's content-box bottom. At 56px that landing
++     spot was 42px higher than where the tile had been riding, so hitting the
++     bottom of a page dropped an empty strip of rail underneath it. Keep the
++     two numbers in step or the strip comes back. */
++  display:flex;flex-direction:column;padding:14px 12px 14px;gap:2px}
+ .railclock{padding:6px 6px 14px;text-align:center;line-height:1.05}
+ .railclock .rc-time{font-family:var(--hdr);font-weight:700;font-size:23px;letter-spacing:.07em;color:var(--bone);font-variant-numeric:tabular-nums}
+ .railclock .rc-sec{color:var(--crimson)}
+-- 
+2.25.1
+

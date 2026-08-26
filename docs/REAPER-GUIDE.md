@@ -1,6 +1,6 @@
 # Reaper — the owner's guide
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v2.7.6 source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v2.7.7 source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -112,7 +112,7 @@ This section is the one to read before you flash and again after you have been r
 
 - **RT-BE96U** — primary model; every release is built and validated on this hardware.
 - **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the four siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
-- **RT-BE92U** (BCM6765 / 96765GW) — a newer sixth model, brought up in the v2.7.x line. Its source rides the same rungs (through v2.7.6) and it ships as **experimental prereleases**; it is not yet in the clean-room CI matrix.
+- **RT-BE92U** (BCM6765 / 96765GW) — a newer sixth model, brought up in the v2.7.x line. Its source rides the same rungs and it ships as **experimental prereleases**. It is in the clean-room CI matrix and in the `all` fleet fan-out, but because it publishes as a prerelease it never lands as a standard release alongside the five BCM4916 models.
 
 **Flash only the image built for your exact model.** Cross-flashing between models can brick the router. The release assets for each model are:
 
@@ -184,7 +184,7 @@ An existing list is migrated once, automatically, at the first boot on a firmwar
 - **A factory reset, and "Format JFFS partition at next boot", erase all of these lists.** For Gatekeeper that is the correct default-deny outcome (nothing is approved after a reset); for the rest it means your rules are gone. **Export first** — see 2.5.
 - **The stock settings backup does not contain them** (it is an nvram export). Again: export first.
 - Approving or removing a Gatekeeper device no longer forces a full nvram commit per click, so those actions are quicker than they were.
-- The v2.6.x/v2.7.0 migrations are recent and are listed under *Pending verification* in the backlog. The expected evidence after upgrading is one migration line per feature in the system log, and a list that is still there after a reboot.
+- The v2.6.x/v2.7.0 migrations are recent. The expected evidence after upgrading is one migration line per feature in the system log, and a list that is still there after a reboot; anything still open about them is in [`BACKLOG.md`](BACKLOG.md).
 
 ### 2.5 Two backups, not one
 

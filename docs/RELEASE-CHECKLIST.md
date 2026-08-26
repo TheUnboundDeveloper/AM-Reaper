@@ -1,5 +1,7 @@
 # Release Checklist — local rung → published firmware
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
 
@@ -22,6 +24,10 @@ sibling branches at once, and neither is on GitHub.
       bump — `EXTENDNO=Reaper_vX.Y.Z`. `cut_fleet.sh` refuses to run otherwise.
 - [ ] The previous rung's sibling commits are **in the hub** (phase 5 of last
       time). If they are not, phase 2 aborts on the ancestry check.
+- [ ] **Documentation claims agree with the repo** —
+      `build-scripts/reaper_docs.py --check` (or let `cut_fleet.sh` preflight run
+      it). A stale claim aborts the cut before anything is exported; `--fix`
+      rewrites the mechanical ones. See [`COMMANDS.md`](COMMANDS.md#keeping-the-docs-honest).
 - [ ] `.github/workflows/public-build.yml` is **writable** — a stray Windows
       read-only attribute makes the `EXPECTED_VERSION` pin fail silently.
       `cut_fleet.sh` checks this in preflight.
@@ -140,7 +146,7 @@ Choose one:
 
 **Actions → Public build → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 jobs,
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 <!--@fleetjobs--> jobs,
       ~1.5 h each — six models since the RT-BE92U joined the fan-out)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override

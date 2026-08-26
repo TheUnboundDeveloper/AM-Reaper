@@ -1,6 +1,10 @@
 #!/bin/bash
 # Reaper build launcher -- GT-BE98 (quad-band: 2.4/5/5/6 GHz)
 # Flow:  git checkout gt-be98 ; bump+commit version.conf ; build_gtbe98.sh [ship]
+
+case "${1:-}" in
+  -h|--help) sed -n "2,3 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 BRANCH=gt-be98
 TARGET=gt-be98
 PREFIX=GT-BE98

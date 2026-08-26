@@ -1,5 +1,7 @@
 # Source Availability & Written Offer (GPL v2 & v3)
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 This document is how **Reaper** satisfies the "complete corresponding source"
 obligation of the GNU General Public License — **version 2** for the base and the
 bulk of the firmware (see [`../LICENSE`](../LICENSE)), and **version 3** for the

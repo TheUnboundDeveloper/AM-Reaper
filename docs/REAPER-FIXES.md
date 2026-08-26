@@ -1,5 +1,7 @@
 # RT-BEXXU "reaper" — Hardened Build Fix List
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
 > so the same flaws exist on those models running **stock, currently-shipping firmware**.

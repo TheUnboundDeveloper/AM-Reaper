@@ -1,6 +1,10 @@
 #!/bin/bash
 # Reaper build launcher -- RT-BE86U (dual-band: 2.4/5 GHz, NO 6 GHz)
 # Flow:  git checkout rt-be86u ; bump+commit version.conf ; build_be86u.sh [ship]
+
+case "${1:-}" in
+  -h|--help) sed -n "2,3 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 BRANCH=rt-be86u
 TARGET=rt-be86u
 PREFIX=RT-BE86U

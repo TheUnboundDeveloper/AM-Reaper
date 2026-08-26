@@ -1,5 +1,7 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
 source in this repository — **with nothing added, removed, or hidden** — and how
@@ -72,7 +74,7 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 541 patches (through v2.7.7).
+#   fails without it. This applies all 550 <!--@patchcount--> patches (through v2.7.7).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router

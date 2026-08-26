@@ -5,6 +5,10 @@
 #    (~/_prebuild_be98pro.sh) and its make target resolved via the gt-% pattern
 #    rule to `bin`. Confirm `make gt-be98_pro` is the correct target on this
 #    branch (or run the prebuild first) before trusting an unattended build.
+
+case "${1:-}" in
+  -h|--help) sed -n "2,7 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 BRANCH=gt-be98-pro
 TARGET=gt-be98_pro
 PREFIX=GT-BE98_PRO

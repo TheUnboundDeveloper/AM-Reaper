@@ -1,5 +1,7 @@
 # RT-BE Series "Reaper" — Changelog
 
+> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
 per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).

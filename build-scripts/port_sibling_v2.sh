@@ -18,6 +18,10 @@
 # Usage:  port_sibling_v2.sh <MODEL> [--commit] [--version Reaper_vX.Y.Z]
 #         default = DRY RUN (report only).  --commit performs sync + commit.
 # ============================================================================
+
+case "${1:-}" in
+  -h|--help) sed -n "2,20 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 set -u
 # The tree this port runs in. It used to be safe to hardcode: every model had its
 # own WSL instance with its own branch checked out. Those four instances were

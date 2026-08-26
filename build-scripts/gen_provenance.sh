@@ -19,6 +19,10 @@
 #   patch-count / base-commit default to the environment (PATCH_COUNT,
 #   BASE_COMMIT) and then to "" - an empty field renders as a dash rather than
 #   a wrong number.
+
+case "${1:-}" in
+  -h|--help) sed -n "2,21 p" "$0" | sed "s/^# \?//"; exit 0 ;;
+esac
 set -euo pipefail
 
 SRC="${1:?usage: gen_provenance.sh <source-tree-root> [patch-count] [base-commit]}"

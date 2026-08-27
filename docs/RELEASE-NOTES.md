@@ -1,11 +1,11 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v2.8.3** · 2026-08-26 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v2.7.8** <!--@treever--> — `3006.102.8_Reaper_v2.7.7`, built on RT-BE96U. The line since v2.7.1 adds, in order: **v2.7.2** (Traffic Analyzer history survives a firmware update; a one-file `.rbk` full backup/restore); **v2.7.3** (Gatekeeper learns AiMesh exists, so default-deny no longer blocks node onboarding/heartbeats; the owner's guide surfaced from every page; themed dialogs; manifest signing built then shelved inert); **v2.7.4** (drop the first-boot gate that flashed "Secure Your Router" on boxes with no guest network); **v2.7.5** (one dedicated Addons rail section); **v2.7.6** (Policy Routing's mark chain comes up complete after a reboot with no UI Apply; the Warden status page never fails silently; firewall-lock re-apply; owner-aware PBR teardown); **v2.7.7** (AdGuard removed everywhere; the update check runs again; the six field defects in Policy Routing; the translation pass completed). The series stands at **541 patches** (0518–0528 for v2.7.3, 0529–0535 for v2.7.4–v2.7.6, 0536–0541 for v2.7.7). |
-| **Newest published** | **v2.7.7** <!--@pubver--> (2026-08-25 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
+| **Current rung** | **v2.8.3** <!--@treever--> — `3006.102.8_Reaper_v2.8.3`, built on RT-BE96U. The line since v2.7.1 adds, in order: **v2.7.2** (Traffic Analyzer history survives a firmware update; a one-file `.rbk` full backup/restore); **v2.7.3** (Gatekeeper learns AiMesh exists, so default-deny no longer blocks node onboarding/heartbeats; the owner's guide surfaced from every page; themed dialogs; manifest signing built then shelved inert); **v2.7.4** (drop the first-boot gate that flashed "Secure Your Router" on boxes with no guest network); **v2.7.5** (one dedicated Addons rail section); **v2.7.6** (Policy Routing's mark chain comes up complete after a reboot with no UI Apply; the Warden status page never fails silently; firewall-lock re-apply; owner-aware PBR teardown); **v2.7.7** (AdGuard removed everywhere; the update check runs again; the six field defects in Policy Routing; the translation pass completed); **v2.7.8** (UPnP's two enable keys kept in sync, so mappings are listed and actually forwarded; Warden threat-set occupancy surfaced and a slow custom feed can no longer eat the update window; the QoS page's live stats arrive again; the Gatekeeper poll stops shutting an open access-level menu); **v2.7.9** (a six-agent audit of the Reaper-authored surface — 2 Critical and 8 High, including the firewall master switch that re-applied the ruleset it was asked to remove, and the one-click self-block lockout; the dashboard core count read from the device instead of a hardcoded 4-core BCM4916); **v2.8.3** (the same audit's 17 Medium and 14 Low remainder, plus the Warden migration that was destroying lists and the LAN anti-lockout rule built from an empty variable). The series stands at **553 patches** (0518–0528 for v2.7.3, 0529–0535 for v2.7.4–v2.7.6, 0536–0541 for v2.7.7, 0542–0550 for v2.7.8, 0551–0552 for v2.7.9, 0553 for v2.8.3). |
+| **Newest published** | **v2.7.8** <!--@pubver--> (2026-08-26 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
@@ -17,6 +17,49 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v2.8.3 — Warden lists survive the move to flash, and the LAN shield is whole again
+
+*Built on RT-BE96U, both variants. Cut as patch 0553, bringing the series to 553.*
+
+**Your Warden block and allow lists are no longer destroyed when they move to flash storage.** These
+lists were moved out of the router's settings store so they would stop being silently capped at about
+63 entries. The one-time copy that moves an existing list read it back through a path that returns
+*nothing* for values past roughly 250 characters — so it wrote an empty file, then cleared the
+original. A longer list was not shortened, it was gone, and the page reported a successful migration.
+The copy now reads through a path proven to return the list in full, and the original is deliberately
+left in place, so the worst outcome is a list that did not move rather than one that no longer
+exists. Checked on hardware with a 60-entry list: copied byte for byte, every entry live in the
+filter, and the original still present afterwards.
+
+**The LAN shield is built correctly again.** The rule that stops your own devices being caught by a
+threat or country feed was assembled from a text pattern that lost a character, leaving it with no
+network to protect. It is rebuilt and verified against every common home network size. This is the
+rule that makes a bad feed entry survivable, so it should never have been able to go missing
+quietly — it was found by reading the script the router actually generates, which is now part of how
+these changes get checked.
+
+**Warden updates are all-or-nothing.** Updates, folds and statistics are published atomically, so an
+interrupted refresh can no longer leave a half-written list in force. A custom feed that stalls is
+given a deadline rather than being allowed to consume the time the other feeds need.
+
+**Gatekeeper is steadier.** It no longer grants a time-based allowance before the router knows the
+correct time, it retires its oldest tracked devices instead of growing without limit, and it says so
+in the log when a device list is too long to load rather than truncating in silence.
+
+**The Warden log no longer cries wolf at every start.** With a block list in use, the router
+reported "protection deferred" every time the service started, while protection was in fact fully
+active — the last cleanup step in its own setup script reports "nothing to do" as a failure, and a
+script is judged by its last step. Harmless on its own, but it buried the *real* version of that
+warning, which means protection genuinely has not come up yet.
+
+Also in this rung: the router now watches for the condition behind the long-standing "stuck settings"
+fault and reports it rather than acting on it; the firewall rules engine loads its saved
+configuration as soon as it is switched on; a saved list that exists but cannot be read is no longer
+treated as an empty one; and every generated maintenance script reads settings through the guarded
+path, so none of them can hang waiting on the settings store.
 
 ---
 

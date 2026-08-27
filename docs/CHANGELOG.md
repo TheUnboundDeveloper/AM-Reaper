@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v2.8.3** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v2.8.4** · 2026-08-27 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -23,6 +23,32 @@ a runtime setting; the relevant components are excluded from the build entirely.
 AiMesh has been retained because no suitable open-source replacement is currently known. 
 Replacing AiMesh would also require a compatible replacement implementation on every mesh 
 node, not only on the primary router.
+
+---
+
+## v2.8.4 — The Warden page can save again
+
+A single fault, reported from the field within hours of v2.8.3: on the Warden page, changing a
+block list or pressing **Update now** answered *"invalid request token"*, and it kept answering
+that after logging out and back in. It was reported from Firefox, but the browser was never
+involved and neither was the login — every browser behaved the same way.
+
+- **Saving on the Warden page works again.** When the block and allow lists moved out of nvram
+  into flash storage, the page began sending them to the router in a packaging format its web
+  server does not read. The request therefore arrived carrying nothing at all — including the
+  token that proves it came from you — so it was refused as untrusted. The page now sends them
+  the same way every other settings page does. Worth knowing if you hit this: the refusal
+  stopped the *whole* save, not just the lists, so the master switch, country selection, feed
+  selection and logging could not be changed either, on both buttons. The live statistics on
+  that page kept updating the entire time, which is why it looked healthy while nothing you
+  changed would stick. Nothing was lost — the settings were never written, so they are exactly
+  as you left them.
+- **A refused request now says which kind of refusal it was.** One message covered three
+  different problems: a request that never arrived intact, a genuinely stale security token, and
+  a request sent from another website. That is why this fault read as an expired session and sent
+  people through pointless logouts. The three now read differently, so the next report of this
+  kind identifies itself. What the router *allows* has not changed at all — every request that
+  was accepted before is still accepted, and every one that was refused is still refused.
 
 ---
 

@@ -1,0 +1,1376 @@
+From 7dbc5469c50cc9427bae67d85527ce263c572d6b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 26 Aug 2026 20:08:27 -0400
+Subject: [PATCH] security: the audit's Medium and Low remainder, and two
+ defects it uncovered
+
+Closes the 2026-08-26 audit: the 17 Medium and 14 Low findings, plus two
+defects that only surfaced while validating the fixes on hardware. The two
+late ones are the reason this rung exists rather than shipping v2.8.0.
+
+WARDEN LISTS WERE BEING DESTROYED BY THEIR OWN MIGRATION (the serious one).
+  rc's nvram_safe_get() returns EMPTY for these keys above roughly 200-400
+  bytes while `nvram get` from a shell returns the same key in full - 602
+  bytes captured verbatim in the same shell where the library call had
+  yielded nothing. Measured: 186 bytes read fine, 381 and 706 both came back
+  empty. The one-shot nvram->/jffs migration therefore read "", wrote a
+  0-byte file, and then unset nvram: the list was not truncated, it was GONE.
+  The /jffs store was never at fault - a 706-byte list written straight into
+  it produces a fully populated set.
+  Fixed two ways, because either alone is a single point of failure:
+  rw_nvram_cli_get() reads through the path that demonstrably works, and the
+  nvram originals are now DELIBERATELY LEFT IN PLACE so the worst case is
+  "the list did not migrate and is still where it was" instead of "the list
+  is gone". WHY the two read paths disagree is NOT established and is on the
+  backlog; this rung removes the data loss, not the mystery. The limit is not
+  ours and predates the store: a Warden ban list over ~256 bytes never
+  enforced in nvram either.
+  Proven on metal: a 912-byte, 60-entry list migrates byte-for-byte
+  identical, the ipset populates to 60, and nvram still holds the original.
+
+THE LAN ANTI-LOCKOUT RULE WAS BUILT FROM AN EMPTY VARIABLE.
+  `%%` in an fprintf format string yields ONE `%`, so the generated shell
+  carried ${LANIP%.*} where ${LANIP%%.*} was intended. LANNET came out empty
+  and the structural anti-lockout RETURN - the rule that keeps a LAN client
+  from being dropped by a feed - was malformed. Found only by reading the
+  GENERATED script on the router; a green build, a clean cppcheck and a
+  passing staged-symbol grep were all blind to it. Logic now proven across
+  /24, /25 (both halves), /22, /16, /8 and bogus input.
+
+AND THE FALSE ALARM THE MIGRATION FIX UNCOVERED. With the manual ban list
+  finally usable, rw_gen_apply()'s generated script ends on the
+  rw_emit_ban_conntrack() block, whose last statement is `conntrack -D`. That
+  returns 1 when no live flow matches - the normal case for a freshly-banned
+  address - and a script's exit status is its last command's. start_rwarden()
+  treats any non-zero exit as the cold-boot LAN deferral, so it logged "LAN not
+  ready at boot - protection deferred" on every start with a non-empty ban list
+  while protection was fully armed, and made the GENUINE deferral
+  indistinguishable from that noise. The script now ends with an explicit
+  `exit 0`. Measured on metal: exits 1 with a 60-entry list present, 0 with only
+  those lines stripped. Invisible before this rung because an empty ban list
+  emits no conntrack lines at all.
+
+MEDIUM (17) - atomic publish for the Warden update/fold/stats writes; a
+  geo-fetch deadline so one slow custom feed cannot eat the window; ipset
+  destroy-on-type-mismatch; the DNAT target restricted to a single IPv4 host;
+  a CSRF gate on reaper_conn.cgi; an LRU eviction in gkd; a conntrack probe
+  bound by a shell-side timeout; rjf_get() gained a three-state exists so a
+  file that opens but cannot be read is no longer indistinguishable from an
+  absent one; rjf_syncdir() fsyncs the parent after rename; the rules engine
+  loads its confirmed config when the engine is on; the engine-off branch
+  promotes only obj/grp; gk_refresh became a real service verb; the armed
+  check consults pids("gkd"); a proto-31 netlink socket-count detector in
+  rwatch (log-only, never auto-kill); rexport's nine bare `nvram get` calls
+  moved behind the _nv guard.
+
+LOW (14) - LANNET computed arithmetically rather than by string surgery; /0
+  rejected; a per-family blog skip count; PBR rules deleted by their own
+  fwmark; the six reaper_fw_list_get calls hoisted out of a loop; the scrape
+  token fails closed; reload_upnp consults upnp_enabled(); a weak http_id is
+  logged; gkd refuses a pre-NTP time grant; Gatekeeper logs list truncation
+  per dropped MAC.
+
+Also: the _nv temp path is created under `set -C` (O_CREAT|O_EXCL) after an
+unlink, so a pre-planted symlink can no longer turn a guarded nvram read into
+a root truncate-and-write.
+
+Verified on live RT-BE96U hardware, not just at compile time: C1 exercised in
+both directions (engine off -> chains absent, no orphan apply.sh.tmp, teardown
+script consumed; engine on -> chains restored to the same rule counts and the
+same apply.sh digest); the Warden migration test above; zero bare `nvram get`
+outside the _nv helper across all five generated scripts; every Reaper store
+and tmpfs directory at 0700; rtrafd flat at 3.12s CPU.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf              |   2 +-
+ release/src/router/gkd/gkd.c             |  31 ++++-
+ release/src/router/httpd/web.c           |  80 ++++++++++--
+ release/src/router/rc/gatekeeper.c       |   7 ++
+ release/src/router/rc/rc.h               |   6 +-
+ release/src/router/rc/reaper_fw.c        |  78 +++++++++++-
+ release/src/router/rc/reaper_nv.h        |  12 +-
+ release/src/router/rc/reaper_pbr.c       |  49 +++++++-
+ release/src/router/rc/rexport.c          |  27 ++--
+ release/src/router/rc/rwarden.c          | 116 ++++++++++++++---
+ release/src/router/rc/rwatch.c           |  23 ++++
+ release/src/router/rc/services.c         |  35 ++++--
+ release/src/router/rmcpd/rmcpd.c         |   4 +-
+ release/src/router/rtrafd/rtrafd.c       |  58 ++++++++-
+ release/src/router/shared/reaper_jfile.c | 151 +++++++++++++++++++++--
+ release/src/router/shared/shared.h       |   2 +
+ 16 files changed, 601 insertions(+), 80 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index e836a09be4..7dd23d7f19 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.7.9
++EXTENDNO=Reaper_v2.8.3
+ 
+ RCNO=0
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index fbfd6515a7..77d8c9acc8 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -107,8 +107,27 @@ static dev_t_gk *touch_dev(const char *mac, long now)
+ 	 * up. Online-tracking and enforcement are unaffected either way. */
+ 	int clock_ok = nvram_get_int("ntp_ready");
+ 	if (!d) {
+-		if (ndev >= MAX_DEV) return NULL;
+-		d = &devs[ndev++];
++		if (ndev >= MAX_DEV) {
++			/* Refusing the insert meant a full table silently stopped showing
++			 * NEW devices - including the admin's own - until an entry aged out
++			 * at DEV_TTL (24h). Entries mint from any completed ARP entry, and a
++			 * quarantined device still reaches the router at L2, so ~500 spoofed
++			 * MACs could blind the pending list and the new-device alerts for a
++			 * day. Enforcement was never affected (the quarantine catch-all
++			 * still holds), so this is a visibility DoS - but visibility is the
++			 * whole point of the pending list. Evict the least-recently-seen
++			 * OFFLINE entry instead; if every slot is genuinely online, keep the
++			 * old refusal rather than evict a live device. */
++			int i, victim = -1;
++			for (i = 0; i < ndev; i++) {
++				if (devs[i].online) continue;
++				if (victim < 0 || devs[i].last < devs[victim].last) victim = i;
++			}
++			if (victim < 0) return NULL;
++			d = &devs[victim];
++		} else {
++			d = &devs[ndev++];
++		}
+ 		memset(d, 0, sizeof(*d));
+ 		snprintf(d->mac, sizeof(d->mac), "%s", mac);
+ 		norm_mac(d->mac);
+@@ -381,6 +400,14 @@ static void expire_guests(void)
+ 	 * inside the lock - never the poll-start snapshot, which is seconds stale
+ 	 * after the blocking scans and would clobber an admin approve/block that
+ 	 * landed during this poll. */
++	/* Pre-NTP, setup_timezone() pins time() to RC_BUILDTIME, so `now` here is
++	 * years in the past and every real expiry looks unreached - then the moment
++	 * NTP steps the clock forward, every pass granted in that window expires at
++	 * once. touch_dev() already gates its stamping on ntp_ready; this did not.
++	 * Do nothing until the clock is real: a pass outliving its deadline by one
++	 * poll is harmless, revoking every guest simultaneously is not. */
++	if (!nvram_get_int("ntp_ready")) return;
++
+ 	lf = open(GK_DIR "/rl.lock", O_CREAT | O_RDWR, 0600);
+ 	if (lf >= 0) flock(lf, LOCK_EX);
+ 	rl = strdup(gk_rl_get());
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 1314ca3749..5edb851c86 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21917,6 +21917,21 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 	struct rc_ctst { uint32_t s, d; unsigned sp, dp; char st[16]; } *ctv = NULL;
+ 	int ctn = 0, ctcap = 0;
+ 
++	/* A1-SEC-002: every other Reaper reader is token-gated because these
++	 * handlers are subprocess/scan amplifiers a cross-site GET can drive. This
++	 * one was missed - and it is the most expensive of them: an uncapped read of
++	 * the whole conntrack table (ct_max defaults to 300000) followed by a linear
++	 * scan of it per fcache flow, polled once a second by an open page. Without
++	 * the token an attacker page could keep that running against a logged-in
++	 * admin's browser long after the tab was closed. */
++	{
++		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
++		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
++			websWrite(stream, "{\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++			return;
++		}
++	}
++
+ 	if (inet_aton(nvram_safe_get("lan_ipaddr"), &ia)) lan_net = ntohl(ia.s_addr);
+ 	if (inet_aton(nvram_safe_get("lan_netmask"), &ia)) lan_mask = ntohl(ia.s_addr);
+ 	lan_net &= lan_mask;
+@@ -23333,7 +23348,14 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		websWrite(stream, "{\"now\":%ld,\"enable\":%d,\"armed\":%d,\"def\":%d,\"guest_hours\":%d,\"captive\":%d,\"notify\":%d",
+ 			(long)time(NULL),
+ 			nvram_match("gk_enable", "1") ? 1 : 0,
+-			f_exists("/tmp/gk/chains.ok") ? 1 : 0,
++			/* The stamp alone is not proof: gkd creates /tmp/gk/chains.ok and
++			 * nothing ever deletes it, and NOTHING SUPERVISES gkd - it has no
++			 * watchdog.c entry and is only started by start_gk(). If it dies,
++			 * guest passes stop expiring, the chains stop self-healing and an
++			 * open AiMesh window is never withdrawn, while this page keeps
++			 * reporting a healthy green "enforcing". Require the daemon to
++			 * actually be alive as well. */
++			(f_exists("/tmp/gk/chains.ok") && pids("gkd")) ? 1 : 0,
+ 			nvram_match("gk_default", "1") ? 1 : 0,
+ 			nvram_get_int("gk_guest_hours") > 0 ? nvram_get_int("gk_guest_hours") : 24,
+ 			nvram_match("gk_captive", "0") ? 0 : 1,
+@@ -23431,11 +23453,19 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		}
+ 		if (state == 3) {
+ 			int h = nvram_get_int("gk_guest_hours");
++			/* An absolute deadline computed against the pre-NTP clock
++			 * (RC_BUILDTIME) is not the duration the admin asked for, and it
++			 * expires the instant the clock steps. Refuse rather than issue a
++			 * pass that quietly means something else. */
++			if (!nvram_get_int("ntp_ready")) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"the router's clock is not set yet - try again once it has synced\",\"ek\":\"RDEVE_NTP\"}");
++				return;
++			}
+ 			if (h < 1 || h > 168) h = 24;
+ 			expiry = (long)time(NULL) + (long)h * 3600;
+ 		}
+ 		gk_rl_update(umac, state, expiry);	/* v2.6.3: persisted by gk_rl_set, no nvram_commit */
+-		notify_rc("restart_gk");
++		notify_rc("start_gk_refresh");	/* regen+re-apply; full restart_gk is for enable/disable */
+ 		reaper_audit("gatekeeper", "set-access", umac);
+ 		websWrite(stream, "{\"ok\":1}");
+ 		return;
+@@ -23782,6 +23812,20 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		 * fwactive = reaper_fw_active (written LAST by start/stop_reaper_fw once the
+ 		 *   chains actually exist). A deferred boot leaves fwen=1, fwactive=0, so the
+ 		 *   page needs both to tell "On" from "enabled but no chains yet". */
++		/* Each list resolved into its OWN statement. reaper_fw_list_get()
++		 * returns rjf_get()'s single process-wide static, which the NEXT call
++		 * free()s - so six of them stacked as unsequenced arguments to one
++		 * websWrite() was a use-after-free waiting on an evaluation order. It
++		 * does not fire on the shipped gcc-10.3 (verified by disassembling
++		 * web.o: each list_get is followed immediately by its count), but that
++		 * is a codegen accident, not a guarantee. */
++		{
++		int n_rules = fw_list_count(reaper_fw_list_get("rules"));
++		int n_obj   = fw_list_count(reaper_fw_list_get("obj"));
++		int n_grp   = fw_list_count(reaper_fw_list_get("grp"));
++		int n_svc   = fw_list_count(reaper_fw_list_get("svc"));
++		int n_zone  = fw_list_count(reaper_fw_list_get("zone"));
++		int n_zpol  = fw_list_count(reaper_fw_list_get("zpol"));
+ 		websWrite(stream,
+ 			",\"fwen\":%d,\"fwactive\":%d,\"fwconfirm\":%d,\"fwarmed\":%d,"
+ 			"\"nrules\":%d,\"nobj\":%d,\"ngrp\":%d,\"nsvc\":%d,"
+@@ -23790,12 +23834,8 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			nvram_match("reaper_fw_active", "1") ? 1 : 0,
+ 			nvram_get_int("reaper_fw_confirm"),
+ 			nvram_match("reaper_fw_armed", "1") ? 1 : 0,
+-			fw_list_count(reaper_fw_list_get("rules")),
+-			fw_list_count(reaper_fw_list_get("obj")),
+-			fw_list_count(reaper_fw_list_get("grp")),
+-			fw_list_count(reaper_fw_list_get("svc")),
+-			fw_list_count(reaper_fw_list_get("zone")),
+-			fw_list_count(reaper_fw_list_get("zpol")));
++			n_rules, n_obj, n_grp, n_svc, n_zone, n_zpol);
++		}
+ 		websWrite(stream, ",\"fwerr\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_fw_err"));
+ 
+@@ -25960,11 +26000,19 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		}
+ 		if (state == 3) {
+ 			int h = nvram_get_int("gk_guest_hours");
++			/* An absolute deadline computed against the pre-NTP clock
++			 * (RC_BUILDTIME) is not the duration the admin asked for, and it
++			 * expires the instant the clock steps. Refuse rather than issue a
++			 * pass that quietly means something else. */
++			if (!nvram_get_int("ntp_ready")) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"the router's clock is not set yet - try again once it has synced\",\"ek\":\"RDEVE_NTP\"}");
++				return;
++			}
+ 			if (h < 1 || h > 168) h = 24;
+ 			expiry = (long)time(NULL) + (long)h * 3600;
+ 		}
+ 		gk_rl_update(umac, state, expiry);	/* same format authority as GK; persisted by gk_rl_set */
+-		notify_rc("restart_gk");
++		notify_rc("start_gk_refresh");	/* regen+re-apply; full restart_gk is for enable/disable */
+ 		{ char sd[8]; snprintf(sd, sizeof(sd), "%d", state); rdev_audit("access", umac, sd); }
+ 		websWrite(stream, "{\"ok\":1}");
+ 		return;
+@@ -26159,9 +26207,16 @@ static void gen_scrape_token(char *out, size_t n)
+ 	unsigned char r[16];
+ 	FILE *f;
+ 	size_t i;
+-	strlcpy(out, "rpx_", n);
++	/* Fail CLOSED. This used to seed out="rpx_" and then fill entropy in - so an
++	 * unopenable /dev/urandom or a short read left the literal 4-char string
++	 * "rpx_" as the token, and do_reaper_metrics_cgi (auth = NULL) accepts any
++	 * non-empty stored token: GET /reaper_metrics.cgi?token=rpx_ would return
++	 * the full per-device health snapshot with no session. Emit nothing unless
++	 * all 16 bytes arrived; the caller then leaves the stored key untouched. */
++	out[0] = '\0';
+ 	if ((f = fopen("/dev/urandom", "r")) != NULL) {
+ 		if (fread(r, 1, sizeof(r), f) == sizeof(r)) {
++			strlcpy(out, "rpx_", n);
+ 			for (i = 0; i < sizeof(r) && (4 + i * 2 + 1) < n; i++) {
+ 				out[4 + i * 2]     = hex[r[i] >> 4];
+ 				out[4 + i * 2 + 1] = hex[r[i] & 0xf];
+@@ -26277,7 +26332,10 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 		if ((v = get_cgi("source")) && rexport_val_ok(v))   nvram_set("reaper_export_source", v);
+ 		if ((v = get_cgi("maskmac")))  nvram_set("reaper_export_maskmac", strcmp(v, "1") ? "0" : "1");
+ 		if ((v = get_cgi("regen_scrape")) && !strcmp(v, "1")) {
+-			char t[40]; gen_scrape_token(t, sizeof(t)); nvram_set("reaper_export_scrape_token", t);
++			char t[40];
++			gen_scrape_token(t, sizeof(t));
++			if (t[0]) nvram_set("reaper_export_scrape_token", t);
++			else logmessage("rexport", "scrape token NOT regenerated - /dev/urandom unavailable; the previous token stands");
+ 		}
+ 		/* export requires the per-device health probe to have data to send */
+ 		if (!nvram_match("reaper_export_mode", "off")) nvram_set("rtraf_hprobe", "1");
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index c7551b99e9..4c76341d67 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -274,6 +274,13 @@ static void gk_emit_relist(FILE *f)
+ 			if (!gk_valid_mac(mac)) continue;
+ 			for (i = 0; i < nseen; i++)
+ 				if (strcasecmp(seen[i], mac) == 0) { dup = 1; break; }
++			if (!dup && nseen >= 64)
++				/* The registry outgrew the exemption table. Beyond this the
++				 * remaining node STA MACs fall through to the quarantine tail -
++				 * which is exactly the AiMesh incident this function exists to
++				 * prevent - and it used to happen with no diagnostic at all.
++				 * Owner decision (2026-08-26): keep the cap, log the truncation. */
++				logmessage("gatekeeper", "cfg_relist exemption table full at 64 - AiMesh MAC %s NOT exempted (a large tri-band mesh can exceed this)", mac);
+ 			if (!dup && nseen < 64) {
+ 				strlcpy(seen[nseen], mac, sizeof(seen[0]));
+ 				nseen++;
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index d0adcb6d6d..3d6c703ce6 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2221,7 +2221,11 @@ extern int pc_reward_main(int argc, char *argv[]);
+ 
+ // common.c
+ extern void usage_exit(const char *cmd, const char *help) __attribute__ ((noreturn));
+-#define xstart(args...)	_xstart(args, NULL)
++/* (char *)NULL, not NULL: _xstart is variadic and reads the sentinel with
++ * va_arg(.., char *). A bare NULL that expands to a plain 0 is an int in the
++ * varargs list and is undefined behaviour on any ABI where int and char* are
++ * not the same width. Harmless as built today; correct now regardless. */
++#define xstart(args...)	_xstart(args, (char *)NULL)
+ extern int _xstart(const char *cmd, ...);
+ extern void run_nvscript(const char *nv, const char *arg1, int wtime);
+ extern void run_userfile (char *folder, char *extension, const char *arg1, int wtime);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 2e7780012a..21830b7869 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -758,9 +758,24 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 		return;
+ 	}
+ 
++	/* `-exist` forgives a set that already exists, but NOT one whose TYPE no
++	 * longer matches (same_set() compares typename and family). The object
++	 * editor lets a type be changed under the same name, and the old set then
++	 * survives: create fails, flush succeeds, every add is rejected, and the
++	 * set sits there EMPTY. Rules naming it still load, so there is no failure
++	 * count and no error - a DROP keyed on it silently matches nothing. The
++	 * fqdn branch above already destroys-on-mismatch; do the same here. The
++	 * chains were torn down at the top of this script, so nothing references
++	 * the set and the destroy is safe. */
++	fprintf(f, "if ipset list -t %s%s 2>/dev/null | grep -q '^Type: ' && "
++	           "! ipset list -t %s%s 2>/dev/null | grep -qx 'Type: %s'; then ipset destroy %s%s 2>/dev/null; fi\n",
++	        RFW_SET4, name, RFW_SET4, name, stype, RFW_SET4, name);
+ 	fprintf(f, "ipset create %s%s %s -exist\n", RFW_SET4, name, stype);
+ 	fprintf(f, "ipset flush %s%s\n", RFW_SET4, name);
+ 	if (strcmp(type, "mac") != 0) {
++		fprintf(f, "if ipset list -t %s%s 2>/dev/null | grep -q '^Type: ' && "
++		           "! ipset list -t %s%s 2>/dev/null | grep -qx 'Type: %s'; then ipset destroy %s%s 2>/dev/null; fi\n",
++		        RFW_SET6, name, RFW_SET6, name, stype, RFW_SET6, name);
+ 		fprintf(f, "ipset create %s%s %s family inet6 -exist\n", RFW_SET6, name, stype);
+ 		fprintf(f, "ipset flush %s%s\n", RFW_SET6, name);
+ 	}
+@@ -1570,7 +1585,19 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		 * an empty value word-splits the rule apart and a comma list is rejected
+ 		 * by iptables at load - reject both here. */
+ 		if (!*eport || strchr(eport, ',')) { logmessage("reaper_fw", "forward: external port must be a single port or range - DROPPED"); continue; }
+-		if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip)) { logmessage("reaper_fw", "forward: invalid internal IP - DROPPED"); continue; }
++		/* A DNAT target must be a SINGLE v4 host. rfw_valid_ip() also accepts
++		 * a.b.c.d/n and any IPv6 literal, and the CGI only length- and
++		 * charset-checks this list, so an edited backup replayed through the
++		 * same `save` action reaches here with a CIDR. iptables then rejects
++		 * the DNAT while its companion FORWARD ACCEPT - emitted from the same
++		 * record - loads cleanly, leaving an unconditional WAN-inbound ACCEPT
++		 * above the zone default-policy matrix. The two are only "emitted
++		 * together" at generation time, not at load time. */
++		if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip) ||
++		    strchr(iip, '/') || strchr(iip, ':')) {
++			logmessage("reaper_fw", "forward: internal IP must be a single IPv4 host - DROPPED");
++			continue;
++		}
+ 		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) { logmessage("reaper_fw", "forward: invalid internal port - DROPPED"); continue; }
+ 		if (!rfw_field(tok, 5, sobj, sizeof(sobj))) sobj[0] = 0;
+ 		if (!rfw_field(tok, 6, logf, sizeof(logf))) logf[0] = 0;
+@@ -1958,7 +1985,19 @@ static int rfw_write_lastgood(void)
+ 	 * the confirmed files for keys with no draft only while the marker is
+ 	 * present, so snapshotting after the unlink would write them back empty. */
+ 	for (i = 0; i < RFW_NKEYS; i++) {
+-		vals[i] = strdup(reaper_fw_list_get(rfw_keys[i].file));
++		int readok = 1;
++		const char *cur = reaper_fw_list_get_checked(rfw_keys[i].file, &readok);
++		if (!readok) {
++			/* The file was there and could not be read in full. Persisting the
++			 * "" that used to come back would blow the real list away and the
++			 * marker below would then bless it as confirmed, with no rollback
++			 * source left. Abort and leave the previous snapshot standing. */
++			const char *bad = rfw_keys[i].file;	/* i is clobbered by the unwind below */
++			while (i--) free(vals[i]);
++			logmessage("reaper_fw", "lastgood snapshot ABORTED: list '%s' exists but could not be read", bad);
++			return 0;
++		}
++		vals[i] = strdup(cur);
+ 		if (!vals[i]) { while (i--) free(vals[i]); logmessage("reaper_fw", "lastgood snapshot: out of memory"); return 0; }
+ 	}
+ 	unlink(marker);		/* invalidate the old marker until this one completes */
+@@ -1974,6 +2013,7 @@ static int rfw_write_lastgood(void)
+ 		if (fclose(f) != 0) { unlink(tmp); ok = 0; break; }
+ 		chmod(tmp, 0600);
+ 		if (rename(tmp, p) != 0) { unlink(tmp); ok = 0; break; }
++		rjf_syncdir(p);
+ 	}
+ 	for (i = 0; i < RFW_NKEYS; i++) free(vals[i]);
+ 	if (ok) {
+@@ -1983,7 +2023,7 @@ static int rfw_write_lastgood(void)
+ 			if (fputs("1\n", m) == EOF || fflush(m) != 0 ||
+ 			    fsync(fileno(m)) != 0) ok = 0;
+ 			if (fclose(m) != 0) ok = 0;
+-			if (ok) chmod(marker, 0600);
++			if (ok) { chmod(marker, 0600); rjf_syncdir(marker); }
+ 			else unlink(marker);
+ 		}
+ 	}
+@@ -2150,7 +2190,17 @@ void reaper_fw_sets_only(void)
+ 	int lock;
+ 
+ 	if (!is_routing_enabled()) return;
+-	if (!rfw_cfg_load(&c, 0)) return;
++	/* Commit-confirm covers the RULES but not object MEMBERSHIP. This emitter
++	 * does `ipset flush` + re-add for every literal object, and its callers
++	 * include reaper_pbr_apply() - the VPN Routing page's Apply - and every
++	 * start_firewall(). Loading draft-first meant an object edited on the
++	 * Firewall page and never applied (no arm, no deadline, no revert timer)
++	 * was flushed into the LIVE sets that the CONFIRMED rules match on: an
++	 * address added became trusted instantly, one removed was cut off
++	 * instantly, with nothing to roll back to. When the rules engine is on and
++	 * its chains are live, the sets must follow the CONFIRMED config; the draft
++	 * is only authoritative when there are no rules keyed on these sets. */
++	if (!rfw_cfg_load(&c, nvram_match("reaper_fw_enable", "1") ? 1 : 0)) return;
+ 	mkdir(RFW_DIR, 0700);
+ 	keep[0] = 0;
+ 	snprintf(tmp, sizeof(tmp), "%s.tmp", RFW_SETS);
+@@ -2232,8 +2282,24 @@ void reaper_fw_promote_objects(void)
+ 		logmessage("reaper_fw", "object lists left in the draft - a firewall change is awaiting confirmation");
+ 		return;
+ 	}
++	/* The contract for this function is the two ADDITIVE lists only. The
++	 * engine-off branch used to call rfw_write_lastgood(), which snapshots
++	 * every key through the draft-first resolver - so staged rules/zpol/nat
++	 * edits that were never applied and never live-tested became the CONFIRMED
++	 * set, and re-enabling the engine booted them directly with no arm, no
++	 * deadline and no rollback target but themselves. Promote obj and grp in
++	 * both cases; the loop below already does exactly that. */
+ 	if (!nvram_match("reaper_fw_enable", "1")) {
+-		if (rfw_write_lastgood()) eval("rm", "-rf", REAPER_FW_DRAFT_DIR);
++		for (i = 0; i < 2; i++) {
++			char d[128], p[128];
++			int ex;
++			char *v;
++			snprintf(d, sizeof(d), REAPER_FW_DRAFT_DIR "/%s", keys[i]);
++			v = rjf_get(d, &ex);
++			if (ex <= 0) continue;
++			snprintf(p, sizeof(p), "%s/%s", RFW_LASTGOOD, keys[i]);
++			if (rjf_set(p, v, "reaper_fw") == 0) unlink(d);
++		}
+ 		return;
+ 	}
+ 	for (i = 0; i < 2; i++) {
+@@ -2242,7 +2308,7 @@ void reaper_fw_promote_objects(void)
+ 		char *v;
+ 		snprintf(d, sizeof(d), REAPER_FW_DRAFT_DIR "/%s", keys[i]);
+ 		v = rjf_get(d, &ex);
+-		if (!ex) continue;
++		if (ex <= 0) continue;	/* absent, or present-but-unreadable: never promote a guess */
+ 		snprintf(p, sizeof(p), "%s/%s", RFW_LASTGOOD, keys[i]);
+ 		if (rjf_set(p, v, "reaper_fw") == 0) unlink(d);
+ 	}
+diff --git a/release/src/router/rc/reaper_nv.h b/release/src/router/rc/reaper_nv.h
+index 8383df77e2..80230c33df 100644
+--- a/release/src/router/rc/reaper_nv.h
++++ b/release/src/router/rc/reaper_nv.h
+@@ -15,6 +15,13 @@
+  * "unset/default". Cost on the normal path is one 20 ms tick. busybox here has
+  * usleep but no `timeout`, hence the hand-rolled loop.
+  *
++ * TEMP-FILE SAFETY: the redirect runs as root and /tmp/.nv.$$.<name> is a
++ * predictable path, so a pre-planted symlink there would truncate-and-write
++ * an arbitrary file. The helper unlinks whatever sits at the path first (that
++ * removes a symlink, never its target) and then creates the file under
++ * noclobber, which opens O_CREAT|O_EXCL and therefore refuses any path that
++ * already exists - symlink or not. Only then does it redirect onto it.
++ *
+  * Emit this string right after the "#!/bin/sh" line of each generated script
+  * and write `$(_nv name)` instead of `$(nvram get name)`. Plain fputs-safe
+  * (no % characters).
+@@ -24,7 +31,10 @@
+ #define REAPER_NV_HELPER \
+ 	"# _nv: nvram get with a 5 s ceiling (libnvram netlink wait-forever guard)\n" \
+ 	"_nv() {\n" \
+-	"  _f=/tmp/.nv.$$.$1; nvram get \"$1\" >\"$_f\" 2>/dev/null & _p=$!; _i=0\n" \
++	"  _f=/tmp/.nv.$$.$1\n" \
++	"  rm -f \"$_f\" 2>/dev/null\n" \
++	"  (set -C; : > \"$_f\") 2>/dev/null || { logger -t reaper-nv \"refusing unsafe nv temp $_f\"; return; }\n" \
++	"  nvram get \"$1\" >\"$_f\" 2>/dev/null & _p=$!; _i=0\n" \
+ 	"  while kill -0 \"$_p\" 2>/dev/null; do\n" \
+ 	"    _i=$((_i+1))\n" \
+ 	"    if [ \"$_i\" -gt 250 ]; then kill -9 \"$_p\" 2>/dev/null; logger -t reaper-nv \"nvram get $1 hung >5 s - killed (netlink wait)\"; break; fi\n" \
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 0625b78435..88a1535b99 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -120,7 +120,10 @@
+ #define PPBR_PRIO_BASE  9000                 /* lookup rules: 9000+code */
+ #define PPBR_PRIO_KS    9100                 /* fail-closed prohibit: 9100+code */
+ #define PPBR_MAX_RULES  50                   /* blast-radius cap, not policy */
+-#define PPBR_NAME_MAX   32
++/* 25, not 32: the object layer validates a name to RFW_NAME_MAX (25) so the
++ * full rwfw6_<name> set name stays inside ipset's limit. Accepting 32 here let
++ * a 26-32 char name through to a set name ipset would refuse to create. */
++#define PPBR_NAME_MAX   25
+ #define PPBR_BLOG_SKIP  "/proc/blog/skip_wireguard_network"
+ 
+ #define PPBR_CONFIRM_MIN 15                  /* same floor/ceiling as reaper_fw (shared timer) */
+@@ -240,6 +243,16 @@ static int ppbr_selector(char *buf4, char *buf6, size_t buflen,
+ 		 * not an empty match). */
+ 		if (!ppbr_ok(selval, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", PPBR_NAME_MAX))
+ 			return 0;
++		/* The EMITTER guards these (see the pbr_rule calls below): the v6 line
++		 * has always carried an `ipset list -n` existence test and the v4 line
++		 * now does too. That matters because the
++		 * while the VPN Routing selector dropdown offers every object type -
++		 * so picking a geo object emitted a match on rwfw_<name> that nothing
++		 * ever creates. The rule then failed for ever: NEXPECT=1 NFAIL=1, live
++		 * 0, and rwatch re-ran the whole PBR + sets script every 5 minutes for
++		 * the life of the box, each pass taking the firewall lock and issuing
++		 * an `fc flush`. Guarding v4 the same way makes an unresolvable set
++		 * SKIP instead of fail-count, so nothing thrashes. */
+ 		snprintf(buf4, buflen, "-m set --match-set rwfw_%s dst", selval);
+ 		snprintf(buf6, buflen, "-m set --match-set rwfw6_%s dst", selval);
+ 		return 1;
+@@ -292,9 +305,20 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "  [ -w \"$SKIP\" ] || return 0\n"
+ 	  "  if [ -n \"$2\" ] && [ ! -d /sys/class/net/\"$2\" ]; then logger -t reaper_pbr \"WireGuard iface $2 down - $1 skip-bypass not installed\"; return 0; fi\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 pre\" >> \"$SKIPREC\"; return 0; fi\n"
+-	  "  _u=$(grep -cE '[0-9]' \"$SKIP\" 2>/dev/null); [ -n \"$_u\" ] || _u=0\n"
++	  /* WG_NETWORK_TBL_SZ is 8 PER FAMILY, not 8 in total. Counting every line
++	   * in /proc/blog/skip_wireguard_network lumped v4 and v6 together, so a
++	   * handful of v6 entries from a WireGuard server's AllowedIPs could refuse
++	   * a v4 add while v4 still had free slots. The refusal is silent to the
++	   * data path: the ip rule stays, nothing bypasses the flow cache, and
++	   * accelerated flows sail past the tunnel. Count the family this entry
++	   * actually belongs to. The post-add verification below still catches a
++	   * genuinely full table. */
++	  "  case \"$1\" in *:*) _fam=6;; *) _fam=4;; esac\n"
++	  "  if [ \"$_fam\" = 6 ]; then _u=$(grep -c ':' \"$SKIP\" 2>/dev/null)\n"
++	  "  else _u=$(grep -E '[0-9]' \"$SKIP\" 2>/dev/null | grep -vc ':'); fi\n"
++	  "  [ -n \"$_u\" ] || _u=0\n"
+ 	  "  if [ \"$_u\" -ge 8 ]; then\n"
+-	  "    logger -t reaper_pbr \"blog skip table full ($_u/8) - WireGuard rule for $1 not installed (free a VPN Director/WireGuard slot)\"; return 0\n"
++	  "    logger -t reaper_pbr \"blog skip table full for IPv$_fam ($_u/8) - WireGuard rule for $1 not installed (free a VPN Director/WireGuard slot)\"; return 0\n"
+ 	  "  fi\n"
+ 	  "  printf 'add %%s' \"$1\" > \"$SKIP\" 2>/dev/null\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 new\" >> \"$SKIPREC\"\n"
+@@ -355,7 +379,13 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	   * our pref. Only delete a rule that carries OUR fwmark form (bits 16-19,
+ 	   * mask 0xf0000); anything else at that pref is somebody else's and stays. */
+ 	  "    while ip $V rule show 2>/dev/null | grep -Eq \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\"; do\n"
+-	  "      ip $V rule del pref $P 2>/dev/null || break\n"
++	  /* Fully qualified: the grep above proves one of OUR rules is at this pref,
++	   * but `del pref P` removes the FIRST rule there, which on a box running an
++	   * addon that also uses 9001-9115 can be theirs. Matching the fwmark form
++	   * on the delete means we can only ever remove our own. */
++	  "      _fm=$(ip $V rule show 2>/dev/null | grep -E \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\" | head -1 | sed -n 's|.*fwmark \\(0x[0-9a-fA-F]*/0x[0-9a-fA-F]*\\).*|\\1|p')\n"
++	  "      [ -n \"$_fm\" ] || break\n"
++	  "      ip $V rule del fwmark $_fm pref $P 2>/dev/null || break\n"
+ 	  "    done\n"
+ 	  "  done\n"
+ 	  "done\n"
+@@ -423,9 +453,18 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 					nbad++;
+ 					continue;
+ 				}
+-				if (sel4[0])
++				if (sel4[0]) {
++					if (!strncmp(sel4, "-m set", 6))
++						/* only when the v4 set exists - a geo object resolves to
++						 * rwfw_<name>, which the object layer never creates (Warden
++						 * owns the geo sets), and an unguarded match counted as a
++						 * permanent failure that rwatch then re-applied every 5
++						 * minutes for the life of the box - each pass taking the
++						 * firewall lock and issuing an fc flush. */
++						fprintf(f, "ipset list -n rwfw_%s >/dev/null 2>&1 && ", ent);
+ 					fprintf(f, "pbr_rule iptables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+ 					        sel4, code);
++				}
+ 				if (sel6[0]) {
+ 					if (!strncmp(sel6, "-m set", 6))
+ 						/* only when the v6 set exists (see ppbr_selector) */
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index 56f145b2e4..59717bce48 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -35,6 +35,7 @@
+ 
+ #include "rc.h"
+ #include <shared.h>
++#include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling - v2.6.1 hard rule */
+ 
+ #define REXPORT_SH	"/tmp/rexport.sh"
+ 
+@@ -47,7 +48,13 @@ static void rexport_gen(void)
+ 	if (!f)
+ 		return;
+ 	fputs(
+-	  "#!/bin/sh\n"
++	  /* v2.6.1 hard rule: a generated script must never call bare `nvram get`.
++	   * libnvram can spin forever holding the nvram mutex (see the wlcsm netlink
++	   * bug), and this script is cron'd as often as once a minute - each stuck
++	   * reader would leave a wedged sh+nvram pair behind until PID exhaustion.
++	   * _nv bounds every read at 5 s and logs. This was the last generator in
++	   * the tree still using the bare form. */
++	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "umask 077\n"		/* Phase 3 F4: before any scratch/cfg/token file is written */
+ 	  "# generated by start_rexport - do not edit\n"
+ 	  "H=/tmp/rtraf/health.json\n"
+@@ -63,17 +70,17 @@ static void rexport_gen(void)
+ 	  "  logger -t rexport \"health.json stale (>3m) - collector down, not pushing\"; exit 0\n"
+ 	  "fi\n"
+ 	  "if [ \"$1\" != test ]; then\n"		/* 'test' bypasses the mode gate (Test Connection) */
+-	  "  case \"$(nvram get reaper_export_mode)\" in both|exportonly) ;; *) exit 0 ;; esac\n"
++	  "  case \"$(_nv reaper_export_mode)\" in both|exportonly) ;; *) exit 0 ;; esac\n"
+ 	  "fi\n"
+-	  "ENGINE=\"$(nvram get reaper_export_engine)\"\n"
++	  "ENGINE=\"$(_nv reaper_export_engine)\"\n"
+ 	  "[ \"$ENGINE\" = prometheus ] && exit 0\n"      /* pull model: nothing to push */
+-	  "URL=\"$(nvram get reaper_export_url)\"\n"
++	  "URL=\"$(_nv reaper_export_url)\"\n"
+ 	  "[ -n \"$URL\" ] || exit 0\n"
+-	  "TOKEN=\"$(nvram get reaper_export_token)\"\n"
+-	  "TLSV=\"$(nvram get reaper_export_tlsverify)\"\n"
+-	  "IDX=\"$(nvram get reaper_export_index)\"\n"
+-	  "SRC=\"$(nvram get reaper_export_source)\"\n"
+-	  "MASK=\"$(nvram get reaper_export_maskmac)\"\n"
++	  "TOKEN=\"$(_nv reaper_export_token)\"\n"
++	  "TLSV=\"$(_nv reaper_export_tlsverify)\"\n"
++	  "IDX=\"$(_nv reaper_export_index)\"\n"
++	  "SRC=\"$(_nv reaper_export_source)\"\n"
++	  "MASK=\"$(_nv reaper_export_maskmac)\"\n"
+ 	  /* Belt-and-suspenders for the curl-config build far below. httpd rejects a
+ 	   * double quote in these fields (rexport_val_ok() in web.c), but nvram can
+ 	   * also be set from a root shell, and a quote here would close the quoted
+@@ -81,7 +88,7 @@ static void rexport_gen(void)
+ 	   * directives - `output = <path>` among them. Refuse the run instead. */
+ 	  "case \"$URL$TOKEN$IDX$SRC\" in *'\"'*) logger -t rexport \"illegal character in export settings - refusing\"; exit 0 ;; esac\n"
+ 	  "NOW=$(date +%s)\n"
+-	  "HOST=\"$(nvram get productid)\"\n"
++	  "HOST=\"$(_nv productid)\"\n"
+ 	  "STAT=/tmp/rexport.status\n"
+ 	  "SRCF=\"$H\"\n"
+ 	  "\n"
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 5b7a5e04ef..115f28ae77 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -96,6 +96,20 @@
+  * drift from what the sets are actually built with. */
+ #define RW_THREAT_MAXELEM   524288
+ #define RW_THREAT_MAXELEM_S "524288"
++/* Cap for the per-entry `ipset add` fallback. The fallback exists because
++ * `ipset restore -!` aborts at the FIRST syntax error, and the extraction
++ * regex happily lifts junk like 300.1.2.3 or 1.2.3.4/99 out of arbitrary web
++ * text - so one malformed token anywhere in ANY feed (curated or a
++ * user-supplied custom URL) drops a 500k-line merge onto a one-fork-per-entry
++ * loop: ~40 minutes at 100% CPU holding the update lock. Cap it and say so. */
++#define RW_FALLBACK_MAX_S "20000"
++/* Wall-clock budget for the WHOLE country loop, seconds. The per-URL leash
++ * alone is not enough: the UI offers 89 countries and each needs a v4 and a v6
++ * fetch, so even a short per-URL cap multiplies into hours of holding the
++ * update flock - during which "Update now" silently no-ops. Overrunning just
++ * stops fetching; swap-if-nonempty leaves every set already fetched intact and
++ * the rest on their last-good. */
++#define RW_GEO_BUDGET_S "900"
+ #define RW_GEO_MAXELEM   262144		/* per-country sets; the default 65536 truncates the biggest zones */
+ #define RW_GEO_MAXELEM_S "262144"	/* same value, for string-pasted script text */
+ 
+@@ -153,7 +167,12 @@ static int rw_valid_cidr(const char *s)
+ 		}
+ 		return 0;                 /* any other char -> reject */
+ 	}
+-	if (seen_slash) return (prefix >= 0);
++	/* Prefix 0 is refused. `0.0.0.0/0` in the manual ban list is emitted at slot
++	 * 6, deliberately ABOVE the LAN anti-lockout RETURN, so one paste error
++	 * drops every non-established packet in INPUT and FORWARD - and it lives in
++	 * nvram, not a feed, so it survives a reboot and is recoverable only from
++	 * the console. Broad-but-deliberate bans (a /8) still pass. */
++	if (seen_slash) return (prefix >= 1);
+ 	return (oct == 3 && val >= 0);
+ }
+ 
+@@ -186,6 +205,7 @@ static int rw_valid_cidr6(const char *s)
+ 		return 0;                 /* any other char -> reject */
+ 	}
+ 	if (slash && prefix < 0) return 0;
++	if (slash && prefix == 0) return 0;	/* ::/0 - same full-network lockout as 0.0.0.0/0 */
+ 	return (colon >= 2);
+ }
+ 
+@@ -567,12 +587,26 @@ static void rw_gen_apply(void)
+ 	  "if [ -z \"$LANIP\" ]; then logger -t rwarden 'lan not ready - deferred'; exit 1; fi\n");
+ 	/* Derive LAN CIDR from the netmask (standard class values); /24 fallback. */
+ 	fprintf(f,
+-	  "case \"$LANMASK\" in\n"
+-	  "  255.255.255.0) LANNET=\"${LANIP%%.*}.0/24\";;\n"
+-	  "  255.255.0.0)   LANNET=\"$(echo $LANIP|cut -d. -f1-2).0.0/16\";;\n"
+-	  "  255.255.255.128) LANNET=\"${LANIP%%.*}.0/25\";;\n"
+-	  "  *) LANNET=\"${LANIP%%.*}.0/24\";;\n"
+-	  "esac\n");
++	  /* Compute the network from LANIP AND LANMASK rather than pattern-matching
++	   * the mask. The old table got /25 WRONG - it emitted x.y.z.0/25 for every
++	   * /25 LAN, so on 192.168.50.200/255.255.255.128 (true network .128/25) the
++	   * anti-lockout RETURN covered the wrong half - and any other mask (/22,
++	   * /23) silently fell back to /24, leaving hosts outside that /24 with no
++	   * RETURN at all. Both are the "half my LAN is down" lockout class. */
++	  "_ip1=${LANIP%%%%.*}; _r=${LANIP#*.}; _ip2=${_r%%%%.*}; _r=${_r#*.}; _ip3=${_r%%%%.*}; _ip4=${_r#*.}\n"
++	  "_m1=${LANMASK%%%%.*}; _r=${LANMASK#*.}; _m2=${_r%%%%.*}; _r=${_r#*.}; _m3=${_r%%%%.*}; _m4=${_r#*.}\n"
++	  "case \"$_ip1$_ip2$_ip3$_ip4$_m1$_m2$_m3$_m4\" in ''|*[!0-9]*) LANNET=\"\";; *)\n"
++	  "  _plen=0\n"
++	  "  for _o in $_m1 $_m2 $_m3 $_m4; do\n"
++	  "    case $_o in 255) _plen=$((_plen+8));; 254) _plen=$((_plen+7));; 252) _plen=$((_plen+6));;\n"
++	  "      248) _plen=$((_plen+5));; 240) _plen=$((_plen+4));; 224) _plen=$((_plen+3));;\n"
++	  "      192) _plen=$((_plen+2));; 128) _plen=$((_plen+1));; 0) ;; *) _plen=-1;; esac\n"
++	  "  done\n"
++	  "  if [ \"$_plen\" -lt 8 ]; then LANNET=\"\"; else\n"
++	  "    LANNET=\"$((_ip1&_m1)).$((_ip2&_m2)).$((_ip3&_m3)).$((_ip4&_m4))/$_plen\"\n"
++	  "  fi\n"
++	  ";; esac\n"
++	  "[ -n \"$LANNET\" ] || logger -t rwarden \"could not derive the LAN network from $LANIP/$LANMASK - anti-lockout RETURN skipped\"\n");
+ 	/* IPv6 LAN prefixes for the anti-lockout RETURN: link-local + ULA always,
+ 	 * plus the delegated global prefix if the WAN handed one out. */
+ 	fprintf(f,
+@@ -822,6 +856,17 @@ static void rw_gen_apply(void)
+ 	 * gatekeeper.c apply/teardown). Harmless no-op when the accelerator is off. */
+ 	fprintf(f, "fc flush 2>/dev/null\n");
+ 	rw_emit_ban_conntrack(f);	/* sever live flows to freshly-banned hosts */
++	/* Terminate with an explicit status. The last statement emitted above is
++	 * `conntrack -D`, which returns 1 when no live flow matches - the NORMAL
++	 * case for a freshly-banned address - and a script's exit code is its last
++	 * command's. start_rwarden() treats ANY non-zero exit as the cold-boot LAN
++	 * deferral, so without this it logs "LAN not ready at boot - protection
++	 * deferred" on every start with a non-empty ban list while protection is in
++	 * fact fully armed, and the GENUINE deferral becomes indistinguishable from
++	 * that noise. Invisible until v2.8.2 because an empty ban list emits no
++	 * conntrack lines at all. Proven on metal 2026-08-26: the script exits 1
++	 * with a 60-entry ban list present and 0 with only those lines stripped. */
++	fprintf(f, "exit 0\n");
+ 	fclose(f);
+ 	/* atomic publish: start_firewall() execs this script after releasing the
+ 	 * firewall lock, so a concurrent rebuild must never see a half-written
+@@ -837,7 +882,7 @@ static void rw_gen_apply(void)
+  * current nvram selections; run by cron (rwarden_sched) and by "update now". */
+ static void rw_gen_update(void)
+ {
+-	FILE *f = fopen(RW_UPDATE, "w");
++	FILE *f = fopen(RW_UPDATE ".tmp", "w");
+ 	char *list, *tok, *save = NULL;
+ 	const struct rw_feed *fd;
+ 	if (!f) return;
+@@ -869,6 +914,17 @@ static void rw_gen_update(void)
+ 	   * still logs FAILED, and the previous set is kept (swap-if-nonempty),
+ 	   * so a timeout degrades to "no refresh", never to "no data". */
+ 	  "CURLC='curl -fsSL --max-filesize 33554432 --retry 1 --max-time 15'\n"
++	  /* Geo gets the same short leash as the custom feeds, plus a hard budget
++	   * for the WHOLE country loop. The multiplier was reasoned about for the 8
++	   * custom feeds but never for the 89 countries the UI offers: at
++	   * --retry 2 --max-time 40 that is ~125 s per URL worst case, two URLs per
++	   * country, so one update run could hold the flock for six hours - during
++	   * which "Update now" silently no-ops. Overrunning the budget just stops
++	   * fetching; swap-if-nonempty means every country already fetched keeps
++	   * its set and the rest keep their last-good. */
++	  "CURLG='curl -fsSL --max-filesize 33554432 --retry 1 --max-time 20'\n"
++	  "GEO_DEADLINE=$(( $(date +%%s) + " RW_GEO_BUDGET_S " ))\n"
++	  "geo_budget_left() { [ \"$(date +%%s)\" -lt \"$GEO_DEADLINE\" ]; }\n"
+ 	  /* https-only INCLUDING across redirects. -L follows redirects and curl
+ 	   * permits https->http by default, so an https feed that 302s to http was
+ 	   * still followed - and whatever came back is loaded straight into a DROP
+@@ -987,7 +1043,8 @@ static void rw_gen_update(void)
+ 	  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+ 	  "    logger -t rwarden \"threat v4 batch restore hit a bad entry - per-entry fallback\"\n"
+ 	  "    ipset flush rw_threat_tmp\n"
+-	  "    sort -u $NEW | while read n; do ipset add rw_threat_tmp $n -exist; done\n"
++	  "    sort -u $NEW | head -n " RW_FALLBACK_MAX_S " | while read n; do ipset add rw_threat_tmp $n -exist; done\n"
++	  "    [ \"$(wc -l < $NEW)\" -gt " RW_FALLBACK_MAX_S " ] && logger -t rwarden \"per-entry fallback capped at " RW_FALLBACK_MAX_S " entries - fix the malformed feed\"\n"
+ 	  "  fi\n"
+ 	  "  ipset swap rw_threat_tmp rw_threat; ipset destroy rw_threat_tmp\n"
+ 	  "fi\n"
+@@ -997,7 +1054,8 @@ static void rw_gen_update(void)
+ 	  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+ 	  "    logger -t rwarden \"threat v6 batch restore hit a bad entry - per-entry fallback\"\n"
+ 	  "    ipset flush rw_threat6_tmp\n"
+-	  "    sort -u $NEW6 | while read n; do ipset add rw_threat6_tmp $n -exist; done\n"
++	  "    sort -u $NEW6 | head -n " RW_FALLBACK_MAX_S " | while read n; do ipset add rw_threat6_tmp $n -exist; done\n"
++	  "    [ \"$(wc -l < $NEW6)\" -gt " RW_FALLBACK_MAX_S " ] && logger -t rwarden \"per-entry fallback capped at " RW_FALLBACK_MAX_S " entries - fix the malformed feed\"\n"
+ 	  "  fi\n"
+ 	  "  ipset swap rw_threat6_tmp rw_threat6; ipset destroy rw_threat6_tmp\n"
+ 	  "fi\n");
+@@ -1014,7 +1072,7 @@ static void rw_gen_update(void)
+ 			/* IPv4 (batch ipset restore, per-entry fallback - see threat sets) */
+ 			fprintf(f,
+ 			  "ipset create rw_g_%s hash:net maxelem " RW_GEO_MAXELEM_S " -exist\n"
+-			  "if $CURL \"https://www.ipdeny.com/ipblocks/data/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
++			  "if geo_budget_left && $CURLG \"https://www.ipdeny.com/ipblocks/data/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
+ 			  "  ipset create rw_g_%s_t hash:net maxelem " RW_GEO_MAXELEM_S " -exist; ipset flush rw_g_%s_t\n"
+ 			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 | sed 's/^/add rw_g_%s_t /' > $TMP.rst\n"
+ 			  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+@@ -1039,7 +1097,7 @@ static void rw_gen_update(void)
+ 			}
+ 			fprintf(f,
+ 			  "ipset create rw_g6_%s hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist\n"
+-			  "if $CURL \"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
++			  "if geo_budget_left && $CURLG \"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
+ 			  "  ipset create rw_g6_%s_t hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist; ipset flush rw_g6_%s_t\n"
+ 			  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 | sed 's/^/add rw_g6_%s_t /' > $TMP.rst\n"
+ 			  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+@@ -1090,6 +1148,16 @@ static void rw_gen_update(void)
+ 	 * the REAPER_WARDEN chain and get dropped (A3-NET-001). No-op if accel off. */
+ 	fprintf(f, "fc flush 2>/dev/null\n");
+ 	fclose(f);
++	/* Atomic publish, same as rw_gen_apply. These are rewritten on every
++	 * Save & Apply while cron and httpd may be EXECUTING them: fold.sh runs
++	 * every 15 min, update.sh nightly, and httpd popen()s stats.sh on every
++	 * 30 s Warden-page poll. A bare fopen(w) truncates the file under the
++	 * running shell - stats.sh then emits partial JSON and the page freezes,
++	 * and a half-read fold.sh can run its `iptables -Z` zero loop without the
++	 * preceding bank, losing block counters. */
++	chmod(RW_UPDATE ".tmp", 0700);
++	if (rename(RW_UPDATE ".tmp", RW_UPDATE) != 0)
++		unlink(RW_UPDATE ".tmp");
+ }
+ 
+ /* fold.sh: bank the live iptables/ip6tables packet counters into the durable
+@@ -1136,7 +1204,7 @@ static void rw_gen_update(void)
+  * outright when there is nothing new to bank, to bound NAND wear on /jffs. */
+ static void rw_gen_fold(void)
+ {
+-	FILE *f = fopen(RW_FOLD, "w");
++	FILE *f = fopen(RW_FOLD ".tmp", "w");
+ 	if (!f) return;
+ 	fputs(
+ 	  "#!/bin/sh\n"
+@@ -1246,6 +1314,16 @@ static void rw_gen_fold(void)
+ 	  "fi\n"
+ 	  "rm -f \"$TMPCC\" \"$TMPCH\"\n", f);
+ 	fclose(f);
++	/* Atomic publish, same as rw_gen_apply. These are rewritten on every
++	 * Save & Apply while cron and httpd may be EXECUTING them: fold.sh runs
++	 * every 15 min, update.sh nightly, and httpd popen()s stats.sh on every
++	 * 30 s Warden-page poll. A bare fopen(w) truncates the file under the
++	 * running shell - stats.sh then emits partial JSON and the page freezes,
++	 * and a half-read fold.sh can run its `iptables -Z` zero loop without the
++	 * preceding bank, losing block counters. */
++	chmod(RW_FOLD ".tmp", 0700);
++	if (rename(RW_FOLD ".tmp", RW_FOLD) != 0)
++		unlink(RW_FOLD ".tmp");
+ }
+ 
+ /* stats.sh: durable store + live iptables/ip6tables counters -> JSON for the UI.
+@@ -1258,7 +1336,7 @@ static void rw_gen_fold(void)
+  * 30 s; if it zeroed, it would eat the deltas fold.sh exists to bank. */
+ static void rw_gen_stats(void)
+ {
+-	FILE *f = fopen(RW_STATS, "w");
++	FILE *f = fopen(RW_STATS ".tmp", "w");
+ 	if (!f) return;
+ 	fputs(
+ 	  "#!/bin/sh\n"
+@@ -1367,6 +1445,16 @@ static void rw_gen_stats(void)
+ 	  "\"$GEO\" \"$THREAT\" \"$BAN\" \"$UNCL\" \"$SV\" \"$RI\" \"$JP\" "
+ 	  "\"$SELF\" \"$SELFN\" \"$OUTA\" \"$OUTN\"\n", f);
+ 	fclose(f);
++	/* Atomic publish, same as rw_gen_apply. These are rewritten on every
++	 * Save & Apply while cron and httpd may be EXECUTING them: fold.sh runs
++	 * every 15 min, update.sh nightly, and httpd popen()s stats.sh on every
++	 * 30 s Warden-page poll. A bare fopen(w) truncates the file under the
++	 * running shell - stats.sh then emits partial JSON and the page freezes,
++	 * and a half-read fold.sh can run its `iptables -Z` zero loop without the
++	 * preceding bank, losing block counters. */
++	chmod(RW_STATS ".tmp", 0700);
++	if (rename(RW_STATS ".tmp", RW_STATS) != 0)
++		unlink(RW_STATS ".tmp");
+ }
+ 
+ void stop_rwarden(void)
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 5370e42c90..6028a08d99 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -97,6 +97,29 @@ static void rwatch_gen(void)
+ 	  "  _cl=$(tr '\\0' ' ' </proc/$_p/cmdline 2>/dev/null)\n"
+ 	  "  kill -9 $_p 2>/dev/null && logger -t rwatch \"reaped hung nvram pid $_p ($_cl) age ${_age}s - libnvram netlink wait\"\n"
+ 	  "done\n"
++	  /* reaper v2.8.0: the reaper above only ever sees `pidof nvram` - the
++	   * short-lived CLI, which the root-cause analysis calls self-limiting
++	   * (process exit closes every socket it held). The population that
++	   * actually wedges the box is the LONG-LIVED wlcsm daemons spinning
++	   * inside wlcsm_nvram_getall while holding g_WLCSM_NVRAM_MUTEX, and this
++	   * watchdog had no detector for them at all. The signature is a daemon
++	   * holding an implausible number of netlink proto-31 sockets: join the
++	   * inode column of /proc/net/netlink against each pid's fd links.
++	   * DETECT AND LOG ONLY - never auto-kill a wlcsm daemon; killing bsd or
++	   * cfg_server mid-flight is worse than the leak. This gives the bug field
++	   * lineage, which is what the escalation path needs. */
++	  "_nl=$(awk 'NR>1 && $2==31 {print $10}' /proc/net/netlink 2>/dev/null | sort -u)\n"
++	  "if [ -n \"$_nl\" ]; then\n"
++	  "  for _d in bsd wlceventd debug_monitor cfg_server eapd mcpd; do\n"
++	  "    for _p in $(pidof $_d 2>/dev/null); do\n"
++	  "      _c=0\n"
++	  "      for _i in $_nl; do\n"
++	  "        ls -l /proc/$_p/fd 2>/dev/null | grep -q \"socket:\[$_i\]\" && _c=$((_c+1))\n"
++	  "      done\n"
++	  "      [ \"$_c\" -ge 8 ] && logger -t rwatch \"WLCSM NETLINK LEAK SUSPECT: $_d pid $_p holds $_c proto-31 sockets - nvram may be wedged (not killed by design)\"\n"
++	  "    done\n"
++	  "  done\n"
++	  "fi\n"
+ 	  "\n"
+ 	  /* reaper v2.6.9 (field): after a reboot some REAPER_PBR mark rules were
+ 	   * missing while the ip rules were present - a `-m set` rule fails to
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 2784db28f1..a7d0600cca 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7451,6 +7451,12 @@ start_httpd(void)
+ 			for (k = 0; k < (int)sizeof(rnd); k++) sprintf(tid + 3 + k * 2, "%02x", rnd[k]);
+ 			nvram_set("http_id", tid);
+ 			f_write_string("/tmp/.http_id_boot", "1", 0, 0);
++		} else {
++			/* Falling through here leaves the shipped defaults.c constant - the
++			 * SAME on every router - as this boot's CSRF token, and start_httpd
++			 * is not re-entered so there is no retry. Say so: a silently weak
++			 * token is indistinguishable from a strong one from the outside. */
++			logmessage("httpd", "http_id NOT regenerated (/dev/urandom unavailable) - the factory CSRF token is in use for this boot");
+ 		}
+ 		if (uf) fclose(uf);
+ 	}
+@@ -8567,14 +8573,15 @@ void reload_upnp(void)
+ 	if (!is_routing_enabled())
+ 		return;
+ 
+-	unit = wan_primary_ifunit();
+-#ifdef RTCONFIG_DUALWAN
+-	if (nvram_match("wans_mode", "lb") && !is_phy_connect(unit))
+-		unit = 1 - unit;
+-#endif
+-	snprintf(prefix, sizeof(prefix), "wan%d_", unit);
+-
+-	if (!nvram_get_int(strcat_r(prefix, "upnp_enable", tmp)))
++	/* v2.8.0: derive from the SAME helpers start_upnp() uses. This function kept
++	 * its own unit selection (wan_primary_ifunit + an lb flip) and read that
++	 * unit's key directly, while upnp_wan_unit() picks by connect-scan - on a
++	 * failed-over dual-WAN box the two could disagree, so the mappings a
++	 * firewall rebuild had just flushed were never reinstalled: daemon up,
++	 * leases listed, nothing DNATed. Single-WAN always agreed, which is why the
++	 * field cases the v2.7.8 fix closed did not expose this half. */
++	(void)unit; (void)prefix; (void)tmp;
++	if (!upnp_enabled())
+ 		return;
+ 	/* not running -> the normal start path owns it; there is nothing to restore
+ 	   and we must not spawn a daemon the user did not ask for */
+@@ -22047,6 +22054,18 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_gk();
+ 		if(action & RC_SERVICE_START) start_gk();
+ 	}
++	else if (strcmp(script, "gk_refresh") == 0)
++	{
++		/* v2.8.0: the per-device Gatekeeper actions used to fire a full
++		 * restart_gk - kill gkd, tear every chain down, fc flush, rebuild,
++		 * respawn. Working through a pending list meant one of those per click:
++		 * a measurable data-plane stall each time, and a window with NO
++		 * Gatekeeper rule installed each time, which in quarantine mode is a
++		 * free pass for every unknown device. gk_refresh() regenerates and
++		 * re-applies (apply.sh is an idempotent teardown+rebuild) without
++		 * touching the daemon. Reserve the full restart for enable/disable. */
++		if (action & RC_SERVICE_START) gk_refresh();
++	}
+ 	else if (strcmp(script, "rwarden") == 0)	/* reaper v1.8.0 Warden ipset firewall */
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_rwarden();
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index aa15947062..5d638b234e 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -275,7 +275,7 @@ static int key_is_secret(const char *key)
+ 	int i;
+ 	char lo[128];
+ 	size_t j;
+-	for (j = 0; key[j] && j < sizeof(lo) - 1; j++)
++	for (j = 0; j < sizeof(lo) - 1 && key[j]; j++)	/* bound BEFORE indexing */
+ 		lo[j] = tolower((unsigned char)key[j]);
+ 	lo[j] = 0;
+ 	for (i = 0; SECRET_FRAG[i]; i++)
+@@ -1111,7 +1111,7 @@ static void tool_net_dns_lookup(struct json_object *args, sbuf_t *out)
+ 	char clean[256];
+ 	char *argv[] = { "nslookup", NULL, NULL };
+ 	size_t i, n = name ? strlen(name) : 0;
+-	if (n == 0 || n > 253) { sb_puts(out, "error: missing or oversized 'host'"); return; }
++	if (!name || n == 0 || n > 253) { sb_puts(out, "error: missing or oversized 'host'"); return; }
+ 	if (name[0] == '-') { sb_puts(out, "error: invalid 'host' (leading '-')"); return; }	/* F6 */
+ 	/* a DNS query, not a network probe of the target - just sanitize charset */
+ 	for (i = 0; i < n; i++) {
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index b29cbd3348..67719b4027 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -938,10 +938,28 @@ static void poll_ifaces(const char *wanif)
+ 	last_if_rx[0] = rxb; last_if_tx[0] = txb; have_if_last[0] = 1;
+ }
+ 
++/* Bound a child command in the SHELL. rtrafd is a single-threaded ~10 Hz
++ * collector with no watchdog: poll_classes() forks seven `tmctl` every 4 s and
++ * poll_probe() one `ping` every 5 s, and plain popen()/pclose() puts no ceiling
++ * on either - pclose() blocks until the child exits, however long that takes.
++ * `ping -W` bounds the REPLY wait, not name resolution, so with dnsmasq
++ * restarting a hostname probe parks in the resolver for tens of seconds and the
++ * whole collector - WAN sampling, live.json, history rollover - stops with it.
++ * busybox has no `timeout` applet (rmcpd records the same) and popen() hands
++ * back no pid to kill, so the ceiling goes inside the command: run it in the
++ * background, arm a killer, take whichever finishes first. */
++static void rt_bound(char *out, size_t n, const char *cmd, int secs)
++{
++	snprintf(out, n,
++	         "{ %s; } & _c=$!; { sleep %d; kill -9 $_c 2>/dev/null; } & _w=$!; "
++	         "wait $_c 2>/dev/null; kill $_w 2>/dev/null",
++	         cmd, secs);
++}
++
+ static void poll_classes(const char *wanif)
+ {
+ 	int qid;
+-	char cmd[160], line[160];
++	char raw[160], cmd[512], line[160];
+ 	if (!cfg_qos_on) {			/* cached at 1 Hz (refresh_cfg), same test */
+ 		have_cls_last = 0;
+ 		return;
+@@ -949,7 +967,8 @@ static void poll_classes(const char *wanif)
+ 	for (qid = 0; qid <= 6; qid++) {
+ 		uint64_t txb = 0, dp = 0;
+ 		FILE *p;
+-		snprintf(cmd, sizeof(cmd), "tmctl getqstats --devtype 0 --if %s --qid %d", wanif, qid);
++		snprintf(raw, sizeof(raw), "tmctl getqstats --devtype 0 --if %s --qid %d", wanif, qid);
++		rt_bound(cmd, sizeof(cmd), raw, 3);
+ 		if ((p = popen(cmd, "r")) == NULL) return;
+ 		while (fgets(line, sizeof(line), p)) {
+ 			sscanf(line, " txBytes: %llu", (unsigned long long *)&txb);
+@@ -1421,12 +1440,13 @@ static void poll_conntrack(void)
+ 
+ static void poll_probe(void)
+ {
+-	char tgt[64], cmd[128], line[256];
++	char tgt[64], raw[128], cmd[512], line[256];
+ 	FILE *p;
+ 	int got = 0;
+ 	strlcpy(tgt, nvram_safe_get("rtraf_probe"), sizeof(tgt));
+ 	if (!host_ok(tgt)) return;
+-	snprintf(cmd, sizeof(cmd), "ping -c 1 -W 2 %s 2>/dev/null", tgt);
++	snprintf(raw, sizeof(raw), "ping -c 1 -W 2 %s 2>/dev/null", tgt);
++	rt_bound(cmd, sizeof(cmd), raw, 6);
+ 	if ((p = popen(cmd, "r")) == NULL) return;
+ 	while (fgets(line, sizeof(line), p)) {
+ 		char *t = strstr(line, "time=");
+@@ -1800,6 +1820,17 @@ static void health_drain(void)
+ 		if (ic->type != ICMP_ECHOREPLY || ntohs(ic->un.echo.id) != hp_id) continue;
+ 		slot = ntohs(ic->un.echo.sequence);
+ 		if (slot < 0 || slot >= NCLI || !chealth[slot].pending) continue;
++		/* A raw ICMP socket receives every ICMP packet delivered to the host,
++		 * and hp_id is only getpid() & 0xffff. Without this the sequence number
++		 * alone selected the slot, so any LAN host could spray echo replies and
++		 * stamp a near-zero RTT and zero loss onto an arbitrary device - exactly
++		 * the signal the feature exists to provide. Accept a reply only from the
++		 * address we actually probed. */
++		{
++			struct in_addr want;
++			if (!cli[slot].ip[0] || inet_aton(cli[slot].ip, &want) == 0) continue;
++			if (from.sin_addr.s_addr != want.s_addr) continue;
++		}
+ 		{
+ 			float ms = (now.tv_sec - chealth[slot].tsend.tv_sec) * 1000.0f
+ 				 + (now.tv_nsec - chealth[slot].tsend.tv_nsec) / 1000000.0f;
+@@ -1829,7 +1860,11 @@ static int health_conn_begin(void)
+ {
+ 	int i;
+ 	if (hp_ctf) { fclose(hp_ctf); hp_ctf = NULL; }		/* drop a stale handle from an aborted cycle */
+-	if ((hp_ctf = fopen("/proc/net/nf_conntrack", "r")) == NULL) return 0;
++	/* "e" = CLOEXEC: this handle is deliberately held open across ticks, during
++	 * which poll_classes() forks tmctl and poll_probe() forks ping - they would
++	 * otherwise inherit a root-opened conntrack fd. The author is CLOEXEC-aware
++	 * elsewhere in this file (rd_u64_fd, hp_open), so this was an oversight. */
++	if ((hp_ctf = fopen("/proc/net/nf_conntrack", "re")) == NULL) return 0;
+ 	for (i = 0; i < NCLI; i++) { chealth[i].tcp_next = 0; chealth[i].te_next = 0; }
+ 	hp_ipindex_build();
+ 	return 1;
+@@ -1916,7 +1951,18 @@ static void write_health(void)
+ 				fprintf(m, "# HELP %s %s\n# TYPE %s gauge\n", fam[k].name, fam[k].help, fam[k].name);
+ 				for (i = 0; i < NCLI; i++) {
+ 					if (!cli[i].used || strcmp(cli[i].key, RT_DEVKEY) == 0) continue;
+-					fprintf(m, "%s{mac=\"%s\",ip=\"%s\"} ", fam[k].name, cli[i].key, cli[i].ip);
++					{
++						/* Every other emit routes through jesc(); this one
++						 * claimed the values were charset-constrained. True for
++						 * live-derived keys, NOT for cli[] restored from
++						 * rtraf.db, which db_load NUL-terminates but does not
++						 * charset-check - a quote or newline there injects
++						 * label text into the OpenMetrics stream. */
++						char eb[64], eb2[64];
++						jesc(cli[i].key, eb, sizeof(eb));
++						jesc(cli[i].ip, eb2, sizeof(eb2));
++						fprintf(m, "%s{mac=\"%s\",ip=\"%s\"} ", fam[k].name, eb, eb2);
++					}
+ 					switch (k) {
+ 					case 0: fprintf(m, "%.1f\n", chealth[i].probed ? chealth[i].rtt_ms : 0.0f); break;
+ 					case 1: fprintf(m, "%.1f\n", chealth[i].probed ? chealth[i].jit_ms : 0.0f); break;
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+index 3ad9c47a23..1dafcae0ae 100755
+--- a/release/src/router/shared/reaper_jfile.c
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -19,6 +19,7 @@
+ #include <string.h>
+ #include <unistd.h>
+ #include <sys/stat.h>
++#include <fcntl.h>
+ #include <bcmnvram.h>
+ #include <shutils.h>
+ #include "shared.h"
+@@ -27,12 +28,21 @@
+ 
+ static char *rjf_buf;	/* last value returned by rjf_get(); replaced on each call */
+ 
+-/* returns "" when the file is absent or empty; -1 via *exists when absent */
++/* *exists: 1 = read in full, 0 = absent, -1 = OPENED BUT UNREADABLE.
++ *
++ * The third state matters. *exists used to be set from `f != NULL` alone, before
++ * the read was attempted, so a non-regular file, an over-cap size, a short read
++ * or a malloc failure all returned "" with exists=1 - indistinguishable from a
++ * genuinely empty list. Any caller that PERSISTS what it resolves would then
++ * write that "" out as the confirmed value and destroy the real list. Callers
++ * that merely display or apply a list can keep treating -1 as empty; callers
++ * that persist must check (see reaper_fw_list_get_checked). */
+ char *rjf_get(const char *path, int *exists)
+ {
+ 	FILE *f = fopen(path, "r");
+ 	char *nb = NULL;
+ 	size_t n = 0;
++	int readok = 0;
+ 
+ 	if (exists) *exists = (f != NULL);
+ 	if (f) {
+@@ -41,11 +51,13 @@ char *rjf_get(const char *path, int *exists)
+ 			nb = malloc((size_t)st.st_size + 1);
+ 			if (nb) {
+ 				n = fread(nb, 1, (size_t)st.st_size, f);
++				if (n == (size_t)st.st_size || feof(f)) readok = 1;
+ 				nb[n] = 0;
+ 				while (n && (nb[n - 1] == '\n' || nb[n - 1] == '\r')) nb[--n] = 0;
+ 			}
+ 		}
+ 		fclose(f);
++		if (exists && !readok) *exists = -1;
+ 	}
+ 	if (!nb) nb = strdup("");
+ 	if (!nb) return "";
+@@ -54,6 +66,29 @@ char *rjf_get(const char *path, int *exists)
+ 	return rjf_buf;
+ }
+ 
++/* fsync the DIRECTORY after a rename. The file's own data was fsynced before the
++ * rename, but the directory entry that makes it visible is separate metadata: on
++ * a power cut in that window JFFS2 can come back with the data written and the
++ * name missing. That is not theoretical here - the firewall migration unsets the
++ * nvram originals the moment the .committed marker write returns, so losing the
++ * dirent loses the only other copy of all eight lists. */
++void rjf_syncdir(const char *path)
++{
++	char d[256], *sl;
++	int fd;
++
++	strlcpy(d, path, sizeof(d));
++	if ((sl = strrchr(d, '/')) == NULL) return;
++	if (sl == d) sl[1] = 0; else *sl = 0;
++	if ((fd = open(d, O_RDONLY
++#ifdef O_DIRECTORY
++			| O_DIRECTORY
++#endif
++		)) < 0) return;
++	fsync(fd);
++	close(fd);
++}
++
+ int rjf_set(const char *path, const char *v, const char *tag)
+ {
+ 	FILE *f;
+@@ -100,6 +135,7 @@ int rjf_set(const char *path, const char *v, const char *tag)
+ 		logmessage(tag, "rename of %s failed - NOT saved", path);
+ 		return -1;
+ 	}
++	rjf_syncdir(path);
+ 	return 0;
+ }
+ 
+@@ -130,6 +166,34 @@ char *reaper_fw_list_get(const char *key)
+ 	return nvram_safe_get(nv);
+ }
+ 
++/* Same resolution as reaper_fw_list_get, but reports whether the value was
++ * actually READ rather than defaulted. Only callers that PERSIST a resolved
++ * value need this - a transient failure that resolved to "" used to be written
++ * straight into the confirmed snapshot, and the .committed marker then blessed
++ * it, so the real list was gone with no rollback source. */
++char *reaper_fw_list_get_checked(const char *key, int *ok)
++{
++	char p[128], nv[40];
++	int ex;
++	char *v;
++
++	if (ok) *ok = 1;
++	snprintf(p, sizeof(p), REAPER_FW_DRAFT_DIR "/%s", key);
++	v = rjf_get(p, &ex);
++	if (ex > 0) return v;
++	if (ex < 0) { if (ok) *ok = 0; return v; }
++	snprintf(p, sizeof(p), REAPER_FW_LASTGOOD_DIR "/.committed");
++	if (f_exists(p)) {
++		snprintf(p, sizeof(p), REAPER_FW_LASTGOOD_DIR "/%s", key);
++		v = rjf_get(p, &ex);
++		if (ex > 0) return v;
++		if (ex < 0) { if (ok) *ok = 0; return v; }
++		return "";
++	}
++	snprintf(nv, sizeof(nv), "reaper_fw_%s", key);
++	return nvram_safe_get(nv);
++}
++
+ int reaper_fw_list_stage(const char *key, const char *v)
+ {
+ 	char p[128];
+@@ -183,6 +247,45 @@ int rw_list_set(const char *name, const char *v)
+ 	return rjf_set(p, v, "rwarden");
+ }
+ 
++/* Read an nvram value through the `nvram` CLI rather than nvram_safe_get().
++ *
++ * PROVEN ON LIVE METAL 2026-08-26: for these Warden keys the library call
++ * returns EMPTY above roughly 200-400 bytes, while the CLI returns the value in
++ * full - 602 bytes captured verbatim in the same shell where nvram_safe_get()
++ * had yielded nothing. Measured library behaviour: 186 bytes read fine, 381 and
++ * 706 both came back empty. The migration consequently copied "" over a real
++ * list. (Why the two paths differ is NOT established - the platform uses
++ * Broadcom's libnvram, not the generic /dev/nvram nvram_linux.c in this tree.
++ * See the backlog; this reads through the path that demonstrably works.)
++ *
++ * `key` comes only from this file's own static table, so nothing external
++ * reaches the command line. Caller frees. NULL = could not read at all, which
++ * the caller must treat as "do not proceed", never as "empty". */
++static char *rw_nvram_cli_get(const char *key)
++{
++	char cmd[96];
++	char *buf = NULL, *nb;
++	size_t cap = 0, len = 0, nc;
++	FILE *p;
++	int c;
++
++	snprintf(cmd, sizeof(cmd), "nvram get %s", key);
++	if ((p = popen(cmd, "r")) == NULL) return NULL;
++	while ((c = fgetc(p)) != EOF) {
++		if (len + 2 > cap) {
++			nc = cap ? cap * 2 : 512;
++			if ((nb = realloc(buf, nc)) == NULL) { free(buf); pclose(p); return NULL; }
++			buf = nb; cap = nc;
++		}
++		buf[len++] = (char)c;
++	}
++	pclose(p);
++	if (!buf) return strdup("");
++	buf[len] = 0;
++	while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = 0;
++	return buf;
++}
++
+ /* One-shot nvram -> /jffs, guarded by a marker so it can never re-import a value
+  * it already unset. Runs from start_rwarden() before anything reads a list. */
+ void rw_list_migrate(void)
+@@ -191,24 +294,46 @@ void rw_list_migrate(void)
+ 	char marker[128];
+ 	int i, n = 0;
+ 
++	/* Correct the mode on EVERY call, before the marker check - not just on the
++	 * one migrating boot. mkdir() does not change an existing directory, and
++	 * /jffs/rwarden predates this store (it already held the block counters and
++	 * the ipset cache) with a world-writable mode. The list files themselves are
++	 * 0600, but a world-writable parent still lets a non-root process rename or
++	 * unlink them, which is the same "mkdir does not fix an existing dir" gap
++	 * already recorded against /tmp/rwarden. */
++	mkdir(REAPER_RW_DIR, 0700);
++	chmod(REAPER_RW_DIR, 0700);
++
+ 	snprintf(marker, sizeof(marker), REAPER_RW_DIR "/.committed");
+ 	if (f_exists(marker)) return;
+-
+-	mkdir("/jffs/rwarden", 0700);
+ 	for (i = 0; names[i]; i++) {
+ 		char nv[40];
+-		const char *cur;
++		char *cur;
+ 		snprintf(nv, sizeof(nv), "rwarden_%s", names[i]);
+-		cur = nvram_safe_get(nv);
+-		if (rw_list_set(names[i], cur) != 0) return;	/* leave the marker unwritten; retry next boot */
++		cur = rw_nvram_cli_get(nv);
++		if (!cur) return;	/* unreadable: leave the marker unwritten, retry next boot */
++		if (rw_list_set(names[i], cur) != 0) { free(cur); return; }
+ 		if (cur[0]) n++;
++		free(cur);
+ 	}
+ 	if (rjf_set(marker, "1", "rwarden") != 0) return;
+-	for (i = 0; names[i]; i++) {
+-		char nv[40];
+-		snprintf(nv, sizeof(nv), "rwarden_%s", names[i]);
+-		nvram_unset(nv);
+-	}
+-	nvram_commit();
+-	logmessage("rwarden", "%d list(s) migrated from nvram to %s (nvram held a silent 1 KB cap per list)", n, REAPER_RW_DIR);
++	/* The nvram originals are DELIBERATELY LEFT IN PLACE.
++	 *
++	 * Proven on live metal 2026-08-26: rc's nvram_safe_get() returns EMPTY for
++	 * these keys above roughly 200-400 bytes, while `nvram get` from a shell
++	 * returns the value in full. The migration therefore read "", wrote an empty
++	 * file, and - when it used to unset afterwards - DESTROYED the real list.
++	 * Measured: 186 bytes migrated intact, 381 and 706 both produced a 0-byte
++	 * file and an empty ipset, with nvram then cleared. The /jffs store itself is
++	 * not the problem: a 706-byte list written straight into it produced a fully
++	 * populated set.
++	 *
++	 * Keeping the nvram copy makes the worst case "the list did not migrate and
++	 * is still where it was" instead of "the list is gone". rw_list_get() prefers
++	 * the file, so a stale copy costs nothing but a few hundred bytes.
++	 *
++	 * The underlying read limit is NOT ours and predates this store - it means a
++	 * Warden ban list over ~256 bytes never worked in nvram either. That needs
++	 * its own investigation; see the backlog. */
++	logmessage("rwarden", "%d list(s) copied from nvram to %s (nvram copies kept as a fallback)", n, REAPER_RW_DIR);
+ }
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index b2ebeda42b..7573a2ed4f 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3607,6 +3607,8 @@ extern void gk_rl_migrate(void);	/* one-shot nvram -> file (start_gk) */
+  * in nvram (shared/reaper_jfile.c) + the Policy Routing rule-list resolver. */
+ extern char *rjf_get(const char *path, int *exists);	/* "" when absent/empty; buffer valid until the next call */
+ extern int rjf_set(const char *path, const char *v, const char *tag);	/* atomic replace; 0 ok, -1 logged */
++extern void rjf_syncdir(const char *path);	/* fsync the dirent after a rename */
++extern char *reaper_fw_list_get_checked(const char *key, int *ok);	/* *ok=0 => unreadable, do NOT persist */
+ #define REAPER_PBR_RL    "/jffs/reaper_pbr/lastgood/rulelist"	/* the CONFIRMED list */
+ #define REAPER_PBR_DRAFT "/tmp/reaper_pbr/draft"		/* an apply awaiting confirmation */
+ extern char *reaper_pbr_rl_get(void);	/* draft > confirmed > legacy nvram */
+-- 
+2.25.1
+

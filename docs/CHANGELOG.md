@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v2.7.9** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v2.8.3** · 2026-08-26 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -25,6 +25,45 @@ Replacing AiMesh would also require a compatible replacement implementation on e
 node, not only on the primary router.
 
 ---
+
+## v2.8.3 — Warden lists survive the move to flash, and the LAN shield is whole again
+
+The remainder of the same review that produced v2.7.9 — thirty-one smaller findings — plus two
+faults that only appeared once the earlier fixes were exercised on real hardware. Both of those
+are the reason this release exists, and both share a trait worth naming: nothing reported an
+error. Every layer said it had succeeded.
+
+- **Your Warden block and allow lists are no longer destroyed when they move to flash storage.**
+  These lists moved out of nvram so they would stop being capped at about 63 entries. The one-time
+  copy read the old list through a path that silently returns *nothing* for values past roughly
+  250 characters, wrote an empty file, and then cleared the original — so a longer list was not
+  shortened, it was gone, and the page reported a successful migration. The copy now reads through
+  a path proven to return the list in full, and the nvram original is deliberately kept, so the
+  worst case is a list that did not move rather than one that no longer exists. Verified on
+  hardware with a 60-entry list: copied byte for byte, every entry active in the filter, and the
+  original still in place afterwards.
+- **The LAN shield is built correctly again.** The rule that stops your own devices from being
+  caught by a threat or country feed was assembled from a text pattern that lost a character, so
+  it was written with no network to protect. It is rebuilt and checked against every common home
+  network size. This is the rule that makes a bad feed entry survivable, so it should never have
+  been able to go missing quietly.
+- **A Warden list update is now all-or-nothing.** Updates, folds and statistics are published
+  atomically, so an interrupted refresh can no longer leave a half-written list in force.
+- **One slow feed can no longer eat the whole update window.** A custom feed that stalls is given
+  a deadline instead of being allowed to consume the time budget the other feeds need.
+- **Gatekeeper is steadier.** It no longer grants a time-based allowance before the router knows
+  the correct time, it evicts its oldest tracked devices instead of growing without limit, and it
+  says so in the log when a device list is too long to load rather than truncating in silence.
+- **The Warden log no longer cries wolf at every start.** With a block list in use, the router
+  reported "protection deferred" on every start of the service while protection was in fact fully
+  active — because the last cleanup step in its own setup script reports "nothing to do" as a
+  failure. The message was harmless in itself, but it made the *real* version of that warning —
+  the one that means protection genuinely has not come up yet — impossible to pick out.
+- **Also:** the router watches for the condition behind the long-standing "stuck settings" fault
+  and reports it rather than acting on it; the rules engine loads its saved configuration as soon
+  as it is switched on; a firewall list that exists but cannot be read is no longer treated as an
+  empty one; and every generated maintenance script now reads settings through the guarded path,
+  so none of them can hang waiting on the router's settings store.
 
 ## v2.7.9 — Turning the firewall off actually turns it off, and Gatekeeper stops locking you out
 

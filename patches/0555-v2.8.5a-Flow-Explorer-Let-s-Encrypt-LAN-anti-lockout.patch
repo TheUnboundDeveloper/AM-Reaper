@@ -1,0 +1,548 @@
+From 9ea2ab01836c989372fcf037685e725f98ae0a9b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 27 Aug 2026 17:52:58 -0400
+Subject: [PATCH] v2.8.5a: Flow Explorer, Let's Encrypt, LAN anti-lockout, and
+ two quiet ones
+
+Five fixes, three of them from the field and two found by tooling written for
+this rung. Test spin: v2.8.5 stays free for the release build so a test image
+and a shipped one can never be confused in a log.
+
+THE FLOW EXPLORER HAS BEEN EMPTY SINCE v2.8.3. Its poll answered 200 and the
+page said "No active flows in the accelerator cache" forever. v2.8.3 put a CSRF
+gate on reaper_conn.cgi - correctly, it is an uncapped conntrack read a
+cross-site GET could drive - but Reaper_Conn.asp's poll was never taught to send
+http_id, so every request was refused. do_reaper_conn_cgi takes no action
+parameter, so unlike the gk/dev/export CGIs it has no read-only branch to exempt:
+every request needs the token. The page now sends it, and a refusal renders the
+error instead of falling through to the ordinary empty state - a page that cannot
+read the accelerator must not look like an idle one. That ambiguity is what made
+this cost a field report rather than a glance.
+
+LET'S ENCRYPT ANNOUNCED A RENEWAL THAT HAD NOT HAPPENED AND A LOGOUT THAT NEVER
+CAME. Reported on v2.7.8 and again on v2.8.3, the second time with a certificate
+that had renewed days earlier and was still in date. Two independent causes.
+  le_restart_httpd is set by libletsencrypt.so on every start_letsencrypt(), and
+  start_services() runs that at EVERY boot - not only on a renewal. httpd unsets
+  the flag as it starts, so anything seen afterwards was set by the blob during
+  that boot. The alert therefore fired on the first login after a flash.
+  And nothing in the tree ever logged the session out. The complete consumer set
+  for that flag was: httpd unsetting it at startup, state.js alerting on it, and
+  state.js clearing it. The promise was unbacked.
+  It matters because httpd installs a new certificate only while login_ip is
+  empty (reload_cert == 2), so the logout was not cosmetic - it was the step that
+  completes the swap. Now: alert only when httpds_reload_cert says a swap is
+  really pending, clear the flag quietly when it is not, and perform the logout.
+  httpds_reload_cert is appended LAST in ajax_status.xml because state.js indexes
+  <wan> elements positionally.
+  Third half of the same problem: only the DDNS page's Apply ran the prepare_cert
+  rc verb, so a background inadyn-driven renewal left the new certificate on disk
+  and httpd kept serving the old one. ddns_updated() now arms the same reload.
+  No dict change - with the gate and the logout, the shipped wording is true.
+
+THE LAN ANTI-LOCKOUT RULE WAS WRONG ON ANY LAN THAT IS NOT /24, /16 OR /8.
+reaper_fw derived LANNET by pattern-matching the netmask, and everything else
+fell to a /24 default. On a /23 or /22 LAN that covers a quarter or a half of the
+network, and every host outside it got NO anti-lockout RETURN - the "half my LAN
+is down" class. rwarden hit this first and was fixed in v2.8.3; reaper_fw kept
+the defective table. This is that same proven arithmetic block.
+  Verified without a router and without trusting the escaping: the emitted C
+  string was extracted, compiled on the host, and the shell it really produces
+  run against a mask table. 10/10 correct - /24, /25 both halves, /23, /22, /16,
+  /8, /32 and bogus input - against 6 of 9 wrong before. The %% here is correct
+  and load-bearing: ${LANIP%%.*} is the intended longest-match strip, and the
+  regression test fails if a single-% form ever reappears.
+
+GATEKEEPER COULD REPORT A DEFERRAL THAT NEVER HAPPENED. /tmp/gk/apply.sh ended on
+`fc flush`, and a script's exit status is its last command's, which
+start_gk()/gk_refresh() read as the cold-boot LAN deferral. Identical in shape to
+the rwarden defect fixed in v2.8.3. It now ends `exit 0`; every rule command
+above that is still checked on its own. Whether this fires in practice depends on
+what `fc flush` returns on metal, which is one command to settle.
+
+CLIENTS PINNED TO ADGUARD WERE SILENTLY UNFILTERED. Removing AdGuard in v2.7.6
+blanked entries 19 and 20 of server_table[]. Nothing broke - get_dns_filter()
+returns a count and every caller guards on it, so a blank entry emits no DNAT
+rule and DNS keeps working, exactly as the discontinued Norton entries 2-4 have
+upstream for years. But a client the user had set to AdGuard is now unfiltered
+while they believe ads are blocked, and the dropdown shows an out-of-range value.
+  A one-shot idempotent migration rewrites the stored mode to Unfiltered - what
+  the box is already doing - and logs each affected client so a replacement can
+  be chosen. Deliberately NOT substituted with another provider: silently
+  redirecting someone's DNS to a third party we picked would be the bigger
+  surprise. SDN profiles are reported, not rewritten; that record is positionally
+  dense and a mis-placed field would corrupt a whole profile.
+  The rewrite loop was compiled on the host and run over nine cases: 190 is not
+  mistaken for 19, a malformed 4-field record is left alone, truncation refuses
+  to write rather than dropping clients' settings, and it is a true no-op for
+  anyone who never used AdGuard.
+
+TOOLING, none of which ships in the image. A pre-build gate now exists at
+/home/reaper/reaper_tests (rule-29 quote safety, CSRF caller coherence, dict
+lockstep, and a JS parse of every Reaper page in all 25 languages - ~7s, and it
+is what caught state.js being outside the checked set). reaper_verify gained
+check 19, csrf-callers, self-tested against history: it flags the v2.7.7 QoS
+defect and this rung's Conn defect, and is clean before either existed. Two bugs
+in that tooling were found and fixed before it could do harm - it crashed on any
+staged www because of the dangling user*.asp symlinks, which would have blocked
+every ship, and it had drifted from the lean-repo engine.
+
+Verified across all six model trees: the seven shared files are byte-identical
+and the suite is green on each.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf            |   2 +-
+ release/src/router/rc/dnsfilter.c      | 129 +++++++++++++++++++++++++
+ release/src/router/rc/dnsfilter.h      |   1 +
+ release/src/router/rc/gatekeeper.c     |  12 ++-
+ release/src/router/rc/reaper_fw.c      |  29 ++++--
+ release/src/router/rc/services.c       |  23 +++++
+ release/src/router/www/Reaper_Conn.asp |  27 +++++-
+ release/src/router/www/ajax_status.xml |   4 +
+ release/src/router/www/state.js        |  41 +++++++-
+ 9 files changed, 253 insertions(+), 15 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index de530ae203..314ddfc731 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.8.4
++EXTENDNO=Reaper_v2.8.5a
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/dnsfilter.c b/release/src/router/rc/dnsfilter.c
+index 2d2fb3d380..8a85ab6830 100644
+--- a/release/src/router/rc/dnsfilter.c
++++ b/release/src/router/rc/dnsfilter.c
+@@ -163,6 +163,135 @@ int get_dns_filter(int proto, int mode, dnsf_srv_entry_t *dnsfsrv)
+ }
+ 
+ 
++/* v2.8.5: AdGuard was removed from the DNS filter service list in v2.7.6, which
++ * blanked entries 19 and 20 of server_table[]/server6_table[]. Nothing broke by
++ * that alone - get_dns_filter() returns a count of non-empty servers and every
++ * caller guards on it, so a blank entry emits no DNAT rule at all and DNS keeps
++ * working (the discontinued Norton entries 2-4 have behaved exactly that way
++ * upstream for years).
++ *
++ * What DID happen is quieter: a client the user had pinned to AdGuard is now
++ * silently UNFILTERED. They believe ads are being blocked, nothing says
++ * otherwise, and because the UI no longer offers those values the dropdown
++ * shows an out-of-range selection.
++ *
++ * Rewrite the stored mode to Unfiltered - which is what the box is ALREADY
++ * doing - so the record matches reality and the UI is coherent, and say so in
++ * the log so the user can choose a replacement. Deliberately NOT substituting
++ * another provider: silently redirecting someone's DNS to a third party we
++ * picked would be a bigger surprise than telling them their filter is gone.
++ *
++ * Idempotent - once rewritten nothing matches - so it is safe at every boot and
++ * needs no "done" flag, and nvram is written only if something really changed.
++ */
++#define DNSF_SRV_GONE_ADGUARD		19
++#define DNSF_SRV_GONE_ADGUARD_FAMILY	20
++
++static int dnsf_mode_is_gone(int mode)
++{
++	return (mode == DNSF_SRV_GONE_ADGUARD || mode == DNSF_SRV_GONE_ADGUARD_FAMILY);
++}
++
++void dnsfilter_migrate_removed(void)
++{
++	char *nv, *nvp, *rule, *out;
++	size_t olen = 255 * 6 + 1, used = 0;
++	int listchg = 0, truncated = 0;
++
++	/* the network-wide default */
++	if (dnsf_mode_is_gone(nvram_get_int("dnsfilter_mode"))) {
++		nvram_set_int("dnsfilter_mode", DNSF_SRV_UNFILTERED);
++		logmessage("dnsfilter", "the network-wide DNS filter was set to a service that has since been removed - it is now Unfiltered; choose a replacement on the DNS Director page");
++	}
++
++	/* the per-client list */
++#ifdef HND_ROUTER
++	nv = nvp = malloc(olen);
++	if (nv) nvram_split_get("dnsfilter_rulelist", nv, olen, 5);
++#else
++	nv = nvp = strdup(nvram_safe_get("dnsfilter_rulelist"));
++#endif
++	if (nv == NULL)
++		return;
++
++	if ((out = malloc(olen)) == NULL) {
++		free(nv);
++		return;
++	}
++	out[0] = '\0';
++
++	/* Records are '<'-separated and the mode is the LAST '>'-delimited field,
++	 * so rewriting just that tail leaves every other field byte-identical -
++	 * safer than reparsing and rebuilding a record whose full shape we do not
++	 * own (a 4th field would survive a tail rewrite but not a rebuild). */
++	while ((rule = strsep(&nvp, "<")) != NULL) {
++		char *tail;
++		int w;
++
++		if (*rule == '\0')
++			continue;		/* the list's leading '<' */
++
++		tail = strrchr(rule, '>');
++		if (tail && dnsf_mode_is_gone(atoi(tail + 1))) {
++			char rec[192], *rname, *rmac, *rmode;
++
++			strlcpy(rec, rule, sizeof(rec));
++			if (vstrsep(rec, ">", &rname, &rmac, &rmode) == 3)
++				logmessage("dnsfilter", "client %s was set to a DNS filter service that has since been removed - it is now Unfiltered", rmac);
++			w = snprintf(out + used, olen - used, "<%.*s>%d",
++				     (int)(tail - rule), rule, DNSF_SRV_UNFILTERED);
++			listchg++;
++		} else {
++			w = snprintf(out + used, olen - used, "<%s", rule);
++		}
++
++		/* snprintf reports what it WOULD have written; a short buffer here
++		 * would silently drop clients' settings, so bail and keep the
++		 * original rather than store a truncated list. */
++		if (w < 0 || (size_t)w >= olen - used) {
++			truncated = 1;
++			break;
++		}
++		used += w;
++	}
++
++	if (truncated) {
++		logmessage("dnsfilter", "dnsfilter_rulelist did not fit while migrating removed filter services - left unchanged");
++	} else if (listchg) {
++#ifdef HND_ROUTER
++		nvram_split_set("dnsfilter_rulelist", out, 255, 5);
++#else
++		nvram_set("dnsfilter_rulelist", out);
++#endif
++		nvram_commit();
++	}
++
++	free(out);
++	free(nv);
++
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* An SDN profile can carry its own filter index too. That lives inside the
++	 * dense positional sdn_rl record, where a mis-placed field would corrupt a
++	 * whole profile, so report it and let the user re-pick rather than rewrite
++	 * it here. Same end state as above: the profile is already unfiltered. */
++	{
++		MTLAN_T *pmtl;
++		size_t mtl_sz = 0, i;
++
++		if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) != NULL) {
++			if (get_mtlan(pmtl, &mtl_sz)) {
++				for (i = 1; i < mtl_sz; ++i) {
++					if (pmtl[i].enable && dnsf_mode_is_gone(pmtl[i].sdn_t.dnsf_idx))
++						logmessage("dnsfilter", "SDN network %d uses a DNS filter service that has since been removed - it is unfiltered; choose a replacement in that network's settings",
++							   pmtl[i].sdn_t.sdn_idx);
++				}
++			}
++			FREE_MTLAN((void *)pmtl);
++		}
++	}
++#endif
++}
++
+ void dnsfilter_settings(FILE *fp) {
+ 	char *name, *mac, *mode;
+ 	unsigned char ea[ETHER_ADDR_LEN];
+diff --git a/release/src/router/rc/dnsfilter.h b/release/src/router/rc/dnsfilter.h
+index 195d6a4839..556a54d763 100644
+--- a/release/src/router/rc/dnsfilter.h
++++ b/release/src/router/rc/dnsfilter.h
+@@ -49,3 +49,4 @@ typedef struct {
+ 
+ extern int get_dns_filter(int proto, int mode, dnsf_srv_entry_t *dnsfsrv);
+ extern int dnsfilter_support_dot(int mode);
++extern void dnsfilter_migrate_removed(void);
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 4c76341d67..b02da5ed99 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -569,7 +569,17 @@ static void gk_gen_apply(void)
+ 		    * re-apply when a bridge's delegated prefix changes */
+ 		   "{ for N in $GKNETS; do gk_net_fields \"$N\"; gk_v6pfx \"$NIF\"; done; } 2>/dev/null | sort -u | tr '\\n' ' ' > " GK_DIR "/v6pfx\n"
+ 		   "# offloaded flows must re-traverse the fresh rules\n"
+-		   "fc flush 2>/dev/null\n");
++		   "fc flush 2>/dev/null\n"
++		   /* v2.8.5: a script's exit status is its LAST command's, and
++		    * start_gk()/gk_refresh() read any non-zero as the cold-boot LAN
++		    * deferral. Ending on `fc flush` let a flush that returned non-zero
++		    * be reported as "enforcement deferred" while Gatekeeper was in fact
++		    * fully armed - and made the GENUINE deferral indistinguishable from
++		    * that noise. Same defect rwarden fixed in v2.8.3, where rw_gen_apply
++		    * ended on `conntrack -D` (exit 1 whenever no flow matched). Real
++		    * failures still surface: every rule command above is checked on its
++		    * own. */
++		   "exit 0\n");
+ 
+ 	fclose(f);
+ 	chmod(GK_APPLY ".tmp", 0700);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 21830b7869..619fee4518 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -1740,12 +1740,29 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	   * Reject anything outside the expected charset before use. */
+ 	  "case \"$LANIF\" in ''|*[!A-Za-z0-9._-]*) logger -t reaper_fw 'bad lan_ifname'; exit 1;; esac\n"
+ 	  "case \"$LANIP\" in ''|*[!0-9.]*) logger -t reaper_fw 'lan not ready - deferred'; exit 1;; esac\n"
+-	  "case \"$LANMASK\" in\n"
+-	  "  255.255.255.0) LANNET=\"${LANIP%%.*}.0/24\";;\n"
+-	  "  255.255.0.0)   LANNET=\"$(echo \"$LANIP\" | cut -d. -f1-2).0.0/16\";;\n"
+-	  "  255.0.0.0)     LANNET=\"$(echo \"$LANIP\" | cut -d. -f1).0.0.0/8\";;\n"
+-	  "  *)             LANNET=\"${LANIP%%.*}.0/24\";;\n"
+-	  "esac\n"
++	  /* v2.8.5: compute the network from LANIP AND LANMASK instead of
++	   * pattern-matching the mask. The table this replaces was wrong for every
++	   * mask that is not /24, /16 or /8: /25 got the wrong half, and /22 and
++	   * /23 silently fell back to /24, so hosts outside that /24 got NO
++	   * anti-lockout RETURN at all - the 'half my LAN is down' class. rwarden
++	   * hit this first and was fixed in v2.8.3; reaper_fw kept the defective
++	   * table until now. This is that same proven block. Validated off-router
++	   * across /24, /25 (both halves), /23, /22, /16, /8 and bogus input.
++	   * NOTE: inside an fprintf, so shell %% is written %%%%. */
++	  "_ip1=${LANIP%%%%.*}; _r=${LANIP#*.}; _ip2=${_r%%%%.*}; _r=${_r#*.}; _ip3=${_r%%%%.*}; _ip4=${_r#*.}\n"
++	  "_m1=${LANMASK%%%%.*}; _r=${LANMASK#*.}; _m2=${_r%%%%.*}; _r=${_r#*.}; _m3=${_r%%%%.*}; _m4=${_r#*.}\n"
++	  "case \"$_ip1$_ip2$_ip3$_ip4$_m1$_m2$_m3$_m4\" in \x27\x27|*[!0-9]*) LANNET=\"\";; *)\n"
++	  "  _plen=0\n"
++	  "  for _o in $_m1 $_m2 $_m3 $_m4; do\n"
++	  "    case $_o in 255) _plen=$((_plen+8));; 254) _plen=$((_plen+7));; 252) _plen=$((_plen+6));;\n"
++	  "      248) _plen=$((_plen+5));; 240) _plen=$((_plen+4));; 224) _plen=$((_plen+3));;\n"
++	  "      192) _plen=$((_plen+2));; 128) _plen=$((_plen+1));; 0) ;; *) _plen=-1;; esac\n"
++	  "  done\n"
++	  "  if [ \"$_plen\" -lt 8 ]; then LANNET=\"\"; else\n"
++	  "    LANNET=\"$((_ip1&_m1)).$((_ip2&_m2)).$((_ip3&_m3)).$((_ip4&_m4))/$_plen\"\n"
++	  "  fi\n"
++	  ";; esac\n"
++	  "[ -n \"$LANNET\" ] || logger -t reaper_fw \"could not derive the LAN network from $LANIP/$LANMASK - anti-lockout RETURN skipped\"\n"
+ 	  /* Phase 2/3: the egress defaults and the hardened forwards are both
+ 	   * anchored to the WAN interface, resolved at RUN time like every other
+ 	   * interface value here (a WAN reconnect can rename it). Every consumer is
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index a7d0600cca..1672712fc7 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -5114,6 +5114,21 @@ ddns_updated_main(int argc, char *argv[])
+ 		nvram_set("le_rc_notify", "0");
+ 		stop_letsencrypt();
+ 		start_letsencrypt();
++#if defined(RTCONFIG_HTTPS)
++		/* v2.8.5: a renewal that arrives this way (inadyn -> ddns_updated) never
++		 * ran prepare_cert - only the DDNS page's Apply does - so the new
++		 * certificate sat on disk and httpd went on serving the old one until
++		 * something else restarted it. Arm the same reload the prepare_cert rc
++		 * verb arms; httpd installs it once the session ends, and the UI now
++		 * reads this flag to decide whether the renewal alert is warranted. */
++		if (prepare_cert_in_etc() > 0) {
++			nvram_set("httpds_reload_cert", "2");
++#if defined(RTCONFIG_IPV6)
++			if (ipv6_enabled() && nvram_match("misc_http_x", "1"))
++				nvram_set("httpds6_reload_cert", "2");
++#endif
++		}
++#endif
+ 	}
+ #endif
+ 
+@@ -13691,6 +13706,14 @@ start_services(void)
+ 	 * `nvram` invoked from a script. No-op unless nvram wlcsm_bindfix=1. */
+ 	start_wlcsm_bindfix();
+ 
++#ifdef RTCONFIG_DNSFILTER
++	/* v2.8.5: retire DNS filter services that no longer exist (AdGuard, removed
++	 * in v2.7.6) from the stored per-client and network-wide settings, so what
++	 * is recorded matches what the box actually does. Idempotent; writes only
++	 * when something changed. */
++	dnsfilter_migrate_removed();
++#endif
++
+ #if 0
+ #ifdef HND_ROUTER
+ 	start_jitterentropy();
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index 1400e47eba..d89f3003a1 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -94,6 +94,7 @@ code{font-family:var(--mono)}
+ .chip{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.05em;font-size:9px;font-weight:700;padding:2px 8px;border-radius:999px;border:1px solid}
+ .chip.acc{color:var(--jade);border-color:rgba(79,178,134,.45)}
+ .empty{background:var(--panel);border:1px dashed var(--line2);border-radius:12px;padding:30px;text-align:center;color:var(--steel);font-size:13px}
++.empty.err{background:var(--red-dim);border-style:solid;border-color:rgba(225,6,0,.45);color:var(--bone)}
+ .note{margin-top:22px;font-size:12px;color:var(--steel);line-height:1.6;max-width:98ch;border-top:1px solid var(--line);padding-top:14px}
+ .note b{color:var(--bone-dim)}
+ /* v2.1.3: Quick Look list */
+@@ -168,7 +169,17 @@ code{font-family:var(--mono)}
+ (function(){
+   "use strict";
+   var ENDPOINT="/reaper_conn.cgi";
+-  var state={conns:[],sel:null,prev:{},qos:0};
++  var state={conns:[],sel:null,prev:{},qos:0,err:null};
++  /* v2.8.5: the feed is CSRF-gated. v2.8.3 added reaper_gate() to
++     do_reaper_conn_cgi, which takes no action parameter and so has no
++     read-only branch to exempt - every request needs the token. A refusal
++     answers {"ok":0,"error":...,"ek":...} with no flows[], which used to fall
++     straight through to the ordinary "no active flows" empty state: a page
++     that could not read the accelerator looked exactly like an idle one.
++     Map the ek to the dict, raw English error as the fallback so a key with no
++     dict entry yet still surfaces (the aerr idiom from Reaper_Advisor.asp). */
++  var CERR={ RDEVE_1:`<#RDEVE_1#>` };
++  function cerr(j){ return (j&&j.ek&&CERR[j.ek])||(j&&j.error)||""; }
+   var filter="all", currentMs=1000, live=true, timer=null;
+   /* v2.1.3: view mode (Quick Look = default) + device-name map */
+   var view=(function(){ try{ return localStorage.getItem("reaper_conn_view")||"quick"; }catch(e){ return "quick"; } })();
+@@ -199,12 +210,13 @@ code{font-family:var(--mono)}
+ 
+   function fetchOnce(){
+     var x=new XMLHttpRequest();
+-    x.open("GET",ENDPOINT+"?_="+Date.now(),true); x.timeout=6000;
++    x.open("GET",ENDPOINT+"?http_id="+encodeURIComponent('<% nvram_get("http_id"); %>')+"&_="+Date.now(),true); x.timeout=6000;
+     x.onreadystatechange=function(){ if(x.readyState!==4)return; var j; try{ j=JSON.parse(x.responseText); }catch(e){ return; } ingest(j); render(); };
+     x.onerror=x.ontimeout=function(){}; x.send();
+   }
+ 
+   function ingest(j){
++    state.err=(j&&j.ok===0)?(cerr(j)||"error"):null;
+     state.qos=j.qos_type;
+     var g={}, order=[], seen=j.seen||{}, now=j.now||0;
+     (j.flows||[]).forEach(function(r){
+@@ -230,6 +242,13 @@ code{font-family:var(--mono)}
+       state.sel = conns.length ? conns.slice().sort(function(a,b){return b.rate-a.rate;})[0].nfc : null;
+   }
+ 
++  /* An empty list means one of two very different things: the accelerator
++     really has no flows, or the feed refused the request. Say which. */
++  function emptyBox(){
++    return state.err ? '<div class="empty err">'+esc(state.err)+'</div>'
++                     : '<div class="empty">'+`<#RCON_25#>`+'</div>';
++  }
++
+   /* top-level render: dispatch to the chosen view */
+   function render(){ if(view==="quick") renderQuick(); else renderAdv(); }
+ 
+@@ -237,7 +256,7 @@ code{font-family:var(--mono)}
+   function renderQuick(){
+     var conns=state.conns.slice().sort(function(a,b){ return b.rate-a.rate; });
+     var qv=document.getElementById("quickView");
+-    if(!conns.length){ qv.innerHTML='<div class="empty">'+`<#RCON_25#>`+'</div>'; return; }
++    if(!conns.length){ qv.innerHTML=emptyBox(); return; }
+     var ext=conns.filter(function(c){return !isPrivate(c.srv);}).length;
+     var rows=conns.map(function(c){
+       var nm=devName(c.cli), inside=isPrivate(c.srv);
+@@ -276,7 +295,7 @@ code{font-family:var(--mono)}
+ 
+     document.getElementById("ftag").textContent="("+shown.length+`<#RCON_24#>`;
+ 
+-    if(!conns.length){ document.getElementById("fbody").innerHTML='<div class="empty">'+`<#RCON_25#>`+'</div>'; document.getElementById("detail").innerHTML=""; return; }
++    if(!conns.length){ document.getElementById("fbody").innerHTML=emptyBox(); document.getElementById("detail").innerHTML=""; return; }
+ 
+     var rows=shown.map(function(c){
+       var hw=Math.round(c.hwPct*10)/10, cpu=Math.round((100-c.hwPct)*10)/10, acc=c.hwPct>=50;
+diff --git a/release/src/router/www/ajax_status.xml b/release/src/router/www/ajax_status.xml
+index d8acbd7f6d..8135f459da 100644
+--- a/release/src/router/www/ajax_status.xml
++++ b/release/src/router/www/ajax_status.xml
+@@ -70,6 +70,10 @@
+   <wan>wlc2_state=<% nvram_get("wlc2_state"); %></wan>
+   <wan>le_restart_httpd=<% nvram_get("le_restart_httpd"); %></wan>
+   <wan>rssi_6g=<% wl_rssi_6g(); %></wan>
++  <!-- v2.8.5: whether a certificate swap is actually pending. le_restart_httpd
++       alone does NOT mean that - see the note in state.js refreshStatus(). This
++       is APPENDED because state.js indexes <wan> elements positionally. -->
++  <wan>httpds_reload_cert=<% nvram_get("httpds_reload_cert"); %></wan>
+   <wanbonding>wan_bonding_speed=<% wan_bonding_speed(); %></wanbonding>
+   <wanbonding>wan_bonding_p1_status=<% wan_bonding_p1_status(); %></wanbonding>
+   <wanbonding>wan_bonding_p2_status=<% wan_bonding_p2_status(); %></wanbonding>
+diff --git a/release/src/router/www/state.js b/release/src/router/www/state.js
+index 10726630b8..8dd82de16a 100644
+--- a/release/src/router/www/state.js
++++ b/release/src/router/www/state.js
+@@ -1015,7 +1015,12 @@ function change_wl_unit_status(unit){
+ 	document.titleForm.submit();
+ }
+ 
+-function change_le_restart_httpd(){
++/* v2.8.5: `logout` completes what the alert promises. Nothing in the firmware
++   ever logged the session out - the text said it would, the user stayed logged
++   in, and httpd, which installs the new certificate only while login_ip is
++   empty, therefore never installed it. Called with false to clear the flag
++   silently when no swap is pending. */
++function change_le_restart_httpd(logout){
+ 
+ 	document.titleForm.le_restart_httpd.disabled = false;
+ 	document.titleForm.le_restart_httpd.value = "";
+@@ -1023,6 +1028,14 @@ function change_le_restart_httpd(){
+ 	document.titleForm.action_mode.value = "apply";
+ 	document.titleForm.action = "apply.cgi";
+ 	document.titleForm.submit();
++
++	/* the clear posts into hidden_frame; let it land before navigating away.
++	   top.location because this runs in a stock page inside the Reaper shell
++	   iframe - logging out only the frame would leave the shell signed in. */
++	if(logout)
++		setTimeout(function(){
++			try{ top.location = "/Logout.asp"; }catch(e){ location = "/Logout.asp"; }
++		}, 1500);
+ }
+ 
+ var dsltmp_transmode_orig = '<% nvram_get("dsltmp_transmode"); %>';
+@@ -1058,6 +1071,8 @@ var external_ip = 0;
+ 
+ var link_internet = '<% nvram_get("link_internet"); %>';
+ var le_restart_httpd_chk = "";
++/* v2.8.5: is a certificate swap actually pending? (ajax_status.xml) */
++var httpds_reload_cert = "";
+ 
+ var wifison_ready = '<% nvram_get("wifison_ready"); %>';
+ var ui_lang = '<% nvram_get("preferred_lang"); %>';
+@@ -3152,6 +3167,11 @@ function refreshStatus(xhr){
+ 	rssi_6g = wanStatus[35].firstChild.nodeValue.replace("rssi_6g=", "");
+ 	link_internet = wanStatus[32].firstChild.nodeValue.replace("link_internet=", "");
+ 	le_restart_httpd = wanStatus[34].firstChild.nodeValue.replace("le_restart_httpd=", "");
++	/* index 36, appended last in ajax_status.xml. Guarded: a cached state.js
++	   paired with an older ajax_status.xml would otherwise throw here and kill
++	   the whole status poll. */
++	httpds_reload_cert = (wanStatus[36] && wanStatus[36].firstChild)
++		? wanStatus[36].firstChild.nodeValue.replace("httpds_reload_cert=", "") : "";
+ 
+ 	var vpnStatus = devicemapXML[0].getElementsByTagName("vpn");
+ 	vpnc_proto = vpnStatus[0].firstChild.nodeValue.replace("vpnc_proto=", "");
+@@ -4047,10 +4067,25 @@ function refreshStatus(xhr){
+ 			notification.updateNTDB_Status();
+ 	}
+ 
++	/* v2.8.5: le_restart_httpd is set by libletsencrypt.so on every
++	   start_letsencrypt(), which start_services() runs at EVERY boot - not only
++	   when a certificate is actually renewed. Alerting on it alone told users
++	   "your certificate has been renewed, you will be logged out" on the first
++	   login after a flash, with a certificate that had renewed days earlier and
++	   was still in date (field reports on v2.7.8 and v2.8.3).
++	   httpds_reload_cert is the flag that means a swap is genuinely pending;
++	   httpd honours it only once login_ip is empty (httpd.c reload_cert == 2),
++	   which is why the promised logout has to actually happen - see
++	   change_le_restart_httpd(). With nothing pending, clear the flag quietly
++	   rather than raising an alarm about a certificate nobody touched. */
+ 	if(letsencrypt_support && le_restart_httpd == "1" && le_restart_httpd_chk == ""){
+-		alert("<#LANHostConfig_x_DDNSLetsEncrypt_ReloginHint#>");
+ 		le_restart_httpd_chk = le_restart_httpd;
+-		change_le_restart_httpd();
++		if(httpds_reload_cert != "" && httpds_reload_cert != "0"){
++			alert("<#LANHostConfig_x_DDNSLetsEncrypt_ReloginHint#>");
++			change_le_restart_httpd(true);
++		}
++		else
++			change_le_restart_httpd(false);
+ 	}
+ 
+ 	if(window.frames["statusframe"] && (typeof window.frames["statusframe"].stopFlag != "undefined" && window.frames["statusframe"].stopFlag == 1) || stopFlag == 1){
+-- 
+2.25.1
+

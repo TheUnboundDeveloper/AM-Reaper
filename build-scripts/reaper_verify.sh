@@ -262,6 +262,30 @@ else
   fail "i18n-quote" "dict token embedded in a breakable JS string context (see above)"
 fi
 
+# ---- 19. CSRF gate <-> caller coherence (reaper_csrfcheck.py) --------------
+# The v2.8.3 defect this was written for: reaper_conn.cgi gained an http_id gate
+# in a security rung, Reaper_Conn.asp's poll was never updated, and the Flow
+# Explorer showed "no active flows" forever. A green build cannot see it - both
+# halves are correct on their own, only the pairing is wrong. Reads which
+# handlers gate (and which actions they exempt) straight out of web.c, so the
+# allowlist cannot drift from the C.
+# Locate the checker next to THIS script, so a lean/CI checkout runs its own
+# copy rather than reaching into /home/reaper (which does not exist there).
+_SDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CSRFCHK="$_SDIR/reaper_csrfcheck.py"
+[ -f "$CSRFCHK" ] || CSRFCHK=/home/reaper/reaper_build/reaper_csrfcheck.py
+WEBC="$R/release/src/router/httpd/web.c"
+if [ ! -f "$CSRFCHK" ]; then
+  warn "csrf-callers" "reaper_csrfcheck.py not found - check skipped"
+elif [ ! -f "$WEBC" ]; then
+  warn "csrf-callers" "no web.c at $WEBC - check skipped"
+elif out=$(python3 "$CSRFCHK" "$FS/www" "$WEBC" 2>&1); then
+  pass "csrf-callers" "every gated Reaper CGI has callers that send the token ($(echo "$out" | tail -1))"
+else
+  echo "$out" | sed 's/^/    /'
+  fail "csrf-callers" "a www page calls a CSRF-gated Reaper CGI without http_id (see above)"
+fi
+
 # ---- 18. provenance stamp: the About page's patch count must be REAL -------
 # Stamping is deliberately non-fatal, and for three releases nothing downstream
 # ever looked at the result - so a stale 465 shipped through v2.5.8, a dash in

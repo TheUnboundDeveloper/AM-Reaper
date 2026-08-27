@@ -118,7 +118,7 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
 to `0554` <!--@patchcount--> (v2.8.4 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
-v2.7.8 <!--@pubver-->. The RT-BE86U /
+v2.8.3 <!--@pubver-->. The RT-BE86U /
 RT-BE88U / GT-BE98 / GT-BE98 Pro images (published at v2.7.6, alongside the
 RT-BE92U's experimental prerelease) are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob

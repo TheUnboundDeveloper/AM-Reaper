@@ -1,6 +1,6 @@
 # Build Provenance — from published image back to source
 
-> **Doc status:** current as of **v2.8.3** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v2.8.4** · 2026-08-27 <!--@stamp-->
 
 This document lets anyone verify, end to end, that a published Reaper firmware
 image was built from exactly the source published in this repository — with
@@ -117,7 +117,7 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0553` <!--@patchcount--> (v2.8.3 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
+to `0554` <!--@patchcount--> (v2.8.4 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
 v2.7.8 <!--@pubver-->. The RT-BE86U /
 RT-BE88U / GT-BE98 / GT-BE98 Pro images (published at v2.7.6, alongside the
 RT-BE92U's experimental prerelease) are produced by

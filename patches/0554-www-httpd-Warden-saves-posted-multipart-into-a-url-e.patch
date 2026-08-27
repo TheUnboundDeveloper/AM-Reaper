@@ -1,0 +1,445 @@
+From 78336b9ab0c3b36f18d9c5b94e0b814fe89df988 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 27 Aug 2026 08:30:53 -0400
+Subject: [PATCH] www/httpd: Warden saves posted multipart into a url-encoded
+ parser
+
+Field report, 2026-08-27, on v2.8.3: changing a Warden blocklist or pressing
+Update now answered "invalid request token", and stayed broken across a logout
+and back in. Reported from Firefox, but it was never a browser or a session
+problem - the request simply never parsed, on every browser.
+
+THE DEFECT. When ban/allow/cfeeds moved out of nvram into /jffs (they had hit
+the silent 1 KB cap), Reaper_Warden.asp stopped putting them on the nvram apply
+form and began POSTing them to the new save_lists endpoint. It built the body
+with `new FormData()` and called `lx.send(lf)`, which sets multipart/form-data.
+The endpoint's input handler is do_html_post_and_get, which is url-encoded-only:
+it reads the body with a SINGLE fgets(), so it got the multipart boundary line
+and nothing else. That line carries no '=', so init_cgi() registered ZERO
+variables, http_id was never there, and the CSRF gate refused the request.
+
+Scope was wider than the lists. rwSave() only calls f.submit() inside the XHR
+success callback, so the abort killed the ENTIRE Warden save - master toggle,
+countries, feed selection, logging - for both buttons. The live-stats poll kept
+working throughout, because it sends the same token as a GET query string, which
+is why the page looked healthy while nothing could be saved.
+
+THE FIX is the transport, and it is the pattern already proven on applyapp.cgi
+by Reaper_Advisor.asp: URLSearchParams, an explicit
+Content-Type: application/x-www-form-urlencoded, and send(lf.toString()). The
+three values are single-line by construction (rwCleanCidrs joins on spaces,
+rwCfeedCollect on '<'), so no literal newline can truncate that fgets either;
+encoded worst case is ~34 KB against a 64 KB post_buf.
+
+AND THE REASON THE REPORT COST A ROUND TRIP. The gate answered "invalid request
+token" for three unrelated failures, so the one message could not distinguish a
+body that never parsed from a genuine token mismatch - the user read it as a
+dead session and logged out and back in twice before the report reached us. The
+gate now classifies: init_cgi() counts the pairs it actually parsed (cgi_nvars()),
+and reaper_gate()/reaper_gate_hid() return NODATA / TOKEN / XSITE. "request
+carried no parameters" + ek _1B and "cross-site request refused" + ek _1C are new;
+"invalid request token" + ek _1 keeps exactly its old meaning, so existing help
+text is unaffected. All 15 Reaper gates converted. The security decision is
+unchanged - anything but RGATE_OK is still refused.
+
+Two gates needed their own handling: the .rbk restore upload takes its token
+from a multipart field its own POST half captures, so it passes rbk_up.hid (an
+array, never NULL) and can only return TOKEN/XSITE - cgi_nvars() is legitimately
+0 there; the disk-unmount endpoint reads a JSON body and emits no error text, so
+it refuses silently on any non-OK.
+
+Verified into the staged filesystem, not just off a green build: fs/www/
+Reaper_Warden.asp carries URLSearchParams with no FormData left, and
+fs/usr/sbin/httpd carries all three classifier strings.
+
+Swept the rest of www: the only other FormData users are Reaper_Advisor.asp
+(wrapped in URLSearchParams) and Reaper_Firmware.asp (upgrade.cgi, which has a
+real multipart handler), and no page sends a JSON body to a url-encoded CGI.
+
+The sibling branches carry the same defect and still need the port.
+
+EXTENDNO -> Reaper_v2.8.4. v2.8.3 is in the field; this rung takes its own
+number so the two are never confused in a log.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf              |   2 +-
+ release/src/router/httpd/cgi.c           |  17 +++
+ release/src/router/httpd/httpd.h         |   1 +
+ release/src/router/httpd/web.c           | 156 ++++++++++++++++-------
+ release/src/router/www/Reaper_Warden.asp |  15 ++-
+ 5 files changed, 143 insertions(+), 48 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 7dd23d7f19..de530ae203 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.8.3
++EXTENDNO=Reaper_v2.8.4
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/cgi.c b/release/src/router/httpd/cgi.c
+index 7780fc8232..b2e48760c3 100644
+--- a/release/src/router/httpd/cgi.c
++++ b/release/src/router/httpd/cgi.c
+@@ -161,12 +161,28 @@ set_cgi(char *name, char *value)
+ 	assert(ep);
+ }
+ 
++/* reaper 2026-08-27: how many name=value pairs the LAST init_cgi() actually
++ * parsed out of this request. A body the parser could not read at all (the
++ * Warden save posted multipart/form-data into this url-encoded parser, so
++ * do_html_post_and_get's fgets handed over nothing but the boundary line)
++ * leaves this at 0 - which is what lets the Reaper CSRF gates say "no form
++ * data" instead of blaming the token. See reaper_gate() in web.c. */
++static int cgi_nvars_parsed = 0;
++
++int
++cgi_nvars(void)
++{
++	return cgi_nvars_parsed;
++}
++
+ void
+ init_cgi(char *query)
+ {
+ 	int len, nel;
+ 	char *q, *name, *value;
+ 
++	cgi_nvars_parsed = 0;
++
+ 	/* Clear variables */
+ 	if (!query) {
+ 		hdestroy_r(&htab);
+@@ -193,6 +209,7 @@ init_cgi(char *query)
+ 		if (value) {
+ 			//printf("set_cgi: name=%s, value=%s.\n", name , value);	// N12 test
+ 			set_cgi(name, value);
++			cgi_nvars_parsed++;
+ 		}
+ 	}
+ }
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+index 316d92da7f..d080934823 100644
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -413,6 +413,7 @@ extern void unescape(char *s, size_t len);
+ extern char *get_cgi(char *name);
+ extern void set_cgi(char *name, char *value);
+ extern void init_cgi(char *query);
++extern int cgi_nvars(void);	/* reaper: pairs the last init_cgi() parsed; 0 = the body never parsed */
+ extern char *webcgi_get(const char *name);
+ extern void webcgi_set(char *name, char *value);
+ extern void webcgi_init(char *query);
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 5edb851c86..db8c2d9c0c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21708,6 +21708,71 @@ static int reaper_referer_ok(void)
+ 	return 0;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * reaper 2026-08-27: the gate above answered "invalid request token" for three
++ * unrelated failures, and a field report on the Warden save proved how badly
++ * that misdirects. The page had been POSTing a FormData object - so
++ * multipart/form-data - into do_html_post_and_get, which is url-encoded-only
++ * and reads the body with a single fgets(): it got the boundary line, which
++ * carries no '=', so init_cgi() registered ZERO variables and http_id was
++ * simply never there. The user read "invalid request token" as a dead session
++ * and logged out and back in twice before the report reached us.
++ *
++ * Classify instead. cgi_nvars() == 0 with no http_id means the request body
++ * never reached the parser - a client/transport bug, not a credential one -
++ * and it gets its own message and ek suffix so the next report names itself.
++ * The SECURITY decision is unchanged: anything but RGATE_OK is refused.
++ * ------------------------------------------------------------------------- */
++#define RGATE_OK	0
++#define RGATE_NODATA	1	/* body never parsed (wrong Content-Type, empty POST) */
++#define RGATE_TOKEN	2	/* http_id absent or wrong */
++#define RGATE_XSITE	3	/* Referer belongs to another host */
++
++/* hid: the token as this handler obtained it (get_cgi, get_cgi_json, or a
++ * multipart field the POST half captured), or NULL if it was not supplied. */
++static int reaper_gate_hid(const char *hid)
++{
++	const char *want = nvram_safe_get("http_id");
++
++	if (!hid && cgi_nvars() == 0) return RGATE_NODATA;
++	if (!hid || !want[0] || strcmp(hid, want) != 0) return RGATE_TOKEN;
++	if (!reaper_referer_ok()) return RGATE_XSITE;
++	return RGATE_OK;
++}
++
++static int reaper_gate(void)
++{
++	return reaper_gate_hid(get_cgi("http_id"));
++}
++
++static const char *reaper_gate_msg(int why)
++{
++	switch (why) {
++	case RGATE_NODATA: return "request carried no parameters";
++	case RGATE_XSITE:  return "cross-site request refused";
++	default:           return "invalid request token";
++	}
++}
++
++/* ek suffix appended to the page's namespace, so a screenshot of the alert
++ * identifies WHICH of the three refusals fired. "_1" stays what it always was
++ * (a genuine token mismatch) - existing help text keeps its meaning. */
++static const char *reaper_gate_ek(int why)
++{
++	switch (why) {
++	case RGATE_NODATA: return "_1B";
++	case RGATE_XSITE:  return "_1C";
++	default:           return "_1";
++	}
++}
++
++/* {"ok":0,...} refusal for the JSON CGIs; ns is the page's ek namespace. */
++static void reaper_gate_deny(FILE *stream, int why, const char *ns)
++{
++	websWrite(stream, "{\"ok\":0,\"error\":\"%s\",\"ek\":\"%s%s\"}",
++		reaper_gate_msg(why), ns, reaper_gate_ek(why));
++}
++
+ static void
+ do_reaper_diag_cgi(char *url, FILE *stream)
+ {
+@@ -21721,9 +21786,9 @@ do_reaper_diag_cgi(char *url, FILE *stream)
+ 	 * http_id CSRF token (Reaper_Diag.asp now sends it) so a cross-site GET
+ 	 * cannot trigger a diagnostic run. */
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "ERROR: invalid request token.\n");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			websWrite(stream, "ERROR: %s.\n", reaper_gate_msg(why));
+ 			return;
+ 		}
+ 	}
+@@ -21844,9 +21909,9 @@ do_reaper_qdiag_cgi(char *url, FILE *stream)
+ 	 * the http_id CSRF token (Reaper_QoSDiag.asp now sends it) so a cross-site GET
+ 	 * cannot trigger the subprocess. */
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -21925,9 +21990,9 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 	 * the token an attacker page could keep that running against a logged-in
+ 	 * admin's browser long after the tab was closed. */
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -23327,10 +23392,9 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 
+ 	/* CSRF: state-changing actions must carry http_id (same guard as rmcp) */
+ 	if (strcmp(action, "status") != 0) {
+-		char *hid = get_cgi("http_id");
+-		char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -23571,9 +23635,9 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 	 * CSRF token (Reaper_Warden.asp now sends it) so a cross-site GET cannot
+ 	 * trigger the subprocess. */
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -23768,9 +23832,9 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 	 * the syslog - require the http_id CSRF token like the Warden / diag
+ 	 * readers, on ALL actions. */
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -24158,9 +24222,9 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 	if (!action) action = "cfg";
+ 
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -24469,9 +24533,9 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 	char *action = get_cgi("action");
+ 	if (!action) action = "export";
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -24695,9 +24759,9 @@ do_reaper_fullbak_file(char *url, FILE *stream)
+ 	int len_cfg;
+ 	FILE *m, *cf;
+ 	{
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "invalid request token");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			websWrite(stream, "%s", reaper_gate_msg(why));
+ 			return;
+ 		}
+ 	}
+@@ -24872,9 +24936,12 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 	/* same CSRF discipline as every Reaper control (the token traveled as a
+ 	 * multipart field, captured by the POST half) */
+ 	{
+-		char *want = nvram_safe_get("http_id");
+-		if (!want[0] || strcmp(rbk_up.hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		/* the token rode in as a multipart field the POST half captured, so
++		 * cgi_nvars() is legitimately 0 here - pass the captured buffer (an
++		 * array, never NULL) and this can only ever come back TOKEN/XSITE. */
++		int why = reaper_gate_hid(rbk_up.hid);
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			goto done;
+ 		}
+ 	}
+@@ -25568,10 +25635,9 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 	 * single-flight httpd. Gate it like every other Reaper reader; only the
+ 	 * light store_status snapshot stays exempt. */
+ 	if (strcmp(action, "store_status") != 0) {
+-		char *hid = get_cgi("http_id");
+-		char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RDEVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -26271,9 +26337,9 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 
+ 	/* CSRF guard on every state-changing / subprocess action (status is read-only) */
+ 	if (strcmp(action, "status") != 0) {
+-		char *hid = get_cgi("http_id"), *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RDEVE");
+ 			return;
+ 		}
+ 	}
+@@ -26629,10 +26695,9 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 	 * token (a per-router secret embedded in served pages; a cross-origin page
+ 	 * cannot read it via SOP, so cannot forge this). 'status' is read-only. */
+ 	if (strcmp(action, "status") != 0) {
+-		char *hid = get_cgi("http_id");
+-		char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"invalid request token\",\"ek\":\"RADVE_1\"}");
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RADVE");
+ 			return;
+ 		}
+ 	}
+@@ -34803,9 +34868,10 @@ static int ej_safely_remove_disk(int eid, webs_t wp, int argc, char_t **argv){
+ 	   not in the referer-check whitelist, so require the http_id token like
+ 	   the other Reaper mutating CGIs (a cross-site GET/POST cannot supply it). */
+ 	{
+-		char *hid = get_cgi_json("http_id", root);
+-		const char *want = nvram_safe_get("http_id");
+-		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok())
++		/* JSON body: the token comes from the decoded object, not the CGI
++		 * table. This endpoint returns no error text, so the verdict is not
++		 * distinguished here - any non-OK is the same silent refusal. */
++		if (reaper_gate_hid(get_cgi_json("http_id", root)) != RGATE_OK)
+ 			goto END;
+ 	}
+ 
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 32c36c5e20..dad904ffcc 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -585,7 +585,17 @@ function rwSave(updateNow){
+      they are stored first and the form then applies the remaining settings and
+      restarts the service. Submitting before the store completed would restart
+      rwarden against the PREVIOUS lists, so the submit waits for this reply. */
+-  var lf = new FormData();
++  /* URLSearchParams, NOT FormData: send(FormData) sets multipart/form-data, and
++     httpd's do_html_post_and_get is url-encoded-only - it reads the body with a
++     single fgets() and hands init_cgi() the multipart BOUNDARY line, which holds
++     no '=' and so parses to zero variables. http_id then looked absent and every
++     Warden save answered "invalid request token" (field report 2026-08-27, on
++     every browser - not a session or a Firefox problem). Reaper_Advisor.asp is
++     the working precedent: build the fields, post them url-encoded.
++     The three values are single-line by construction (rwCleanCidrs joins on
++     spaces, rwCfeedCollect on '<'), so no literal newline can truncate that
++     fgets either; encoded worst case is ~34 KB against a 64 KB post_buf. */
++  var lf = new URLSearchParams();
+   lf.append('action','save_lists');
+   lf.append('http_id','<% nvram_get("http_id"); %>');
+   lf.append('ban', ban.ok);
+@@ -593,6 +603,7 @@ function rwSave(updateNow){
+   lf.append('cfeeds', cfeeds.ok);
+   var lx = new XMLHttpRequest();
+   lx.open('POST','/reaper_warden.cgi',true);
++  lx.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+   lx.onreadystatechange = function(){
+     if(lx.readyState !== 4) return;
+     var r = null;
+@@ -606,7 +617,7 @@ function rwSave(updateNow){
+     var wait = (parseInt(f.action_wait.value,10)||10) + 5;
+     setTimeout(function(){ location.reload(); }, wait*1000);
+   };
+-  lx.send(lf);
++  lx.send(lf.toString());
+ }
+ 
+ /* ---------- live block stats (reaper_warden.cgi) ---------- */
+-- 
+2.25.1
+

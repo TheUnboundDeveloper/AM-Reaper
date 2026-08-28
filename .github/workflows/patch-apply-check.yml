@@ -37,6 +37,7 @@ jobs:
           path: reaper
           sparse-checkout: |
             patches
+            build-scripts/ci
 
       - name: Fetch pinned upstream base
         run: |
@@ -63,3 +64,18 @@ jobs:
             exit 1
           fi
           echo "OK: all $n patches applied cleanly"
+
+      - name: Diag counter regression guard
+        # The series is the ONLY route from the build tree to the public assembly,
+        # so the diag counter fixes (REAPER-DIAG v1.3.8) have to be asserted against
+        # what the patches actually reconstruct - not against a local working tree
+        # this runner never sees. Layer B of the guard extracts the real awk programs
+        # out of the reconstructed file and runs them against fixtures.
+        run: |
+          set -euo pipefail
+          DIAG=upstream/release/src/router/others/reaper_diag
+          if [ ! -r "$DIAG" ]; then
+            echo "::error::$DIAG missing from the reconstructed tree - the series no longer ships the diag"
+            exit 1
+          fi
+          bash reaper/build-scripts/ci/check_diag_counters.sh "$DIAG"

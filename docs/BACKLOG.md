@@ -16,7 +16,12 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
-*Updated 2026-08-28 (2nd pass) — removed three items that shipped in v2.7.8 and are recorded in the changelog: the UPnP two-key desync, the QoS live-stats blank, and the Gatekeeper access-level menu closing under the 5 s poll. Verified against the tree, not just the notes: both UPnP commits are on `be96u-only` with the shared helpers in place, and we are 15 commits past them on v2.8.6.
+*Updated 2026-08-28 (3rd pass) — closed the `RFW_*` IPv6 protocol-label item (`RFW_257` minted and
+translated in all 25 packs) and the `pinTarget()` sub-item of batch B, which turned out to need no
+decision at all — the substitution it asked about was removed deliberately, so only the caller's
+stale comment and a dead ternary needed clearing. Recorded a reachability finding on the `rexport`
+mask loop.
+Earlier: 2026-08-28 (2nd pass) — removed three items that shipped in v2.7.8 and are recorded in the changelog: the UPnP two-key desync, the QoS live-stats blank, and the Gatekeeper access-level menu closing under the 5 s poll. Verified against the tree, not just the notes: both UPnP commits are on `be96u-only` with the shared helpers in place, and we are 15 commits past them on v2.8.6.
 Earlier the same day: added the two `reaper_diag` counter defects (QoS readback truncation and
 wireless-churn line-counting), both found on v2.8.6 metal and remediated in tree for the next
 diag build, with a CI regression guard.
@@ -50,12 +55,10 @@ The ordered short list. Each line points at its full entry below.
    tester data requested. → [Open bugs](#open-bugs--under-investigation)
 2. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
    v2.7.6+. → [Open bugs](#open-bugs--under-investigation)
-3. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
-   `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
+3. **[P3] Code-review tail, batch B** (`do_reaper_conn_cgi` lock order, `rexport` mask loop,
+   §2.1 iptables-restore batching — the first and last are owner-deferred; `pinTarget()` is
+   **closed**).
    → [Code quality](#code-quality--deferred-with-reason)
-4. **[P3] `RFW_*` IPv6 protocol labels** — the last translation residual: the "Other" label still
-   needs a key minted, and the `RFW_*` proto set must be done as one job.
-   → [Documentation](#documentation)
 
 ---
 
@@ -267,8 +270,12 @@ The ordered short list. Each line points at its full entry below.
   whisperer") stay English **by choice** — prose and humour where a mechanical pass reads worse
   than English; the `RABT_29/30/32/33` taglines are translated. That is a settled decision, not
   owed work. What remains:
-  - **`RFW_*` IPv6 protocol labels on `Reaper_Firewall.asp`.** `RFW_252` ("Both") is translated, but
-    the "Other" label **still needs a key minted**; do the `RFW_*` proto set as one job, not piecemeal.
+  - **`RFW_*` IPv6 protocol labels on `Reaper_Firewall.asp` — DONE in tree 2026-08-28, unbuilt.**
+    `RFW_257` ("Other") minted and **translated** in all 25 packs (lockstep 6745→6746); the `BOTH`
+    label now uses the already-translated `RFW_252`. `TCP`/`UDP` stay literal — they are protocol
+    names. Did **not** reuse `Adaptive_Others` (plural, and it names an Adaptive QoS category).
+    Translations are not a native pass; the gender-dependent ones (CZ/PL/RU/UK/SL, DA/NO/SV/NL) are
+    worth a speaker's skim.
     The `value="TCP|UDP|BOTH|OTHER"` attributes are pinned — **do not remove them**: `rc/firewall.c`
     `strcmp`s the submitted value, so an unpinned translated label would break the rule format in 24
     languages. **Do not reuse ASUS's `option_both_direction`** for "Both" — JP/CN/TW render it as
@@ -318,9 +325,18 @@ The ordered short list. Each line points at its full entry below.
   `rmcpd tool_firewall` `-S`+`-nvxL` carry different data, the `get_settings_audit` redaction `sed`
   is defense-in-depth, `Reaper_QoSDiag` `fmtBytes` 1024-base is *correct* (queue buffer sizes).
   **Batch A (10 mechanical items) shipped in v2.6.2.** Batch B, deferred with reasons:
-  `Reaper_Wireless.asp:547` `pinTarget()` is an identity function (the "← original" annotation is
-  dead) — the intended 20→80 MHz block substitution was never implemented: implement (metal) or
-  delete the annotation; `rexport.c:77` O(devices) MAC-mask rewrite; `rwarden.c:1117` stats.sh chain
+  **`pinTarget()` — CLOSED in tree, no decision needed.** The framing above was wrong: the 20→80 MHz
+  substitution was not "never implemented", it was **removed deliberately** because it made "best"
+  and "applied" disagree in the field — the reason is recorded above the function. Implementing it
+  would reintroduce that bug. What was actually wrong was drift in the caller: `scanPin()` still
+  described the removed behaviour and appended a `← <original>` suffix behind a condition that can
+  never be true. Dead ternary removed, comment corrected, `pinTarget()` kept (deliberate, per its
+  own comment). No behaviour change. `rexport.c:77` O(devices) MAC-mask rewrite — **reachability checked 2026-08-28: narrow.** The loop
+  runs only when `reaper_export_maskmac=1` **and** `reaper_export_mode` is `both`/`exportonly`; both
+  ship off, and the script exits before the loop otherwise. It forks printf+md5sum+cut+`sed -i` per
+  MAC and rewrites the whole file each time, on the export interval (default 300 s). The cheap fix is
+  one batched `sed -i -f` instead of N in-place rewrites; the md5 forks have to stay (no hash in awk).
+  Not done: it is an export path under active metal-test and the gain is small at this reachability; `rwarden.c:1117` stats.sh chain
   re-lists (shell contract with `web.c`); `rchqd`↔`web.c` duplicate `chanim_stats` parser (needs a
   shared header); `rtrafd.c:1727` `metrics.prom` scrape-token semantics; `rtrafd` ping-probe
   blocking / `write_live` 10 Hz (timing-sensitive); dashboard client/port-tile `innerHTML` change

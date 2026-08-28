@@ -1,0 +1,64 @@
+From 0562c23e5718fac265132a5347eaa1db8e20a742 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 12:51:26 -0400
+Subject: [PATCH] rtrafd: detach rt_bound's watcher from the pipe - the v2.8.6
+ live-freeze regression
+
+The rt_bound() popen timeout wrapper (2026-08-26 audit remediation) let its
+watcher subshell - and the sleep it forks, which `kill $_w` never reaches -
+inherit the pipe's write fd. A popen reader gets EOF only when the last holder
+of that fd closes it, so a tmctl that answered in milliseconds still cost the
+collector the FULL timeout of blocked fgets(). With HW classful QoS on, that is
+7 queues x 3 s per 4 s class poll plus 6 s per ping-probe cycle: the
+single-threaded collector spent ~27 s blocked per loop pass and live.json was
+rewritten once per pass instead of 10x/s. Field symptom (v2.8.6/v2.8.7 metal,
+2026-08-27): Traffic Analyzer live metrics flatline, lurching forward every
+~20-30 s.
+
+Confirmed on RT-BE96U hardware: live.json mtime frozen 22 s then a burst; the
+shipped wrapper measured 3 s and the fixed one 0 s for an instant child on the
+router's own busybox 1.25.1. The audit's metal check verified rtrafd CPU -
+which stayed flat, correctly, because the daemon was blocked, not spinning.
+
+Fix: redirect the watcher to /dev/null before it forks, so nothing but the
+bounded command holds the pipe. Popen-harness measured: fast path
+3.008 s -> 0.005 s; a hung child is still killed at the deadline. Host ring
+harness still 9/9.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 67719b4027..cda65d5f79 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -947,11 +947,22 @@ static void poll_ifaces(const char *wanif)
+  * whole collector - WAN sampling, live.json, history rollover - stops with it.
+  * busybox has no `timeout` applet (rmcpd records the same) and popen() hands
+  * back no pid to kill, so the ceiling goes inside the command: run it in the
+- * background, arm a killer, take whichever finishes first. */
++ * background, arm a killer, take whichever finishes first.
++ *
++ * The watcher MUST NOT inherit the pipe (v2.8.6 field regression): a popen
++ * reader gets EOF only when every holder of the write fd has closed it, and
++ * the watcher subshell - and the sleep it forks, which `kill $_w` does not
++ * reach - held a copy for the full timeout. So a tmctl that answered in
++ * milliseconds still cost the caller `secs` seconds of fgets(): 7 queues x 3 s
++ * every 4 s class poll froze the whole collector, live.json included, which
++ * the page renders as flatlined metrics that lurch forward every ~20 s.
++ * Redirecting the watcher to /dev/null before it forks is the entire fix;
++ * measured in the popen harness: 3.008 s -> 0.005 s fast path, hung child
++ * still killed at `secs`. */
+ static void rt_bound(char *out, size_t n, const char *cmd, int secs)
+ {
+ 	snprintf(out, n,
+-	         "{ %s; } & _c=$!; { sleep %d; kill -9 $_c 2>/dev/null; } & _w=$!; "
++	         "{ %s; } & _c=$!; { sleep %d; kill -9 $_c 2>/dev/null; } >/dev/null 2>&1 & _w=$!; "
+ 	         "wait $_c 2>/dev/null; kill $_w 2>/dev/null",
+ 	         cmd, secs);
+ }
+-- 
+2.25.1
+

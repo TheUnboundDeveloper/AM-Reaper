@@ -1,0 +1,136 @@
+From 0c20faacdb988432f4977d82f88e2e202f01b3ea Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 27 Aug 2026 20:09:28 -0400
+Subject: [PATCH] v2.8.6: the diag can answer a throughput question without a
+ shell
+
+A GT-BE98 owner on an 8 Gbps PPPoE line reported it capping at ~1.5 Gbps, which
+is close to what this SoC does when traffic falls off the Runner onto the CPU.
+The obvious first question - is the flow accelerator actually running? - could
+not be answered from his diagnostic report at all, because section 9 prints the
+accelerator's CONFIG and never says whether it is enabled. Answering it needed a
+shell on his router, which is exactly what the diag exists to avoid.
+
+Section 9 now reports fc_disable, fc_disable_force, runner_disable and
+runner_disable_force. With QoS off these should all read 0 or empty; a 1 means
+every routed packet is taking the software path. Worth recording why this is the
+right first check: hnd_nat_ac_init() computes fc_disable from IS_NON_AQOS(),
+which is `qos_enable == 1 && qos_type != 1`, so with QoS disabled the whole
+clause is false and the value collapses to fc_disable_force alone. The two
+conditions Reaper adds there (!IS_HWQOS(), !IS_HWQOS_CLASSFUL()) can only ever
+KEEP the accelerator on relative to stock - they are extra guards against
+disabling it, never a cause of it.
+
+Section 17 now reports reaper_wanbounce_enable and the /tmp/reaper_wan_bounced
+latch. The one-shot PPPoE stale-session bounce is armed by DEFAULT - rwatch_gen
+tests `!= 0`, so an UNSET key counts as enabled - and it fires at most once per
+boot. The nvram dump above it only matches rwatch_*/reaper_store*, so neither the
+switch nor the latch appeared anywhere: on the very box that feature was written
+for, after a 2026-08-20 field report on this same model, we could not tell
+whether it had armed, already fired, or been opted out of. The unset case now
+renders as "<unset = enabled>" rather than a blank, because a blank field reads
+as "off" and here it means the opposite.
+
+DIAG VERSION -> v1.3.7, so a report identifies which build produced it.
+
+Verified by running both blocks rather than reading them: the accelerator loop
+prints its four keys and the bounce block renders the unset-and-not-fired case
+correctly. sh -n clean. One self-inflicted defect caught on the way in - the
+printf newline had become a LITERAL newline in the source, which produces
+identical output but is wrong in the file, and is the same backslash-eating trap
+that bit two other edits this session.
+
+Not fixed here, pre-existing: shellcheck reports SC1072/SC1073 on a malformed
+`# shellcheck disable=` directive (4 hits, present before this change).
+
+EXTENDNO -> Reaper_v2.8.6. v2.8.5a was cut and built for RT-BE96U but never
+published; this rung supersedes it and carries the same five fixes.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf           |  2 +-
+ release/src/router/others/reaper_diag | 29 ++++++++++++++++++++++++---
+ 2 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 314ddfc731..ddd2915acc 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.8.5a
++EXTENDNO=Reaper_v2.8.6
+ 
+ RCNO=0
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 606621b8dc..4802928cd3 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.6 (2026-08-23) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.7 (2026-08-23) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.6"
++VER="REAPER-DIAG v1.3.7"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -476,6 +476,18 @@ have fc && fc status 2>/dev/null | head -14 | sed 's/^/  /'
+ # v1.3.0: the learning line carries the eviction picture (Cumulative [learned - freed], Active)
+ have fc && fc status 2>/dev/null | grep -E "Flow (Ucast|Mcast) Learning" | sed 's/^[ \t]*/  /'
+ have fcctl && echo "  active flows: $(fcctl status 2>/dev/null | grep -i -m1 flow)"
++# v1.3.7: everything above is the accelerator's CONFIG - none of it says whether
++# it is actually RUNNING. fc_disable is the global kill switch written by
++# hnd_nat_ac_init(); fc_disable_force is the override that survives the QoS
++# logic. On a multi-gig line this is the FIRST thing a throughput complaint
++# needs: with QoS off these should all read 0/empty, and a 1 means every routed
++# packet is taking the CPU path instead of the Runner. Added after a GT-BE98
++# 8 Gbps -> ~1.5 Gbps report where the accelerator state could not be read from
++# the diag at all, so the question could not be answered without a shell.
++echo "  -- accelerator state (0/empty = accelerating, 1 = software path) --"
++for k in fc_disable fc_disable_force runner_disable runner_disable_force; do
++  printf '     %-22s %s\n' "$k" "$(nvram get $k 2>/dev/null)"
++done
+ 
+ sec "10. QOS (engine + hardware readbacks)"
+ for k in qos_enable qos_type qos_obw qos_ibw qos_pshaper qos_minrates qos_dscp_trust qos_ipolicer qos_dscp_wmm qos_sched qos_orates; do
+@@ -756,6 +768,17 @@ case "$(nvram get reaper_store 2>/dev/null)" in
+ esac
+ echo "  durable store     : $RS_BASE$( [ "$RS_BASE" = /tmp/reaper ] && echo ' (VOLATILE - lost at reboot)')"
+ echo "  datastore opt-ins : $(nvram get reaper_store_ds 2>/dev/null)"
++# v1.3.7: the one-shot PPPoE stale-session bounce (rwatch_gen, v1.9.2) is armed
++# by DEFAULT - its test is `!= 0`, so an UNSET key counts as enabled - and it
++# fires at most once per boot behind a tmpfs latch. The nvram grep above only
++# matches rwatch_*/reaper_store*, so neither the switch nor the latch was
++# reported: on the one box this feature was written for, we could not tell
++# whether it had armed, already fired, or been opted out of.
++RWB="$(nvram get reaper_wanbounce_enable 2>/dev/null)"
++[ -n "$RWB" ] || RWB="<unset = enabled>"
++if [ -f /tmp/reaper_wan_bounced ]; then RWL="PRESENT - already re-dialled once this boot"; else RWL="absent - not fired this boot"; fi
++echo "  pppoe wan bounce  : reaper_wanbounce_enable=$RWB"
++echo "  bounce latch      : $RWL"
+ if [ -s "$RS_BASE/syslog.mirror" ]; then
+   echo "  syslog mirror     : $RS_BASE/syslog.mirror $(wc -c < "$RS_BASE/syslog.mirror" 2>/dev/null) bytes, $(wc -l < "$RS_BASE/syslog.mirror" 2>/dev/null) lines"
+   echo "     spans          : $(head -1 "$RS_BASE/syslog.mirror" 2>/dev/null | cut -c1-15) .. $(tail -1 "$RS_BASE/syslog.mirror" 2>/dev/null | cut -c1-15)"
+@@ -789,7 +812,7 @@ if [ -n "$SLF" ]; then
+   TOPD="$(cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* disassociated' | awk '{print $7, $5}' | sort | uniq -c | sort -rn | head -1)"
+   set -- $TOPD
+   if [ "${1:-0}" -ge 200 ]; then
+-    # v1.3.6: span from the first CREDIBLE timestamp, not line 1 - the head of
++    # v1.3.7: span from the first CREDIBLE timestamp, not line 1 - the head of
+     # the log is stamped by the pre-NTP boot clock (months off, and the format
+     # has no year), which inflated the span and reported a hot loop as ~0/h.
+     # Pseudo-epoch with 30.4-day months is fine: only the difference is used.
+-- 
+2.25.1
+

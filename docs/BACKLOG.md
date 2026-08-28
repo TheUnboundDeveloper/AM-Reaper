@@ -16,7 +16,10 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
-*Updated 2026-08-28 (4th pass) — closed the three documentation items (retained-but-inert
+*Updated 2026-08-28 (5th pass) - added the rtrafd rt_bound() pipe-inheritance regression (Traffic
+Analyzer live freeze on v2.8.6+ metal), root-caused, lab-confirmed and fixed in tree the same day;
+ships v2.8.8.
+Earlier: 2026-08-28 (4th pass) — closed the three documentation items (retained-but-inert
 features, system defaults, per-page user guides): REAPER-GUIDE.md is now the single manual and is
 pushed, with the two old guides left as anchor-preserving stubs so shipped ? buttons still work.
 Added a follow-up to retire those stubs once the per-tab links are repointed. Fixed one stale
@@ -68,6 +71,22 @@ The ordered short list. Each line points at its full entry below.
 ---
 
 ## Open bugs / under investigation
+
+- **[P2] Traffic Analyzer live metrics froze/flatlined on v2.8.6-v2.8.7 metal, lurching forward every ~20-30 s
+  (field, 2026-08-27 night; root-caused and fixed in tree 2026-08-28, lands v2.8.8).** A regression from the
+  2026-08-26 audit remediation itself: the `rt_bound()` popen timeout wrapper added to rtrafd let its watcher
+  subshell - and the `sleep` it forks, which `kill $_w` never reaches - inherit the pipe write fd, so the
+  reader gets EOF only when the timeout expires. Every tmctl answered in milliseconds but still cost the
+  collector the full 3 s of blocked fgets(): with HW classful QoS on, 7 queues x 3 s every 4 s class poll plus
+  6 s per ping-probe cycle blocked the single-threaded collector ~27 s per loop pass, so live.json updated
+  once per lurch instead of 10x/s. Confirmed on the RT-BE96U lab: live.json mtime frozen 22 s then a burst;
+  the shipped wrapper measured 3 s / the fixed one 0 s for an instant child on the router's own busybox
+  (v1.25.1). Why the audit's metal check missed it: it verified rtrafd CPU (flat - correct, the daemon was
+  *blocked*, not spinning), not collector latency. Fix (canon 0562c23e57, cut as patch 0562 on the v2.8.8 rung): detach the watcher from the
+  pipe (`>/dev/null 2>&1` before its `&`); harness-proven 3.008 s -> 0.005 s fast path with the hung-child
+  kill still firing at the deadline. All five sibling branches carry the same wrapper and take the fix at the
+  next port (done on the v2.8.8 cut). First field check of the v2.8.8 MCP test image on the owner's
+  RT-BE96U looks good (owner, 2026-08-28). **[owed - v2.8.8 release publication]**
 
 - **[P2] Warden "crash" on the BE92U tester after an amtm + Diversion 6.1 update — hypothesis only,
   tester data requested (2026-08-23).** No fix yet. Ranked: (1) the stuck-nvram wlcsm bug tripped by

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v2.8.7** · 2026-08-27 <!--@stamp-->
+> **Doc status:** current as of **v2.8.8** · 2026-08-27 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -23,6 +23,25 @@ a runtime setting; the relevant components are excluded from the build entirely.
 AiMesh has been retained because no suitable open-source replacement is currently known. 
 Replacing AiMesh would also require a compatible replacement implementation on every mesh 
 node, not only on the primary router.
+
+---
+
+## v2.8.8 — The Traffic Analyzer's live view unfreezes
+
+One fix, found in the field the night v2.8.6 first ran and confirmed on hardware the next
+morning. Nothing else changes.
+
+- **The Traffic Analyzer's live metrics froze and lurched; now they flow again.** A protection
+  added in the recent security hardening — a time limit around the small helper programs the
+  traffic collector runs, so a hung helper could not stall it forever — had a flaw in its plumbing:
+  the watchdog it set up held the collector's data pipe open until the time limit expired, even
+  when the helper had already answered. Every reading that should have taken milliseconds took the
+  full three seconds, and with hardware QoS enabled the collector spent roughly 27 seconds blocked
+  out of every pass. On the page that looked like charts flatlining, then jumping forward every
+  20–30 seconds. The watchdog now stands aside from the data pipe; it still cuts off a genuinely
+  hung helper at the same deadline. Verified on the router itself: the live feed updates every
+  second again, and a deliberately hung helper is still killed on time. History totals were never
+  affected — only the live view was degraded, and no data was lost.
 
 ---
 

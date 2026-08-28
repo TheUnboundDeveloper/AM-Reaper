@@ -78,9 +78,29 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.4.8 [Examples](#448-examples)
      - 4.4.9 [Limits and gotchas](#449-limits-and-gotchas)
    - 4.5 [QoS (Traffic Manager)](#45-qos-traffic-manager)
+     - 4.5.1 [Choosing a mode](#451-choosing-a-mode)
+     - 4.5.2 [Getting the bandwidth numbers right](#452-getting-the-bandwidth-numbers-right)
+     - 4.5.3 [Setting up the classful engine](#453-setting-up-the-classful-engine)
+     - 4.5.4 [Priority and ceilings: the two knobs](#454-priority-and-ceilings-the-two-knobs)
+     - 4.5.5 [Classification rules](#455-classification-rules)
+     - 4.5.6 [Why download is different](#456-why-download-is-different)
+     - 4.5.7 [Verifying it works](#457-verifying-it-works)
+     - 4.5.8 [Examples](#458-examples)
+     - 4.5.9 [Limits and gotchas](#459-limits-and-gotchas)
    - 4.6 [QoS Diagnostics](#46-qos-diagnostics)
    - 4.7 [Traffic Analyzer](#47-traffic-analyzer)
+     - 4.7.1 [Turning it on, and where history lives](#471-turning-it-on-and-where-history-lives)
+     - 4.7.2 [The windows](#472-the-windows)
+     - 4.7.3 [How per-device numbers are counted](#473-how-per-device-numbers-are-counted)
+     - 4.7.4 [Examples](#474-examples)
+     - 4.7.5 [Limits and gotchas](#475-limits-and-gotchas)
    - 4.8 [Devices](#48-devices)
+     - 4.8.1 [Naming](#481-naming)
+     - 4.8.2 [Pinning an address](#482-pinning-an-address)
+     - 4.8.3 [The Network Ledger](#483-the-network-ledger)
+     - 4.8.4 [What the connection column tells you](#484-what-the-connection-column-tells-you)
+     - 4.8.5 [Filtering and export](#485-filtering-and-export)
+     - 4.8.6 [Limits and gotchas](#486-limits-and-gotchas)
    - 4.9 [Connections](#49-connections)
    - 4.10 [Wireless Quality and WiFi Professional (all bands)](#410-wireless-quality-and-wifi-professional-all-bands)
    - 4.11 [Long-Term Storage, Data Export and the Reaper settings backup](#411-long-term-storage-data-export-and-the-reaper-settings-backup)
@@ -865,36 +885,107 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 
 ### 4.5 QoS (Traffic Manager)
 
-**What it is.** The Reaper QoS page offers five modes. Two are Reaper's own hardware engines, which shape in the Broadcom traffic manager **with the NAT/flow accelerator left on** — the thing ASUS never shipped:
+**What it is.** Five modes, two of which are Reaper's own hardware engines. Those two shape traffic inside the Broadcom traffic manager **with the NAT and flow accelerator left on** — which is the thing ASUS never shipped. Stock forces a choice: hardware acceleration *or* software QoS. These give you both.
+
+**When to use it.** Any line where upload saturation makes calls stutter or games lag. If your calls are fine and nothing ever feels slow while something is uploading, you do not need this page.
+
+#### 4.5.1 Choosing a mode
 
 | Mode | What it does | Accelerator |
 |---|---|---|
-| **HW QoS Classful** (type 11) — *recommended* | Five strict-priority classes with guaranteed minimums and per-class ceilings, hardware PI2 AQM on every queue, a download ingress policer and Wi-Fi WMM stamping. | On |
-| **Hardware QoS** (type 10) | A single shaped upload queue plus AQM. The simplest bufferbloat fix, no classes. | On |
-| **Cake** | Software shaper with the best *download* control; one CPU core does all shaping. Fine below about 1 Gb/s. | Off |
+| **HW QoS Classful** (type 11) — *recommended* | Five strict-priority classes with guaranteed minimums and per-class ceilings, hardware AQM on every queue, a download policer, and Wi-Fi WMM stamping. | **On** |
+| **Hardware QoS** (type 10) | One shaped upload queue plus AQM. The simplest bufferbloat fix, no classes. | **On** |
+| **Cake** | Software shaper, the best *download* control. One CPU core does all the work. | Off |
 | **Traditional** | The classic software engine. | Off |
-| **Bandwidth Limiter** | Hard per-device caps (up to 32 devices, both directions), edited on this page. Not bufferbloat control. | — |
+| **Bandwidth Limiter** | Hard per-device caps, up to 32 devices, both directions. Not bufferbloat control. | — |
 
-**When to use it.** Any line where upload saturation makes calls stutter or games lag; the classful engine when you want calls and games served ahead of downloads; Cake only if download bufferbloat is your main problem and your line is under ~1 Gb/s; the Bandwidth Limiter for capping guests' or children's devices.
+Pick **HW QoS Classful** unless you have a reason not to. Pick **Hardware QoS** if you want the bufferbloat fixed and do not care which traffic wins. Pick **Cake** only if *download* bufferbloat is your actual problem and your line is under about 1 Gb/s — it is the only mode that genuinely shapes download, and it costs you hardware acceleration and a CPU core to get there.
 
-**Setting it up (HW QoS Classful)**
+**Changing mode reboots the router**, because the accelerator has to be reconfigured. Edits *within* a mode apply live.
 
-1. Run a few speed tests at a quiet hour. Take the **lowest consistent upload** and enter **90–95 % of it** as the Upload figure; enter your **measured download** as the Download figure (the router keeps ~10 % headroom on the download policer automatically — do not do that maths yourself).
-2. Pick **HW QoS Classful**. Changing mode (or turning QoS on) **reboots the router** so the accelerator can be reconfigured; edits within a mode apply live.
-3. The classes ship as a measured profile: **Web/VoIP**, **Gaming**, **Streaming**, **Downloads**, **Default**, with starter rules for conferencing, SIP, game consoles, Steam, BitTorrent and web traffic. Reorder with move up/down; the **top row is served first**. Set **Min %** (a guaranteed floor under load; mins must total ≤ 100 %) and **Ceiling %** (the most a class may ever take; never give the top class 100 %, since its ceiling is what protects everyone below it). Suggested setups are in the page's FAQ.
-4. Leave the **Aggregate cap (port shaper)** on. Optionally enable **Guaranteed minimums**, **Trust DSCP marking** (off by default because any LAN host can mark its own packets), **L4S marking** (experimental), and **Wi-Fi downstream priority (WMM)** (opt-in; lift-only).
-5. **Apply**.
+#### 4.5.2 Getting the bandwidth numbers right
 
-**What to expect.** Saturate the upload with a large backup and watch the live columns: the bulk class pins near its ceiling, its drop counter ticks up (PI2 holding it to rate — that is the system working), and a simultaneous call or speed test stays responsive. If nothing changes, your upload figure is above what the line really delivers. Unmatched traffic lands in the class named **Default**. The Traffic Analyzer's "By QoS class" chart shows **upload only**, because the hardware engine shapes upload only.
+This is the step that decides whether the page does anything at all, and it is where nearly every "QoS isn't working" report comes from.
 
-**Limits and gotchas**
+**Upload.** Run a few speed tests at a quiet hour, take the **lowest consistent** upload figure, and enter **90–95% of it**.
 
-- **Strict priority only.** The per-class "Weighted (WRR)" option was removed in v2.5.4 because the hardware's egress scheduler cannot create a weighted queue (a closed-driver limit). The page describes classes as what they are. Any text on the page that still mentions a weighted pool refers to that removed option.
-- The classes were being served in **inverted priority order** until v2.5.4; the fix is confirmed at the queue-configuration level on the RT-BE96U, and the drain behaviour under sustained classified load is still owed a test.
-- On a **GT-BE98**, the v2.5.4 queue rebuild could be rejected by the traffic manager, taking all IPv4 off the air while IPv6 still worked (v2.5.4–v2.5.9). v2.6.0 made the rebuild transactional — on any rejection the queues are restored to the stock layout and a `hwqos` syslog line says the priority correction was not applied. Worst case is now the old priority order, never no internet. Pending reporter confirmation.
-- Rules that classify by **transferred bytes** cannot be hardware-offloaded and put long flows in the wrong class; the page warns about them. Match on port, protocol, IP or MAC instead.
-- With empty bandwidth fields the engine behaves as QoS-off rather than reclassifying without a shaper.
-- Cake mode filters redundant upload ACKs and targets a 50 ms base RTT (tunable as `qos_cake_rtt`).
+Why not 100%? Because the shaper only controls a queue it owns. If your figure matches what the line really delivers, the bottleneck moves upstream into your ISP's buffer — which you cannot see, cannot manage, and which is exactly what was causing your latency in the first place. The 5–10% you give up is what buys the router the right to be the bottleneck.
+
+**Download.** Enter your **measured download speed**. Do not apply the 90% yourself — **the router already keeps about 10% headroom on the download policer for you.**
+
+> **Known translation defect:** the English help text says this correctly. Some non-English packs still instruct you to enter roughly 90% manually, which leaves you double-derated to about 81% of your line. If you are reading the interface in a language other than English, enter the **measured** figure and ignore help text that says otherwise.
+
+**With the bandwidth fields empty**, the engine behaves as though QoS is off, rather than classifying traffic with no shaper behind it.
+
+#### 4.5.3 Setting up the classful engine
+
+1. Enter the bandwidth figures as above.
+2. Select **HW QoS Classful** and let the router reboot.
+3. The classes ship as a measured profile — **Web/VoIP**, **Gaming**, **Streaming**, **Downloads**, **Default** — with starter rules for conferencing, SIP, game consoles, Steam, BitTorrent and web traffic.
+4. Leave the **Aggregate cap (port shaper)** on.
+5. Optionally enable **Guaranteed minimums**, **Trust DSCP marking**, **L4S marking** (experimental), and **Wi-Fi downstream priority (WMM)**.
+6. **Apply.**
+
+**Trust DSCP marking is off by default, deliberately.** DSCP is a claim the sending device makes about its own traffic, and any device on your LAN can mark its packets however it likes. Turn it on only if you control what is on your network and something on it marks correctly.
+
+#### 4.5.4 Priority and ceilings: the two knobs
+
+The class editor has two independent controls, and confusing them is the second most common mistake.
+
+- **Order is priority.** The top row is served first under contention. Rank by how much the traffic suffers from waiting: interactive and voice at the top, bulk at the bottom.
+- **Ceiling % is the most a class may ever take**, as a share of your upload figure.
+- **Min % is a floor** the class is guaranteed under load. Minimums must total 100% or less.
+
+**Never give the top class a 100% ceiling.** Its ceiling is the only thing protecting everything below it.
+
+**The counter-intuitive part: bulk traffic wants a low priority and a *high* ceiling.** Strict priority means it yields instantly the moment anything above it has traffic, so it cannot hurt you — and the high ceiling lets it use the whole line when nothing else wants it. A backup class at the bottom with a 95% ceiling is correct.
+
+#### 4.5.5 Classification rules
+
+Rules match traffic to a class on port, protocol, address or MAC.
+
+> **Do not classify by transferred bytes.** Rules that match on "how much this connection has transferred" cannot be offloaded to hardware. An accelerated flow keeps whatever class it was given when the connection *started*, so a rule meaning "once this download passes 512 KB, treat it as bulk" never fires for the flows that matter most — the long ones. The page warns about this. Some stock default rules are written this way, which is why the shipped Reaper rule set replaces them.
+
+Unmatched traffic lands in the class named **Default**.
+
+#### 4.5.6 Why download is different
+
+The hardware engines shape **upload only**, and this is a hardware limit rather than an omission.
+
+The traffic manager's queues are an *egress* object: they exist on the way out of a port. On the download side the chip offers a single **aggregate policer** — one rate limit for everything arriving — with no queues and no per-class split. There is no hardware path that could prioritise one kind of download over another, and the CLI cannot bind the per-flow policers that exist deeper in the silicon.
+
+So:
+
+- **Download bufferbloat** is handled by the aggregate policer (classful mode), or properly by **Cake**, which shapes in software at the cost of the accelerator.
+- **Download prioritisation** is delivered as far as it can be by the **Wi-Fi WMM lift**, which raises the marking on the top classes so your access point serves them first. It only ever lifts; demoting the bulk class was tried and reverted after it measurably hurt throughput.
+- The Traffic Analyzer's "By QoS class" chart therefore shows **upload only**. That is correct, not a missing feature.
+
+#### 4.5.7 Verifying it works
+
+Saturate your upload with a large backup or file send, and watch the live columns.
+
+**What success looks like:** the bulk class pins near its ceiling, **its drop counter ticks up**, and a simultaneous call or speed test stays responsive. The rising drop counter is the AQM holding that class to its rate — it is the system working, not a fault.
+
+**What failure looks like:** nothing changes. That almost always means your upload figure is above what the line actually delivers, so the router never becomes the bottleneck and never gets to make a decision. Lower it and try again.
+
+#### 4.5.8 Examples
+
+**A home office on a fast symmetric line.** Web/VoIP top with a modest ceiling, gaming next, streaming below that, backups at the bottom with a 95% ceiling. On a multi-gigabit upload the engine will rarely engage at all — it is insurance for the day someone starts a large upload during a call.
+
+**Fix the stutter, do not think about classes.** Choose **Hardware QoS** (type 10), enter 90–95% of measured upload, apply. One queue, correct AQM, accelerator still on.
+
+**Download bufferbloat on a slower line.** Choose **Cake**. Accept the loss of hardware acceleration; below about 1 Gb/s the CPU keeps up and Cake's download control is better than anything the hardware path offers.
+
+**Cap a child's tablet.** That is the **Bandwidth Limiter**, not the classful engine. Different tool, different page section.
+
+#### 4.5.9 Limits and gotchas
+
+- **Strict priority only.** The per-class "Weighted (WRR)" option was removed in v2.5.4: the hardware's egress scheduler on these ethernet ports cannot actually create a weighted queue, so every class silently ran strict-priority anyway. The page now describes the classes as what they are. Any remaining text mentioning a weighted pool refers to that removed option.
+- **802.1p and 802.1Q are not required** and are not read by this engine. Classification is internal to the router's forwarding path. WAN VLAN tagging is only for ISPs that mandate a tag for link-up; 802.1p priority is not honoured across the ISP boundary anyway.
+- Classes were served in **inverted priority order** until v2.5.4. The fix is confirmed at the queue-configuration level on the RT-BE96U; drain behaviour under sustained classified load is still owed a test.
+- On a **GT-BE98**, the v2.5.4 queue rebuild could be rejected by the traffic manager, taking all IPv4 off the air while IPv6 still worked. v2.6.0 made the rebuild transactional: on rejection the queues are restored to the stock layout and a log line says the priority correction was not applied. Worst case is now the old priority order, never no internet. Pending reporter confirmation.
+- **Leftover settings from a previous mode stay in place, inert.** Switching from classful to type 10 leaves the classful keys set. They do nothing, but they can make a perfectly healthy type-10 configuration look like a broken classful one when you go looking.
+- Cake mode filters redundant upload acknowledgements and targets a 50 ms base round-trip time.
 
 ### 4.6 QoS Diagnostics
 
@@ -906,47 +997,123 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 
 ### 4.7 Traffic Analyzer
 
-**What it is.** A native bandwidth and usage page driven by the `rtrafd` collector: live WAN throughput with an optional latency trace, per-QoS-class upload, per-network totals (main LAN, guest and each SDN, labelled with the network's name and VLAN), top devices for the window, live top talkers by destination-port bucket, and a monthly data cap. Windows: **Live** (100 ms, 1 s, 10 s, 30 s), **24 hours**, **14 days**, **1 year**, **By month**. The collector adds no listening ports; it only reads local counters.
+**What it is.** A native bandwidth and usage page driven by the `rtrafd` collector: live WAN throughput with an optional latency trace, per-QoS-class upload, per-network totals, top devices, live top talkers by destination-port bucket, and a monthly data cap.
 
-**When to use it.** To see who is using the line and when, to confirm QoS classes are receiving traffic, and to keep an eye on a metered connection.
+**When to use it.** To see who is using the line and when, to confirm QoS classes are actually receiving traffic, and to keep an eye on a metered connection.
 
-**Setting it up**
+**On privacy.** The collector **adds no listening ports** and sends nothing anywhere. It reads counters the kernel already keeps. The one thing that leaves the router is the optional latency probe, and only if you give it a target.
 
-1. On the page's **Settings** panel, turn on **Collect traffic history**. Without it the realtime interface monitor still works, but there is no history or per-device accounting.
-2. **History storage** is a read-only pointer to the Long-Term Storage page (4.11): choose RAM, JFFS or USB there. Anything longer than the live view needs JFFS or USB to outlast a reboot.
-3. Optionally set a **WAN latency probe** target (a single ping per sample; blank = nothing is sent) and a **Monthly data cap** in GB (a warning is logged at 80 % and 100 %; nothing is cut off).
+#### 4.7.1 Turning it on, and where history lives
 
-**What to expect**
+1. In **Settings**, turn on **Collect traffic history**. Without it the realtime monitor still works, but there is no history and no per-device accounting.
+2. **History storage** is a pointer to the Long-Term Storage page (4.11), where you choose RAM, JFFS or USB.
+3. Optionally set a **WAN latency probe** target and a **Monthly data cap**.
 
-- Per-device numbers come from the kernel's connection-tracking table, which already includes bytes the hardware accelerator forwarded, so offloaded flows are counted. Both **IPv4 and IPv6** are attributed per device (from v2.4.4), keyed on MAC so a dual-stack device is one row; the router's own traffic is a hidden **Router** bucket so By-Network + clients add up to the WAN line. Inbound connections (port forwards, UPnP) are attributed to the device that received them.
-- Offline devices keep the names you gave them. The graphs draw on the display's refresh and place readings by arrival time, so they flow rather than step.
-- A loss of polls flips the status pill to amber **No response** rather than drawing zeros.
+> **The storage choice is the one that matters.** The default is **RAM**, and on RAM every number you see is lost at the next reboot. If you want history that outlives a restart — and the 14-day, monthly and yearly views only mean anything if it does — set the store to JFFS or USB *before* you start collecting. USB is the right answer if you have a stick in the router: it is larger and it spares the internal flash the write cycles.
 
-**Limits and gotchas**
+The **latency probe** sends one ping per sample to the target you name. **Leave it blank and nothing is sent at all.**
 
-- **By QoS class** is upload-only and only populates under HW QoS Classful.
+The **data cap** is informational: a warning is logged at 80% and again at 100%. Nothing is cut off, and nothing is throttled.
+
+#### 4.7.2 The windows
+
+| Window | Resolution | Good for |
+|---|---|---|
+| **Live** | 100 ms, 1 s, 10 s, 30 s | watching something happen right now |
+| **24 hours** | hourly | "what happened last night" |
+| **14 days** | daily | weekly patterns, a device that started misbehaving |
+| **By month** | monthly | a metered connection |
+| **1 year** | monthly | long-term totals |
+
+Live at 100 ms is genuinely 100 ms. The chart places each reading by the time it arrived rather than by its position in a list, so it scrolls smoothly instead of jumping — and a missed poll shows as a smooth interpolation rather than a stutter.
+
+The **per-class stack updates every 4 seconds** and visibly steps. That is inherent to how often the hardware reports queue statistics, and it is deliberately not smoothed: inventing values between real samples would be inventing data.
+
+#### 4.7.3 How per-device numbers are counted
+
+Per-device bytes come from the kernel's connection-tracking table, which on this platform **already includes the bytes the hardware accelerator forwarded**. Accelerated flows are counted; nothing is missed because it was offloaded.
+
+This is worth stating because it was once wrong in a way that mattered. An earlier version accounted from the flow cache instead, which only ever sees *accelerated* flows — so everything on the software path was invisible, and large fast downloads in particular went missing, because those are exactly the flows that get evicted and re-learned most often. If you remember the Traffic Analyzer under-reporting big downloads, that is what it was, and it is fixed.
+
+Other details worth knowing:
+
+- **Both IPv4 and IPv6** are attributed per device, keyed on hardware address, so a dual-stack device is one row rather than two.
+- **Guest and SDN networks are included.** Attribution reads your live bridges, so a new guest network appears without configuration. Earlier versions tested only the main LAN subnet and silently dropped every guest client.
+- **The router's own traffic** goes to a hidden **Router** bucket, so per-network totals plus clients add up to the WAN line instead of leaving an unexplained gap.
+- **Inbound connections** — port forwards, UPnP — are attributed to the device that received them.
+- **Offline devices keep the names you gave them.**
+- If polling stops, the status pill turns amber **No response** rather than drawing zeros. A flat line at zero means zero; amber means "not known".
+
+#### 4.7.4 Examples
+
+**Find what is saturating the line.** Live window, watch **Top devices** and **top talkers by port bucket** together. The first tells you which device, the second tells you roughly what kind of traffic.
+
+**Confirm QoS is doing something.** Start a large upload and watch **By QoS class**. Traffic should appear in the class your rules predict. If everything lands in Default, your classification rules are not matching (4.5.5).
+
+**Watch a metered line.** Set the monthly cap, use the **By month** view. The cap warns; it does not enforce.
+
+**Catch an overnight talker.** 24-hour view the next morning. A device that transfers steadily at 03:00 is worth a second look.
+
+#### 4.7.5 Limits and gotchas
+
+- **By QoS class is upload-only**, and only populates under HW QoS Classful. That is a hardware property, not an omission — see 4.5.6.
+- **RAM storage loses everything at reboot.** The longer windows are meaningless on RAM.
 - A device with no IPv4 traffic shows a blank address until the network map names it.
-- A device-name mis-attribution is possible only when a DHCP lease is reused by an offline device's IP; a negligible byte undercount when a duplicate row is folded away. Both are documented trade-offs.
-- The IPv6 per-device attribution and the "1 year" totals for IPv6 devices on a USB store are pending field confirmation.
+- A device-name mis-attribution is possible when a DHCP lease is reused by an offline device's address, and a negligible byte undercount when a duplicate row is folded away. Both are accepted trade-offs.
+- A store that attaches before the clock is set used to have the current month or day wiped — the "Month tab resets after a firmware update" symptom. Slot ageing is now driven by absolute time and nothing is aged while the clock is still unset.
+- IPv6 per-device attribution and the one-year totals for IPv6 devices on a USB store are pending field confirmation.
 
 ### 4.8 Devices
 
-**What it is.** The **Device Identity Manager**: one page, between USB Application and System Info, that correlates everything ASUS scatters about a device — its custom name, DHCP reservation, Gatekeeper access state and live presence (leases + address table + Wi-Fi association, band, last seen, 24-hour traffic) — per MAC. It is the lens, not a second engine: every action writes to the same stores the rest of the firmware reads, and access states are enforced by Gatekeeper.
+**What it is.** The **Device Identity Manager**: one page that correlates everything the firmware otherwise scatters about a device — custom name, DHCP reservation, Gatekeeper access state, and live presence (leases, address table, Wi-Fi association, band, last seen, 24-hour traffic) — keyed on hardware address.
 
-**When to use it.** Naming devices (the name propagates to every page: client list, Gatekeeper, Traffic, Connections, the DHCP-leases log), pinning addresses, checking who is online, spotting reservation problems, and changing a device's Gatekeeper state without leaving the page.
+It is a **lens, not a second engine**. Every action writes to the same stores the rest of the firmware reads, and access states are enforced by Gatekeeper. Nothing here has its own private copy of anything.
 
-**How to use it**
+**When to use it.** Naming devices, pinning addresses, checking who is online, spotting reservation problems, and changing a device's access without leaving the page.
 
-- **Rename** inline — click the name. Your custom name wins everywhere over the device's self-reported hostname.
-- **Pin IP** opens a pool-aware reservation dialog that recommends an address *outside* the DHCP pool (keeps the pool free for new devices; the device moves at its next lease renewal) or lets you keep the current address inside it. **Widen pool** extends the DHCP range to the usable subnet when it is tight.
-- The **Access** dropdown sets Gatekeeper state (**Pending** for an un-enrolled device; Full access, Internet only, Guest, Blocked).
-- The **Network Ledger** card flags what needs attention: pool exhausted or running low, reservation store nearly full (an nvram limit), reservations outside the current subnet (dnsmasq ignores them), duplicate reservations, Wi-Fi-associated devices that cannot get an address.
-- Filter chips (All, Online, Offline, Unnamed, Reserved, Randomized, Blocked) and search by name, MAC or IP.
-- **Export list** saves the whole inventory as CSV, JSON or HTML — **unsanitised**; keep it private.
+#### 4.8.1 Naming
 
-**What to expect.** Wired versus wireless is decided from the LAN bridge's forwarding table, not a guess, so Wi-Fi 7 / 6 GHz clients are no longer mislabelled Wired. A Wi-Fi 7 **MLO** device appears as one row showing its combined bands (`MLO · 5+6 GHz`), with its affiliated links labelled rather than flagged as problems. Devices behind an **AiMesh node** are reported as Wi-Fi on their real band; the node itself gets an **AiMesh Node** chip and shows its backhaul band (or Wired if cabled), and the phantom lease-less "device" its backhaul radio used to add is folded away (pending confirmation on a real mesh). First-seen stamping waits for the clock to be set, so "first seen 961 days ago" no longer happens.
+Click a name to rename it inline. **Your custom name wins everywhere** over whatever the device calls itself, and it propagates to every page — the client list, Gatekeeper, Traffic Analyzer, Connections, and the DHCP lease log.
 
-**Limits and gotchas.** A phone using a private (randomized) address reappears as a new MAC until that feature is turned off for your network. The reservation store is nvram-limited.
+There is one master name store behind that, deliberately, because there used not to be. Renames could appear to revert, or show the old name on some pages and the new one on others, and deleting a single offline client could wipe every custom name you had set. Those were real defects with a single cause — several parts of the firmware parsing the same store differently — and the fix was to make one store authoritative. Field devices with duplicate records left over from that period clean themselves up on the next reboot.
+
+#### 4.8.2 Pinning an address
+
+**Pin IP** opens a pool-aware dialog. It recommends an address **outside** the DHCP pool, which keeps the pool free for new arrivals; the device moves to it at its next lease renewal rather than immediately. You can also keep the address it currently has, inside the pool.
+
+**Widen pool** extends the DHCP range toward the usable subnet when the pool is tight.
+
+#### 4.8.3 The Network Ledger
+
+The ledger card flags things that will bite you later:
+
+- the DHCP pool is exhausted, or running low;
+- the reservation store is nearly full — this is an NVRAM size limit, not a made-up one;
+- **reservations outside the current subnet**, which the DHCP server silently ignores. This is the one people lose time to: the reservation looks fine on the page and does nothing, usually because the LAN was renumbered after it was made;
+- duplicate reservations;
+- devices associated to Wi-Fi that cannot get an address.
+
+#### 4.8.4 What the connection column tells you
+
+Wired versus wireless is read from the LAN bridge's forwarding table rather than guessed, so Wi-Fi 7 and 6 GHz clients are no longer mislabelled as Wired.
+
+- A **Wi-Fi 7 MLO** device is one row showing its combined bands (`MLO · 5+6 GHz`), with its affiliated links labelled rather than flagged as faults.
+- Devices behind an **AiMesh node** are shown as Wi-Fi on their real band. The node itself gets an **AiMesh Node** chip and shows its backhaul band, or Wired if it is cabled.
+- **First-seen** stamping waits for the clock to be set, so a device does not claim to have been first seen 961 days ago.
+
+#### 4.8.5 Filtering and export
+
+Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Search matches name, address or hardware address.
+
+**Export list** saves the whole inventory as CSV, JSON or HTML.
+
+> **The export is unsanitised.** It contains every device name, hardware address and IP address on your network. It is meant for your own records. Do not attach it to a forum post or a bug report — unlike the diagnostic bundle (4.13), nothing in it is redacted.
+
+#### 4.8.6 Limits and gotchas
+
+- **A phone using a private (randomized) address reappears as a new device** each time it rotates, until you turn that feature off for your network on the phone. This is the single most common source of unexpected new entries here and in Gatekeeper.
+- The reservation store is limited by NVRAM size; the ledger warns before you reach it.
+- The router's own address can still appear as a row rather than being folded into a router bucket the way the Traffic Analyzer does it. Known, deferred, harmless.
 
 ### 4.9 Connections
 

@@ -36,9 +36,30 @@ This guide is written for someone who will install and run the firmware: technic
 3. [The dashboard and navigation](#3-the-dashboard-and-navigation)
 4. [Each feature page](#4-each-feature-page)
    - 4.1 [Firewall](#41-firewall)
+     - 4.1.1 [Status](#411-status)
+     - 4.1.2 [General](#412-general)
+     - 4.1.3 [Rules](#413-rules)
+     - 4.1.4 [Objects](#414-objects)
+     - 4.1.5 [Zones](#415-zones)
+     - 4.1.6 [Egress](#416-egress)
+     - 4.1.7 [Forwards](#417-forwards)
+     - 4.1.8 [Network Services](#418-network-services)
+     - 4.1.9 [URL Filter](#419-url-filter)
+     - 4.1.10 [Keyword Filter](#4110-keyword-filter)
+     - 4.1.11 [Logging](#4111-logging)
+     - 4.1.12 [Limits, and things deliberately not built](#4112-limits-and-things-deliberately-not-built)
    - 4.2 [Gatekeeper](#42-gatekeeper)
    - 4.3 [Warden](#43-warden)
    - 4.4 [Policy Routing](#44-policy-routing)
+     - 4.4.1 [How it works](#441-how-it-works)
+     - 4.4.2 [The page](#442-the-page)
+     - 4.4.3 [What a rule matches](#443-what-a-rule-matches)
+     - 4.4.4 [Domain lists](#444-domain-lists)
+     - 4.4.5 [Where a rule sends traffic](#445-where-a-rule-sends-traffic)
+     - 4.4.6 [Order and precedence](#446-order-and-precedence)
+     - 4.4.7 [Fail-closed](#447-fail-closed)
+     - 4.4.8 [Examples](#448-examples)
+     - 4.4.9 [Limits and gotchas](#449-limits-and-gotchas)
    - 4.5 [QoS (Traffic Manager)](#45-qos-traffic-manager)
    - 4.6 [QoS Diagnostics](#46-qos-diagnostics)
    - 4.7 [Traffic Analyzer](#47-traffic-analyzer)
@@ -338,27 +359,17 @@ Each section covers: what it is, when to use it, how to set it up, what to expec
 
 ### 4.1 Firewall
 
-**What it is.** One page, eleven tabs: live chain state, the stock Asuswrt controls, and Reaper's own rules engine. The engine is **off by default**; nothing changes until you enable it. It adds policy *on top of* the stock firewall rather than replacing it, so Gatekeeper, Warden, SDN and the base rules keep working underneath. The per-tab reference behind each **?** button is [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md); this section is the summary.
+**What it is.** One page, eleven tabs: live chain state, the stock Asuswrt controls, and Reaper's own rules engine. The engine is **off by default**; nothing changes until you enable it. It adds policy *on top of* the stock firewall rather than replacing it, so Gatekeeper, Warden, SDN and the base rules keep working underneath.
 
 **When to use it.** When you want rules about *things* — "the TV may not reach the internet during work hours", "guests may not reach the LAN", "only my office may use this port forward" — without memorising addresses or writing iptables by hand. If all you need is "this device gets no internet", the Egress tab alone does it.
 
-**The tabs, in order**
-
-- **Status** — read-only: whether the base firewall and the Reaper engine are *actually* up, counts of rules, objects and zones loaded, which content filters are on, the state of Gatekeeper and Warden, and an **exposure** card listing what of yours is reachable from the internet right now (NAT, forwards, triggering, DMZ, UPnP with its advertised IGD version, the remote-admin port, SSH from the WAN). Check it after every Apply and after every reboot. The page no longer runs `iptables`, so auto-refresh is cheap; raw chains are still available over SSH.
-- **General** — the stock master switch, DoS protection, WAN ping, logged packets, the WAN access allow-list for the router's own services, and the separate **IPv6 firewall** (IPv6 has no NAT; an inbound rule is the only thing between the internet and a LAN host).
-- **Rules** — the engine. Each rule has a direction (**Inbound** into the router, **Forwarded** through it, **Outbound** from it), an action (Accept / Drop / Reject), an optional source and destination as zones or objects, an optional service, schedule (`Mon,Tue|09:00|17:00`), rate limit, and a log flag. Also here: **Enable the rules engine**, the **Auto-revert timer**, **Preview**, **Apply and confirm**, and the confirmation card.
-- **Objects** — address objects (host or subnet, address range, MAC address, domain name, **Country (Warden)**), address groups, and service objects (protocol + ports).
-- **Zones** — a zone names a set of interfaces (`br0` as `lan`, `tun+` as `vpn`); a **zone policy** sets the default between two zones.
-- **Egress** — per-device internet defaults: pick an object, choose Drop/Reject, optionally schedule it. Anchored to the internet-facing side only, so the device can still reach the printer and NAS.
-- **Forwards** — port forwards with a source restriction (including "only from this country") and a schedule; each forward installs its translation *and* the matching permission together. **Backup and restore** (Export / Import) of the whole firewall configuration as text lives here too.
-- **Network Services**, **URL Filter**, **Keyword Filter** — the stock filters, in one place. The URL and keyword filters cannot see encrypted sites; for blocking that holds, use a domain-name object in a rule.
-- **Logging** — which decisions go to the system log (off / Drop / Accept / Both) and the recent entries.
+If you only read one thing: the **Rules**, **Egress** and **Forwards** tabs use **commit-confirm** — a change applies immediately but reverts on its own unless you press Keep before the countdown ends. That is deliberate. A mistake that locks you out of the router undoes itself, so you can experiment from a browser without a serial cable standing by. The **General**, **Network Services**, **URL Filter** and **Keyword Filter** tabs are the long-standing Asuswrt controls, re-presented in one place; they apply straight away with no countdown.
 
 **Setting it up, step by step**
 
-1. On **Objects**, define what you will refer to: `nas` = host `192.168.50.20`; `kids-tablet` = a MAC; `smb` = TCP `139,445`; `streaming` = a domain list (one per line, or paste a comma/space-separated list — up to about 1,900 characters per object; split larger lists). Country objects are not created here: add the country on the **Warden** page first, then point a Country (Warden) object at it so both features share one list.
+1. On **Objects**, define what you will refer to: `nas` = host `192.168.50.20`; `kids-tablet` = a MAC; `smb` = TCP `139,445`; `streaming` = a domain list. Country objects are not created here: add the country on the **Warden** page first, then point a Country (Warden) object at it so both features share one list.
 2. On **Zones**, name your interfaces and set the broad policy (guest → lan: Drop).
-3. On **Rules**, write the exceptions. First match wins; put specific exceptions above broad blocks. An allowlist is an ordered pair: *Accept `iot` → `vendor-cloud`* above *Drop `iot` → (empty)*. Leaving a source or destination empty means "anything".
+3. On **Rules**, write the exceptions. First match wins; put specific exceptions above broad blocks.
 4. Press **Preview** — it compiles the draft and shows the exact commands the router would run, generated by the same code that would apply them. Nothing is applied.
 5. Press **Apply and confirm**, check you can still reach the router and that the things you meant to allow still work, then press **Keep these changes** before the timer ends (2.7).
 6. On **Forwards**, press **Export** and keep the text somewhere safe.
@@ -367,16 +378,153 @@ Every list has **Modify**: the record loads back into the add-row, Add becomes S
 
 **What to expect.** The master switch shows "Working…" and then the measured outcome — the engine sets a marker as its final act, only when its rules really went on, so a boot where the LAN was not ready yet reports as *inactive* rather than claiming success. Failures to load part of the ruleset are counted and reported; a partial load is distinguishable from "LAN not ready, will retry". Precedence within forwarded traffic is **explicit rule > Egress default > Zone policy**.
 
-**Limits and gotchas**
+The eleven tabs follow, in the order they appear in the interface.
 
-- **Rate-limited rules are skipped** (and logged) when the kernel module is missing, never silently applied without the limit.
-- **A named object that resolves to nothing produces no rule**, not a rule that matches everything — so a domain list that has not resolved yet fails to a missing rule, never to an unintended block. Domain lists are fed by every DNS answer the router's own resolver gives plus a 10-minute re-resolve; entries expire after an hour; members are saved to flash after each pass and replayed at boot. A device using its own DNS, or encrypted DNS, is invisible to them.
-- **MAC objects work only as a source** on inbound or forwarded traffic.
-- **Forwards bypass Zone policy by design.** Put a forwarded device in its own zone if you want it reachable but isolated.
+#### 4.1.1 Status
+
+**What it is.** A read-only picture of what is actually filtering traffic right now: whether the base firewall and the Reaper engine are up, how many rules, objects and zones are loaded, which content filters are on, the state of Gatekeeper and Warden, and an **exposure** card listing what of the router is reachable from the internet (NAT, forwards, triggering, DMZ, UPnP with its advertised IGD version, the remote-admin port, SSH from the WAN).
+
+**How to use it.** Treat it as the answer to "is what I think I configured actually live?" — the two can differ while a restart is in flight, or if a ruleset failed to build. Check it after every Apply, and again after a reboot. The exposure card is the one worth a slow read: anything listed there can be reached from the WAN side.
+
+The page no longer runs `iptables`, so auto-refresh is cheap; raw chains are still available over SSH.
+
+**Example.** You add a port forward, apply it, and the Forwards table shows your rule — but Status still reports the engine inactive. That means the generated ruleset did not run (most often the LAN was not up yet at boot). The rule exists in your configuration and does nothing until it does.
+
+#### 4.1.2 General
+
+**What it is.** The base Asuswrt firewall: the master on/off switch, DoS protection, whether the router answers pings from the internet, which packets get logged, an allow-list of addresses permitted to reach the router's own services from the WAN, and the separate IPv6 firewall.
+
+**How to use it.** Leave the master switch and DoS protection on. Leave "respond to ping from WAN" off unless you have a specific reason — answering it confirms the address is live to anyone scanning. Remember that the IPv6 firewall is genuinely separate: IPv6 traffic is not translated, so every device on your LAN has a globally routable address and only this switch stands in front of it.
+
+**Example.** To let only your office reach the router's web interface from outside, turn on the WAN access allow-list and add a single entry — source `203.0.113.10`, port `8443`, TCP. Every other source is refused, whatever the port forwards say.
+
+#### 4.1.3 Rules
+
+**What it is.** The Reaper rules engine. Each rule names a direction (**Inbound** into the router, **Forwarded** through it, **Outbound** from it), an action (Accept / Drop / Reject), an optional source and destination — as zones, objects or both — an optional service, an optional schedule (`Mon,Tue|09:00|17:00`), an optional rate limit, and whether to log matches. Also here: **Enable the rules engine**, the **Auto-revert timer**, **Preview**, **Apply and confirm**, and the confirmation card.
+
+**How to use it.** Build the pieces first: define your Objects and Zones, then write rules that refer to them by name. Rules read top to bottom and the first match wins, so put specific exceptions above broad blocks. Press **Preview** before **Apply** — it shows the exact commands the rule set will run without running any of them. After Apply, the countdown starts: press **Keep** only once you have confirmed you can still reach the router.
+
+Within forwarded traffic the order of precedence is: an explicit rule here, then a per-device Egress default, then the broad Zone policy. So a specific allow beats a device block, which beats a zone-wide deny.
+
+**Example.** To stop a smart TV reaching the internet during the working day: direction `Forward`, action `Drop`, source object `tv` (the TV's address), destination zone `wan`, schedule `Mon,Tue,Wed,Thu,Fri|09:00|17:00`. Leave the service empty so it covers every protocol.
+
+##### Allowing only certain destinations, and blocking everything else
+
+This is the most common thing people ask for, and it does not need a "not" or "invert" setting. **Leaving a source or destination empty means "anything"**, so an allowlist is two rules in the right order:
+
+| # | direction | action | source | destination | meaning |
+|---|---|---|---|---|---|
+| 1 | Forward | Accept | `iot-devices` | `vendor-cloud` | the traffic you want to permit |
+| 2 | Forward | Drop | `iot-devices` | *(leave empty)* | everything else from those devices |
+
+First match wins, so rule 1 must sit above rule 2. Add more allow rules above the drop as you need them. The same shape works for a single device, a group, or a whole zone.
+
+Three ways to express "deny by default" exist, and they differ in scope rather than in strength — pick the narrowest one that covers what you mean:
+
+- **an ordered pair of rules**, as above — best when the exceptions are specific and you want them visible next to the block;
+- **an Egress default** on the Egress tab — best for "this device gets nothing outbound unless listed", because it is anchored to the internet interface and so never cuts the device off from the printer or the NAS;
+- **a Zone policy** on the Zones tab — best for a broad posture such as "guest may not reach lan".
+
+Because an explicit rule beats an Egress default, which beats a Zone policy, you can set a strict default at the bottom layer and open specific holes at the top without editing the default again.
+
+**Worth knowing.**
+
+- Rate limiting needs a kernel module that is not always present. If it is missing, rules that use a rate limit are **skipped** rather than silently applied without the limit, and a line saying so is written to the system log.
+- **An empty source or destination means "anything". A named object that currently resolves to nothing is not the same thing** — that rule is left out entirely rather than becoming a rule that matches everything. A domain object that has not resolved yet, or an emptied group, therefore fails to a missing rule, never to an unintended block.
+
+#### 4.1.4 Objects
+
+**What it is.** Named things you can point rules at, so you write `printer` instead of an address you have to remember. Three kinds live here: address objects (a host or subnet, an address range, a MAC address, a domain name, or a country), address groups that bundle several objects under one name, and service objects that name a protocol and a set of ports.
+
+**How to use it.** Name objects after what they are, not where they are — `printer`, `kids-tablet`, `nas` — so a rule still reads correctly after you renumber your network. Edit the object when a device moves and every rule using it follows automatically. Use a group when the same set of devices keeps appearing in rules.
+
+**Example.** Create an address object `nas` of type host with value `192.168.50.20`, and a service object `smb` with protocol TCP and ports `139,445`. A rule blocking `smb` to `nas` from your guest zone then reads as plain English and needs no comment.
+
+**Worth knowing.**
+
+- **Domain-name objects** fill in as the router resolves the name, and entries expire after about an hour so a rotating content network does not accumulate stale addresses forever. They only see lookups the router's own resolver answers — a device using its own DNS server, or encrypted DNS, is invisible to them. A background refresh every ten minutes covers the common case. Members are saved to flash after each pass and replayed at boot.
+- **A long list pastes in one go.** Domain and address lists take one entry per line or comma-separated, and the editor normalises the whitespace and line endings for you, so a forty-domain object goes in as a single paste rather than a few entries at a time. If something in the paste cannot be accepted the editor says so and keeps saying so — it never silently drops the remainder. These lists live on the router's internal flash (`/jffs`), not in nvram, which is what lifted the old size ceiling; a 40-domain object therefore saves only from v2.6.9 onward.
+- **MAC objects** only work as a *source* on traffic into or through the router. A MAC address does not survive being routed, so it cannot be used as a destination or on outbound traffic.
 - **Object names** are restricted to letters, digits and underscores; anything else is dropped and logged.
-- A 40-domain object saves only from v2.6.9 (lists moved to `/jffs`); on older images the nvram 1 KB wall applied. The move is pending field confirmation.
-- Deliberately not built: rule negation ("not"), because an empty field already means "any" and an ordered pair expresses an allowlist; a rule tracer is deferred.
-- **Gatekeeper / Warden quick access.** The Status tab shows both layers' state and the Rules page links to them; the engine relies on the fixed layer order (Warden → Gatekeeper → rules engine), so an Accept rule here can no longer let a geo-blocked source or a quarantined device through (v2.6.2; pending metal confirmation).
+- **Country objects** are owned by Warden, not by this engine — set them up on the Warden page.
+
+#### 4.1.5 Zones
+
+**What it is.** A zone is a name for a set of interfaces — `lan` for your bridge, `wan` for the internet, `vpn` for tunnel interfaces. A zone policy then says what happens by default when traffic moves from one zone to another.
+
+**How to use it.** Zones let you write intent once instead of repeating interface names in every rule. Start with the broad policy — for example guest to LAN denied — and then write specific Rules for the exceptions you actually want. Interface names accept a trailing `+` as a wildcard, so `tun+` covers every tunnel interface without listing them.
+
+**Example.** Define a zone `guest` with interface `br1`, and a zone `lan` with `br0`. Add a zone policy: source `guest`, destination `lan`, action `Drop`. Guests can now reach the internet but nothing on your home network — and you have not written a single address anywhere.
+
+**Worth knowing.** A zone policy is the weakest statement in the engine; both explicit Rules and Egress defaults override it. That is what makes "deny everything, then allow what I need" workable.
+
+#### 4.1.6 Egress
+
+**What it is.** A per-device default for traffic leaving your network toward the internet. Pick an address object, pick what should happen to its outbound traffic, and optionally limit it to a schedule. It is anchored to the internet-facing side only, so the device can still reach the printer and the NAS.
+
+**How to use it.** This is the short path for "this device should not be on the internet" without writing a full rule. It sits between explicit Rules and Zone policy in precedence, so you can set a device to Drop here and still allow one specific thing through with a Rule above it.
+
+Prefer `Reject` over `Drop` for devices someone is sitting at: reject sends a refusal and the application fails immediately, while drop leaves it hanging until it times out. Use `Drop` for devices nobody is watching, which reveals less.
+
+**Example.** Object `kids-tablet`, action `Reject`, schedule `Sun,Mon,Tue,Wed,Thu 21:00-07:00`. The tablet keeps working on the local network overnight — it can still reach the printer and a media server — but it cannot reach the internet, and it says so instead of hanging.
+
+#### 4.1.7 Forwards
+
+**What it is.** Port forwarding: traffic arriving at the router from the internet on a chosen port is sent to a device inside your network. You can restrict which outside addresses are allowed to use the forward, and put it on a schedule. Each forward installs its translation *and* the matching permission together. This tab also holds Export and Import for backing up the whole firewall configuration as text.
+
+**How to use it.** A port forward is a hole in the firewall by definition, so make it as small as it can be. Restrict the source whenever you know who will connect. Use a non-obvious external port — forwarding external `8443` to internal `443` will not stop a determined attacker but removes you from the results of everyone scanning the standard port. Give the target device a fixed address first, or the forward will eventually point at whatever picked up that address.
+
+Export before you make a large change. The result is plain text you can paste back to restore.
+
+**Example.** To reach a home server's web interface: protocol TCP, external port `8443`, internal address `192.168.50.80`, internal port `443`, source restricted to an object holding your office address. Everyone else scanning port 8443 finds nothing.
+
+**Worth knowing.** Forwards bypass your Zone policy by design — that is what a forward is. If you want traffic to reach the device but not the rest of the network, put the device in its own zone.
+
+#### 4.1.8 Network Services
+
+**What it is.** The long-standing Asuswrt service filter. It matches traffic leaving your LAN by source address, destination address, port and protocol, and either blocks the listed traffic or permits only the listed traffic, within a daily time window.
+
+**How to use it.** Choose the mode deliberately. Block-list blocks what you list and allows the rest. Allow-list allows only what you list and blocks everything else — which is far stricter, and will cut off things you forgot, so add DNS and the rest of your essentials before you switch it on.
+
+The time window applies to the whole list, not per entry. If you need per-device or per-rule scheduling, use the Rules or Egress tabs instead.
+
+**Example.** To stop devices using outside DNS servers and force them through the router: mode Block-list, source blank (meaning every device), destination blank, destination port `53`, protocol UDP. Add a second entry for TCP. The router's own resolver still works because that traffic never leaves the LAN.
+
+**Worth knowing.** This filter needs the router's clock to be correct for the time window to mean anything. If time has not synchronised yet, the page says so.
+
+#### 4.1.9 URL Filter
+
+**What it is.** Blocks web requests whose address contains one of the keywords you list.
+
+**How to use it.** Keep the entries short and distinctive — a fragment of the domain rather than a full address, because the same site is reached by many different URLs. Test with one entry before adding a long list.
+
+Be realistic about the limits. This matches the request as it goes past, so it works on plain, unencrypted requests and misses almost everything on the modern web, which is encrypted. Treat it as a nudge for casual use, not a control. For blocking that holds, use a domain-name Object in a Rule, or block at the DNS level.
+
+**Example.** Entry `example-game.com`. Plain requests to that domain are refused; the same site over HTTPS is not, which is why this tab is the weakest of the blocking options here.
+
+#### 4.1.10 Keyword Filter
+
+**What it is.** Blocks web pages whose content contains one of the words you list.
+
+**How to use it.** The same realism applies, more so: the filter has to be able to read the page to match a word in it, so encrypted sites pass untouched. It also matches inside ordinary text, so a short or common word will block pages you did not intend — prefer distinctive phrases, and add them one at a time.
+
+**Example.** Entry `freegamedownload`. A plain page containing that string is blocked. A page that is encrypted, or that spells it differently, is not.
+
+#### 4.1.11 Logging
+
+**What it is.** Chooses which firewall decisions get written to the system log — nothing, dropped packets, accepted packets, or both — and shows the recent entries.
+
+**How to use it.** Leave it off for normal running. A busy connection can log thousands of lines a minute, which fills the log and pushes out everything else you might have wanted to read.
+
+Turn on **Drop** while you are diagnosing a rule that is not doing what you expect, look at the entries, then turn it back off. **Accept** and **Both** are for short, deliberate investigations only.
+
+**Example.** A device cannot reach a service and you do not know which rule is stopping it. Set logging to Drop, reproduce the failure, and read the entries — each logged line names the addresses and ports, which tells you which of your rules matched.
+
+#### 4.1.12 Limits, and things deliberately not built
+
+- **Rule negation ("not") does not exist**, because an empty field already means "any" and an ordered pair expresses an allowlist (4.1.3). A rule tracer is deferred.
+- **The layer order is fixed**: Warden, then Gatekeeper, then the rules engine. An Accept rule here cannot let a geo-blocked source or a quarantined device through (v2.6.2; pending metal confirmation).
+- The Status tab shows both of those layers' state, and the Rules tab links to them.
 
 ### 4.2 Gatekeeper
 
@@ -441,33 +589,109 @@ Every list has **Modify**: the record loads back into the add-row, Add becomes S
 
 ### 4.4 Policy Routing
 
-**What it is.** A page in the VPN menu next to VPN Director that decides *which traffic* uses *which path* — an OpenVPN client, a WireGuard client, the plain WAN, or nowhere — by a rule you write. It adds the piece VPN Director lacks: rules keyed on a named **Firewall object or domain list** (destination), or on a **device by IP/CIDR or MAC** (source). A Policy Routing rule **wins** over a VPN Director rule for the same traffic, so you can "tunnel everything, except send this one service straight out the WAN". Built entirely from a firewall mark plus a routing-policy rule; it never dials a tunnel or changes a VPN's settings. Off by default.
+**What it is.** A page in the VPN menu, next to VPN Director, that decides *which traffic* uses *which path* — an OpenVPN client, a WireGuard client, the plain WAN, or nowhere at all — by a rule you write. It adds the piece VPN Director lacks: rules keyed on a named **Firewall object or domain list** (destination), or on a **device by IP/CIDR or MAC** (source).
 
-**Note:** the per-page reference [`VPN-ROUTING-GUIDE.md`](VPN-ROUTING-GUIDE.md) is current as of v2.6.7+ — it covers WireGuard targets, IPv6, and apply-and-confirm with the auto-revert countdown.
+It is **off by default**, and turning it on changes nothing until you add a rule.
 
 **When to use it.** Routing a *set of sites* through a tunnel; carving an exception out of a full-tunnel VPN; forcing one device through a VPN and **blocking** it if the tunnel drops; a hard "this device goes nowhere". If you only need plain source routing without those properties, VPN Director alone is fine.
 
-**Setting it up**
+#### 4.4.1 How it works
 
-1. On **Policy Routing**, build any **Domain lists** you need in the card at the bottom: a name and the domains (one per line, or paste a list). These are Firewall objects of type *Domain name*; the Firewall page sees the same lists. Example: `streaming` = `netflix.com, nflxvideo.net, nflximg.net`. Address, MAC and country objects are still created on the Firewall page and simply appear in the dropdown.
-2. Add a rule: a description, **Match by** — *Domain list / object (destination)*, *Device by IP / CIDR (source)* (one or more addresses or CIDRs, IPv4 or IPv6, comma-separated or one per line, up to 64), or *Device by MAC (source)* — and a **Target**: an OpenVPN client, a WireGuard client, **Out the WAN (VPN bypass)**, or **Block**. Each rule has its own enable checkbox and a **Modify** button.
-3. Turn on **Enable policy routing**, then **Apply**. Rules go live at once and the confirmation card appears; press **Keep** within the auto-revert timer (set on the Firewall page) or the previous rules come back (2.7).
+A rule has two halves: **what to match**, and **where to send it**. When traffic matches, the router marks it and steers it through the routing table for the target you chose — a VPN client's table, the normal WAN table, or a dead end.
 
-**What to expect**
+It is built entirely from mechanisms already in the firmware — a firewall mark plus a routing-policy rule — so it adds no new moving parts and reuses the routing tables your OpenVPN clients already set up. Nothing here dials a tunnel or changes a VPN's own settings; it only decides what rides through one that is already connected.
 
-- Rules read top to bottom, first match wins. Put "reach this site directly" *above* "send this device to the tunnel".
-- **Fail-closed.** A rule targeting a VPN client blocks the matched traffic while that tunnel is down; it is never leaked out the WAN. If you want "use the tunnel when up, otherwise direct", that is a WAN rule, not a VPN rule. A WireGuard rule whose client is switched off is marked *client not enabled — traffic blocked*.
-- **IPv6 is covered.** A destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
-- Domain lists are refreshed every 10 minutes, fed live by dnsmasq answers, saved to flash and replayed at boot; they are built whether or not the Firewall engine is enabled. A rule whose set was a moment late at boot is re-applied by `rwatch` (logged, at most every two minutes).
-- The rule list lives on `/jffs` (2.4); twenty rules and more save.
+**Policy Routing and VPN Director are meant to sit side by side.** Use VPN Director for the broad posture ("send everything through the tunnel", or "send this subnet through the tunnel"), and Policy Routing for the exceptions that need an object or a device — because a Policy Routing rule **wins** over a VPN Director rule for the same traffic. That is what lets you say "tunnel everything, *except* send this one streaming service straight out the WAN."
 
-**Limits and gotchas**
+#### 4.4.2 The page
 
-- **WireGuard costs hardware acceleration.** The traffic accelerator does not honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing does what VPN Director does and tells the accelerator to leave the affected flows alone. A **source** rule bypasses only that address (*accel bypass: this source*). A **destination-list or MAC** rule must bypass the **whole LAN** (*accel bypass: whole LAN*) — LAN traffic loses hardware acceleration while such a rule exists. The page says so on the rule and the log says so on every apply. Entries VPN Director or the WireGuard server placed are never removed.
-- Protocol/port matching is not offered.
-- All of v2.6.7 (WireGuard targets, IPv6, apply-and-confirm, the `/jffs` move) and the v2.6.9 address lists are pending on-metal confirmation; the WireGuard and IPv6 legs need a WireGuard client and an IPv6 line to test.
-- A list that has not resolved yet, or an emptied group, produces no rule rather than a rule that matches everything.
-- CDNs change: when a service starts using a domain you did not list, the traffic is not matched. Come back and Modify the list.
+**The master switch** turns the whole engine on or off. With it off, no marks and no routing rules are placed, whatever is in the table.
+
+**The rule table** lists your rules in order, with the match on the left and the target on the right, each with its own enable checkbox so you can park a rule without deleting it.
+
+**The add-rule form** builds one rule: pick the selector type, fill in its value, choose the target, and add it. Every row also has **Modify**: it loads the rule back into the form, the Add button becomes Save, and saving replaces the rule in place.
+
+**Apply and confirm** puts the whole list into effect at once and starts the same auto-revert countdown the Firewall Rules tab uses (the timer is set on the Firewall page): press **Keep** to make it permanent, or let it expire — or press **Revert** — and the previous rules come back on their own. The router owns that deadline, so closing the tab does not cancel it. Keep is the only thing that writes flash.
+
+**The Domain lists card** is where you build and maintain the lists the rules point at (4.4.4). You no longer have to go to the Firewall page for this.
+
+#### 4.4.3 What a rule matches
+
+Each rule matches traffic one of three ways:
+
+- **Domain list / object (destination)** — a named list of domains built on this page, or any Firewall address object or group, chosen from the dropdown. The rule matches traffic whose **destination** is in that list. This is the powerful one: name a set of streaming sites, or a country, and route everything headed *to* it in one rule.
+- **Device by IP / CIDR (source)** — a single address or a range on your LAN, or a list of them (IPv4 or IPv6, one per line or comma-separated, up to 64). The rule matches traffic **from** it.
+- **Device by MAC (source)** — a device's hardware address. The rule matches traffic **from** that device, wherever it picked up its IP.
+
+##### VPN Director already routes by source IP — what do the device rules add?
+
+A fair question; VPN Director's source rule and a device rule here do steer the same packets. The device rules exist for what they add on top:
+
+- **Fail-closed.** If the tunnel drops, a device routed here is **blocked** until it comes back. VPN Director's rule would quietly fall through to the WAN unless you also enabled its kill switch.
+- **Block as a target.** "This device goes nowhere", without a firewall rule.
+- **MAC keying.** A MAC rule follows the device across DHCP changes; an IP rule does not.
+- **Precedence.** A rule here **overrides** a VPN Director rule for the same device, so you can carve one device out of a broad "route this subnet" policy.
+
+If none of those matter to you, VPN Director alone is fine — use whichever you find clearer.
+
+#### 4.4.4 Domain lists
+
+A domain list is a Firewall object of type *Domain name*: a name plus the domains it covers. The card on this page lets you **add, modify and delete** them without leaving Policy Routing; the Firewall page sees the same lists, so nothing is duplicated.
+
+- **Entering domains.** The box takes one domain per line, or a comma- or space-separated paste from a text file. Blank lines and duplicates are dropped, everything is lower-cased, and each name is checked before it is saved. A list can hold as many domains as fit in about 1,900 characters — if a service needs more, split it into two lists and two rules.
+- **How a list becomes addresses.** Two mechanisms feed it: every DNS answer the router's own resolver gives for a listed name lands in the list immediately, and a timer re-resolves every name **every 10 minutes** as a floor — which covers clients that use their own DNS, names already cached, and the cold start after a reboot. Addresses expire an hour after they were last seen, so a CDN that rotates its pool prunes itself.
+- **Across reboots.** After every timer pass the lists are **saved to the router's flash** and restored the moment they are re-created at boot, so a rule is not blind until the first lookup. A rule whose set was a moment late at boot is re-applied by `rwatch` (logged, at most every two minutes).
+- **CDNs change.** When a service starts reaching out to a domain you did not list, the traffic is not matched. That is the one piece no timer can fix for you — come back and **Modify** the list.
+- **The Firewall engine does not need to be on.** The lists are built whenever Policy Routing is enabled, engine or no engine. If the Firewall engine *is* on and you edit a list here, the routing side uses the new list on Apply; the Firewall's own rules pick it up on the Firewall page's Apply, as its commit-and-confirm flow requires.
+
+#### 4.4.5 Where a rule sends traffic
+
+Every rule has one target:
+
+- **A VPN client (OpenVPN 1–5)** — matched traffic goes through that OpenVPN client's tunnel, using the routing table the client already created. The tunnel does not have to be the default route; this steers only the traffic you named through it.
+- **WAN** — matched traffic is forced out the normal internet connection, **bypassing** a full-tunnel VPN. This is how you carve an exception out of "route everything through the tunnel".
+- **Block** — matched traffic is dropped. Useful as a hard "this device, or this destination, goes nowhere" that does not depend on the firewall rule order.
+- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off is fail-closed: it blocks the selected traffic until that client comes up. Since v2.7.7 the target list **hides tunnels you have not configured** and flags ones that are configured but currently down, so a rule cannot be pointed at a target that was never going to carry it. The accelerator-bypass table has only **eight slots**, so a rule that would overflow it — or that names a tunnel whose interface is absent — is **refused and logged** rather than applied.
+
+**IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around the tunnel.
+
+#### 4.4.6 Order and precedence
+
+Rules read **top to bottom, first match wins** — put specific rules above broad ones. A device that should mostly use a tunnel but reach one site directly needs the "reach this site directly" rule *above* the "send this device to the tunnel" rule.
+
+Between features, **a Policy Routing rule takes precedence over a VPN Director rule** covering the same traffic. So you do not have to unpick VPN Director to make an exception — you add the exception here and it wins.
+
+#### 4.4.7 Fail-closed
+
+A rule that targets a VPN client **fails closed**: if that tunnel is **down**, the matched traffic is **blocked, not sent out the WAN.** This is deliberate, and it is the safety property that matters most in a routing feature. The whole point of sending a device or a site through a VPN is usually that it must *not* touch the internet directly — so if the tunnel drops, leaking that traffic to the WAN would be the one failure you were trying to prevent. Instead it stops until the tunnel is back.
+
+If you actually want "use the tunnel when it is up, otherwise go direct", that is a **WAN** rule, not a VPN-client rule — state it explicitly rather than relying on a failure.
+
+#### 4.4.8 Examples
+
+**Send a set of streaming sites through a VPN, leave everything else direct.**
+Build a domain list `streaming` in the card on this page, listing the services' domains. Then add a rule: selector **Object** = `streaming`, target **OpenVPN 1**. Only traffic to those domains uses the tunnel; the rest of the house is untouched.
+
+**Tunnel the whole house, but send one service straight out the WAN.**
+Set VPN Director (or a broad rule) to route everything through the tunnel. Then here: selector **Object** = `work-app` (a domain list for the service that dislikes the VPN's exit address), target **WAN**. Because Policy Routing wins over VPN Director, that one service goes direct and everything else stays tunnelled.
+
+**Force one device down a VPN, and nowhere else if it drops.**
+Selector **Source MAC** = the device's address, target **OpenVPN 2**. If OVPN 2 is connected the device uses it; if OVPN 2 goes down the device has no internet (fail-closed) rather than quietly falling back to your real address.
+
+**Send a device — or a destination — nowhere at all.**
+Selector **Source IP** (or **Object**), target **Block**. A hard stop that does not depend on where it sits in the firewall's own rule order.
+
+#### 4.4.9 Limits and gotchas
+
+- **WireGuard costs hardware acceleration.** The traffic accelerator does not honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing does what VPN Director does and tells the accelerator to leave the affected flows alone. A **source** rule bypasses only that address (*accel bypass: this source*). A **destination-list or MAC** rule must bypass the **whole LAN** (*accel bypass: whole LAN*) — LAN traffic loses hardware acceleration while such a rule exists. The page says so on the rule and the log says so on every apply. Prefer a source rule over a destination-list rule where you can. Entries VPN Director or the WireGuard server placed are never removed.
+- **Protocol and port matching is not offered.**
+- **A list that has not resolved yet, or an emptied group, produces no rule** rather than a rule that matches everything — the same fail-to-nothing behaviour the firewall uses.
+- **Objects are shared with the Firewall.** Domain lists are edited here or on Firewall → Objects; they are the same objects. Address, MAC and country objects are still created on the Firewall page and simply appear in the dropdown.
+- **A confirmed set survives a reboot on its own** (v2.7.6/v2.7.7). The marking chain and the routing rules come back complete at boot with no visit to this page, and if the routing half is ever lost the router re-applies it the way it already did for a lost firewall chain.
+- **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup — use *Reaper settings backup* on the Storage page. Twenty rules and more save without trouble.
+- **Add rules from a device that is not itself being routed** by the rule you are testing.
+- **To check what actually loaded**, the rules appear as routing-policy entries and a marking chain on the router; if something is not behaving, the system log names any rule that was skipped and why.
+- All of v2.6.7 (WireGuard targets, IPv6, apply-and-confirm, the `/jffs` move) and the v2.6.9 address lists are **pending on-metal confirmation**; the WireGuard and IPv6 legs need a WireGuard client and an IPv6 line to test.
 
 ### 4.5 QoS (Traffic Manager)
 

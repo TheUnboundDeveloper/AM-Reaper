@@ -16,7 +16,12 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
-*Updated 2026-08-28 (3rd pass) — closed the `RFW_*` IPv6 protocol-label item (`RFW_257` minted and
+*Updated 2026-08-28 (4th pass) — closed the three documentation items (retained-but-inert
+features, system defaults, per-page user guides): REAPER-GUIDE.md is now the single manual and is
+pushed, with the two old guides left as anchor-preserving stubs so shipped ? buttons still work.
+Added a follow-up to retire those stubs once the per-tab links are repointed. Fixed one stale
+FIREWALL-GUIDE cross-reference the merge left behind.
+Earlier: 2026-08-28 (3rd pass) — closed the `RFW_*` IPv6 protocol-label item (`RFW_257` minted and
 translated in all 25 packs) and the `pinTarget()` sub-item of batch B, which turned out to need no
 decision at all — the substitution it asked about was removed deliberately, so only the caller's
 stale comment and a dead ternary needed clearing. Recorded a reachability finding on the `rexport`
@@ -299,14 +304,29 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P3]** Document the non-functional retained features (stock pieces of the firmware update-check
-  UI, the removed security-check UI) kept only for potential future use.
-- **[P3]** Annotate the system defaults.
-- **[P3]** User guides. [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) covers the eleven firewall tabs
-  (every tab's **?** links to its section; extended with the allowlist recipe after a field request
-  turned out to be a documentation gap). The same treatment is owed for **Warden, Gatekeeper, QoS,
-  Traffic, Devices** and **Policy Routing** (`VPN-ROUTING-GUIDE.md`, linked from the page's ? dot —
-  404s until written and pushed). **[owed]**
+- **[P3] The user-guide set — DONE 2026-08-28 and pushed.** All three items here (retained-but-inert
+  features, the system defaults, and per-page user guides) closed together.
+  [`REAPER-GUIDE.md`](REAPER-GUIDE.md) is now the single manual, 1429 lines / ~25k words:
+  - **§8 Factory defaults** — the fifteen stock defaults Reaper changes with the reason for each
+    (taken from a real diff of `shared/defaults.c` against the base pin), all sixty Reaper-owned
+    keys grouped by feature, and what a factory reset does *not* clear (`/jffs`, so every rule
+    store survives).
+  - **§9 Present but inactive** — the stock firmware page (kept because Reaper reuses its
+    `webs_state_*` variables) and the thirteen `AiProtection_*` pages (engine compiled out), each
+    mapped to what replaces it, and stating plainly that **nothing replaces DPI / signature IPS**.
+  - **§4 deepened** for Firewall (168 lines), Warden (114), Policy Routing (105), QoS (103),
+    Gatekeeper (98), Traffic (67) and Devices (51).
+  `FIREWALL-GUIDE.md` and `VPN-ROUTING-GUIDE.md` are now **stubs** that keep their original
+  headings, so the **?** buttons in already-shipped firmware still resolve.
+  In tree, unbuilt: twelve more pages gained a **?** link (QoS, QoS Diagnostics, Traffic, Devices,
+  Connections, Wireless, WiFi Pro, Diagnostics, Firmware, Analytics, Policy Routing, AI Advisor),
+  reusing the existing `RABT_43` key — **no new i18n keys, no translation pass owed**.
+
+- **[P3] Retire the two guide stubs.** `FIREWALL-GUIDE.md` and `VPN-ROUTING-GUIDE.md` exist only so
+  the deep links in already-installed firmware keep resolving. They can be deleted once a release
+  ships whose Firewall/Policy-Routing **?** buttons point straight at `REAPER-GUIDE.md` anchors,
+  **and** enough time has passed that older images are out of circulation. Repointing those 14
+  per-tab links is the prerequisite and has not been done. **[owed]**
 
 ---
 
@@ -491,7 +511,7 @@ survives the person who made the call.*
 - **Firewall rule negation / "not" on source and destination — considered, not building.** An empty
   source/destination already means "any", so an allowlist is an ordered pair (Accept to the object
   above Drop with the field empty), with Egress defaults and Zone policy for posture (*explicit rule
-  > Egress default > Zone policy*). Documented in [`FIREWALL-GUIDE.md`](FIREWALL-GUIDE.md) §Rules.
+  > Egress default > Zone policy*). Documented in [`REAPER-GUIDE.md`](REAPER-GUIDE.md#413-rules).
   Not adding it: negation does not distribute over the engine's (src set × dst set) expansion, and it
   would add a second, less visible way to express default-deny. If the narrow "everything except X in
   one condition" case is asked for specifically: single-set objects only, groups refused loudly, the

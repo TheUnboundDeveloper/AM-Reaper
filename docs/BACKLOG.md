@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v2.8.6** · 2026-08-28 <!--@stamp-->
 
 Working list of what's left to accomplish, grouped by area. Status is noted where
 known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]**
@@ -16,7 +16,10 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
-*Updated 2026-08-26 — added the QoS live-stats and Gatekeeper dropdown defects (both found on v2.7.7 metal, remediated in tree
+*Updated 2026-08-28 — added the two `reaper_diag` counter defects (QoS readback truncation and
+wireless-churn line-counting), both found on v2.8.6 metal and remediated in tree for the next
+diag build, with a CI regression guard.
+Earlier: 2026-08-26 — added the QoS live-stats and Gatekeeper dropdown defects (both found on v2.7.7 metal, remediated in tree
 for v2.7.8). Last cleaned 2026-08-25 (after v2.7.7) — removed what v2.7.7 shipped (Gatekeeper
 re-list count; the translation pass) and added the UPnP key-desync defect found in the field the
 same day.
@@ -198,6 +201,53 @@ The ordered short list. Each line points at its full entry below.
   **Code review 2026-08-24:** the v2.5.5 bounce is present and logically sound (`rc/rwatch.c`: 300 s
   boot grace, PPPoE-only, link-up, all-three-probes-fail, one-shot latch, `SIGHUP` keeps NAT/routes).
   No code change warranted — this is an upstream OLT stale-session issue. **[owed — tester capture]**
+
+- **[P2] `reaper_diag` under-reported QoS and over-reported wireless churn — two counter defects
+  found on RT-BE96U v2.8.6 metal, 2026-08-28.** Both made the diag misreport a state rather than
+  fail, which is the worst way for a triage tool to be wrong: the output looked healthy and
+  authoritative either way.
+  - **Section 10 (QoS) could not tell "shaping" from "armed but toothless."** The per-queue
+    readback piped `tmctl getqcfg` through `head -3`, keeping `qid`/`priority`/`qsize` and cutting
+    `weight`/`minBufs`/`schedMode`/**`shaper`** plus the `ret code` status line. The three
+    survivors are programmed by `setqcfg` unconditionally, while every rate element sits behind
+    its own guard (`cap>0`, `obw>0`, `obw>0 && qos_pshaper!=0`) — so a box whose class rates never
+    landed printed a per-queue block byte-identical to a healthy one. The port shaper *is* printed
+    in full, so a wholly empty `qos_obw` still shows as `(0,0,0)`; what was invisible is the case
+    that matters more — port shaper correct, per-class rates from `qos_orates` wrong or absent
+    underneath, i.e. exactly the rate arithmetic the classful engine has historically got wrong.
+    Sharpening the irony, that block had **already** been rewritten in v1.3.7 for a
+    truncation-shaped misdiagnosis (the `QOSDIAG-1` comment: reading the port shaper
+    unconditionally "made a healthy type-10 box report (0,0,0) and look uncapped — which is exactly
+    what sent the 2026-08-01 investigation down a blind alley"). The fix split the engines and left
+    the same bug on the other side of it: the **type-10** branch reads `getqcfg --qid 0` untruncated
+    with the shaper visible, while the **type-11** branch — the one with seven shapers to verify
+    instead of one — was the truncated loop.
+  - **Section 19b counted syslog lines, not events.** `hostapd` repeats the same
+    `IEEE 802.11: disassociated` line for one flap — commonly twice, in bursts of up to ten
+    identical lines inside a single second. Measured over a 48 h span on metal: **2810 disassoc
+    lines → 411 unique `(timestamp, MAC)` events, 6.8x inflation**; the top station was reported as
+    `disassoc=1057 (~21/h)` when the truth was **218 events ≈ 4.5/h**. Both the 19b table and the
+    section 0b `finding INFO` line were fed from the raw line count. An inflated churn figure makes
+    a device that has already been ruled benign look like a router fault, and is precisely what
+    drags a closed item back into triage.
+
+  **Fixed in tree, not yet built (REAPER-DIAG v1.3.7 → v1.3.8, `release/src/router/others/reaper_diag`).**
+  Section 10 now prints one line per queue carrying every field — and is *shorter* than the form it
+  replaces (7 lines vs 21) — plus a `[TMCTL-ERR]` tag when `ret code` is non-zero, which the old
+  truncation discarded along with everything else. Both churn counters dedup on
+  `(timestamp, MAC, event)` before incrementing; 1-second granularity means a same-second burst
+  counts as the one flap it is. The `finding INFO` threshold (200) is deliberately left alone —
+  against deduped events it stops firing on ordinary roaming while the real 218-event loop still
+  trips it. Verified against live metal: all seven queue shapers read back exactly per `qos_orates`
+  (qid1–3 = 1980000 = 90%, qid4–5 = 2090000 = 95%, qid0/qid6 uncapped at 2200000).
+
+  **Regression guard added:** `build-scripts/ci/check_diag_counters.sh` — layer A greps the source
+  for the invariants (no `head -3` on `getqcfg`, shaper captured, `TMCTL-ERR` present, dedup at both
+  churn sites, `VER >= 1.3.8`), layer B *extracts the real awk programs out of the diag source* and
+  runs them against fixtures, so the tests cannot drift from what ships. Confirmed to fail in the
+  right direction: 8/8 pass against the fixed source, 7/7 fail against pre-fix v1.3.7 — including
+  the old churn awk scoring a 7-line fixture as 6 events where the fixed one scores 3. **[owed —
+  ships with the next diag build]**
 
 ---
 

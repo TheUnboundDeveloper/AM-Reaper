@@ -1,0 +1,113 @@
+Reaper v2.8.6
+
+Five fixes and one diagnostic improvement. Three of the fixes came from the field; two were found
+
+by new checks that now run before a build starts. One of those two had been quietly wrong since
+
+long before this release, on any home network that is not a standard size.
+
+> Connections — Flow Explorer shows your traffic again
+
+Since v2.8.3 the page had reported
+
+"No active flows in the accelerator cache" however busy the router was. A security check
+
+added to that page's data feed in v2.8.3 was right to be there, but the page itself was never
+
+taught to present the credential the feed had begun asking for — so every request was politely
+
+refused, once a second, and the page drew an empty list. It now sends it. Separately, a refusal
+
+no longer looks like an idle router: if the page cannot read the accelerator for any reason
+
+it now says so, rather than showing an empty table. That ambiguity is why this took a field
+
+report instead of a glance.
+
+> Let's Encrypt stops announcing renewals that did not happen
+
+On the first login after a
+
+restart, the router could announce that your certificate had been renewed and that you were
+
+about to be signed out — with a certificate that had renewed days earlier and was still
+
+perfectly valid. Then it did not sign you out. Two separate faults: the flag the message reads
+
+is set every time the router starts, not only when a certificate is actually renewed; and
+
+nothing in the firmware ever performed the sign-out the message promised. That sign-out was not
+
+cosmetic — the web server only swaps in a new certificate once no one is signed in, so the
+
+missing step was the one that finishes the job. The message now appears only when a certificate
+
+swap is genuinely pending, and it now really does sign you out, which completes the swap. A
+
+renewal that arrives on its own in the background also now arms that swap; previously such a
+
+renewal left the new certificate sitting on disk while the old one stayed in use.
+
+> The lockout protection now covers your whole network
+
+The router keeps a standing rule that
+
+stops its own protection features from cutting you off from it. On the usual home network that
+
+rule was correct, but on a larger one — a /22 or /23, where the network spans more addresses
+
+than the common size — it only covered a quarter or a half of it, and devices outside that
+
+portion had no such protection at all. The rule is now calculated from your actual network and
+
+mask rather than matched against a short list of common shapes. The same fault was found and
+
+fixed in the threat-blocking feature in v2.8.3; this is the same repair applied to the rules
+
+engine, which had been missed.
+
+> Gatekeeper stops reporting a delay that did not happen
+
+On startup Gatekeeper could log that
+
+device controls had been deferred because the network was not ready, while they were in fact
+
+fully applied. Harmless in itself, but it made the message meaningless — a genuine deferral
+
+looked identical to the false one. Fixed.
+
+> Devices left on the removed AdGuard DNS filter are now told
+
+AdGuard was removed as a DNS
+
+filtering choice a few releases ago. Nothing broke — those devices simply resolved names
+
+normally — but any device you had set to it had quietly stopped being filtered while still
+
+appearing to be configured for it, and the setting showed as blank. Such devices are now moved
+
+to Unfiltered, which is what they had actually been all along, and each one is named in the
+
+system log so you can choose a replacement. No device's DNS is silently redirected to a
+
+different provider.
+
+> The diagnostic report answers two more questions on its own
+
+Prompted by a throughput report
+
+that could not be investigated without shell access to someone's router, the report now states
+
+whether the hardware traffic accelerator is actually switched on — previously it described the
+
+accelerator's settings but never said whether it was running, which is the first thing anyone
+
+needs to know when a fast connection is running slowly. It also now reports the automatic PPPoE
+
+redial setting and whether that redial has already happened since the last restart. That setting
+
+is on unless you turn it off, and a blank field previously made it look switched off.
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

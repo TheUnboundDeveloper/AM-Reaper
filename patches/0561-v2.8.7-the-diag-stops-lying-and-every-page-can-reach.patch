@@ -1,0 +1,85 @@
+From 521af82fb168e65883782bd4602791db3e478a6e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 10:48:42 -0400
+Subject: [PATCH] v2.8.7: the diag stops lying, and every page can reach the
+ manual
+
+Four changes, no C. Nothing here can wedge a router, which is the point of
+shipping it on a stable base.
+
+THE DIAG (v1.3.7 -> v1.3.8). Two counter defects, both of which made the diag
+misreport a state rather than fail - the worst way for a triage tool to be
+wrong, because the output looks healthy and authoritative either way.
+
+Section 10 piped `tmctl getqcfg` through `head -3`, keeping qid/priority/qsize
+and cutting weight/minBufs/schedMode/shaper plus the ret-code line. Those three
+survivors are programmed by setqcfg unconditionally while every rate element
+sits behind its own guard, so a box whose class rates never landed printed a
+per-queue block byte-identical to a healthy one. Section 10 could not tell
+"shaping" from "armed but toothless". Now one line per queue carrying every
+field - and SHORTER than the form it replaces, 7 lines against 21 - plus a
+[TMCTL-ERR] tag when ret code is non-zero, which the truncation used to discard.
+The same block had already been rewritten once, for a truncation-shaped
+misdiagnosis; that fix split the engines and left the truncation on the type-11
+side, the branch with seven shapers to verify instead of one.
+
+Section 19b counted syslog LINES, not events. hostapd repeats the same
+disassociated line for one flap, commonly twice and in bursts of up to ten
+inside a single second. Measured over a 48 h span on metal: 2810 lines against
+411 unique (timestamp, MAC) events, 6.8x inflation; the top station read
+1057 (~21/h) when the truth was 218 (~4.5/h). Both the 19b table and the
+section 0b finding were fed from the raw count and now dedup on
+(timestamp, MAC, event). The finding threshold (200) is deliberately unchanged:
+against deduped events it stops firing on ordinary roaming while a real loop
+still trips it. An inflated churn figure makes an already-benign device look
+like a router fault.
+
+THE MANUAL. Twelve pages gained a "?" in their heading linking to their section
+of REAPER-GUIDE.md - QoS, QoS Diagnostics, Traffic, Devices, Connections,
+Wireless, WiFi Pro, Diagnostics, Firmware, Analytics, Policy Routing, AI
+Advisor. Five already had one, so every Reaper page now reaches the guide. It
+reuses the existing RABT_43 key, so there are no new i18n keys and no
+translation pass owed; the dict lockstep is untouched by that change. The guide
+itself was pushed first, deliberately, so all 15 anchors resolve on the first
+boot that carries them rather than 404-ing until a later push.
+
+I18N. RFW_257 ("Other") minted and TRANSLATED in all 25 packs, and the IPv6
+protocol select's BOTH label switched to the already-translated RFW_252 - the
+last RFW_ residual. TCP and UDP stay literal; they are protocol names. The
+value="TCP|UDP|BOTH|OTHER" attributes are untouched and still uppercase, because
+rc/firewall.c does an exact case-sensitive strcmp on them and a translated value
+would break the rule format in 24 languages. Adaptive_Others was deliberately
+not reused: it is plural and names an Adaptive QoS category, which is the same
+class of mistake as reusing ASUS's option_both_direction for "Both".
+
+DEAD CODE. Reaper_Wireless.asp's scan pin carried a comment claiming
+pinTarget() substitutes the 80 MHz block containing the winner, and a ternary
+appending "<- <original>" when the pin differed from the scanned best. The
+substitution was removed deliberately - it is exactly what made "best" and
+"applied" disagree in the field - so pinTarget() returns its argument and that
+condition can never be true. Comment corrected, dead ternary removed, function
+kept. No behaviour change.
+
+Dict lockstep 6745 -> 6746 (RFW_257 only). Diag verified by extracting its awk
+programs and running them against fixtures; the guard lives in the lean repo at
+build-scripts/ci/check_diag_counters.sh and is wired into patch-apply-check, so
+it now asserts against the reconstructed series rather than a local tree.
+---
+ release/src-rt/version.conf | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index ddd2915acc..284cb10e6b 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.8.6
++EXTENDNO=Reaper_v2.8.7
+ 
+ RCNO=0
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v2.8.6** · 2026-08-27 <!--@stamp-->
+> **Doc status:** current as of **v2.8.7** · 2026-08-27 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -23,6 +23,48 @@ a runtime setting; the relevant components are excluded from the build entirely.
 AiMesh has been retained because no suitable open-source replacement is currently known. 
 Replacing AiMesh would also require a compatible replacement implementation on every mesh 
 node, not only on the primary router.
+
+---
+
+## v2.8.7 — The diagnostic report stops misleading you, and every page can reach the manual
+
+No change to how the router runs. Nothing in this release touches the firewall, the daemons or the
+kernel — it fixes a diagnostic tool that was quietly reporting the wrong thing, finishes the
+translation of one control, and connects the interface to the manual.
+
+- **The diagnostic report can now tell working QoS from QoS that is doing nothing.** Section 10
+  listed each traffic-shaping queue but cut the report off after three lines — before the one line
+  that says what rate the queue is actually shaping at. Those first three lines are written
+  whether or not the shaping ever took effect, so a router whose QoS had silently failed to apply
+  produced a report identical to a healthy one. Anyone reading it, including us, could not tell the
+  two apart. Each queue is now one line carrying every field, which is *shorter* than what it
+  replaces, and a queue that fails to report at all is now flagged instead of silently omitted.
+
+- **Wi-Fi churn was over-reported roughly sevenfold.** The report ranks devices by how often they
+  drop off the Wi-Fi, and it was counting log lines rather than actual events. The access point
+  writes the same disconnection several times over — commonly twice, and in bursts of up to ten
+  within a single second. Measured over two days on a live router: 2,810 log lines for 411 real
+  events. One device was reported as having dropped 1,057 times, about 21 an hour, when the true
+  figure was 218, about four and a half an hour. Both the table and the warning it feeds now count
+  events. If you have looked at one of these reports before and concluded a device was misbehaving
+  badly, it is worth looking again — the number was inflated, though a device at the top of that
+  list is still worth attention.
+
+- **Every page now has a "?" that opens its section of the owner's guide.** Twelve pages gained one:
+  Traffic Manager and its diagnostics, Traffic Analyzer, Devices, Connections, both wireless pages,
+  Diagnostics, Firmware, Analytics, Policy Routing and the AI Advisor. Five pages already had one,
+  so the whole interface is now covered. The guide itself has grown considerably — it now documents
+  the factory defaults and what a reset does and does not clear, the stock pages that remain in the
+  firmware but are switched off and what replaces them, and full per-page sections for the firewall,
+  Warden, Gatekeeper, Policy Routing, Traffic Manager, Traffic Analyzer and Devices. The links open
+  in a new tab and are not required for the router to work.
+
+- **The IPv6 firewall's protocol list is now translated.** Its "Both" and "Other" options were
+  English in every language. They now read correctly in all 25, joining the rest of that page.
+
+Also, a stale note in the wireless scan was removed: it described the channel picker substituting a
+wider channel block, which it stopped doing some time ago — precisely because that substitution was
+what made the scan's chosen channel disagree with the channel it applied.
 
 ---
 

@@ -1,0 +1,66 @@
+From 3af3303772d980a52d6a45310d6c8767b37eb5e0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 10:20:15 -0400
+Subject: [PATCH] www: drop the dead "<- original" annotation on the Wi-Fi scan
+ pin
+
+Batch B item. The backlog framed this as a choice - "implement the 20->80 MHz
+block substitution (metal) or delete the annotation" - but that choice should
+not be made, and the reason is already in the file.
+
+pinTarget() is an identity function on purpose. The comment above its definition
+records why: the old 5 GHz branch substituted the 80 MHz block containing the
+scan winner, and that is exactly what made "best" and "applied" disagree in the
+field. Implementing the substitution would reintroduce a known field bug. There
+is nothing to decide and no metal needed.
+
+What was actually wrong was documentation drift in the caller. scanPin() still
+carried a comment stating that pinTarget() "substitutes the 80 MHz block
+CONTAINING the winner - best 44 applies as 36/80", describing behaviour removed
+some time ago, and a ternary appending "<- <original chanspec>" when the pin
+differed from the scanned best. Since pinTarget() returns its argument, that
+condition is never true, so the suffix could never render.
+
+Removed the dead ternary and rewrote the comment to say what the code does and
+why the substitution is gone, so the next reader is not invited to "restore" it.
+
+pinTarget() itself is kept. Its own comment says it is retained deliberately so
+every caller and the guard in scanPin() stay unchanged.
+
+No behaviour change: shown was already always equal to pin. Value-only, no dict
+token, 24-language lockstep untouched.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Wireless.asp | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index c0d1773cae..f77e64b243 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -653,13 +653,14 @@ function renderScan(){
+ function scanPin(){
+   if(!SCANBEST||!SCANBEST.chanspec||!SCANDATA) return;
+   var u=SCANDATA.unit, nb=nbandOf(u), pin=pinTarget(SCANBEST.chanspec,nb);
+-  /* reaper: the pin is NOT always the scanned best. On 5 GHz the sweep samples
+-   * 20 MHz channels (rwifi_5g_chans, swept at bw=20) but the radio runs 80 MHz,
+-   * so pinTarget() substitutes the 80 MHz block CONTAINING the winner - best 44
+-   * applies as 36/80. Showing only the substituted value made this read as "it
+-   * assigns a completely different channel" in the field. State the transform.
+-   * Value-only, no new dict token, so the 24-language lockstep is untouched. */
+-  var shown=pin+((pin!==SCANBEST.chanspec)?" \u2190 "+SCANBEST.chanspec:"");
++  /* reaper: the pin IS the scanned best - pinTarget() is deliberately an
++   * identity function (see its definition). The old 5 GHz branch substituted
++   * the 80 MHz block containing the winner, which is exactly why "best" and
++   * "applied" disagreed in the field, so it was removed. The "<- original"
++   * suffix that used to state that transform is therefore dead: pin can never
++   * differ from SCANBEST.chanspec. Value-only, no dict token, so the
++   * 24-language lockstep is untouched. */
++  var shown=pin;
+   var msg=`<#RWIF_42#> `+(BANDLBL[nb]||"")+" "+shown+" (nopkt "+(+SCANBEST.nopkt).toFixed(0)+"%)";
+   var res=(SCANDATA.results)||[], ck=blockKey(scanRunCs(),nb), j;
+   for(j=0;j<res.length;j++) if(ck&&blockKey(res[j].chanspec,nb)===ck){
+-- 
+2.25.1
+

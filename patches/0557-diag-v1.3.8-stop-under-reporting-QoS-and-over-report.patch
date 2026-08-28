@@ -1,0 +1,104 @@
+From 13f590b9e89d5b88074b6083e5a304074712d5a3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 06:31:59 -0400
+Subject: [PATCH] diag v1.3.8: stop under-reporting QoS and over-reporting
+ wireless churn
+
+Section 10 piped `tmctl getqcfg` through `head -3`, keeping qid/priority/qsize
+and cutting weight/minBufs/schedMode/shaper plus the "ret code" status line.
+Those three survivors are programmed by setqcfg unconditionally while every rate
+element sits behind its own guard (cap>0, obw>0, obw>0 && qos_pshaper!=0), so a
+box whose class rates never landed printed a per-queue block byte-identical to a
+healthy one: the readback could not tell "shaping" from "armed but toothless".
+The port shaper is printed in full, so a wholly empty qos_obw still shows as
+(0,0,0); what was invisible is the worse case, port shaper correct with the
+per-class rates from qos_orates wrong or absent underneath.
+
+This is the same blind spot as QOSDIAG-1, which had already rewritten this block
+once after an unconditional port-shaper read sent the 2026-08-01 investigation
+down a blind alley. That fix split the engines and left the truncation on the
+type-11 side, the branch with seven shapers to verify instead of one. Now one
+line per queue carrying every field, shorter than the form it replaces (7 lines
+vs 21), plus a [TMCTL-ERR] tag when ret code is non-zero, which the truncation
+used to discard along with everything else.
+
+Section 19b counted syslog lines, not events. hostapd repeats the same
+"IEEE 802.11: disassociated" line for one flap, commonly twice and in bursts of
+up to ten identical lines inside a single second. Measured over a 48 h span on
+metal: 2810 disassoc lines against 411 unique (timestamp, MAC) events, 6.8x
+inflation; the top station was reported as 1057 (~21/h) when the truth was 218
+events (~4.5/h). Both the 19b table and the section 0b finding line were fed
+from the raw count and now dedup on (timestamp, MAC, event); 1-second
+granularity means a same-second burst counts as the one flap it is. The finding
+threshold (200) is deliberately unchanged: against deduped events it stops
+firing on ordinary roaming while a real loop still trips it. An inflated churn
+figure makes an already-benign device look like a router fault.
+
+Verified on RT-BE96U v2.8.6 metal: all seven queue shapers read back exactly per
+qos_orates (qid1-3 = 1980000 = 90%, qid4-5 = 2090000 = 95%, qid0/qid6 uncapped
+at 2200000 = qos_obw). Regression guard lives in the lean repo at
+build-scripts/ci/check_diag_counters.sh.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag | 29 ++++++++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 4802928cd3..db5b1a67c7 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.7"
++VER="REAPER-DIAG v1.3.8"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -513,8 +513,20 @@ if have tmctl; then
+     echo "  -- tmctl portshaper ($WANIF) --"; tmctl getportshaper --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
+   fi
+   echo "  -- tmctl portrxrate ($WANIF) --"; tmctl getportrxrate --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++  # QOSDIAG-2 (v1.3.8): `head -3` kept qid/priority/qsize and CUT weight/
++  # minBufs/schedMode/shaper plus the "ret code" status line. Those three
++  # survivors are programmed by setqcfg UNCONDITIONALLY -- every rate element
++  # sits behind its own guard (cap>0, obw>0, obw>0 && qos_pshaper!=0) -- so a
++  # box whose class rates never landed printed a per-queue block byte-identical
++  # to a healthy one, and the readback could not tell "shaping" from "armed but
++  # toothless". Same class of blind spot as QOSDIAG-1 above, and it hid exactly
++  # the rate arithmetic the classful engine gets wrong. One line per queue now:
++  # shows every field AND is shorter than the old form (7 lines vs 21).
++  echo "  -- per-queue config (prio/qsize/sched/weight/shaper) --"
+   q=0; while [ $q -le 6 ]; do
+-    echo "  -- qcfg qid $q --"; tmctl getqcfg --devtype 0 --if $WANIF --qid $q 2>/dev/null | head -3 | sed 's/^/     /'
++    tmctl getqcfg --devtype 0 --if $WANIF --qid $q 2>/dev/null | awk -v q=$q '
++      /priority/{p=$3} /qsize/{s=$3} /weight/{w=$3} /schedMode/{m=$2} /shaper/{sh=$3$4$5}
++      /ret code/{printf "     qid%s prio=%s qsize=%s sched=%s wt=%s shaper=%s%s\n", q,p,s,m,w,sh,($0~/= 0/?"":"  [TMCTL-ERR]")}'
+     q=$((q+1))
+   done
+ fi
+@@ -807,9 +819,16 @@ SLF="$(slog_files | tr '\n' ' ')"
+ if [ -n "$SLF" ]; then
+   echo "  sources           : $SLF"
+   echo "  span              : $(cat $SLF 2>/dev/null | head -1 | cut -c1-15) .. $(tail -1 /tmp/syslog.log 2>/dev/null | cut -c1-15)   lines=$(cat $SLF 2>/dev/null | wc -l)"
+-  echo "  -- wireless churn: top stations by disassociation (assoc/disassoc) --"
+-  cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* (associated|disassociated)' | awk '{m=$7; if ($0 ~ /disassociated/) d[m]++; else a[m]++} END {for (k in d) printf "%6d %6d %s\n", d[k], a[k]+0, k}' | sort -rn | head -10 | awk '{printf "  disassoc=%-5s assoc=%-5s %s\n", $1, $2, $3}'
+-  TOPD="$(cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* disassociated' | awk '{print $7, $5}' | sort | uniq -c | sort -rn | head -1)"
++  # CHURNFIX (v1.3.8): hostapd emits the SAME "IEEE 802.11: disassociated" line
++  # repeatedly for one flap -- commonly 2x, in bursts up to 10 identical lines
++  # inside one second. Counting lines over-reported by 6.8x on metal (2810 lines
++  # -> 411 events over a 48 h span; the top station read 1057 (~21/h) when the
++  # truth was 218 (~4.5/h)). An inflated churn number makes a known-benign
++  # device look like a router fault. Dedup on (timestamp, MAC, event) first;
++  # 1-second granularity means a same-second burst counts as the one flap it is.
++  echo "  -- wireless churn: top stations by disassociation (deduped events, assoc/disassoc) --"
++  cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* (associated|disassociated)' | awk '{m=$7; e=($0 ~ /disassociated/)?"d":"a"; if (seen[$1" "$2" "$3" "m" "e]++) next; if (e=="d") d[m]++; else a[m]++} END {for (k in d) printf "%6d %6d %s\n", d[k], a[k]+0, k}' | sort -rn | head -10 | awk '{printf "  disassoc=%-5s assoc=%-5s %s\n", $1, $2, $3}'
++  TOPD="$(cat $SLF 2>/dev/null | grep -E 'hostapd: .*STA .* disassociated' | awk '{if (seen[$1" "$2" "$3" "$7]++) next; print $7, $5}' | sort | uniq -c | sort -rn | head -1)"
+   set -- $TOPD
+   if [ "${1:-0}" -ge 200 ]; then
+     # v1.3.7: span from the first CREDIBLE timestamp, not line 1 - the head of
+-- 
+2.25.1
+

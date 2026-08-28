@@ -1,6 +1,6 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v2.8.6** · 2026-08-27 <!--@stamp-->
+> **Doc status:** current as of **v2.8.6** · 2026-08-28 <!--@stamp-->
 
 **Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v2.8.6 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
@@ -55,6 +55,14 @@ This guide is written for someone who will install and run the firmware: technic
 5. [Efficiency and good practice](#5-efficiency-and-good-practice)
 6. [Troubleshooting quick table](#6-troubleshooting-quick-table)
 7. [Glossary](#7-glossary)
+8. [Factory defaults, and what Reaper changes](#8-factory-defaults-and-what-reaper-changes)
+   - 8.1 [Stock settings whose default Reaper changes](#81-stock-settings-whose-default-reaper-changes)
+   - 8.2 [Reaper's own settings and their defaults](#82-reapers-own-settings-and-their-defaults)
+   - 8.3 [What a factory reset actually restores](#83-what-a-factory-reset-actually-restores)
+9. [Present but inactive](#9-present-but-inactive)
+   - 9.1 [The stock firmware-update page](#91-the-stock-firmware-update-page)
+   - 9.2 [The AiProtection pages](#92-the-aiprotection-pages)
+   - 9.3 [Why they were not simply deleted](#93-why-they-were-not-simply-deleted)
 
 ---
 
@@ -715,3 +723,146 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **Socket bind shim** — the on-by-default workaround for the closed nvram library's netlink defect (4.17).
 - **Warden** — the threat-feed, country and manual IP blocking layer.
 - **Zone policy** — the default action between two zones; the weakest statement in the firewall engine, overridden by Egress defaults and explicit rules.
+
+---
+
+## 8. Factory defaults, and what Reaper changes
+
+"Factory default" means the value a setting takes on a **factory reset**, or on a first boot with
+clean NVRAM. Every setting below can be changed afterwards from the GUI. This section exists so you
+can tell *what the firmware chose for you* from *what you chose*, and put anything back.
+
+To read the live value of any key over SSH: `nvram get <key>`.
+
+### 8.1 Stock settings whose default Reaper changes
+
+Fifteen ASUS/Merlin defaults ship with a different value under Reaper. Each is a deliberate choice,
+not an accident, and each is reversible from the GUI.
+
+| Setting | Stock | Reaper | Why |
+|---|---|---|---|
+| `wps_enable`, `wps_enable_x` | `1` | **`0`** | WPS is off out of the box. Its PIN method is broken by design and cannot be made safe. Turn it on in Wireless only if a device has no other pairing method. |
+| `upnp_enable` | `1` | **`0`** | UPnP lets any LAN device open a hole in your firewall without asking. Enable it per WAN if you need console or game-server port mapping. |
+| `upnp_min_port_ext` | `1` | **`1024`** | When UPnP is on, it may no longer map privileged ports. A compromised LAN device cannot claim port 22, 53 or 443. |
+| `upnp_ssdp_interval` | `60` | **`900`** | SSDP announcements every 15 minutes instead of every minute. Far less multicast chatter, which is noticeable on Wi-Fi. |
+| `firmware_check_enable` | `1` | **`0`** | The stock automatic update check phones ASUS. Reaper checks its own GitHub release manifest instead — see 4.14 and 9.1. |
+| `ASUS_EULA`, `ASUS_NEW_EULA` | `0` | **`1`** | Pre-accepted, because the setup wizard that would have presented them was removed. Nothing is transmitted; this only stops the firmware blocking on a dialog that no longer exists. |
+| `qos_default` | `3` | **`4`** | The catch-all class for unmatched traffic. Stock pointed at class 3, named "Downloads", so unclassified traffic — including game traffic, which is unmarked UDP — queued alongside bulk transfers. It now points at the class actually named "Default". |
+| `qos_orates` | `80-100,10-100,…` | **`15-100,15-90,20-90,5-95,25-95,…`** | Per-class minimum and maximum rates. The stock profile committed effectively the whole link to class 1. Reaper's leaves headroom and keeps the committed total under 85% of your configured upload. |
+| `qos_rulelist` | Web / HTTPS / File Transfer | **Conferencing, SIP, Game Console, Steam, BitTorrent, Web** | The starting classification rules. The stock set predates modern traffic; Reaper's recognises conferencing and game traffic, which is what people actually want prioritised. |
+| `psc6g` | `0` | **`1`** | Advertise the 6 GHz Preferred Scanning Channel, so 6 GHz clients find the band quickly instead of scanning the whole range. |
+| `smbd_simpler_naming` | `0` | **`1`** | USB shares are named after the volume rather than a generated string. |
+| `v3_auth_type` | *(empty)* | **`SHA`** | SNMPv3 authentication defaults to SHA rather than nothing chosen. |
+| `v3_priv_type` | *(empty)* | **`AES`** | SNMPv3 privacy defaults to AES. Both matter only if you enable SNMP at all. |
+
+Reaper also **adds 72** NVRAM keys of its own (8.2) and **removes 23** belonging to features it
+strips out — AiCloud and WebDAV (`enable_webdav`, `acc_webdavproxy`, `st_webdav_mode`), cloud sync
+(`cloud_sync`, `enable_cloudsync`), and the share-link plumbing.
+
+### 8.2 Reaper's own settings and their defaults
+
+Sixty keys, grouped by the feature that owns them. **Almost everything ships off.** No Reaper
+feature enforces anything until you turn it on. The exceptions are the two passive ones that only
+observe — `rtraf_enable` and `rwatch_enable` — plus `reaper_wanbounce_enable`.
+
+**Firewall engine** (4.1) — `reaper_fw_enable` `0`, `reaper_fw_active` `0`, `reaper_fw_armed` `0`,
+`reaper_fw_confirm` `60`. The rule-store keys (`reaper_fw_rules`, `_obj`, `_grp`, `_svc`, `_zone`,
+`_zpol`, `_nat`, `_edef`, `_err`) all start empty. `reaper_fw_confirm` is the safety timer: after
+you apply a ruleset, the firewall reverts unless you confirm within 60 seconds, so a rule that locks
+you out undoes itself.
+
+**Warden** (4.3) — `rwarden_enable` `0`, `rwarden_dir` `in` (inbound only), `rwarden_reset` `off`,
+`rwarden_log` `0`, `rwarden_self` `0`, `rwarden_stats_save` `1`. The list keys (`rwarden_feeds`,
+`rwarden_geo`, `rwarden_allow`, `rwarden_ban`, `rwarden_cfeeds`, `rwarden_sched`) start empty, so a
+freshly enabled Warden blocks nothing until you choose feeds or countries.
+
+**Gatekeeper** (4.2) — `gk_enable` `0`, `gk_default` `0`, `gk_captive` `1`, `gk_notify` `1`,
+`gk_guest_hours` `24`, `gk_rl` empty. `gk_default` `0` means a device Gatekeeper has never seen is
+**blocked**, not allowed. That is deliberate, and it is why enabling Gatekeeper before populating
+the device list will cut off new arrivals.
+
+**Policy routing** (4.4) — `reaper_pbr_enable` `0`, `reaper_pbr_rulelist` empty.
+
+**Traffic Analyzer** (4.7) — `rtraf_enable` **`1`** (on, because it only records), `rtraf_cap_gb`
+`0` (no cap), `rtraf_path` and `rtraf_probe` empty.
+
+**Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds`
+`dev,traf,watch`. On `ram`, history is lost at reboot; point it at USB to keep it. The exporter is
+entirely off: `reaper_export_mode` empty, `reaper_export_interval` `300`,
+`reaper_export_tlsverify` `1`, `reaper_export_maskmac` `0`, and all URL, token and metric keys
+empty.
+
+**Self-monitor** (4.13) — `rwatch_enable` **`1`**, `rwatch_iv` `5` minutes,
+`reaper_wanbounce_enable` **`1`**. The WAN bounce fires only on a PPPoE link that has failed all
+three reachability probes after the boot grace period.
+
+**Connections and QoS diagnostics** — `rchq_enable` `0`.
+
+**AI Advisor, MCP build only** (4.16) — `rmcp_port` `5199`, `rmcp_timeout` `60` minutes,
+`rmcp_client` empty. There is deliberately **no enable key**: the Advisor is armed by a session file
+in `/tmp`, so every reboot comes up dark.
+
+**Miscellaneous** — `reaper_fbdone` `0` (the first-boot card is still to be shown),
+`reaper_fwsig_override` `0` (firmware-manifest signature checking stays on).
+
+### 8.3 What a factory reset actually restores
+
+A factory reset clears NVRAM, so everything above returns to the value in the tables above. It does
+**not** erase `/jffs`, which is where the firewall, Warden, Gatekeeper and policy-routing rule
+stores live. For a genuinely clean box, format JFFS as well, from Administration.
+
+The useful consequence: if you are resetting to clear a bad *setting*, your rules survive and you do
+not have to rebuild them.
+
+---
+
+## 9. Present but inactive
+
+Some stock ASUS pages are still inside the firmware image but are **not reachable from the menu**.
+They are not hidden bugs, and they are not doing anything. They were left in place rather than
+deleted because each still shares state or code with something Reaper does use. This section lists
+them, so that finding one by typing its address does not look like a discovery.
+
+### 9.1 The stock firmware-update page
+
+`Advanced_FirmwareUpgrade_Content.asp` is present, and **absent from the menu**. Reaper's own
+Firmware page (4.14) replaces it.
+
+It is kept because the two share NVRAM state. Reaper's page reuses the stock update variables —
+`webs_state_update`, `webs_state_info`, `webs_state_url`, `webs_state_flag`, `webs_state_error`,
+`webs_state_upgrade`, `webs_state_sha` — rather than inventing parallel ones. The stock page is the
+other reader of that state.
+
+The automatic check it used to drive is off (`firmware_check_enable` `0`, see 8.1), because it
+queried ASUS. Reaper checks its own GitHub release manifest instead, and verifies a signature over
+it.
+
+### 9.2 The AiProtection pages
+
+Thirteen `AiProtection_*.asp` pages remain in the image — Home Security, Malicious Sites Blocking,
+Intrusion Prevention, Infected Device Prevention, Web Protector, Content Filter, Ad Block, Key
+Guard, and their mobile variants. **None is in the menu.**
+
+The engine behind them is gone. AiProtection is a TrendMicro product: the router ships traffic
+metadata to TrendMicro's cloud for classification, which is precisely the arrangement Reaper exists
+to remove. The DPI engine that fed those pages is compiled out of the build, so the pages have
+nothing left to talk to.
+
+What replaces them, and what does not:
+
+- **Malicious-site and threat blocking** — Warden (4.3), using public IP threat feeds and country
+  blocks. It works on addresses rather than on inspected content, and it needs no cloud service.
+- **Per-device access control** — Gatekeeper (4.2).
+- **Content and keyword filtering** — the firewall's URL Filter and Keyword Filter tabs (4.1).
+- **Deep packet inspection, and signature-based intrusion prevention** — **nothing replaces this.**
+  It cannot be done locally at line rate on this hardware without a commercial signature feed. If
+  that specific capability is what you need, Reaper is not the firmware for you. That is an honest
+  trade, not an oversight.
+
+### 9.3 Why they were not simply deleted
+
+Removing a page means removing every reference to it: menu entries, help mappings, redirect targets,
+and any shared NVRAM. Each removal is a chance to break something that still works, for no benefit a
+user can see — an unreachable page costs a few kilobytes of flash and nothing else. They may go in a
+later release, once the shared state is untangled. Until then they are inert, unreferenced, and safe
+to ignore.

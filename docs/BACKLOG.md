@@ -16,7 +16,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
-*Updated 2026-08-28 — added the two `reaper_diag` counter defects (QoS readback truncation and
+*Updated 2026-08-28 (2nd pass) — removed three items that shipped in v2.7.8 and are recorded in the changelog: the UPnP two-key desync, the QoS live-stats blank, and the Gatekeeper access-level menu closing under the 5 s poll. Verified against the tree, not just the notes: both UPnP commits are on `be96u-only` with the shared helpers in place, and we are 15 commits past them on v2.8.6.
+Earlier the same day: added the two `reaper_diag` counter defects (QoS readback truncation and
 wireless-churn line-counting), both found on v2.8.6 metal and remediated in tree for the next
 diag build, with a CI regression guard.
 Earlier: 2026-08-26 — added the QoS live-stats and Gatekeeper dropdown defects (both found on v2.7.7 metal, remediated in tree
@@ -45,100 +46,20 @@ shipped/closed items. Only genuinely open work remains.*
 
 The ordered short list. Each line points at its full entry below.
 
-1. **[P1] UPnP silently half-works — daemon and firewall rules gate on different nvram keys**
-   (confirmed on two boxes 2026-08-25; read side *and* the httpd Apply side now fixed in tree,
-   both unbuilt — needs a build and a metal check).
-   → [Open bugs](#open-bugs--under-investigation)
-2. **[P2] Warden "crash" on the BE92U addon box** (amtm + Diversion update) — hypotheses ranked,
+1. **[P2] Warden "crash" on the BE92U addon box** (amtm + Diversion update) — hypotheses ranked,
    tester data requested. → [Open bugs](#open-bugs--under-investigation)
-3. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
+2. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
    v2.7.6+. → [Open bugs](#open-bugs--under-investigation)
-4. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
+3. **[P3] Code-review tail, batch B** (needs decisions / metal: `pinTarget()` 20→80 MHz intent,
    `do_reaper_conn_cgi` lock order, `rexport` mask loop, §2.1 iptables-restore batching).
    → [Code quality](#code-quality--deferred-with-reason)
-5. **[P3] `RFW_*` IPv6 protocol labels** — the last translation residual: the "Other" label still
+4. **[P3] `RFW_*` IPv6 protocol labels** — the last translation residual: the "Other" label still
    needs a key minted, and the `RFW_*` proto set must be done as one job.
    → [Documentation](#documentation)
-6. **[P2] QoS page live stats blank** — remediated for v2.7.8 (the poll never sent `http_id`, so the
-   stats CGI refused it); needs the build and a look at the page.
-   → [Open bugs](#open-bugs--under-investigation)
 
 ---
 
 ## Open bugs / under investigation
-
-- **[P1] UPnP silently half-works: the daemon and the firewall rules gate on different nvram keys
-  (confirmed on two boxes, 2026-08-25).** `start_upnp()` gates on the per-unit
-  `wan<N>_upnp_enable`; `nat_setting()`/`nat_setting2()` gate the `-A VSERVER -j VUPNP` and
-  `PUPNP` hooks on the generic `upnp_enable`. Nothing keeps the two in sync: `wan_defaults()` is
-  "assign none-exist value" and copies the **defaults-table** value rather than the current
-  setting, so once the per-unit key exists it is frozen, and the only writer is httpd's `wan_`
-  propagation (`web.c:4541`), gated on `unit != -1` and on `validate_apply_input_value()` — which
-  lives in the closed `priv_webapi.o`. Either half can be on while the other is off, and every
-  status surface still reports UPnP healthy. Seen both ways:
-  - **RT-BE88U v2.7.6 (field):** daemon up with real console mappings in `VUPNP` (udp 3074/9308),
-    but `VSERVER -j VUPNP` **absent** — nothing was ever DNATed, and the console reported NAT type
-    Moderate with the GUI listing the mappings as healthy. This was the reported bug; Warden was
-    ruled out (filter-only, `INPUT`/`FORWARD`, never the nat table).
-  - **RT-BE96U v2.7.7 (owner):** the jump installed and passing traffic, but the daemon never
-    started — no `/tmp/upnp.leases`, `VUPNP` empty.
-
-  **Fix in tree, not yet built:** both halves now derive from shared `upnp_wan_unit()` /
-  `upnp_enabled()` helpers in `rc/services.c`, with all five gates in `rc/firewall.c` repointed at
-  them, so the two cannot disagree by construction. **Field workaround meanwhile:**
-  `nvram get upnp_enable; nvram get wan0_upnp_enable` — set whichever reads 0, `nvram commit`,
-  then `service restart_firewall` (or `restart_upnp`).
-
-  **The Apply half is now fixed in tree too (unbuilt).** `validate_apply()` gains an explicit
-  `wan_upnp_enable` branch ahead of the generic `wan_` propagation: it resolves the unit from
-  `wan_primary_ifunit()` when `wan_unit` is absent, validates the value as a boolean itself, and
-  writes **both** `wan<N>_upnp_enable` and the generic `upnp_enable` in lockstep. The page only
-  ever posted the unindexed `wan_upnp_enable`, so the generic key had **no writer on this path at
-  all** — that part is proven from source and is fixed. Reading the apply loop also eliminated
-  several suspects: the loop iterates `router_defaults`, so field order in the form is irrelevant
-  and `wan_unit` (defaults.c:2494) is reached before `wan_upnp_enable` (2603); `nvram_check()`
-  rejects only on over-length, so a 1-char boolean passes; and the radios are enabled for
-  dhcp/pppoe/static/bridge by `fixed_change_wan_proto_type()`, so they do post. That leaves
-  `validate_apply_input_value()` (closed `priv_webapi.o`) as the only unexplained gate — the new
-  branch no longer depends on it either way. **Which gate was actually blocking on metal is still
-  unproven**; confirm on the next flash by toggling UPnP and checking that `nvram get upnp_enable`
-  and `nvram get wan0_upnp_enable` both flip. **[owed — build + metal confirmation]**
-
----
-
-- **[P3] Gatekeeper: the 5 s poll closed an open access-level menu — remediated for v2.7.8
-  (owner report, 2026-08-26).** `gkPaint()` → `gkRender()` rebuilds `#devrows` with a whole-table
-  `innerHTML` assignment every poll, so a row's `.rowsel` `<select>` was destroyed with its row and
-  the native popup shut mid-choice. Same class as rule 40's dashboard dropdown trap, and a
-  signature compare would not have covered it — the rows carry relative "last seen" text that
-  changes on most polls. **Fixed in tree for v2.7.8:** an open `<select>` holds focus, so
-  `gkEditing()` tests focus and `gkRender()` defers the *paint* (never the fetch, so `GK.st` stays
-  current), flushing on `focusout`; `gkAct()` blurs first so a committed choice still repaints at
-  once; and the `s_def` / `s_hours` value writes are guarded the same way. `www`-only, no dict
-  change. Verified without a build: `reaper_langcheck` 0 breakers, both edited pages structurally
-  balanced. **[owed — build + a look at the page]**
-
----
-
-- **[P2] QoS page: the live per-class stats never populated — remediated for v2.7.8
-  (found 2026-08-26 on RT-BE96U v2.7.7 metal).** The Traffic Manager page showed no rate and no
-  drop figures on any of the five class rows, on a box where the engine was demonstrably working
-  (`qos_type=11` armed, port shaper at `qos_obw`, class queues at `priority` 5→1, live `tmctl
-  getqstats` deltas on qid3 and qid5, zero drops). The engine was never the problem: `pollStats()`
-  in `Reaper_QoS.asp` requested `/reaper_qos_stats.cgi?_=<ts>` with **no `http_id`**, and v2.5.0
-  (`patches/0464`) had added a mandatory `http_id` CSRF gate to `do_reaper_qos_stats_cgi` —
-  matching the other `popen()`ing Reaper readers. Without the token the handler returns
-  `{"enabled":0,"error":"auth"}` before running a single `tmctl`, and the page's `if (!d.enabled)
-  return;` leaves every cell blank. The page-side URL had been unchanged since v1.2.8
-  (`patches/0131`) and was never updated when the gate landed, so the panel had been dead since
-  **v2.5.0**. `Reaper_QoSDiag.asp` already sent the token, which is why the diagnostics page kept
-  showing the same data.
-  **Fixed in tree for v2.7.8:** the poll now sends
-  `?http_id=<% nvram_get("http_id"); %>`, the same idiom as `Reaper_QoSDiag.asp`. `www`-only,
-  no dict change. `Reaper_Conn.asp` polls without a token too but is unaffected —
-  `do_reaper_conn_cgi` reads `/proc` and has no gate. **[owed — build + a look at the page]**
-
----
 
 - **[P2] Warden "crash" on the BE92U tester after an amtm + Diversion 6.1 update — hypothesis only,
   tester data requested (2026-08-23).** No fix yet. Ranked: (1) the stuck-nvram wlcsm bug tripped by

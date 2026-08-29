@@ -43,11 +43,12 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.1.5 [Zones](#415-zones)
      - 4.1.6 [Egress](#416-egress)
      - 4.1.7 [Forwards](#417-forwards)
-     - 4.1.8 [Network Services](#418-network-services)
-     - 4.1.9 [URL Filter](#419-url-filter)
-     - 4.1.10 [Keyword Filter](#4110-keyword-filter)
-     - 4.1.11 [Logging](#4111-logging)
-     - 4.1.12 [Limits, and things deliberately not built](#4112-limits-and-things-deliberately-not-built)
+     - 4.1.8 [Service Intercept](#418-service-intercept)
+     - 4.1.9 [Network Services](#419-network-services)
+     - 4.1.10 [URL Filter](#4110-url-filter)
+     - 4.1.11 [Keyword Filter](#4111-keyword-filter)
+     - 4.1.12 [Logging](#4112-logging)
+     - 4.1.13 [Limits, and things deliberately not built](#4113-limits-and-things-deliberately-not-built)
    - 4.2 [Gatekeeper](#42-gatekeeper)
      - 4.2.1 [The four states](#421-the-four-states)
      - 4.2.2 [Turning it on safely](#422-turning-it-on-safely)
@@ -103,7 +104,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.8.6 [Limits and gotchas](#486-limits-and-gotchas)
    - 4.9 [Connections](#49-connections)
    - 4.10 [Wireless Quality and WiFi Professional (all bands)](#410-wireless-quality-and-wifi-professional-all-bands)
-   - 4.11 [Long-Term Storage, Data Export and the Reaper settings backup](#411-long-term-storage-data-export-and-the-reaper-settings-backup)
+   - 4.11 [Long-Term Storage and Data Export](#411-long-term-storage-and-data-export)
    - 4.12 [USB Disks](#412-usb-disks)
    - 4.13 [Diagnostics](#413-diagnostics)
    - 4.14 [Firmware](#414-firmware)
@@ -259,7 +260,7 @@ An existing list is migrated once, automatically, at the first boot on a firmwar
 | Backup | Where | What it contains | What it does not |
 |---|---|---|---|
 | **Stock settings backup** | Administration → Restore/Save/Upload Setting | nvram: every stock setting, plus Reaper's switches, QoS configuration, storage choices, and so on. | The Reaper lists on `/jffs` (2.4). Device names and reservations *are* in nvram, so they are included. |
-| **Reaper settings backup** (v2.7.0) | Storage page → *Reaper settings backup* card → **Export settings** | One JSON file, `reaper-settings-<model>-<version>-<date>.json`: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all eight lists) and Warden (countries, feeds, ban/allow lists). | Stock settings. |
+| **Reaper settings backup** (v2.7.0) | Administration → Restore/Save/Upload Setting → *Backup & Restore* panel → **Export settings** | One JSON file, `reaper-settings-<model>-<version>-<date>.json`: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all eight lists) and Warden (countries, feeds, ban/allow lists). | Stock settings. |
 | **Full backup** (`.rbk`, v2.7.2) | Administration → Restore/Save/Upload Setting → *Reaper full backup* card | **One file** carrying the stock settings (in the stock `.CFG` format, still restorable by stock/Merlin), the Reaper settings above, and the firewall's resolved domain-set cache — so a reset-and-restore keeps every Reaper store in a single archive. | — (this is the everything-in-one option). |
 
 The one-file **`.rbk` full backup** (v2.7.2) is the simplest option and the one to reach for before a factory reset: it wraps the stock settings and every Reaper store together, checks the archive matches this router model and that `/jffs` is healthy before touching anything, restores the stock settings and reboots, and one click after you log back in completes the Reaper half (firewall and routing lists are staged as drafts to **Apply** then **Keep**). Otherwise, take both of the separate backups above, and take the Reaper one again after any significant change to those four features. Either Reaper file **contains your device addresses and your domain lists** — keep it with your other private backups.
@@ -517,7 +518,55 @@ Export before you make a large change. The result is plain text you can paste ba
 
 **Worth knowing.** Forwards bypass your Zone policy by design — that is what a forward is. If you want traffic to reach the device but not the rest of the network, put the device in its own zone.
 
-#### 4.1.8 Network Services
+#### 4.1.8 Service Intercept
+
+**What it is.** A forward sends traffic *arriving from the internet* to a device inside your
+network. Service Intercept is the other direction: traffic **leaving** a device on your network
+for a chosen service is sent to a server *you* pick, whatever address the device thought it was
+using. It exists for the devices that ignore what DHCP tells them and have a public server
+compiled into their firmware — the classic case is time (NTP), where a thermostat or a TV will
+happily ask a hard-coded internet server forever.
+
+Two modes: **Send to a server** points the traffic at a machine on your network; **Send to the
+router** points it at the router itself, for when the router *is* the service.
+
+**How to use it.** Pick the zone the clients are on, the service port to catch, and the server to
+send it to. The classic NTP setup is: From `LAN`, protocol UDP, intercept port `123`, server
+`192.168.50.10`, server port `123`, return path **Auto**.
+
+**Two things it does for you, which are the whole reason this is not a raw firewall rule:**
+
+- **The server is always exempt from its own rule.** Without that, the server's own request to
+  its upstream would be caught and pointed back at itself — it could never sync, and the fallback
+  the whole arrangement exists for would be dead. You do not have to remember this; it is
+  automatic. The **Exempt** field is for anything *else* that should be left alone.
+- **The return path.** If the server sits on the same network as the clients, it answers them
+  directly from its own address and the client throws the reply away — it was expecting the
+  address it originally asked. **Auto** detects exactly that case and adds the address
+  translation that routes the answer back through the router. If the server is on a different
+  VLAN it correctly adds nothing, because the reply already comes back through the router.
+  **Always** adds it everywhere, which hides the client's address from your server — fine for
+  time, wrong for anything that logs per client. **Never** omits it.
+
+**The router is never intercepted.** Its own traffic is generated locally and never passes the
+point where interception happens, so the router keeps its own route to the outside no matter what
+you set here. The same property means a Rules-tab block on forwarded traffic cannot cut the router
+off either.
+
+**What you give up.** Interception removes the *clients'* fallback. If the server is down, a
+client asking a public server is sent to a dead address and gets nothing — it does not fall
+through to the internet. A firewall rule cannot health-check. For time this is usually an easy
+trade (clocks drift slowly), but decide it deliberately.
+
+**Limits.** IPv4 only. On a dual-stack network a device can still reach a public server over
+IPv6; if that matters, add a Rules-tab block for the service on IPv6, which works today. It also
+matches on a port, so it cannot catch a device that fetches the same thing over HTTPS.
+
+**Not for DNS.** Reaper already ships **DNS Director** for exactly this job on DNS, and it is the
+better tool: per-client policy, a choice of upstream resolvers, and it blocks DNS-over-TLS on port
+853 as well — which a port-53 intercept would sail straight past. Use DNS Director for DNS.
+
+#### 4.1.9 Network Services
 
 **What it is.** The long-standing Asuswrt service filter. It matches traffic leaving your LAN by source address, destination address, port and protocol, and either blocks the listed traffic or permits only the listed traffic, within a daily time window.
 
@@ -529,7 +578,7 @@ The time window applies to the whole list, not per entry. If you need per-device
 
 **Worth knowing.** This filter needs the router's clock to be correct for the time window to mean anything. If time has not synchronised yet, the page says so.
 
-#### 4.1.9 URL Filter
+#### 4.1.10 URL Filter
 
 **What it is.** Blocks web requests whose address contains one of the keywords you list.
 
@@ -539,7 +588,7 @@ Be realistic about the limits. This matches the request as it goes past, so it w
 
 **Example.** Entry `example-game.com`. Plain requests to that domain are refused; the same site over HTTPS is not, which is why this tab is the weakest of the blocking options here.
 
-#### 4.1.10 Keyword Filter
+#### 4.1.11 Keyword Filter
 
 **What it is.** Blocks web pages whose content contains one of the words you list.
 
@@ -547,7 +596,7 @@ Be realistic about the limits. This matches the request as it goes past, so it w
 
 **Example.** Entry `freegamedownload`. A plain page containing that string is blocked. A page that is encrypted, or that spells it differently, is not.
 
-#### 4.1.11 Logging
+#### 4.1.12 Logging
 
 **What it is.** Chooses which firewall decisions get written to the system log — nothing, dropped packets, accepted packets, or both — and shows the recent entries.
 
@@ -557,7 +606,7 @@ Turn on **Drop** while you are diagnosing a rule that is not doing what you expe
 
 **Example.** A device cannot reach a service and you do not know which rule is stopping it. Set logging to Drop, reproduce the failure, and read the entries — each logged line names the addresses and ports, which tells you which of your rules matched.
 
-#### 4.1.12 Limits, and things deliberately not built
+#### 4.1.13 Limits, and things deliberately not built
 
 - **Rule negation ("not") does not exist**, because an empty field already means "any" and an ordered pair expresses an allowlist (4.1.3). A rule tracer is deferred.
 - **The layer order is fixed**: Warden, then Gatekeeper, then the rules engine. An Accept rule here cannot let a geo-blocked source or a quarantined device through (v2.6.2; pending metal confirmation).
@@ -656,7 +705,7 @@ A held device that opens a web page sees a themed **"Awaiting approval"** notice
 #### 4.2.8 Limits and gotchas
 
 - **Phones using rotating private addresses reappear as new devices.** The pending list flags them. This is the single most common source of unexpected pending entries; it is the phone's privacy feature working, not a fault.
-- **The device list is not in the settings backup.** It lives on the router's internal flash, and a factory reset clears it. Export it from the Storage page (4.11) if you have spent time on it.
+- **The device list is not in the settings backup.** It lives on the router's internal flash, and a factory reset clears it. Export it with **Export settings** in the *Backup & Restore* panel (Administration → Restore/Save/Upload Setting, 2.5) if you have spent time on it.
 - **Capacity is 512 devices**, tested to 300. The old 45-device ceiling is gone, and existing lists migrate at first boot. A write failure is logged rather than swallowed.
 - The grandfathering step refuses to overwrite its list if that list is ever too large to load, and logs instead of failing quietly.
 - Before v2.5.0, Block and quarantine were enforced only on the main LAN. That is fixed, and a quarantined device on a guest network now also gets the waiting page.
@@ -878,7 +927,7 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 - **A list that has not resolved yet, or an emptied group, produces no rule** rather than a rule that matches everything — the same fail-to-nothing behaviour the firewall uses.
 - **Objects are shared with the Firewall.** Domain lists are edited here or on Firewall → Objects; they are the same objects. Address, MAC and country objects are still created on the Firewall page and simply appear in the dropdown.
 - **A confirmed set survives a reboot on its own** (v2.7.6/v2.7.7). The marking chain and the routing rules come back complete at boot with no visit to this page, and if the routing half is ever lost the router re-applies it the way it already did for a lost firewall chain.
-- **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup — use *Reaper settings backup* on the Storage page. Twenty rules and more save without trouble.
+- **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup — use **Export settings** in the *Backup & Restore* panel (Administration → Restore/Save/Upload Setting, 2.5). Twenty rules and more save without trouble.
 - **Add rules from a device that is not itself being routed** by the rule you are testing.
 - **To check what actually loaded**, the rules appear as routing-policy entries and a marking chain on the router; if something is not behaving, the system log names any rule that was skipped and why.
 - All of v2.6.7 (WireGuard targets, IPv6, apply-and-confirm, the `/jffs` move) and the v2.6.9 address lists are **pending on-metal confirmation**; the WireGuard and IPv6 legs need a WireGuard client and an IPv6 line to test.
@@ -1137,7 +1186,7 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 **Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal). The Professional page's first load after an upgrade can take ~15 s; the cause is under investigation.
 
-### 4.11 Long-Term Storage, Data Export and the Reaper settings backup
+### 4.11 Long-Term Storage and Data Export
 
 These share the **Storage** page under System Log.
 
@@ -1145,7 +1194,7 @@ These share the **Storage** page under System Log.
 
 **Data export** (mode control here; destination on **Administration → Data Export**) — per-device connection-health metrics (round-trip latency, jitter, loss, TCP connection count and state, throughput, online state). Modes: **Off** (nothing retained or sent), **Store only** (history on the router, nothing leaves), **Store + Export**, **Export only**. Any mode other than Off turns on the **Health probe**, which can also be enabled on its own for the live view and **Preview payload**. Targets: Splunk HEC, Datadog, Dynatrace, Elastic, generic HTTP/JSON, OpenTelemetry, TLS syslog (push), or a **Prometheus** OpenMetrics scrape endpoint (pull, bearer token required). TLS verification is on by default; the API token is stored masked and kept out of process lists and logs; an option hashes device MACs before they leave. **Test connection** and **Preview payload** show exactly what will go out. The probe is light enough to leave on (spread across ticks, at most 16 pings per tick, skipped while the link is saturated; default interval 60 s); the exporter refuses to push a snapshot older than three minutes, so a crashed collector never masquerades as live data. Not included by choice: wireless RSSI/PHY metrics and TCP retransmit counts.
 
-**Reaper settings backup** — **Export settings / Import settings** (2.5).
+**Reaper settings backup** — moved. Export and import now live in the *Backup & Restore* panel on **Administration → Restore/Save/Upload Setting**, alongside the full `.rbk` backup, so every backup is in one place (2.5).
 
 ### 4.12 USB Disks
 

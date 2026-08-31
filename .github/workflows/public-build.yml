@@ -437,8 +437,12 @@ jobs:
   # THREE independent conditions must all hold before anything is published:
   #   1. inputs.publish  -- an explicit checkbox on the dispatch, default FALSE.
   #      Publishing is never a side effect of building; you ask for it.
-  #   2. the branch is main -- on Dev, a fork, or any other branch both jobs are
-  #      skipped entirely, so a development build can never publish.
+  #   2. the branch is main or Dev -- on a fork or any other branch both jobs
+  #      are skipped entirely, so a stray build can never publish. A Dev
+  #      publish is the BETA channel: the tag/release name gets "-beta"
+  #      appended and the release is marked pre-release; refresh_manifest
+  #      stays main-only, so a beta never reaches the on-router update check
+  #      and beta testers flash manually from the GitHub release page.
   #   3. the build succeeded.
   # `if:` REPLACES the implicit success() that `needs:` would otherwise apply,
   # which is why success() is written out. Without it these would run even after
@@ -453,7 +457,7 @@ jobs:
   tag:
     name: Tag for release
     needs: build
-    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write          # job-scoped -- the build job stays contents: read
@@ -473,6 +477,18 @@ jobs:
           set -euo pipefail
           # EXPECTED_VERSION is e.g. "Reaper_v2.3.7"; tags are "v2.3.7-<MODEL>".
           V="${EXPECTED_VERSION#Reaper_}"
+          # Dev = the beta channel. Same build, same series, same everything --
+          # only the published NAME differs: "-beta" is appended to the version
+          # segment of every tag/release (v3.0.0-beta-RT-BE96U) and release.yml
+          # marks it pre-release (both by the explicit input below and by its
+          # own *beta* match). Asset FILENAMES keep the built version string;
+          # the beta identity lives in the tag, the release name and the
+          # pre-release flag. A beta re-spin of the same version follows the
+          # normal re-release path: delete the beta tag or dispatch release.yml
+          # with allow_republish.
+          if [ "${{ github.ref }}" = "refs/heads/Dev" ]; then
+            V="$V-beta"
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
             MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
@@ -522,7 +538,7 @@ jobs:
   release:
     name: Publish
     needs: [build, tag]
-    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
     permissions:
       contents: write
     strategy:
@@ -532,6 +548,9 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
+      # Belt-and-braces: the -beta tag already trips release.yml's *beta* match,
+      # but a Dev publish is ALWAYS a pre-release even if the naming changes.
+      prerelease: ${{ github.ref == 'refs/heads/Dev' }}
 
   # ---------------------------------------------------------------------------
   # UPDATE-MANIFEST REFRESH -- runs ONCE, after the whole per-model release
@@ -544,6 +563,10 @@ jobs:
   # releases just published. It is a SINGLE writer on purpose: the release job
   # is a per-model matrix, so refreshing inside it would race five commits to
   # main. The concurrency group serializes it across overlapping runs too.
+  #
+  # DELIBERATELY main-only, even though tag/release now also run on Dev: the
+  # manifest IS the stable update channel. A Dev/beta publish must never be
+  # offered to fielded routers -- promotion to main is what flips the channel.
   # ---------------------------------------------------------------------------
   refresh_manifest:
     name: Refresh update manifest

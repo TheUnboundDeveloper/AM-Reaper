@@ -76,10 +76,13 @@ jobs:
           # under workflow_call github.event_name is still the CALLER's event.
           TAG="${{ inputs.tag }}"
           [ -n "$TAG" ] || TAG="${GITHUB_REF_NAME}"
-          # tag = v<X.Y.Z[a]>-<MODEL>; model prefixes contain hyphens/underscores
-          # (RT-BE96U, GT-BE98_PRO), so pull the version by pattern and treat the
-          # remainder as the model.
-          VERSION=$(printf '%s' "$TAG" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+[a-z]?')
+          # tag = v<X.Y.Z[a]>[-(alpha|beta|rc)[N]]-<MODEL>; model prefixes contain
+          # hyphens/underscores (RT-BE96U, GT-BE98_PRO), so pull the version by
+          # pattern and treat the remainder as the model. The optional channel
+          # segment ("-beta", "-beta2", ...) is part of the VERSION: it is what a
+          # Dev publish appends, it keeps beta tags distinct from the final ones,
+          # and the *beta* case below is what marks the release pre-release.
+          VERSION=$(printf '%s' "$TAG" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+[a-z]?(-(alpha|beta|rc)[0-9]*)?')
           MODEL="${TAG#${VERSION}-}"
           if [ -z "$VERSION" ] || [ "$MODEL" = "$TAG" ] || [ -z "$MODEL" ]; then
             echo "::error::tag '$TAG' is not of the form v<version>-<MODEL> (e.g. v2.1.2-RT-BE96U)"
@@ -233,7 +236,10 @@ jobs:
           # even inside an `all` fleet run, so it never lands as a standard release
           # alongside the five BCM4916 models. Drop this case to graduate it.
           case "$M" in RT-BE92U) pre="--prerelease" ;; esac
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.prerelease }}" = "true" ]; then
+          # Honor an explicit prerelease input from BOTH workflow_dispatch and
+          # workflow_call (public-build passes prerelease=true on a Dev publish).
+          # On a tag push the input is empty, so this is a no-op there.
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
             pre="--prerelease"
           fi
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then

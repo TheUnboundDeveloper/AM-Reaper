@@ -16,6 +16,8 @@ privacy exposure · **[P3]** cosmetic, polish, internal quality, or deferred-by-
 > is treated as done unless a problem is reported against it; this file no longer tracks per-version
 > confirmations.
 
+*Updated 2026-08-30 (7th pass) — seventeen closed items removed and recorded in [`CHANGELOG.md`](CHANGELOG.md) under the versions that shipped them: the Warden feed ceilings (v2.7.8); the sibling `Tools_Sysinfo.asp` sync (v2.8.3 fleet cut); the diag counter fixes and the user-guide set (v2.8.7); the Traffic Analyzer live-view freeze (v2.8.8); the Firewall Status refresh cue, Wireless Apply and firewall sub-editor Apply feedback, the diag preamble numbers and the guest-pass unit (v2.9.3); the Firewall Status forwards/intercepts rows, the Smart Connect pointer, the Devices export reserved-IP columns, the QoS drops note and the diag SSID length (v2.9.4). The QoS class-breakdown and Traffic Analyzer visual-reset reports closed as working-as-designed (no DPI; no-RTC clock step) and are noted under v2.9.4.*
+
 *Updated 2026-08-30 (6th pass) — six items moved to FIXED IN TREE for the v2.9.4 test image
 (commit `4387547afa`), each pinned by a new `verify_markers` regression rule so a later change
 cannot silently drop it: Firewall Status forwards/intercepts rows; the Smart Connect dead switch
@@ -98,7 +100,10 @@ The ordered short list. Each line points at its full entry below.
    tester data requested. → [Open bugs](#open-bugs--under-investigation)
 2. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro on
    v2.7.6+. → [Open bugs](#open-bugs--under-investigation)
-3. **[P3] Code-review tail, batch B** (`do_reaper_conn_cgi` lock order, `rexport` mask loop,
+3. **[P2] CVE check 2026-08-30 fallout** — whitelist the DNS Traffic Analyzer SQL inputs
+   (`web.c:39324-39370`), Tor 0.4.9 bump before the 2026-09-01 network sunset, the cheap
+   strongSwan/avahi/kernel backports. → [Open bugs](#open-bugs--under-investigation)
+4. **[P3] Code-review tail, batch B** (`do_reaper_conn_cgi` lock order, `rexport` mask loop,
    §2.1 iptables-restore batching — the first and last are owner-deferred; `pinTarget()` is
    **closed**).
    → [Code quality](#code-quality--deferred-with-reason)
@@ -106,6 +111,59 @@ The ordered short list. Each line points at its full entry below.
 ---
 
 ## Open bugs / under investigation
+
+- **[P2] CVE / component check 2026-08-30 (v2.9.4 staged rootfs) — results and the work it queues.**
+  First dedicated inherited-component CVE pass: 6 research slices + 2 adversarial verification
+  passes, every finding re-derived from the staged fs, the vendored source and the CVE record.
+  Full report `audits/CVE-CHECK-2026-08-30.md` (ASUS root, internal); slice evidence in
+  `audits/cve-2026-08-30/`. **No REACHABLE-HIGH survives; nothing REACHABLE-MED at factory
+  defaults.** The default-on surface (dnsmasq 2.93, avahi, lldpd incl. the WAN port, Samba SMB2/3
+  LAN-only, busybox udhcpc/ntpd, OpenSSL 1.1.1 at the June-2026 ESM level) carries its fixes.
+  - **[P2] SQLi in ASUS's DNS-based Traffic Analyzer handlers, compiled in here** (CVE-2026-11851
+    class). `httpd/web.c:39324-39370` `ej_dns_appStat / ej_dns_wanStat / ej_dns_wanStat_detail`
+    pass raw `websGetVar("client"/"mode"/"dura"/"date")` into the prebuilt `dns_sqlite_Stat_hook()`
+    (`SELECT %s FROM %s WHERE %s …`, `mac="%s"`); only `ej_dns_status` (`:39286`) validates.
+    Registered unconditionally under `RTCONFIG_DNSQUERY_INTERCEPT=y`; `getAppTraffic_Dns.asp` /
+    `getWanTraffic_Dns.asp` ship. Admin-auth (or CSRF'd admin) read of `/jffs/app_*.db`. **Fix =
+    whitelist the four inputs exactly as `ej_dns_status` does; do not wait for ASUS's build#.**
+    Add to the v3.0.0 security review's pre-seeded list.
+  - **[P2] Tor 0.4.8.22 stops working 2026-09-01** — 0.4.8 EOL since 2026-06-01, the network
+    rejects <0.4.9 from September 1 (torproject.org). Client-side TROVE-2026-009/011 also unfixed.
+    Bump to 0.4.9.x (Merlin 102.9 carries 0.4.9.11 + an IPv6-leak fix) or drop the feature.
+  - **[P3] Cheap backports, no default change** — strongSwan CVE-2026-47895 `clone_()` hunk
+    (`identification.c:1712-1729`; unauth EAP-Identity/XAuth double-free, MED only when IPsec server
+    is on, UDP 500/4500 closed by default); avahi CNAME trio CVE-2025-68468 / CVE-2025-68471 /
+    CVE-2026-24401 (`browse.c:298/323/401-424`; LOW but **default-on** — the precondition exists
+    because `nsswitch.conf` uses `mdns4_minimal` and nss-mdns ships, so any router-side `.local`
+    lookup opens the record browser); kernel one-hunk set CVE-2024-50299 (SCTP OOTB — LAN path
+    proven, impact a 2-byte tailroom read, LOW), CVE-2023-52881, CVE-2024-47684, CVE-2024-50154,
+    CVE-2023-6932, plus CVE-2023-52340 (MED only with IPv6 WAN). No stable backports beyond
+    4.19.294 exist in the tree — proven.
+  - **[P3] Document as known limitations (Samba precedent)** — netatalk 3.0.5 / Time Machine:
+    2022 pre-auth RCE set **confirmed absent in code** (CVE-2022-23125 `appl.c:86-111`,
+    CVE-2022-45188 `appl.c:410-420`, CVE-2022-43634 `dsi_write.c:37`, CVE-2022-23121) — MED when
+    enabled; wpa_supplicant **0.6.10 (2010)** used for WAN 802.1X (`rc/auth.c:216`) — MED when
+    configured, no slice had inventoried it; lighttpd 1.4.39 behind the captive portal
+    (CVE-2018-25103, pre-auth :8083 when `cp_enable`/`chilli_enable`=1); net-snmp 5.9.4.pre2
+    CVE-2022-44792/93 with a RW community; Quagga 0.99.24 zebra CVE-2016-1245 when
+    `quagga_enable=1`. Each is off by default. Own rung + metal test if any is upgraded.
+  - **[P3] Supply-chain note** — `webs_update.sh:66` `REAPER_SIG_ENFORCE=0`: the manifest signature
+    check is inert (owner-shelved 2026-08-23); protection is HTTPS + CA + GitHub host-pin + sha256.
+    Residual = GitHub-account compromise. Re-enable or record as accepted.
+  - **[P4] Hygiene** — OpenSSL 1.1.1zi pair (CVE-2026-63072 / -54874, no consumer); e2fsprogs
+    CVE-2022-1304 (owner-triggered scans only — the hotplug-fsck claim was refuted); busybox
+    `ash.c`/`tar.c` bumps (root-only residuals); stray x86-64 `lib/libexpat.so`; 19 blanket
+    `-lxml2` links + expat 2.0.1 build (HIGH the day any binary parses network XML); the dead
+    HTTP `app_*.sh` install path (`apps_ipkg_server` empty, APP_* unset) — remove the pages.
+  - **Uninspectable, recorded so nobody re-finds them**: Broadcom `hostapd` (default-on, over the
+    air), `cfg_server`/`cfg_client` 7788, `networkmap`, `infosvr` 9999, `protect_srv`, `dnsqd`,
+    `asusdiscovery`, Tuxera `tntfs/tfat/thfsplus`. CVE-2025-15101 (ASUS web UI cmd-inj) stays
+    INFERRED-fixed from sibling build numbers — no public endpoint to grep.
+  - **Cadence**: delta check per minor release; full pass when the Merlin base moves (102.9's
+    OpenSSL 3.5 migration is the next).
+
+---
+
 
 - **[P1] AiMesh "Add Node" finds nothing whenever the CAP heard the node only on 2.4 GHz — the
   parent-presence gate throws away a parent that would have worked (owner, field, 2026-08-30;
@@ -263,84 +321,6 @@ The ordered short list. Each line points at its full entry below.
   itself: until a restore can report its own outcome, every restore report is unfalsifiable.
   **[FIXED IN TREE v2.9.3, commit `3a6507bfbf` - rides the next image; metal owed]**
 
-- **[P2] Firewall Status omits Forwards and Service Intercepts entirely — the posture page does not
-  report two enforcement surfaces that are live (owner, metal, 2026-08-29).** The "Rules engine"
-  card at `Reaper_Firewall.asp:1195-1200` counts `nrules / nobj / ngrp / nsvc / nzone / nzpol` and
-  stops there. The `nat` record store — which holds BOTH port forwards and Service Intercepts, since
-  v2.9.0 distinguishes them by the record's `mode` field (`forward | intercept | redirect`) — has no
-  row anywhere on the tab, and neither does the `REAPER_FWM` masquerade chain that Intercept's
-  hairpin return path installs. The page's stated job is to report posture; an operator who has just
-  redirected all LAN NTP to an internal server can read this page top to bottom and see no trace of
-  it. That is worse than a missing count, because the absence reads as "nothing configured" rather
-  than "not shown". Note the draft-state machinery already treats `nat` as a first-class key — the
-  `dirty` flag in `web.c` walks `obj, grp, svc, zone, zpol, rules, edef, nat` — so Status is the odd
-  one out, not the store.
-  **Scope:** the CGI must emit the counts (`action=status` in `httpd/web.c`, alongside the six it
-  already sends), and the page renders them with `kvCount`. Worth deciding whether forwards and
-  intercepts are one row or two — two is more useful (they are operationally different things) and
-  the `mode` field already separates them, at the cost of one extra minted token across 25 packs.
-  Whether the `REAPER_FWM` chain deserves its own row is a smaller call; the Intercept row implies
-  it. **[FIXED IN TREE v2.9.4, commit `4387547afa` - regression marker pinned; rides the v2.9.4 test image; metal owed]**
-
-- **[P3] Traffic Analyzer resets visually every so often — reported 2026-08-29, not yet
-  characterised.** The page occasionally snaps back as if it had just loaded: what is not yet
-  established is *what* resets (the live WAN chart only, the per-window history, or the whole page)
-  and whether any stored data is actually lost. That distinction sets the priority — a redraw with
-  the dataset intact is cosmetic; a history that genuinely zeroes is **[P2]**. **Do not assume this
-  is the v2.8.8 freeze** (`rt_bound()` pipe inheritance, closed above): that symptom was a *stall*
-  followed by a lurch, not a return to empty. Candidates worth separating, cheapest first:
-  (a) a **clock step**, which this box takes on every boot and every NTP re-sync because the
-  RT-BE96U has no battery-backed RTC — `rtrafd.c` zeroes ring slots by wrapped index specifically to
-  survive that, and the same mechanism is what produced the historical "Month tab resets on a
-  firmware update" field report (see `rtrafd.c` ~413-490 / ~2311-2371), so a step in the wrong
-  direction is the first thing to rule in or out; (b) an **rtrafd restart** re-seeding `live.json`
-  from scratch — visible as a fresh daemon PID or a `healthhist spool reset` line in syslog;
-  (c) a **page-side** rebuild, where the fetch helper's single `onloadend` hands `ok=false` to a
-  draw path that rebuilds its series from an empty response rather than holding the last good frame.
-  The only page-initiated `location.reload()` is in `applySettings()` (user-driven, 6 s after
-  Apply), so a spontaneous reset is *not* that. **Data to collect at the moment it happens:** which
-  window tab was open, whether the Month/Day tabs also went empty or only the live view, `uptime`
-  plus `pidof rtrafd` before and after, and syslog around the event grepped for `rtrafd`, `ntpd`,
-  `crond: time disparity` and `settimeofday`. 
-  **CORROBORATION FOR CANDIDATE (a), 2026-08-30:** a clock step is now OBSERVED on this unit, not just theorised. The live syslog interleaves `Aug 29 23:16:28` and `Aug 30 03:14:19` lines in the same contiguous block - i.e. the clock jumped forward ~4 h mid-log when NTP corrected, exactly the no-RTC behaviour described above. That does not yet prove it causes the visual reset, but it removes the need to establish that steps happen at all; the remaining work is correlating a step with an observed reset. **[owed - characterisation]**
-
-- **[P2] QoS class breakdown reads almost entirely "Default" and "Streaming" while gaming and
-  web/VoIP traffic is live — reported 2026-08-29 (owner's own box), cause not established.** Two
-  readings, and the data to tell them apart is cheap. **(1) The chart is right and the classifier is
-  the problem.** This is the structural shape D1 predicts: the catch-all is `qos_default=4` -> qid5
-  "Default", and essentially nothing on a modern LAN marks DSCP, so unmarked game UDP and TLS web
-  both land in the catch-all. The DSCP map itself is *not* the old inverted one — verified in tree
-  2026-08-29: `qos.c` sends CS4/AF41-43 to class 2 and `shared/defaults.c` ships
-  `qos_class_names=Web/VoIP,Gaming,Streaming,Downloads,Default`, so class 2 is genuinely "Gaming"
-  (the D2/D3 label-and-map inversions were closed in `cef37f5cea` / `0df80aff0b`). What is left is
-  that beyond DSCP and the preset rules there is no classifier at all — no port, protocol or
-  connbytes rule puts a game or a browser anywhere but the catch-all. **(2) The chart is
-  mis-summarising.** The "By class" panel is **upload-only** (it carries the `updonly` badge and
-  reads the egress queue counters), so it can never describe download-dominated traffic, and a
-  reader comparing it against what they know is on the network would call that wrong even when
-  every counter is correct. **Decisive check, no build needed:** on the live box run
-  `tmctl getqstats` per qid while a known flow is running and compare `txPackets` against what the
-  panel draws — if they agree, this is (1) and the work is classification rules; if they disagree,
-  it is (2) and the work is on the page. Note also that the panel is meaningless unless
-  `qos_type=11` is actually armed with a non-empty `qos_obw` (D5). Related: the qid5-only drop
-  signature already confirmed on metal 2026-08-19. **[owed - triage]**
-
-- **[P2] Traffic Analyzer live metrics froze/flatlined on v2.8.6-v2.8.7 metal, lurching forward every ~20-30 s
-  (field, 2026-08-27 night; root-caused and fixed in tree 2026-08-28, lands v2.8.8).** A regression from the
-  2026-08-26 audit remediation itself: the `rt_bound()` popen timeout wrapper added to rtrafd let its watcher
-  subshell - and the `sleep` it forks, which `kill $_w` never reaches - inherit the pipe write fd, so the
-  reader gets EOF only when the timeout expires. Every tmctl answered in milliseconds but still cost the
-  collector the full 3 s of blocked fgets(): with HW classful QoS on, 7 queues x 3 s every 4 s class poll plus
-  6 s per ping-probe cycle blocked the single-threaded collector ~27 s per loop pass, so live.json updated
-  once per lurch instead of 10x/s. Confirmed on the RT-BE96U lab: live.json mtime frozen 22 s then a burst;
-  the shipped wrapper measured 3 s / the fixed one 0 s for an instant child on the router's own busybox
-  (v1.25.1). Why the audit's metal check missed it: it verified rtrafd CPU (flat - correct, the daemon was
-  *blocked*, not spinning), not collector latency. Fix (canon 0562c23e57, cut as patch 0562 on the v2.8.8 rung): detach the watcher from the
-  pipe (`>/dev/null 2>&1` before its `&`); harness-proven 3.008 s -> 0.005 s fast path with the hung-child
-  kill still firing at the deadline. All five sibling branches carry the same wrapper and take the fix at the
-  next port (done on the v2.8.8 cut). First field check of the v2.8.8 MCP test image on the owner's
-  RT-BE96U looks good (owner, 2026-08-28). **[owed - v2.8.8 release publication]**
-
 - **[P2] Warden "crash" on the BE92U tester after an amtm + Diversion 6.1 update — hypothesis only,
   tester data requested (2026-08-23).** No fix yet. Ranked: (1) the stuck-nvram wlcsm bug tripped by
   the addon installers' bare `nvram get` storm (our `_nv` guard covers only our own scripts — look
@@ -403,225 +383,11 @@ The ordered short list. Each line points at its full entry below.
   boot grace, PPPoE-only, link-up, all-three-probes-fail, one-shot latch, `SIGHUP` keeps NAT/routes).
   No code change warranted — this is an upstream OLT stale-session issue. **[owed — tester capture]**
 
-- **[P2] `reaper_diag` under-reported QoS and over-reported wireless churn — two counter defects
-  found on RT-BE96U v2.8.6 metal, 2026-08-28.** Both made the diag misreport a state rather than
-  fail, which is the worst way for a triage tool to be wrong: the output looked healthy and
-  authoritative either way.
-  - **Section 10 (QoS) could not tell "shaping" from "armed but toothless."** The per-queue
-    readback piped `tmctl getqcfg` through `head -3`, keeping `qid`/`priority`/`qsize` and cutting
-    `weight`/`minBufs`/`schedMode`/**`shaper`** plus the `ret code` status line. The three
-    survivors are programmed by `setqcfg` unconditionally, while every rate element sits behind
-    its own guard (`cap>0`, `obw>0`, `obw>0 && qos_pshaper!=0`) — so a box whose class rates never
-    landed printed a per-queue block byte-identical to a healthy one. The port shaper *is* printed
-    in full, so a wholly empty `qos_obw` still shows as `(0,0,0)`; what was invisible is the case
-    that matters more — port shaper correct, per-class rates from `qos_orates` wrong or absent
-    underneath, i.e. exactly the rate arithmetic the classful engine has historically got wrong.
-    Sharpening the irony, that block had **already** been rewritten in v1.3.7 for a
-    truncation-shaped misdiagnosis (the `QOSDIAG-1` comment: reading the port shaper
-    unconditionally "made a healthy type-10 box report (0,0,0) and look uncapped — which is exactly
-    what sent the 2026-08-01 investigation down a blind alley"). The fix split the engines and left
-    the same bug on the other side of it: the **type-10** branch reads `getqcfg --qid 0` untruncated
-    with the shaper visible, while the **type-11** branch — the one with seven shapers to verify
-    instead of one — was the truncated loop.
-  - **Section 19b counted syslog lines, not events.** `hostapd` repeats the same
-    `IEEE 802.11: disassociated` line for one flap — commonly twice, in bursts of up to ten
-    identical lines inside a single second. Measured over a 48 h span on metal: **2810 disassoc
-    lines → 411 unique `(timestamp, MAC)` events, 6.8x inflation**; the top station was reported as
-    `disassoc=1057 (~21/h)` when the truth was **218 events ≈ 4.5/h**. Both the 19b table and the
-    section 0b `finding INFO` line were fed from the raw line count. An inflated churn figure makes
-    a device that has already been ruled benign look like a router fault, and is precisely what
-    drags a closed item back into triage.
-
-  **Fixed in tree, not yet built (REAPER-DIAG v1.3.7 → v1.3.8, `release/src/router/others/reaper_diag`).**
-  Section 10 now prints one line per queue carrying every field — and is *shorter* than the form it
-  replaces (7 lines vs 21) — plus a `[TMCTL-ERR]` tag when `ret code` is non-zero, which the old
-  truncation discarded along with everything else. Both churn counters dedup on
-  `(timestamp, MAC, event)` before incrementing; 1-second granularity means a same-second burst
-  counts as the one flap it is. The `finding INFO` threshold (200) is deliberately left alone —
-  against deduped events it stops firing on ordinary roaming while the real 218-event loop still
-  trips it. Verified against live metal: all seven queue shapers read back exactly per `qos_orates`
-  (qid1–3 = 1980000 = 90%, qid4–5 = 2090000 = 95%, qid0/qid6 uncapped at 2200000).
-
-  **Regression guard added:** `build-scripts/ci/check_diag_counters.sh` — layer A greps the source
-  for the invariants (no `head -3` on `getqcfg`, shaper captured, `TMCTL-ERR` present, dedup at both
-  churn sites, `VER >= 1.3.8`), layer B *extracts the real awk programs out of the diag source* and
-  runs them against fixtures, so the tests cannot drift from what ships. Confirmed to fail in the
-  right direction: 8/8 pass against the fixed source, 7/7 fail against pre-fix v1.3.7 — including
-  the old churn awk scoring a 7-line fixture as 6 events where the fixed one scores 3. **[owed —
-  ships with the next diag build]**
-
 ---
 
 ## UI / UX polish
 
 ---
-
-- **[P3] Firewall Status refresh button gives no sign it did anything (owner, metal, 2026-08-29;
-  owner confirmed via devtools that the request DOES fire).** `Reaper_Firewall.asp:1673` wires
-  `$('st_refresh').onclick = loadStatus` and nothing else — no busy state, no completion cue. When
-  the posture has not changed, `loadStatus()` rewrites the same `innerHTML` into the same five
-  cards, so a successful refresh is pixel-identical to no refresh and the operator cannot tell a
-  working button from a dead one. (The control is labelled `RFW_19` = "Refresh"; it is the only
-  button on the Status tab.) A few seconds of acknowledgement is enough — the card header already
-  carries an empty `<span class="hint" id="st_hint">` at `:178` built for exactly this, so a
-  timestamp or a brief "updated" there needs no new markup.
-  **Constraint that shapes the fix (standing rule 34):** this button shares `loadStatus` with the
-  10 s auto-refresh `setInterval` at `:1250`, so the cue must hang off the ONE always-fires
-  completion point in the `xhr` helper (the guarded handler at ~`:661-672`, which already exists
-  because `readyState 4 / status 0` fires alongside error and timeout). Setting a busy flag on click
-  and clearing it only on success would wedge the button the first time a poll fails. **[FIXED IN TREE v2.9.3, commit `3a6507bfbf` - rides the next image; metal owed]**
-
-- **[P2] Wireless Apply looks like it did nothing, because its feedback rides the connection it
-  destroys (owner, metal, 2026-08-29, v2.9.2).** `Advanced_Wireless_Content.asp:3607` calls
-  `httpApi.nvramSet(postObject, function(){ showLoading(restartTime); … location.reload(); })` —
-  the loading overlay lives INSIDE the success callback. Applying a Wi-Fi password restarts the
-  radio and deauths the operator, so the response to that very request never arrives, the callback
-  never runs, and the page sits inert while the router applies the change perfectly. Owner only
-  realised it had worked when he tried to leave the page and found himself disconnected. This is
-  now the FIRST-BOOT path, not an edge case: factory Wi-Fi is open again as of v2.9.2, so the
-  intended flow is join-over-Wi-Fi then set a password — which always deauths.
-  **Fix:** raise `showLoading()` BEFORE the request, and when the browser is on Wi-Fi replace the
-  auto-reload-and-hope with a persistent instruction ("your Wi-Fi password changed — reconnect with
-  the new password, then continue") rather than a countdown that reloads into a dead connection.
-  Note the security fields are stripped from `postObject` under `isSupport("sdn_mainfh")`
-  (`:3587-3605`) and travel the SDN main-fronthaul path instead — metal-confirmed working, so do
-  not "fix" that. **[FIXED IN TREE v2.9.3, commit `3a6507bfbf` - rides the next image; metal owed]**
-
-- **[P3] Firewall sub-editor Apply buttons give no visual feedback at all (owner, metal,
-  2026-08-29).** `Reaper_Firewall.asp:684` `fwApply()` does `f.submit()` into the hidden `fw_hidden`
-  iframe (`fwform`, `:617`, `action=/start_apply.htm`) and then, seven seconds later, blindly
-  `location.reload()`. Between the click and that reload there is no busy state, no spinner and no
-  message — the operator gets a dead-looking button for 7 s and then a page that flashes. Seven
-  call sites go through it: the URL filter (`:1384`), keyword filter (`:1399`), log level
-  (`:1403`) and the four at `:1314/:1324/:1363`.
-  **Do NOT "fix" the Rules-tab Apply — it is already correct.** `$('rf_apply')` (`:1652`) takes a
-  different path entirely: `fwcgi('action=apply', …)` with `showSaved(S,true,<#RFW_154#>)` on
-  success plus an `rfwLoad()` refresh, and its pending-changes banner was metal-confirmed working
-  in v2.9.0. The gap is only the `fwApply()` family.
-  **Shape of the fix:** the acknowledgement has to be raised *before* `f.submit()`, not after —
-  the form posts into a hidden iframe, so there is no navigation to hang a completion cue on and no
-  callback that reliably fires. A busy state on click plus the existing `showSaved()` helper (used
-  by the Rules tab) is enough; the 7 s timer then becomes the completion cue rather than the only
-  observable event. Same symptom class as the wireless-page Apply (see the wireless item), but a
-  DIFFERENT root cause — there the feedback sits inside an `httpApi.nvramSet` success callback that
-  can never fire because applying the change deauths the client. Worth fixing together as one
-  "every Apply must acknowledge itself" pass. **[FIXED IN TREE v2.9.3, commit `3a6507bfbf` - rides the next image; metal owed]**
-
-- **[P3] Diagnostics preamble blocks are numbered `0.` and `0b.` — DECIDED 2026-08-29: drop the
-  numbers (owner).** `others/reaper_diag:938` emits `#### 0. SANITIZATION LEDGER (what was found and
-  withheld) ####` and `:881` emits `#### 0b. FINDINGS (derived by the script; read these first)
-  ####`; `www/Reaper_Diag.asp:114` mirrors the `0.` literal in the on-page example. The report body
-  is NOT affected — all 28 `sec()` calls already run `1. IDENTITY / VERSION` through
-  `19b. SYSLOG HISTORY`. Only these two preamble blocks, assembled ahead of `$BODY` and never part
-  of the numbered sequence, carry a zero.
-  **The work, in full:**
-  1. `others/reaper_diag:938` -> `#### SANITIZATION LEDGER (what was found and withheld) ####`
-  2. `others/reaper_diag:881` -> `#### FINDINGS (derived by the script; read these first) ####`
-  3. `www/Reaper_Diag.asp:114` -> same edit to the sample line, so the page and the artefact agree
-  4. The report's own guidance prose at `:955` says "Start with 0b (FINDINGS), then 19b (history)" —
-     it must lose the `0b` too, or the file will point at a label that no longer exists. Nothing
-     else in that prose moves: `:950` and `:952-955` cite sections 14 and 16, which keep their
-     numbers.
-  5. Bump `REAPER-DIAG` version (`www/Reaper_Diag.asp:72` carries the string) so a report can be
-     told apart from a pre-change one.
-  **Why not renumber:** shifting `1->2 ... 19b->20b` so the ledger could become `1.` would silently
-  invalidate every reference by number — the report's own prose, the script comments at `:43` and
-  `:759`, the DIAG findings in this backlog and in project memory, and prior session rows citing
-  sections 11b and 19b. Removing two numbers achieves "the numbering starts at 1" at none of that
-  cost. **[FIXED IN TREE v2.9.3, commit `3a6507bfbf` - rides the next image; metal owed]**
-
-- **[P3] Gatekeeper "Guest pass length" shows a bare number with no unit (owner, metal, 2026-08-29).**
-  `www/Reaper_GK.asp:162` renders `<select id="s_hours">` with the options `4 / 8 / 24 / 48` and
-  nothing anywhere says what they are. Neither surrounding label helps: `RGK_25` is "Guest pass
-  length" and `RGK_26` is "Timed internet-only access for visitors". The operator is left to infer
-  hours from the value 24, which is a guess that happens to be right — the nvram key and the CGI
-  parameter are both `guest_hours`. Getting it wrong is not free on this feature: someone reading
-  `48` as days or `4` as minutes mis-sets a visitor's access window.
-  The page already knows the unit and shows it **one place only** — the per-device grant button at
-  `:306` renders `gkEsc(j.guest_hours) + ' h'` — so the settings row and the button currently
-  disagree about whether a unit is worth displaying.
-  **Cost is the honest part: this is a dict change, not a one-liner.** All 25 packs move in lockstep
-  (identical line counts, `LnxDictPrep` maps named tokens to line indices at build), so any of these
-  costs one token minted and translated 24 times:
-  - a unit suffix rendered after the `<select>` — smallest diff, keeps the option values clean, and
-    is the shape most locales handle without word-order trouble;
-  - unit text folded into each `<option>` — reads best in English, but multiplies the translation
-    surface by four and invites "24 hours" being pluralised wrongly in packs that inflect;
-  - re-word `RGK_26` to carry the unit in the sublabel — no new token, but it re-translates an
-    existing one across 24 packs, so it is not actually cheaper, and it hides the unit from anyone
-    scanning the control rather than the description.
-  Recommended: the suffix, and take `:306`'s hardcoded `' h'` through the same token while there.
-  **Secondary finding:** that `' h'` at `:306` is a hardcoded English abbreviation that never goes
-  through the dict at all — same class as the Tier-3 i18n item (hardcoded CGI error strings), and it
-  is the reason the unit "already appears" without any pack having been asked to translate it.
-  **[FIXED IN TREE v2.9.3, commit `3a6507bfbf` - rides the next image; metal owed]**
-
-- **[P3] Diag over-reports VIF SSID length by one (found reading a live v1.3.9 report,
-  2026-08-30).** `others/reaper_diag:456` emits `ssid_len=$(nvram get ${VIF}_ssid | wc -c)` -
-  `wc -c` counts the trailing newline `nvram get` appends, so every VIF line reads +1: a live
-  report showed `ssid_len=7` for a 6-char SSID, 6 for 5, and 33 for the 32-hex onboarding BSS,
-  consistently. The primary-radio path reports its length correctly (32), so the two disagree
-  within one report. Cosmetic, but a diag that miscounts invites false "the SSID changed"
-  conclusions when comparing reports - the whole value of printing a length instead of the
-  (withheld) SSID is that it can be compared exactly.
-  **Fix:** one line - `wc -c` -> `awk '{print length($0)}'` or `tr -d '
-' | wc -c` (busybox-safe;
-  the diag runs under /bin/sh). Bump REAPER-DIAG to v1.3.10 and, per the build-gate lesson of
-  2026-08-30, update the pinned `REAPER-DIAG v1.3.9` marker in the engine's `verify_markers.txt`
-  AND the lean repo's build-scripts copy in the same change - the v2.9.3 first build failed
-  verify on exactly that pairing. **[FIXED IN TREE v2.9.4, commit `4387547afa` - regression marker pinned; rides the v2.9.4 test image; metal owed]**
-
-- **[P3] QoS class table: add a drops-interpretation note under the priority/weighted explainer
-  (owner ask 2026-08-30, wording direction his).** `Reaper_QoS.asp` shows per-class DROPS counters
-  with no guidance on when a number is alarming, and the metal lesson of 2026-08-30 is that it
-  reads scary precisely when the system is working: Default went 441 -> 1191 during two speed
-  tests (~0.01% of the packets moved, PI2 signaling at the 95% ceiling) and then froze at idle -
-  predicted, tested, confirmed. The owner's first read of 441 was "large amount of drops...not
-  sure if these are during settings changes". The AQM card ("drops rise briefly when a class is
-  held to its rate; that is the system working") states the mechanism but not the operator's rule
-  of thumb.
-  **The work:** one new sentence-length token (RQOS_124 - next free; 123 exist) placed directly
-  AFTER the priority/weighted explainer paragraph below the class table, saying in substance:
-  drop counters are cumulative since the last QoS restart and normally grow only during
-  saturation such as a speed test; counters that climb while the link is idle, or while a class
-  sits well below its ceiling, are the signal of an actual problem. Append to all 25 packs
-  (lockstep - currently 6781 lines; English-seed, translate pass owed with RGK_61/RSEC).
-  Standard rules apply: reaper_langcheck OUR[] already lists Reaper_QoS.asp, no line-index moves.
-  **[FIXED IN TREE v2.9.4, commit `4387547afa` - regression marker pinned; rides the v2.9.4 test image; metal owed]**
-
-- **[P2] The Smart Connect master toggle is a dead switch in the migrated SDN state, and the Rule
-  page's help text points at a control that no longer exists (owner, metal, 2026-08-30).** Owner
-  enabled Smart Connect from our toggle on `Advanced_Smart_Connect.asp` (commit `8f560e59b1`);
-  nothing happened - the Network page kept three per-band main cards and every band on the Rule
-  page read "- -".
-  **Why:** the toggle sets the CLASSIC pair (`smart_connect_x=1` + `smart_connect_selif_x` mask)
-  and fires a bare `restart_wireless`. Post-migration the main network is owned by the SDN MAINFH
-  profiles (`mainfh_smart_connect.status` / `.band_bitwise`, consumed by `SDN/sdn.js:547/2309/6592`),
-  and nothing in the classic path regenerates them - no `restart_sdn`, no `sync_apgx_to_wlunit` -
-  so the per-band profiles come back unchanged. Not the nvram length trap: `selif_x` is CKN_STR64.
-  Same family as the whole migration saga: classic-nvram controls that do not drive the SDN layer
-  are dead once migrated.
-  **The working path (told to the owner):** Network page -> main network card -> Wi-Fi band
-  checkboxes (the `checkbox_wifi_band` control, which carries `SDN_MainFH_Smart_Connect_Hint`) ->
-  select all bands -> Apply. Goes through the SDN apply and merges the cards properly.
-  **RESOLVED v2.9.4 — option (a)-as-pointer chosen, (b) and (c) partially:** the page detects the
-  migrated state from `sdn_rl` (`MAINFH` present); the button becomes a pointer to
-  `/reaper_shell.asp#SDN.asp` and the click-guard stops the inert classic post; both stale hints
-  (the "- -" cell title and the top banner, now `#scWhereHint`) reword to the Network page when
-  migrated. Hand-forging `sdn_rl` was deliberately rejected — the SDN app posts a fully
-  re-serialized list and a bad serialization takes down every SSID. RESIDUAL, deliberately left:
-  the Rule page still reads `smart_connect_selif_x` for its in-group display, which can desync
-  from the MAINFH profiles; once bands are merged via the Network page, whether stock populates
-  the steering tables (bsd) is a metal observation, not a code question.
-  **The work:** (a) make the toggle state-aware - in the migrated state either drive the MAINFH
-  band_bitwise through the same path the SDN app uses, or replace the button with a pointer to the
-  Network page edit; do NOT leave a control that silently no-ops. (b) Fix our "- -" cell hint on
-  the Rule page (`Advanced_Smart_Connect.asp:202`): it says "add the band under Wireless > General",
-  but post-migration that page is RF-only and the band membership lives on the Network page - a
-  dead pointer we wrote. (c) While in there, decide what the Rule page should read as "in the
-  group" when MAINFH owns membership - it currently reads `smart_connect_selif_x`, which can
-  desync from the profiles (observed: button label said "Disable" = x is 1, yet every band read
-  "- -"). **[FIXED IN TREE v2.9.4, commit `4387547afa` - regression marker pinned; rides the v2.9.4 test image; metal owed]**
 
 - **[P3] Rail clock never re-syncs with the router - add a periodic refresh (owner ask
   2026-08-30).** The date/time in the nav rail (`.railclock`, `#rc_time`/`#rc_date` -
@@ -796,33 +562,6 @@ The ordered short list. Each line points at its full entry below.
 
 ---
 
-- **[P3] Devices export drops the IP of an offline device that holds a reservation or a pin (owner
-  ask 2026-08-29).** `expRows()` in `www/Reaper_Devices.asp` emits `ip: (d.ip || '')` — the *current
-  lease* — so a device that is pinned or statically reserved but offline at export time exports with
-  an empty IP, even though the router knows exactly which address it owns. That is the wrong answer
-  for the file's stated purpose: the comment above it calls this an **inventory**, and deliberately
-  exports every device rather than the filtered view for precisely that reason. An inventory that
-  blanks the addresses an operator went to the trouble of assigning is the same class of surprise.
-  The data is already in hand — the render path uses `d.resv` / `d.resv_ip` a few lines below, so
-  the change is confined to `expRows()` and all three formats (CSV, JSON, HTML) inherit it from that
-  one function. **Decide before writing it:**
-  - **Do not silently pass a reserved address off as a lease.** `ip` today means "has this address
-    right now"; a reservation means "is entitled to it". Collapsing the two makes the CSV read as
-    though an offline device were online. Preferred shape: keep `ip` as the live lease and add a
-    second field (`reserved_ip`, plus a source/state column) so the distinction survives into the
-    file — JSON and HTML carry it for free; CSV grows a column, which is a format change worth a
-    conscious nod.
-  - **Reservations that are broken must not export as fact.** The page already distinguishes
-    `d.orphan` (pinned to a MAC that no longer appears) and `d.dup` (two devices pinned to the same
-    address) and renders both with the `pindead` chip. Those addresses are exactly the ones an
-    operator should not copy into another system unqualified, so whatever field carries the
-    reservation must carry that state too.
-  - `d.resv_in_pool` (reserved inside vs outside the DHCP pool) is worth carrying for the same
-    reason — an out-of-pool reservation is a legitimate config, but it reads as an anomaly without
-    the flag.
-  No CGI or httpd work: `action=status` already delivers every field named here, and the export is
-  built entirely in the browser by design. **[FIXED IN TREE v2.9.4, commit `4387547afa` - regression marker pinned; rides the v2.9.4 test image; metal owed]**
-
 - **[P2] Sign the firmware-update manifest — IMPLEMENTED for v2.7.3, then SHELVED INERT (owner
   decision 2026-08-23).** All machinery ships but nothing enforces: `REAPER_SIG_ENFORCE=0` in
   `reaper_webs_update.sh` skips the whole verify (no sig fetch, no refusal, error 9 / the
@@ -910,6 +649,30 @@ The ordered short list. Each line points at its full entry below.
     warning; persisted in the /jffs store, OFF by default; cleared at boot unless persisted.
     **[project]**
 
+- **[P3] Static preamble puncturing control for 320/160/80 MHz channels (`wl eht dissubchan`) —
+  BUILDABLE, source-only (investigated 2026-08-31).** 802.11be preamble puncturing lets the AP keep a
+  wide channel and transmit around a 20/40/80 MHz slice that is occupied (a neighbour's 6E/7 BSS parked
+  inside our 320 block) instead of falling back to 160. Our SDK (`WIFI7_SDK_20231126`) has the
+  **static** form: `WL_EHT_CMD_DISSUBCHAN` (`wlioctl.h:14489`, struct `wl_eht_dissubchan_cmd` with
+  `dissubchans` + `pending_dissubchans` + `pending_csa_triggered` = applied live via CSA), and the
+  shipped `wl` exposes `wl eht dissubchan [bitmap]`. `wl.ko` already computes the legacy-client width
+  after puncturing (`wlc_eht_get_max_legacy_bw_after_puncturing`), so Wi-Fi 6/6E clients are served
+  inside the un-punctured portion by the driver. **Nothing in the firmware drives it:** no nvram
+  consumer, no GUI, no init hook; `wlconf`/`acsd2`/`rc` carry no reference.
+  - **Shape:** nvram `wlX_punct_bitmap` (0 = off) applied after wlconf at radio bring-up
+    (`rc/sysdeps/init-broadcom.c`, beside the `eht_features` assembly) and on `restart_wireless`;
+    Wireless-page row of 20 MHz cells for the live chanspec constrained to the legal 802.11be
+    patterns (320 MHz: one 40 or one 80 MHz slice, never the primary 20; 160: one 20 or 40; 80: one
+    20) with a `Puncture pattern: 0x…` readback; diag section 7 gains `wl eht dissubchan` + a
+    per-20 MHz `chanim_stats` so the dirty slice is visible. OFF by default.
+  - **Metal gate first (zero build):** read `wl -i wl2 eht dissubchan`, set one 40 MHz bitmap on the
+    pinned 320 block, confirm the pattern is reported and clients stay associated. If the driver
+    reverts it the way a runtime `chanspec` set does, the hook must ride wlconf's bring-up path.
+  - **Honest scope note:** the 2026-07 6 GHz sawtooth was occupancy across the ENTIRE upper 160 MHz
+    of the 320-1 block (ch 33-61); puncturing removes at most 80 MHz of a 320, so it would not have
+    fixed that case (avoidance did). It pays off for a narrower interferer. MRU needs nothing from
+    us (EHT PHY capability, driver-scheduled). **Dynamic / interference-aware puncturing is blocked -
+    see B-4.** **[project]**
 ---
 
 ## Documentation
@@ -949,24 +712,6 @@ The ordered short list. Each line points at its full entry below.
   two docs); a reason is written by hand and can only be caught by re-deriving it.
 
 ---
-
-- **[P3] The user-guide set — DONE 2026-08-28 and pushed.** All three items here (retained-but-inert
-  features, the system defaults, and per-page user guides) closed together.
-  [`REAPER-GUIDE.md`](REAPER-GUIDE.md) is now the single manual, 1429 lines / ~25k words:
-  - **§8 Factory defaults** — the fifteen stock defaults Reaper changes with the reason for each
-    (taken from a real diff of `shared/defaults.c` against the base pin), all sixty Reaper-owned
-    keys grouped by feature, and what a factory reset does *not* clear (`/jffs`, so every rule
-    store survives).
-  - **§9 Present but inactive** — the stock firmware page (kept because Reaper reuses its
-    `webs_state_*` variables) and the thirteen `AiProtection_*` pages (engine compiled out), each
-    mapped to what replaces it, and stating plainly that **nothing replaces DPI / signature IPS**.
-  - **§4 deepened** for Firewall (168 lines), Warden (114), Policy Routing (105), QoS (103),
-    Gatekeeper (98), Traffic (67) and Devices (51).
-  `FIREWALL-GUIDE.md` and `VPN-ROUTING-GUIDE.md` are now **stubs** that keep their original
-  headings, so the **?** buttons in already-shipped firmware still resolve.
-  In tree, unbuilt: twelve more pages gained a **?** link (QoS, QoS Diagnostics, Traffic, Devices,
-  Connections, Wireless, WiFi Pro, Diagnostics, Firmware, Analytics, Policy Routing, AI Advisor),
-  reusing the existing `RABT_43` key — **no new i18n keys, no translation pass owed**.
 
 - **[P3] Retire the two guide stubs.** `FIREWALL-GUIDE.md` and `VPN-ROUTING-GUIDE.md` exist only so
   the deep links in already-installed firmware keep resolving. They can be deleted once a release
@@ -1017,72 +762,6 @@ The ordered short list. Each line points at its full entry below.
   - **§2.1 netfilter fork storms** (Warden/GK → `iptables-restore` batching, double teardowns) —
     **DEFERRED per owner (2026-08-19)**: high blast radius on controls under active metal-test.
     Revisit once Gatekeeper/firewall are validated on hardware.
-
-- **[P3] Sibling port gap: `Tools_Sysinfo.asp` — ROOT-CAUSED AND FIXED IN-TREE 2026-08-25, needs a
-  commit per branch + a build.** Investigated 2026-08-25. The page was listed in
-  `_port_protect.sh`'s `PP_PROTECT_GLOB` as one of "the two radio-gated pages", so the port
-  skipped it — but it does not gate per *branch* at all: it gates at **runtime** on
-  `based_modelid`, so one shared copy serves every model. Measured lag against canon:
-  rt-be86u / rt-be88u / gt-be98-pro `11+/76-`, gt-be98 `8+/73-`, **rt-be92u byte-identical**.
-  The sibling-only lines are just the pre-rewrite code (the 20-slot `labels:[0,3,…,57]` category
-  axis, `animation:false`, direct `data:` arrays) plus an *older* subset of the model checks
-  (`GT-AXE16000` only, where canon has `GT-AXE16000 || GT-BE98` **and** `GT-BE98_PRO`) — canon is
-  the strict superset for every model.
-  - **Worse than a plain lag: the four siblings ship HALF of one two-file rewrite.**
-    `Reaper_QoSDiag.asp` is *not* protected and synced normally, so those images render a
-    time-based x axis on the QoS Diagnostics chart and the old sideways-snapping category axis on
-    the Sysinfo temperature chart.
-  - **Proof no divergence is needed:** rt-be92u carries canon's copy byte-for-byte and shipped
-    v2.7.6 + v2.7.7.
-  - **Done:** `Tools_Sysinfo.asp` removed from `PP_PROTECT_GLOB` (now classifies as shared, so the
-    parity check surfaces this instead of hiding it), and canon's copy written into all four
-    lagging worktrees — each now byte-identical to canon, one file changed per branch.
-  - **Still owed:** commit on each of the four branches (`pp_parity_check` compares *commits*, so
-    it reports UNSYNCED until then), rebuild those models, and run `sync_local_engine.sh` so the
-    engine copy of `_port_protect.sh` picks up the new rule. **[owed — commit + build]**
-
-  **The `searchIspNameProfile.js` half of this item was wrong — struck.** It is not a sibling lag;
-  canon *deliberately* deleted it in v2.3.3's de-cloud pass (`c2162344cc`, "0 shipped pages
-  included it"), and that justification still holds: the only reference is in the **base**
-  `www/Advanced_WAN_Content.asp:120`, which never ships — `RTCONFIG_MULTISERVICE_WAN=y` means the
-  `sysdep/FUNCTION/MULTISERVICE_WAN` overlay overwrites it at install, and that overlay has no
-  reference. Confirmed against the staged rootfs: no shipped page includes it, so there is no 404.
-  The four older siblings still carry the 3,270 B orphan (rt-be92u correctly does not); harmless,
-  delete it for parity whenever those branches are next touched.
-
-  **`Main_WStatus_Content.asp` — same verdict, also fixed 2026-08-25.** It was the other entry in
-  that protect glob, and it maps radios at runtime too (`GT-AXE16000||GT-BE98` quad-band /
-  `GT-BE98_PRO` / generic tri-band). Four of five siblings were already byte-identical; only
-  gt-be98-pro differed, and only by *missing* canon's `2ea3eafaf2` ("add GT-BE98 to the quad-band
-  radio branch"). That omission is **inert on GT-BE98_PRO hardware** — `based_modelid` takes the
-  `GT-BE98_PRO` branch either way — so nothing was ever visibly wrong; it was drift the port could
-  not heal. Un-protected and synced. `PP_PROTECT_GLOB` is now just the dicts and the GT-BE98
-  chanlist shim.
-
-- **[P3] Warden custom feeds — both residual ceilings FIXED in-tree 2026-08-25, ride the next
-  build.** Confirmed still open before touching anything: `threat_n` was already in the stats JSON
-  but **no page ever read it** (`RWDN_89` "Prefixes loaded" is the *geo* count, not the threat
-  set), and a single `$CURL` served curated, custom **and** ipdeny geo fetches alike.
-  - **Occupancy is now surfaced.** `rwarden.c` gained `RW_THREAT_MAXELEM`/`_S` — the ceiling had
-    been a bare `524288` repeated at six `ipset create` sites, so there was no single number to
-    quote — and the stats JSON now emits `threat_max` from that same define, so the page cannot
-    drift from what the sets are actually built with. `Reaper_Warden.asp` renders
-    `<#RWDN_100#>` = "Threat entries: N / 524,288" in the existing breakdown list, next to the geo
-    prefix count. Entries past `maxelem` are silently dropped by ipset, which is exactly what a
-    user piling on custom feeds could not see before.
-  - **Custom feeds are on a shorter leash.** New `CURLC` (`--retry 1 --max-time 15`) is used at
-    the two custom-feed fetch sites ONLY; curated feeds and the ipdeny geo fetches keep `$CURL`
-    (`--retry 2 --max-time 40`) because those are known-good hosts worth waiting on. Worst case
-    for eight custom feeds drops from 8x3x40s ≈ **16 min** to 8x2x15s ≈ **4 min**. `CURLC` gets
-    the same `--proto/--proto-redir =https` upgrade when curl supports it, so the redirect pin is
-    not weakened. A timeout still logs `custom feed fetch FAILED` and the previous set is kept
-    (swap-if-nonempty), so a slow feed degrades to "no refresh", never "no data".
-  - **i18n:** `RWDN_100` appended to all 25 dicts in lockstep (6744 → 6745). **`RWDN_92`–`RWDN_99`
-    were deliberately SKIPPED** — they are reserved by the shelved port-forward-exemption patch at
-    `/home/reaper/shelved/warden-fwd-exempt-v2.7.8.patch`; reusing them would silently relabel that
-    feature's strings if it is ever restored. Numbering gaps cost nothing (LnxDictPrep re-indexes
-    named tokens at build time).
-  **[owed — build]**
 
 - **[P3] The `/tmp` systemic dir-ownership hardening — deferred per owner (2026-08-19).** `mkdir(,0700)`
   return ignored, owner never checked, rc `umask(0)` → `fopen("w")` is 0666; ~11 sites. Fix = ONE
@@ -1235,5 +914,19 @@ survives the person who made the call.*
   table**. Workarounds: keep Guest Pro off the 2.5G-1 port, move the device, or tag it VID-52.
   Almost certainly present on stock too. Investigation: `GUESTPRO-2.5G-VLAN-PLAN.md` (private tree).
   **[blocked — blob; risk-accepted]**
+
+
+### B-4. Dynamic (interference-aware) preamble puncturing needs the 2025 Broadcom SDK
+
+- **[P3] The automatic form of 802.11be preamble puncturing - the AP measuring per-20 MHz occupancy
+  and puncturing the dirty slice on its own - is not in the SDK this model ships with.** Source
+  references it: `shared/wlif_utils_ax.c:4901` sends `WL_EHT_CMD_PUNCT_FEATURES` and `defaults.c:2046`
+  seeds `wl_eht_punct_features=0` ("disable puncture features by default"), but both sit behind
+  `#if defined(WIFI7_SDK_20250506)`; this build is `WIFI7_SDK_20231126` (`sdk_profile.mak:1`), the
+  enum does not exist in our `wlioctl.h` (`wl_eht_cmd_e` ends at `EXT_NLTF = 12`), and no shipped
+  blob (`wlconf`, `acsd2`, `wl`, `hostapd`) carries the string. `acsd2` has no puncture logic at all.
+  Only the **static** bitmap (`WL_EHT_CMD_DISSUBCHAN`) exists - see the Features entry, metal-proven
+  2026-08-31. Unblocks when ASUS publishes a GPL drop for this model on the 2025 SDK; until then the
+  nvram default is inert. **[blocked - SDK]**
 
 ---

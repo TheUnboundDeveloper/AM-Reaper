@@ -1,0 +1,222 @@
+From 05716172d103130bfa0fba590b77d32d1f88078d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 29 Aug 2026 10:43:19 -0400
+Subject: [PATCH] audit tier 1: drop a vendor USB test hook, stop three loops
+ repeating themselves
+
+Five small, independent fixes from the 2026-08-28 audit. None changes a feature;
+each removes something that should not have been running.
+
+A1 - watchdog.c: REMOVED A FACTORY TEST HOOK THAT SHIPPED ENABLED.
+    #if 1  /* Do Function Test Script */
+    if(nvram_match("ci","1")) system("sh /tmp/mnt/sda1/auto_test.sh");
+Permanently compiled in and evaluated on every 30 s tick, so with one nvram
+value set it ran an arbitrary script off the first partition of ANY attached USB
+stick, as root, in a loop. Not remotely reachable - setting nvram already implies
+admin - but it is a persistence and escalation primitive with no consumer
+anywhere in this build, and a hardened firmware has no business carrying a
+vendor debug hook that executes removable media.
+
+A2 - watchdog.c: the daily firmware check and the "new firmware" notification
+each fired TWICE. Both test hour+minute inside a function that runs on the 30 s
+tick, so both ticks in the matching minute matched. That meant two
+webs_update.sh execs against our own GitHub-hosted manifest per router per day,
+fleet-wide, and a duplicate notification. Both now latch on a day+minute slot,
+which re-arms tomorrow and cannot wedge. The stock auto_firmware_check() has the
+same shape but sits under `#if 0`, so it is dead and was left alone.
+
+P10 - services.c: the UI's "Update now" for Warden feeds ran SYNCHRONOUSLY
+inside rc's service handler, holding the single service loop for the whole
+refresh - worst case minutes of curated-feed retries plus the geo budget - with
+every queued event behind it (restart_firewall, any Apply, restart_wireless)
+waiting. Backgrounded. update.sh already self-serializes with its own flock and
+returns nothing to rc; the cron path calls it directly and was never affected.
+
+B7 - rwatch.c: the policy-routing heal had NO give-up. Any shortfall it cannot
+fix - a family/module edge, an addon competing for the chain - re-ran the full
+apply every 120 s forever: firewall lock, mangle teardown and rebuild, ipset
+flush and re-add of every literal, and an `fc flush` whenever a WireGuard rule
+exists, i.e. a hardware-accelerator flush every two minutes for the life of the
+box. gkd already learned this (GK_HEAL_STRIKES); both heal blocks now share a
+strike counter, stop after 5, and say so ONCE. The counter clears the moment the
+chain converges, so a transient shortfall still self-heals and a later one heals
+again from zero - only a persistent failure stops.
+
+B11 - reaper_jfile.c: rc runs with umask(0), so every list write created its temp
+file 0666 and only tightened it AFTER write+fsync+fclose - a window in which the
+whole firewall, Warden and policy-routing lists sat world-writable on /jffs.
+fchmod now runs immediately after fopen, before any content exists. The existing
+chmod stays as the belt to this braces.
+
+Verified without a build: the rendered PBR-heal shell passes sh -n, and the
+strike counter simulated end to end - five heals, gives up once (not every
+tick), both markers cleared on convergence, and a later shortfall heals again
+from #1. Brace balance on all four files compared against HEAD and unchanged
+(the raw skew is pre-existing, from braces inside strings and comments).
+fchmod's sys/stat.h is already included. The only auto_test.sh left in the tree
+is the comment recording its removal.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rwatch.c           | 28 +++++++++++++---
+ release/src/router/rc/services.c         |  9 +++++-
+ release/src/router/rc/watchdog.c         | 41 ++++++++++++++++++------
+ release/src/router/shared/reaper_jfile.c |  7 ++++
+ 4 files changed, 70 insertions(+), 15 deletions(-)
+ mode change 100755 => 100644 release/src/router/shared/reaper_jfile.c
+
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 6028a08d99..acaf917a50 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -132,8 +132,21 @@ static void rwatch_gen(void)
+ 	  "  _sh=/tmp/reaper_pbr/apply.sh; [ -d /tmp/reaper_pbr/armed ] && [ -f /tmp/reaper_pbr/candidate.sh ] && _sh=/tmp/reaper_pbr/candidate.sh\n"
+ 	  "  _live=$(( $(iptables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') + $(ip6tables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') ))\n"
+ 	  "  _last=$(cat /tmp/reaper_pbr/heal.at 2>/dev/null || echo 0)\n"
+-	  "  if [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ $((UP-_last)) -ge 120 ] && [ -x \"$_sh\" ]; then\n"
+-	  "    echo $UP > /tmp/reaper_pbr/heal.at\n"
++	  /* GIVE UP AFTER N (audit B7, 2026-08-29). A heal that can never converge -
++	   * a family/module edge, an addon competing for the chain - re-ran the full
++	   * apply every 120 s FOREVER: firewall lock, mangle teardown+rebuild, ipset
++	   * flush and re-add of every literal, and `fc flush` whenever a WG rule
++	   * exists, i.e. a hardware-accelerator flush every two minutes for the life
++	   * of the box. gkd already learned this (GK_HEAL_STRIKES); this is the same
++	   * cap for the PBR healer. The counter clears the moment it converges, so a
++	   * transient shortfall still self-heals; only a persistent one stops. */
++	  "  [ \"$_ex\" -gt 0 ] && [ \"$_live\" -ge \"$_ex\" ] && rm -f /tmp/reaper_pbr/heal.n /tmp/reaper_pbr/heal.gaveup\n"
++	  "  _n=$(cat /tmp/reaper_pbr/heal.n 2>/dev/null || echo 0); case \"$_n\" in ''|*[!0-9]*) _n=0;; esac\n"
++	  "  if [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ \"$_n\" -ge 5 ]; then\n"
++	  "    [ -f /tmp/reaper_pbr/heal.gaveup ] || { : > /tmp/reaper_pbr/heal.gaveup; logger -t rwatch \"policy routing: $_live of $_ex mark rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
++	  "  fi\n"
++	  "  if [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ \"$_n\" -lt 5 ] && [ $((UP-_last)) -ge 120 ] && [ -x \"$_sh\" ]; then\n"
++	  "    echo $UP > /tmp/reaper_pbr/heal.at; echo $((_n+1)) > /tmp/reaper_pbr/heal.n\n"
+ 	  "    logger -t rwatch \"policy routing: $_live of $_ex mark rule(s) live - re-applying\"\n"
+ 	  /* v2.7.3 (code-review P3): under rc's firewall lock. shell flock(1)
+ 	   * cannot take rc's POSIX fcntl lock, so call back into rc for it -
+@@ -146,8 +159,15 @@ static void rwatch_gen(void)
+ 	  "  _shr=/tmp/reaper_pbr/apply.sh; [ -d /tmp/reaper_pbr/armed ] && [ -f /tmp/reaper_pbr/candidate.sh ] && _shr=/tmp/reaper_pbr/candidate.sh\n"
+ 	  "  _lvr=$(ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000')\n"
+ 	  "  _lstr=$(cat /tmp/reaper_pbr/heal.at 2>/dev/null || echo 0)\n"
+-	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ $((UP-_lstr)) -ge 120 ] && [ -x \"$_shr\" ]; then\n"
+-	  "    echo $UP > /tmp/reaper_pbr/heal.at\n"
++	  /* same give-up cap as the mark-rule heal above, sharing its counter:
++	   * both re-run the SAME script, so five attempts is five attempts. */
++	  "  [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -ge \"$_exr\" ] && rm -f /tmp/reaper_pbr/heal.n /tmp/reaper_pbr/heal.gaveup\n"
++	  "  _nr=$(cat /tmp/reaper_pbr/heal.n 2>/dev/null || echo 0); case \"$_nr\" in ''|*[!0-9]*) _nr=0;; esac\n"
++	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -ge 5 ]; then\n"
++	  "    [ -f /tmp/reaper_pbr/heal.gaveup ] || { : > /tmp/reaper_pbr/heal.gaveup; logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
++	  "  fi\n"
++	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -lt 5 ] && [ $((UP-_lstr)) -ge 120 ] && [ -x \"$_shr\" ]; then\n"
++	  "    echo $UP > /tmp/reaper_pbr/heal.at; echo $((_nr+1)) > /tmp/reaper_pbr/heal.n\n"
+ 	  "    logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live - re-applying\"\n"
+ 	  "    rc reaper_lockrun \"$_shr\" >/dev/null 2>&1\n"
+ 	  "  fi\n"
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 1672712fc7..335edc5c87 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -22096,7 +22096,14 @@ retry_wps_enr:
+ 	}
+ 	else if (strcmp(script, "rwarden_update") == 0)	/* reaper v1.8.0 Warden feed refresh on demand (UI "Update now") */
+ 	{
+-		if((action & RC_SERVICE_START) && f_exists("/tmp/rwarden/update.sh")) doSystem("sh /tmp/rwarden/update.sh");
++		/* BACKGROUNDED 2026-08-29 (audit P10). This ran synchronously, so the
++		 * UI's "Update now" held rc's single service loop for the WHOLE feed
++		 * refresh - worst case minutes of curated-feed retries plus the geo
++		 * budget - and every queued event behind it (restart_firewall, any
++		 * Apply, restart_wireless) waited. update.sh already self-serializes
++		 * with its own flock and needs nothing back from rc; the cron path
++		 * invokes it directly and was never affected. */
++		if((action & RC_SERVICE_START) && f_exists("/tmp/rwarden/update.sh")) doSystem("sh /tmp/rwarden/update.sh &");
+ 	}
+ 	/* reaper v2.3.8 native firewall rules engine. The four verbs are separate
+ 	 * services rather than one with arguments so each is individually auditable
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index d81bc8e5ac..4916000664 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -8957,8 +8957,15 @@ static void noti_new_fw_available()
+ 	localtime_r(&now, &local);
+ 
+ 	//periodic_check trigger
+-	if( local.tm_hour == (18 + rand_hr) && local.tm_min == rand_min ){ //at 6 pm + random offset to check
+-		periodic_check = 1;
++	/* same once-per-minute latch as auto_firmware_check_reaper (audit A2): the
++	 * 30 s tick matched this twice, so the notification fired twice each day. */
++	{
++		static long last_noti = -1;
++		long slot = (long)local.tm_yday * 1440L + local.tm_hour * 60 + local.tm_min;
++		if( local.tm_hour == (18 + rand_hr) && local.tm_min == rand_min && slot != last_noti ){ //at 6 pm + random offset to check
++			last_noti = slot;
++			periodic_check = 1;
++		}
+ 	}
+ 
+ 	if(periodic_check){
+@@ -12029,11 +12036,15 @@ wdp:
+ #ifdef HND_ROUTER
+ 	udhcpc_check();
+ #endif
+-#if 1   /* Do Function Test Script */
+-		if(nvram_match("ci", "1")){
+-			system("sh /tmp/mnt/sda1/auto_test.sh");
+-		}
+-#endif
++/* Reaper 2026-08-29: REMOVED a vendor factory-test hook that shipped enabled.
++ * It was `#if 1` - permanently compiled in - and evaluated on every 30 s tick:
++ *     if(nvram_match("ci","1")) system("sh /tmp/mnt/sda1/auto_test.sh");
++ * so with one nvram value set it executed an arbitrary script from the first
++ * partition of ANY attached USB device, as root, in a loop. Not remotely
++ * reachable (setting nvram already implies admin), but it is a persistence and
++ * escalation primitive with no legitimate consumer anywhere in this build, and
++ * a hardened firmware has no business carrying a vendor debug hook that runs
++ * removable media. Found by the 2026-08-28 audit (report appendix A1). */
+ #ifdef RTCONFIG_FBWIFI
+ 	if(nvram_match("fbwifi_enable", "on") && nvram_match("fbwifi_running", "1"))
+ 		fbwifi_check();
+@@ -12364,9 +12375,19 @@ void auto_firmware_check_reaper()
+ 	sched_hr = (sched_hv && *sched_hv) ? atoi(sched_hv) : -1;
+ 	if (sched_hr < 0 || sched_hr > 23)
+ 		sched_hr = 2 + rand_hr;
+-	if(local.tm_hour == sched_hr && local.tm_min == rand_min) {
+-		periodic_check = 1;
+-		period_retry = 0;
++	/* FIRE ONCE PER SCHEDULED MINUTE (audit A2, 2026-08-29). This function runs
++	 * on the 30 s tick, so a bare hour+minute test matches on BOTH ticks inside
++	 * the matching minute and the check ran twice every day - two webs_update.sh
++	 * execs against our own GitHub-hosted manifest, per router, fleet-wide. The
++	 * latch is keyed on the day too, so it re-arms tomorrow and cannot wedge. */
++	{
++		static long last_fire = -1;
++		long slot = (long)local.tm_yday * 1440L + local.tm_hour * 60 + local.tm_min;
++		if(local.tm_hour == sched_hr && local.tm_min == rand_min && slot != last_fire) {
++			last_fire = slot;
++			periodic_check = 1;
++			period_retry = 0;
++		}
+ 	}
+ 	if (bootup_check || periodic_check || period_retry!=0)
+ 	{
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+old mode 100755
+new mode 100644
+index 1dafcae0ae..0f8a0e69f0
+--- a/release/src/router/shared/reaper_jfile.c
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -118,6 +118,13 @@ int rjf_set(const char *path, const char *v, const char *tag)
+ 		logmessage(tag, "cannot write %s - NOT saved", tmp);
+ 		return -1;
+ 	}
++	/* Tighten BEFORE any content is written (audit B11, 2026-08-29). rc runs
++	 * with umask(0), so this file was created 0666 and the chmod below did not
++	 * land until after write+fsync+fclose - a window in which the full firewall,
++	 * Warden and policy-routing lists sat world-writable on /jffs. The existing
++	 * chmod stays as the belt to this braces. */
++	if (fchmod(fileno(f), 0600) != 0)
++		logmessage(tag, "could not tighten %s before writing", tmp);
+ 	if (len && fwrite(v, 1, len, f) != len) {
+ 		fclose(f); unlink(tmp);
+ 		logmessage(tag, "short write to %s - NOT saved", path);
+-- 
+2.25.1
+

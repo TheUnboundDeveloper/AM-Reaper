@@ -185,8 +185,15 @@ if [ "$DO_PORT" = 1 ]; then
           unsafe=1
         fi
       fi
-      # a differing sibling value naming a model would be model identity
+      # a differing sibling value naming a model would be model identity - EXCEPT
+      # the Reaper About-page credit tokens (RABT_*), whose prose thanks the
+      # GT-BE98 testers and the RT-BE88U ambassador by name. That text is shared
+      # across every model (the About page is model-agnostic), so a model name
+      # there is credit prose, not identity. Without this exclusion a version
+      # jump that newly translated those two credits false-positives on all 24
+      # dicts and blocks the whole port (2026-09-01, the v3.0.0 cut).
       if git -C "$CANON_DIR" diff "$CANON" "$B" -- "$d" | grep -E '^\+' | grep -vE '^\+\+\+' \
+         | grep -vE '^\+RABT_[0-9]+=' \
          | grep -qE 'RT-BE96U|RT-BE86U|RT-BE88U|GT-BE98'; then
         echo "    $d: a sibling-side differing value carries a model name"
         unsafe=1

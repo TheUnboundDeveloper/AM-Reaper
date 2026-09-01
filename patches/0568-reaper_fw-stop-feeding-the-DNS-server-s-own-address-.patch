@@ -1,0 +1,101 @@
+From e2fa471b5cf0d0b615d5743a4815f04609f59c70 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 22:53:40 -0400
+Subject: [PATCH] reaper_fw: stop feeding the DNS server's own address into
+ every fqdn set
+
+The periodic FQDN resolver parsed nslookup with an unanchored
+    sed -n 's/^Address[^:]*: *//p'
+but busybox nslookup_main() calls server_print() UNCONDITIONALLY before the
+query (networking/nslookup.c:189), and print_host() renders every block the
+same way - "%-10s %s\n" header, then "Address N: <ip> [revhost]". So the
+resolver's own address arrives as
+
+    Address 1: 127.0.0.1 localhost
+
+BEFORE the "Name:" block, and went straight into the object's ipset. Every
+*/10 pass re-added it, refreshing its timer forever, and the save block
+persisted it to the /jffs cache so a cold boot replayed it back.
+
+Three ways this was worse than it first looks:
+
+  - A FAILED lookup poisoned the set with nothing else in it. The error goes
+    to stderr (discarded by 2>/dev/null) and only the server block prints, so
+    every NXDOMAIN, typo'd domain and DNS outage still added the server.
+  - Where /etc/resolv.conf names the LAN IP rather than loopback (lan.c
+    writes "nameserver <lan_ipaddr>" on the non-routing path), the address
+    inserted into every enforcement set is the router's own.
+  - The sets back both firewall rules and policy routing, so this is wrong
+    data in an enforcement set, not just a cosmetic list entry.
+
+Fix: anchor the range to the answer section, /^Name:/,$ - a failed lookup has
+no Name: block and now contributes nothing. Added a leading non-routable
+guard (127.*, 0.0.0.0, ::1, ::) as belt-and-braces for the same class: those
+can never be a meaningful member of a FORWARD-path set whatever a future
+busybox prints or a resolver answers. The permissive "let ipset do the final
+parse" contract for real addresses is unchanged.
+
+No migration needed. The fqdn sets carry timeout RFW_FQDN_TTL (3600 s) and
+the design already relies on expiry to retire stale members; once nothing
+re-adds the server address it ages out within the hour, and the cache is
+rewritten from the live set on the next pass.
+
+Verified without a build: reproduced the exact busybox output format for a
+loopback resolver, a LAN-IP resolver and an NXDOMAIN, and ran the emitted
+script unmodified against stubbed nslookup/ipset - before: 127.0.0.1 /
+192.168.50.1 added, and added even on NXDOMAIN; after: only the genuine A
+and AAAA answers, nothing on NXDOMAIN. Emitted text renders and `sh -n`
+parses; the fprintf compiles under -Wall -Wextra -Wformat=2 with no
+warnings; braces balance and the new comment introduces no premature close.
+Confirmed this parse pattern exists nowhere else in the tree (ntp.c and
+rwatch.c check exit status only; netool.c never parses its output).
+
+Found by the 2026-08-28 audit (report section 0 item A / section 3 B1).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_fw.c | 26 ++++++++++++++++++++++++--
+ 1 file changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 619fee4518..212b0cae95 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -1028,10 +1028,32 @@ static void rfw_gen_resolve(const rfw_cfg_t *c)
+ 				any = 1;
+ 				/* nslookup output differs across busybox builds; take anything
+ 				 * that looks like a literal address and let ipset do the final
+-				 * parse (same contract as Warden's feed ingestion). */
++				 * parse (same contract as Warden's feed ingestion).
++				 *
++				 * ANCHOR THE PARSE TO THE ANSWER SECTION. busybox nslookup_main
++				 * calls server_print() UNCONDITIONALLY before the query
++				 * (networking/nslookup.c:189), and print_host() renders every
++				 * block the same way - "%-10s %s\n" header, then "Address N: ".
++				 * So the resolver's OWN address arrives as a line reading
++				 * "Address 1: 127.0.0.1 localhost" BEFORE the "Name:" block, and
++				 * an unanchored match fed it straight into the set: the DNS
++				 * server was added to every fqdn object, every pass, refreshed
++				 * forever, and persisted to the /jffs cache. Worse on a failed
++				 * lookup - the error goes to stderr and only the server block
++				 * prints, so every NXDOMAIN/typo/DNS-outage poisoned the set with
++				 * nothing else. And where resolv.conf names the LAN IP rather
++				 * than loopback (lan.c writes "nameserver <lan_ipaddr>"), the
++				 * address inserted was the router's own.
++				 *   Restricting the range to "/^Name:/,$" takes answers only; a
++				 * failed lookup has no Name: block and so contributes nothing.
++				 * The leading non-routable guard is belt-and-braces for the same
++				 * class: loopback/unspecified can never be a meaningful member of
++				 * a FORWARD-path enforcement set, whatever a future busybox
++				 * prints or a resolver answers. Fixed 2026-08-28. */
+ 				fprintf(f,
+-				  "nslookup %s 2>/dev/null | sed -n 's/^Address[^:]*: *//p' | while read a _x; do\n"
++				  "nslookup %s 2>/dev/null | sed -n '/^Name:/,$s/^Address[^:]*: *//p' | while read a _x; do\n"
+ 				  "  case \"$a\" in\n"
++				  "    127.*|0.0.0.0|::1|::) ;;\n"
+ 				  "    *[!0-9.]*:*|*:*) ipset add %s%s \"$a\" -exist 2>/dev/null;;\n"
+ 				  "    *[!0-9.]*) ;;\n"
+ 				  "    *) ipset add %s%s \"$a\" -exist 2>/dev/null;;\n"
+-- 
+2.25.1
+

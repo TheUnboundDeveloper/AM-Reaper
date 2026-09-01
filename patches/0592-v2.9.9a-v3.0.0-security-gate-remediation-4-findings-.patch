@@ -1,0 +1,211 @@
+From 857b881733dd1236b52e4d55f3ccdc3616ae8cf8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 31 Aug 2026 20:23:17 -0400
+Subject: [PATCH] v2.9.9a: v3.0.0 security-gate remediation (4 findings from
+ the adversarial review)
+
+Fixes the four actionable findings from the v3.0.0-gate adversarial security
+review of the v2.9.0..v2.9.9 window. All source-only, no blob work.
+
+1. DNS Traffic Analyzer SQLi (inherited ASUS, compiled in under
+   RTCONFIG_DNSQUERY_INTERCEPT): ej_dns_appStat / ej_dns_wanStat /
+   ej_dns_wanStat_detail fed request params straight into
+   dns_sqlite_Stat_hook() with no validation, unlike their sibling
+   ej_dns_status, and their caller pages carry no Referer whitelist entry so
+   the path is CSRF-rideable by a lured admin. New reaper_dns_stat_args_ok()
+   mirrors ej_dns_status (MAC-or-empty client, enum-token mode, whitelisted
+   dura, timestamp-or-empty date); out-of-spec input emits an empty array.
+
+2. Restore upload parser overflow guard: do_reaper_restore_post used
+   MIN(len+1, (int)sizeof(buf)) at six fgets sites - the (int) cast forces a
+   signed compare, so a Content-Length near INT_MAX overflows len+1 to
+   INT_MIN, wins the MIN, and passes a negative size to fgets. Stock and
+   every other parser omit the cast. Dropped it (a v2.9.6 regression, CSRF-
+   reachable, DoS-class).
+
+3. sdn_rl template-literal breakout on Advanced_Smart_Connect.asp: the raw
+   sdn_rl blob (which carries the user-set SDN network name) was embedded in
+   a JS backtick literal, and nvram_get does not escape backtick/dollar-brace
+   - a network named with a template expression executed in every admin
+   session. Now read via the safe httpApi.nvramGet accessor the same file
+   already uses.
+
+4. CSV formula injection in the Devices export: a device/DHCP hostname is
+   attacker-chosen; csvCell RFC-4180-quoted but did not neutralize a leading
+   = + - @ / tab / CR. Prefix a single quote so the cell is text.
+
+Latent findings from the same review were assessed and deliberately NOT
+changed - each touches a regression-sensitive path (Tor IPv6 firewall
+emission on a non-UI-reachable config; gatekeeper enforcement arming, whose
+hold legitimately waits for a user-paced Complete-restore; first-boot
+chpass) with benefit only on unreachable or admin-only paths. Documented for
+the owner.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ release/src/router/httpd/web.c                | 52 ++++++++++++++++---
+ .../src/router/www/Advanced_Smart_Connect.asp |  2 +-
+ release/src/router/www/Reaper_Devices.asp     |  5 ++
+ 4 files changed, 53 insertions(+), 8 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 7076fcce3c..0dae0f81ba 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.9.9
++EXTENDNO=Reaper_v2.9.9a
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index be7d80f916..7c9080795c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24918,18 +24918,18 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 
+ 	/* walk the parts: capture http_id, stop at the file */
+ 	while (len > 0) {
+-		if (!fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++		if (!fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+ 		len -= strlen(buf);
+ 		if (strncasecmp(buf, "Content-Disposition:", 20) != 0) continue;
+ 		if (strstr(buf, "name=\"file\"")) break;
+ 		if (strstr(buf, "name=\"http_id\"")) {
+ 			/* blank line then the value line */
+ 			while (len > 0) {
+-				if (!fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++				if (!fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+ 				len -= strlen(buf);
+ 				if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n")) break;
+ 			}
+-			if (len > 0 && fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) {
++			if (len > 0 && fgets(buf, MIN(len + 1, sizeof(buf)), stream)) {
+ 				len -= strlen(buf);
+ 				buf[strcspn(buf, "\r\n")] = '\0';
+ 				strlcpy(rbk_up.hid, buf, sizeof(rbk_up.hid));
+@@ -24941,18 +24941,18 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	/* skip the file part's remaining headers */
+ 	why = "file-part-headers";
+ 	while (len > 0) {
+-		if (!fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++		if (!fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+ 		len -= strlen(buf);
+ 		if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n")) break;
+ 	}
+ 
+ 	/* magic line, then the meta line (both short text) */
+ 	why = "magic";
+-	if (len <= 0 || !fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++	if (len <= 0 || !fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+ 	len -= strlen(buf);
+ 	if (strcmp(buf, RBK_MAGIC) != 0) goto out;
+ 	why = "meta";
+-	if (len <= 0 || !fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
++	if (len <= 0 || !fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+ 	len -= strlen(buf);
+ 	if (strlen(buf) >= RBK_META_MAX) goto out;
+ 	meta = json_tokener_parse(buf);
+@@ -39373,6 +39373,34 @@ ej_dns_status(int eid, webs_t wp, int argc, char_t **argv)
+ 	return 0;
+ }
+ 
++/* reaper v3.0.0 (security review): the three DNS-stat wrappers below fed
++ * client/mode/dura/date straight into dns_sqlite_Stat_hook() ("SELECT %s ...
++ * WHERE mac=\"%s\"") with no validation, unlike their sibling ej_dns_status.
++ * A CSRF'd admin (these pages carry no Referer whitelist entry) could inject
++ * SQL through the blob. Mirror ej_dns_status: MAC-or-empty client, enum-token
++ * mode, whitelisted dura, timestamp-or-empty date. Anything out of spec emits
++ * an empty array, exactly as ej_dns_status does on a failed check. */
++static int
++reaper_dns_stat_args_ok(char *client, char *mode, char *dura, char *date)
++{
++	char *p;
++
++	if (*client != '\0' && !isValidMacAddress(client))
++		return 0;
++	if (*mode == '\0')
++		return 0;
++	for (p = mode; *p; p++)
++		if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
++		      (*p >= '0' && *p <= '9') || *p == '_'))
++			return 0;
++	if (strcmp(dura, "realtime") && strcmp(dura, "month") &&
++	    strcmp(dura, "week") && strcmp(dura, "day"))
++		return 0;
++	if (*date != '\0' && !isValidtimestamp_noletter(date))
++		return 0;
++	return 1;
++}
++
+ static int
+ ej_dns_appStat(int eid, webs_t wp, int argc, char_t **argv)
+ {
+@@ -39384,6 +39412,10 @@ ej_dns_appStat(int eid, webs_t wp, int argc, char_t **argv)
+         dura = websGetVar(wp, "dura", "");
+         date = websGetVar(wp, "date", "");
+ 
++        if (!reaper_dns_stat_args_ok(client, mode, dura, date)) {
++                websWrite(wp, "[]");
++                return 0;
++        }
+         // 0: app, 1: mac
+         dns_sqlite_Stat_hook(0, client, mode, dura, date, &retval, wp);
+ 
+@@ -39401,6 +39433,10 @@ ej_dns_wanStat(int eid, webs_t wp, int argc, char_t **argv)
+         dura = websGetVar(wp, "dura", "");
+         date = websGetVar(wp, "date", "");
+ 
++        if (!reaper_dns_stat_args_ok(client, mode, dura, date)) {
++                websWrite(wp, "[]");
++                return 0;
++        }
+         // 0: app, 1: mac
+         dns_sqlite_Stat_hook(1, client, mode, dura, date, &retval, wp);
+ 
+@@ -39418,6 +39454,10 @@ ej_dns_wanStat_detail(int eid, webs_t wp, int argc, char_t **argv)
+ 	dura = websGetVar(wp, "dura", "");
+ 	date = websGetVar(wp, "date", "");
+ 
++	if (!reaper_dns_stat_args_ok(client, mode, dura, date)) {
++		websWrite(wp, "[]");
++		return 0;
++	}
+ 	// 0: app, 1: mac
+ 	dns_sqlite_Stat_hook(2, client, mode, dura, date, &retval, wp);
+ 
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index 2be1521c51..9aa9673506 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -970,7 +970,7 @@ function isSmartConnectEnabled(){
+    Rewriting sdn_rl from this classic page is NOT attempted - mis-serializing it
+    takes down every SSID; the SDN app owns that write. Detect the state from
+    sdn_rl itself (enum/numeric fields only, no user text). */
+-var RP_SDN_MIGRATED = `<% nvram_get("sdn_rl"); %>`.indexOf('MAINFH') >= 0;
++var RP_SDN_MIGRATED = (httpApi.nvramGet(["sdn_rl"]).sdn_rl || '').indexOf('MAINFH') >= 0;
+ var RP_NETPAGE = '/reaper_shell.asp#SDN.asp';
+ 
+ function setupSmartConnectToggle(){
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 02ed86e9e4..39cd7a7d1b 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -236,6 +236,11 @@ function expRows(){
+ }
+ function csvCell(s){
+   s = String(s == null ? '' : s);
++  /* Neutralize spreadsheet formula injection: a device/DHCP hostname is
++     attacker-chosen (a LAN client names itself), and a cell beginning = + - @
++     or a tab/CR is executed as a formula by Excel/Sheets. Prefix a single
++     quote so the cell is read as text. Do this BEFORE RFC-4180 quoting. */
++  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+   return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;   /* RFC 4180 */
+ }
+ function expBuild(fmt, rows, stamp){
+-- 
+2.25.1
+

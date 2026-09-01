@@ -52,7 +52,7 @@ PP_PROTECT_EXACT="release/src-rt/version.conf release/src-rt/target.mak"
 # Shared pages that legitimately differ from canon by EXACTLY the model-unique
 # banner filename (synced then re-pointed by the port). Verify compares these
 # banner-normalized.
-PP_BANNER_REFS="release/src/router/www/Main_Login.asp release/src/router/www/Main_ReaperDash.asp release/src/router/www/reaper_shell.asp release/src/router/www/state.js release/src/router/www/Main_Password.asp release/src/router/www/Reaper_FirstBoot.asp release/src/router/www/Logout.asp"
+PP_BANNER_REFS="release/src/router/www/Main_Login.asp release/src/router/www/Main_ReaperDash.asp release/src/router/www/reaper_shell.asp release/src/router/www/state.js release/src/router/www/Main_Password.asp release/src/router/www/Logout.asp"
 
 # classification: 0 = protected (per-model, skip), 1 = shared (must match canon),
 #                 2 = banner-ref (shared modulo banner name)

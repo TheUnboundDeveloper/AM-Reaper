@@ -1,6 +1,6 @@
 # AM-Reaper
 
-> **Doc status:** current as of **v2.8.6** · 2026-08-28 <!--@stamp-->
+> **Doc status:** current as of **v2.8.8** · 2026-08-31 <!--@stamp-->
 
 **Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v2.7.3** (all five main models — see §"Current version" below); the source tree sits at **v2.7.6**. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** (BCM4916, metal validation owed on the four siblings), with the newer **RT-BE92U** (BCM6765) added as an experimental sixth model.
 
@@ -75,7 +75,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 
 - Commands: what each build/cut/verify script does, and what a fork can run — [`docs/COMMANDS.md`](docs/COMMANDS.md).
 - Base: Asuswrt-Merlin **3006.102.8** (patches apply on tag `3006.102.8-beta2`; the sibling-model strip is optional — see [`patches/README.md`](patches/README.md)).
-- Current version: **v2.8.6** <!--@pubver--> (firmware line `3006.102.8_Reaper_v<version>`) — *current* means the newest
+- Current version: **v2.8.8** <!--@pubver--> (firmware line `3006.102.8_Reaper_v<version>`) — *current* means the newest
   **published release**, i.e. the newest image you can actually download from
   [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all six models
   (published 2026-08-28 <!--@pubdate-->). The **RT-BE92U** (BCM6765) ships as an experimental prerelease.

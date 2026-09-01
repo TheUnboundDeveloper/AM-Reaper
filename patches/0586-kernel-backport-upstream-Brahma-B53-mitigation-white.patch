@@ -1,0 +1,154 @@
+From f8e3c3633d37031c55a112e84299b6cf09b4fc9b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 23 Aug 2026 17:07:16 +0200
+Subject: [PATCH] kernel: backport upstream Brahma-B53 mitigation whitelists
+
+The HND 5.04 kernels run on Broadcom Brahma-B53 cores (BCM4912/BCM6756/
+BCM4916, MIDR 0x420f1000), which are missing from every arm64 CPU
+whitelist in the 4.19 kernel.  The B53 is an in-order core without the
+speculation that Meltdown/Spectre-v2/SSB exploit; upstream declared it
+immune, but only in v5.4/v5.6, and none of it was ever backported to
+4.19.y (verified against 4.19.325, the EOL release).
+
+As a result every HND 5.04 router enables KPTI and pays its cost on
+every kernel entry/exit with no security benefit:
+
+  meltdown: Mitigation: PTI  ->  Not affected
+
+  getppid ns/call (aarch64 static, N=40 processes, pinned core):
+    GT-AXE16000 (stock 3006.102.8_2 kernel vs same kernel + this patch)
+        226.0 -> 177.8   (-21.3%)
+    GT-BE98 (4916)
+        224.4 -> 188.6   (-16.0%)
+
+Verbatim transplant of three mainline commits, authored by Broadcom:
+  bfc97f9f199c ("arm64: apply ARM64_ERRATUM_845719 workaround for
+                Brahma-B53 core" - MIDR definition only)
+  e059770cb1cd ("arm64: Brahma-B53 is SSB and spectre v2 safe")
+  31d868c49017 ("arm64: kpti: Add Broadcom Brahma-B53 core to the
+                KPTI whitelist")
+
+Applied identically to both 5.04 SDKs (axhnd.675x / 4.19.183 and
+behnd.4916 / 4.19.294).  Spectre-v1 mitigation (__user pointer
+sanitization) is unaffected; nothing upstream considers required for
+this core is disabled.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XmTHuyWNGcGnG3o55fzoDV
+(cherry picked from commit d0cd23ffe5fd62c34f6252fc4b7a457ed9ff0fb4)
+---
+ .../kernel/linux-4.19/arch/arm64/include/asm/cputype.h          | 2 ++
+ .../kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c            | 2 ++
+ .../kernel/linux-4.19/arch/arm64/kernel/cpufeature.c            | 1 +
+ .../kernel/linux-4.19/arch/arm64/include/asm/cputype.h          | 2 ++
+ .../kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c            | 2 ++
+ .../kernel/linux-4.19/arch/arm64/kernel/cpufeature.c            | 1 +
+ 6 files changed, 10 insertions(+)
+
+diff --git a/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/include/asm/cputype.h b/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/include/asm/cputype.h
+index 7a9c3a5cef..3c8422b36e 100644
+--- a/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/include/asm/cputype.h
++++ b/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/include/asm/cputype.h
+@@ -92,6 +92,7 @@
+ #define CAVIUM_CPU_PART_THUNDERX_83XX	0x0A3
+ #define CAVIUM_CPU_PART_THUNDERX2	0x0AF
+ 
++#define BRCM_CPU_PART_BRAHMA_B53	0x100
+ #define BRCM_CPU_PART_VULCAN		0x516
+ 
+ #define QCOM_CPU_PART_FALKOR_V1		0x800
+@@ -119,6 +120,7 @@
+ #define MIDR_THUNDERX_81XX MIDR_CPU_MODEL(ARM_CPU_IMP_CAVIUM, CAVIUM_CPU_PART_THUNDERX_81XX)
+ #define MIDR_THUNDERX_83XX MIDR_CPU_MODEL(ARM_CPU_IMP_CAVIUM, CAVIUM_CPU_PART_THUNDERX_83XX)
+ #define MIDR_CAVIUM_THUNDERX2 MIDR_CPU_MODEL(ARM_CPU_IMP_CAVIUM, CAVIUM_CPU_PART_THUNDERX2)
++#define MIDR_BRAHMA_B53 MIDR_CPU_MODEL(ARM_CPU_IMP_BRCM, BRCM_CPU_PART_BRAHMA_B53)
+ #define MIDR_BRCM_VULCAN MIDR_CPU_MODEL(ARM_CPU_IMP_BRCM, BRCM_CPU_PART_VULCAN)
+ #define MIDR_QCOM_FALKOR_V1 MIDR_CPU_MODEL(ARM_CPU_IMP_QCOM, QCOM_CPU_PART_FALKOR_V1)
+ #define MIDR_QCOM_FALKOR MIDR_CPU_MODEL(ARM_CPU_IMP_QCOM, QCOM_CPU_PART_FALKOR)
+diff --git a/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c b/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c
+index ea4dd16a0f..e785a01c90 100644
+--- a/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c
++++ b/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c
+@@ -466,6 +466,7 @@ out_printmsg:
+ 
+ /* known invulnerable cores */
+ static const struct midr_range arm64_ssb_cpus[] = {
++	MIDR_ALL_VERSIONS(MIDR_BRAHMA_B53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A35),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A55),
+@@ -565,6 +566,7 @@ multi_entry_cap_cpu_enable(const struct arm64_cpu_capabilities *entry)
+  * List of CPUs that do not need any Spectre-v2 mitigation at all.
+  */
+ static const struct midr_range spectre_v2_safe_list[] = {
++	MIDR_ALL_VERSIONS(MIDR_BRAHMA_B53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A35),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A55),
+diff --git a/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c b/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c
+index 1719d21a17..64402be00e 100644
+--- a/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c
++++ b/release/src-rt-5.04axhnd.675x/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c
+@@ -894,6 +894,7 @@ static bool unmap_kernel_at_el0(const struct arm64_cpu_capabilities *entry,
+ 	static const struct midr_range kpti_safe_list[] = {
+ 		MIDR_ALL_VERSIONS(MIDR_CAVIUM_THUNDERX2),
+ 		MIDR_ALL_VERSIONS(MIDR_BRCM_VULCAN),
++		MIDR_ALL_VERSIONS(MIDR_BRAHMA_B53),
+ 		MIDR_ALL_VERSIONS(MIDR_CORTEX_A35),
+ 		MIDR_ALL_VERSIONS(MIDR_CORTEX_A53),
+ 		MIDR_ALL_VERSIONS(MIDR_CORTEX_A55),
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/include/asm/cputype.h b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/include/asm/cputype.h
+index a367f0e5e7..8b5dc376ce 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/include/asm/cputype.h
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/include/asm/cputype.h
+@@ -100,6 +100,7 @@
+ #define CAVIUM_CPU_PART_THUNDERX_83XX	0x0A3
+ #define CAVIUM_CPU_PART_THUNDERX2	0x0AF
+ 
++#define BRCM_CPU_PART_BRAHMA_B53	0x100
+ #define BRCM_CPU_PART_VULCAN		0x516
+ 
+ #define QCOM_CPU_PART_FALKOR_V1		0x800
+@@ -135,6 +136,7 @@
+ #define MIDR_THUNDERX_81XX MIDR_CPU_MODEL(ARM_CPU_IMP_CAVIUM, CAVIUM_CPU_PART_THUNDERX_81XX)
+ #define MIDR_THUNDERX_83XX MIDR_CPU_MODEL(ARM_CPU_IMP_CAVIUM, CAVIUM_CPU_PART_THUNDERX_83XX)
+ #define MIDR_CAVIUM_THUNDERX2 MIDR_CPU_MODEL(ARM_CPU_IMP_CAVIUM, CAVIUM_CPU_PART_THUNDERX2)
++#define MIDR_BRAHMA_B53 MIDR_CPU_MODEL(ARM_CPU_IMP_BRCM, BRCM_CPU_PART_BRAHMA_B53)
+ #define MIDR_BRCM_VULCAN MIDR_CPU_MODEL(ARM_CPU_IMP_BRCM, BRCM_CPU_PART_VULCAN)
+ #define MIDR_QCOM_FALKOR_V1 MIDR_CPU_MODEL(ARM_CPU_IMP_QCOM, QCOM_CPU_PART_FALKOR_V1)
+ #define MIDR_QCOM_FALKOR MIDR_CPU_MODEL(ARM_CPU_IMP_QCOM, QCOM_CPU_PART_FALKOR)
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c
+index a3c5c46dd2..ce619f35fa 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpu_errata.c
+@@ -481,6 +481,7 @@ out_printmsg:
+ 
+ /* known invulnerable cores */
+ static const struct midr_range arm64_ssb_cpus[] = {
++	MIDR_ALL_VERSIONS(MIDR_BRAHMA_B53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A35),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A55),
+@@ -580,6 +581,7 @@ multi_entry_cap_cpu_enable(const struct arm64_cpu_capabilities *entry)
+  * List of CPUs that do not need any Spectre-v2 mitigation at all.
+  */
+ static const struct midr_range spectre_v2_safe_list[] = {
++	MIDR_ALL_VERSIONS(MIDR_BRAHMA_B53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A35),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A53),
+ 	MIDR_ALL_VERSIONS(MIDR_CORTEX_A55),
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c
+index d7e73a7963..3f1b7509c1 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/arch/arm64/kernel/cpufeature.c
+@@ -909,6 +909,7 @@ static bool unmap_kernel_at_el0(const struct arm64_cpu_capabilities *entry,
+ 	static const struct midr_range kpti_safe_list[] = {
+ 		MIDR_ALL_VERSIONS(MIDR_CAVIUM_THUNDERX2),
+ 		MIDR_ALL_VERSIONS(MIDR_BRCM_VULCAN),
++		MIDR_ALL_VERSIONS(MIDR_BRAHMA_B53),
+ 		MIDR_ALL_VERSIONS(MIDR_CORTEX_A35),
+ 		MIDR_ALL_VERSIONS(MIDR_CORTEX_A53),
+ 		MIDR_ALL_VERSIONS(MIDR_CORTEX_A55),
+-- 
+2.25.1
+

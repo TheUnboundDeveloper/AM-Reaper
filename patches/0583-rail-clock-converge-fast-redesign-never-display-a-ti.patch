@@ -1,0 +1,169 @@
+From cec0b187a08bce5d95db90f465a38a32e99ccdd9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 30 Aug 2026 12:55:07 -0400
+Subject: [PATCH] rail clock: converge-fast redesign - never display a time
+ known to be false
+
+Field result of the v2.9.4 cut, reported minutes after flashing: a page loaded
+during the PRE-NTP window ticked "SUN 31 DEC 2023" confidently while the
+taskbar read Aug 2026. This board has no RTC - every boot starts at the epoch
+clock, so pages loaded in the first minutes ALWAYS seed bogus, and the first
+re-sync was not due for five minutes. Wrong twice: the correction was tuned
+for the mid-session drift case instead of the boot case, and it ticked a time
+it could already know was false.
+
+Redesign (owner direction: correct in place, no refresh, no navigation, no
+reliance on an eternal 5-minute poll):
+- an implausible base (year < 2026) is NEVER displayed - the rail shows its
+  own --:--:-- placeholder instead of a confident lie
+- sync starts ~2 s after load and retries every 8 s until BOTH sides are sane,
+  so the boot case converges seconds after NTP lands - in place
+- a server answer that is itself still pre-NTP is rejected, not adopted
+- once sane: visibilitychange is the primary corrector, with a 10-minute
+  safety heartbeat for the mid-session NTP-step case only
+- inflight latch so retries never stack; any failure leaves the display alone
+
+Same contract otherwise: RP_CLK seed/i18n from the page, time source is the
+banner fragment's data-now, no new endpoint, regression marker
+(visibilitychange) unchanged.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/js/reaper_clock.js | 100 +++++++++++++++-------
+ 1 file changed, 68 insertions(+), 32 deletions(-)
+
+diff --git a/release/src/router/www/js/reaper_clock.js b/release/src/router/www/js/reaper_clock.js
+index 417f4d568f..2aeff0dd2b 100644
+--- a/release/src/router/www/js/reaper_clock.js
++++ b/release/src/router/www/js/reaper_clock.js
+@@ -1,59 +1,95 @@
+-/* reaper v2.9.4: the nav-rail clock, with re-sync.
++/* reaper v2.9.5: the nav-rail clock - converge-fast redesign.
+  *
+- * The old per-page inline script seeded its base ONCE from <% uptime(); %> at
+- * render and extrapolated forever. This board has no battery RTC, so every boot
+- * and every NTP correction is a clock STEP (observed on metal 2026-08-30: a ~4 h
+- * jump mid-syslog) - a shell tab left open across one showed the wrong time
+- * until reloaded. The two page copies were also byte-identical twins destined
+- * to drift apart; the logic now lives here once.
++ * v2.9.4's first cut seeded from <% uptime(); %> and re-synced on a 5-minute
++ * interval. Field result (owner, 2026-08-30, minutes after flashing): a page
++ * loaded during the PRE-NTP WINDOW ticked "SUN 31 DEC 2023" with total
++ * confidence for up to five minutes - this board has no RTC, so every boot
++ * starts at the epoch clock and pages loaded in the first minutes ALWAYS seed
++ * bogus. Wrong twice: the first correction came far too late, and worse, it
++ * ticked a time it could already know was false.
+  *
+- * Contract: the page defines window.RP_CLK = { seed, dw[7], mo[12] } BEFORE
+- * loading this file (seed = <% uptime(); %>; dw/mo carry the page's translated
+- * day/month names - dict tokens stay in the .asp, this file is deliberately
+- * token-free). Re-sync fetches /Reaper_SecBanner.asp - a request the banner
+- * loader already makes on every admin page - and reads its data-now attribute.
+- * Rule-34 shape: one guarded completion; any failure leaves the clock ticking
+- * on its current base. Corrections under 2 s are ignored (jitter), larger ones
+- * snap (the NTP-step case this exists for). */
++ * The redesign, owner's direction ("clear what's on the page and ensure it's
++ * truly displaying what the router has"):
++ *   - an implausible base (year < 2026) is NEVER displayed - the rail shows its
++ *     own --:--:-- placeholder instead of a confident lie;
++ *   - sync starts ~2 s after load and retries every 8 s until BOTH sides are
++ *     sane - so the boot case converges in seconds, not minutes;
++ *   - a server answer that is itself still pre-NTP is rejected, not adopted;
++ *   - once sane, visibilitychange is the primary corrector (tab wakes from
++ *     overnight sleep -> immediate check) with only a slow 10-minute safety
++ *     heartbeat for the mid-session NTP-step case.
++ *
++ * Contract unchanged: the page defines window.RP_CLK = { seed, dw[7], mo[12] }
++ * before loading this file; time source is Reaper_SecBanner.asp's data-now
++ * attribute (a fragment every admin page already fetches; no new endpoint).
++ * Rule-34 shape: one guarded completion per fetch, an inflight latch so
++ * retries never stack, and any failure leaves the current display alone. */
+ (function(){
+ 	var C = window.RP_CLK;
+-	if (!C || !C.seed || !C.dw || !C.mo) return;
++	if (!C || !C.dw || !C.mo) return;
+ 	var et = document.getElementById('rc_time'), ed = document.getElementById('rc_date');
+ 	if (!et) return;
+ 
++	var SANE_AFTER = Date.UTC(2026, 0, 1);   /* pre-2026 = the epoch clock */
++	var b = NaN, t0 = 0, ticking = false, inflight = false;
++
+ 	function parse(us){
+ 		if (!us || us.length < 25) return NaN;
+ 		return Date.parse(us.substring(8,11)+" "+us.substring(5,7)+" "+us.substring(17,25)+" "+us.substring(12,16));
+ 	}
+-	var b = parse(C.seed), t0 = Date.now();
+-	if (isNaN(b)) return;
+-
++	function sane(ms){ return !isNaN(ms) && ms >= SANE_AFTER; }
+ 	function p2(n){ return (n<10?'0':'')+n; }
++	function dashes(){
++		et.textContent = '--:--:--';
++		if (ed) ed.textContent = '\u2014';
++	}
+ 	function tk(){
+ 		var d = new Date(b + (Date.now()-t0));
+ 		et.innerHTML = p2(d.getHours())+':'+p2(d.getMinutes())+':<span class="rc-sec">'+p2(d.getSeconds())+'</span>';
+ 		if (ed) ed.textContent = C.dw[d.getDay()]+' '+d.getDate()+' '+C.mo[d.getMonth()]+' '+d.getFullYear();
+ 	}
++	function adopt(ms){
++		b = ms; t0 = Date.now();
++		if (!ticking){ ticking = true; setInterval(tk, 1000); }
++		tk();
++	}
+ 	function resync(){
++		if (inflight) return;
++		inflight = true;
+ 		try{
+ 			var x = new XMLHttpRequest(), done = false;
++			function fin(){ if (done) return; done = true; inflight = false; schedule(); }
+ 			x.open('GET','/Reaper_SecBanner.asp?_='+Date.now(), true);
+-			x.timeout = 10000;
++			x.timeout = 8000;
+ 			x.onreadystatechange = function(){
+-				if (done || x.readyState !== 4 || x.status !== 200) return;
+-				done = true;
+-				var m = /data-now="([^"]*)"/.exec(x.responseText || '');
+-				if (!m) return;
+-				var nb = parse(m[1]);
+-				if (isNaN(nb)) return;
+-				var drift = nb - (b + (Date.now()-t0));
+-				if (drift > 2000 || drift < -2000){ b = nb; t0 = Date.now(); tk(); }
++				if (x.readyState !== 4) return;
++				if (x.status === 200){
++					var m = /data-now="([^"]*)"/.exec(x.responseText || '');
++					var nb = m ? parse(m[1]) : NaN;
++					if (sane(nb)){
++						var drift = nb - (b + (Date.now()-t0));
++						if (!sane(b) || drift > 2000 || drift < -2000) adopt(nb);
++					}
++					/* an insane server answer (router still pre-NTP) is
++					 * rejected; the fast loop below keeps asking */
++				}
++				fin();
+ 			};
++			x.ontimeout = x.onerror = x.onabort = function(){ fin(); };
+ 			x.send();
+-		}catch(e){}
++		}catch(e){ inflight = false; schedule(); }
++	}
++	var timer = null;
++	function schedule(){
++		if (timer) clearTimeout(timer);
++		/* fast until sane, then the slow safety heartbeat */
++		timer = setTimeout(resync, sane(b) ? 600000 : 8000);
+ 	}
+-	tk();
+-	setInterval(tk, 1000);
+-	setInterval(resync, 300000);
++
++	/* seed: display it only if it deserves display */
++	var seed = parse(C.seed || '');
++	if (sane(seed)) adopt(seed); else dashes();
++
++	setTimeout(resync, 2000);
+ 	document.addEventListener('visibilitychange', function(){ if (!document.hidden) resync(); });
+ })();
+-- 
+2.25.1
+

@@ -45,7 +45,6 @@ BANNER_REF_FILES = {
     "release/src/router/www/Main_Login.asp",
     "release/src/router/www/Main_Password.asp",
     "release/src/router/www/Main_ReaperDash.asp",
-    "release/src/router/www/Reaper_FirstBoot.asp",
     "release/src/router/www/reaper_shell.asp",
     "release/src/router/www/state.js",
 }

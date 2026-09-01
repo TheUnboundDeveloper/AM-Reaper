@@ -1,0 +1,858 @@
+From 3a6507bfbfa5a296d3c0cab7c03c56f947f98131 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 30 Aug 2026 10:28:56 -0400
+Subject: [PATCH] field fixes: AiMesh search, restore lockout, and every Apply
+ acknowledges itself
+
+Nine owner-reported or field-proven defects, all small, all in the first-run /
+recovery area. Nothing here changes enforcement semantics except the Gatekeeper
+restore deferral, which is the point of it.
+
+AIMESH "ADD NODE" FINDS NOTHING (P1, field 2026-08-30, GT-BE98 CAP + 3x RT-AX92U)
+select_best_onboarding_re() required ALL FIVE of rssi/rssi_5g/rssi_5g2/source/
+ts_eth before a candidate parent contributed anything - and cfg_server only
+writes the bands it actually HEARD the node on. A CAP that heard a node on
+2.4 GHz alone discarded every parent, so no parent was selected and the node
+never reached the list. The 2.4 GHz fallback in the obPriority block was already
+correct and simply unreachable. The gate existed to avoid dereferencing missing
+keys, not because all bands are required: sourceObj stays mandatory, ts_eth is
+required only on the ethernet branch that reads it, and each band is guarded
+individually. These gates affect the SEARCH LISTING only - the join path never
+reads onboarding.json. Explains the long-standing "works for some, not others"
+shape: it depended on whether the CAP happened to hear the node on 5 GHz.
+The v2.3.7 aimesh: diagnostic logging is the only reason this was diagnosable.
+
+A SETTINGS RESTORE CAN NO LONGER LOCK ANYONE OUT (P1, field 2026-08-29)
+A full-backup restore is two phases: the nvram half arrives with the reboot,
+the /jffs half is replayed from restore_pending.json afterwards. gk_enable came
+back in phase 1, the device list not until phase 2 - so the box rebooted with
+Gatekeeper armed and an EMPTY list: default-deny for every device on the LAN,
+including the operator, who had SSH off and got back in only through the HTTPS
+admin-port carve-out. Two layers:
+- start_gk() now holds enforcement OFF while restore_pending.json exists, with
+  a syslog line naming the fix (finish the restore on the backup page). Not
+  silent: the dashboard Gatekeeper tile keys off gk_enable, and the backup page
+  banners the pending restore. All three re-arm paths are structurally closed
+  while deferred - gk_refresh() and the firewall hook gate on apply.sh existing
+  (stop_gk unlinked it; the deferral never regenerates it) and gkd escalates
+  via restart_gk, which lands back in the deferral. Phase 2 issues restart_gk
+  after the restored list lands; the pending file is consumed valid or corrupt,
+  so nothing can wedge the deferral on.
+- The operator's MAC (connection IP -> ARP, via the new reaper_client_mac())
+  is stamped approved-full in phase 1 and re-stamped after the phase-2 import
+  replaces the list - covering the case where the archive predates the
+  operator's device, or their MAC changed (a Wi-Fi password change makes client
+  OSes present a fresh randomized MAC).
+
+EVERY RESTORE RESULT IS NOW VISIBLE
+The backup card's msg() helper began `if(!m)return;` - with #rbk_msg absent the
+outcome of a restore was discarded with no trace, success or failure. That is
+why a field restore could POST, receive 200 OK and appear to do nothing, and
+why the v2.9.2 per-cause ec codes never reached the operator. Falls back to
+alert() + console so a result can never be swallowed again.
+
+EVERY APPLY ACKNOWLEDGES ITSELF
+- Advanced_Wireless_Content.asp raised its loading overlay INSIDE the nvramSet
+  success callback - applying a wireless security change deauths the client, so
+  the response never arrives, the callback never runs, and the page sits inert
+  while the router applies the change perfectly ("it appeared nothing happened
+  when in reality it rebooted the wifi with the password"). This is the
+  FIRST-BOOT path now that factory Wi-Fi is open. Overlay and reload are armed
+  BEFORE the request; a security change adds the stock DrSurf_sweet_advise1
+  disconnect notice (already translated in all 25 packs) to the overlay.
+- Reaper_Firewall.asp fwApply() posted into a hidden iframe then blindly
+  reloaded 7 s later - seven call sites (URL filter, keyword filter, log level,
+  four rule editors) all looked like dead buttons. A toast (stock
+  Main_alert_proceeding_desc1) is raised before the submit. The Rules-tab Apply
+  is a different path that already reports via showSaved() and is untouched.
+- The Status tab's Refresh gave no sign it did anything - identical innerHTML
+  rewritten over identical cards. The click is acknowledged at once and the
+  shared #st_hint span is stamped with the time on xhr()'s single always-fires
+  completion point (standing rule 34: no busy flag cleared only on success -
+  loadStatus is shared with the 10 s auto-refresh and a failed poll would wedge
+  the button).
+
+ALSO
+- get_fh_ap_ssid_by_unit() had no else under RTCONFIG_MULTILAN_MWL: when no
+  fronthaul prefix resolves (factory box before cfg_server creates the MAINFH
+  profiles; 6 GHz with no .1 VIF) it returned an EMPTY string instead of
+  falling back to wlN_ssid the way the non-MWL path always does. Consumers are
+  the AiMesh fronthaul SSID reporters, so it misreported during onboarding.
+- reaper_diag: the preamble "0. SANITIZATION LEDGER" and "0b. FINDINGS" lose
+  their numbers (owner decision 2026-08-29: drop, do NOT renumber the body -
+  every by-number reference in prose, comments, memory and session rows stays
+  valid). Reaper_Diag.asp's sample line matches again. REAPER-DIAG v1.3.9.
+- Reaper_GK.asp: the guest-pass length select showed a bare 4/8/24/48 with
+  nothing saying what they were, while the per-device grant button rendered a
+  hardcoded English " h". Both now go through new token RGK_61 (English-seeded
+  "h" in all 25 packs, appended so no line index moves; translate pass owed).
+
+Rides along, already in tree: REAPER-DIAG v1.3.8 counter fixes (QoS shaper
+readback + 19b event dedup), Warden custom-feed ceilings, RFW_* IPv6 labels.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/httpd.c              |  18 +++
+ release/src/router/httpd/httpd.h              |   3 +
+ release/src/router/httpd/reaper_inject.c      |   8 +-
+ release/src/router/httpd/web.c                | 120 ++++++++++++++++--
+ release/src/router/others/reaper_diag         |  10 +-
+ release/src/router/rc/gatekeeper.c            |  15 +++
+ .../router/www/Advanced_Wireless_Content.asp  |  45 ++++++-
+ release/src/router/www/BR.dict                |   1 +
+ release/src/router/www/CN.dict                |   1 +
+ release/src/router/www/CZ.dict                |   1 +
+ release/src/router/www/DA.dict                |   1 +
+ release/src/router/www/DE.dict                |   1 +
+ release/src/router/www/EN.dict                |   1 +
+ release/src/router/www/ES.dict                |   1 +
+ release/src/router/www/FI.dict                |   1 +
+ release/src/router/www/FR.dict                |   1 +
+ release/src/router/www/HU.dict                |   1 +
+ release/src/router/www/IT.dict                |   1 +
+ release/src/router/www/JP.dict                |   1 +
+ release/src/router/www/KR.dict                |   1 +
+ release/src/router/www/MS.dict                |   1 +
+ release/src/router/www/NL.dict                |   1 +
+ release/src/router/www/NO.dict                |   1 +
+ release/src/router/www/PL.dict                |   1 +
+ release/src/router/www/RO.dict                |   1 +
+ release/src/router/www/RU.dict                |   1 +
+ release/src/router/www/Reaper_Diag.asp        |   2 +-
+ release/src/router/www/Reaper_Firewall.asp    |  38 +++++-
+ release/src/router/www/Reaper_GK.asp          |   4 +-
+ release/src/router/www/SL.dict                |   1 +
+ release/src/router/www/SV.dict                |   1 +
+ release/src/router/www/TH.dict                |   1 +
+ release/src/router/www/TR.dict                |   1 +
+ release/src/router/www/TW.dict                |   1 +
+ release/src/router/www/UK.dict                |   1 +
+ 36 files changed, 260 insertions(+), 30 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index b17fd3f0df..124d3127e0 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.9.2
++EXTENDNO=Reaper_v2.9.3
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 12198158ec..efbe79b4eb 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1277,6 +1277,22 @@ gk_ip_to_mac(const char *ip, char *mac, size_t maclen)
+ 	return 1;
+ }
+ 
++/* reaper v2.9.3: the IP of the client on the CURRENT request, captured in
++ * handle_request(). Needed outside httpd.c so a CGI can identify the operator
++ * who issued it - specifically the settings restore, which must never lock out
++ * the admin performing it (see do_reaper_restore_cgi). */
++char reaper_client_ip[128] = "";
++
++/* reaper v2.9.3: resolve the current request's client to a LAN MAC. Returns 1
++ * and fills mac on success. Thin wrapper so gk_ip_to_mac can stay static. */
++int
++reaper_client_mac(char *mac, size_t maclen)
++{
++	if (!reaper_client_ip[0] || !mac || maclen < 18)
++		return 0;
++	return gk_ip_to_mac(reaper_client_ip, mac, maclen);
++}
++
+ /* is mac listed (any state) in gk_rl "<MAC>state>expiry..."? */
+ static int
+ gk_mac_known(const char *mac)
+@@ -1579,6 +1595,8 @@ handle_request(void)
+ 	slowloris_check();
+ 
+ 	temp_ip_str = safe_uaddr_ntop(&login_uip_tmp, uip_tmp, sizeof(uip_tmp));
++	/* reaper v2.9.3: publish it for CGIs that must identify the operator. */
++	snprintf(reaper_client_ip, sizeof(reaper_client_ip), "%s", temp_ip_str ? temp_ip_str : "");
+ 
+ 	if ( strcasecmp( method, "get" ) != 0 && strcasecmp(method, "post") != 0 && strcasecmp(method, "head") != 0 ) {
+ 		send_error( 501, "Not Implemented", (char*) 0, "That method is not implemented." );
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+index d080934823..bbb225f151 100644
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -501,6 +501,9 @@ extern int ej_wps_info_2g(int eid, webs_t wp, int argc, char_t **argv);
+ extern int ej_wps_info(int eid, webs_t wp, int argc, char_t **argv);
+ extern int ej_wl_unit_status_array(int eid, webs_t wp, int argc, char_t **argv, int unit);
+ extern int ej_wl_status_array(int eid, webs_t wp, int argc, char_t **argv);
++/* reaper v2.9.3: identify the client on the current request (see httpd.c). */
++extern char reaper_client_ip[128];
++extern int reaper_client_mac(char *mac, size_t maclen);
+ extern const char *syslog_msg_filter[];
+ 
+ /* web.c/web-*.c */
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 90761af634..fc833df886 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -113,10 +113,16 @@
+  *
+  * NOTE: every line must end in a backslash, comments included (see the
+  * REAPER_BOUNCE_JS note above). */
++/* reaper v2.9.3: msg() used to be `if(!m)return;` - with #rbk_msg absent the
++ * outcome of a restore was discarded with no trace, success or failure. That is
++ * why a field restore could POST, receive 200 OK and appear to do nothing, and
++ * why the per-cause ec codes never reached the operator. It now falls back to
++ * alert() + console so a result can never be swallowed again. */
+ #define REAPER_BKCARD_JS \
+ 	"<script>(function(){" \
+ 	"function t(i){var e=document.getElementById(i);return e?e.textContent:\"\";}" \
+-	"function msg(ok,s){var m=document.getElementById(\"rbk_msg\");if(!m)return;" \
++	"function msg(ok,s){var m=document.getElementById(\"rbk_msg\");" \
++	"if(!m){try{alert(s);}catch(e){}try{console.log(\"reaper backup: \"+s);}catch(e){}return;}" \
+ 	"m.style.display=\"\";m.className=ok?\"rbk_ok\":\"rbk_err\";m.textContent=s;}" \
+ 	"function wire(){" \
+ 	"var hid=t(\"rbk_hid\"),model=t(\"rbk_model\"),ver=t(\"rbk_ver\");" \
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 5e155d9e57..b7cfd8c8b9 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24546,6 +24546,9 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+  * completes it with one click after logging back in. */
+ #define RCFG_PENDING	"/jffs/reaper/restore_pending.json"
+ #define RCFG_PENDING_MAX	(256 * 1024)
++/* reaper v2.9.3: the MAC of the operator who ran the restore, re-applied in
++ * phase 2 after the restored device list lands. */
++#define RCFG_ADMIN_MAC	"/jffs/reaper/restore_admin_mac"
+ 
+ static void
+ do_reaper_cfg_cgi(char *url, FILE *stream)
+@@ -24614,6 +24617,34 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 		/* consumed either way: a corrupt pending file must not banner forever */
+ 		unlink(RCFG_PENDING);
+ 		if (r != 0) { websWrite(stream, "{\"ok\":0,\"error\":\"not a Reaper settings file\"}"); return; }
++		/* reaper v2.9.3: the import above has just replaced the device list with
++		 * the one from the archive - which may predate the operator's current
++		 * device, or their MAC may have changed (a Wi-Fi password change makes
++		 * client OSes present a fresh randomized MAC). Re-stamp them approved so
++		 * completing a restore can never be the thing that locks them out. */
++		{
++			char amac[18] = "";
++			int afd = open(RCFG_ADMIN_MAC, O_RDONLY | O_NOFOLLOW);
++			if (afd >= 0) {
++				ssize_t an = read(afd, amac, sizeof(amac) - 1);
++				close(afd);
++				if (an > 0) {
++					amac[an] = 0;
++					while (an > 0 && (unsigned char)amac[an - 1] <= ' ')
++						amac[--an] = 0;
++					if (strlen(amac) == 17) {
++						gk_rl_update(amac, 1, 0);
++						logmessage("reaper_cfg", "full-backup restore: operator %s re-stamped approved after the device list was replaced", amac);
++					}
++				}
++				unlink(RCFG_ADMIN_MAC);
++			}
++		}
++		/* reaper v2.9.3: start_gk() held enforcement off while the pending file
++		 * existed (see rc/gatekeeper.c). It is consumed now and the restored
++		 * device list is in place, so bring Gatekeeper up on its restored
++		 * settings. Harmless when gk_enable=0 - start_gk() just returns. */
++		notify_rc("restart_gk");
+ 		logmessage("reaper_cfg", "full-backup restore completed from %s", RCFG_PENDING);
+ 		websWrite(stream, "{\"ok\":1,\"flags\":%d,\"lists\":%d,\"rejected\":%d}", nflags, nlists, rejected);
+ 		return;
+@@ -25091,6 +25122,35 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 		fclose(cf);
+ 		if (left > 0) { unlink("/tmp/settings_u.prf"); websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"cfgshort\"}"); goto done; }
+ 	}
++	/* reaper v2.9.3: DO NOT LOCK OUT THE OPERATOR PERFORMING THE RESTORE.
++	 * gk_enable/gk_default live in nvram and come back in THIS phase, but the
++	 * device list is in /jffs and is only replayed in phase 2, after the
++	 * reboot. So the box reboots with Gatekeeper armed and an empty list -
++	 * default-deny for everyone, including whoever pressed Restore. Field-hit
++	 * 2026-08-29 with SSH disabled; only the HTTPS admin-port carve-out got the
++	 * owner back in. Stamp the requesting client approved-full (state 1) now:
++	 * gk_rl lives in /jffs so this survives the reboot, and phase 2 re-applies
++	 * it from the marker below after the restored list lands. Same
++	 * self-exempting principle as Service Intercept's automatic source
++	 * exemption - the operator is never the thing you fence out. */
++	{
++		char amac[18] = "";
++		if (reaper_client_mac(amac, sizeof(amac))) {
++			gk_rl_update(amac, 1, 0);
++			mkdir("/jffs/reaper", 0700);
++			unlink(RCFG_ADMIN_MAC);
++			{
++				int afd = open(RCFG_ADMIN_MAC, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++				if (afd >= 0) {
++					write(afd, amac, strlen(amac));
++					close(afd);
++				}
++			}
++			logmessage("reaper_cfg", "full-backup restore: operator %s stamped approved so the restore cannot lock them out", amac);
++		} else
++			logmessage("reaper_cfg", "full-backup restore: could not resolve the operator's MAC - if Gatekeeper is enabled, reach the GUI on the HTTPS admin port after the reboot");
++	}
++
+ 	ok = 1;
+ 	logmessage("reaper_cfg", "full-backup restore: settings staged, Reaper half parked at %s - restoring and rebooting", RCFG_PENDING);
+ 	websWrite(stream, "{\"ok\":1,\"reboot\":1}");
+@@ -42448,6 +42508,20 @@ char *get_fh_ap_ssid_by_unit(int unit)
+ 		trim_space(prefix);
+ 		strlcpy(ssid, nvram_safe_get(strlcat_r(prefix, "_ssid", tmp, sizeof(tmp))), sizeof(ssid));
+ 	}
++	else {
++		/* reaper v2.9.3: the MWL branch had NO else, so when the fronthaul prefix
++		 * could not be resolved this returned an EMPTY string - it could never fall
++		 * back to wlN_ssid the way the non-MWL path below always does. That is a
++		 * live case, not a theoretical one: a box that has not yet had its SDN
++		 * MAINFH profiles created (a factory reset until cfg_server reconciles)
++		 * resolves no fronthaul prefix at all, and on 6 GHz there may be no .1 VIF
++		 * to resolve to. Consumers are the AiMesh fronthaul SSID reporters
++		 * (ssid_2g_fh, ap2g_ssid_fh_buf...), so an empty answer misreports the
++		 * network during onboarding rather than failing loudly. Mirror the non-MWL
++		 * fallback. */
++		snprintf(prefix, sizeof(prefix), "wl%d_", unit);
++		strlcpy(ssid, nvram_safe_get(strlcat_r(prefix, "ssid", tmp, sizeof(tmp))), sizeof(ssid));
++	}
+ #else
+ #if defined(RTCONFIG_DWB) && defined(RTCONFIG_FRONTHAUL_DWB)
+ 	if ((dwb_mode == 1 || dwb_mode == 3) && fh_ap_enabled > 0 && unit == dwb_band)
+@@ -43491,23 +43565,43 @@ static char *select_best_onboarding_re(char *newReMac, int *rssi, int *source, l
+ 				json_object_object_get_ex(newReObj, "source", &sourceObj);
+ 				json_object_object_get_ex(newReObj, "ts_eth", &tsEthObj);
+ 				json_object_object_get_ex(newReObj, "type", &typeObj);
+-				/* reaper: gate-2 diagnostics. ALL FIVE keys must be present or this
+-				 * parent contributes nothing; if no parent qualifies, the new node is
+-				 * dropped from the onboarding list entirely and the wizard shows an
+-				 * empty search. Note rssi_5g2 is required even on models with no
+-				 * second 5 GHz radio. Logging only - the gate itself is unchanged. */
+-				if (!(rssiObj && rssi5gObj && rssi5g2Obj && sourceObj && tsEthObj))
+-					logmessage("aimesh", "onboarding: parent %s skipped for node %s - missing%s%s%s%s%s",
++				/* reaper v2.9.3: the ORIGINAL gate here required ALL FIVE of rssi,
++				 * rssi_5g, rssi_5g2, source and ts_eth to be present before a parent
++				 * contributed anything - and cfg_server only writes the bands it
++				 * actually HEARD the node on. A CAP that heard a node on 2.4 GHz
++				 * alone therefore had every candidate parent discarded, no parent was
++				 * selected, and the node never reached the list: "Add Node" finds
++				 * nothing. Field-proven 2026-08-30 (GT-BE98 CAP + 3x RT-AX92U, log:
++				 * "parent ... skipped ... - missing rssi_5g rssi_5g2" for every
++				 * parent, then "no parent selected - not offered").
++				 *
++				 * The bitter part is that the 2.4 GHz fallback further down already
++				 * handles this exactly right - each band is scored independently with
++				 * its own != 0 guard, and the obPriority block falls back to rssi2g
++				 * when no 5 GHz RSSI is valid. It simply could never be reached.
++				 *
++				 * The gate existed to avoid dereferencing a missing key, NOT because
++				 * all three bands are required. So guard each dereference instead:
++				 * sourceObj stays mandatory (it is structural - *source |= needs it),
++				 * ts_eth is required only on the ethernet branch that reads it, and
++				 * each band is skipped individually when absent. Nothing downstream
++				 * changes. These gates affect the SEARCH LISTING only - the join path
++				 * (ob_selection / onboarding+macs) never reads onboarding.json - so a
++				 * parent chosen on 2.4 GHz still onboards through the stock path. */
++				if (!sourceObj)
++					logmessage("aimesh", "onboarding: parent %s skipped for node %s - missing source",
++						key, newReMac);
++				else if (!(rssiObj && rssi5gObj && rssi5g2Obj && tsEthObj))
++					logmessage("aimesh", "onboarding: parent %s partial for node %s - missing%s%s%s%s (still usable)",
+ 						key, newReMac,
+ 						rssiObj ? "" : " rssi",
+ 						rssi5gObj ? "" : " rssi_5g",
+ 						rssi5g2Obj ? "" : " rssi_5g2",
+-						sourceObj ? "" : " source",
+ 						tsEthObj ? "" : " ts_eth");
+ 
+-				if (rssiObj && rssi5gObj && rssi5g2Obj && sourceObj && tsEthObj) {
++				if (sourceObj) {
+ 					/* for ethernet */
+-					if (json_object_get_int(sourceObj) & 0x2) {
++					if ((json_object_get_int(sourceObj) & 0x2) && tsEthObj) {
+ 						if (ts_eth_tmp <= json_object_get_int64(tsEthObj)) {
+ 							snprintf(reMac, sizeof(reMac), "%s", key);
+ 							*rssi = 0;
+@@ -43520,19 +43614,19 @@ static char *select_best_onboarding_re(char *newReMac, int *rssi, int *source, l
+ 					/* for wireless */
+ 					if (json_object_get_int(sourceObj) & 0x1) {
+ 						/* check rssi for 2g */
+-						if (json_object_get_int(rssiObj) != 0 && rssi2g <= json_object_get_int(rssiObj)) {
++						if (rssiObj && json_object_get_int(rssiObj) != 0 && rssi2g <= json_object_get_int(rssiObj)) {
+ 							snprintf(reMac2g, sizeof(reMac2g), "%s", key);
+ 							rssi2g = json_object_get_int(rssiObj);
+ 						}
+ 
+ 						/* check rssi for 5g */
+-						if (json_object_get_int(rssi5gObj) != 0 && rssi5g <= json_object_get_int(rssi5gObj)) {
++						if (rssi5gObj && json_object_get_int(rssi5gObj) != 0 && rssi5g <= json_object_get_int(rssi5gObj)) {
+ 							snprintf(reMac5g, sizeof(reMac5g), "%s", key);
+ 							rssi5g = json_object_get_int(rssi5gObj);
+ 						}
+ 
+ 						/* check rssi for 5g2 */
+-						if (json_object_get_int(rssi5g2Obj) != 0 && rssi5g2 <= json_object_get_int(rssi5g2Obj)) {
++						if (rssi5g2Obj && json_object_get_int(rssi5g2Obj) != 0 && rssi5g2 <= json_object_get_int(rssi5g2Obj)) {
+ 							snprintf(reMac5g2, sizeof(reMac5g2), "%s", key);
+ 							rssi5g2 = json_object_get_int(rssi5g2Obj);
+ 						}
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index db5b1a67c7..95b1ec7d2d 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.7 (2026-08-23) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.9 (2026-08-30) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.8"
++VER="REAPER-DIAG v1.3.9"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -878,7 +878,7 @@ echo ""; echo "#### END OF DIAG ####"
+ # v1.3.0: FINDINGS first. Prepended BEFORE the sanitizer so any pseudonym used
+ # in a finding is the same one the sections use.
+ {
+-  echo ""; echo "#### 0b. FINDINGS (derived by the script; read these first) ####"
++  echo ""; echo "#### FINDINGS (derived by the script; read these first) ####"
+   if [ -s "$FIND" ]; then cat "$FIND"; else echo "  none - nothing the script checks for was out of range"; fi
+   echo "  (WARN = acts on the fault class the section names; INFO = worth knowing, not a fault)"
+   cat "$RAW"
+@@ -935,7 +935,7 @@ fi
+   echo "==================== $MODEL Reaper sanitized diag ===================="
+   echo " $VER | firmware: $EXTNO | generated: $(date)"
+   echo ""
+-  echo "#### 0. SANITIZATION LEDGER (what was found and withheld) ####"
++  echo "#### SANITIZATION LEDGER (what was found and withheld) ####"
+   cat "$LEDG"
+   echo ""
+   echo "  -- post-sanitize verification (counts only; values never printed) --"
+@@ -952,7 +952,7 @@ fi
+   echo "  Investigating a connectivity complaint? Read 14 (Warden counters +"
+   echo "  set membership) with 16 (probes): a climbing RW_ODROP or an IN SET"
+   echo "  hit means the router dropped it; flat counters with failing probes"
+-  echo "  means look upstream. Start with 0b (FINDINGS), then 19b (history)."
++  echo "  means look upstream. Start with FINDINGS, then 19b (history)."
+   cat "$BODY"
+   echo "==================== end diag $(date) ===================="
+ } > "$OUT"
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index b02da5ed99..447c1a67b2 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -645,6 +645,21 @@ void start_gk(void)
+ 		return;
+ 	if (!nvram_match("gk_enable", "1"))
+ 		return;
++	/* reaper v2.9.3: a full-backup restore is TWO phases - the nvram half (this
++	 * boot) and the /jffs half (replayed from restore_pending.json after it).
++	 * gk_enable comes back in phase 1 but the device list does not arrive until
++	 * phase 2, so arming here would run default-deny with an EMPTY list: every
++	 * device on the LAN quarantined, including the operator mid-restore.
++	 * Field-hit 2026-08-29 with SSH disabled. While the pending file exists,
++	 * hold enforcement off entirely - visible state, not silent: the dashboard's
++	 * Gatekeeper tile keys off gk_enable and the backup page banners the pending
++	 * restore. The phase-2 import (do_reaper_cfg_cgi) consumes the file - valid
++	 * or corrupt - and restarts us; gkd's amas_watch/self-heal paths never run
++	 * while we return here, so nothing re-arms behind this check. */
++	if (f_exists("/jffs/reaper/restore_pending.json")) {
++		logmessage("gatekeeper", "settings restore pending - enforcement held OFF until the restore completes (finish it on the Administration backup page)");
++		return;
++	}
+ 	mkdir(GK_DIR, 0700);
+ 	gk_rl_migrate();	/* v2.6.3: nvram gk_rl -> /jffs/gatekeeper/rl, once */
+ 	reaper_hook_gen();	/* v2.6.2 front chains */
+diff --git a/release/src/router/www/Advanced_Wireless_Content.asp b/release/src/router/www/Advanced_Wireless_Content.asp
+index d6b491dc47..ab7ca0c91b 100644
+--- a/release/src/router/www/Advanced_Wireless_Content.asp
++++ b/release/src/router/www/Advanced_Wireless_Content.asp
+@@ -3604,13 +3604,46 @@
+                     });
+                 }
+ 
+-                httpApi.nvramSet(postObject, function () {
+-                    showLoading(restartTime);
+-                    window.scrollTo && window.scrollTo({top: 0, left: 0, behavior: 'smooth'});
+-                    setTimeout(function () {
+-                        location.reload();
+-                    }, restartTime * 1000);
++                /* reaper v2.9.3: the overlay used to be raised INSIDE the nvramSet success
++                   callback. Applying a wireless security change deauths the client, so the
++                   response to that very request never arrives, the callback never runs, and
++                   the page sits inert while the router applies the change perfectly. Field
++                   report 2026-08-30: "it appeared nothing happened when in reality it
++                   rebooted the wifi with the password" - the owner only noticed it had
++                   worked when he tried to leave the page and found himself disconnected.
++                   This is the FIRST-BOOT path now that factory Wi-Fi is open again, so it is
++                   the common case, not an edge one. Raise the overlay and arm the reload
++                   BEFORE the request: feedback must never depend on the connection the
++                   change is about to drop. */
++                var wlSecChanged = Object.keys(postObject).some(function (k) {
++                    return /_(ssid|auth_mode_x|wpa_psk|crypto|mfp)$/.test(k);
+                 });
++
++                showLoading(restartTime);
++                window.scrollTo && window.scrollTo({top: 0, left: 0, behavior: 'smooth'});
++
++                if (wlSecChanged) {
++                    /* Say plainly that the browser itself may be the client that drops.
++                       DrSurf_sweet_advise1 is stock and already translated in all 25 packs,
++                       so this costs no new token. Backticks because the English carries an
++                       apostrophe and other locales may too. */
++                    try {
++                        var lb = document.getElementById("loadingBlock");
++                        if (lb && !document.getElementById("rwl_dc_hint")) {
++                            var hint = document.createElement("div");
++                            hint.id = "rwl_dc_hint";
++                            hint.style.cssText = "margin:14px 18px 0;line-height:1.5";
++                            hint.textContent = `<#DrSurf_sweet_advise1#>`;
++                            lb.appendChild(hint);
++                        }
++                    } catch (e) {}
++                }
++
++                setTimeout(function () {
++                    location.reload();
++                }, restartTime * 1000);
++
++                httpApi.nvramSet(postObject, function () {});
+             }
+ 
+             function mloHint() {
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 3eaa4cefda..9fab94fb08 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=A senha do Wi-Fi ainda e admin
+ RSEC_10=A senha do Wi-Fi foi alterada
+ RSEC_11=Alterar senha do Wi-Fi
+ RSEC_12=Este aviso nao pode ser fechado. Ele desaparece sozinho quando as duas forem alteradas.
++RGK_61=h
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 2a0b787af5..c563383180 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi 密码仍为 admin
+ RSEC_10=Wi-Fi 密码已更改
+ RSEC_11=更改 Wi-Fi 密码
+ RSEC_12=此提示无法关闭。两项都更改后它会自动消失。
++RGK_61=h
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index b8bdfeab96..1096615d2b 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Heslo Wi-Fi je stale admin
+ RSEC_10=Heslo Wi-Fi bylo zmeneno
+ RSEC_11=Zmenit heslo Wi-Fi
+ RSEC_12=Toto upozorneni nelze zavrit. Zmizi samo, jakmile budou zmeneny obe polozky.
++RGK_61=h
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 794ae22517..50f95555b4 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi-kodeordet er stadig admin
+ RSEC_10=Wi-Fi-kodeordet er blevet aendret
+ RSEC_11=Skift Wi-Fi-kodeord
+ RSEC_12=Denne meddelelse kan ikke lukkes. Den forsvinder af sig selv, nar begge er aendret.
++RGK_61=h
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index a4f1490cf1..95b3120d32 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=WLAN-Passwort ist noch admin
+ RSEC_10=WLAN-Passwort wurde geaendert
+ RSEC_11=WLAN-Passwort aendern
+ RSEC_12=Dieser Hinweis laesst sich nicht schliessen. Er verschwindet von selbst, sobald beide geaendert sind.
++RGK_61=h
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 61c829c1ba..89136c3e7c 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi password is still admin
+ RSEC_10=Wi-Fi password has been changed
+ RSEC_11=Change Wi-Fi password
+ RSEC_12=This notice cannot be dismissed. It disappears on its own once both are changed.
++RGK_61=h
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 00827be801..f714fb729f 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=La contrasena del Wi-Fi sigue siendo admin
+ RSEC_10=La contrasena del Wi-Fi se ha cambiado
+ RSEC_11=Cambiar contrasena del Wi-Fi
+ RSEC_12=Este aviso no se puede cerrar. Desaparece solo cuando ambas se hayan cambiado.
++RGK_61=h
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 06d540e293..518255426f 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi-salasana on yha admin
+ RSEC_10=Wi-Fi-salasana on vaihdettu
+ RSEC_11=Vaihda Wi-Fi-salasana
+ RSEC_12=Tata ilmoitusta ei voi sulkea. Se katoaa itsestaan, kun molemmat on vaihdettu.
++RGK_61=h
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 46429c8a12..e3bfa02962 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Le mot de passe Wi-Fi est encore admin
+ RSEC_10=Le mot de passe Wi-Fi a ete change
+ RSEC_11=Changer le mot de passe Wi-Fi
+ RSEC_12=Cet avis ne peut pas etre ferme. Il disparait de lui-meme une fois les deux changes.
++RGK_61=h
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index df642f0cd8..ac5eb4672d 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=A Wi-Fi jelszo meg admin
+ RSEC_10=A Wi-Fi jelszo megvaltozott
+ RSEC_11=Wi-Fi jelszo modositasa
+ RSEC_12=Ez az ertesites nem zarhato be. Magatol eltunik, amint mindketto megvaltozott.
++RGK_61=h
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index e9b6671ee0..ff3efe3156 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=La password del Wi-Fi e ancora admin
+ RSEC_10=La password del Wi-Fi e stata modificata
+ RSEC_11=Modifica password Wi-Fi
+ RSEC_12=Questo avviso non puo essere chiuso. Scompare da solo quando entrambe sono state modificate.
++RGK_61=h
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 1a83e7146e..8665386d35 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi パスワードは admin のままです
+ RSEC_10=Wi-Fi パスワードが変更されました
+ RSEC_11=Wi-Fi パスワードを変更
+ RSEC_12=この通知は閉じられません。両方を変更すると自動的に消えます。
++RGK_61=h
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index c2c296b45c..baedd11909 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi 비밀번호가 아직 admin 입니다
+ RSEC_10=Wi-Fi 비밀번호가 변경되었습니다
+ RSEC_11=Wi-Fi 비밀번호 변경
+ RSEC_12=이 알림은 닫을 수 없습니다. 둘 다 변경하면 저절로 사라집니다.
++RGK_61=h
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index c129936a0f..54e4b79ae5 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Kata laluan Wi-Fi masih admin
+ RSEC_10=Kata laluan Wi-Fi telah ditukar
+ RSEC_11=Tukar kata laluan Wi-Fi
+ RSEC_12=Notis ini tidak boleh ditutup. Ia hilang dengan sendirinya apabila kedua-duanya ditukar.
++RGK_61=h
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 8cc90a99a5..d2cbe2ecbf 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi-wachtwoord is nog admin
+ RSEC_10=Wi-Fi-wachtwoord is gewijzigd
+ RSEC_11=Wi-Fi-wachtwoord wijzigen
+ RSEC_12=Deze melding kan niet worden gesloten. Hij verdwijnt vanzelf zodra beide zijn gewijzigd.
++RGK_61=h
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index a17cc18134..d88c9600b3 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi-passordet er fortsatt admin
+ RSEC_10=Wi-Fi-passordet er endret
+ RSEC_11=Endre Wi-Fi-passord
+ RSEC_12=Denne meldingen kan ikke lukkes. Den forsvinner av seg selv nar begge er endret.
++RGK_61=h
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index b6d5f55e66..689b86f9ba 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Haslo Wi-Fi to nadal admin
+ RSEC_10=Haslo Wi-Fi zostalo zmienione
+ RSEC_11=Zmien haslo Wi-Fi
+ RSEC_12=Tego powiadomienia nie mozna zamknac. Znika samo, gdy oba zostana zmienione.
++RGK_61=h
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 5537c688e0..9061cbc6e1 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Parola Wi-Fi este inca admin
+ RSEC_10=Parola Wi-Fi a fost schimbata
+ RSEC_11=Schimba parola Wi-Fi
+ RSEC_12=Aceasta notificare nu poate fi inchisa. Dispare singura dupa ce amandoua au fost schimbate.
++RGK_61=h
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index c45a79d9dd..cc12dd1277 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Пароль Wi-Fi по-прежнему admin
+ RSEC_10=Пароль Wi-Fi изменен
+ RSEC_11=Изменить пароль Wi-Fi
+ RSEC_12=Это уведомление нельзя закрыть. Оно исчезнет само, когда оба будут изменены.
++RGK_61=h
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 26f4ce10f2..163595e309 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -111,7 +111,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+   <div class="ledgrid">
+   <div class="lg-l">
+   <p><#RDIAG_22#></p>
+-  <pre class="sample"><span class="w">#### 0. SANITIZATION LEDGER (what was found and withheld) ####</span>
++  <pre class="sample"><span class="w">#### SANITIZATION LEDGER (what was found and withheld) ####</span>
+   secrets redacted           : <span class="g">2</span>
+   usernames redacted         : <span class="g">1</span>
+   SSID values redacted       : <span class="g">3</span>
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 0ccd49e31e..cc52e5d8be 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -681,8 +681,28 @@ function tgGet(el){return el.classList.contains('on')?'1':'0';}
+ function showSaved(el,ok,msg){el.className='saved'+(ok?'':' err');el.textContent=msg;el.classList.remove('hidden');setTimeout(function(){el.classList.add('hidden');},4000);}
+ 
+ /* dirty-only apply: writes the given nvram map, then restart_firewall */
++/* reaper v2.9.3: fwApply posts into a hidden iframe and then blindly reloads 7 s
++   later, so between the click and the reload there was NO busy state, no spinner
++   and no message - seven call sites (URL filter, keyword filter, log level and
++   the four rule editors) all looked like dead buttons. Owner-reported 2026-08-29.
++   The acknowledgement has to be raised BEFORE the submit: there is no navigation
++   to hang a completion cue on and no callback that reliably fires. Note the
++   Rules-tab Apply ($('rf_apply')) is a DIFFERENT path that already reports via
++   showSaved() - do not "fix" that one. */
++function fwToast(m){
++  var t=document.getElementById('fw_toast');
++  if(!t){
++    t=document.createElement('div');
++    t.id='fw_toast';t.className='saved';
++    t.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:100000;padding:10px 18px';
++    document.body.appendChild(t);
++  }
++  t.textContent=m;t.classList.remove('hidden');
++}
++
+ function fwApply(fields,overlayReload){
+   var f=$('fwform');
++  fwToast(`<#Main_alert_proceeding_desc1#>`);
+   Array.prototype.slice.call(f.querySelectorAll('.dyn')).forEach(function(n){n.remove();});
+   for(var k in fields){
+     var i=document.createElement('input');i.type='hidden';i.className='dyn';i.name=k;i.value=fields[k];f.appendChild(i);
+@@ -1169,6 +1189,16 @@ function kvOn(k,on){return kvRow(k,on?'on':'off',on?ON_T:OFF_T);}
+ function kvCount(k,n){n=parseInt(n,10)||0;return kvRow(k,n>0?'on':'off',n>0?(n+' '+CFG_T):NONE_T);}
+ function loadStatus(){
+   xhr('/reaper_fw.cgi?action=status&http_id='+encodeURIComponent(REAPER_HTTPID),function(j){
++    /* reaper v2.9.3: stamp the shared #st_hint span on EVERY completion. When the
++       posture has not changed loadStatus rewrites identical innerHTML, so a working
++       refresh button was pixel-identical to a dead one. This hangs off xhr()'s
++       single always-fires callback (standing rule 34) rather than a busy flag
++       cleared on success - the latter would wedge the button the first time a poll
++       failed, and loadStatus is shared with the 10 s auto-refresh interval. */
++    try{
++      var _h=$('st_hint');
++      if(_h) _h.textContent=' '+new Date().toLocaleTimeString();
++    }catch(e){}
+     if(!j||!j.ok){$('st_core').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';return;}
+     var f=j.fw,g;
+ 
+@@ -1670,7 +1700,13 @@ function boot(){
+   Array.prototype.slice.call(document.querySelectorAll('#wins .win')).forEach(function(w){
+     w.onclick=function(){showTab(w.getAttribute('data-t'));};
+   });
+-  $('st_refresh').onclick=loadStatus;
++  /* reaper v2.9.3: acknowledge the click at once; loadStatus stamps the time on
++     completion (see above), so the two together make a working button visibly
++     different from a dead one. */
++  $('st_refresh').onclick=function(){
++    try{var _h=$('st_hint');if(_h)_h.textContent=' ...';}catch(e){}
++    loadStatus();
++  };
+   $('st_auto').onclick=function(){this.classList.toggle('on');stopAuto();startAuto();};
+   document.addEventListener('visibilitychange',function(){if(document.hidden)stopAuto();else if($('tab_status').classList.contains('on'))startAuto();});
+   initTab();
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+index cf30aabf60..41dda1e896 100644
+--- a/release/src/router/www/Reaper_GK.asp
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -159,7 +159,7 @@ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--
+     <div class="setrow"><span class="sl"><#RGK_21#><span class="sd"><#RGK_22#></span></span>
+       <select class="setsel" id="s_def" onchange="gkCfg()"><option value="0"><#RGK_23#></option><option value="1"><#RGK_24#></option></select></div>
+     <div class="setrow"><span class="sl"><#RGK_25#><span class="sd"><#RGK_26#></span></span>
+-      <select class="setsel" id="s_hours" onchange="gkCfg()"><option value="4">4</option><option value="8">8</option><option value="24">24</option><option value="48">48</option></select></div>
++      <select class="setsel" id="s_hours" onchange="gkCfg()"><option value="4">4</option><option value="8">8</option><option value="24">24</option><option value="48">48</option></select><span class="sunit">&nbsp;<#RGK_61#></span></div><!-- reaper v2.9.3: the control showed a bare 4/8/24/48 with nothing saying what they were, while the per-device grant button below already rendered a hardcoded English " h". Both now go through RGK_61 so the two surfaces agree and the unit is translatable. -->
+     <div class="setrow"><span class="sl"><#RGK_27#><span class="sd"><#RGK_28#></span></span><span class="tg" id="s_captive" onclick="gkTg(this)"></span></div>
+     <div class="setrow"><span class="sl"><#RGK_29#><span class="sd"><#RGK_30#></span></span><span class="tg" id="s_notify" onclick="gkTg(this)"></span></div>
+   </div>
+@@ -303,7 +303,7 @@ function gkPaint(){
+       + '<div class="pacts">'
+       + '<button class="btn" onclick="gkSet(\'' + gkMac(d.mac) + `\',1)"><#RGK_05#></button>`
+       + '<button class="btng" onclick="gkSet(\'' + gkMac(d.mac) + `\',2)"><#RGK_06#></button>`
+-      + '<button class="btng" onclick="gkSet(\'' + gkMac(d.mac) + `\',3)"><#RGK_07#> &middot; ` + gkEsc(j.guest_hours) + ' h</button>'
++      + '<button class="btng" onclick="gkSet(\'' + gkMac(d.mac) + `\',3)"><#RGK_07#> &middot; ` + gkEsc(j.guest_hours) + ' <#RGK_61#></button>'
+       + '<button class="btnd" onclick="gkSet(\'' + gkMac(d.mac) + `\',0)"><#RGK_08#></button>`
+       + '</div></div>';
+   }
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 3c1704964a..57b9bd8d7e 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Geslo za Wi-Fi je se vedno admin
+ RSEC_10=Geslo za Wi-Fi je bilo spremenjeno
+ RSEC_11=Spremeni geslo za Wi-Fi
+ RSEC_12=Tega obvestila ni mogoce zapreti. Izgine samo, ko sta oboje spremenjena.
++RGK_61=h
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 569713d3b8..a25544c841 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi-losenordet ar fortfarande admin
+ RSEC_10=Wi-Fi-losenordet har andrats
+ RSEC_11=Andra Wi-Fi-losenord
+ RSEC_12=Det har meddelandet gar inte att stanga. Det forsvinner av sig sjalvt nar bada har andrats.
++RGK_61=h
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 27b238ed4d..7b3ede56fe 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=รหัสผ่าน Wi-Fi ยังเป็น admin
+ RSEC_10=เปลี่ยนรหัสผ่าน Wi-Fi แล้ว
+ RSEC_11=เปลี่ยนรหัสผ่าน Wi-Fi
+ RSEC_12=ประกาศนี้ไม่สามารถปิดได้ จะหายไปเองเมื่อเปลี่ยนทั้งสองอย่างแล้ว
++RGK_61=h
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 51ab5f1bee..8d7934240f 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi parolasi hala admin
+ RSEC_10=Wi-Fi parolasi degistirildi
+ RSEC_11=Wi-Fi parolasini degistir
+ RSEC_12=Bu bildirim kapatilamaz. Ikisi de degistirildiginde kendiliginden kaybolur.
++RGK_61=h
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 9e02aeb27a..2e1b559701 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Wi-Fi 密碼仍為 admin
+ RSEC_10=Wi-Fi 密碼已變更
+ RSEC_11=變更 Wi-Fi 密碼
+ RSEC_12=此提示無法關閉。兩項都變更後它會自動消失。
++RGK_61=h
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index d0b8c49359..5460627481 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6778,3 +6778,4 @@ RSEC_9=Пароль Wi-Fi досі admin
+ RSEC_10=Пароль Wi-Fi змінено
+ RSEC_11=Змінити пароль Wi-Fi
+ RSEC_12=Це сповіщення неможливо закрити. Воно зникне саме, коли обидва буде змінено.
++RGK_61=h
+-- 
+2.25.1
+

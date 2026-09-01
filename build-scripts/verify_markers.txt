@@ -27,13 +27,27 @@ www/Main_DHCPStatus_Content.asp|fetchDeviceNames|2
 # internet-only device had no resolver = no usable internet). The generator's
 # shell-helper name proves the carve-out is compiled into rc:
 sbin/rc|gk_same_net|1
-# 2026-08-06 -- first-boot login refresh-loop fix (v2.1.6 field reports): the
-# FirstBoot page must leave to the DASHBOARD, never to "/" (the stale httpd
-# indexpage cache could route "/" back to the wizard = infinite reload). The
-# C half (live get_index_page recompute in httpd.c + web.c login_cgi) has no
-# greppable literal -- covered by the factory-reset metal acceptance test.
-www/Reaper_FirstBoot.asp|/Main_ReaperDash.asp|2
-www/Reaper_FirstBoot.asp|!location.replace("/")
+# v2.9.1 -- the first-boot WIZARD AND ALL SIX OF ITS GATES ARE GONE. The two
+# markers that used to live here guarded Reaper_FirstBoot.asp's exit target;
+# the page no longer ships. What replaces them guards the opposite property:
+# that nothing blocks a page any more, and that the banner which replaced the
+# blocking is actually present in the image.
+#
+# The wizard must never come back, in any form:
+www/Reaper_SecBanner.asp|rsec_state|1
+usr/sbin/httpd|Reaper_SecBanner.asp|1
+usr/sbin/httpd|!Reaper_FirstBoot.asp
+usr/sbin/httpd|!reaper_fbdone
+# The banner must carry all twelve translated strings, and the fragment must
+# never carry the loader (it would fetch itself forever):
+www/Reaper_SecBanner.asp|rsec_t_wifi_cta|1
+www/Reaper_SecBanner.asp|!XMLHttpRequest
+# It must NEVER be served pre-auth: the login page must not name the banner.
+www/Main_Login.asp|!rsec
+# The factory Wi-Fi key is now a real key on every band (2.4/5 psk2, 6 sae) -
+# a shipped image that reverts to an OPEN factory network is the regression
+# this whole change exists to remove:
+usr/sbin/httpd|reaper_wifi_default|1
 # 2026-08-06 -- Warden block count now persists across reboot/reflash: the
 # cumulative baseline lives on /jffs (was /tmp, which cleared on reboot).
 sbin/rc|/jffs/rwarden/blocked_base|1
@@ -65,8 +79,8 @@ usr/lib/libshared.so|/jffs/reaper_pbr/lastgood/rulelist|1
 usr/lib/libshared.so|/tmp/reaper_fw/draft|1
 sbin/rc|/tmp/reaper_pbr/expect|1
 usr/sbin/httpd|reaper_cfg.cgi|1
-# moved 2026-08-29: settings backup UI left Reaper_Storage.asp for the injected card
-www/Reaper_BackupCard.asp|rbk_cx|1
+# moved 2026-08-29 to the injected card; v2.9.8 absorbed into the native page
+www/Reaper_Backup.asp|rbk_cx|1
 # v2.7.1 security review: per-boot http_id (rc) + same-host Referer check on
 # every Reaper CGI (httpd). Missing = the factory-constant CSRF token is back.
 sbin/rc|/tmp/.http_id_boot|1
@@ -80,7 +94,7 @@ usr/sbin/httpd|cross-site request refused|1
 bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
-www/Reaper_BackupCard.asp|rbk_dl|1
+www/Reaper_Backup.asp|rbk_dl|1
 usr/sbin/reaper_diag|REAPER-DIAG v1.3.10|1
 # v2.7.3 -- Gatekeeper learned AiMesh exists: cfg_relist infrastructure
 # exemptions (rc) + gkd's onboarding window. Missing = quarantine breaks
@@ -98,10 +112,35 @@ www/Reaper_Firewall.asp|ic_tbl|1
 # v2.9.0 -- the vendor factory-test hook is REMOVED and must never come back:
 # it ran `sh /tmp/mnt/sda1/auto_test.sh` as root every 30 s when nvram ci=1.
 sbin/rc|!auto_test.sh
-# v2.9.4 regression markers (mirror of the engine copy - keep in sync)
+# v2.9.4 regression markers - each pins a fix so a later change cannot silently
+# drop it: the QoS drops-interpretation note, the Firewall Status forwards +
+# intercepts rows, the Devices export reserved-IP columns, the rail-clock
+# re-sync helper (and its carrier attribute on the banner fragment), and the
+# Smart Connect migrated-state hint swap.
 www/Reaper_QoS.asp|rqos_dropnote|1
 www/Reaper_Firewall.asp|nicpt|1
 www/Reaper_Devices.asp|reserved_ip|1
 www/js/reaper_clock.js|visibilitychange|1
 www/Reaper_SecBanner.asp|data-now|1
 www/Advanced_Smart_Connect.asp|scWhereHint|1
+# v2.9.6 -- full-backup restore drains the TLS-buffered upload tail (the one
+# missing fputc that made every metal restore from v2.7.2 to v2.9.4 answer
+# "magic"); the card's message/pending divs are un-hidden with an explicit
+# display="block" (the stylesheet rule beat style.display=""); every refusal
+# reaches syslog; the stock restore tail stamps each step. Missing = the
+# restore silently fails again with no trace anywhere.
+usr/sbin/httpd|upload tail drained from the TLS/stdio buffer|1
+usr/sbin/httpd|full-backup restore REFUSED|1
+www/Reaper_Backup.asp|'block'|1
+www/Reaper_Backup.asp|!style.display=""
+usr/lib/libwebapi.so|settings restore: nvram committed|1
+# v2.9.8 -- native Backup & Restore page (Reaper_Backup.asp) replaces the
+# stock Restore/Save/Upload page (menu repointed, stock page SUP-redirected)
+# and absorbs the injected card; the pending-restore banner rides the shell
+# and the dashboard so Complete restore is one click from the landing page.
+# Missing = the restore flow regresses to the injected-card era.
+www/Reaper_Backup.asp|jffsupload.cgi|1
+www/reaper_shell.asp|import_pending|1
+www/Main_ReaperDash.asp|import_pending|1
+www/require/modules/menuTree.js|Reaper_Backup.asp|1
+usr/sbin/httpd|Reaper_Backup.asp|1

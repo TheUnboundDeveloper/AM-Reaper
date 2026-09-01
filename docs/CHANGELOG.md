@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v2.8.8** · 2026-08-27 <!--@stamp-->
+> **Doc status:** current as of **v3.0.0** · 2026-09-01 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -23,6 +23,211 @@ a runtime setting; the relevant components are excluded from the build entirely.
 AiMesh has been retained because no suitable open-source replacement is currently known. 
 Replacing AiMesh would also require a compatible replacement implementation on every mesh 
 node, not only on the primary router.
+
+---
+
+## v3.0.0 — Backup & Restore you can trust, a finished first-boot story, and the whole window locked behind a regression gate
+
+The first 3.x release. It rolls up everything staged since v2.9.4 (v2.9.6 through v2.9.9a)
+and closes the release gate on all of it. Four things stand out.
+
+- **Backup & Restore is one page you can actually trust.** The stock Administration
+  "Restore/Save/Upload Setting" page is gone. In its place is a single Reaper-native
+  Backup & Restore panel that also owns factory reset and the JFFS save/restore, so every
+  way to save or recover a configuration lives in one themed place. The one-file `.rbk`
+  full backup/restore — "Complete restore" — is reachable straight from the landing banner,
+  and the defect that made restores fail on real hardware (the upload's last, TLS-buffered
+  chunk was silently dropped, a problem present since v2.7.2) is fixed. Both restore modes
+  were confirmed working on hardware. Every label on the new page was translated across all
+  24 languages and the English was proofread in the same pass.
+
+- **First boot is finished, and it is not a wizard.** The old setup wizard / EULA gate is
+  retired for good. A new box shows an un-dismissable banner until you have changed the
+  admin login off its factory value — nothing is blocked behind a multi-step flow, you just
+  can't ignore the one thing that matters. Factory Wi-Fi ships open again (an owner call),
+  and the path that actually changes the admin password on a factory-clean box — which a
+  regression had quietly broken — works again.
+
+- **Upstream security, pulled forward from Asuswrt-Merlin 3006.102.9.** With thanks to
+  Eric "Merlin" Sauvageau: two OpenSSL 1.1.1 CVE backports, the kernel's Brahma-B53
+  Spectre/Meltdown mitigation whitelists, Tor updated to 0.4.9.11 (with IPv6 LAN clients now
+  routed through Tor as well), and four further pull-forwards from the 3006.102.9 alpha.
+
+- **Nothing in this window can quietly regress.** A fresh adversarial security review of the
+  whole window was run and its four actionable findings fixed. A new build-time regression
+  framework (`reaper_static_checks.py` — dictionary lockstep, ASCII/control-byte scanning,
+  brace-parity, macro-continuity — plus a hardened CSRF checker) is wired into the release
+  gate, so a later change that drops any of these fixes stops the image from shipping.
+
+- **Field fixes carried along the way:** AiMesh node search and a restore-time LAN lockout,
+  Apply-button correctness, Firewall Status now reporting port forwards and service intercepts,
+  the Service Intercept feature itself, Traffic Analyzer cadence and the header rail-clock, a
+  DNS resolver that was feeding its own address back to itself, and the DNS-over-TLS
+  (stubby) crash-restart watchdog.
+
+## v2.9.4 — Firewall Status reports everything that is enforcing, and five small things the field asked for
+
+Five owner-picked items from a week of hands-on use, plus six new regression markers in the build
+gate so that none of them can quietly regress: a later change that drops any of these fixes now
+stops the image from shipping.
+
+- **Firewall Status now reports Port forwards and Service intercepts.** The posture page counted
+  rules, objects, groups, services, zones and zone policies and stopped there — the NAT store that
+  holds both port forwards and Service Intercepts had no row, so an operator who had just redirected
+  all LAN NTP to an internal server could read the page top to bottom and see no trace of it. Two
+  new rows, one for each, from the same store the rules engine reads.
+
+- **The Smart Connect switch no longer pretends to work after the network migration.** Once the
+  main Wi-Fi network is owned by the Network page's profiles, the classic Smart Connect toggle
+  writes settings nothing reads any more, and the Rule page's hint pointed at a control that no
+  longer exists. The page now detects that state: the button becomes a pointer to the Network page
+  (where band merging actually happens), the inert post is blocked, and both stale hints are
+  reworded. Un-migrated routers keep the working classic toggle.
+
+- **The Devices export keeps the address of an offline device that holds a reservation or a pin.**
+  The export used to carry only the current lease, so a reserved device that happened to be offline
+  exported with a blank address. The live lease stays as it was; two new columns carry the reserved
+  address and its state — reserved, reserved outside the DHCP pool, orphaned or duplicated — in the
+  CSV, JSON and HTML exports alike, so a broken reservation can never be copied elsewhere as fact.
+
+- **The QoS class table explains its drop counters.** A short note under the class explainer states
+  the rule of thumb: drops are cumulative since the last QoS restart and normally grow only while
+  the link is saturated, such as during a speed test; counters that climb while the link is idle,
+  or while a class sits well below its ceiling, are the signal of a real problem.
+
+- **The diagnostic report counts a Wi-Fi network name's length correctly.** Every guest network line
+  read one character too long because the trailing newline was counted; the primary radios were
+  right, so a single report disagreed with itself. REAPER-DIAG v1.3.10.
+
+Two reports from the same week closed without a code change, because the router was right:
+
+- **"The QoS class breakdown reads almost entirely Default and Streaming while games and browsing
+  are live."** That is the design: Reaper does no deep packet inspection, so beyond DSCP marks and
+  the preset rules there is no classifier, and unmarked game and web traffic lands in the catch-all.
+  The panel is also upload-only, which it says on its badge. Classification rules are a feature
+  request, not a defect, and are tracked as one.
+- **"The Traffic Analyzer resets visually every so often."** This router has no battery-backed
+  clock, so its time steps forward when NTP first corrects it after a boot — a four-hour step was
+  observed in the system log the same day. The live view redraws across a step; the stored history
+  is written by wrapped index specifically to survive one, and no data is lost.
+
+---
+
+## v2.9.3 — Ten field fixes: mesh node search, restore lockout, and every Apply button acknowledges itself
+
+The first day of v2.9.2 on hardware produced this list. Nothing here changes a default.
+
+- **AiMesh "Add Node" finds nodes again.** The search discarded any candidate the router had heard
+  only on 2.4 GHz, because it required signal readings on every band before it would consider one —
+  and the mesh controller only reports the bands it actually heard. The existing 2.4 GHz fallback
+  was unreachable behind that gate; it now runs.
+
+- **A settings restore can no longer lock out the person performing it.** Gatekeeper's on/off switch
+  comes back with the router settings in the first half of a restore, but its device list lives in
+  flash and only returns in the second half, after the reboot — so the router came back armed with
+  an empty list and default-denied everyone, including the operator. Gatekeeper now holds
+  enforcement off while a restore is pending and re-arms once the list has landed, and the operator's
+  own device is stamped approved before the reboot and again after the import.
+
+- **The restore card's messages can no longer be dropped without a trace.** Its message function
+  silently returned when its target element was missing; it now falls back to a browser alert and
+  the console, and every failure carries a bracketed cause code.
+
+- **Wireless Apply shows that it worked.** Its "applying" overlay lived inside the success callback of
+  the very request that restarts the radio and disconnects the browser, so the page sat inert while
+  the router applied the change perfectly. The overlay now appears before the request, and a change
+  to the Wi-Fi security shows a notice that you will need to reconnect.
+
+- **The firewall's sub-editor Apply buttons acknowledge the click.** Seven of them posted into a
+  hidden frame and reloaded the page seven seconds later with nothing in between; each now shows a
+  brief "applying" notice first. The Rules tab's own Apply already did this and is unchanged.
+
+- **The Firewall Status refresh button confirms it ran.** A successful refresh on an unchanged
+  posture was pixel-identical to no refresh at all; it now acknowledges instantly and shows the
+  time of the last update, hung off the one completion point that always fires — a failed poll can
+  never wedge the button.
+
+- **Guest passes say "h".** Gatekeeper's guest-pass length offered 4 / 8 / 24 / 48 with no unit; the
+  unit now appears on the selector and on the per-device grant button, through a translatable token
+  rather than the hardcoded English abbreviation the button had been using.
+
+- **The diagnostic report's two preamble blocks lose their "0." and "0b." numbers** — the body's
+  numbering, which everything cites, is untouched. REAPER-DIAG v1.3.9.
+
+- **A wireless helper stops returning an empty network name** on one code path that lacked its
+  fallback.
+
+- Also riding this image: the v2.8.7 diagnostic counter fixes and the v2.7.8 Warden feed ceilings.
+
+---
+
+## v2.9.2 — A factory-fresh router can set its password again, and Wi-Fi comes back
+
+Two faults found the first time v2.9.1 met a factory reset, both confirmed fixed on hardware the
+same day.
+
+- **The admin password can be changed on a factory-default router.** The web server refuses a
+  password change from the factory default unless the request carries the session token, and the
+  only page that supplied it was the setup wizard v2.9.1 removed. Neither the password page nor the
+  stock setup path could change the password, and the failure was silent. The token now travels with
+  every password change centrally, so no page can forget it again. The stock password page also
+  stopped hopping to the removed wizard, which is what the brief flash of ASUS setup pages was.
+
+- **Wi-Fi comes back after a factory reset.** v2.9.1 shipped a five-character factory Wi-Fi key;
+  the access-point daemon requires eight to sixty-three, treated the key as empty, refused the
+  configuration and exited — and one daemon serves every radio, so no band came up. By owner
+  decision the factory Wi-Fi is **open again**, as stock ships it, so a reset router is reachable
+  over Wi-Fi without a cable; the "Secure Your Router" banner reports an open factory network as
+  unsecured until a key is set.
+
+- A per-radio defaults block that v2.9.1 edited turned out never to compile for this model; the
+  edit was a no-op and is reverted.
+
+---
+
+## v2.9.1 — First boot rebuilt: no wizard, no gates, one banner
+
+An owner-directed redesign of what a factory-reset router does.
+
+- **The setup wizard and all six first-boot gates are gone.** Nothing blocks a page any more. The
+  router boots usable on the factory login.
+- **One un-dismissable banner** on every top-level admin page until both the login password and the
+  Wi-Fi key are off their factory values. It reads live state, not a latch: setting either back to
+  the factory value later brings it back. It is deliberately absent from the login page.
+- Twelve new banner strings in all 25 languages.
+
+*(The factory Wi-Fi key this release introduced did not survive contact with hardware — see v2.9.2.)*
+
+---
+
+## v2.9.0 — Service Intercept, one Backup & Restore panel, and the performance audit's first tier
+
+*v2.8.9 was built with most of this and superseded before it was applied in the field; its content
+is folded in here.*
+
+- **Service Intercept (Firewall → NAT).** Redirect a service from every device on a network to a
+  host of your choosing — the owner's case is LAN NTP to an internal time server — without breaking
+  the target itself: the target is automatically exempted as a source, so it still reaches its own
+  upstream, and the return path is masqueraded only when the target sits on the same subnet as its
+  clients, the two things a naive redirect gets wrong. Rules go through the same apply-and-keep
+  confirmation as the rest of the firewall; the pending-changes banner now shows on every firewall
+  tab, and an empty exemption reads "None". All strings in 25 languages.
+
+- **Backup & Restore is one panel.** The Reaper settings export/import moved off the Storage page
+  into the card on Administration → Restore/Save/Upload, beside the one-file full backup, so a single
+  place owns every backup surface and the pending-restore prompt cannot drift between two copies.
+
+- **Traffic Analyzer: Top Devices, Top Talkers and By Network update every 2 s** instead of 5, and
+  By Network shows download and upload separately.
+
+- **From the 2026-08-28 performance audit, first tier:** the firewall's domain-name sets are no
+  longer poisoned with the router's own DNS address; the header's WAN indicator survives a request
+  that fails; the traffic collector's cadence thresholds are stated in seconds rather than poll
+  counts; the DNS-over-TLS resolver is restarted if it crashes (inherited dead code); a leftover
+  factory-test hook that could run a script from a USB stick every 30 s is removed; the firmware
+  check and its notification fire once, not twice; Warden's "Update now" no longer blocks the
+  router's service manager; the Policy Routing self-heal gives up after five attempts instead of
+  retrying forever; list writes tighten permissions before content is written.
 
 ---
 
@@ -210,6 +415,14 @@ error. Every layer said it had succeeded.
   as it is switched on; a firewall list that exists but cannot be read is no longer treated as an
   empty one; and every generated maintenance script now reads settings through the guarded path,
   so none of them can hang waiting on the router's settings store.
+
+- **Sibling models: the System Information temperature chart caught up with the primary.** On
+  RT-BE86U, RT-BE88U, GT-BE98 and GT-BE98 Pro the page had been excluded from the port on the
+  mistaken belief that it differed per model; it selects its radio layout at run time, so one copy
+  serves every model. Those four had shipped half of one two-file rewrite - the QoS diagnostics
+  chart on the new time axis, the temperature chart on the old one. The page (and the wireless
+  status page, same story) is now identical to the primary on every model, and the port rule that
+  hid the lag is gone.
 
 ## v2.7.9 — Turning the firewall off actually turns it off, and Gatekeeper stops locking you out
 

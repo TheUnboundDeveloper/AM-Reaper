@@ -318,6 +318,29 @@ else
   fi
 fi
 
+# ---- 20. static source checks (reaper_static_checks.py) --------------------
+# Promotes this session's by-hand static checks into one gate: (1) *.dict line
+# lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips
+# non-ASCII), (3) forbidden control-byte scan of the Reaper www + all *.dict,
+# (4) brace/paren/bracket parity of the inline JS in each Reaper page, and
+# (5) #define comment-continuation integrity in httpd/reaper_inject.c. Unlike
+# most checks here it runs on the SOURCE tree ($R/release/src/router), not the
+# staged fs, because it is guarding what the build transforms. Located next to
+# THIS script (via _SDIR, set above) so a lean/CI checkout runs its own copy.
+STATICCHK="$_SDIR/reaper_static_checks.py"
+[ -f "$STATICCHK" ] || STATICCHK=/home/reaper/reaper_build/reaper_static_checks.py
+RSRC="$R/release/src/router"
+if [ ! -f "$STATICCHK" ]; then
+  warn "static-checks" "reaper_static_checks.py not found - check skipped"
+elif [ ! -d "$RSRC" ]; then
+  warn "static-checks" "no source tree at $RSRC - check skipped"
+elif out=$(python3 "$STATICCHK" "$RSRC" 2>&1); then
+  pass "static-checks" "$(echo "$out" | tail -1)"
+else
+  echo "$out" | sed 's/^/    /'
+  fail "static-checks" "a static source check failed (see above)"
+fi
+
 echo "reaper_verify: $PASSN pass, $WARNN warn, $FAILN FAIL  ($MODEL $VARIANT)"
 [ "$FAILN" -gt 0 ] && { echo "== VERIFY FAILED =="; exit 1; }
 echo "== VERIFY OK =="; exit 0

@@ -1,0 +1,1299 @@
+From 63af364f0498580a3f373b4616aa3a5479f33ab7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 31 Aug 2026 14:43:56 -0400
+Subject: [PATCH] v2.9.8: native Backup & Restore page; Complete-restore one
+ click from the landing page
+
+Owner items after the v2.9.7 metal pass confirmed both restore modes:
+
+1. Reaper_Backup.asp - a reaper-native page owns every backup/restore
+   surface: full .rbk backup/restore, Reaper settings JSON export/import,
+   stock router settings .CFG save/restore (remove-password + ASUS-DDNS
+   transfer flags kept), JFFS partition backup/restore (jffs2_on-gated,
+   stock jffsupload.cgi file2 contract), and factory default reset
+   (apply.cgi Restore / restore_erase) - with the themed confirm modal,
+   one-shot-guarded liveness polling after reboot-class actions, and the
+   changed-LAN-IP exit message when the box never answers again.
+2. The stock Administration > Restore/Save/Upload page is retired from the
+   menu (menuTrees/menuTree.js repointed, stock file kept on disk as the
+   fallback) and SUP-redirected to the native page; the v2.7.2 injected
+   card (mode 4, REAPER_BKCARD_JS + Reaper_BackupCard.asp fragment) is
+   absorbed by the native page and deleted.
+3. Pending-restore banner on reaper_shell.asp (above every framed page) and
+   Main_ReaperDash.asp (the post-login landing page): after a full-backup
+   restore reboots the box, the Reaper half is one visible click anywhere -
+   the banner carries the Complete restore button and reports the counts
+   in place. Hidden and cost-free when nothing is pending.
+
+i18n: RBKP_19..RBKP_26 appended to all 25 dicts (translated), lockstep
+6792. verify_markers + reaper_langcheck OUR updated in lean + engine.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |   2 +-
+ release/src/router/httpd/reaper_inject.c      | 137 +-----
+ release/src/router/www/BR.dict                |   8 +
+ release/src/router/www/CN.dict                |   8 +
+ release/src/router/www/CZ.dict                |   8 +
+ release/src/router/www/DA.dict                |   8 +
+ release/src/router/www/DE.dict                |   8 +
+ release/src/router/www/EN.dict                |   8 +
+ release/src/router/www/ES.dict                |   8 +
+ release/src/router/www/FI.dict                |   8 +
+ release/src/router/www/FR.dict                |   8 +
+ release/src/router/www/HU.dict                |   8 +
+ release/src/router/www/IT.dict                |   8 +
+ release/src/router/www/JP.dict                |   8 +
+ release/src/router/www/KR.dict                |   8 +
+ release/src/router/www/MS.dict                |   8 +
+ release/src/router/www/Main_ReaperDash.asp    |  37 ++
+ release/src/router/www/NL.dict                |   8 +
+ release/src/router/www/NO.dict                |   8 +
+ release/src/router/www/PL.dict                |   8 +
+ release/src/router/www/RO.dict                |   8 +
+ release/src/router/www/RU.dict                |   8 +
+ release/src/router/www/Reaper_Backup.asp      | 427 ++++++++++++++++++
+ release/src/router/www/Reaper_BackupCard.asp  |  78 ----
+ release/src/router/www/SL.dict                |   8 +
+ release/src/router/www/SV.dict                |   8 +
+ release/src/router/www/TH.dict                |   8 +
+ release/src/router/www/TR.dict                |   8 +
+ release/src/router/www/TW.dict                |   8 +
+ release/src/router/www/UK.dict                |   8 +
+ release/src/router/www/reaper_shell.asp       |  39 ++
+ .../router/www/require/menuTrees/menuTree.js  |   2 +-
+ 32 files changed, 710 insertions(+), 212 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_Backup.asp
+ delete mode 100644 release/src/router/www/Reaper_BackupCard.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 553d2f1afd..e893036214 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.9.7
++EXTENDNO=Reaper_v2.9.8
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 11b87aae75..1c7cbf7a84 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -96,132 +96,13 @@
+ 	"\"advanced_basicfirewall_content.asp\":\"Reaper_Firewall.asp\"," \
+ 	"\"advanced_firewall_content.asp\":\"Reaper_Firewall.asp\"," \
+ 	"\"advanced_urlfilter_content.asp\":\"Reaper_Firewall.asp\"," \
+-	"\"advanced_keywordfilter_content.asp\":\"Reaper_Firewall.asp\"};" \
++	"\"advanced_keywordfilter_content.asp\":\"Reaper_Firewall.asp\"," \
++	"\"advanced_settingbackup_content.asp\":\"Reaper_Backup.asp\"};" \
+ 	"if(rp.toLowerCase()===\"index.asp\"){top.location.replace(\"/Main_ReaperDash.asp\");return;}" \
+ 	"var s=SUP[rp.toLowerCase()];" \
+ 	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}" \
+ 	"if(self===top){location.replace(\"/reaper_shell.asp#\"+rp+location.search);}})();</script>"
+ 
+-/* v2.7.2 full-backup card (backlog P2): injected ONLY into the stock
+- * Administration > Restore/Save/Upload page (mode 4). The stock file stays
+- * byte-pristine; this script fetches the tokenized fragment
+- * Reaper_BackupCard.asp (do_ej resolves its dict tokens server-side) and
+- * inserts it above the stock form, then wires the buttons. All user-visible
+- * strings live in the fragment's hidden spans - this block is pure logic, so
+- * i18n rule 24 is satisfied without putting a single literal here. Scripts
+- * inside innerHTML never execute, which is exactly why the wiring lives here.
+- *
+- * NOTE: every line must end in a backslash, comments included (see the
+- * REAPER_BOUNCE_JS note above). */
+-/* reaper v2.9.3: msg() used to be `if(!m)return;` - with #rbk_msg absent the
+- * outcome of a restore was discarded with no trace, success or failure. That is
+- * why a field restore could POST, receive 200 OK and appear to do nothing, and
+- * why the per-cause ec codes never reached the operator. It now falls back to
+- * alert() + console so a result can never be swallowed again.
+- *
+- * reaper v2.9.6: the element was never absent - it was INVISIBLE. The fragment
+- * hides #rbk_msg and #rbk_pending with a STYLESHEET rule
+- * (`#rbk_card #rbk_msg{display:none}`), and `el.style.display=""` only clears
+- * an INLINE style, so every message from v2.7.2 to v2.9.4 was written into a
+- * div the stylesheet kept hidden - which is also why the v2.9.3 alert()
+- * fallback never fired. Un-hiding must set an explicit inline value that
+- * outranks the rule: display="block". Same for the pending-restore banner. */
+-#define REAPER_BKCARD_JS \
+-	"<script>(function(){" \
+-	"function t(i){var e=document.getElementById(i);return e?e.textContent:\"\";}" \
+-	"function msg(ok,s){var m=document.getElementById(\"rbk_msg\");" \
+-	"if(!m){try{alert(s);}catch(e){}try{console.log(\"reaper backup: \"+s);}catch(e){}return;}" \
+-	"m.style.display=\"block\";m.className=ok?\"rbk_ok\":\"rbk_err\";m.textContent=s;}" \
+-	"function wire(){" \
+-	"var hid=t(\"rbk_hid\"),model=t(\"rbk_model\"),ver=t(\"rbk_ver\");" \
+-	"var dl=document.getElementById(\"rbk_dl\");" \
+-	"if(dl)dl.onclick=function(){location.href=\"/REAPER_\"+model.replace(/[^A-Za-z0-9._-]/g,\"\")+\"_\"+ver.replace(/[^A-Za-z0-9._-]/g,\"\")+\"_settings.rbk?http_id=\"+encodeURIComponent(hid);};" \
+-	"var up=document.getElementById(\"rbk_up\"),fi=document.getElementById(\"rbk_file\");" \
+-	"if(up&&fi){up.onclick=function(){fi.click();};" \
+-	"fi.onchange=function(){" \
+-	"var f=fi.files&&fi.files[0];if(!f)return;" \
+-	"if(f.size>16777216||f.size<64){msg(0,t(\"rbk_s_badfile\"));fi.value=\"\";return;}" \
+-	"var rd=new FileReader();" \
+-	"rd.onload=function(){" \
+-	"var head=String(rd.result||\"\");" \
+-	"if(head.indexOf(\"REAPER-BACKUP 1\\n\")!==0){msg(0,t(\"rbk_s_badfile\"));fi.value=\"\";return;}" \
+-	"var meta=null;try{meta=JSON.parse(head.split(\"\\n\")[1]);}catch(e){}" \
+-	"if(!meta){msg(0,t(\"rbk_s_badfile\"));fi.value=\"\";return;}" \
+-	"if(String(meta.model)!==model){msg(0,t(\"rbk_s_model\"));fi.value=\"\";return;}" \
+-	"if(!confirm(t(\"rbk_s_confirm\"))){fi.value=\"\";return;}" \
+-	"var fd=new FormData();fd.append(\"http_id\",hid);fd.append(\"file\",f);" \
+-	"var p=new XMLHttpRequest();p.open(\"POST\",\"/reaper_restore.cgi\",true);" \
+-	"p.onloadend=function(){" \
+-	"var r=null;try{r=JSON.parse(p.responseText);}catch(e){}" \
+-	"fi.value=\"\";" \
+-	"if(!r||!r.ok){var ek=r&&r.ek;" \
+-	"var em=ek===\"model\"?t(\"rbk_s_model\"):ek===\"jffs\"?t(\"rbk_s_jffs\"):ek===\"file\"?t(\"rbk_s_badfile\"):t(\"rbk_s_fail\");" \
+-	"if(r&&r.ec)em+=\" [\"+r.ec+\"]\";msg(0,em);return;}" \
+-	"msg(1,t(\"rbk_s_reboot\"));};" \
+-	"p.send(fd);};" \
+-	"rd.readAsText(f.slice(0,2048));};}" \
+-	"var cx=document.getElementById(\"rbk_cx\");" \
+-	"if(cx)cx.onclick=function(){" \
+-	"var g=new XMLHttpRequest();" \
+-	"g.open(\"GET\",\"/reaper_cfg.cgi?action=export&http_id=\"+encodeURIComponent(hid)+\"&_=\"+Date.now(),true);" \
+-	"g.onloadend=function(){" \
+-	"var j=null;try{j=JSON.parse(g.responseText);}catch(e){}" \
+-	"if(!j||!j.ok){msg(0,t(\"rbk_s_cfail\"));return;}" \
+-	"var name=\"reaper-settings-\"+String(j.model||\"router\").replace(/[^A-Za-z0-9_-]/g,\"\")+\"-\"+String(j.version||\"\").replace(/[^A-Za-z0-9_.-]/g,\"\")+\"-\"+new Date().toISOString().slice(0,10)+\".json\";" \
+-	"var blob=new Blob([JSON.stringify(j,null,1)],{type:\"application/json\"});" \
+-	"var a=document.createElement(\"a\");a.href=URL.createObjectURL(blob);a.download=name;" \
+-	"document.body.appendChild(a);a.click();" \
+-	"setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},2000);" \
+-	"msg(1,t(\"rbk_s_saved\")+\" \"+name);};" \
+-	"g.send();};" \
+-	"var ci=document.getElementById(\"rbk_ci\"),cf=document.getElementById(\"rbk_cfile\");" \
+-	"if(ci&&cf){ci.onclick=function(){cf.click();};" \
+-	"cf.onchange=function(){" \
+-	"var f=cf.files&&cf.files[0];if(!f)return;" \
+-	"if(f.size>60000){msg(0,t(\"rbk_s_cbad\"));cf.value=\"\";return;}" \
+-	"var rd=new FileReader();" \
+-	"rd.onload=function(){" \
+-	"var j=null;try{j=JSON.parse(String(rd.result||\"\"));}catch(e){}" \
+-	"if(!j||!j.reaper_cfg){msg(0,t(\"rbk_s_cbad\"));cf.value=\"\";return;}" \
+-	"if(!confirm(t(\"rbk_s_cconfirm\"))){cf.value=\"\";return;}" \
+-	"var p2=new XMLHttpRequest();p2.open(\"POST\",\"/reaper_cfg.cgi\",true);" \
+-	"p2.setRequestHeader(\"Content-Type\",\"application/x-www-form-urlencoded\");" \
+-	"p2.onloadend=function(){" \
+-	"var r=null;try{r=JSON.parse(p2.responseText);}catch(e){}" \
+-	"cf.value=\"\";" \
+-	"if(!r||!r.ok){msg(0,t(\"rbk_s_cfail\"));return;}" \
+-	"msg(1,t(\"rbk_s_cdone\").replace(\"%1\",r.flags).replace(\"%2\",r.lists).replace(\"%3\",r.rejected));};" \
+-	"p2.send(\"action=import&http_id=\"+encodeURIComponent(hid)+\"&cfg=\"+encodeURIComponent(JSON.stringify(j)));};" \
+-	"rd.readAsText(f);};}" \
+-	"var x2=new XMLHttpRequest();" \
+-	"x2.open(\"GET\",\"/reaper_cfg.cgi?action=pending&http_id=\"+encodeURIComponent(hid)+\"&_=\"+Date.now(),true);" \
+-	"x2.onload=function(){var j=null;try{j=JSON.parse(x2.responseText);}catch(e){}" \
+-	"if(j&&j.ok&&j.pending){var b=document.getElementById(\"rbk_pending\");if(b)b.style.display=\"block\";}};" \
+-	"x2.send();" \
+-	"var cp=document.getElementById(\"rbk_complete\");" \
+-	"if(cp)cp.onclick=function(){cp.disabled=true;" \
+-	"var q=new XMLHttpRequest();q.open(\"POST\",\"/reaper_cfg.cgi\",true);" \
+-	"q.setRequestHeader(\"Content-Type\",\"application/x-www-form-urlencoded\");" \
+-	"q.onloadend=function(){var r=null;try{r=JSON.parse(q.responseText);}catch(e){}" \
+-	"cp.disabled=false;" \
+-	"if(!r||!r.ok){msg(0,t(\"rbk_s_fail\"));return;}" \
+-	"var b=document.getElementById(\"rbk_pending\");if(b)b.style.display=\"none\";" \
+-	"msg(1,t(\"rbk_s_done\").replace(\"%1\",r.flags).replace(\"%2\",r.lists).replace(\"%3\",r.rejected));};" \
+-	"q.send(\"action=import_pending&http_id=\"+encodeURIComponent(hid));};" \
+-	"}" \
+-	"function boot(){" \
+-	"var x=new XMLHttpRequest();" \
+-	"x.open(\"GET\",\"/Reaper_BackupCard.asp\",true);" \
+-	"x.onload=function(){" \
+-	"if(x.status!==200)return;" \
+-	"var host=document.createElement(\"div\");host.innerHTML=x.responseText;" \
+-	"var a=document.getElementById(\"FormTitle\")||document.forms[0]||null;" \
+-	"if(a&&a.parentNode)a.parentNode.insertBefore(host,a);else document.body.insertBefore(host,document.body.firstChild);" \
+-	"wire();};" \
+-	"x.send();}" \
+-	"if(document.readyState===\"loading\")document.addEventListener(\"DOMContentLoaded\",boot);else boot();" \
+-	"})();</script>"
+-
+ /* stock pages: theme <link> + bounce */
+ /* v2.9.1 unsecured-router banner. Replaces the six first-boot gates that used to
+  * block every page until Reaper_FirstBoot.asp was completed. Nothing is blocked
+@@ -292,8 +173,6 @@
+ 	"x.send();})();</script>"
+ 
+ static const char REAPER_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
+-/* the Administration backup page: the stock block + the full-backup card loader */
+-static const char REAPER_BKCARD_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_BKCARD_JS REAPER_SECBANNER_JS;
+ /* reaper-native pages: bounce only, no reaper_content.css <link> (see reaper_native[]) */
+ static const char REAPER_NATIVE_BLOCK[] = REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
+ /* first-run gate pages: reaper_content.css <link> only, NO bounce (see reaper_css_only[]) */
+@@ -377,9 +256,6 @@ static const char *reaper_skip[] = {
+ 	"offline.htm",
+ 	"gotoHomePage.htm",
+ 	"blocking.asp",
+-	/* v2.7.2: the full-backup card FRAGMENT (no <head>, fetched by the
+-	   injected loader and inserted via innerHTML) - serve it pristine */
+-	"Reaper_BackupCard.asp",
+ 	/* v2.9.1: the unsecured-router banner FRAGMENT - same deal, and it must
+ 	   never carry the loader itself or it would fetch itself forever. */
+ 	"Reaper_SecBanner.asp",
+@@ -414,6 +290,9 @@ static const char *reaper_native[] = {
+ 	"Reaper_Firewall.asp",
+ 	"Reaper_About.asp",	/* v2.4.6: credits, provenance and support */	/* v2.3.8: native firewall hub - replaces the four stock filter tabs */
+ 	"Reaper_VPNRouting.asp",	/* v2.5.x: ipset/source policy-routing editor (VPN menu) */
++	"Reaper_Backup.asp",	/* v2.9.8: native Backup & Restore - replaces the stock
++				   Restore/Save/Upload page (SUP-redirected) and absorbs the
++				   retired Reaper_BackupCard.asp injected card */
+ 	NULL
+ };
+ 
+@@ -565,10 +444,6 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 		if (strcasecmp(name, reaper_native[i]) == 0)
+ 			return 2;
+ 
+-	/* the Administration backup page additionally gets the full-backup card
+-	   loader (v2.7.2). Signalled by return value 4. */
+-	if (strcasecmp(name, "Advanced_SettingBackup_Content.asp") == 0)
+-		return 4;
+ 
+ 	return 1;
+ }
+@@ -632,8 +507,6 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 		block = REAPER_NATIVE_BLOCK;  blocklen = sizeof(REAPER_NATIVE_BLOCK) - 1;  break;
+ 	case 3:
+ 		block = REAPER_CSSONLY_BLOCK; blocklen = sizeof(REAPER_CSSONLY_BLOCK) - 1; break;
+-	case 4:
+-		block = REAPER_BKCARD_BLOCK;  blocklen = sizeof(REAPER_BKCARD_BLOCK) - 1;  break;
+ 	case 5:
+ 		block = REAPER_BANNERONLY_BLOCK; blocklen = sizeof(REAPER_BANNERONLY_BLOCK) - 1; break;
+ 	default:
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index d79bfde85a..e7c821949f 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Configuracoes do roteador (.CFG)
++RBKP_20=Arquivo de configuracoes padrao - legivel pelo firmware original e Merlin
++RBKP_21=A particao /jffs inteira em um unico arquivo .tar - scripts de addons, certificados e os dados do Reaper. A restauracao substitui todo o conteudo atual de /jffs.
++RBKP_22=Nao e um arquivo de backup JFFS (.tar) valido.
++RBKP_23=Restaurando a particao JFFS...
++RBKP_24=Restauracao do JFFS concluida. Reinicie o roteador para que todos os servicos usem os arquivos restaurados.
++RBKP_25=Armazenamento interno /jffs
++RBKP_26=Restaurar estas configuracoes do roteador? As configuracoes atuais serao substituidas e o roteador sera reiniciado.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 90accc9fea..89db438a9c 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=路由器设置 (.CFG)
++RBKP_20=原厂设置文件 - 可被原厂固件和 Merlin 固件读取
++RBKP_21=整个 /jffs 分区打包为一个 .tar 文件 - 插件脚本、证书以及 Reaper 数据。恢复将替换 /jffs 上的全部现有内容。
++RBKP_22=不是有效的 JFFS 备份 (.tar) 文件。
++RBKP_23=正在恢复 JFFS 分区...
++RBKP_24=JFFS 恢复完成。请重新启动路由器，以便所有服务加载恢复的文件。
++RBKP_25=内部 /jffs 存储
++RBKP_26=要恢复这些路由器设置吗？当前设置将被替换，路由器将重新启动。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 5cfea6d445..2c4f4ecc4f 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Nastavení routeru (.CFG)
++RBKP_20=Standardní soubor nastavení - čitelný pro tovární firmware i Merlin
++RBKP_21=Celý oddíl /jffs v jednom archivu .tar - skripty doplňků, certifikáty a data Reaper. Obnovení nahradí veškerý aktuální obsah /jffs.
++RBKP_22=Toto není platný soubor zálohy JFFS (.tar).
++RBKP_23=Obnovování oddílu JFFS...
++RBKP_24=Obnovení JFFS dokončeno. Restartujte router, aby všechny služby načetly obnovené soubory.
++RBKP_25=Interní úložiště /jffs
++RBKP_26=Obnovit tato nastavení routeru? Aktuální nastavení budou nahrazena a router se restartuje.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 2ad8312593..93950a6d3a 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Routerindstillinger (.CFG)
++RBKP_20=Standardindstillingsfil - kan læses af original- og Merlin-firmware
++RBKP_21=Hele /jffs-partitionen som et .tar-arkiv - addon-scripts, certifikater og Reaper-data. Gendannelse erstatter alt nuværende indhold på /jffs.
++RBKP_22=Ikke en gyldig JFFS-backupfil (.tar).
++RBKP_23=Gendanner JFFS-partitionen...
++RBKP_24=JFFS-gendannelse fuldført. Genstart routeren, så alle tjenester bruger de gendannede filer.
++RBKP_25=Internt /jffs-lager
++RBKP_26=Gendan disse routerindstillinger? De nuværende indstillinger erstattes, og routeren genstarter.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 74ed529efe..92e94f8d6d 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Router-Einstellungen (.CFG)
++RBKP_20=Standard-Einstellungsdatei - lesbar für Original- und Merlin-Firmware
++RBKP_21=Die gesamte /jffs-Partition als ein .tar-Archiv - Addon-Skripte, Zertifikate und die Reaper-Daten. Die Wiederherstellung ersetzt den gesamten aktuellen Inhalt von /jffs.
++RBKP_22=Keine gültige JFFS-Sicherungsdatei (.tar).
++RBKP_23=JFFS-Partition wird wiederhergestellt...
++RBKP_24=JFFS-Wiederherstellung abgeschlossen. Starten Sie den Router neu, damit alle Dienste die wiederhergestellten Dateien verwenden.
++RBKP_25=Interner /jffs-Speicher
++RBKP_26=Diese Router-Einstellungen wiederherstellen? Die aktuellen Einstellungen werden ersetzt und der Router wird neu gestartet.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index ae19ed3a29..c1dc183560 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Router settings (.CFG)
++RBKP_20=Stock settings file - readable by stock and Merlin firmware
++RBKP_21=The entire /jffs partition as one .tar archive - addon scripts, certificates, and the Reaper data stores. Restoring replaces everything currently on /jffs.
++RBKP_22=Not a valid JFFS backup (.tar) file.
++RBKP_23=Restoring the JFFS partition...
++RBKP_24=JFFS restore complete. Reboot the router so every service picks up the restored files.
++RBKP_25=Internal /jffs storage
++RBKP_26=Restore these router settings? The current settings will be replaced and the router will reboot.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 98e9c9f430..41f2d653a3 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Configuración del router (.CFG)
++RBKP_20=Archivo de configuración estándar - legible por el firmware original y Merlin
++RBKP_21=La partición /jffs completa en un único archivo .tar - scripts de addons, certificados y los datos de Reaper. La restauración sustituye todo el contenido actual de /jffs.
++RBKP_22=No es un archivo de copia de seguridad JFFS (.tar) válido.
++RBKP_23=Restaurando la partición JFFS...
++RBKP_24=Restauración de JFFS completada. Reinicie el router para que todos los servicios usen los archivos restaurados.
++RBKP_25=Almacenamiento interno /jffs
++RBKP_26=¿Restaurar esta configuración del router? La configuración actual será sustituida y el router se reiniciará.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index df790d2a06..5b432d44a6 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Reitittimen asetukset (.CFG)
++RBKP_20=Vakioasetustiedosto - luettavissa alkuperäisellä ja Merlin-laiteohjelmistolla
++RBKP_21=Koko /jffs-osio yhtenä .tar-arkistona - lisäosien skriptit, varmenteet ja Reaper-tiedot. Palautus korvaa /jffs-osion koko nykyisen sisällön.
++RBKP_22=Ei kelvollinen JFFS-varmuuskopiotiedosto (.tar).
++RBKP_23=Palautetaan /jffs-osiota...
++RBKP_24=JFFS-palautus valmis. Käynnistä reititin uudelleen, jotta kaikki palvelut käyttävät palautettuja tiedostoja.
++RBKP_25=Sisäinen /jffs-tallennustila
++RBKP_26=Palautetaanko nämä reitittimen asetukset? Nykyiset asetukset korvataan ja reititin käynnistyy uudelleen.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 3c53218c63..cd48d04c07 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Paramètres du routeur (.CFG)
++RBKP_20=Fichier de paramètres standard - lisible par le firmware d'origine et Merlin
++RBKP_21=La partition /jffs entière en une seule archive .tar - scripts des addons, certificats et données Reaper. La restauration remplace tout le contenu actuel de /jffs.
++RBKP_22=Fichier de sauvegarde JFFS (.tar) non valide.
++RBKP_23=Restauration de la partition JFFS...
++RBKP_24=Restauration JFFS terminée. Redémarrez le routeur pour que tous les services utilisent les fichiers restaurés.
++RBKP_25=Stockage interne /jffs
++RBKP_26=Restaurer ces paramètres du routeur ? Les paramètres actuels seront remplacés et le routeur redémarrera.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 9a0b5b4847..bd57a7a009 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Router-beállítások (.CFG)
++RBKP_20=Szabványos beállításfájl - a gyári és a Merlin firmware is olvassa
++RBKP_21=A teljes /jffs partíció egyetlen .tar archívumban - bővítmény-szkriptek, tanúsítványok és a Reaper adatai. A visszaállítás a /jffs teljes jelenlegi tartalmát lecseréli.
++RBKP_22=Nem érvényes JFFS biztonsági mentés (.tar) fájl.
++RBKP_23=A JFFS partíció visszaállítása...
++RBKP_24=A JFFS visszaállítása kész. Indítsa újra a routert, hogy minden szolgáltatás a visszaállított fájlokat használja.
++RBKP_25=Belső /jffs tároló
++RBKP_26=Visszaállítja ezeket a router-beállításokat? A jelenlegi beállítások lecserélődnek, és a router újraindul.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4810ca6e02..91dbaf1a8b 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Impostazioni del router (.CFG)
++RBKP_20=File di impostazioni standard - leggibile dal firmware originale e Merlin
++RBKP_21=L'intera partizione /jffs in un unico archivio .tar - script degli addon, certificati e i dati Reaper. Il ripristino sostituisce tutto il contenuto attuale di /jffs.
++RBKP_22=File di backup JFFS (.tar) non valido.
++RBKP_23=Ripristino della partizione JFFS...
++RBKP_24=Ripristino JFFS completato. Riavviare il router perché tutti i servizi usino i file ripristinati.
++RBKP_25=Memoria interna /jffs
++RBKP_26=Ripristinare queste impostazioni del router? Le impostazioni attuali saranno sostituite e il router verrà riavviato.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 8435ef0aa5..aa73b270f2 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=ルーター設定 (.CFG)
++RBKP_20=標準設定ファイル - 純正ファームウェアと Merlin で読み取り可能
++RBKP_21=/jffs パーティション全体を 1 つの .tar アーカイブに - アドオンのスクリプト、証明書、Reaper のデータ。復元すると /jffs の現在の内容はすべて置き換えられます。
++RBKP_22=有効な JFFS バックアップ (.tar) ファイルではありません。
++RBKP_23=JFFS パーティションを復元しています...
++RBKP_24=JFFS の復元が完了しました。復元されたファイルを全サービスに反映させるため、ルーターを再起動してください。
++RBKP_25=内蔵 /jffs ストレージ
++RBKP_26=このルーター設定を復元しますか？現在の設定は置き換えられ、ルーターが再起動します。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 6a9066ad95..ac767221ae 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=공유기 설정 (.CFG)
++RBKP_20=표준 설정 파일 - 순정 펌웨어와 Merlin에서 읽을 수 있음
++RBKP_21=전체 /jffs 파티션을 하나의 .tar 아카이브로 - 애드온 스크립트, 인증서, Reaper 데이터. 복원하면 /jffs의 현재 내용이 모두 교체됩니다.
++RBKP_22=유효한 JFFS 백업 (.tar) 파일이 아닙니다.
++RBKP_23=JFFS 파티션 복원 중...
++RBKP_24=JFFS 복원 완료. 모든 서비스가 복원된 파일을 사용하도록 공유기를 재부팅하세요.
++RBKP_25=내장 /jffs 저장소
++RBKP_26=이 공유기 설정을 복원할까요? 현재 설정이 교체되고 공유기가 재부팅됩니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index ad1e476ca5..2abe4f9ca0 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Tetapan penghala (.CFG)
++RBKP_20=Fail tetapan standard - boleh dibaca oleh perisian tegar asal dan Merlin
++RBKP_21=Keseluruhan partition /jffs dalam satu arkib .tar - skrip addon, sijil dan data Reaper. Pemulihan menggantikan semua kandungan semasa /jffs.
++RBKP_22=Bukan fail sandaran JFFS (.tar) yang sah.
++RBKP_23=Memulihkan partition JFFS...
++RBKP_24=Pemulihan JFFS selesai. But semula penghala supaya semua perkhidmatan menggunakan fail yang dipulihkan.
++RBKP_25=Storan dalaman /jffs
++RBKP_26=Pulihkan tetapan penghala ini? Tetapan semasa akan diganti dan penghala akan but semula.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index e47a92708a..c319b8d17b 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -391,6 +391,43 @@ main{min-width:0}
+ </style>
+ </head>
+ <body>
++<!-- reaper v2.9.8: pending-restore banner (twin of the reaper_shell.asp copy -
++     the dashboard is the post-login landing page, so the one click that
++     finishes a full-backup restore must be visible here first). -->
++<style>
++.rpb{display:none;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;font-size:12.5px;color:#ECE7DB;background:linear-gradient(180deg,rgba(225,6,0,.16),rgba(225,6,0,.06)),#120b0b;border-bottom:1px solid rgba(225,6,0,.45);box-shadow:inset 3px 0 0 #E10600}
++.rpb.on{display:flex}
++.rpb.done{border-bottom-color:rgba(79,178,134,.45);box-shadow:inset 3px 0 0 #4FB286}
++.rpb button{font-family:'Rajdhani',system-ui,sans-serif;font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11.5px;color:#ECE7DB;background:#B3000C;border:1px solid #B3000C;border-radius:7px;padding:6px 13px;cursor:pointer;margin-left:auto}
++.rpb button:hover{background:#E10600}
++.rpb button[disabled]{opacity:.5;cursor:not-allowed}
++</style>
++<div class="rpb" id="rpb"><span id="rpb_txt"><#RBKP_6#></span><button id="rpb_go" type="button"><#RBKP_7#></button></div>
++<script>(function(){
++  var hid='<% nvram_get("http_id"); %>';
++  var bar=document.getElementById('rpb'),txt=document.getElementById('rpb_txt'),go=document.getElementById('rpb_go');
++  var x=new XMLHttpRequest();
++  x.open('GET','/reaper_cfg.cgi?action=pending&http_id='+encodeURIComponent(hid)+'&_='+Date.now(),true);
++  x.timeout=8000;
++  x.onload=function(){
++    var j=null;try{j=JSON.parse(x.responseText);}catch(e){}
++    if(j&&j.ok&&j.pending)bar.className='rpb on';
++  };
++  x.send();
++  go.onclick=function(){
++    go.disabled=true;
++    var q=new XMLHttpRequest();
++    q.open('POST','/reaper_cfg.cgi',true);
++    q.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
++    q.onloadend=function(){
++      var r=null;try{r=JSON.parse(q.responseText);}catch(e){}
++      if(!r||!r.ok){go.disabled=false;txt.textContent=`<#RBKP_14#>`;return;}
++      bar.className='rpb on done';go.style.display='none';
++      txt.textContent=`<#RBKP_11#>`.replace('%1',r.flags).replace('%2',r.lists).replace('%3',r.rejected);
++    };
++    q.send('action=import_pending&http_id='+encodeURIComponent(hid));
++  };
++})();</script>
+ <div class="app">
+ 
+   <!-- LEFT RAIL (always expanded; menu mirrors the current firmware) -->
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index eb0258cd83..2366f23291 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Routerinstellingen (.CFG)
++RBKP_20=Standaard instellingenbestand - leesbaar door originele en Merlin-firmware
++RBKP_21=De volledige /jffs-partitie als een .tar-archief - addon-scripts, certificaten en de Reaper-gegevens. Herstellen vervangt alle huidige inhoud van /jffs.
++RBKP_22=Geen geldig JFFS-back-upbestand (.tar).
++RBKP_23=JFFS-partitie wordt hersteld...
++RBKP_24=JFFS-herstel voltooid. Herstart de router zodat alle services de herstelde bestanden gebruiken.
++RBKP_25=Interne /jffs-opslag
++RBKP_26=Deze routerinstellingen herstellen? De huidige instellingen worden vervangen en de router start opnieuw op.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index d608562639..ad1f101e7b 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Ruterinnstillinger (.CFG)
++RBKP_20=Standard innstillingsfil - kan leses av original- og Merlin-fastvare
++RBKP_21=Hele /jffs-partisjonen som ett .tar-arkiv - addon-skript, sertifikater og Reaper-data. Gjenoppretting erstatter alt nåværende innhold på /jffs.
++RBKP_22=Ikke en gyldig JFFS-sikkerhetskopifil (.tar).
++RBKP_23=Gjenoppretter JFFS-partisjonen...
++RBKP_24=JFFS-gjenoppretting fullført. Start ruteren på nytt slik at alle tjenester bruker de gjenopprettede filene.
++RBKP_25=Intern /jffs-lagring
++RBKP_26=Gjenopprette disse ruterinnstillingene? De nåværende innstillingene erstattes, og ruteren starter på nytt.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index c95ff08190..1fb3753483 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Ustawienia routera (.CFG)
++RBKP_20=Standardowy plik ustawień - czytelny dla firmware fabrycznego i Merlin
++RBKP_21=Cała partycja /jffs w jednym archiwum .tar - skrypty dodatków, certyfikaty i dane Reaper. Przywrócenie zastępuje całą obecną zawartość /jffs.
++RBKP_22=To nie jest prawidłowy plik kopii JFFS (.tar).
++RBKP_23=Przywracanie partycji JFFS...
++RBKP_24=Przywracanie JFFS zakończone. Uruchom router ponownie, aby wszystkie usługi korzystały z przywróconych plików.
++RBKP_25=Wewnętrzna pamięć /jffs
++RBKP_26=Przywrócić te ustawienia routera? Obecne ustawienia zostaną zastąpione, a router uruchomi się ponownie.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index a2fbc51895..5d328402c4 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Setările routerului (.CFG)
++RBKP_20=Fişier de setări standard - lizibil de firmware-ul original şi Merlin
++RBKP_21=Întreaga partiţie /jffs într-o singură arhivă .tar - scripturile addon-urilor, certificatele şi datele Reaper. Restaurarea înlocuieşte tot conţinutul actual din /jffs.
++RBKP_22=Nu este un fişier de backup JFFS (.tar) valid.
++RBKP_23=Se restaurează partiţia JFFS...
++RBKP_24=Restaurarea JFFS s-a încheiat. Reporniţi routerul pentru ca toate serviciile să folosească fişierele restaurate.
++RBKP_25=Stocare internă /jffs
++RBKP_26=Restauraţi aceste setări ale routerului? Setările actuale vor fi înlocuite, iar routerul va reporni.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index abbd792e0f..96b77f8ea7 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Настройки роутера (.CFG)
++RBKP_20=Стандартный файл настроек - читается заводской прошивкой и Merlin
++RBKP_21=Весь раздел /jffs одним архивом .tar - скрипты аддонов, сертификаты и данные Reaper. Восстановление заменяет все текущее содержимое /jffs.
++RBKP_22=Недопустимый файл резервной копии JFFS (.tar).
++RBKP_23=Восстановление раздела JFFS...
++RBKP_24=Восстановление JFFS завершено. Перезагрузите роутер, чтобы все службы использовали восстановленные файлы.
++RBKP_25=Внутреннее хранилище /jffs
++RBKP_26=Восстановить эти настройки роутера? Текущие настройки будут заменены, и роутер перезагрузится.
+diff --git a/release/src/router/www/Reaper_Backup.asp b/release/src/router/www/Reaper_Backup.asp
+new file mode 100644
+index 0000000000..729e406f9f
+--- /dev/null
++++ b/release/src/router/www/Reaper_Backup.asp
+@@ -0,0 +1,427 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     reaper v2.9.8 (owner request 2026-08-31): the ONE native Backup & Restore
++     page. Replaces the stock Administration > Restore/Save/Upload page
++     (Advanced_SettingBackup_Content.asp, kept byte-pristine on disk as the
++     fallback) and absorbs the injected Reaper_BackupCard.asp fragment, which is
++     retired with it. Owns every backup/restore surface:
++       - full .rbk backup/restore (reaper_restore.cgi / the .rbk download)
++       - Reaper settings JSON export/import (reaper_cfg.cgi)
++       - stock router settings .CFG save/restore (Settings_*.CFG / upload.cgi)
++       - JFFS partition backup/restore (backup_jffs_*.tar / jffsupload.cgi,
++         part name "file2", jffs2_on-gated)
++       - factory default reset (apply.cgi action_mode=Restore / restore_erase)
++     The pending-restore banner also lives in reaper_shell.asp and
++     Main_ReaperDash.asp so "Complete restore" is one click from the landing
++     page after the post-restore reboot; this page keeps its own copy because
++     it is where the restore started. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RBKP_15#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.helpq{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none}
++.helpq:hover{border-color:var(--crimson);color:var(--bone)}
++.lede{max-width:1120px;font-size:12.5px;color:var(--steel);margin:0 0 16px}
++.rbkbar{display:none;align-items:center;gap:12px;flex-wrap:wrap;max-width:1120px;margin:0 0 16px;padding:11px 15px;border:1px solid var(--crimson);border-radius:10px;background:rgba(225,6,0,.09);font-size:12.5px;color:var(--bone)}
++.rbkbar .btn{margin-left:auto}
++.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;max-width:1120px;margin-bottom:14px}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;min-width:0}
++.card.wide{grid-column:1/-1}
++.card h2{font-size:16px;font-weight:600}
++.tag{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--steel);margin:3px 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.desc{font-size:12px;color:var(--bone-dim);line-height:1.55;margin:0 0 12px}
++.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:auto;padding-top:2px}
++.note{font-size:11px;color:var(--steel);line-height:1.5;margin-top:10px}
++.chk{display:flex;gap:8px;align-items:flex-start;font-size:11.5px;color:var(--bone-dim);margin-top:10px}
++.chk input{margin-top:2px;accent-color:#71767b}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:11.5px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:7px 14px;cursor:pointer}
++.btn:hover{color:var(--bone);border-color:var(--crimson-deep)}
++.btn.hot{color:var(--bone);background:var(--crimson-deep);border-color:var(--crimson-deep)}
++.btn.hot:hover{background:var(--crimson)}
++.btn.danger{color:var(--amber);border-color:rgba(217,164,65,.4)}
++.btn[disabled]{opacity:.4;cursor:not-allowed}
++.stat{display:none;font-size:12px;margin-top:10px}
++.stat.ok{display:block;color:var(--jade)}
++.stat.err{display:block;color:var(--danger)}
++.ovl{display:none;position:fixed;inset:0;z-index:1000;background:rgba(4,4,5,.88);align-items:center;justify-content:center;text-align:center}
++.ovl.on{display:flex}
++.ovl .box{max-width:520px;padding:28px 30px}
++.ovl .t{font-family:var(--hdr);font-weight:700;font-size:19px;color:var(--bone);margin-bottom:10px}
++.ovl .s{font-size:12.5px;color:var(--bone-dim);line-height:1.6}
++.ovl .beat{margin:16px auto 0;width:44px;height:4px;border-radius:3px;background:#1c1c21;overflow:hidden}
++.ovl .beat i{display:block;height:100%;width:40%;background:var(--crimson);animation:rb 1.1s infinite linear}
++@keyframes rb{0%{margin-left:-40%}100%{margin-left:100%}}
++</style>
++</head>
++<body>
++<div class="pagehead">
++  <h1><#RBKP_15#></h1>
++  <a class="helpq" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#25-two-backups-not-one" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>">?</a>
++</div>
++<p class="lede"><#RBKP_16#></p>
++
++<div class="rbkbar" id="rbk_pending"><span><#RBKP_6#></span><button class="btn hot" id="rbk_complete" type="button"><#RBKP_7#></button></div>
++
++<div class="grid">
++  <div class="card">
++    <h2><#RBKP_1#></h2>
++    <div class="tag"><#RBKP_17#></div>
++    <div class="desc"><#RBKP_2#></div>
++    <div class="row">
++      <button class="btn" id="rbk_dl" type="button"><#RBKP_3#></button>
++      <button class="btn" id="rbk_up" type="button"><#RBKP_4#></button>
++      <input id="rbk_file" type="file" accept=".rbk" style="display:none">
++    </div>
++    <div class="note"><#RBKP_5#></div>
++    <div class="stat" id="st_rbk"></div>
++  </div>
++
++  <div class="card">
++    <h2><#RDST_68#></h2>
++    <div class="tag"><#RBKP_18#></div>
++    <div class="desc"><#RDST_69#></div>
++    <div class="row">
++      <button class="btn" id="rbk_cx" type="button"><#RDST_70#></button>
++      <button class="btn" id="rbk_ci" type="button"><#RDST_71#></button>
++      <input id="rbk_cfile" type="file" accept=".json,application/json" style="display:none">
++    </div>
++    <div class="note"><#RDST_72#></div>
++    <div class="stat" id="st_cfg"></div>
++  </div>
++
++  <div class="card">
++    <h2><#RBKP_19#></h2>
++    <div class="tag"><#RBKP_20#></div>
++    <div class="desc"><#Setting_save_upload_desc#></div>
++    <div class="row">
++      <button class="btn" id="cfg_save" type="button"><#Setting_save_itemname#></button>
++      <button class="btn" id="cfg_up" type="button"><#Setting_upload_itemname#></button>
++      <input id="cfg_file" type="file" accept=".CFG,.cfg" style="display:none">
++    </div>
++    <label class="chk"><input type="checkbox" id="remove_passwd"><span><#Setting_remove_passwd#></span></label>
++    <label class="chk" id="ddns_row" style="display:none"><input type="checkbox" id="transfer_ddns"><span><#DDNS_transfer#></span></label>
++    <div class="stat" id="st_scfg"></div>
++  </div>
++
++  <div class="card" id="jffs_card">
++    <h2><#RDSH_12#></h2>
++    <div class="tag"><#RBKP_25#></div>
++    <div class="desc"><#RBKP_21#></div>
++    <div class="row">
++      <button class="btn" id="jffs_save" type="button"><#CTL_onlysave#></button>
++      <button class="btn" id="jffs_up" type="button"><#CTL_upload#></button>
++      <input id="jffs_file" type="file" accept=".tar" style="display:none">
++    </div>
++    <div class="stat" id="st_jffs"></div>
++  </div>
++
++  <div class="card wide">
++    <h2><#Setting_factorydefault_itemname#></h2>
++    <div class="tag"><#Setting_factorydefault_itemname#></div>
++    <label class="chk"><input type="checkbox" id="fd_init" checked><span><#Setting_initialize_desc#></span></label>
++    <div class="row" style="margin-top:12px">
++      <button class="btn danger" id="fd_go" type="button"><#CTL_restore#></button>
++    </div>
++  </div>
++</div>
++
++<div class="ovl" id="ovl"><div class="box"><div class="t" id="ovl_t"></div><div class="s" id="ovl_s"></div><div class="beat"><i></i></div></div></div>
++
++<script src="/reaper_util.js"></script>
++<script>
++var HID = '<% nvram_get("http_id"); %>';
++var MODEL = '<% nvram_get("productid"); %>';
++var VER = '<% nvram_get("extendno"); %>';
++var LAN_IP = '<% nvram_get("lan_ipaddr"); %>';
++var DEF_IP = '<% nvram_default_get("lan_ipaddr"); %>';
++var JFFS_ON = '<% nvram_get("jffs2_on"); %>';
++var DDNS_EN = '<% nvram_get("ddns_enable_x"); %>';
++var DDNS_SRV = '<% nvram_get("ddns_server_x"); %>';
++var PREF_LANG = '<% nvram_get("preferred_lang"); %>';
++var FIRMVER = '<% nvram_get("firmver"); %>';
++var busy = 0;
++
++function $id(i){ return document.getElementById(i); }
++function setStat(i, txt, cls){ var n = $id(i); if(!n) return; n.className = 'stat' + (cls ? ' ' + cls : ''); n.textContent = txt; n.style.display = txt ? 'block' : 'none'; }
++/* rule 34: a failed XHR fires BOTH readystatechange(4) and error - every
++   completion path below runs through once() so no chain can ever double. */
++function once(fn){ var done = 0; return function(a){ if(done) return; done = 1; fn(a); }; }
++function veil(t, s){ $id('ovl_t').textContent = t; $id('ovl_s').textContent = s || ''; $id('ovl').className = 'ovl on'; }
++function veilSub(s){ $id('ovl_s').textContent = s; }
++function veilOff(){ $id('ovl').className = 'ovl'; }
++function gotoLogin(){ try{ (window.top || window).location.href = '/Main_Login.asp'; }catch(e){ location.href = '/Main_Login.asp'; } }
++function clean(s){ return String(s).replace(/[^A-Za-z0-9._-]/g, ''); }
++
++/* wait for the router to go DOWN then answer again -> back to login.
++   If it never goes down within noDownCap ticks, call onNeverDown (the upload
++   was rejected and nothing is rebooting). If it never comes BACK, show
++   capMsg - after a factory reset the LAN IP usually changed, so this origin
++   may simply never answer again and that message is the real exit. */
++function pollBack(tries, wentDown, noDownCap, onNeverDown, capMsg){
++  if(!wentDown && noDownCap && tries > noDownCap){ onNeverDown(); return; }
++  if(tries > 450){ veilSub(capMsg); return; }
++  var x = new XMLHttpRequest();
++  var next = once(function(down){ setTimeout(function(){ pollBack(tries + 1, down || wentDown, noDownCap, onNeverDown, capMsg); }, 2000); });
++  x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
++  x.timeout = 3000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    if(x.status === 200){
++      if(wentDown){ gotoLogin(); return; }
++      next(0);
++    } else next(1);
++  };
++  x.onerror = x.ontimeout = x.onabort = function(){ next(1); };
++  x.send();
++}
++
++/* ---------------- pending-restore banner ---------------- */
++function pendingCheck(){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/reaper_cfg.cgi?action=pending&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
++  x.timeout = 8000;
++  x.onload = function(){
++    var j = null; try{ j = JSON.parse(x.responseText); }catch(e){}
++    if(j && j.ok && j.pending) $id('rbk_pending').style.display = 'flex';
++  };
++  x.send();
++}
++function pendingComplete(){
++  var b = $id('rbk_complete'); b.disabled = true;
++  var q = new XMLHttpRequest();
++  q.open('POST', '/reaper_cfg.cgi', true);
++  q.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++  q.onloadend = function(){
++    var r = null; try{ r = JSON.parse(q.responseText); }catch(e){}
++    b.disabled = false;
++    if(!r || !r.ok){ setStat('st_rbk', `<#RBKP_14#>`, 'err'); return; }
++    $id('rbk_pending').style.display = 'none';
++    setStat('st_rbk', `<#RBKP_11#>`.replace('%1', r.flags).replace('%2', r.lists).replace('%3', r.rejected), 'ok');
++  };
++  q.send('action=import_pending&http_id=' + encodeURIComponent(HID));
++}
++
++/* ---------------- full backup (.rbk) ---------------- */
++function rbkDownload(){ location.href = '/REAPER_' + clean(MODEL) + '_' + clean(VER) + '_settings.rbk?http_id=' + encodeURIComponent(HID); }
++function rbkRestore(f){
++  if(f.size > 16777216 || f.size < 64){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
++  var rd = new FileReader();
++  rd.onload = function(){
++    var head = String(rd.result || '');
++    if(head.indexOf('REAPER-BACKUP 1\n') !== 0){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
++    var meta = null; try{ meta = JSON.parse(head.split('\n')[1]); }catch(e){}
++    if(!meta){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
++    if(String(meta.model) !== MODEL){ setStat('st_rbk', `<#RBKP_8#>`, 'err'); return; }
++    reaperConfirm(`<#RBKP_13#>`, { danger: true, okLabel: `<#CTL_restore#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++      if(!go || busy) return;
++      busy = 1;
++      setStat('st_rbk', '', '');
++      var fd = new FormData();
++      fd.append('http_id', HID);
++      fd.append('file', f);
++      var p = new XMLHttpRequest();
++      p.open('POST', '/reaper_restore.cgi', true);
++      p.onloadend = function(){
++        var r = null; try{ r = JSON.parse(p.responseText); }catch(e){}
++        if(!r || !r.ok){
++          busy = 0;
++          var ek = r && r.ek;
++          var em = ek === 'model' ? `<#RBKP_8#>` : ek === 'jffs' ? `<#RBKP_9#>` : ek === 'file' ? `<#RBKP_12#>` : `<#RBKP_14#>`;
++          if(r && r.ec) em += ' [' + r.ec + ']';
++          setStat('st_rbk', em, 'err');
++          return;
++        }
++        veil(`<#RBKP_15#>`, `<#RBKP_10#>`);
++        pollBack(0, 0, 0, function(){}, `<#Main_alert_proceeding_desc3#> <#LANConfig_ChangedLANIP#>`);
++      };
++      p.send(fd);
++    });
++  };
++  rd.readAsText(f.slice(0, 2048));
++}
++
++/* ---------------- Reaper settings JSON ---------------- */
++function cfgExport(){
++  var g = new XMLHttpRequest();
++  g.open('GET', '/reaper_cfg.cgi?action=export&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
++  g.onloadend = function(){
++    var j = null; try{ j = JSON.parse(g.responseText); }catch(e){}
++    if(!j || !j.ok){ setStat('st_cfg', `<#RDST_74#>`, 'err'); return; }
++    var name = 'reaper-settings-' + String(j.model || 'router').replace(/[^A-Za-z0-9_-]/g, '') + '-' + String(j.version || '').replace(/[^A-Za-z0-9_.-]/g, '') + '-' + new Date().toISOString().slice(0, 10) + '.json';
++    var blob = new Blob([JSON.stringify(j, null, 1)], { type: 'application/json' });
++    var a = document.createElement('a');
++    a.href = URL.createObjectURL(blob); a.download = name;
++    document.body.appendChild(a); a.click();
++    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 2000);
++    setStat('st_cfg', `<#RDST_73#>` + ' ' + name, 'ok');
++  };
++  g.send();
++}
++function cfgImport(f){
++  if(f.size > 60000){ setStat('st_cfg', `<#RDST_75#>`, 'err'); return; }
++  var rd = new FileReader();
++  rd.onload = function(){
++    var j = null; try{ j = JSON.parse(String(rd.result || '')); }catch(e){}
++    if(!j || !j.reaper_cfg){ setStat('st_cfg', `<#RDST_75#>`, 'err'); return; }
++    reaperConfirm(`<#RDST_76#>`, { okLabel: `<#CTL_ok#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++      if(!go) return;
++      var p = new XMLHttpRequest();
++      p.open('POST', '/reaper_cfg.cgi', true);
++      p.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++      p.onloadend = function(){
++        var r = null; try{ r = JSON.parse(p.responseText); }catch(e){}
++        if(!r || !r.ok){ setStat('st_cfg', `<#RDST_74#>`, 'err'); return; }
++        setStat('st_cfg', `<#RDST_77#>`.replace('%1', r.flags).replace('%2', r.lists).replace('%3', r.rejected), 'ok');
++      };
++      p.send('action=import&http_id=' + encodeURIComponent(HID) + '&cfg=' + encodeURIComponent(JSON.stringify(j)));
++    });
++  };
++  rd.readAsText(f);
++}
++
++/* ---------------- stock router settings (.CFG) ---------------- */
++function cfgSave(){
++  var flag = 0;
++  if(DDNS_EN === '1'){
++    if(DDNS_SRV !== 'WWW.ASUS.COM') flag = 1;
++    else flag = $id('transfer_ddns').checked ? 1 : 0;
++  }
++  var rp = $id('remove_passwd').checked ? 1 : 0;
++  location.href = '/Settings_' + clean(MODEL) + '.CFG?path=' + flag + '&remove_passwd=' + rp;
++}
++function cfgRestore(f){
++  var nm = String(f.name || '').toUpperCase();
++  if(nm.length < 5 || nm.lastIndexOf('.CFG') !== nm.length - 4){ setStat('st_scfg', `<#Setting_upload_hint#>`, 'err'); return; }
++  var rd = new FileReader();
++  rd.onload = function(){
++    var head = String(rd.result || '');
++    if(head.indexOf('HDR1') !== 0 && head.indexOf('HDR2') !== 0){ setStat('st_scfg', `<#Setting_upload_hint#>`, 'err'); return; }
++    reaperConfirm(`<#RBKP_26#>`, { danger: true, okLabel: `<#CTL_restore#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++      if(!go || busy) return;
++      busy = 1;
++      setStat('st_scfg', '', '');
++      veil(`<#Setting_upload_itemname#>`, `<#SET_ok_desc#>`);
++      var fd = new FormData();
++      fd.append('current_page', 'Reaper_Backup.asp');
++      fd.append('next_page', '');
++      fd.append('action_mode', '');
++      fd.append('action_script', '');
++      fd.append('action_wait', '');
++      fd.append('productid', MODEL);
++      fd.append('preferred_lang', PREF_LANG);
++      fd.append('firmver', FIRMVER);
++      fd.append('file', f, f.name);
++      var x = new XMLHttpRequest();
++      x.open('POST', '/upload.cgi', true);
++      /* the box reboots into the restored settings; liveness is the verdict -
++         if it never goes down, the file was rejected (stock UploadError path) */
++      var handed = once(function(){
++        veilSub(`<#SAVE_restart_desc#>`);
++        pollBack(0, 0, 90, function(){
++          busy = 0; veilOff();
++          setStat('st_scfg', `<#Setting_upload_hint#>`, 'err');
++        }, `<#Main_alert_proceeding_desc3#> <#LANConfig_ChangedLANIP#>`);
++      });
++      x.onload = handed;
++      x.onerror = x.ontimeout = x.onabort = handed;
++      x.send(fd);
++    });
++  };
++  rd.readAsText(f.slice(0, 8));
++}
++
++/* ---------------- JFFS partition ---------------- */
++function jffsSave(){ location.href = '/backup_jffs_' + clean(MODEL) + '.tar'; }
++function jffsRestore(f){
++  var nm = String(f.name || '');
++  if(nm.length < 5 || nm.toLowerCase().lastIndexOf('.tar') !== nm.length - 4){ setStat('st_jffs', `<#RBKP_22#>`, 'err'); return; }
++  reaperConfirm(`<#RBKP_21#>` + '\n' + `<#Setting_factorydefault_hint2#>`, { danger: true, okLabel: `<#CTL_restore#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++    if(!go || busy) return;
++    busy = 1;
++    setStat('st_jffs', `<#RBKP_23#>`, 'ok');
++    var fd = new FormData();
++    fd.append('file2', f, f.name);
++    var x = new XMLHttpRequest();
++    x.open('POST', '/jffsupload.cgi', true);
++    var fin = once(function(okish){
++      busy = 0;
++      if(okish) setStat('st_jffs', `<#RBKP_24#>`, 'ok');
++      else setStat('st_jffs', `<#RDST_74#>`, 'err');
++    });
++    x.onload = function(){ fin(x.status === 200); };
++    x.onerror = x.ontimeout = x.onabort = function(){ fin(0); };
++    x.send(fd);
++  });
++}
++
++/* ---------------- factory default ---------------- */
++function factoryReset(){
++  var init = $id('fd_init').checked;
++  var msg = init ? `<#Setting_initialize_hint1#>` : `<#Setting_factorydefault_hint1#>`;
++  if(LAN_IP !== DEF_IP) msg += '\n' + `<#Setting_factorydefault_iphint#>`.replace('192.168.1.1', DEF_IP) + '\n';
++  msg += '\n' + `<#Setting_factorydefault_hint2#>`;
++  reaperConfirm(msg, { danger: true, okLabel: `<#CTL_restore#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++    if(!go || busy) return;
++    busy = 1;
++    veil(`<#Setting_factorydefault_itemname#>`, `<#SAVE_restart_desc#>`);
++    var x = new XMLHttpRequest();
++    x.open('POST', '/apply.cgi', true);
++    x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++    var handed = once(function(){
++      pollBack(0, 0, 0, function(){}, `<#Main_alert_proceeding_desc3#> <#LANConfig_ChangedLANIP#>`);
++    });
++    x.onload = handed;
++    x.onerror = x.ontimeout = x.onabort = handed;
++    x.send('action_mode=' + (init ? 'restore_erase' : 'Restore') + '&next_page=');
++  });
++}
++
++/* ---------------- boot ---------------- */
++function boot(){
++  if(DDNS_EN === '1' && DDNS_SRV === 'WWW.ASUS.COM') $id('ddns_row').style.display = 'flex';
++  if(JFFS_ON !== '1') $id('jffs_card').style.display = 'none';
++  $id('rbk_dl').onclick = rbkDownload;
++  $id('rbk_up').onclick = function(){ $id('rbk_file').click(); };
++  $id('rbk_file').onchange = function(){ var f = this.files && this.files[0]; this.value = ''; if(f) rbkRestore(f); };
++  $id('rbk_complete').onclick = pendingComplete;
++  $id('rbk_cx').onclick = cfgExport;
++  $id('rbk_ci').onclick = function(){ $id('rbk_cfile').click(); };
++  $id('rbk_cfile').onchange = function(){ var f = this.files && this.files[0]; this.value = ''; if(f) cfgImport(f); };
++  $id('cfg_save').onclick = cfgSave;
++  $id('cfg_up').onclick = function(){ $id('cfg_file').click(); };
++  $id('cfg_file').onchange = function(){ var f = this.files && this.files[0]; this.value = ''; if(f) cfgRestore(f); };
++  $id('jffs_save').onclick = jffsSave;
++  $id('jffs_up').onclick = function(){ $id('jffs_file').click(); };
++  $id('jffs_file').onchange = function(){ var f = this.files && this.files[0]; this.value = ''; if(f) jffsRestore(f); };
++  $id('fd_go').onclick = factoryReset;
++  pendingCheck();
++}
++if(document.readyState !== 'loading') boot();
++else document.addEventListener('DOMContentLoaded', boot);
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_BackupCard.asp b/release/src/router/www/Reaper_BackupCard.asp
+deleted file mode 100644
+index a36a708580..0000000000
+--- a/release/src/router/www/Reaper_BackupCard.asp
++++ /dev/null
+@@ -1,78 +0,0 @@
+-<!-- SPDX-License-Identifier: GPL-2.0-only -->
+-<!-- Reaper v2.7.2: full-backup card, fetched by the injected script and
+-     inserted into the stock Administration > Restore/Save/Upload page.
+-     This is a FRAGMENT (no head/body): tokens resolve server-side through
+-     do_ej, all behavior JS lives in reaper_inject.c's block (scripts inside
+-     innerHTML never execute), and every string the JS needs is carried in a
+-     hidden span so no translation ever sits inside an attribute or a JS
+-     string. Listed in reaper_skip[] - served pristine, never re-injected.
+-     2026-08-28: now the MASTER Backup & Restore panel - the Reaper settings
+-     (JSON) export/import moved here from Reaper_Storage.asp, so one panel
+-     owns every backup surface and the pending-restore banner lives only
+-     here and can never drift between two copies. -->
+-<div id="rbk_card">
+-<style>
+-#rbk_card{margin:0 0 14px;width:760px;max-width:96%;box-sizing:border-box;border:1px solid #3a3a3e;border-radius:6px;padding:14px 18px 16px;background:#101012;color:#ECE7DB;font-family:Arial,Helvetica,sans-serif;text-align:left}
+-#rbk_card .rbk_h{font-size:15px;font-weight:bold;color:#ECE7DB;margin:0 0 6px}
+-#rbk_card .rbk_h em{font-style:normal;color:#E10600}
+-#rbk_card .rbk_help{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:bold 11px Arial,sans-serif;text-decoration:none;vertical-align:middle}
+-#rbk_card .rbk_help:hover{border-color:#E10600;color:#ECE7DB}
+-#rbk_card .rbk_d{font-size:12px;line-height:1.55;color:#b8b3a7;margin:0 0 12px}
+-#rbk_card .rbk_grid{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap}
+-#rbk_card .rbk_sec{flex:1 1 300px;display:flex;flex-direction:column;min-width:0;border:1px solid rgba(255,255,255,.09);border-radius:6px;background:#151518;padding:12px 14px}
+-#rbk_card .rbk_sh{font-size:13px;font-weight:bold;color:#ECE7DB;margin:0 0 3px}
+-#rbk_card .rbk_tag{font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:.07em;color:#8d897f;margin:0 0 8px;padding-bottom:7px;border-bottom:1px solid rgba(255,255,255,.07)}
+-#rbk_card .rbk_sd{font-size:12px;line-height:1.55;color:#b8b3a7;margin:0 0 10px}
+-#rbk_card .rbk_row{margin:auto 0 9px;padding-top:2px}
+-#rbk_card button{background:#1c1c1f;color:#ECE7DB;border:1px solid #555;border-radius:4px;padding:7px 14px;font-size:12px;cursor:pointer;margin-right:8px}
+-#rbk_card button:hover{border-color:#E10600}
+-#rbk_card .rbk_note{font-size:11px;color:#8d897f;line-height:1.5;margin:0}
+-#rbk_card #rbk_pending{display:none;margin:0 0 12px;padding:8px 10px;border:1px solid #E10600;border-radius:4px;background:#1a0d0d;font-size:12px}
+-#rbk_card #rbk_msg{display:none;margin:10px 0 0;font-size:12px}
+-#rbk_card .rbk_ok{color:#4FB286}
+-#rbk_card .rbk_err{color:#E10600}
+-</style>
+-<div class="rbk_h"><em>REAPER</em> &middot; <#RBKP_15#><a class="rbk_help" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#25-two-backups-not-one" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>">?</a></div>
+-<div class="rbk_d"><#RBKP_16#></div>
+-<div id="rbk_pending"><span><#RBKP_6#></span> <button id="rbk_complete" type="button"><#RBKP_7#></button></div>
+-<div class="rbk_grid">
+-  <div class="rbk_sec">
+-    <div class="rbk_sh"><#RBKP_1#></div>
+-    <div class="rbk_tag"><#RBKP_17#></div>
+-    <div class="rbk_sd"><#RBKP_2#></div>
+-    <div class="rbk_row">
+-      <button id="rbk_dl" type="button"><#RBKP_3#></button>
+-      <button id="rbk_up" type="button"><#RBKP_4#></button>
+-      <input id="rbk_file" type="file" accept=".rbk" style="display:none">
+-    </div>
+-    <div class="rbk_note"><#RBKP_5#></div>
+-  </div>
+-  <div class="rbk_sec">
+-    <div class="rbk_sh"><#RDST_68#></div>
+-    <div class="rbk_tag"><#RBKP_18#></div>
+-    <div class="rbk_sd"><#RDST_69#></div>
+-    <div class="rbk_row">
+-      <button id="rbk_cx" type="button"><#RDST_70#></button>
+-      <button id="rbk_ci" type="button"><#RDST_71#></button>
+-      <input id="rbk_cfile" type="file" accept=".json,application/json" style="display:none">
+-    </div>
+-    <div class="rbk_note"><#RDST_72#></div>
+-  </div>
+-</div>
+-<div id="rbk_msg"></div>
+-<span id="rbk_hid" style="display:none"><% nvram_get("http_id"); %></span>
+-<span id="rbk_model" style="display:none"><% nvram_get("productid"); %></span>
+-<span id="rbk_ver" style="display:none"><% nvram_get("extendno"); %></span>
+-<span id="rbk_s_badfile" style="display:none"><#RBKP_12#></span>
+-<span id="rbk_s_model" style="display:none"><#RBKP_8#></span>
+-<span id="rbk_s_jffs" style="display:none"><#RBKP_9#></span>
+-<span id="rbk_s_reboot" style="display:none"><#RBKP_10#></span>
+-<span id="rbk_s_done" style="display:none"><#RBKP_11#></span>
+-<span id="rbk_s_confirm" style="display:none"><#RBKP_13#></span>
+-<span id="rbk_s_fail" style="display:none"><#RBKP_14#></span>
+-<span id="rbk_s_saved" style="display:none"><#RDST_73#></span>
+-<span id="rbk_s_cfail" style="display:none"><#RDST_74#></span>
+-<span id="rbk_s_cbad" style="display:none"><#RDST_75#></span>
+-<span id="rbk_s_cconfirm" style="display:none"><#RDST_76#></span>
+-<span id="rbk_s_cdone" style="display:none"><#RDST_77#></span>
+-</div>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index a870f12b9c..2e9506753e 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Nastavitve usmerjevalnika (.CFG)
++RBKP_20=Standardna datoteka z nastavitvami - berljiva za tovarniško in Merlin programsko opremo
++RBKP_21=Celotna particija /jffs v enem arhivu .tar - skripti dodatkov, potrdila in podatki Reaper. Obnovitev zamenja vso trenutno vsebino /jffs.
++RBKP_22=To ni veljavna varnostna kopija JFFS (.tar).
++RBKP_23=Obnavljanje particije JFFS...
++RBKP_24=Obnovitev JFFS je končana. Znova zaženite usmerjevalnik, da bodo vse storitve uporabljale obnovljene datoteke.
++RBKP_25=Notranji pomnilnik /jffs
++RBKP_26=Želite obnoviti te nastavitve usmerjevalnika? Trenutne nastavitve bodo zamenjane in usmerjevalnik se bo znova zagnal.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 6ff1f391f4..027beb8b44 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Routerinställningar (.CFG)
++RBKP_20=Standardinställningsfil - läsbar av original- och Merlin-firmware
++RBKP_21=Hela /jffs-partitionen som ett .tar-arkiv - addon-skript, certifikat och Reaper-data. Återställning ersätter allt nuvarande innehåll på /jffs.
++RBKP_22=Ingen giltig JFFS-säkerhetskopia (.tar).
++RBKP_23=Återställer JFFS-partitionen...
++RBKP_24=JFFS-återställningen är klar. Starta om routern så att alla tjänster använder de återställda filerna.
++RBKP_25=Intern /jffs-lagring
++RBKP_26=Återställa dessa routerinställningar? De nuvarande inställningarna ersätts och routern startas om.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index c298c13486..8d2571055c 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=การตั้งค่าเราเตอร์ (.CFG)
++RBKP_20=ไฟล์การตั้งค่ามาตรฐาน - อ่านได้ทั้งเฟิร์มแวร์ดั้งเดิมและ Merlin
++RBKP_21=พาร์ติชัน /jffs ทั้งหมดในไฟล์ .tar เดียว - สคริปต์ของแอดออน ใบรับรอง และข้อมูลของ Reaper การกู้คืนจะแทนที่เนื้อหาปัจจุบันทั้งหมดใน /jffs
++RBKP_22=ไม่ใช่ไฟล์สำรอง JFFS (.tar) ที่ถูกต้อง
++RBKP_23=กำลังกู้คืนพาร์ติชัน JFFS...
++RBKP_24=กู้คืน JFFS เสร็จสมบูรณ์ โปรดรีบูตเราเตอร์เพื่อให้ทุกบริการใช้ไฟล์ที่กู้คืน
++RBKP_25=พื้นที่จัดเก็บภายใน /jffs
++RBKP_26=กู้คืนการตั้งค่าเราเตอร์เหล่านี้หรือไม่ การตั้งค่าปัจจุบันจะถูกแทนที่และเราเตอร์จะรีบูต
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index d802438dea..ff5155e4ab 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Yönlendirici ayarları (.CFG)
++RBKP_20=Standart ayar dosyası - orijinal ve Merlin donanım yazılımı tarafından okunabilir
++RBKP_21=Tüm /jffs bölümü tek bir .tar arşivinde - eklenti betikleri, sertifikalar ve Reaper verileri. Geri yükleme, /jffs üzerindeki mevcut tüm içeriği değiştirir.
++RBKP_22=Geçerli bir JFFS yedek (.tar) dosyası değil.
++RBKP_23=JFFS bölümü geri yükleniyor...
++RBKP_24=JFFS geri yükleme tamamlandı. Tüm hizmetlerin geri yüklenen dosyaları kullanması için yönlendiriciyi yeniden başlatın.
++RBKP_25=Dahili /jffs depolama
++RBKP_26=Bu yönlendirici ayarları geri yüklensin mi? Mevcut ayarlar değiştirilecek ve yönlendirici yeniden başlatılacaktır.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 9a1b11557a..fd41cfeab6 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=路由器設定 (.CFG)
++RBKP_20=原廠設定檔 - 可被原廠韌體與 Merlin 韌體讀取
++RBKP_21=整個 /jffs 分割區打包為一個 .tar 檔 - 外掛程式指令碼、憑證與 Reaper 資料。還原將取代 /jffs 上所有現有內容。
++RBKP_22=不是有效的 JFFS 備份 (.tar) 檔案。
++RBKP_23=正在還原 JFFS 分割區...
++RBKP_24=JFFS 還原完成。請重新啟動路由器，讓所有服務載入還原的檔案。
++RBKP_25=內建 /jffs 儲存空間
++RBKP_26=要還原這些路由器設定嗎？目前的設定將被取代，路由器將重新啟動。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 790c3466e2..39d9156f40 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6782,3 +6782,11 @@ RGK_61=h
+ RFW_276=Port forwards
+ RFW_277=Service intercepts
+ RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
++RBKP_19=Налаштування маршрутизатора (.CFG)
++RBKP_20=Стандартний файл налаштувань - читається заводською прошивкою та Merlin
++RBKP_21=Увесь розділ /jffs одним архівом .tar - скрипти аддонів, сертифікати та дані Reaper. Відновлення замінює весь поточний вміст /jffs.
++RBKP_22=Неприпустимий файл резервної копії JFFS (.tar).
++RBKP_23=Відновлення розділу JFFS...
++RBKP_24=Відновлення JFFS завершено. Перезавантажте маршрутизатор, щоб усі служби використовували відновлені файли.
++RBKP_25=Внутрішнє сховище /jffs
++RBKP_26=Відновити ці налаштування маршрутизатора? Поточні налаштування буде замінено, і маршрутизатор перезавантажиться.
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 95d8faff1c..4145719c3e 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -197,6 +197,45 @@ a.item.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;
+ </style>
+ </head>
+ <body>
++<!-- reaper v2.9.8: pending-restore banner. After a full-backup restore reboots
++     the box, the Reaper half waits for one click - this puts that click on the
++     shell (above every framed page) and on the dashboard, so the operator sees
++     it wherever they land. Server-side state only (reaper_cfg.cgi
++     action=pending); hidden and cost-free when nothing is pending. -->
++<style>
++.rpb{display:none;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;font-size:12.5px;color:#ECE7DB;background:linear-gradient(180deg,rgba(225,6,0,.16),rgba(225,6,0,.06)),#120b0b;border-bottom:1px solid rgba(225,6,0,.45);box-shadow:inset 3px 0 0 #E10600}
++.rpb.on{display:flex}
++.rpb.done{border-bottom-color:rgba(79,178,134,.45);box-shadow:inset 3px 0 0 #4FB286}
++.rpb button{font-family:'Rajdhani',system-ui,sans-serif;font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11.5px;color:#ECE7DB;background:#B3000C;border:1px solid #B3000C;border-radius:7px;padding:6px 13px;cursor:pointer;margin-left:auto}
++.rpb button:hover{background:#E10600}
++.rpb button[disabled]{opacity:.5;cursor:not-allowed}
++</style>
++<div class="rpb" id="rpb"><span id="rpb_txt"><#RBKP_6#></span><button id="rpb_go" type="button"><#RBKP_7#></button></div>
++<script>(function(){
++  var hid='<% nvram_get("http_id"); %>';
++  var bar=document.getElementById('rpb'),txt=document.getElementById('rpb_txt'),go=document.getElementById('rpb_go');
++  var x=new XMLHttpRequest();
++  x.open('GET','/reaper_cfg.cgi?action=pending&http_id='+encodeURIComponent(hid)+'&_='+Date.now(),true);
++  x.timeout=8000;
++  x.onload=function(){
++    var j=null;try{j=JSON.parse(x.responseText);}catch(e){}
++    if(j&&j.ok&&j.pending)bar.className='rpb on';
++  };
++  x.send();
++  go.onclick=function(){
++    go.disabled=true;
++    var q=new XMLHttpRequest();
++    q.open('POST','/reaper_cfg.cgi',true);
++    q.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
++    q.onloadend=function(){
++      var r=null;try{r=JSON.parse(q.responseText);}catch(e){}
++      if(!r||!r.ok){go.disabled=false;txt.textContent=`<#RBKP_14#>`;return;}
++      bar.className='rpb on done';go.style.display='none';
++      txt.textContent=`<#RBKP_11#>`.replace('%1',r.flags).replace('%2',r.lists).replace('%3',r.rejected);
++    };
++    q.send('action=import_pending&http_id='+encodeURIComponent(hid));
++  };
++})();</script>
+ <div class="app">
+   <header class="top">
+     <a class="brand" href="/Main_ReaperDash.asp" title="REAPER <#Reaper_c_dashboard#>"><img src="/images/RT-96U_REAPER_Header.png" alt="REAPER"></a>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 84feb87e49..11b16b76f1 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -364,7 +364,7 @@ define(function(){
+ 					{url: "Advanced_OperationMode_Content.asp", tabName: "<#menu5_6_1#>"},
+ 					{url: "Advanced_System_Content.asp", tabName: "<#menu5_6_2#>"},
+ 					{url: "Reaper_Firmware.asp", tabName: "<#menu5_6_3#>"},	/* reaper Phase 2: native firmware page (stock Advanced_FirmwareUpgrade_Content.asp kept on disk as fallback) */
+-					{url: "Advanced_SettingBackup_Content.asp", tabName: "<#menu5_6_4#>"},
++					{url: "Reaper_Backup.asp", tabName: "<#menu5_6_4#>"},	/* reaper v2.9.8: native Backup & Restore page (stock Advanced_SettingBackup_Content.asp kept on disk as fallback, SUP-redirected) */
+ 					{url: "Advanced_PerformanceTuning_Content.asp", tabName: "<#fan_tuning_temperature#>"},
+ 					{url: "Advanced_ADSL_Content.asp", tabName: "<#menu_dsl_setting#>"},
+ 					{url: "Advanced_Feedback.asp", tabName: "<#menu_feedback#>"},
+-- 
+2.25.1
+

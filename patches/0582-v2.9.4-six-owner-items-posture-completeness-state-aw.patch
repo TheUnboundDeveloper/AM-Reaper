@@ -1,0 +1,755 @@
+From 4387547afa440865566dfa961707e650fbfb17f1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 30 Aug 2026 12:33:27 -0400
+Subject: [PATCH] v2.9.4: six owner items - posture completeness, state-aware
+ controls, honest counters
+
+Six backlog items, all owner-reported or found on his metal, plus regression
+markers pinning each one so a later change cannot silently drop it.
+
+FIREWALL STATUS NOW REPORTS FORWARDS AND SERVICE INTERCEPTS (P2)
+The posture page counted rules/objects/groups/services/zones/policies and
+stopped - the nat store, which holds BOTH port forwards and Service Intercepts,
+had no counter, so two live enforcement surfaces were invisible. New
+fw_nat_mode_counts() splits the store by record mode. Mode is POSITIONAL FIELD 8
+and an absent field is a pre-Service-Intercept record meaning "forward"
+(mirrors rc's parse; unknown modes are dropped by the loader and counted as
+neither - fail closed both places). The nat list is resolved LAST and consumed
+immediately: reaper_fw_list_get() returns a static the next call frees. Two new
+status rows (RFW_276/277).
+
+SMART CONNECT: NO MORE DEAD SWITCH, NO MORE DEAD POINTER (P2)
+Post-migration (SDN MAINFH profiles own the main network) the classic toggle
+set smart_connect_x/selif and fired a bare restart_wireless - the per-band
+profiles came back unchanged and nothing visibly happened. Rewriting sdn_rl
+from a classic page is deliberately NOT attempted (mis-serializing it takes
+down every SSID; the SDN app owns that write). Instead the page detects the
+migrated state from sdn_rl itself and the button becomes a pointer to the
+Network page, where the control actually lives; the "- -" cell hint and the
+top banner (which sent users to a Wireless > General selector that no longer
+exists there post-migration) are state-aware now too. Un-migrated boxes keep
+the working classic toggle.
+
+RAIL CLOCK RE-SYNCS (P3)
+Both copies of the nav clock seeded once from <% uptime(); %> and extrapolated
+forever - on a board with no RTC, where every boot and NTP correction is a
+step (a ~4 h jump was observed mid-syslog on metal), a shell tab left open
+across one showed the wrong time until reloaded. The twin inline scripts
+collapse into js/reaper_clock.js: 1 s local tick, re-sync every 5 min and on
+visibilitychange from Reaper_SecBanner.asp's new data-now attribute (a fetch
+the banner loader already makes on every admin page - no new endpoint, no new
+page, no langcheck surface). Corrections under 2 s are ignored, larger snap;
+any failure leaves the clock ticking on its current base. Dict tokens stay in
+the .asp seeds - the shared file is deliberately token-free, since the token
+pass is unproven for js/ subdirectory files.
+
+DEVICES EXPORT CARRIES RESERVATIONS (P3, owner format decision 2026-08-30)
+An inventory that blanks the addresses an operator assigned was the wrong
+answer, but a reservation must never export as a live lease: 'ip' keeps
+meaning "has this address right now"; new reserved_ip + state columns
+(reserved / reserved-out-of-pool / orphan / duplicate) qualify the claim in
+all three formats. A broken pin exports as flagged, not as fact.
+
+QOS DROPS-INTERPRETATION NOTE (P3, owner wording direction)
+RQOS_124 under the class-table explainer: counters are cumulative since the
+last QoS restart and normally grow only under saturation such as a speed test;
+climbing while idle, or while a class sits below its ceiling, is the sign of a
+real problem. Encodes the metal-validated rule of 2026-08-30 (Default
+441->1191 across two speed tests, frozen at idle - predicted and confirmed).
+
+DIAG VIF ssid_len OFF-BY-ONE (P3) - REAPER-DIAG v1.3.10
+`nvram get | wc -c` counted the trailing newline, so every VIF line read +1
+(live report: 7 for a 6-char SSID, 33 for the 32-hex onboarding BSS) while the
+primary-radio path was exact. tr -d newline first. The pinned marker moves to
+v1.3.10 in the SAME change, in both the engine's verify_markers.txt and the
+lean build-scripts copy - the v2.9.3 first build failed verify on exactly that
+pairing, and the lean copy turned out to still be at v1.3.8.
+
+REGRESSION MARKERS (owner ask: fixes must not silently rebreak)
+Six new verify_markers rules pin: rqos_dropnote, the nicpt status row, the
+reserved_ip export column, the clock helper's visibilitychange re-sync, the
+banner's data-now carrier, and the Smart Connect scWhereHint swap. Engine and
+lean copies both updated.
+
+New dict tokens RFW_276/277 + RQOS_124, appended in lockstep (6784 lines x 25
+packs), English-seeded - they join the RGK_61/RSEC translate pass.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                   |  2 +-
+ release/src/router/httpd/web.c                | 42 +++++++++++++
+ release/src/router/others/reaper_diag         |  9 ++-
+ .../src/router/www/Advanced_Smart_Connect.asp | 30 +++++++++-
+ release/src/router/www/BR.dict                |  3 +
+ release/src/router/www/CN.dict                |  3 +
+ release/src/router/www/CZ.dict                |  3 +
+ release/src/router/www/DA.dict                |  3 +
+ release/src/router/www/DE.dict                |  3 +
+ release/src/router/www/EN.dict                |  3 +
+ release/src/router/www/ES.dict                |  3 +
+ release/src/router/www/FI.dict                |  3 +
+ release/src/router/www/FR.dict                |  3 +
+ release/src/router/www/HU.dict                |  3 +
+ release/src/router/www/IT.dict                |  3 +
+ release/src/router/www/JP.dict                |  3 +
+ release/src/router/www/KR.dict                |  3 +
+ release/src/router/www/MS.dict                |  3 +
+ release/src/router/www/Main_ReaperDash.asp    |  2 +-
+ release/src/router/www/NL.dict                |  3 +
+ release/src/router/www/NO.dict                |  3 +
+ release/src/router/www/PL.dict                |  3 +
+ release/src/router/www/RO.dict                |  3 +
+ release/src/router/www/RU.dict                |  3 +
+ release/src/router/www/Reaper_Devices.asp     | 26 ++++++--
+ release/src/router/www/Reaper_Firewall.asp    |  3 +
+ release/src/router/www/Reaper_QoS.asp         |  4 ++
+ release/src/router/www/Reaper_SecBanner.asp   |  3 +-
+ release/src/router/www/SL.dict                |  3 +
+ release/src/router/www/SV.dict                |  3 +
+ release/src/router/www/TH.dict                |  3 +
+ release/src/router/www/TR.dict                |  3 +
+ release/src/router/www/TW.dict                |  3 +
+ release/src/router/www/UK.dict                |  3 +
+ release/src/router/www/js/reaper_clock.js     | 59 +++++++++++++++++++
+ release/src/router/www/reaper_shell.asp       |  2 +-
+ 36 files changed, 243 insertions(+), 14 deletions(-)
+ create mode 100644 release/src/router/www/js/reaper_clock.js
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 124d3127e0..55d24d4b6a 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.9.3
++EXTENDNO=Reaper_v2.9.4
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b7cfd8c8b9..b883b05202 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23809,6 +23809,41 @@ static int fw_list_count(const char *s)
+ 	return n;
+ }
+ 
++/* reaper v2.9.4: split the nat store by record mode so the Status tab can report
++ * forwards and Service Intercepts separately - the posture page listed neither,
++ * so two live enforcement surfaces were invisible (owner, metal, 2026-08-29).
++ * Records are '<'-separated, fields '>'-separated, and MODE IS POSITIONAL FIELD 8:
++ * an absent field 8 is a pre-Service-Intercept record and means "forward"
++ * (mirrors rc/reaper_fw.c, which also fails closed on an unknown value - such a
++ * record is dropped by the loader, so it is counted as neither here). */
++static void fw_nat_mode_counts(const char *s, int *fwd, int *icpt)
++{
++	char mode[16];
++	int fi = -1, mi = 0, started = 0;
++
++	*fwd = *icpt = 0;
++	if (!s) return;
++	mode[0] = '\0';
++	for (;; s++) {
++		if (*s == '<' || *s == '\0') {
++			if (started) {
++				mode[mi] = '\0';
++				if (!strcmp(mode, "intercept") || !strcmp(mode, "redirect"))
++					(*icpt)++;
++				else if (fi < 8 || !*mode || !strcmp(mode, "forward"))
++					(*fwd)++;	/* absent/empty field 8 = legacy forward */
++				/* anything else: loader drops it - count as neither */
++			}
++			if (*s == '\0') break;
++			started = 1; fi = 0; mi = 0; mode[0] = '\0';
++		} else if (started && *s == '>') {
++			fi++;
++		} else if (started && fi == 8 && mi < (int)sizeof(mode) - 1) {
++			mode[mi++] = *s;
++		}
++	}
++}
++
+ /* reaper 2026-08-13: the remote-admin port actually in use. http_enable:
+  * 0 = HTTP only, 1 = HTTPS only, 2 = both - report the TLS port whenever TLS
+  * answers, since that is the one an operator would be reaching. */
+@@ -23899,6 +23934,13 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			nvram_get_int("reaper_fw_confirm"),
+ 			nvram_match("reaper_fw_armed", "1") ? 1 : 0,
+ 			n_rules, n_obj, n_grp, n_svc, n_zone, n_zpol);
++		/* nat resolved LAST and consumed immediately: reaper_fw_list_get()
++		 * returns a static the NEXT call frees (see the note above). */
++		{
++			int n_fwd = 0, n_icpt = 0;
++			fw_nat_mode_counts(reaper_fw_list_get("nat"), &n_fwd, &n_icpt);
++			websWrite(stream, ",\"nfwd\":%d,\"nicpt\":%d", n_fwd, n_icpt);
++		}
+ 		}
+ 		websWrite(stream, ",\"fwerr\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_fw_err"));
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 95b1ec7d2d..2ba6cee217 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.9 (2026-08-30) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.10 (2026-08-30) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.9"
++VER="REAPER-DIAG v1.3.10"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -453,7 +453,10 @@ u=0; while [ $u -le 3 ]; do
+   # detail is gathered here too, not just on the primary.
+   for VIF in $(nvram get wl${u}_vifs 2>/dev/null); do
+     VAC="$(wl -i $VIF assoclist 2>/dev/null | wc -l)"
+-    echo "     vif $VIF: up=$(ifconfig $VIF 2>/dev/null | grep -c UP) stations=${VAC:-0} ssid_len=$(nvram get ${VIF}_ssid 2>/dev/null | wc -c)"
++    # v1.3.10: tr -d newline before wc -c - nvram get appends one, so every
++    # VIF ssid_len read +1 (live report: 7 for a 6-char SSID, 33 for the
++    # 32-hex onboarding BSS). The primary-radio path was already exact.
++    echo "     vif $VIF: up=$(ifconfig $VIF 2>/dev/null | grep -c UP) stations=${VAC:-0} ssid_len=$(nvram get ${VIF}_ssid 2>/dev/null | tr -d "\n" | wc -c)"
+     wl -i $VIF assoclist 2>/dev/null | awk '{print $2}' | while read M; do
+       echo "     .. sta $M (on $VIF):"
+       wl -i $VIF sta_info "$M" 2>/dev/null | grep -E "rate of last|rssi|smoothed|PS :|idle|in network|flags|link bandwidth|tx pkts:|tx failures" | sed 's/^/        /'
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index 5f1d60611e..2be1521c51 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -199,7 +199,7 @@ function isSmartConnectSelifBand(band){
+ let scExcluded = 0;
+ function scExcludedCell(styleAttr){
+ 	scExcluded++;
+-	return `<td ${styleAttr} align="center" title="This band is not part of the Smart Connect group, so it has no steering rules to show. Its settings are not lost - add the band under Wireless &gt; General to edit them." style="cursor:help">- -</td>`;
++	return `<td ${styleAttr} align="center" title="This band is not part of the Smart Connect group, so it has no steering rules to show. Its settings are not lost - ${RP_SDN_MIGRATED ? 'band membership is managed on the Network page (open the main network and choose its Wi-Fi bands)' : 'add the band under Wireless &gt; General to edit them'}." style="cursor:help">- -</td>`;
+ }
+ 
+ /* Show the explanation under the tables only when something is actually hidden. */
+@@ -962,10 +962,30 @@ function isSmartConnectEnabled(){
+ 	return parseInt(variable['smart_connect_x']) > 0;
+ }
+ 
++/* reaper v2.9.4: once cfg_server has performed the SDN migration (main network
++   on the MAINFH subunit-1 profiles), band membership is owned by the Network
++   page and the classic smart_connect_x/selif pair no longer drives anything -
++   the old toggle set nvram, fired a bare restart_wireless, and the per-band
++   profiles came back unchanged: a dead switch (owner, metal, 2026-08-30).
++   Rewriting sdn_rl from this classic page is NOT attempted - mis-serializing it
++   takes down every SSID; the SDN app owns that write. Detect the state from
++   sdn_rl itself (enum/numeric fields only, no user text). */
++var RP_SDN_MIGRATED = `<% nvram_get("sdn_rl"); %>`.indexOf('MAINFH') >= 0;
++var RP_NETPAGE = '/reaper_shell.asp#SDN.asp';
++
+ function setupSmartConnectToggle(){
+ 	var btn = document.getElementById('smartConnectToggle');
+ 	if(!btn) return;
+ 
++	if(RP_SDN_MIGRATED){
++		/* not a dead switch, not a hand-forged sdn_rl: point at the owner */
++		btn.value = 'Manage on Network page';
++		btn.title = 'In this firmware state the main network\'s band membership is managed on the Network page - open the main network there and choose its Wi-Fi bands.';
++		var hintEl = document.getElementById('scWhereHint');
++		if(hintEl) hintEl.innerHTML = 'Choose which radios take part on the <b>Network</b> page &mdash; open the main network and pick its Wi-Fi bands.';
++		return;
++	}
++
+ 	if(isSmartConnectEnabled()){
+ 		btn.value = 'Disable Smart Connect';
+ 		btn.title = 'Turn off Smart Connect (band steering) for all radios';
+@@ -990,6 +1010,12 @@ function setupSmartConnectToggle(){
+ }
+ 
+ function toggleSmartConnect(){
++	if(RP_SDN_MIGRATED){
++		/* v2.9.4: the classic pair is inert here - go where the control lives */
++		top.location = RP_NETPAGE;
++		return;
++	}
++
+ 	var setObj = {};
+ 
+ 	if(isSmartConnectEnabled()){
+@@ -1083,7 +1109,7 @@ function toggleSmartConnect(){
+ 			     re-shown the moment the band is added back. Shown only when a column is
+ 			     actually suppressed - see genSmartConnectExcludedNote(). -->
+ 			<div id="sc_excluded_note" class="formfontdesc" style="display:none;line-height:18px;margin:10px 5px;padding:8px 10px;border:1px solid #6b8fa3;border-radius:4px;background:rgba(107,143,163,0.10);">
+-				<b>Some bands show &ldquo;- -&rdquo;.</b> Those radios are not part of the Smart Connect group, so there are no steering rules to display for them. Nothing has been lost &mdash; each band keeps its own policy and it reappears here as soon as the band is added back. Choose which radios take part under <b>Wireless &gt; General</b>.
++				<b>Some bands show &ldquo;- -&rdquo;.</b> Those radios are not part of the Smart Connect group, so there are no steering rules to display for them. Nothing has been lost &mdash; each band keeps its own policy and it reappears here as soon as the band is added back. <span id="scWhereHint">Choose which radios take part under <b>Wireless &gt; General</b>.</span>
+ 			</div>
+ 			<div id="bsd_steering_div">
+ 				<table cellspacing="0" cellpadding="4" bordercolor="#6b8fa3" border="1" align="center" width="100%" class="FormTable" style="margin-top:10px">
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 9fab94fb08..d79bfde85a 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=A senha do Wi-Fi foi alterada
+ RSEC_11=Alterar senha do Wi-Fi
+ RSEC_12=Este aviso nao pode ser fechado. Ele desaparece sozinho quando as duas forem alteradas.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index c563383180..90accc9fea 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi 密码已更改
+ RSEC_11=更改 Wi-Fi 密码
+ RSEC_12=此提示无法关闭。两项都更改后它会自动消失。
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 1096615d2b..5cfea6d445 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Heslo Wi-Fi bylo zmeneno
+ RSEC_11=Zmenit heslo Wi-Fi
+ RSEC_12=Toto upozorneni nelze zavrit. Zmizi samo, jakmile budou zmeneny obe polozky.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 50f95555b4..2ad8312593 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi-kodeordet er blevet aendret
+ RSEC_11=Skift Wi-Fi-kodeord
+ RSEC_12=Denne meddelelse kan ikke lukkes. Den forsvinder af sig selv, nar begge er aendret.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 95b3120d32..74ed529efe 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=WLAN-Passwort wurde geaendert
+ RSEC_11=WLAN-Passwort aendern
+ RSEC_12=Dieser Hinweis laesst sich nicht schliessen. Er verschwindet von selbst, sobald beide geaendert sind.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 89136c3e7c..ae19ed3a29 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi password has been changed
+ RSEC_11=Change Wi-Fi password
+ RSEC_12=This notice cannot be dismissed. It disappears on its own once both are changed.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index f714fb729f..98e9c9f430 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=La contrasena del Wi-Fi se ha cambiado
+ RSEC_11=Cambiar contrasena del Wi-Fi
+ RSEC_12=Este aviso no se puede cerrar. Desaparece solo cuando ambas se hayan cambiado.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 518255426f..df790d2a06 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi-salasana on vaihdettu
+ RSEC_11=Vaihda Wi-Fi-salasana
+ RSEC_12=Tata ilmoitusta ei voi sulkea. Se katoaa itsestaan, kun molemmat on vaihdettu.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e3bfa02962..3c53218c63 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Le mot de passe Wi-Fi a ete change
+ RSEC_11=Changer le mot de passe Wi-Fi
+ RSEC_12=Cet avis ne peut pas etre ferme. Il disparait de lui-meme une fois les deux changes.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index ac5eb4672d..9a0b5b4847 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=A Wi-Fi jelszo megvaltozott
+ RSEC_11=Wi-Fi jelszo modositasa
+ RSEC_12=Ez az ertesites nem zarhato be. Magatol eltunik, amint mindketto megvaltozott.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index ff3efe3156..4810ca6e02 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=La password del Wi-Fi e stata modificata
+ RSEC_11=Modifica password Wi-Fi
+ RSEC_12=Questo avviso non puo essere chiuso. Scompare da solo quando entrambe sono state modificate.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 8665386d35..8435ef0aa5 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi パスワードが変更されました
+ RSEC_11=Wi-Fi パスワードを変更
+ RSEC_12=この通知は閉じられません。両方を変更すると自動的に消えます。
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index baedd11909..6a9066ad95 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi 비밀번호가 변경되었습니다
+ RSEC_11=Wi-Fi 비밀번호 변경
+ RSEC_12=이 알림은 닫을 수 없습니다. 둘 다 변경하면 저절로 사라집니다.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 54e4b79ae5..ad1e476ca5 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Kata laluan Wi-Fi telah ditukar
+ RSEC_11=Tukar kata laluan Wi-Fi
+ RSEC_12=Notis ini tidak boleh ditutup. Ia hilang dengan sendirinya apabila kedua-duanya ditukar.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 53a3614302..e47a92708a 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -396,7 +396,7 @@ main{min-width:0}
+   <!-- LEFT RAIL (always expanded; menu mirrors the current firmware) -->
+   <aside class="rail">
+     <div class="railclock"><div class="rc-time" id="rc_time">--:--:--</div><div class="rc-date" id="rc_date">&mdash;</div></div>
+-    <script>(function(){var us="<% uptime(); %>";var nf=us.substring(8,11)+" "+us.substring(5,7)+" "+us.substring(17,25)+" "+us.substring(12,16);var b=Date.parse(nf);var et=document.getElementById('rc_time'),ed=document.getElementById('rc_date');if(!et||isNaN(b))return;var t0=Date.now();var DW=[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`],MO=[`<#Reaper_c_mon_0#>`,`<#Reaper_c_mon_1#>`,`<#Reaper_c_mon_2#>`,`<#Reaper_c_mon_3#>`,`<#Reaper_c_mon_4#>`,`<#Reaper_c_mon_5#>`,`<#Reaper_c_mon_6#>`,`<#Reaper_c_mon_7#>`,`<#Reaper_c_mon_8#>`,`<#Reaper_c_mon_9#>`,`<#Reaper_c_mon_10#>`,`<#Reaper_c_mon_11#>`];function p2(n){return(n<10?'0':'')+n;}function tk(){var d=new Date(b+(Date.now()-t0));et.innerHTML=p2(d.getHours())+':'+p2(d.getMinutes())+':<span class="rc-sec">'+p2(d.getSeconds())+'</span>';if(ed)ed.textContent=DW[d.getDay()]+' '+d.getDate()+' '+MO[d.getMonth()]+' '+d.getFullYear();}tk();setInterval(tk,1000);})();</script>
++    <script>var RP_CLK={seed:"<% uptime(); %>",dw:[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`],mo:[`<#Reaper_c_mon_0#>`,`<#Reaper_c_mon_1#>`,`<#Reaper_c_mon_2#>`,`<#Reaper_c_mon_3#>`,`<#Reaper_c_mon_4#>`,`<#Reaper_c_mon_5#>`,`<#Reaper_c_mon_6#>`,`<#Reaper_c_mon_7#>`,`<#Reaper_c_mon_8#>`,`<#Reaper_c_mon_9#>`,`<#Reaper_c_mon_10#>`,`<#Reaper_c_mon_11#>`]};</script><script src="/js/reaper_clock.js"></script>
+     <div class="raillang"><span class="raillbl"><#Reaper_c_language#>:</span><select class="raillangsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+ 
+     <div class="grp"><#menu5_1_1#></div>
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index d2cbe2ecbf..eb0258cd83 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi-wachtwoord is gewijzigd
+ RSEC_11=Wi-Fi-wachtwoord wijzigen
+ RSEC_12=Deze melding kan niet worden gesloten. Hij verdwijnt vanzelf zodra beide zijn gewijzigd.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index d88c9600b3..d608562639 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi-passordet er endret
+ RSEC_11=Endre Wi-Fi-passord
+ RSEC_12=Denne meldingen kan ikke lukkes. Den forsvinner av seg selv nar begge er endret.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 689b86f9ba..c95ff08190 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Haslo Wi-Fi zostalo zmienione
+ RSEC_11=Zmien haslo Wi-Fi
+ RSEC_12=Tego powiadomienia nie mozna zamknac. Znika samo, gdy oba zostana zmienione.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 9061cbc6e1..a2fbc51895 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Parola Wi-Fi a fost schimbata
+ RSEC_11=Schimba parola Wi-Fi
+ RSEC_12=Aceasta notificare nu poate fi inchisa. Dispare singura dupa ce amandoua au fost schimbate.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index cc12dd1277..abbd792e0f 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Пароль Wi-Fi изменен
+ RSEC_11=Изменить пароль Wi-Fi
+ RSEC_12=Это уведомление нельзя закрыть. Оно исчезнет само, когда оба будут изменены.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 429183ad88..06a7388193 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -216,8 +216,22 @@ function errText(j){ return (j && j.ek && DERR[j.ek]) || (j && j.error) || `<#RD
+ var PRODID = `<% nvram_get("productid"); %>`;
+ 
+ function expRows(){
++  /* v2.9.4 (owner decision 2026-08-30): an inventory that blanks the addresses an
++     operator assigned is the wrong answer, but a reservation must never be passed
++     off as a live lease - 'ip' keeps meaning "has this address right now", and the
++     reservation travels in its own columns. 'state' qualifies it so a broken pin
++     (orphan / duplicate) exports as flagged, not as fact, and an out-of-pool
++     reservation reads as deliberate rather than anomalous. Empty when no
++     reservation exists. All three formats inherit from this one function. */
+   return ((D && D.devices) ? D.devices : []).map(function(d){
+-    return { name: (d.name || d.host || ''), mac: (d.mac || ''), ip: (d.ip || '') };
++    var rstate = '';
++    if (d.resv) {
++      rstate = d.orphan ? 'orphan'
++             : d.dup    ? 'duplicate'
++             : d.resv_in_pool ? 'reserved' : 'reserved-out-of-pool';
++    }
++    return { name: (d.name || d.host || ''), mac: (d.mac || ''), ip: (d.ip || ''),
++             reserved_ip: (d.resv ? (d.resv_ip || '') : ''), state: rstate };
+   });
+ }
+ function csvCell(s){
+@@ -227,9 +241,10 @@ function csvCell(s){
+ function expBuild(fmt, rows, stamp){
+   var i, out;
+   if (fmt === 'csv') {
+-    out = 'name,mac,ip\r\n';
++    out = 'name,mac,ip,reserved_ip,state\r\n';
+     for (i = 0; i < rows.length; i++)
+-      out += csvCell(rows[i].name) + ',' + csvCell(rows[i].mac) + ',' + csvCell(rows[i].ip) + '\r\n';
++      out += csvCell(rows[i].name) + ',' + csvCell(rows[i].mac) + ',' + csvCell(rows[i].ip) + ',' +
++             csvCell(rows[i].reserved_ip) + ',' + csvCell(rows[i].state) + '\r\n';
+     return { text: out, mime: 'text/csv', ext: 'csv' };
+   }
+   if (fmt === 'json') {
+@@ -245,10 +260,11 @@ function expBuild(fmt, rows, stamp){
+         'th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#B7B1A4}' +
+         'td.m{font-family:ui-monospace,Consolas,monospace;font-size:11.5px}</style>' +
+         '<h1>' + esc(PRODID) + '</h1><p>' + esc(stamp) + ' &middot; ' + rows.length + '</p>' +
+-        '<table><thead><tr><th>Name</th><th>MAC</th><th>IP</th></tr></thead><tbody>';
++        '<table><thead><tr><th>Name</th><th>MAC</th><th>IP</th><th>Reserved IP</th><th>State</th></tr></thead><tbody>';
+   for (i = 0; i < rows.length; i++)
+     out += '<tr><td>' + esc(rows[i].name) + '</td><td class="m">' + esc(rows[i].mac) +
+-           '</td><td class="m">' + esc(rows[i].ip) + '</td></tr>';
++           '</td><td class="m">' + esc(rows[i].ip) + '</td><td class="m">' + esc(rows[i].reserved_ip) +
++           '</td><td>' + esc(rows[i].state) + '</td></tr>';
+   return { text: out + '</tbody></table>', mime: 'text/html', ext: 'html' };
+ }
+ function expGo(){
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index cc52e5d8be..e931bfc623 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -1228,6 +1228,9 @@ function loadStatus(){
+     g+=kvCount(`<#RFW_175#>`,f.nsvc);
+     g+=kvCount(`<#RFW_176#>`,f.nzone);
+     g+=kvCount(`<#RFW_177#>`,f.nzpol);
++    /* v2.9.4: forwards + Service Intercepts were live but invisible here */
++    g+=kvCount(`<#RFW_276#>`,f.nfwd);
++    g+=kvCount(`<#RFW_277#>`,f.nicpt);
+     g+=kvRow(`<#RFW_178#>`,f.fwconfirm>0?'on':'off',f.fwconfirm>0?(f.fwconfirm+'s'):OFF_T);
+     if(f.fwarmed)g+=kvRow(`<#RFW_179#>`,'on',ON_T);
+     if(f.fwerr)  g+=kvRow(`<#RFW_180#>`,'off',f.fwerr);
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 032f012b08..47d84385c7 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -258,6 +258,10 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+     <tbody id="ctbody"></tbody>
+   </table>
+   <div class="hint" style="margin-top:8px"><#RQOS_28#></div>
++  <!-- v2.9.4 (owner direction): how to READ the drops column. Encodes the
++       metal-validated rule of 2026-08-30 (441->1191 during two speed tests,
++       frozen at idle - predicted and confirmed). -->
++  <div class="hint" id="rqos_dropnote" style="margin-top:6px"><#RQOS_124#></div>
+   <!-- transferred-range rules are non-sticky (rule_gum=0) and match with
+        connbytes, so they re-evaluate per packet and cannot ride hardware flow
+        offload. Filled by rulesWarn() only when such a rule is actually present. -->
+diff --git a/release/src/router/www/Reaper_SecBanner.asp b/release/src/router/www/Reaper_SecBanner.asp
+index b53476b7da..36ef66ff75 100644
+--- a/release/src/router/www/Reaper_SecBanner.asp
++++ b/release/src/router/www/Reaper_SecBanner.asp
+@@ -28,7 +28,8 @@
+ 	pages. Telling an unauthenticated visitor or a quarantined guest that the router
+ 	still has factory credentials hands the fact to exactly the wrong person.
+ -->
+-<div id="rsec_state" data-pw="<% check_pw(); %>" data-wifi="<% reaper_wifi_default(); %>"></div>
++<div id="rsec_state" data-pw="<% check_pw(); %>" data-wifi="<% reaper_wifi_default(); %>" data-now="<% uptime(); %>"></div><!-- v2.9.4: data-now feeds js/reaper_clock.js re-sync; this fragment is
++     already fetched by every admin page and served no-cache. -->
+ 
+ <div id="rsec_i18n" style="display:none">
+ 	<span id="rsec_t_head_both"><#RSEC_1#></span>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 57b9bd8d7e..a870f12b9c 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Geslo za Wi-Fi je bilo spremenjeno
+ RSEC_11=Spremeni geslo za Wi-Fi
+ RSEC_12=Tega obvestila ni mogoce zapreti. Izgine samo, ko sta oboje spremenjena.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index a25544c841..6ff1f391f4 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi-losenordet har andrats
+ RSEC_11=Andra Wi-Fi-losenord
+ RSEC_12=Det har meddelandet gar inte att stanga. Det forsvinner av sig sjalvt nar bada har andrats.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 7b3ede56fe..c298c13486 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=เปลี่ยนรหัสผ่าน Wi-Fi แล้ว
+ RSEC_11=เปลี่ยนรหัสผ่าน Wi-Fi
+ RSEC_12=ประกาศนี้ไม่สามารถปิดได้ จะหายไปเองเมื่อเปลี่ยนทั้งสองอย่างแล้ว
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 8d7934240f..d802438dea 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi parolasi degistirildi
+ RSEC_11=Wi-Fi parolasini degistir
+ RSEC_12=Bu bildirim kapatilamaz. Ikisi de degistirildiginde kendiliginden kaybolur.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 2e1b559701..9a1b11557a 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Wi-Fi 密碼已變更
+ RSEC_11=變更 Wi-Fi 密碼
+ RSEC_12=此提示無法關閉。兩項都變更後它會自動消失。
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 5460627481..790c3466e2 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6779,3 +6779,6 @@ RSEC_10=Пароль Wi-Fi змінено
+ RSEC_11=Змінити пароль Wi-Fi
+ RSEC_12=Це сповіщення неможливо закрити. Воно зникне саме, коли обидва буде змінено.
+ RGK_61=h
++RFW_276=Port forwards
++RFW_277=Service intercepts
++RQOS_124=Drop counters are cumulative since the last QoS restart and normally grow only while a class is saturated &mdash; a speed test is the usual cause. Counters that climb while the link is idle, or while a class sits well below its ceiling, indicate a real problem.
+diff --git a/release/src/router/www/js/reaper_clock.js b/release/src/router/www/js/reaper_clock.js
+new file mode 100644
+index 0000000000..417f4d568f
+--- /dev/null
++++ b/release/src/router/www/js/reaper_clock.js
+@@ -0,0 +1,59 @@
++/* reaper v2.9.4: the nav-rail clock, with re-sync.
++ *
++ * The old per-page inline script seeded its base ONCE from <% uptime(); %> at
++ * render and extrapolated forever. This board has no battery RTC, so every boot
++ * and every NTP correction is a clock STEP (observed on metal 2026-08-30: a ~4 h
++ * jump mid-syslog) - a shell tab left open across one showed the wrong time
++ * until reloaded. The two page copies were also byte-identical twins destined
++ * to drift apart; the logic now lives here once.
++ *
++ * Contract: the page defines window.RP_CLK = { seed, dw[7], mo[12] } BEFORE
++ * loading this file (seed = <% uptime(); %>; dw/mo carry the page's translated
++ * day/month names - dict tokens stay in the .asp, this file is deliberately
++ * token-free). Re-sync fetches /Reaper_SecBanner.asp - a request the banner
++ * loader already makes on every admin page - and reads its data-now attribute.
++ * Rule-34 shape: one guarded completion; any failure leaves the clock ticking
++ * on its current base. Corrections under 2 s are ignored (jitter), larger ones
++ * snap (the NTP-step case this exists for). */
++(function(){
++	var C = window.RP_CLK;
++	if (!C || !C.seed || !C.dw || !C.mo) return;
++	var et = document.getElementById('rc_time'), ed = document.getElementById('rc_date');
++	if (!et) return;
++
++	function parse(us){
++		if (!us || us.length < 25) return NaN;
++		return Date.parse(us.substring(8,11)+" "+us.substring(5,7)+" "+us.substring(17,25)+" "+us.substring(12,16));
++	}
++	var b = parse(C.seed), t0 = Date.now();
++	if (isNaN(b)) return;
++
++	function p2(n){ return (n<10?'0':'')+n; }
++	function tk(){
++		var d = new Date(b + (Date.now()-t0));
++		et.innerHTML = p2(d.getHours())+':'+p2(d.getMinutes())+':<span class="rc-sec">'+p2(d.getSeconds())+'</span>';
++		if (ed) ed.textContent = C.dw[d.getDay()]+' '+d.getDate()+' '+C.mo[d.getMonth()]+' '+d.getFullYear();
++	}
++	function resync(){
++		try{
++			var x = new XMLHttpRequest(), done = false;
++			x.open('GET','/Reaper_SecBanner.asp?_='+Date.now(), true);
++			x.timeout = 10000;
++			x.onreadystatechange = function(){
++				if (done || x.readyState !== 4 || x.status !== 200) return;
++				done = true;
++				var m = /data-now="([^"]*)"/.exec(x.responseText || '');
++				if (!m) return;
++				var nb = parse(m[1]);
++				if (isNaN(nb)) return;
++				var drift = nb - (b + (Date.now()-t0));
++				if (drift > 2000 || drift < -2000){ b = nb; t0 = Date.now(); tk(); }
++			};
++			x.send();
++		}catch(e){}
++	}
++	tk();
++	setInterval(tk, 1000);
++	setInterval(resync, 300000);
++	document.addEventListener('visibilitychange', function(){ if (!document.hidden) resync(); });
++})();
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index ec95a2a997..95d8faff1c 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -221,7 +221,7 @@ a.item.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;
+   </header>
+   <aside class="rail" id="rail">
+     <div class="railclock"><div class="rc-time" id="rc_time">--:--:--</div><div class="rc-date" id="rc_date">&mdash;</div></div>
+-    <script>(function(){var us="<% uptime(); %>";var nf=us.substring(8,11)+" "+us.substring(5,7)+" "+us.substring(17,25)+" "+us.substring(12,16);var b=Date.parse(nf);var et=document.getElementById('rc_time'),ed=document.getElementById('rc_date');if(!et||isNaN(b))return;var t0=Date.now();var DW=[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`],MO=[`<#Reaper_c_mon_0#>`,`<#Reaper_c_mon_1#>`,`<#Reaper_c_mon_2#>`,`<#Reaper_c_mon_3#>`,`<#Reaper_c_mon_4#>`,`<#Reaper_c_mon_5#>`,`<#Reaper_c_mon_6#>`,`<#Reaper_c_mon_7#>`,`<#Reaper_c_mon_8#>`,`<#Reaper_c_mon_9#>`,`<#Reaper_c_mon_10#>`,`<#Reaper_c_mon_11#>`];function p2(n){return(n<10?'0':'')+n;}function tk(){var d=new Date(b+(Date.now()-t0));et.innerHTML=p2(d.getHours())+':'+p2(d.getMinutes())+':<span class="rc-sec">'+p2(d.getSeconds())+'</span>';if(ed)ed.textContent=DW[d.getDay()]+' '+d.getDate()+' '+MO[d.getMonth()]+' '+d.getFullYear();}tk();setInterval(tk,1000);})();</script>
++    <script>var RP_CLK={seed:"<% uptime(); %>",dw:[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`],mo:[`<#Reaper_c_mon_0#>`,`<#Reaper_c_mon_1#>`,`<#Reaper_c_mon_2#>`,`<#Reaper_c_mon_3#>`,`<#Reaper_c_mon_4#>`,`<#Reaper_c_mon_5#>`,`<#Reaper_c_mon_6#>`,`<#Reaper_c_mon_7#>`,`<#Reaper_c_mon_8#>`,`<#Reaper_c_mon_9#>`,`<#Reaper_c_mon_10#>`,`<#Reaper_c_mon_11#>`]};</script><script src="/js/reaper_clock.js"></script>
+     <div class="raillang"><span class="raillbl"><#Reaper_c_language#>:</span><select class="raillangsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+     <a class="railabout" href="/reaper_shell.asp#Reaper_About.asp" title="<#RABT_00#>">
+       <span class="sig"><svg viewBox="0 0 64 64" aria-hidden="true">
+-- 
+2.25.1
+

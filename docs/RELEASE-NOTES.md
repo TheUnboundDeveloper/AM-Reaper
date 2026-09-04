@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.0.0** · 2026-08-31 <!--@stamp-->
+> **Doc status:** current as of **v3.0.7** · 2026-09-03 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.0.0** <!--@treever--> — `3006.102.8_Reaper_v2.8.8`, built on RT-BE96U. The line since v2.7.1 adds, in order: **v2.7.2** (Traffic Analyzer history survives a firmware update; a one-file `.rbk` full backup/restore); **v2.7.3** (Gatekeeper learns AiMesh exists, so default-deny no longer blocks node onboarding/heartbeats; the owner's guide surfaced from every page; themed dialogs; manifest signing built then shelved inert); **v2.7.4** (drop the first-boot gate that flashed "Secure Your Router" on boxes with no guest network); **v2.7.5** (one dedicated Addons rail section); **v2.7.6** (Policy Routing's mark chain comes up complete after a reboot with no UI Apply; the Warden status page never fails silently; firewall-lock re-apply; owner-aware PBR teardown); **v2.7.7** (AdGuard removed everywhere; the update check runs again; the six field defects in Policy Routing; the translation pass completed); **v2.7.8** (UPnP's two enable keys kept in sync, so mappings are listed and actually forwarded; Warden threat-set occupancy surfaced and a slow custom feed can no longer eat the update window; the QoS page's live stats arrive again; the Gatekeeper poll stops shutting an open access-level menu); **v2.7.9** (a six-agent audit of the Reaper-authored surface — 2 Critical and 8 High, including the firewall master switch that re-applied the ruleset it was asked to remove, and the one-click self-block lockout; the dashboard core count read from the device instead of a hardcoded 4-core BCM4916); **v2.8.3** (the same audit's 17 Medium and 14 Low remainder, plus the Warden migration that was destroying lists and the LAN anti-lockout rule built from an empty variable); **v2.8.4** (the Warden page could not save at all — its lists were posted in a packaging format the web server does not parse, so every save arrived empty and was refused as untrusted; a refused request now also names which of the three refusals it was). The series stands at **563 patches** (0518–0528 for v2.7.3, 0529–0535 for v2.7.4–v2.7.6, 0536–0541 for v2.7.7, 0542–0550 for v2.7.8, 0551–0552 for v2.7.9, 0553 for v2.8.3, 0554 for v2.8.4, 0555–0556 for v2.8.5a–v2.8.6, 0557–0561 for v2.8.7, 0562–0563 for v2.8.8). |
+| **Current rung** | **v3.0.7** <!--@treever--> — `3006.102.8_Reaper_v3.0.7`, built on RT-BE96U. The fleet rung for the 3.0.x window: **v3.0.0** (Backup & Restore rebuilt into one page you can trust, first boot finished without a wizard, the upstream 3006.102.9 security pull-forwards, and the whole window behind a regression gate); **v3.0.1** (Policy Routing was failing open on every boot and WAN re-dial, and its self-heal had never run); **v3.0.3 / v3.0.4** (the speed test's half-enabled feature and socket ceiling, the self-heals held off until the box has finished booting, and an OpenSSL 3.5 migration withdrawn); **v3.0.5** (Policy Routing's Apply, Keep and Revert tell the truth, the speed test says why it failed, Warden's resolver carve-out and the diagnostics' servers-file fix); **v3.0.6** (the full backup carries `/jffs`, the settings export embeds the router `.CFG`, two panels instead of four). The series stands at **602 patches** (0564–0593 for v3.0.0, 0594–0602 for v3.0.1–v3.0.7). |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
@@ -19,6 +19,40 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.0.7 — the 3.0.x window on every model
+
+*Built on RT-BE96U. Cut as patches 0594–0602, bringing the series to 602. This is the fleet rung: the
+RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and RT-BE92U take everything since v3.0.0 from the series.*
+
+**Policy Routing keeps its word.** Two boot-time defects are gone: the mark chain no longer fails open
+on every boot and WAN re-dial (an upstream routine flushes the whole IPv4 rule table on `wan_up`, and
+Reaper's rules now re-assert after it), and the self-heal that was meant to catch exactly that had
+never run at all, because it invoked its applet in a form `rc` silently ignores.
+On the page, Apply, Keep and Revert now report what actually happened: the poll waits for the real
+window, a revert that fails says so, and a confirm that could not save everything says which half
+it saved.
+
+**The speed test says why it failed.** The engine's own output is kept for every run and a failed
+run's output is kept aside until the next failure, the page names the failure instead of collapsing
+four causes into one sentence, and when the Hardware QoS shaper is the ceiling for a WAN test the page
+says so. The diagnostics report (`reaper_diag` v1.3.13) shows the offload state and the last run's
+messages, and reads the dnsmasq servers file in its real `server=` form, so it stops reporting a
+resolver that is forwarding as one that is not.
+
+**The self-heals wait for the box to finish booting.** The revived watchdog jobs hold off for the
+first five minutes of uptime so they never fight the boot. In the same rung an OpenSSL 3.5 migration
+was withdrawn: it built clean and passed the gate, but the access-point daemon this platform ships
+prebuilt needs symbols the compatibility shim did not export, and 6 GHz Wi-Fi went down with it. The
+gate now checks that every binary linking OpenSSL can resolve the symbols it imports, so that class
+of defect cannot pass again.
+
+**One backup that really is everything.** The `.rbk` full backup now carries the whole `/jffs`
+partition — addon scripts, certificates, every Reaper data store — and a restore that has it replaces
+`/jffs` the way the stock JFFS restore did, with nothing to click after the reboot. The settings
+export embeds the router's own `.CFG`, so importing it on the same model restores the router settings
+too. The Backup & Restore page is two panels instead of four.
+
 
 ## What's new in v2.8.3 — Warden lists survive the move to flash, and the LAN shield is whole again
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """reaper_static_checks.py <router-src-dir>
 
-Build gate: five static checks over the Reaper SOURCE tree (release/src/router),
+Build gate: eight static checks over the Reaper SOURCE tree (release/src/router),
 promoting the ad-hoc checks the team runs by hand into one reaper_verify gate.
 The argument is release/src/router; www is <arg>/www and the inject file is
 <arg>/httpd/reaper_inject.c. Runs on SOURCE (real dict tokens, un-minified .asp),
@@ -10,8 +10,34 @@ never the staged fs.
 Exit 0 = every check passed, 1 = one or more failed, 2 = bad usage.
 Prints one summary line per check and a final tally.
 
-The five checks
-  1. dict-lockstep      Every <www>/*.dict EXCEPT temp.dict has an identical line
+The eight checks
+  8. pbr-fwmark-regex   The `fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000` rule-form regex
+                        is one literal that lives at FIVE consumer sites
+                        (reaper_pbr.c x3 teardown/expect, rwatch.c heal count,
+                        reaper_diag live count) and must stay byte-identical;
+                        and the PRODUCER (`fwmark 0x%X0000/$MASK`, PPBR_MASK)
+                        must render a string every one of them matches, in
+                        both the written and the iproute2-printed mask form.
+                        Change the mask nibble and every consumer silently
+                        counts 0 with a green build.
+  6. pbr-reassert       Every add_multi_routes() CALL in rc/*.c is followed by a
+                        reaper_pbr_reassert() within REASSERT_LOOKAHEAD lines.
+                        That blob opens with an unconditional IPv4 `ip rule
+                        flush`; without the re-assert policy routing is left
+                        FAIL-OPEN (marks set, no rule to select on, traffic
+                        pinned to a tunnel egresses the WAN). A C call site
+                        leaves no string in the binary, so verify_markers.txt
+                        cannot express this. vpnc.c/vpnc_legacy.c are excluded:
+                        their call sites are compiled out on CONFIG_BCMWL5.
+  7. warden-log-prefix  Every --log-prefix rwarden.c emits is accepted by
+                        fw_line_is_fwlog() in httpd/web.c (the sole filter on the
+                        GUI drops viewer) and is known to others/reaper_diag.
+                        A producer/consumer contract across files: both halves
+                        stay valid C when it breaks, so the build stays green.
+                        This is the shape that hid the v2.4.2 outbound-logging
+                        regression until 2026-09-01.
+
+  1. dict-lockstep     Every <www>/*.dict EXCEPT temp.dict has an identical line
                         count (the `wc -l *.dict | sort -u` check). Fail names the
                         outliers and their counts.
   2. www-ascii          The Reaper-authored www pages must be ASCII-only: the
@@ -318,6 +344,201 @@ def check_macro_continuation(inject_c):
 
 
 # ---------------------------------------------------------------------------
+# 6. pbr-reassert: every add_multi_routes() CALL must be followed by a
+#    reaper_pbr_reassert(). A C call site leaves no string in the binary, so
+#    verify_markers.txt structurally cannot express this - it has to be here.
+# ---------------------------------------------------------------------------
+# add_multi_routes() is the closed ASUS blob that opens with an unconditional
+# IPv4 `ip rule flush`. That wipes Reaper's whole 9000-9115 policy-routing band
+# while leaving the REAPER_PBR mangle chain intact, so the marks keep being set
+# with no rule left to select on and IPv4 traffic pinned to a tunnel egresses the
+# WAN in the clear (a BLOCK rule, realised solely as `prohibit`, stops blocking).
+# Upstream re-asserts its own killswitch after every call for the same reason.
+# Look-ahead is generous because the wan_up() site carries a long comment.
+REASSERT_LOOKAHEAD = 25
+# vpnc.c / vpnc_legacy.c call it inside `#if !defined(CONFIG_BCMWL5) &&
+# defined(RTCONFIG_DUALWAN)`. CONFIG_BCMWL5 is defined on every model this tree
+# builds, so those two are compiled OUT and are deliberately not required to
+# re-assert. If a model ever builds without CONFIG_BCMWL5, drop this exclusion.
+REASSERT_EXCLUDED = ("vpnc.c", "vpnc_legacy.c")
+
+
+def _is_comment_line(line):
+    s = line.strip()
+    return s.startswith("/*") or s.startswith("*") or s.startswith("//")
+
+
+def check_pbr_reassert(router):
+    rc_dir = os.path.join(router, "rc")
+    if not os.path.isdir(rc_dir):
+        return (True, "rc/ not present -- skipped", [])
+    call_re = re.compile(r"\badd_multi_routes\s*\(")
+    def_re = re.compile(r"^\s*(?:static\s+)?(?:int|void)\s+add_multi_routes\s*\(")
+    details = []
+    nchecked = 0
+    nexcluded = 0
+    for fn in sorted(os.listdir(rc_dir)):
+        if not fn.endswith(".c"):
+            continue
+        path = os.path.join(rc_dir, fn)
+        try:
+            lines = open(path, "r", encoding="utf-8", errors="replace").read().split("\n")
+        except OSError:
+            continue
+        for i, line in enumerate(lines):
+            if not call_re.search(line):
+                continue
+            if def_re.match(line) or _is_comment_line(line):
+                continue
+            if fn in REASSERT_EXCLUDED:
+                nexcluded += 1
+                continue
+            nchecked += 1
+            window = "\n".join(lines[i:i + REASSERT_LOOKAHEAD])
+            if "reaper_pbr_reassert()" not in window:
+                details.append("%s:%d add_multi_routes() call with no "
+                               "reaper_pbr_reassert() within %d lines -- the ip "
+                               "rule flush would leave policy routing FAIL-OPEN"
+                               % (fn, i + 1, REASSERT_LOOKAHEAD))
+    if details:
+        return (False, "%d unguarded add_multi_routes() call site(s)" % len(details), details)
+    if nchecked == 0:
+        # the call sites moving wholesale is itself a change worth stopping on
+        return (False, "no add_multi_routes() call sites found -- check moved or "
+                       "renamed; re-verify the flush is still guarded", [])
+    return (True, "%d add_multi_routes() call site(s) re-assert PBR (%d compiled-out "
+                  "site(s) excluded)" % (nchecked, nexcluded), [])
+
+
+# ---------------------------------------------------------------------------
+# 7. warden-log-prefix: every LOG prefix rwarden.c emits must be accepted by the
+#    GUI drops viewer's filter in web.c, and known to the diagnostics report.
+# ---------------------------------------------------------------------------
+# A producer/consumer contract across two files: each half is individually
+# correct C, so a green build and a clean marker pass are both blind to a break.
+# This is the class that hid the v2.4.2 regression for six months of rungs --
+# fw_line_is_fwlog() tested for "REAPER-WARDEN " WITH a trailing space, which can
+# never match "REAPER-WARDEN-OUT " (the next character is '-'), so every outbound
+# Warden block was discarded server-side and the page looked like outbound
+# logging had been turned off.
+def check_warden_log_prefixes(router):
+    rwarden = os.path.join(router, "rc", "rwarden.c")
+    web_c = os.path.join(router, "httpd", "web.c")
+    diag = os.path.join(router, "others", "reaper_diag")
+    if not os.path.isfile(rwarden) or not os.path.isfile(web_c):
+        return (True, "rwarden.c or web.c not present -- skipped", [])
+
+    src = open(rwarden, "r", encoding="utf-8", errors="replace").read()
+    # fprintf writes them escaped:  --log-prefix \"REAPER-WARDEN-OUT \"
+    prefixes = sorted(set(re.findall(r'--log-prefix\s+\\"([A-Z0-9][A-Z0-9-]*)\s+\\"', src)))
+    if not prefixes:
+        return (False, "no --log-prefix emissions found in rwarden.c -- the "
+                       "extraction pattern no longer matches; fix this check "
+                       "before trusting it", [])
+
+    web = open(web_c, "r", encoding="utf-8", errors="replace").read()
+    m = re.search(r"fw_line_is_fwlog\s*\([^)]*\)\s*\{(.*?)\n\}", web, re.S)
+    if not m:
+        return (False, "could not locate fw_line_is_fwlog() in web.c -- fix this "
+                       "check before trusting it", [])
+    accepted = re.findall(r'strstr\s*\(\s*k\s*,\s*"([^"]+)"\s*\)', m.group(1))
+    if not accepted:
+        return (False, "fw_line_is_fwlog() exposes no strstr literals -- fix this "
+                       "check before trusting it", [])
+
+    diag_src = ""
+    if os.path.isfile(diag):
+        diag_src = open(diag, "r", encoding="utf-8", errors="replace").read()
+
+    details = []
+    for p in prefixes:
+        emitted = p + " "          # the literal that reaches syslog
+        if not any(emitted.startswith(lit) for lit in accepted):
+            details.append('web.c fw_line_is_fwlog() drops "%s": no strstr literal '
+                           "is a prefix of it, so the drops viewer discards every "
+                           "one of these lines" % emitted)
+        if diag_src and p not in diag_src:
+            details.append('others/reaper_diag does not mention "%s" -- the '
+                           "sanitized report will not count these blocks" % p)
+    if details:
+        return (False, "%d Warden LOG prefix contract break(s)" % len(details), details)
+    return (True, "all %d Warden LOG prefix(es) accepted by the drops viewer%s"
+                  % (len(prefixes), " and the diag report" if diag_src else ""), [])
+
+
+# ---------------------------------------------------------------------------
+# 8. pbr-fwmark-regex: the rule-form regex is a producer/consumer contract
+#    across three files. reaper_pbr.c WRITES `fwmark 0x<code>0000/$MASK`, and
+#    the same file (teardown + expect_rules), rwatch.c (the ip-rule heal's live
+#    count) and others/reaper_diag (the FINDINGS live count) all READ it back
+#    with one grep -E literal. iproute2 prints the mask with leading zeros
+#    stripped (0xf0000, not 0x000F0000), which is why the literal carries
+#    `0x0*[fF]0000`. If the literal drifts at one site, or the mask nibble
+#    moves, that site counts 0 on a healthy box: the heal re-runs forever or the
+#    diag WARNs about a fail-open that is not there - with a green build.
+# ---------------------------------------------------------------------------
+FWMARK_SITES = (("rc/reaper_pbr.c", 3), ("rc/rwatch.c", 1), ("others/reaper_diag", 1))
+FWMARK_LITERAL_RE = re.compile(r"fwmark 0x\[[^\]]+\]\+/0x[0-9A-Fa-f*\[\]]+")
+PPBR_MASK_RE = re.compile(r'#define\s+PPBR_MASK\s+"(0x[0-9A-Fa-f]+)"')
+
+
+def check_pbr_fwmark_regex(router):
+    details = []
+    found = {}
+    for rel, minc in FWMARK_SITES:
+        path = os.path.join(router, rel)
+        if not os.path.isfile(path):
+            return (True, "%s not present -- skipped" % rel, [])
+        src = open(path, "r", encoding="utf-8", errors="replace").read()
+        lits = FWMARK_LITERAL_RE.findall(src)
+        if len(lits) < minc:
+            details.append("%s: %d fwmark rule-form literal(s), expected >= %d -- a "
+                           "consumer site moved or was rewritten" % (rel, len(lits), minc))
+        for l in lits:
+            found.setdefault(l, []).append(rel)
+    if len(found) > 1:
+        details.append("the literal differs between sites: %s" %
+                       "; ".join("%r in %s" % (k, ",".join(sorted(set(v)))) for k, v in found.items()))
+    if details:
+        return (False, "fwmark rule-form regex contract broken", details)
+    if not found:
+        return (False, "no fwmark rule-form literal found anywhere -- check moved or renamed", [])
+    literal = next(iter(found))
+    try:
+        rx = re.compile(literal)
+    except re.error as e:
+        return (False, "the literal is not a valid regex: %s" % e, [literal])
+    pbr = open(os.path.join(router, "rc/reaper_pbr.c"), "r", encoding="utf-8", errors="replace").read()
+    m = PPBR_MASK_RE.search(pbr)
+    if not m:
+        return (False, "PPBR_MASK define not found in rc/reaper_pbr.c", [])
+    mask = m.group(1)
+    if "fwmark 0x%X0000/$MASK" not in pbr:
+        return (False, "producer format `fwmark 0x%X0000/$MASK` not found in rc/reaper_pbr.c", [])
+    # the producer format hardcodes the code into bits 16-19 (`0x%X0000`), so
+    # the mask MUST be exactly those bits - a moved nibble is a silent miss at
+    # every consumer, and the regex alone cannot see it (it is unanchored, so
+    # `0x0*[fF]0000` happily matches a PREFIX of 0x00F00000; proven 2026-09-02)
+    if int(mask, 16) != 0xF0000:
+        return (False, "PPBR_MASK is %s but the producer writes the code at bits 16-19 "
+                       "(0xF0000) -- every consumer would count 0" % mask, [])
+    # what the producer writes, and what `ip rule show` prints back (mask with
+    # leading zeros stripped); every consumer must match both WHOLE, for the
+    # lowest and highest rule codes
+    printed = "0x" + (mask[2:].lstrip("0") or "0")
+    for code in (1, 0xF):
+        for mk in (mask, printed):
+            sample = "fwmark 0x%X0000/%s" % (code, mk)
+            if not rx.fullmatch(sample):
+                details.append("consumer regex %r does not match producer form %r in full" % (literal, sample))
+    if details:
+        return (False, "fwmark producer/consumer mismatch", details)
+    nsites = sum(len(v) for v in found.values())
+    return (True, "one fwmark rule-form literal at %d site(s) in %d file(s); producer "
+                  "(mask %s) matches in both forms" % (nsites, len(FWMARK_SITES), mask), [])
+
+
+# ---------------------------------------------------------------------------
 def main(argv):
     if len(argv) != 2:
         sys.stderr.write("usage: reaper_static_checks.py <router-src-dir>\n")
@@ -341,6 +562,9 @@ def main(argv):
         ("control-bytes",      check_control_bytes(www, our)),
         ("js-brace-parity",    check_js_parity(www, our)),
         ("macro-continuation", check_macro_continuation(inject_c)),
+        ("pbr-reassert",       check_pbr_reassert(router)),
+        ("warden-log-prefix",  check_warden_log_prefixes(router)),
+        ("pbr-fwmark-regex",   check_pbr_fwmark_regex(router)),
     ]
 
     npass = 0

@@ -1,0 +1,153 @@
+From 1c8d24b088f19a0d4031c44376d51585cb5fb218 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 1 Sep 2026 18:59:05 -0400
+Subject: [PATCH] v3.0.3: speed test - fix the half-enabled feature, lift the
+ socket ceiling, and say when the flow accelerator is off
+
+Field reports: the Internet speed test fails, and syslog shows "sched: RT
+throttling activated". Those turned out to be two unrelated things.
+
+The RT throttling is NOT the speed test. Ookla runs as an ordinary SCHED_OTHER
+task - there is no chrt/taskset/nice/sched_setscheduler anywhere near its launch
+(swept httpd/*.c and rc/*.c) - and the firmware never writes sched_rt_runtime_us,
+so the kernel default 95% budget applies. The message is the kernel throttling
+Broadcom's RT packet threads, and NOHZ local_softirq_pending 04 (bit 2, NET_TX)
+says the same thing from the other side. Both are symptoms of moving packets.
+Deliberately NOT touched: raising or disabling sched_rt_runtime_us would let RT
+threads monopolise a core and can starve userspace including the watchdog.
+
+1. The feature was half-enabled. config_base had RTCONFIG_OOKLA unset, yet the
+   CGI handlers are compiled into httpd, the page ships, it is in menuTree, and
+   the static engine installs - it worked only because those handlers happen to
+   sit outside the #ifdef. But add_rc_support("ookla") (rc/init.c:23644) is
+   INSIDE it, so the UI was never told the capability exists. Now set, so the
+   stated configuration and the shipped contents agree.
+
+2. Socket-buffer ceilings raised. net.core.rmem_max/wmem_max cap any socket that
+   calls setsockopt(SO_RCVBUF/SO_SNDBUF) - exactly what a throughput tool does.
+   At the stock 212992 a single stream over a 20 ms path tops out near
+   85 Mbit/s, a hard ceiling no other tuning lifts. Raised to 16 MB (ceilings,
+   not allocations) plus netdev_max_backlog 4096.
+
+   NOTE the block directly below, ASUS's own "Tweak NAT performance", is left
+   commented out ON PURPOSE. It pins tcp_rmem/tcp_wmem max to 262144, far BELOW
+   the kernel's ~6 MB autotuned default; uncommenting it verbatim would make a
+   multi-gigabit WAN slower. TCP autotuning is left alone.
+
+3. The diagnostics report now says when forwarded traffic is NOT on the hardware
+   fast path, which is the real answer to "why can't my wired client reach line
+   rate". Acceleration is on by default (fc_disable=0, runner_disable=0) and
+   Reaper's Hardware QoS is explicitly exempted from disabling it (qos.c:3179),
+   but TRADITIONAL QoS (qos_type=1) uses tc/HTB and takes the accelerator down -
+   capping a wired client at CPU forwarding speed however fast its NIC is.
+   Nothing surfaced that. New FINDINGS cover fc_disable, runner_disable, the
+   Traditional-QoS trap, and the WireGuard blog-skip list. REAPER-DIAG v1.3.12.
+
+NOT fixed here, and honest about it: the built-in test terminates ON the router,
+so it bypasses the flow accelerator and the CPU does all the TCP plus TLS. It
+cannot reach 10 Gbps at any tuning. A 10 Gbps figure has to be measured THROUGH
+the router by a client fast enough to terminate it (or several summed) - that
+path is forwarded, accelerated, and is what the hardware is for. Triage and the
+full reasoning: plans/speedtest-triage-2026-09-01/TRIAGE.md.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+(cherry picked from commit 928ff46278ce78113c55986e7903e70394acbf7a)
+
+# Conflicts:
+#	release/src-rt/version.conf
+---
+ release/src-rt/version.conf           |  2 +-
+ release/src/router/config_base        |  2 +-
+ release/src/router/others/reaper_diag |  9 ++++++++-
+ release/src/router/rc/firewall.c      | 23 +++++++++++++++++++++++
+ 4 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index ad718cb053..c915f344e3 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v3.0.1
++EXTENDNO=Reaper_v3.0.4
+ 
+ RCNO=0
+diff --git a/release/src/router/config_base b/release/src/router/config_base
+index 44a9605b20..4c8b7daf15 100644
+--- a/release/src/router/config_base
++++ b/release/src/router/config_base
+@@ -641,7 +641,7 @@ RTCONFIG_FRS_LIVE_UPDATE=y
+ # RTCONFIG_BROOP_LED is not set
+ # RTCONFIG_GN_WBL is not set
+ # RTCONFIG_AMAZON_WSS is not set
+-# RTCONFIG_OOKLA is not set
++RTCONFIG_OOKLA=y
+ # RTCONFIG_OOKLA_LITE is not set
+ # RTCONFIG_ETH_MONITOR is not set
+ # RTCONFIG_QCA_MCSD is not set
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 5598080a66..fc8fbaa973 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.11"
++VER="REAPER-DIAG v1.3.12"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -616,6 +616,13 @@ _wdir="$(nvram get rwarden_dir 2>/dev/null)"
+ [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && { [ "$_wdir" = both ] || [ "$_wdir" = out ]; } && ! iptables -nL RW_ODROP >/dev/null 2>&1 && finding WARN "Warden outbound enforcement is configured (rwarden_dir=$_wdir) but the RW_ODROP chain is absent - outbound blocks are neither dropped nor logged (see 14)"
+ [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && [ "$(nvram get rwarden_log 2>/dev/null)" = 1 ] && iptables -nL RW_ODROP >/dev/null 2>&1 && [ "$(iptables -S RW_ODROP 2>/dev/null | grep -c 'j LOG')" = 0 ] && finding WARN "Warden logging is on and the outbound chain exists, but RW_ODROP carries no LOG rule - outbound blocks are dropped silently (see 14)"
+ [ "$(nvram get rwatch_enable 2>/dev/null)" = 1 ] && [ "$(cru l 2>/dev/null | grep -c '#rwatch#')" = 0 ] && finding WARN "rwatch enabled but its cron line is missing"
++_qt="$(nvram get qos_type 2>/dev/null)"; _qe="$(nvram get qos_enable 2>/dev/null)"
++_fcd="$(nvram get fc_disable 2>/dev/null)"; _rnd="$(nvram get runner_disable 2>/dev/null)"
++echo "  flow accel        : fc_disable=${_fcd:-unset} runner_disable=${_rnd:-unset} qos_enable=${_qe:-unset} qos_type=${_qt:-unset}"
++[ "$_fcd" = 1 ] && finding WARN "the Broadcom flow accelerator is DISABLED (fc_disable=1) - forwarded traffic is handled by the CPU, which caps throughput well below line rate"
++[ "$_rnd" = 1 ] && finding WARN "the Runner is DISABLED (runner_disable=1) - forwarded traffic is handled by the CPU, which caps throughput well below line rate"
++[ "$_qe" = 1 ] && [ "$_qt" = 1 ] && finding WARN "QoS is enabled in TRADITIONAL mode (qos_type=1), which turns the flow accelerator off - a wired client cannot reach multi-gigabit in this mode; Hardware QoS (qos_type 10/11) keeps acceleration on"
++[ -r /proc/blog/skip_wireguard_network ] && [ "$(grep -c . /proc/blog/skip_wireguard_network 2>/dev/null)" -gt 0 ] && finding INFO "$(grep -c . /proc/blog/skip_wireguard_network) network(s) are on the flow-accelerator bypass list (WireGuard policy routing) - those flows are CPU-forwarded by design"
+ 
+ sec "13. ADDONS / JFFS"
+ echo "  jffs scripts: $(ls /jffs/scripts 2>/dev/null | tr '\n' ' ')"
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 36e834b109..d2b7299cff 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9301,6 +9301,29 @@ add_mtwan:
+ 	handle_sdn_feature(ALL_SDN, SDN_FEATURE_ALL_FIREWALL, RC_SERVICE_START);
+ #endif
+ 
++	/* reaper: raise the EXPLICIT socket-buffer ceilings. net.core.*mem_max
++	 * caps any socket that calls setsockopt(SO_RCVBUF/SO_SNDBUF) - which is
++	 * what throughput tools (and the Ookla engine) do. The stock 212992 caps a
++	 * single stream at roughly 85 Mbit/s over a 20 ms path, which is a hard
++	 * ceiling no other tuning can lift. These are ceilings, not allocations.
++	 *
++	 * tcp_rmem/tcp_wmem are deliberately NOT set: the kernel autotunes them up
++	 * to ~6 MB already, and ASUS's block below (commented out, kept for
++	 * reference) pins their max to 262144 - BELOW the default. Uncommenting
++	 * that block verbatim would slow a multi-gigabit WAN down. */
++	if ((fp = fopen("/proc/sys/net/core/rmem_max", "w+"))) {
++		fputs("16777216", fp);
++		fclose(fp);
++	}
++	if ((fp = fopen("/proc/sys/net/core/wmem_max", "w+"))) {
++		fputs("16777216", fp);
++		fclose(fp);
++	}
++	if ((fp = fopen("/proc/sys/net/core/netdev_max_backlog", "w+"))) {
++		fputs("4096", fp);
++		fclose(fp);
++	}
++
+ 	/* Tweak NAT performance... */
+ /*
+ 	if ((fp=fopen("/proc/sys/net/core/netdev_max_backlog", "w+")))
+-- 
+2.25.1
+

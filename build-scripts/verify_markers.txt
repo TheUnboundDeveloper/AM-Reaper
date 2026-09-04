@@ -95,7 +95,7 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.10|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.13|1
 # v2.7.3 -- Gatekeeper learned AiMesh exists: cfg_relist infrastructure
 # exemptions (rc) + gkd's onboarding window. Missing = quarantine breaks
 # node onboarding and mesh heartbeats again.
@@ -139,8 +139,81 @@ usr/lib/libwebapi.so|settings restore: nvram committed|1
 # and absorbs the injected card; the pending-restore banner rides the shell
 # and the dashboard so Complete restore is one click from the landing page.
 # Missing = the restore flow regresses to the injected-card era.
-www/Reaper_Backup.asp|jffsupload.cgi|1
+# v3.0.6 -- the full backup carries the whole /jffs partition (fourth .rbk
+# part; a restore that has it replaces /jffs and parks no pending half) and
+# the settings JSON embeds the stock .CFG (cfg_b64; same-model import goes
+# through reaper_restore.cgi). The stock .CFG/JFFS cards are gone from the
+# page. Missing = the archive silently drops back to settings-only.
+www/Reaper_Backup.asp|cfg_b64|1
+usr/sbin/httpd|/jffs restored from the archive|1
+usr/sbin/httpd|"cfg_b64":|1
 www/reaper_shell.asp|import_pending|1
 www/Main_ReaperDash.asp|import_pending|1
 www/require/modules/menuTree.js|Reaper_Backup.asp|1
 usr/sbin/httpd|Reaper_Backup.asp|1
+# v3.0.1 -- the watchdog's self-heal runner is dispatchable again. `rc` selects an
+# applet by argv[0] BASENAME only: the argv shift for an `rc <applet>` invocation
+# is #if 0 in rc.c, and DEBUG_RCTEST maps a bare "rc" to rctest_main -- so
+# `rc reaper_lockrun <script>` fell through and did nothing. From v2.7.3 to
+# v3.0.0 EVERY rwatch self-heal (policy routing AND the Warden CRITICAL heal)
+# logged that it was re-applying and re-applied nothing. Line 1 proves the
+# symlink ships -- a marker fails when its own file is missing, which is the only
+# way this format can assert a file exists. Line 2 blocks a regression to the
+# dead form. Both verified RED against the v3.0.0 staged fs (3 hits of the dead
+# form, no symlink). The `rc reaper_lockrun` phrase also appears in a source
+# COMMENT in rwatch.c -- comments never reach .rodata, so line 2 stays clean.
+sbin/reaper_lockrun|reaper_lockrun|1
+sbin/rc|!rc reaper_lockrun
+# v3.0.1 -- the ip-rule heal owns its counter, throttle and give-up latch. It
+# shared heal.n/heal.at with the mark heal, and the mark block cleared the
+# counter on every tick whenever the mangle chain was healthy -- which is the
+# exact field state reported -- so the five-strike cap was unreachable and the
+# heal re-ran every 5 minutes forever. Verified RED against v3.0.0 (0 hits).
+sbin/rc|heal.rn|1
+sbin/rc|heal.rat|1
+sbin/rc|heal.rgaveup|1
+# v3.0.1 -- both /proc/blog/skip_wireguard_network writes carry a TRAILING SPACE.
+# The kernel handler copy_from_user()s into a 128-byte stack buffer, never
+# NUL-terminates it, then runs strsep(" ")/strlen over it and breaks once it has
+# the ip token. The trailing space puts strsep's NUL inside the bytes we wrote,
+# so the ip token is always terminated in-region. Dropping it (or reverting the
+# del site to `echo`, which appends a newline instead) puts the parse back over
+# uninitialised kernel stack on every WireGuard-target apply AND revert.
+# NOTE the DOUBLED PERCENT. These lines are generated shell held in a C fprintf
+# FORMAT string, so what lands in sbin/rc's .rodata is the format -- `%%s` --
+# not the `%s` the generated script ends up carrying at runtime. Matching the
+# runtime form gives x0 and fails the build (it did, on the first v3.0.1 build).
+# Same trap for any marker pinning shell that rc/httpd emit through *printf.
+sbin/rc|printf 'add %%s ' |1
+sbin/rc|printf 'del %%s ' |1
+# v3.0.5 -- PBR/Warden Rung B (F6-F11). R6: the commit-confirm revert checks
+# its own result and says so (REVERT FAILED, E_REVERT), and its rules script is
+# on reaper_lockrun's allowlist so it runs under the firewall lock. rc reports
+# refusals/failures to the page as CODES (E_*), never prose.
+sbin/rc|REVERT FAILED|1
+sbin/rc|/tmp/reaper_pbr/rollback.sh.rules|1
+sbin/rc|E_NOSNAP|1
+sbin/rc|E_SAVE|1
+# R7: the page polls the whole commit-confirm window (not 12 x 700 ms - the
+# negative pins the old budget) and every Keep / Revert acknowledges its
+# response through pbrAck(); the partial-load code is handled, not shown raw.
+www/Reaper_VPNRouting.asp|!tries<12
+www/Reaper_VPNRouting.asp|pbrAck(|1
+www/Reaper_VPNRouting.asp|E_PARTIAL|1
+# v3.0.5 -- /tmp/resolv.dnsmasq is dnsmasq's SERVERS-FILE (`server=` lines).
+# Parsing it for `nameserver` lines is the v2.6.2 Warden self-filter bug (the
+# resolver carve-out exempted nothing) and the diag misread ("dnsmasq not
+# forwarding upstream" on every report) coming back. Both negatives.
+sbin/rc|!nameserver/{print $2}' /tmp/resolv.dnsmasq
+usr/sbin/reaper_diag|!nameserver/{print $2}' /tmp/resolv.dnsmasq
+# v1.3.13 -- rmcpd reported as arm-gated, not as a dead switch-driven service.
+usr/sbin/reaper_diag|arm-gated|1
+# v3.0.5 -- the 10 Gbit/s speed-test reports. The engine is launched through
+# /usr/sbin/ookla_run (stderr KEPT per run, nice -10, argv passed through); a
+# build that drops the wrapper silently goes back to discarding the engine's
+# errors. Line 1 proves the wrapper ships (file-exists assertion + its exec
+# target), line 2 that httpd calls it, line 3 that the diag reads what it keeps.
+usr/sbin/ookla_run|nice -n -10 ookla|1
+usr/sbin/ookla_run|lastfail|1
+usr/sbin/httpd|ookla_run|1
+usr/sbin/reaper_diag|10b. INTERNET SPEED TEST|1

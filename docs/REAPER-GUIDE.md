@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.0.0** · 2026-08-31 <!--@stamp-->
+> **Doc status:** current as of **v3.0.7** · 2026-09-03 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.0.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.0.7 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -198,7 +198,7 @@ Images are hosted on the project's GitHub Releases page (also mirrored in-tree u
 
 Before you start, every time:
 
-1. **Save your current configuration** (Administration → Restore/Save/Upload Setting → Save) and keep the `.cfg` off the router.
+1. **Save a full backup** (Administration → Backup & Restore → Download full backup) and keep the `.rbk` off the router.
 2. **Download the stock ASUS firmware for your exact model** and keep it next to the Reaper image. It is your rollback and your rescue image.
 3. Be on a reasonably recent stock or Merlin firmware first, to avoid nvram and bootloader-format mismatches.
 4. **Use a wired connection.** Never flash over Wi-Fi.
@@ -257,15 +257,18 @@ An existing list is migrated once, automatically, at the first boot on a firmwar
 
 ### 2.5 Two backups, not one
 
-| Backup | Where | What it contains | What it does not |
+Both live on **Administration → Backup & Restore** (the Reaper page that replaced the stock Restore/Save/Upload Setting page in v2.9.8).
+
+| Backup | Button | What it contains | What it does not |
 |---|---|---|---|
-| **Stock settings backup** | Administration → Restore/Save/Upload Setting | nvram: every stock setting, plus Reaper's switches, QoS configuration, storage choices, and so on. | The Reaper lists on `/jffs` (2.4). Device names and reservations *are* in nvram, so they are included. |
-| **Reaper settings backup** (v2.7.0) | Administration → Restore/Save/Upload Setting → *Backup & Restore* panel → **Export settings** | One JSON file, `reaper-settings-<model>-<version>-<date>.json`: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all eight lists) and Warden (countries, feeds, ban/allow lists). | Stock settings. |
-| **Full backup** (`.rbk`, v2.7.2) | Administration → Restore/Save/Upload Setting → *Reaper full backup* card | **One file** carrying the stock settings (in the stock `.CFG` format, still restorable by stock/Merlin), the Reaper settings above, and the firewall's resolved domain-set cache — so a reset-and-restore keeps every Reaper store in a single archive. | — (this is the everything-in-one option). |
+| **Full backup** (`.rbk`, v2.7.2; carries `/jffs` since v3.0.6) | **Download full backup** | **One file** carrying the stock settings (in the stock `.CFG` format, still restorable by stock/Merlin if carved out), the Reaper settings below, the firewall's resolved domain-set cache, and — since v3.0.6 — **the whole `/jffs` partition** as a gzip tar: addon scripts, certificates, every Reaper data store. | — (this is the everything-in-one option). It restores only to the same model. |
+| **Reaper settings backup** (v2.7.0; embeds the `.CFG` since v3.0.6) | **Export settings** | One JSON file, `reaper-settings-<model>-<version>-<date>.json`: the stock settings (`.CFG`, embedded as base64) plus Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all eight lists) and Warden (countries, feeds, ban/allow lists). | `/jffs` itself — addon scripts, certificates and the domain-set cache are not in it. |
 
-The one-file **`.rbk` full backup** (v2.7.2) is the simplest option and the one to reach for before a factory reset: it wraps the stock settings and every Reaper store together, checks the archive matches this router model and that `/jffs` is healthy before touching anything, restores the stock settings and reboots, and one click after you log back in completes the Reaper half (firewall and routing lists are staged as drafts to **Apply** then **Keep**). Otherwise, take both of the separate backups above, and take the Reaper one again after any significant change to those four features. Either Reaper file **contains your device addresses and your domain lists** — keep it with your other private backups.
+The **full backup** is the file to keep before a factory reset, a reflash or a hardware swap. Restore checks that the archive matches this router model, that `/jffs` is healthy, and that the `/jffs` tar lists cleanly before touching anything; then it replaces `/jffs` (wipe and extract, as the stock JFFS restore did), restores the stock settings and reboots. Everything is live when the router returns — there is nothing to click afterwards. An archive made **before v3.0.6** has no `/jffs` part and keeps the two-phase flow: after the reboot, log back in and click **Complete restore** when prompted; its firewall and routing lists are then staged as drafts to **Apply** then **Keep**.
 
-**Import** replays the file through each feature's own save path, so it faces exactly the same validation as typing the values in. Gatekeeper and Warden take effect at once. The Firewall and Policy Routing lists are loaded as **drafts**: open each page, **Apply**, then **Keep** — so a restored rule that cuts off your own access still reverts on its own (2.7). Nothing is written to `/jffs/configs`. The page reports `Imported: N setting(s), M list(s), K rejected`. The round trip is believed to work and is pending on-metal confirmation.
+The **settings file** is the small, portable one. Importing it **on the same model** restores the router settings and reboots, then Complete restore finishes the Reaper half exactly as above. Importing it **on a different model or firmware** skips the router settings inside and imports only the Reaper configuration, with no reboot: Gatekeeper and Warden take effect at once, and the Firewall and Policy Routing lists are loaded as **drafts** — open each page, **Apply**, then **Keep** — so a restored rule that cuts off your own access still reverts on its own (2.7). Nothing is written to `/jffs/configs`. The page reports `Imported: N setting(s), M list(s), K rejected`.
+
+Either file **contains your device addresses, passwords and your domain lists** — keep it with your other private backups. The stock `.CFG` save options ("remove password from file", "transfer DDNS") are gone with the stock panel: both files keep passwords and do not transfer DDNS.
 
 ### 2.6 A USB disk for the long-term store
 

@@ -1,0 +1,106 @@
+From 5fda373aac6f297a5de02d9166ace9612e90e2b3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 2 Sep 2026 18:06:37 -0400
+Subject: [PATCH] v3.0.5 r2: QoS notice on its own line; keep a failed
+ speed-test run's output
+
+Metal 2026-09-02 on the first v3.0.5 image: the QoS ceiling notice was placed
+inside the Go/results flex row and became a third column, pushing the
+download and upload figures onto one line. It now sits above the row as a
+full-width block.
+
+The first speed-test run after the flash ended "Latency test failed" and the
+second run, three minutes later, succeeded and overwrote the first run's
+output before it could be read. ookla_run now runs the engine as a child and
+copies a run that produced no result entry to ookla_result.lastfail /
+ookla_stderr.lastfail (only the next failed run replaces them); reaper_diag
+10b prints that kept run and notes it as a finding.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/others/ookla_run        | 22 ++++++++++++++++++++--
+ release/src/router/others/reaper_diag      |  9 +++++++++
+ release/src/router/www/internet_speed.html |  5 ++++-
+ 3 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/others/ookla_run b/release/src/router/others/ookla_run
+index 55058bdd57..6bdd3e36ed 100755
+--- a/release/src/router/others/ookla_run
++++ b/release/src/router/others/ookla_run
+@@ -11,10 +11,28 @@
+ #     collectors and everything else in userspace. nice -10 keeps them ahead of
+ #     that crowd without touching the RT budget (Tier 3 of the triage: never
+ #     raise sched_rt_runtime_us).
++# (c) KEEP THE EVIDENCE OF A FAILED RUN. Metal 2026-09-02: the first run after
++#     a flash failed ("Latency test failed"), the second succeeded three minutes
++#     later and overwrote the first run's output before anyone could read it.
++#     A run that ends without a "result" entry is copied to *.lastfail, which
++#     only the next FAILED run replaces. reaper_diag 10b prints it.
+ #
+ # The engine's argv is passed through untouched - never re-parsed by a shell -
+ # so a server id or interface name from the page cannot become a command.
+-# `exec` keeps the pid, so httpd's pidof("ookla") / killall still see it.
++# The engine runs as a child (not exec) so the post-run check can happen;
++# httpd's pidof("ookla") / killall -9 ookla still see the engine by name.
+ LOG="$1"; shift
+ [ -n "$LOG" ] || LOG=/dev/null
+-exec nice -n -10 ookla "$@" 2>"$LOG"
++nice -n -10 ookla "$@" 2>"$LOG"
++rc=$?
++case "$LOG" in
++  */ookla_stderr)
++    D="${LOG%/*}"; OUT="$D/ookla_result"
++    if [ -f "$OUT" ] && ! grep -q '"type":"result"' "$OUT" 2>/dev/null; then
++      cp -f "$OUT" "$D/ookla_result.lastfail" 2>/dev/null
++      cp -f "$LOG" "$D/ookla_stderr.lastfail" 2>/dev/null
++      echo "rc=$rc $(date '+%Y-%m-%d %H:%M:%S') uptime=$(cut -d. -f1 /proc/uptime)s" > "$D/ookla_lastfail.when"
++    fi
++    ;;
++esac
++exit $rc
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index c88805e8e2..30d8f7aadb 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -589,6 +589,15 @@ else
+   echo "  -- last run: no result file under $OK_DIR (never run, or /jffs/.sys wiped) --"
+ fi
+ if [ -s "$OK_DIR/ookla_stderr" ]; then echo "  -- engine stderr (tail) --"; tail -8 "$OK_DIR/ookla_stderr" | cut -c1-200 | sed 's/^/     /'; else echo "  engine stderr     : empty, or not kept (pre-v3.0.5 build)"; fi
++# the LAST FAILED run, kept by ookla_run - a later successful run cannot erase it
++if [ -f "$OK_DIR/ookla_result.lastfail" ]; then
++  echo "  -- LAST FAILED run (kept by ookla_run: $(cat "$OK_DIR/ookla_lastfail.when" 2>/dev/null)) --"
++  echo "  entries by type   : $(grep -o '"type":"[a-zA-Z]*"' "$OK_DIR/ookla_result.lastfail" 2>/dev/null | sed 's/"type"://; s/"//g' | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
++  grep -E '"level":"(error|warning)"' "$OK_DIR/ookla_result.lastfail" 2>/dev/null | tail -8 | sed -n 's/.*"message":"\([^"]*\)".*/     \1/p'
++  grep '^{"error"' "$OK_DIR/ookla_result.lastfail" 2>/dev/null | tail -2 | cut -c1-200 | sed 's/^/     /'
++  [ -s "$OK_DIR/ookla_stderr.lastfail" ] && { echo "     -- its stderr (tail) --"; tail -6 "$OK_DIR/ookla_stderr.lastfail" | cut -c1-200 | sed 's/^/     /'; }
++  finding INFO "an Internet speed-test run failed earlier and its output was kept ($(cat "$OK_DIR/ookla_lastfail.when" 2>/dev/null | cut -c1-40)) - the engine's own words are in 10b"
++fi
+ case "$(nvram get ookla_state 2>/dev/null)" in
+   3) finding WARN "the last Internet speed test TIMED OUT (ookla_state=3) - see 10b for the engine's last messages";;
+   4) finding WARN "the last Internet speed test ended on an ENGINE ERROR (ookla_state=4) - see 10b for its message";;
+diff --git a/release/src/router/www/internet_speed.html b/release/src/router/www/internet_speed.html
+index 033b65a026..ac2736dc26 100644
+--- a/release/src/router/www/internet_speed.html
++++ b/release/src/router/www/internet_speed.html
+@@ -1536,6 +1536,10 @@ function adjustSpeedFontClass(id) {
+ 					</div>
+ 				</div>
+ 			</div>
++			<!-- reaper v3.0.5: the QoS ceiling, on its OWN line above the Go/results row.
++			     Metal 2026-09-02: placed inside .go_speed_container it became a third flex
++			     column and pushed the download/upload figures onto one line. -->
++			<div id="qos_cap_hint" style="width: 100%; display: none; justify-content: center; margin: 8px 0 0;"><div class="wan_notice_m" style="cursor: default; max-width: 96%; min-width: 0;"><div class="notice_icon" style="flex: 0 0 auto;"></div><div id="qos_cap_text" style="margin: 0 10px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div></div></div>
+ 			<div class="go_speed_container">
+ 				<div class="speedTest_btn_container">
+ 					<div id="speedTest_btn" class="speedTest_btn_normal"  style="display: flex; justify-content: center;" onclick ="start_speedTest();" title="<#InternetSpeed_Go#>"><div id="speedTest_btn_text" style="width: 110px; overflow: hidden; text-overflow: ellipsis;"><#InternetSpeed_Go#></div></div>
+@@ -1543,7 +1547,6 @@ function adjustSpeedFontClass(id) {
+ 				<div class="mobile_show">
+ 					<div id="wan_disconn_hint" style="width: 100%; height: 50px; display: flex; justify-content: center;" onclick="show_alert_message();"><div class="wan_notice_m"><div class="notice_icon"></div><div style="margin: 0 10px;">WAN Disconnected</div></div></div>
+ 				</div>
+-				<div id="qos_cap_hint" style="width: 100%; display: none; justify-content: center; margin: 4px 0 6px;"><div class="wan_notice_m" style="cursor: default; max-width: 100%; min-width: 0;"><div class="notice_icon" style="flex: 0 0 auto;"></div><div id="qos_cap_text" style="margin: 0 10px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div></div></div>
+ 				<div class="download_upload_container">
+ 					<div class="speedResult_container">
+ 						<div class="result_title_container">
+-- 
+2.25.1
+

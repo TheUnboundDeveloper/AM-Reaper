@@ -1,0 +1,332 @@
+From e821aa140b78a41c8b5256b4347fdecd6d967720 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 1 Sep 2026 11:35:13 -0400
+Subject: [PATCH] v3.0.1: policy routing fail-open, the dead self-heal runner,
+ the Warden drops viewer
+
+Four field reports from 2026-09-01 traced to source. The headline finding was in
+none of them.
+
+1. FAIL-OPEN (the reason this rung exists). add_multi_routes() - the closed ASUS
+   blob - opens with an unconditional IPv4 `ip rule flush`, and wan_up() calls it
+   19 lines after start_firewall() installed our policy-routing rules. That wipes
+   the whole 9000-9115 pref band while leaving the REAPER_PBR mangle chain
+   intact, so the marks keep being set with no rule left to select on. There is
+   no iptables backstop: rc/reaper_pbr.c:514-534 is the only enforcement site.
+   Result, on every boot and every WAN re-dial: IPv4 traffic pinned to a tunnel
+   follows `lookup main` out of the WAN in the clear, and a BLOCK rule (realised
+   solely as `prohibit`) stops blocking. Upstream re-asserts its own killswitch
+   on the very next line for exactly this reason; we re-asserted nothing.
+   reaper_pbr_reassert() now follows all FOUR call sites - wan_up(), the LB
+   wan_down() path, wanduck's static-WAN link-up, and the add_multi_routes
+   applet in rc.c (whose arms return immediately, so it goes before the return).
+
+2. THE SELF-HEAL RUNNER WAS DEAD CODE, v2.7.3..v3.0.0. rwatch emitted
+   `rc reaper_lockrun <script>`, but rc dispatches applets by argv[0] basename
+   ONLY: the argv shift for that form is #if 0 in rc.c and DEBUG_RCTEST maps a
+   bare "rc" to rctest_main, so every call fell through and did nothing while
+   logging that it had re-applied. reaper_lockrun_main was registered but
+   reachable only through a /sbin symlink rc/Makefile never created. Install the
+   symlink, call the applet by name. This also revives the Warden CRITICAL
+   self-heal, dead since the same commit.
+
+3. The ip-rule heal shared heal.n/heal.at with the mark heal, and the mark block
+   cleared the counter on every tick whenever the mangle chain was healthy -
+   the exact field state - so the five-strike give-up cap was unreachable and the
+   heal re-ran every 5 minutes forever. It now owns heal.rn/heal.rat/heal.rgaveup.
+
+4. Warden outbound blocks were never missing from the firewall: they were
+   discarded by the GUI. fw_line_is_fwlog() tested for "REAPER-WARDEN " WITH a
+   trailing space, which cannot match "REAPER-WARDEN-OUT " or
+   "REAPER-WARDEN-SELF " (the next character is '-'), and it is the sole filter
+   on action=drops. Dates to v2.3.3, when that prefix was the only one; v2.4.2
+   gave outbound its own prefix and did not update the filter.
+
+5. Both /proc/blog/skip_wireguard_network writes now carry a trailing space. The
+   kernel handler copy_from_user()s into a 128-byte stack buffer, never
+   NUL-terminates it, then runs strsep(" ")/strlen over it and breaks once it
+   has the ip token. The trailing space puts strsep's NUL inside the bytes we
+   wrote. The del site also moves off `echo`, which appended a newline instead.
+   Userspace-only; no kernel change. Not claimed as the cause of the reported
+   reboot, which is still unexplained.
+
+Regression pins (build-scripts, synced to the engine): 7 new verify_markers plus
+two new reaper_static_checks - pbr-reassert (a C call site leaves no string in
+the binary, so a marker structurally cannot express it) and warden-log-prefix
+(a producer/consumer contract across rwarden.c, web.c and reaper_diag - the
+class of break that stays green through a full build). Both were proven to go
+red against the pre-fix tree before being accepted. reaper_diag gains three
+runtime FINDINGS for the same faults and goes to v1.3.11.
+
+Deliberately NOT included: the conntrack recapture of flows that leaked while
+the rules were absent. With the re-assert now on every wan_up() a purge in the
+apply tail would drop every PBR-marked connection on every WAN re-dial; it
+belongs on the healer path, where a leak provably happened.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+(cherry picked from commit 546a95f176ade6977c1a48c5c929282e48a29b71)
+---
+ release/src-rt/version.conf           |  2 +-
+ release/src/router/httpd/web.c        | 18 +++++++++++++-----
+ release/src/router/others/reaper_diag | 10 +++++++++-
+ release/src/router/rc/Makefile        |  6 ++++++
+ release/src/router/rc/rc.c            | 15 +++++++++++----
+ release/src/router/rc/reaper_pbr.c    |  4 ++--
+ release/src/router/rc/rwatch.c        | 22 +++++++++++++---------
+ release/src/router/rc/wan.c           | 13 +++++++++++++
+ release/src/router/rc/wanduck.c       |  1 +
+ 9 files changed, 69 insertions(+), 22 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 83275b04c8..ad718cb053 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v3.0.0
++EXTENDNO=Reaper_v3.0.1
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 7c9080795c..0e0a675195 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23748,10 +23748,18 @@ fw_emit_cmd(FILE *stream, const char *cmd, size_t cap)
+ }
+ 
+ /* a syslog line belongs to the drops viewer iff klogd tagged it kernel:
+- * and it carries one of the three firewall LOG prefixes this build can
+- * emit (complete inventory, rc/ grep 2026-08-10): "DROP " / "ACCEPT "
+- * (fw_log_x target chains, --state NEW only) and "REAPER-WARDEN "
+- * (rwarden_log=1, every packet). Gatekeeper drops emit no LOG rules. */
++ * and it carries one of the firewall LOG prefixes this build can emit:
++ * "DROP " / "ACCEPT " (fw_log_x target chains, --state NEW only) and the
++ * Warden family (rwarden_log=1, every packet) - "REAPER-WARDEN ",
++ * "REAPER-WARDEN-OUT " and "REAPER-WARDEN-SELF ", emitted by rwarden.c.
++ * Gatekeeper drops emit no LOG rules.
++ * The Warden test is deliberately WITHOUT a trailing space so it admits the
++ * whole family: matching "REAPER-WARDEN " could never match the -OUT/-SELF
++ * prefixes (the next character is '-'), so from v2.4.2 - which gave outbound
++ * drops their own prefix - to v3.0.0 every outbound block was dropped here
++ * before it reached the browser, and the page looked like outbound logging
++ * had been switched off. Keep any new prefix a strict extension of this one,
++ * or update reaper_static_checks.py's warden-log-prefix-contract with it. */
+ static int
+ fw_line_is_fwlog(const char *line)
+ {
+@@ -23759,7 +23767,7 @@ fw_line_is_fwlog(const char *line)
+ 	if (!k) return 0;
+ 	return (strstr(k, "DROP IN=") != NULL ||
+ 		strstr(k, "ACCEPT IN=") != NULL ||
+-		strstr(k, "REAPER-WARDEN ") != NULL);
++		strstr(k, "REAPER-WARDEN") != NULL);
+ }
+ 
+ #define FW_DROPS_MAX	400
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 2ba6cee217..5598080a66 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.10"
++VER="REAPER-DIAG v1.3.11"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -612,6 +612,9 @@ echo "  policy routing    : reaper_pbr_enable=$(nvram get reaper_pbr_enable 2>/d
+ echo "  exporter          : reaper_export_mode=$(nvram get reaper_export_mode 2>/dev/null)"
+ echo "  -- cron (cru l) --"; cru l 2>/dev/null | sed 's/^/  /'
+ [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && ! iptables -nL REAPER_WARDEN >/dev/null 2>&1 && finding WARN "Warden enabled but REAPER_WARDEN chain absent"
++_wdir="$(nvram get rwarden_dir 2>/dev/null)"
++[ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && { [ "$_wdir" = both ] || [ "$_wdir" = out ]; } && ! iptables -nL RW_ODROP >/dev/null 2>&1 && finding WARN "Warden outbound enforcement is configured (rwarden_dir=$_wdir) but the RW_ODROP chain is absent - outbound blocks are neither dropped nor logged (see 14)"
++[ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && [ "$(nvram get rwarden_log 2>/dev/null)" = 1 ] && iptables -nL RW_ODROP >/dev/null 2>&1 && [ "$(iptables -S RW_ODROP 2>/dev/null | grep -c 'j LOG')" = 0 ] && finding WARN "Warden logging is on and the outbound chain exists, but RW_ODROP carries no LOG rule - outbound blocks are dropped silently (see 14)"
+ [ "$(nvram get rwatch_enable 2>/dev/null)" = 1 ] && [ "$(cru l 2>/dev/null | grep -c '#rwatch#')" = 0 ] && finding WARN "rwatch enabled but its cron line is missing"
+ 
+ sec "13. ADDONS / JFFS"
+@@ -727,6 +730,11 @@ ip -4 rule list 2>/dev/null | awk -F: '$1+0>=9000 && $1+0<=9199' | sed 's/^/
+ ip -6 rule list 2>/dev/null | awk -F: '$1+0>=9000 && $1+0<=9199' | sed 's/^/    rule6 /'
+ [ -r /proc/blog/skip_wireguard_network ] && echo "  wg accel bypass   : $(grep -c . /proc/blog/skip_wireguard_network 2>/dev/null) net(s) listed ($(awk '$2=="new"' /tmp/reaper_pbr/skipnets 2>/dev/null | wc -l) added by policy routing)"
+ [ "$(nvram get reaper_pbr_enable 2>/dev/null)" = 1 ] && [ "$(iptables -t mangle -S PREROUTING 2>/dev/null | grep -c 'j REAPER_PBR')" = 0 ] && finding WARN "policy routing is enabled but its PREROUTING jump is missing (see 14e)"
++_pbrx="$(cat /tmp/reaper_pbr/expect_rules 2>/dev/null)"; case "$_pbrx" in ''|*[!0-9]*) _pbrx=0;; esac
++_pbrl="$(ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000')"; case "$_pbrl" in ''|*[!0-9]*) _pbrl=0;; esac
++[ "$(nvram get reaper_pbr_enable 2>/dev/null)" = 1 ] && [ "$_pbrx" -gt 0 ] && [ "$_pbrl" = 0 ] && finding WARN "policy routing marks are being set but NO ip rules are live ($_pbrl of $_pbrx) - IPv4 traffic pinned to a tunnel is following the main table OUT OF THE WAN and BLOCK rules are not blocking; something flushed the rule table and it was not re-asserted (see 14e)"
++[ -f /tmp/reaper_pbr/heal.rgaveup ] && finding WARN "the policy-routing ip-rule self-heal gave up after 5 attempts - the rules are still missing (see 14e)"
++[ -f /tmp/reaper_pbr/heal.gaveup ] && finding WARN "the policy-routing mark self-heal gave up after 5 attempts - the mangle chain is still short (see 14e)"
+ echo "  -- ip rule bands (9000-9999 = Reaper PBR, 10000+ = VPN Director) --"
+ ip rule list 2>/dev/null | awk '$1+0 >= 9000 && $1+0 < 20000' | sed 's/^/  /' | head -40
+ echo "  -- tunnels --"
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 41ff47808f..0cb9492cf2 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -1784,6 +1784,12 @@ ifeq ($(CONFIG_BCMWL5),y)
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc setup_dnsmq
+ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc add_multi_routes
++# reaper: rc dispatches applets by argv[0] basename ONLY. The argv shift for an
++# `rc <applet>` invocation is #if 0 in rc.c and DEBUG_RCTEST maps a bare "rc" to
++# rctest_main, so without this symlink reaper_lockrun_main is unreachable and every
++# rwatch self-heal (policy routing AND the Warden CRITICAL heal) silently does
++# nothing - which is exactly what happened from v2.7.3 to v3.0.0.
++	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_lockrun
+ 
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc free_caches
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc get_phy_status
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index 944645f301..31ea27c28f 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -5038,10 +5038,17 @@ int main(int argc, char **argv)
+ 	}
+ #endif
+ 	else if (!strcmp(base, "add_multi_routes")) {
+-		if(argc == 2)
+-			return add_multi_routes(safe_atoi(argv[1]), -1);
+-		else
+-			return add_multi_routes(0, -1);
++		int amr_rc;
++		amr_rc = (argc == 2) ? add_multi_routes(safe_atoi(argv[1]), -1)
++				     : add_multi_routes(0, -1);
++		/* the applet flushes the IPv4 rule table exactly like the in-process
++		 * callers do - see the note in wan_up(). Without this re-assert the
++		 * whole PBR pref band stays gone until the next UI Apply, which is a
++		 * FAIL-OPEN: marks keep being set with no rule left to select on.
++		 * (The amvpn_set_kilswitch_rules_all() below sits after the returns
++		 * this replaces and is unreachable upstream dead code; left as-is.) */
++		reaper_pbr_reassert();
++		return amr_rc;
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 		amvpn_set_kilswitch_rules_all();
+ #endif
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 88a1535b99..0ecc30d437 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -290,7 +290,7 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "pbr_skip_del_ours() {\n"
+ 	  "  [ -f \"$SKIPREC\" ] || return 0\n"
+ 	  "  while read N F; do\n"
+-	  "    [ \"$F\" = new ] && [ -w \"$SKIP\" ] && echo \"del $N\" > \"$SKIP\" 2>/dev/null\n"
++	  "    [ \"$F\" = new ] && [ -w \"$SKIP\" ] && printf 'del %%s ' \"$N\" > \"$SKIP\" 2>/dev/null\n"
+ 	  "  done < \"$SKIPREC\"\n"
+ 	  "  rm -f \"$SKIPREC\"\n"
+ 	  "}\n"
+@@ -320,7 +320,7 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "  if [ \"$_u\" -ge 8 ]; then\n"
+ 	  "    logger -t reaper_pbr \"blog skip table full for IPv$_fam ($_u/8) - WireGuard rule for $1 not installed (free a VPN Director/WireGuard slot)\"; return 0\n"
+ 	  "  fi\n"
+-	  "  printf 'add %%s' \"$1\" > \"$SKIP\" 2>/dev/null\n"
++	  "  printf 'add %%s ' \"$1\" > \"$SKIP\" 2>/dev/null\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 new\" >> \"$SKIPREC\"\n"
+ 	  "  else logger -t reaper_pbr \"blog skip table full - WireGuard rule for $1 may be bypassed by accelerated flows\"; fi\n"
+ 	  "}\n");
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index acaf917a50..fb57a5aefc 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -151,25 +151,25 @@ static void rwatch_gen(void)
+ 	  /* v2.7.3 (code-review P3): under rc's firewall lock. shell flock(1)
+ 	   * cannot take rc's POSIX fcntl lock, so call back into rc for it -
+ 	   * a concurrent start_firewall now serializes instead of interleaving. */
+-	  "    rc reaper_lockrun \"$_sh\" >/dev/null 2>&1\n"
++	  "    reaper_lockrun \"$_sh\" >/dev/null 2>&1\n"
+ 	  "  fi\n"
+ 	  "fi\n"
+ 	  "if [ \"$(_nv reaper_pbr_active)\" = 1 ] && [ -s /tmp/reaper_pbr/expect_rules ]; then\n"
+ 	  "  _exr=$(cat /tmp/reaper_pbr/expect_rules 2>/dev/null); case \"$_exr\" in ''|*[!0-9]*) _exr=0;; esac\n"
+ 	  "  _shr=/tmp/reaper_pbr/apply.sh; [ -d /tmp/reaper_pbr/armed ] && [ -f /tmp/reaper_pbr/candidate.sh ] && _shr=/tmp/reaper_pbr/candidate.sh\n"
+ 	  "  _lvr=$(ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000')\n"
+-	  "  _lstr=$(cat /tmp/reaper_pbr/heal.at 2>/dev/null || echo 0)\n"
++	  "  _lstr=$(cat /tmp/reaper_pbr/heal.rat 2>/dev/null || echo 0)\n"
+ 	  /* same give-up cap as the mark-rule heal above, sharing its counter:
+ 	   * both re-run the SAME script, so five attempts is five attempts. */
+-	  "  [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -ge \"$_exr\" ] && rm -f /tmp/reaper_pbr/heal.n /tmp/reaper_pbr/heal.gaveup\n"
+-	  "  _nr=$(cat /tmp/reaper_pbr/heal.n 2>/dev/null || echo 0); case \"$_nr\" in ''|*[!0-9]*) _nr=0;; esac\n"
++	  "  [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -ge \"$_exr\" ] && rm -f /tmp/reaper_pbr/heal.rn /tmp/reaper_pbr/heal.rgaveup\n"
++	  "  _nr=$(cat /tmp/reaper_pbr/heal.rn 2>/dev/null || echo 0); case \"$_nr\" in ''|*[!0-9]*) _nr=0;; esac\n"
+ 	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -ge 5 ]; then\n"
+-	  "    [ -f /tmp/reaper_pbr/heal.gaveup ] || { : > /tmp/reaper_pbr/heal.gaveup; logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
++	  "    [ -f /tmp/reaper_pbr/heal.rgaveup ] || { : > /tmp/reaper_pbr/heal.rgaveup; logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
+ 	  "  fi\n"
+ 	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -lt 5 ] && [ $((UP-_lstr)) -ge 120 ] && [ -x \"$_shr\" ]; then\n"
+-	  "    echo $UP > /tmp/reaper_pbr/heal.at; echo $((_nr+1)) > /tmp/reaper_pbr/heal.n\n"
++	  "    echo $UP > /tmp/reaper_pbr/heal.rat; echo $((_nr+1)) > /tmp/reaper_pbr/heal.rn\n"
+ 	  "    logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live - re-applying\"\n"
+-	  "    rc reaper_lockrun \"$_shr\" >/dev/null 2>&1\n"
++	  "    reaper_lockrun \"$_shr\" >/dev/null 2>&1\n"
+ 	  "  fi\n"
+ 	  "fi\n"
+ 	  "\n"
+@@ -290,7 +290,7 @@ static void rwatch_gen(void)
+ 	  "if [ -n \"$CRIT\" ]; then\n"
+ 	  "  logger -t rwatch \"CRITICAL:$CRIT - LAN/loopback found in a Warden block set (ingest filter breached); re-applied warden chain\"\n"
+ 	  /* v2.7.3: same firewall-lock discipline as the PBR heal above */
+-	  "  [ -f /tmp/rwarden/apply.sh ] && rc reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
++	  "  [ -f /tmp/rwarden/apply.sh ] && reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  "if [ -n \"$FAIL$CRIT\" ]; then\n"
+@@ -455,7 +455,11 @@ void start_rwatch(void)
+  * firewall rebuild now serializes behind it instead of interleaving with
+  * it. Allowlisted scripts only - this is a heal wrapper for our own
+  * watchdog, not a general lock-run tool. Invoked as
+- * `rc reaper_lockrun <script>` (the rc base handler shifts argv). */
++ * `reaper_lockrun <script>`, through the /sbin symlink rc/Makefile installs.
++ * NOT as `rc reaper_lockrun <script>`: rc dispatches applets by argv[0]
++ * basename only, the argv shift for that form is #if 0 in rc.c, and
++ * DEBUG_RCTEST maps a bare "rc" to rctest_main - so the `rc ` prefix made
++ * every caller a silent no-op (v2.7.3 .. v3.0.0). */
+ int reaper_lockrun_main(int argc, char *argv[])
+ {
+ 	static const char * const ok[] = {
+diff --git a/release/src/router/rc/wan.c b/release/src/router/rc/wan.c
+index 39c0488404..5bb759fef0 100644
+--- a/release/src/router/rc/wan.c
++++ b/release/src/router/rc/wan.c
+@@ -4282,6 +4282,18 @@ NOIP:
+ 
+ 	/* default route via default gateway */
+ 	add_multi_routes(0, wan_unit);
++	/* add_multi_routes() opens with an unconditional IPv4 `ip rule flush` (closed
++	 * ASUS blob - the string is in its .rodata, and the open-source twin at :201
++	 * shows the same prologue). That wipes our whole 9000-9115 pref band, which
++	 * start_firewall() installed ~19 lines up, while leaving the REAPER_PBR mangle
++	 * chain intact - so the marks keep being set with no rule left to select on.
++	 * Without this re-assert that is a FAIL-OPEN: the packet falls through to
++	 * `from all lookup main`, and traffic the operator pinned to a tunnel egresses
++	 * the WAN in the clear while a BLOCK rule (realised solely as `prohibit`) stops
++	 * blocking. There is no iptables backstop; these rules are the only enforcement.
++	 * Upstream re-asserts its own killswitch on the very next line for the same
++	 * reason. IPv4-only flush, but reaper_pbr_reassert() rebuilds both families. */
++	reaper_pbr_reassert();
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 	amvpn_set_kilswitch_rules_all();
+ #endif
+@@ -4816,6 +4828,7 @@ wan_down(char *wan_ifname)
+ #ifdef RTCONFIG_DUALWAN
+ 	if(nvram_match("wans_mode", "lb")) {
+ 		add_multi_routes(1, -1);
++		reaper_pbr_reassert();	/* same ip-rule flush as wan_up() - see the note there */
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 		amvpn_set_kilswitch_rules_all();
+ #endif
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index efc83c8e29..41f280b8db 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -2142,6 +2142,7 @@ _dprintf("# wanduck(%d): if_wan_phyconnected: x_Setting=%d, link_modem=%d, sim_s
+ 
+ 				if(nvram_get_int(strcat_r(prefix, "dhcpenable_x", tmp)) == 0 && !found_default_route(wan_unit)) {
+ 					add_multi_routes(0, -1);
++					reaper_pbr_reassert();	/* same ip-rule flush as wan_up() - see the note there */
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 					amvpn_set_kilswitch_rules_all();
+ #endif
+-- 
+2.25.1
+

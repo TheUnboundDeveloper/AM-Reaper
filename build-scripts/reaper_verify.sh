@@ -318,6 +318,24 @@ else
   fi
 fi
 
+# ---- 21. dynamic symbol resolution (check_symbols.sh) ----------------------
+# httpd-link (check 5) asks "do the NEEDED libraries exist?". It does NOT ask
+# "do the symbols inside them exist?". v3.0.3 shipped because of that gap: the
+# OpenSSL 1.1 SONAME was replaced by a 143-symbol compat shim under a hostapd
+# that needs 338, so 6 GHz WPA3-SAE called a missing EC function and hostapd
+# restart-looped 41 times. Every library resolved; the gate passed.
+_cks="$(dirname "${BASH_SOURCE[0]}")/check_symbols.sh"
+if [ -f "$_cks" ]; then
+  if _cksout=$(bash "$_cks" "$FS" 2>&1); then
+    pass "check-symbols" "$(echo "$_cksout" | tail -1)"
+  else
+    echo "$_cksout" | sed 's/^/        /'
+    fail "check-symbols" "unresolved dynamic symbols in the staged fs"
+  fi
+else
+  warn "check-symbols" "check_symbols.sh absent -- symbol resolution not checked"
+fi
+
 # ---- 20. static source checks (reaper_static_checks.py) --------------------
 # Promotes this session's by-hand static checks into one gate: (1) *.dict line
 # lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips

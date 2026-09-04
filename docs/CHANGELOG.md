@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.0.0** · 2026-09-01 <!--@stamp-->
+> **Doc status:** current as of **v3.0.7** · 2026-09-03 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -25,6 +25,209 @@ Replacing AiMesh would also require a compatible replacement implementation on e
 node, not only on the primary router.
 
 ---
+
+## v3.0.7 — The 3.0.x window on every model *(built RT-BE96U)*
+
+The fleet rung. It consolidates every rung since v3.0.0 — v3.0.1 through v3.0.6, each built and
+verified on the RT-BE96U as it landed — into one cut, so the RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro
+and RT-BE92U take the whole window from the patch series (0594–0602, bringing the series to 602). The
+per-version sections below carry the detail; in brief:
+
+- **Policy Routing keeps its word.** It no longer fails open on every boot and WAN re-dial, its
+  self-heal actually runs, and Apply, Keep and Revert report what really happened (v3.0.1, v3.0.5).
+- **The speed test says why it failed.** The engine's output is kept per run, a failed run's output is
+  kept aside, the page names the failure, and it says when the Hardware QoS shaper is the ceiling
+  (v3.0.3, v3.0.5).
+- **The self-heals wait for the box to finish booting**, and the OpenSSL 3.5 migration is withdrawn —
+  the release gate gained a symbol-resolution check so a library swap that strands a consumer can
+  never ship again (v3.0.4).
+- **Diagnostics v1.3.13**, Warden's resolver carve-out, and the diagnostics report reading the
+  dnsmasq servers file in its real format (v3.0.5).
+- **One backup that really is everything:** the `.rbk` carries `/jffs`, the settings export embeds
+  the router `.CFG`, and the Backup & Restore page is two panels instead of four (v3.0.6).
+- Housekeeping: the `reaper_diag` header comment names the version the script actually is; the
+  build engine's new gate pieces (`check_symbols.sh`, the `pbr-fwmark-regex` static check, the
+  v3.0.5/v3.0.6 patch markers) ride in this commit so the clean-room build enforces them too.
+
+## v3.0.6 — One backup that really is everything, and a settings file that carries the router settings too *(built RT-BE96U)*
+
+Owner request against the Backup & Restore page: the full backup was still leaving `/jffs`
+behind, the settings file still needed the stock `.CFG` beside it, and the page carried four
+panels for what are two jobs.
+
+- **The full backup now carries the whole `/jffs` partition.** The `.rbk` gains a fourth part: a
+  gzip tar of `/jffs` in the shape the stock JFFS backup used (addon scripts, certificates, every
+  Reaper data store). A restore that has that part checks the archive lists cleanly before it
+  touches anything, then replaces `/jffs` exactly as the stock JFFS restore did (wipe, extract),
+  stages the router settings and reboots. Because every Reaper store comes back as a file, no
+  pending half is parked and there is nothing to click after the reboot — step 03 on the page
+  only arms for an archive made without `/jffs`. If the extraction ever fails after the wipe,
+  the restore falls back to the pending path so the Reaper half is replayed from the archive's
+  JSON after the reboot. The archive magic is unchanged, so an older `.rbk` restores as before
+  and an older firmware reads a new one (it ignores the part it does not know). The `/jffs` part
+  is capped at 96 MB and the page accepts archives up to 128 MB.
+
+- **The settings file now includes the router settings.** The JSON export embeds the stock
+  `.CFG` (base64, `cfg_b64`) — the same file the `.rbk` carries, from the same generator.
+  Importing it on the same model rebuilds a `.rbk` in the browser (CFG + JSON) and sends it
+  through the full-restore path: router settings restore, reboot, Complete restore. On any other
+  model, or for an export made before v3.0.6, the router settings are skipped and the Reaper
+  half is imported without a reboot, exactly as before. Nothing new on the server's upload side —
+  only the export writer changed.
+
+- **Two panels instead of four.** The stock *Router settings (.CFG)* and *JFFS Partition* cards
+  are gone from the page; each remaining card now lists what its file carries. With the `.CFG`
+  card went its two save options, "remove password from file" and "transfer DDNS": the embedded
+  `.CFG` keeps passwords and does not transfer DDNS, which is what the `.rbk` already did.
+
+- Housekeeping: 9 page strings reworded and 4 added, translated into all 24 languages
+  (lockstep 6824); the `jffsupload.cgi` verify marker retired in favour of `cfg_b64` and the new
+  `/jffs restored from the archive` syslog line; the stray untracked `www/temp.dict` removed
+  again.
+
+## v3.0.5 — Policy Routing's Apply, Keep and Revert tell the truth, the speed test says why it failed, and the diagnostics stop misleading you *(built RT-BE96U)*
+
+Five owner field reports against Policy Routing and one against the speed test, all traced to
+source, plus the diagnostics gaps the v3.0.4 field report exposed. Confirmed working on the RT-BE96U.
+
+- **Apply and Confirm works on the first click, and Keep and Revert acknowledge themselves.** The
+  page polled for the armed state for only 8.4 s while the apply built its ipsets twice and ran a
+  48-step teardown, so on a box with more than a few rules the poll gave up before the work finished:
+  the Keep button never appeared, the deadline fired, and the second click was refused with "a change
+  is already awaiting confirmation" — the "first attempt only flickers" report. The page now polls
+  for the whole commit-confirm window, the duplicate ipset rebuild is gone, and Keep and Revert (on
+  both the Policy Routing and Firewall pages) check the router's answer instead of assuming it.
+
+- **The revert can no longer log success while it failed, and confirm and revert can no longer
+  race.** Three "the log lies" defects: the rules script exited 0 with failures, the revert discarded
+  the script's exit status and logged success unconditionally, and a present-but-unreadable last-good
+  snapshot was treated as valid — reverting to an empty ruleset while reporting success. The revert
+  now runs under the firewall lock, checks its result and reports REVERT FAILED; the arm token is
+  taken first on both paths, so a confirm and a timer revert cannot interleave; the deadline is
+  stamped after the work rather than before it (the 60 s window was really about 54); and a confirm
+  whose save did not complete says so and keeps the draft.
+
+- **Errors are codes the page translates, and an old error no longer haunts every page load.** The
+  five error strings were raw English written by rc into a value nothing cleared except the next
+  apply, so one failed apply painted the same red line on every open of the page for the rest of the
+  uptime. The router now sets a code, the page maps it to a translated line, a clean poll clears it,
+  confirm and rollback unset it, and a load failure says it is a load failure instead of "that could
+  not be saved".
+
+- **The speed test names its failure and keeps the evidence.** Four different failures collapsed
+  into one sentence, and the engine's own error output was discarded, so a failing run on a 10 Gbit/s
+  link (a GT-BE98 field report) left nothing to read. Every engine run now goes through a small
+  launcher that keeps its error output per run and runs it at a higher priority; the page says which
+  of timeout, engine error (with the engine's message), launch failure or WAN-down it was; a run that
+  ends without a result is kept aside so the next successful run cannot overwrite it; and the page
+  states the Hardware QoS ceiling where the number is read, because a 2.2 Gbit/s port shaper is a
+  ceiling no socket tuning lifts.
+
+- **The Warden self-filter now exempts the upstream resolvers it was written to exempt, and the
+  diagnostics stop saying dnsmasq is not forwarding.** The file both read is dnsmasq's servers-file
+  (`server=` lines), not a resolv.conf; both looked for `nameserver` lines and matched nothing. The
+  Warden half had been inert since v2.6.2; the diag half misled every report. Both fixed and pinned
+  by negative markers.
+
+- **Diagnostics report v1.3.13.** Prints the socket ceilings (so the v3.0.3 change is verifiable in
+  the field), reports the QoS shaper ceiling as a finding, shows the Advisor daemon as arm-gated
+  rather than as a dead service, lists the resolvers correctly, and gains section 10b for the speed
+  test: host-TCP offload state, RT throttling count, and the last run's messages including a kept
+  failed run.
+
+- **Long translations clip.** Every new message surface clips to one line with a hover tooltip, so a
+  long translation cannot break a layout. Seventeen new dictionary tokens across all 25 language
+  packs, lockstep 6820.
+
+- **Regression pins.** An eighth static check pins the fwmark regex shared by rc and the watchdog
+  (proven to go red on a drifted literal and on a moved mask), plus new markers for the revert path,
+  the launcher, the diag section and the two negative parses.
+
+Two reports closed without a code change, because the router was right:
+
+- **"The QoS class-1 mark knocks flows off the hardware accelerator."** It does not: classful QoS
+  uses CONNMARK, and the kernel's skip-acceleration check reads only the low bits of the packet MARK.
+  Reaper's netfilter layers do not take flows off the offload.
+- **"Commit-confirm logged a revert but the rules were still live minutes later."** The revert is a
+  full rebuild from the last confirmed snapshot, not a teardown — the rules seen afterwards were the
+  previously confirmed generation, so the revert did take. The operator had no way to tell which
+  generation was live; the acknowledgements above are the answer to that.
+
+## v3.0.4 — The self-heals wait for the box to finish booting, and an OpenSSL migration is withdrawn *(built RT-BE96U)*
+
+- **The revived self-heals hold off for the first five minutes of uptime.** v3.0.1 made the
+  watchdog's runner dispatchable, which revived three self-heals that had been silent since v2.7.3.
+  Two of them ran before the boot grace by design, and each took the firewall lock and ran a
+  chain-rebuilding script — in the same window the new WAN-up re-assert wants that lock. All three
+  are now gated behind the 300 s boot grace. The Policy Routing boot heal is defence-in-depth anyway:
+  v3.0.1 fixes the fail-open at its source. `rwatch_enable=0` remains the full kill switch.
+
+- **OpenSSL 3.5 is withdrawn from this line.** The v3.0.2 and v3.0.3 test images carried a migration
+  to OpenSSL 3.5 with a compatibility shim in place of the 1.1 library. The shim exported 95 symbols;
+  hostapd — which authenticates every Wi-Fi client on this platform and is launched by the Broadcom
+  radio monitor rather than by rc — needs 338. Lazy binding let it start, so 2.4 and 5 GHz came up on
+  WPA2 paths; then 6 GHz initialised WPA3-SAE, called a missing elliptic-curve function and died, 47
+  restarts in one boot. The field symptom was a flash that appeared to freeze, then no WAN and no
+  Wi-Fi. The line was rebuilt on v3.0.0 without the migration; the work is preserved on a tag for a
+  retry once hostapd is genuinely compiled in this tree. Confirmed on the RT-BE96U: all three hostapd
+  instances alive, 6 GHz serving a 320 MHz client, no restarts.
+
+- **The release gate now checks symbols, not just libraries.** The link check had only ever asked
+  whether each binary's needed libraries resolve, never whether the symbols in them do — the gap
+  v3.0.3 shipped through. A new check resolves every OpenSSL symbol of every consumer in the image
+  (142 of them) against the shipped libraries, and was proven to fail on a deliberately gutted
+  library before it was accepted.
+
+## v3.0.3 — Speed test: the half-enabled feature, the socket ceiling, and saying when the accelerator is off *(built RT-BE96U; withdrawn, see v3.0.4)*
+
+Its content is carried forward unchanged in v3.0.4 and later; the image itself is the one the
+OpenSSL shim broke.
+
+- **The speed test's capability flag now matches the shipped contents.** The engine, page and CGI
+  handlers all shipped, but the build flag that announces the capability to the UI was unset, so the
+  feature was only ever half-declared.
+- **Socket-buffer ceilings raised.** The stock 212992-byte ceiling caps a single stream over a 20 ms
+  path near 85 Mbit/s; raised to 16 MB (ceilings, not allocations) plus a larger device backlog. TCP
+  autotuning is deliberately left alone — ASUS's own commented-out "NAT performance" block would pin
+  it far below the kernel default.
+- **The diagnostics say when forwarded traffic is off the hardware fast path.** Traditional QoS
+  takes the accelerator down and caps a wired client at CPU forwarding speed; nothing surfaced that.
+  New findings cover the accelerator switches, that trap, and the WireGuard skip list. Diagnostics
+  v1.3.12.
+- **Not the speed test:** the `sched: RT throttling activated` line in the field reports is the
+  kernel throttling Broadcom's real-time packet threads while moving packets, and is left alone on
+  purpose.
+
+## v3.0.1 — Policy Routing was failing open on every boot and WAN re-dial, and its self-heal had never run *(built RT-BE96U)*
+
+Four owner field reports traced to source; the headline finding was in none of them.
+
+- **Policy Routing no longer fails open.** A closed ASUS routine that runs on every WAN-up opens with
+  an unconditional flush of the IPv4 rule table, nineteen lines after the firewall installed the
+  policy-routing rules. The marks kept being set with no rule left to select on, and there is no
+  iptables backstop — so IPv4 traffic pinned to a tunnel left through the WAN in the clear, and a
+  BLOCK rule stopped blocking, on every boot and every re-dial. Upstream re-asserts its own VPN
+  killswitch on the very next line; Reaper re-asserted nothing. The rules are now re-asserted after
+  every call site of that routine. This is also the "does not come up at boot" report: the v2.7.6
+  boot fix was intact and the rules applied, then vanished.
+
+- **The watchdog's self-heal runner had been dead code since v2.7.3.** It invoked its applet through
+  a form rc silently ignores, so every "re-applying" line in the log re-applied nothing — the Policy
+  Routing heal and the Warden CRITICAL self-heal alike. It is now installed and called by name, and
+  the ip-rule heal owns its own counters, so the five-strike give-up can actually fire instead of
+  looping every five minutes forever.
+
+- **Warden's outbound blocks are visible in the drops viewer again.** The firewall never stopped
+  logging them; the viewer's server-side filter required the inbound prefix with a trailing space,
+  which cannot match the outbound or self-filter prefixes. Dates to v2.3.3, exposed when v2.4.2 gave
+  outbound its own prefix.
+
+- **Both WireGuard accelerator-bypass writes are now correctly terminated** for a kernel handler that
+  never NUL-terminates its buffer. Userspace only.
+
+- **Regression pins:** seven new markers and two new static checks (the re-assert call sites, and
+  the log-prefix contract shared by rc, httpd and the diag), both proven to go red against the
+  pre-fix tree. Diagnostics v1.3.11 adds findings for the same three faults.
 
 ## v3.0.0 — Backup & Restore you can trust, a finished first-boot story, and the whole window locked behind a regression gate
 
@@ -54,7 +257,9 @@ and closes the release gate on all of it. Four things stand out.
   routed through Tor as well), and four further pull-forwards from the 3006.102.9 alpha.
 
 - **Nothing in this window can quietly regress.** A fresh adversarial security review of the
-  whole window was run and its four actionable findings fixed. A new build-time regression
+  whole window was run and its four actionable findings fixed — among them the inherited DNS
+  Traffic Analyzer query handlers, which passed four request fields unchecked into a prebuilt SQL
+  sink and now validate them the way the neighbouring status handler always did. A new build-time regression
   framework (`reaper_static_checks.py` — dictionary lockstep, ASCII/control-byte scanning,
   brace-parity, macro-continuity — plus a hardened CSRF checker) is wired into the release
   gate, so a later change that drops any of these fixes stops the image from shipping.

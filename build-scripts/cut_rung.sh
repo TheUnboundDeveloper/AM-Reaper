@@ -14,6 +14,11 @@
 #   1. preflight        branch, clean tree, version format, EXTENDNO agreement
 #   2. export           format-patch since the last rung, doc hunks excluded
 #   3. normalize        From: identity + message scrub
+#   3b. hidden chars    the new patches' ADDED lines must be readable by a
+#                       person: no bidi overrides, zero-width/format or control
+#                       characters, invalid UTF-8, look-alike letters in
+#                       identifiers (reaper_hiddencheck.py). Runs BEFORE
+#                       install so a hit leaves the lean repo untouched.
 #   4. install          copy into patches/, assert gapless
 #   5. replay           git am the WHOLE series onto the pinned base; capture
 #                       both tree hashes; assert the version and the diff
@@ -121,6 +126,19 @@ for p in "$STAGE"/*.patch; do
     -e "s|$OLDREPO|AM-Reaper|g" "$p"
 done
 echo "  From: -> $IDENTITY, build-host + repo-name strings scrubbed"
+
+# ------------------------------------------------------- 3b. hidden characters
+step "3b. hidden characters (the new code must be readable by a person)"
+# Only the ADDED lines of the freshly exported patches, and before they touch
+# the lean repo: bidirectional overrides, zero-width and format characters,
+# control bytes, invalid UTF-8, look-alike letters inside identifiers are FATAL;
+# odd spaces, eval/atob shapes and very long lines are printed as warnings and
+# do not stop the cut. .github/hidden-allowlist.txt downgrades vendored paths.
+# A FAIL means the source commit carries something a reviewer cannot see - fix
+# the commit, never the allowlist, then re-cut.
+python3 "$LEAN/build-scripts/reaper_hiddencheck.py" \
+    --allowlist "$LEAN/.github/hidden-allowlist.txt" --max-details 8 "$STAGE"/*.patch \
+  || die "hidden-character scan FAILED on the new patches - nothing installed"
 
 # ------------------------------------------------------------------ 4. install
 step "4. install into patches/"

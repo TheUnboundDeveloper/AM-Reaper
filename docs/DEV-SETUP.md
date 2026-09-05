@@ -6,7 +6,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 
 ---
 
-## 0. Ground rules (read first)
+## Ground rules (read first)
 
 - **Primary target is the RT-BEXXU.** Built from `release/src-rt-5.04behnd.4916`, model `rt-BEXXU` (Broadcom BCM4916 / WiFi 7). The RT-BEXXU is the hardware-validated model; the same tree also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`), plus the newer **RT-BE92U** (BCM6765, `make rt-be92u`, which builds to the `96765GW` profile in a worktree). This guide walks the RT-BEXXU path; the sibling builds are the same recipe with a different target.
 - **Never push.** All work stays on the local `BEXXU-only` branch. `origin` points at the upstream/mirror — do **not** `git push`.

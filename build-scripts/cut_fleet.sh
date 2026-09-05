@@ -277,6 +277,13 @@ if [ "$DO_OVERLAY" = 1 ]; then
   step "overlay identity gate (the same check CI runs)"
   python3 "$LEAN/build-scripts/ci/check_overlays.py" "$LEAN/overlays" \
     || die "overlay identity gate FAILED - an overlay carries shared code, not identity"
+
+  # The overlays are regenerated diffs, so they are new code too: the same
+  # hidden-character scan cut_rung.sh ran on the rung (its step 3b).
+  step "hidden characters in the overlays"
+  python3 "$LEAN/build-scripts/reaper_hiddencheck.py" \
+      --allowlist "$LEAN/.github/hidden-allowlist.txt" --max-details 8 "$LEAN"/overlays/*.patch \
+    || die "hidden-character scan FAILED on an overlay"
 fi
 
 # ================================================= doc worklist ===============

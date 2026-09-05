@@ -1,0 +1,475 @@
+From 2aa5d966cd5d9d53d6288d0c8144ebe7afec792a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 4 Sep 2026 18:23:58 -0400
+Subject: [PATCH] v3.0.8: amaspark - with MLO the carriers are one link set;
+ raise all of it
+
+Field, RT-BE96U, mld_enable=1: parking wl0 took wl1 and wl2 down with it (the
+backhaul MLO link set), the daemon saw them already down, treated them as not
+its own, and a release raised only wl0 - leaving the 5 and 6 GHz carriers down
+with parking off. Every client network on every band stayed up throughout.
+
+The daemon now snapshots every primary before it acts, claims any that
+dropped alongside (logged as a linked drop, 6 GHz included - the driver's
+doing, not ours), and raises the whole set on release. With MLO off nothing
+changes: the radios park and release independently and 6 GHz is never
+touched. Both worlds exercised in a host simulation around the real file.
+RWIF_86 reworded to say so (25 dicts).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/amaspark.c | 54 +++++++++++++++++++++++---------
+ release/src/router/www/BR.dict   |  2 +-
+ release/src/router/www/CN.dict   |  2 +-
+ release/src/router/www/CZ.dict   |  2 +-
+ release/src/router/www/DA.dict   |  2 +-
+ release/src/router/www/DE.dict   |  2 +-
+ release/src/router/www/EN.dict   |  2 +-
+ release/src/router/www/ES.dict   |  2 +-
+ release/src/router/www/FI.dict   |  2 +-
+ release/src/router/www/FR.dict   |  2 +-
+ release/src/router/www/HU.dict   |  2 +-
+ release/src/router/www/IT.dict   |  2 +-
+ release/src/router/www/JP.dict   |  2 +-
+ release/src/router/www/KR.dict   |  2 +-
+ release/src/router/www/MS.dict   |  2 +-
+ release/src/router/www/NL.dict   |  2 +-
+ release/src/router/www/NO.dict   |  2 +-
+ release/src/router/www/PL.dict   |  2 +-
+ release/src/router/www/RO.dict   |  2 +-
+ release/src/router/www/RU.dict   |  2 +-
+ release/src/router/www/SL.dict   |  2 +-
+ release/src/router/www/SV.dict   |  2 +-
+ release/src/router/www/TH.dict   |  2 +-
+ release/src/router/www/TR.dict   |  2 +-
+ release/src/router/www/TW.dict   |  2 +-
+ release/src/router/www/UK.dict   |  2 +-
+ 26 files changed, 65 insertions(+), 39 deletions(-)
+
+diff --git a/release/src/router/rc/amaspark.c b/release/src/router/rc/amaspark.c
+index 8fc5b314c7..6bb7052140 100644
+--- a/release/src/router/rc/amaspark.c
++++ b/release/src/router/rc/amaspark.c
+@@ -28,6 +28,13 @@
+  *           and, as a backstop, if cfg_obstatus sticks non-idle for 20 min.
+  *   Only what THIS daemon parked is ever released: a radio the operator or a
+  *   schedule turned off is left alone, and a radio with wlN_radio=0 is skipped.
++ *   FIELD 2026-09-04 (owner's BE96U, mld_enable=1): the three primaries form
++ *   the backhaul MLO link set, so parking wl0 took wl1 AND wl2 down with it,
++ *   and a release that raised only wl0 left the other two down. The daemon
++ *   therefore snapshots every primary before it parks, claims any that dropped
++ *   alongside (6 GHz included - that is the driver's doing, not ours, and the
++ *   6 GHz client network stayed up with its clients throughout), logs each as
++ *   a linked drop, and raises the whole set on release.
+  *   Every park and release is one syslog line naming the interface, the band
+  *   and the reason. A wireless restart brings the primaries back up by itself;
+  *   the next tick (5 s) parks them again, which is why this is a daemon and
+@@ -123,7 +130,7 @@ int amaspark_main(int argc, char *argv[])
+ {
+ 	char parked[AP_MAXU] = { 0 };
+ 	char ifn[AP_MAXU][IFNAMSIZ];
+-	int nband[AP_MAXU];
++	int nband[AP_MAXU], before[AP_MAXU], radio[AP_MAXU];
+ 	int last_enabled = -1, last_window = 0, ob_capped = 0;
+ 	long ob_start = 0;
+ 	(void)argc; (void)argv;
+@@ -135,6 +142,8 @@ int amaspark_main(int argc, char *argv[])
+ 
+ 	memset(ifn, 0, sizeof(ifn));
+ 	memset(nband, 0, sizeof(nband));
++	memset(before, 0, sizeof(before));
++	memset(radio, 0, sizeof(radio));
+ 
+ 	/* adopt what a previous instance left parked (restart_amaspark, or it
+ 	 * died): those carriers are ours to release when the rules say so */
+@@ -203,32 +212,49 @@ int amaspark_main(int argc, char *argv[])
+ 		}
+ 		last_window = window;
+ 
++		/* the radios, and where every primary stands before we touch anything */
+ 		for (u = 0; u < AP_MAXU; u++) {
+ 			char key[24], *v;
+-			int st, radio;
+ 			snprintf(key, sizeof(key), "wl%d_ifname", u);
+ 			v = nvram_safe_get(key);
+-			if (!*v) { ifn[u][0] = 0; continue; }
++			if (!*v) { ifn[u][0] = 0; before[u] = -1; continue; }
+ 			strlcpy(ifn[u], v, sizeof(ifn[u]));
+ 			snprintf(key, sizeof(key), "wl%d_nband", u);
+ 			nband[u] = nvram_get_int(key);
+-			if (nband[u] == 4) continue;		/* 6 GHz: never */
+ 			snprintf(key, sizeof(key), "wl%d_radio", u);
+ 			v = nvram_safe_get(key);
+-			radio = *v ? atoi(v) : 1;
+-			if (!radio) { if (parked[u]) { parked[u] = 0; changed = 1; } continue; }
++			radio[u] = *v ? atoi(v) : 1;
++			before[u] = radio[u] ? bss_state(ifn[u]) : -1;
++			if (!radio[u] && parked[u]) { parked[u] = 0; changed = 1; }
++		}
+ 
+-			if (want) {
+-				if (parked[u]) continue;
+-				st = bss_state(ifn[u]);
+-				if (st != 1) continue;	/* down already (not ours) or unknown */
++		if (want) {
++			int acted = 0;
++			for (u = 0; u < AP_MAXU; u++) {
++				if (!ifn[u][0] || !radio[u] || parked[u]) continue;
++				if (nband[u] == 4) continue;		/* 6 GHz: never by our hand */
++				if (before[u] != 1) continue;		/* down already (not ours) or unknown */
+ 				bss_set(ifn[u], 0);
+ 				parked[u] = 1;
+-				changed = 1;
++				changed = acted = 1;
+ 				logmessage(AP_TAG, "parked %s (%s backhaul carrier): %s", ifn[u], band_name(nband[u]), why_park);
+-			} else if (parked[u]) {
+-				st = bss_state(ifn[u]);
+-				if (st == 0) bss_set(ifn[u], 1);
++			}
++			/* MLO: the link set went down together. Claim what dropped with us so
++			 * the release raises all of it, and say so - silence here is what
++			 * left two carriers down in the field. */
++			if (acted) {
++				for (u = 0; u < AP_MAXU; u++) {
++					if (!ifn[u][0] || !radio[u] || parked[u] || before[u] != 1) continue;
++					if (bss_state(ifn[u]) != 0) continue;
++					parked[u] = 1;
++					changed = 1;
++					logmessage(AP_TAG, "%s (%s backhaul carrier) went down with the parked link - the carriers form one MLO link set; it will be raised with the rest", ifn[u], band_name(nband[u]));
++				}
++			}
++		} else {
++			for (u = 0; u < AP_MAXU; u++) {
++				if (!parked[u]) continue;
++				if (ifn[u][0] && radio[u] && bss_state(ifn[u]) == 0) bss_set(ifn[u], 1);
+ 				parked[u] = 0;
+ 				changed = 1;
+ 				logmessage(AP_TAG, "released %s (%s backhaul carrier): %s", ifn[u], band_name(nband[u]), why_rel);
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 3fcacbc439..9659e8a1b6 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 7e78190abe..aee2e5416a 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 290c58eb1a..58a7b6051b 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 4cf0702b02..b791af0ff6 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index fff440b64b..3b43102936 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 6f1eb218ee..26c5639d42 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 1b7561f031..ecc1e8d523 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index f47cbbb242..c9fba568a0 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d9fd968609..d2e6a0d017 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index daf9922685..a74a476b6d 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 0cc42df868..98548183f3 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 5c6950109a..f7a11b1a51 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 3425e958e9..6ed0471875 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index f9bd425741..a2f6c111b9 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index f4d1b7ba97..fe03a3cae2 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index f05ff7f929..4585414eef 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 5b891e7bb6..8caf2e007d 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 9546c99a5d..789e2e543c 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index cfb9ebad14..78cc6d1643 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 06121cbe07..980f99839d 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index a0a08d7878..648bcb3e37 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 50dab95dcb..b5f2ad3395 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index cef8f8f771..0aa50a728c 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 0e9a036058..ddb7053556 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 58ee002436..ba48f0e3b9 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6836,7 +6836,7 @@ RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not store
+ RBKP_48=Sealed backup download started.
+ RBKP_49=This backup is sealed
+ RWIF_85=AiMesh backhaul parking
+-RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. With MLO enabled the three carriers form one link set and go down and come back together, 6 GHz included; your own networks on every band stay up throughout. Every park and release is written to the system log with its reason.
+ RWIF_87=Park the backhaul while no node is paired
+ RWIF_88=Parking is on
+ RWIF_89=Parking is off
+-- 
+2.25.1
+

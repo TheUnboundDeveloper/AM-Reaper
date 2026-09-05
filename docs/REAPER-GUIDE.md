@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.0.7** · 2026-09-03 <!--@stamp-->
+> **Doc status:** current as of **v3.0.9** · 2026-09-05 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.0.7 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.0.9 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -268,7 +268,13 @@ The **full backup** is the file to keep before a factory reset, a reflash or a h
 
 The **settings file** is the small, portable one. Importing it **on the same model** restores the router settings and reboots, then Complete restore finishes the Reaper half exactly as above. Importing it **on a different model or firmware** skips the router settings inside and imports only the Reaper configuration, with no reboot: Gatekeeper and Warden take effect at once, and the Firewall and Policy Routing lists are loaded as **drafts** — open each page, **Apply**, then **Keep** — so a restored rule that cuts off your own access still reverts on its own (2.7). Nothing is written to `/jffs/configs`. The page reports `Imported: N setting(s), M list(s), K rejected`.
 
-Either file **contains your device addresses, passwords and your domain lists** — keep it with your other private backups. The stock `.CFG` save options ("remove password from file", "transfer DDNS") are gone with the stock panel: both files keep passwords and do not transfer DDNS.
+Either file **contains credentials**: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins — and the full backup adds the HTTPS and SSH private keys and the traffic-history databases. Each card says so under its buttons. The stock `.CFG` save options ("remove password from file", "transfer DDNS") are gone with the stock panel: both files keep passwords and do not transfer DDNS. Since v3.0.8 there are two ways to hold such a file safely, and one guard on the way in:
+
+**Sealing (v3.0.8).** Every export asks for your **admin password** (checked on the router, on that request — a stolen session or a script foothold in the browser is not enough to pull the file; five wrong answers lock exports for a minute) and offers an optional **backup passphrase**. Give one and the file is **sealed**: encrypted with AES-256-GCM under a key derived from the passphrase with scrypt. A sealed file cannot be opened without the passphrase, and it refuses to open at all if a byte of it was changed, so a backup that someone "fixed" for you fails before the router parses any of it. The passphrase is **not stored anywhere** — lose it and the file is gone. Leave the field blank and the file is the plain one described above. Sealed files carry a second extension (`.rbk.enc`, `.json.enc`); restore and import recognise them and ask for the passphrase. A sealed settings file is opened on the router rather than in the browser and then behaves exactly like the plain one (same model: settings + reboot; other model: the Reaper half, no reboot).
+
+For the record, the sealed container is plain enough to open without a router: a line `REAPER-SEALED 1`, one JSON line with `salt`, `iv` (base64), the scrypt cost `n`/`r`/`p` and the plaintext `len`, then `len` bytes of AES-256-GCM ciphertext and the 16-byte tag; the two header lines are the authenticated additional data, the key is 32 bytes of scrypt over the passphrase. The plaintext is byte-for-byte the unsealed file.
+
+**On the way in.** Every export, import and refused request is logged with the client's address. A restore refuses a `/jffs` archive in which a later entry would be written **through** a symlink the archive itself planted (the one way a crafted archive could reach outside `/jffs`); links that nothing is written through restore as before, so addon setups are unaffected.
 
 ### 2.6 A USB disk for the long-term store
 
@@ -1188,6 +1194,28 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 **WiFi Professional — All Bands** lays every radio side by side (it builds itself from the router's real radio list, so a four-radio GT-BE98 gets four columns) and applies once: only changed fields are written and all radios cycle together (~10 s) instead of once per band. It asks the router once rather than 116 times, so it opens quickly. Region and the wireless scheduler stay on the classic per-band page; main-network SSID visibility and client isolation are set on the General Wireless and Network pages because on this hardware the main network is an SDN profile. *Disable 802.11b* is the master for the 2.4 GHz preamble control; "B/G Protection" was removed because the driver resets it on every restart. Roaming assistant: 0 = off.
 
 **Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal). The Professional page's first load after an upgrade can take ~15 s; the cause is under investigation.
+
+**AiMesh backhaul parking (v3.0.8, off by default).** Even with no mesh node paired, AiMesh keeps its
+hidden backhaul network on the air on every band: the primary BSS of each radio carries a hashed
+SSID, beacons like any other network, and accepts WPA connections with a key derived inside the
+AiMesh components rather than chosen by you. On 2.4 and 5 GHz each network beacons on its own, so
+the idle carrier is a full beacon stream (about two percent of 2.4 GHz airtime, the band most IoT
+devices use). On 6 GHz the co-located networks share one beacon and the primary is the one that
+transmits it, so there is nothing to save there.
+
+Turn parking on and the 2.4 and 5 GHz carriers are taken off the air whenever this router is the
+AiMesh primary, no node is paired, and no search or onboarding is running. The moment you press
+**Search** or **Add node** on the Network Map they come back within five seconds, so a node can
+find and join them; if the search ends without a node, they park again. A paired mesh is never
+parked and a radio you have switched off is never touched. The daemon never parks 6 GHz by hand,
+but with MLO enabled the three carriers are one link set: parking one drops them all, and the
+daemon logs the linked drops and raises the whole set on release. Every park and
+release is written to the system log with the interface, the band and the reason
+(`amaspark: parked wl1 (5 GHz backhaul carrier): no AiMesh node is paired and no search or onboarding
+is running`), and the Wireless page shows the last state. Your own networks are unaffected: the
+virtual networks on each band keep serving while the carriers are down, which was verified on the
+RT-BE96U with MLO on and clients attached on all three bands. The gain is mostly hygiene, a listener fewer and a quieter channel,
+rather than speed.
 
 ### 4.11 Long-Term Storage and Data Export
 

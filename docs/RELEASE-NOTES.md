@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.0.7** · 2026-09-03 <!--@stamp-->
+> **Doc status:** current as of **v3.0.9** · 2026-09-05 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.0.7** <!--@treever--> — `3006.102.8_Reaper_v3.0.7`, built on RT-BE96U. The fleet rung for the 3.0.x window: **v3.0.0** (Backup & Restore rebuilt into one page you can trust, first boot finished without a wizard, the upstream 3006.102.9 security pull-forwards, and the whole window behind a regression gate); **v3.0.1** (Policy Routing was failing open on every boot and WAN re-dial, and its self-heal had never run); **v3.0.3 / v3.0.4** (the speed test's half-enabled feature and socket ceiling, the self-heals held off until the box has finished booting, and an OpenSSL 3.5 migration withdrawn); **v3.0.5** (Policy Routing's Apply, Keep and Revert tell the truth, the speed test says why it failed, Warden's resolver carve-out and the diagnostics' servers-file fix); **v3.0.6** (the full backup carries `/jffs`, the settings export embeds the router `.CFG`, two panels instead of four). The series stands at **602 patches** (0564–0593 for v3.0.0, 0594–0602 for v3.0.1–v3.0.7). |
+| **Current rung** | **v3.0.9** <!--@treever--> — `3006.102.8_Reaper_v3.0.9`, built on RT-BE96U. Two rungs in one cut: **v3.0.8** (the backup file guarded five ways — sealed with a passphrase, the admin password asked again to export, the puller's address in the log, named credentials on every card, a restore that refuses to write through a planted link — and AiMesh backhaul parking, which takes the idle hidden backhaul network off the 2.4 and 5 GHz air until a node is searched for or paired) and **v3.0.9** (six low-hanging fixes: the Wireless Quality page repaints when the router is back, Gatekeeper stops calling a wireless client wired, rwatch heals a missing Warden chain, the dashboard device list caps at four rows, parking sees the GT-BE98 family's fourth radio, housekeeping). The cut itself now refuses code a person cannot read. The series stands at **608 patches** (0594–0602 for v3.0.1–v3.0.7, 0603–0608 for v3.0.8–v3.0.9). |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
@@ -19,6 +19,45 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.0.9 — the backup file guarded five ways, the idle backhaul parked, six small fixes
+
+*Built on RT-BE96U. Cut as patches 0603–0608, bringing the series to 608. This cut carries both v3.0.8
+and v3.0.9; the RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+
+**The backup file is no longer the softest way in** (v3.0.8). A backup is the whole router in one file:
+Wi-Fi passwords, the admin password, VPN keys, the HTTPS and SSH private keys, the traffic and
+web-history databases. It was plain gzip, and pulling it needed only a logged-in session. Five guards:
+both exports can be **sealed with a passphrase** (AES-256-GCM, key from scrypt; a sealed file is
+unreadable without it and refuses to open if a byte was altered, and the passphrase is never stored);
+every download **asks for the admin password again** and checks it on the request itself, with a
+one-minute lockout after five wrong answers; every export, import and refusal line in the syslog
+**carries the client address**; each backup card **names the credentials** its file contains; and a
+restore **refuses to write through a link** a crafted `/jffs` archive planted earlier. A sealed settings
+file restores on the router rather than in the browser, on the same model or another, exactly as the
+plain file does. Older backups restore unchanged.
+
+**AiMesh backhaul parking** (v3.0.8, Wireless page, off by default). With no node paired, the hidden
+backhaul network is still on the air on every band, a full beacon stream on 2.4 and 5 GHz and a WPA
+network accepting connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off
+the air while no node is paired and no search is running, releases them the moment you search for or
+add a node, and parks them again if the search ends without one. It never parks 6 GHz by hand; with
+MLO the three carriers are one link set and drop and return together, which the daemon detects, logs
+and raises whole on release. Every transition is in the syslog.
+
+**Six fixes that needed no field data** (v3.0.9). The Wireless Quality page polls until the router
+answers again after a Lock or Unlock and repaints, and says so if it never does. Gatekeeper no longer
+calls a wireless client "Wired" from a stale snapshot. rwatch heals a Warden chain that is missing, not
+only one that is poisoned. The dashboard device list caps at four rows and scrolls the rest. Backhaul
+parking handles the GT-BE98 family's fourth radio in the MLO link set. The speed test's notice box
+grows with its text instead of cutting the failure reason off at the stock 200 px. The metrics-export
+masking rewrites its file once, five orphaned dashboard style blocks are gone, and the developer setup
+guide's first section is no longer numbered zero.
+
+**The cut refuses code a person cannot read.** Every rung's added lines are now scanned, before the
+patches are installed, for bidirectional overrides, zero-width and control characters, invalid UTF-8
+and look-alike letters inside identifiers; the overlays get the same scan and CI repeats it over the
+whole series on every push. A hit in Reaper code is fixed in the source, never by editing the allowlist.
 
 ## What's new in v3.0.7 — the 3.0.x window on every model
 

@@ -26,6 +26,75 @@ node, not only on the primary router.
 
 ---
 
+## v3.0.9 — Low-hanging fruit *(built RT-BE96U)*
+
+Six backlog items that needed no field data, plus one carry-over:
+
+- **Wireless Quality: the page refreshes when the router is back.** Lock and Unlock restart the
+  radio the admin is usually connected through, and the old single fetch landed mid-outage, so a
+  lock that worked looked like it did nothing. The page now polls until the router answers again
+  and repaints; if it never does within two minutes it says so.
+- **Gatekeeper no longer calls a wireless client "Wired"** because of a snapshot taken before the
+  station table caught up. The status action now reads the live mesh client lists the Devices page
+  already uses and lets a live wireless signal win over the cached flag. Display only.
+- **rwatch heals a missing Warden chain.** It healed a poisoned one; an absent one, the end state
+  of the stuck-nvram path that fits the BE92U addon-box report, had no healer. Once per ten minutes,
+  under the firewall lock, with a log line.
+- **Dashboard device list caps at four rows** and scrolls the rest, as asked; the old bound was
+  whatever the neighbouring card's height happened to be.
+- **AiMesh backhaul parking sees four radios**, so the GT-BE98 family's fourth carrier is handled
+  in the MLO link set too.
+- **The speed test's notice box grows with its text.** Stock fixes it at 200 px for its own three
+  lines; the failure reason added in v3.0.5 is a fifth line and the engine's own error wraps past the
+  box, so a 10 Gbit/s user saw "Cannot read:" and nothing after it. Desktop layout only; the stock
+  stylesheet is untouched.
+- Housekeeping: the metrics-export MAC masking rewrites its file once instead of once per device;
+  five orphaned dashboard style blocks removed after a cross-page usage check; the developer setup
+  guide's first section is no longer numbered zero.
+- **The cut refuses code a person cannot read.** Before a rung's patches are installed, their added
+  lines are scanned for bidirectional overrides, zero-width and control characters, invalid UTF-8 and
+  look-alike letters inside identifiers; the regenerated overlays get the same scan, and CI repeats
+  it over the whole series on every push. Vendored third-party paths are downgraded to warnings by an
+  allowlist; a hit in Reaper code is fixed in the source, never in the allowlist.
+
+## v3.0.8 — The backup file is no longer the softest way in *(built RT-BE96U)*
+
+A backup is the whole router in one file: Wi-Fi passwords, the admin password, VPN keys, the HTTPS
+and SSH private keys, and the traffic and web-history databases. Until now the file was plain gzip,
+and pulling it needed only a logged-in session. Five guards, each for a different way that file can
+be turned against its owner:
+
+- **Sealed backups.** Both exports — the full backup and the settings file — can be sealed with a
+  passphrase (AES-256-GCM, key from scrypt). A sealed file is unreadable without the passphrase and
+  refuses to open if a single byte was altered, so a "fixed" backup from a stranger fails before the
+  router parses any of it. The passphrase is never stored. Leave it blank and the file is the plain
+  one it always was. The format is documented in the guide so a sealed file can be opened off-router
+  with standard tools.
+- **The admin password, again, to export.** Every download asks for it and the router checks it on
+  the request itself, on top of the session and the anti-cross-site token. Five wrong answers lock
+  exports for a minute.
+- **Who pulled it.** Every export, import and refusal line in the syslog now carries the client
+  address.
+- **Named credentials.** Each backup card says plainly what its file contains.
+- **Restore refuses a write-through.** A crafted `/jffs` archive can no longer place a file through a
+  symlink it planted earlier, the one path out of `/jffs` that busybox does not already strip. Links
+  that nothing is written through — addon boxes have them — restore as before.
+
+The restore of a sealed settings file happens on the router rather than in the browser: on the same
+model it restores the router settings and reboots, on another model it imports the Reaper half without
+a reboot, exactly as the plain file does. Older backups restore unchanged.
+
+**AiMesh backhaul parking** (Wireless page, off by default). With no mesh node paired, the hidden AiMesh
+backhaul network is still on the air on every band: a full beacon stream on 2.4 and 5 GHz (a third of
+the beacon load there, about two percent of 2.4 GHz airtime) and a WPA network accepting connections
+with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air while no node is
+paired and no search is running, releases them the moment you search for or add a node, and parks
+them again if the search ends without one. The daemon never parks 6 GHz by hand; with MLO enabled the
+three carriers form one link set and drop and return together, which the daemon detects, logs and
+handles on release. Every park and release is a syslog line with the interface, the band and the
+reason. Measured on the RT-BE96U with MLO on: every network on every band kept its clients while
+all three carriers were down.
+
 ## v3.0.7 — The 3.0.x window on every model *(built RT-BE96U)*
 
 The fleet rung. It consolidates every rung since v3.0.0 — v3.0.1 through v3.0.6, each built and

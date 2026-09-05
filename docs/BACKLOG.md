@@ -44,12 +44,10 @@ The ordered short list.
 3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
 4. **[P2] Main Wi-Fi network sits on the primary BSS after a factory reset** — the no-wizard
    first-boot flow must own the SDN migration QIS used to trigger.
-5. **[P2] Gatekeeper labels a wireless client "Wired"** — GK status trusts gkd's frozen `seen.tsv`.
-6. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
-7. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
-8. **[P2] Wireless Quality Lock/Unlock: refresh once the router is back** instead of one 18 s fetch.
-9. **[P3] CVE check 2026-08-30 residue** — cheap backports and known-limitation notes.
-10. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
+5. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
+6. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
+7. **[P3] CVE check 2026-08-30 residue** — cheap backports and known-limitation notes.
+8. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
 ---
 
@@ -66,8 +64,6 @@ The ordered short list.
   BE96U. **[owed: one diag after a failing run]** ↳ notes: `speedtest-10g-links.md`
 - **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — rwatch, Warden refresh and the PBR
   deadline watcher all dead on that box. **[needs the GT-BE98 syslog]** ↳ notes: `gt-be98-empty-crontab.md`
-- **[P2] Gatekeeper occasionally labels a wireless client "Wired"** — the GK status action emits
-  gkd's frozen `seen.tsv` verdict; display only, enforcement is by MAC. ↳ notes: `gatekeeper-wireless-labeled-wired.md`
 - **[P3] CVE / component check 2026-08-30 residue** — no reachable HIGH, nothing MED at defaults;
   what it queues: cheap backports, known-limitation notes, the inert manifest signature, hygiene.
   ↳ notes: `cve-check-2026-08-30.md`
@@ -78,8 +74,14 @@ The ordered short list.
   QIS used to trigger never runs until an unrelated apply; the no-wizard first-boot flow must own it,
   without forcing `x_Setting=1` at factory. **[owed]** ↳ notes: `main-wifi-primary-bss-after-reset.md`
 - **[P2] Warden "crash" on the BE92U addon box** after an amtm + Diversion update — one code-plausible
-  path (addon nvram storm → wlcsm wedge → Warden chain missing); defensive fix designed and held.
+  path (addon nvram storm → wlcsm wedge → Warden chain missing). The defensive half is built: rwatch
+  re-applies a missing chain. The root cause still wants the tester's syslog.
   **[owed: tester data]** ↳ notes: `warden-crash-be92u-addons.md`
+- **[P2] Hardware QoS on the RT-BE92U: PI2 AQM is not supported by the Archer traffic manager**
+  (BCM6765; drop algorithms stop at WRED), so both hardware engines most likely fail at the first
+  `setqdropalg` call and the QoS Diagnostics tab has no data source on that chip. Runtime PI2→RED
+  fallback designed; a 30-second tmctl probe from a forum tester decides whether to build it.
+  **[needs data: no BE92U in the lab]** ↳ notes: `hwqos-be92u-archer-fallback.md`
 - **[P2] Firewall hosts rule: pasting an IP list blanks the GUI until httpd restarts** (BE88U,
   v2.7.1) — no blocking operation visible in the save/apply path. **[owed: repro]**
   ↳ notes: `firewall-hosts-paste-blanks-gui.md`
@@ -91,12 +93,6 @@ The ordered short list.
 
 ## UI / UX polish
 
-- **[P2] Wireless Quality: refresh once the router is reachable again after Lock/Unlock** — the
-  single 18 s fetch lands mid-outage, so a lock that worked looks like it did nothing.
-  ↳ notes: `wireless-lock-refresh.md`
-- **[P3] Dashboard per-band device list: cap at four rows, scroll the rest** (owner ask
-  2026-08-30) — today's bound is indirect, via the sibling card's height. **[owed]**
-  ↳ notes: `dashboard-band-list-cap.md`
 - **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
   the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Loader z-index raise is class-wide** — benign; scope to `#Loading` if a modal ever renders
@@ -129,8 +125,6 @@ The ordered short list.
 
 ## Documentation
 
-- **[P3] Doc sections that start at 0** (known: `DEV-SETUP.md` §0) — make the first section 1 or
-  drop the number, minding cross-references. ↳ notes: `doc-section-numbering.md`
 - **[P3] Fold `FIREWALL-GUIDE.md` and `VPN-ROUTING-GUIDE.md` into `REAPER-GUIDE.md`** — repoint
   the in-UI `?` links and the httpd doc whitelist as the files retire. ↳ notes: `fold-howto-guides.md`
 - **[P3] Translations — one residual** — the pinned protocol values and the deliberately literal
@@ -144,8 +138,8 @@ The ordered short list.
 ## Code quality / deferred (with reason)
 
 - **[P2] The code-review MEDIUM/LOW tail, batch B** — `do_reaper_conn_cgi` lock order and the
-  iptables-restore batching are owner-deferred; the `rexport` mask loop is narrow; four dashboard CSS
-  blocks need a usage audit; `pinTarget()` is closed. **[owed]** ↳ notes: `code-review-tail.md`
+  iptables-restore batching are owner-deferred; `pinTarget()` is closed; the `rexport` batched sed
+  and the dashboard CSS audit shipped. **[owed: the two deferred items]** ↳ notes: `code-review-tail.md`
 - **[P3] Policy Routing: recapture of flows that leaked while the rules were absent** — healer path
   only, if ever; never a blanket `conntrack -F`. **[deferred]** ↳ notes: `pbr-conntrack-recapture.md`
 - **[P3] `/tmp` dir-ownership hardening** — one shared validate-or-refuse helper, ~11 sites.

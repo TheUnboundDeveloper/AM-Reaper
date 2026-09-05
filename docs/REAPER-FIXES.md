@@ -596,3 +596,19 @@ CA bundle, host pin, model/variant and the manifest's SHA-256, and nothing flash
 but the manifest carries no author signature (a compromised repository could offer a matching pair);
 a key-custody decision, tracked in `BACKLOG.md`. **R7-REL-001** — the watchdog's routing self-heal
 runs the idempotent apply script without the firewall lock (transient inconsistency at worst).
+
+## Backup export as a data-harvesting surface — owner review 2026-09-04 (v3.0.8)
+
+Reaper-authored code (`httpd/web.c`, the Backup & Restore page); not an inherited defect. Reviewed
+because a backup is the whole network in one file and the file was plain gzip behind a session cookie.
+
+| # | Surface | Guard (v3.0.8) |
+|---|---|---|
+| B1 | A backup at rest (synced folder, forum attachment, stolen laptop) is the Wi-Fi keys, the reversibly scrambled admin password, VPN/TLS/SSH private keys and per-device history in the clear | Optional **sealed** export for both files: AES-256-GCM, 32-byte key from scrypt (N=32768, r=8, p=1), random 16-byte salt and 12-byte IV per file, both header lines as authenticated additional data. Passphrase never stored. |
+| B2 | Any archive with the right model string restores; a `/jffs` tar can carry boot scripts | The seal doubles as integrity: a modified or attacker-built sealed file fails the GCM tag before any parsing. Plain archives remain restorable for compatibility. |
+| B3 | One XSS hole or one stolen session = one same-origin fetch of the whole file (the token is in page JS) | **Re-authentication on export**: the admin password rides in the request body (POST, never the URL) and is checked with `compare_passwd_in_shadow()` in the download handler itself; the page pre-checks it (`action=reauth`) so a wrong answer is a message, not a junk file. In-memory lockout: 5 failures → 60 s. |
+| B4 | No forensics: the export log line said only that a download happened | Client address on every export, import and refusal line. |
+| B5 | A crafted `/jffs` archive: symlink member, then a member written through it — the one traversal busybox tar does not strip | `rbk_tar_links_ok()`: `tar -tv` pass before extraction; any entry whose path traverses an earlier symlink member refuses the restore (`ec: jffslink`). Links nothing is written through are allowed (addon boxes carry them). |
+
+Verified off-router with the exact functions cut from `web.c`: seal→unseal round trip (82 B and 3 MB), interoperation both ways with an independent Python implementation (`hashlib.scrypt` + `cryptography` AES-GCM), and refusal of a wrong passphrase, a flipped ciphertext byte, an altered meta line and an out-of-range scrypt cost; the symlink check on benign, addon-style, space-in-name, look-alike-prefix and two escaping archives.
+

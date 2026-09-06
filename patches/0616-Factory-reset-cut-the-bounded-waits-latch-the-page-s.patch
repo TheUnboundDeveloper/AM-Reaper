@@ -1,0 +1,487 @@
+From 970c8cf6724c08601530700eaf90488a12adfc0a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 12:40:47 -0400
+Subject: [PATCH] Factory reset: cut the bounded waits, latch the page's
+ down-detect, tell the operator how to get back
+
+Timing pass over the GUI factory-reset chain (httpd -> rc -> init),
+traced 2026-09-06 for the "took a long time to reboot" report on v3.1.0.
+
+httpd/web.c
+- prepare_restore(): the stop_app round trip is a synchronous rc_service
+  wait (up to 2 min for rc idle + up to 2 min for completion) and rc's
+  stop_app() returns -1 at once unless a USB application is mounted
+  (apps_dev + apps_mounted_path). Send it only when it has work.
+- both Restore branches: notify_rc_and_wait_2min() instead of the
+  sys_default() macro, whose notify_rc() drops the event after 15 s if rc
+  is busy (ejusb hotplug churn) and the reset silently never happens.
+- "factory reset:" syslog lines at request and at the stop_app decision.
+
+rc/services.c factory_reset()
+- take ACT_REBOOT (after wait_action_idle) before stop_wan(), the way the
+  "reboot" handler does: later wait_action_idle() callers stop at once
+  and shutdn() skips its 30-s busy loop on a stale action lock.
+- three syslog timers (begin / wan+usb stopped / erased, handing off).
+
+www/Reaper_Backup.asp + 25 dicts (RBKP_50, RBKP_51)
+- the reset veil now says what happens (factory Wi-Fi ASUS_xx, open;
+  default LAN IP) with a link to the default address, instead of a
+  silent 15-minute poll.
+- pollBack latches "down" only after 5 consecutive misses: httpd blocks a
+  few seconds preparing the reset and answers again before init takes it
+  down, which bounced the page to the login of a router about to reboot.
+- if the router never goes down within 3 min, release the page and say
+  the reset was not accepted (was: veil until the 15-min cap).
+
+Static check factory-reset-fast (build-scripts, lean) pins all three files.
+Metal owed: reset on the BE96U, then read the "factory reset:" lines and
+stop_services/REBOOT timestamps from /jffs/syslog.log.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c           | 24 +++++++++++++---
+ release/src/router/rc/services.c         | 11 ++++++++
+ release/src/router/www/BR.dict           |  2 ++
+ release/src/router/www/CN.dict           |  2 ++
+ release/src/router/www/CZ.dict           |  2 ++
+ release/src/router/www/DA.dict           |  2 ++
+ release/src/router/www/DE.dict           |  2 ++
+ release/src/router/www/EN.dict           |  2 ++
+ release/src/router/www/ES.dict           |  2 ++
+ release/src/router/www/FI.dict           |  2 ++
+ release/src/router/www/FR.dict           |  2 ++
+ release/src/router/www/HU.dict           |  2 ++
+ release/src/router/www/IT.dict           |  2 ++
+ release/src/router/www/JP.dict           |  2 ++
+ release/src/router/www/KR.dict           |  2 ++
+ release/src/router/www/MS.dict           |  2 ++
+ release/src/router/www/NL.dict           |  2 ++
+ release/src/router/www/NO.dict           |  2 ++
+ release/src/router/www/PL.dict           |  2 ++
+ release/src/router/www/RO.dict           |  2 ++
+ release/src/router/www/RU.dict           |  2 ++
+ release/src/router/www/Reaper_Backup.asp | 36 ++++++++++++++++++++----
+ release/src/router/www/SL.dict           |  2 ++
+ release/src/router/www/SV.dict           |  2 ++
+ release/src/router/www/TH.dict           |  2 ++
+ release/src/router/www/TR.dict           |  2 ++
+ release/src/router/www/TW.dict           |  2 ++
+ release/src/router/www/UK.dict           |  2 ++
+ 28 files changed, 112 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 61af58eaee..4dd12d9765 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -12958,8 +12958,18 @@ prepare_restore(webs_t wp){
+ 	 * Don't stop 3G/4G here.  If yes and end-user connect to
+ 	 * administrative page through 3G/4G, he/she can't see Restarting.asp
+ 	 */
+-	if (!notify_rc_and_wait_2min("stop_app"))
+-		_dprintf("%s: send stop_app rc_service fail!\n", __func__);
++	/* reaper v3.1.0 (factory-reset timing): this round trip is a synchronous
++	 * rc_service wait - up to two minutes for rc to go idle and up to two
++	 * more for completion - and rc's stop_app() returns -1 at once unless a
++	 * USB application is mounted (apps_dev + apps_mounted_path, its own
++	 * precondition). Send it only when it has work; log the decision so the
++	 * reset has a timestamp in the syslog. */
++	logmessage("reaper", "factory reset: request accepted, preparing");
++	if (*nvram_safe_get("apps_dev") && *nvram_safe_get("apps_mounted_path")) {
++		if (!notify_rc_and_wait_2min("stop_app"))
++			_dprintf("%s: send stop_app rc_service fail!\n", __func__);
++	} else
++		logmessage("reaper", "factory reset: no USB application mounted, stop_app skipped");
+ 
+ 	/* Enlarge reboot_time temporarily. */
+ 	nvram_set_int("reboot_time", nvram_get_int("reboot_time") + offset);
+@@ -13576,14 +13586,20 @@ apply_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 	else if (!strcmp(action_mode, "Restore")||!strcmp(action_mode, "restore"))
+ 	{
+ 		prepare_restore(wp);
+-		sys_default();
++		/* reaper v3.1.0: notify_rc() gives the event up after 15 s if rc is
++		 * busy and the reset silently never happens; the waiting form holds
++		 * for up to two minutes. The client already has Restarting.asp. */
++		if (!notify_rc_and_wait_2min("resetdefault"))
++			logmessage("reaper", "factory reset: rc did not accept resetdefault");
+ 
+ 		remove_all_uploaded_cert_from_jffs();
+ 	}
+ 	else if (!strcmp(action_mode, "restore_erase"))
+ 	{
+ 		prepare_restore(wp);
+-		sys_default_erase();
++		/* reaper v3.1.0: same waiting form as the plain reset above. */
++		if (!notify_rc_and_wait_2min("resetdefault_erase"))
++			logmessage("reaper", "factory reset: rc did not accept resetdefault_erase");
+ 
+ 		remove_all_uploaded_cert_from_jffs();
+ 	}
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index d62787da2d..75aa02858d 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -16141,11 +16141,20 @@ void check_services(void)
+ 
+ void factory_reset(void)
+ {
++	unsigned long _fr_t0 = uptime();	/* reaper v3.1.0: syslog timers */
+ #ifdef RTCONFIG_CONCURRENTREPEATER
+ 	nvram_set_int("led_status", LED_FACTORY_RESET);
+ #endif
+ 	g_reboot = 1;
+ 	f_write_string("/tmp/reboot", "1", 0, 0);
++	/* reaper v3.1.0 (factory-reset timing): mirror the "reboot" handler.
++	 * Holding ACT_REBOOT from pid 1 makes every later wait_action_idle()
++	 * caller stop at once (nvram_commit included - nothing may commit over
++	 * the erase anyway) and lets shutdn() skip its 30-second busy loop when
++	 * a daemon dies holding the action lock mid-commit. */
++	logmessage("reaper", "factory reset: begin");
++	if (wait_action_idle(10))
++		set_action(ACT_REBOOT);
+ #ifdef RTCONFIG_REALTEK
+ /* [MUST] : Need to Clarify ... */
+ 	set_led(LED_BLINK_SLOW, LED_BLINK_SLOW);
+@@ -16209,6 +16218,7 @@ void factory_reset(void)
+ #endif
+ 
+ 	sleep(3);
++	logmessage("reaper", "factory reset: wan/usb stopped (%lu s)", (unsigned long)uptime() - _fr_t0);
+ 	nvram_set(ASUS_STOP_COMMIT, "1");
+ 	if(nvram_contains_word("rc_support", "nandflash"))	/* RT-AC56S,U/RT-AC68U/RT-N18U */
+ 	{
+@@ -16237,6 +16247,7 @@ void factory_reset(void)
+ 	eval("mtd-erase", "-d", "plc");
+ #endif
+ 
++	logmessage("reaper", "factory reset: nvram erased, handing off to init (%lu s)", (unsigned long)uptime() - _fr_t0);
+ 	nvram_set("sys_reboot_reason", "rc_func_fact_rst");
+ 	kill(1, SIGTERM);
+ }
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index ffa33494fc..0e7b2b77f4 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=O roteador está sendo redefinido e vai reiniciar com as configurações de fábrica. O Wi-Fi volta como uma rede aberta chamada ASUS_xx. Conecte-se a essa rede ou use uma porta com fio e depois abra o roteador no endereço padrão:
++RBKP_51=O roteador não reiniciou em 3 minutos, portanto o pedido de redefinição não foi aceito e nada foi alterado. Verifique o registro do sistema e tente novamente.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 4f565a477b..2ba2390f4c 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=路由器正在重置，并将以出厂设置重新启动。Wi-Fi 会恢复为名为 ASUS_xx 的开放网络。请重新连接该网络或使用有线端口，然后通过默认地址打开路由器：
++RBKP_51=路由器在 3 分钟内没有重新启动，重置请求未被接受，未作任何更改。请查看系统日志后重试。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 4557895b86..4aafb3231a 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Router se resetuje a restartuje se s továrním nastavením. Wi-Fi se vrátí jako otevřená síť s názvem ASUS_xx. Připojte se znovu k této síti nebo použijte kabelový port a poté otevřete router na výchozí adrese:
++RBKP_51=Router se do 3 minut nerestartoval, požadavek na reset tedy nebyl přijat a nic se nezměnilo. Zkontrolujte systémový protokol a zkuste to znovu.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 1cbb0ae45f..2ac8314ade 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Routeren nulstilles og genstarter med fabriksindstillingerne. Wi-Fi vender tilbage som et åbent netværk med navnet ASUS_xx. Opret forbindelse til det netværk igen, eller brug en kablet port, og åbn derefter routeren på standardadressen:
++RBKP_51=Routeren genstartede ikke inden for 3 minutter, så nulstillingsanmodningen blev ikke accepteret, og intet blev ændret. Kontrollér systemloggen, og prøv igen.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 338fa08ddd..258b70358e 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Der Router wird zurückgesetzt und startet mit den Werkseinstellungen neu. Das WLAN kommt als offenes Netzwerk mit dem Namen ASUS_xx zurück. Verbinden Sie sich erneut mit diesem Netzwerk oder nutzen Sie einen LAN-Anschluss und öffnen Sie den Router dann unter der Standardadresse:
++RBKP_51=Der Router hat innerhalb von 3 Minuten nicht neu gestartet, die Zurücksetzung wurde also nicht angenommen und nichts wurde geändert. Prüfen Sie das Systemprotokoll und versuchen Sie es erneut.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 0399f62b96..b6c397e47d 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=The router is resetting and will reboot with its factory settings. Its Wi-Fi comes back as an open network named ASUS_xx. Reconnect to that network or use a wired port, then open the router at its default address:
++RBKP_51=The router did not restart within 3 minutes, so the reset request was not accepted and nothing was changed. Check the system log, then try again.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 84bffe9d8a..ea1e3c2374 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=El router se está restableciendo y se reiniciará con la configuración de fábrica. El Wi-Fi vuelve como una red abierta llamada ASUS_xx. Vuelva a conectarse a esa red o use un puerto por cable y luego abra el router en su dirección predeterminada:
++RBKP_51=El router no se reinició en 3 minutos, por lo que la solicitud de restablecimiento no fue aceptada y no se cambió nada. Revise el registro del sistema e inténtelo de nuevo.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 6b8c2e333e..8647e80fb3 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Reititin palautetaan ja se käynnistyy uudelleen tehdasasetuksilla. Wi-Fi palaa avoimena verkkona nimeltä ASUS_xx. Yhdistä uudelleen kyseiseen verkkoon tai käytä kaapeliporttia ja avaa sitten reititin sen oletusosoitteessa:
++RBKP_51=Reititin ei käynnistynyt uudelleen 3 minuutin kuluessa, joten palautuspyyntöä ei hyväksytty eikä mitään muutettu. Tarkista järjestelmäloki ja yritä uudelleen.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 0e25f014b4..52413029f6 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Le routeur se réinitialise et va redémarrer avec ses réglages d’usine. Le Wi-Fi revient sous la forme d’un réseau ouvert nommé ASUS_xx. Reconnectez-vous à ce réseau ou utilisez un port filaire, puis ouvrez le routeur à son adresse par défaut :
++RBKP_51=Le routeur n’a pas redémarré dans les 3 minutes : la demande de réinitialisation n’a pas été acceptée et rien n’a été modifié. Consultez le journal système, puis réessayez.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 0307cb80fa..cbaedfbc15 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=A router visszaállítás alatt áll, és a gyári beállításokkal indul újra. A Wi-Fi ASUS_xx nevű nyílt hálózatként tér vissza. Csatlakozzon újra ehhez a hálózathoz, vagy használjon vezetékes portot, majd nyissa meg a routert az alapértelmezett címén:
++RBKP_51=A router 3 percen belül nem indult újra, így a visszaállítási kérést nem fogadta el, és semmi sem változott. Ellenőrizze a rendszernaplót, majd próbálja újra.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 971a86b7dc..b061dd097f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Il router si sta ripristinando e si riavvierà con le impostazioni di fabbrica. Il Wi-Fi torna come rete aperta chiamata ASUS_xx. Ricollegati a quella rete o usa una porta cablata, poi apri il router al suo indirizzo predefinito:
++RBKP_51=Il router non si è riavviato entro 3 minuti, quindi la richiesta di ripristino non è stata accettata e nulla è cambiato. Controlla il registro di sistema e riprova.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 36c1d29784..52478ccaca 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=ルーターをリセット中です。工場出荷時の設定で再起動します。Wi-Fi は ASUS_xx という名前のオープンネットワークとして復帰します。そのネットワークに再接続するか有線ポートを使い、初期アドレスでルーターを開いてください：
++RBKP_51=ルーターが 3 分以内に再起動しなかったため、リセット要求は受け付けられず、何も変更されていません。システムログを確認してからもう一度お試しください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index b51c1e53a3..1c434b3341 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=공유기를 초기화하는 중이며 공장 설정으로 다시 시작됩니다. Wi-Fi는 ASUS_xx라는 이름의 개방형 네트워크로 돌아옵니다. 해당 네트워크에 다시 연결하거나 유선 포트를 사용한 다음 기본 주소로 공유기를 여십시오:
++RBKP_51=공유기가 3분 안에 다시 시작되지 않아 초기화 요청이 수락되지 않았고 아무것도 변경되지 않았습니다. 시스템 로그를 확인한 후 다시 시도하십시오.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 3fccb74750..20ea3658d9 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Penghala sedang ditetapkan semula dan akan but semula dengan tetapan kilang. Wi-Fi kembali sebagai rangkaian terbuka bernama ASUS_xx. Sambung semula ke rangkaian itu atau gunakan port berwayar, kemudian buka penghala di alamat lalainya:
++RBKP_51=Penghala tidak dimulakan semula dalam masa 3 minit, jadi permintaan tetapan semula tidak diterima dan tiada apa yang diubah. Semak log sistem, kemudian cuba lagi.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index fda11753e9..00fd3d5484 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=De router wordt gereset en start opnieuw op met de fabrieksinstellingen. De wifi komt terug als een open netwerk met de naam ASUS_xx. Maak opnieuw verbinding met dat netwerk of gebruik een bekabelde poort en open de router daarna op het standaardadres:
++RBKP_51=De router is niet binnen 3 minuten opnieuw gestart, dus het resetverzoek is niet geaccepteerd en er is niets gewijzigd. Controleer het systeemlogboek en probeer het opnieuw.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 9e98218dd9..65db8f33db 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Ruteren tilbakestilles og starter på nytt med fabrikkinnstillingene. Wi-Fi kommer tilbake som et åpent nettverk med navnet ASUS_xx. Koble til det nettverket på nytt, eller bruk en kablet port, og åpne deretter ruteren på standardadressen:
++RBKP_51=Ruteren startet ikke på nytt innen 3 minutter, så tilbakestillingsforespørselen ble ikke godtatt og ingenting ble endret. Sjekk systemloggen og prøv igjen.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 8dfaef2f38..d2350673f3 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Router jest resetowany i uruchomi się ponownie z ustawieniami fabrycznymi. Wi-Fi wraca jako otwarta sieć o nazwie ASUS_xx. Połącz się ponownie z tą siecią lub użyj portu przewodowego, a następnie otwórz router pod adresem domyślnym:
++RBKP_51=Router nie uruchomił się ponownie w ciągu 3 minut, więc żądanie resetu nie zostało przyjęte i nic nie zmieniono. Sprawdź dziennik systemowy i spróbuj ponownie.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index ef03508755..3b9f577123 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Routerul se resetează și va reporni cu setările din fabrică. Wi-Fi-ul revine ca rețea deschisă numită ASUS_xx. Reconectați-vă la acea rețea sau folosiți un port cu fir, apoi deschideți routerul la adresa sa implicită:
++RBKP_51=Routerul nu a repornit în 3 minute, deci cererea de resetare nu a fost acceptată și nimic nu a fost modificat. Verificați jurnalul sistemului, apoi încercați din nou.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 2ed8a1dec2..24efe73166 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Роутер сбрасывается и перезагрузится с заводскими настройками. Wi-Fi вернётся в виде открытой сети с именем ASUS_xx. Подключитесь к этой сети заново или используйте проводной порт, затем откройте роутер по адресу по умолчанию:
++RBKP_51=Роутер не перезагрузился в течение 3 минут, поэтому запрос на сброс не был принят и ничего не изменилось. Проверьте системный журнал и повторите попытку.
+diff --git a/release/src/router/www/Reaper_Backup.asp b/release/src/router/www/Reaper_Backup.asp
+index e93cd88c33..c8d5eff6bf 100644
+--- a/release/src/router/www/Reaper_Backup.asp
++++ b/release/src/router/www/Reaper_Backup.asp
+@@ -283,6 +283,7 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+       <h2><#Setting_factorydefault_itemname#></h2>
+       <p><#RBKP_32#></p>
+       <label class="chk"><input type="checkbox" id="fd_init" checked><span><#Setting_initialize_desc#></span></label>
++      <div class="stat" id="st_fd"></div>
+     </div>
+     <div class="dz-act">
+       <button class="btn doom" id="fd_go" type="button"><#CTL_restore#></button>
+@@ -324,11 +325,19 @@ function armStep(on){ var s = $id('lf3'); if(s) s.className = on ? 'lstep armed'
+    was rejected and nothing is rebooting). If it never comes BACK, show
+    capMsg - after a factory reset the LAN IP usually changed, so this origin
+    may simply never answer again and that message is the real exit. */
+-function pollBack(tries, wentDown, noDownCap, onNeverDown, capMsg){
++function pollBack(tries, wentDown, noDownCap, onNeverDown, capMsg, downRun){
++  downRun = downRun || 0;
+   if(!wentDown && noDownCap && tries > noDownCap){ onNeverDown(); return; }
+-  if(tries > 450){ veilSub(capMsg); return; }
++  if(tries > 450){ if(typeof capMsg === 'function') capMsg(); else veilSub(capMsg); return; }
+   var x = new XMLHttpRequest();
+-  var next = once(function(down){ setTimeout(function(){ pollBack(tries + 1, down || wentDown, noDownCap, onNeverDown, capMsg); }, 2000); });
++  /* v3.1.0: one missed probe is not "down" - httpd blocks for a few seconds
++     while it prepares a reset and answers again before init takes it down,
++     which used to bounce this page to the login of a router about to reboot.
++     Latch wentDown only after 5 consecutive misses (10 s or more). */
++  var next = once(function(down){
++    var run = down ? downRun + 1 : 0;
++    setTimeout(function(){ pollBack(tries + 1, wentDown || run >= 5, noDownCap, onNeverDown, capMsg, run); }, 2000);
++  });
+   x.open('GET', '/httpd_check.xml?_=' + Date.now(), true);
+   x.timeout = 3000;
+   x.onreadystatechange = function(){
+@@ -623,6 +632,21 @@ function cfgImportPlain(f){
+ }
+ 
+ /* ---------------- factory default ---------------- */
++/* v3.1.0: the reset veil tells the operator what to do instead of waiting
++   on a silent poll. A reset boot comes back with the factory Wi-Fi (open,
++   ASUS_xx) and the default LAN IP, so this origin usually never answers
++   again: the instruction is the real exit and the poll is a convenience.
++   If the router never goes down within 90 ticks (3 min) rc did not take the
++   reset - say so and release the page instead of veiling for 15 minutes. */
++function veilResetHint(){
++  var s = $id('ovl_s');
++  s.textContent = `<#RBKP_50#>` + ' ';
++  var a = document.createElement('a');
++  a.href = 'http://' + clean(DEF_IP) + '/';
++  a.textContent = a.href;
++  a.style.color = 'var(--bone)';
++  s.appendChild(a);
++}
+ function factoryReset(){
+   var init = $id('fd_init').checked;
+   var msg = init ? `<#Setting_initialize_hint1#>` : `<#Setting_factorydefault_hint1#>`;
+@@ -631,12 +655,14 @@ function factoryReset(){
+   reaperConfirm(msg, { danger: true, okLabel: `<#CTL_restore#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
+     if(!go || busy) return;
+     busy = 1;
+-    veil(`<#Setting_factorydefault_itemname#>`, `<#SAVE_restart_desc#>`);
++    setStat('st_fd', '', '');
++    veil(`<#Setting_factorydefault_itemname#>`, '');
++    veilResetHint();
+     var x = new XMLHttpRequest();
+     x.open('POST', '/apply.cgi', true);
+     x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+     var handed = once(function(){
+-      pollBack(0, 0, 0, function(){}, `<#Main_alert_proceeding_desc3#> <#LANConfig_ChangedLANIP#>`);
++      pollBack(0, 0, 90, function(){ busy = 0; veilOff(); setStat('st_fd', `<#RBKP_51#>`, 'err'); }, veilResetHint);
+     });
+     x.onload = handed;
+     x.onerror = x.ontimeout = x.onabort = handed;
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 3e008424ce..6b573a1fd9 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Usmerjevalnik se ponastavlja in se bo znova zagnal s tovarniškimi nastavitvami. Wi-Fi se vrne kot odprto omrežje z imenom ASUS_xx. Znova se povežite s tem omrežjem ali uporabite žični priključek, nato odprite usmerjevalnik na privzetem naslovu:
++RBKP_51=Usmerjevalnik se v 3 minutah ni znova zagnal, zato zahteva za ponastavitev ni bila sprejeta in nič ni bilo spremenjeno. Preverite sistemski dnevnik in poskusite znova.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 0d103bf92b..9d0b0760af 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Routern återställs och startar om med fabriksinställningarna. Wi-Fi kommer tillbaka som ett öppet nätverk med namnet ASUS_xx. Anslut till det nätverket igen eller använd en trådbunden port och öppna sedan routern på standardadressen:
++RBKP_51=Routern startade inte om inom 3 minuter, så återställningsbegäran godtogs inte och inget ändrades. Kontrollera systemloggen och försök igen.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index c305cf6f8f..d4167b70d0 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=เราเตอร์กำลังรีเซ็ตและจะรีบูตด้วยการตั้งค่าจากโรงงาน Wi-Fi จะกลับมาเป็นเครือข่ายเปิดชื่อ ASUS_xx ให้เชื่อมต่อเครือข่ายนั้นอีกครั้งหรือใช้พอร์ตแบบมีสาย จากนั้นเปิดเราเตอร์ที่ที่อยู่เริ่มต้น:
++RBKP_51=เราเตอร์ไม่ได้รีสตาร์ทภายใน 3 นาที คำขอรีเซ็ตจึงไม่ได้รับการยอมรับและไม่มีการเปลี่ยนแปลงใด ๆ โปรดตรวจสอบบันทึกระบบแล้วลองอีกครั้ง
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index b0581eb9c9..e9702222eb 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Yönlendirici sıfırlanıyor ve fabrika ayarlarıyla yeniden başlayacak. Wi-Fi, ASUS_xx adlı açık bir ağ olarak geri gelir. O ağa yeniden bağlanın veya kablolu bir bağlantı noktası kullanın, ardından yönlendiriciyi varsayılan adresinden açın:
++RBKP_51=Yönlendirici 3 dakika içinde yeniden başlamadı; sıfırlama isteği kabul edilmedi ve hiçbir şey değiştirilmedi. Sistem günlüğünü kontrol edip yeniden deneyin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index c4a77e6ba0..f1572ae5af 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=路由器正在重設，並將以出廠設定重新啟動。Wi-Fi 會恢復為名為 ASUS_xx 的開放網路。請重新連線至該網路或使用有線連接埠，然後以預設位址開啟路由器：
++RBKP_51=路由器在 3 分鐘內未重新啟動，重設要求未被接受，未做任何變更。請檢查系統記錄後再試一次。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 0bfadd32fd..ce624f108a 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6858,3 +6858,5 @@ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
++RBKP_50=Маршрутизатор скидається й перезавантажиться із заводськими налаштуваннями. Wi-Fi повернеться як відкрита мережа з назвою ASUS_xx. Підключіться до цієї мережі знову або скористайтеся дротовим портом, а потім відкрийте маршрутизатор за адресою за замовчуванням:
++RBKP_51=Маршрутизатор не перезавантажився протягом 3 хвилин, тому запит на скидання не прийнято й нічого не змінено. Перевірте системний журнал і спробуйте ще раз.
+-- 
+2.25.1
+

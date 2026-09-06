@@ -116,7 +116,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.0.9'
+    ${{ inputs.version == '' && 'Reaper_v3.1.0'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -448,8 +448,9 @@ jobs:
   #      are skipped entirely, so a stray build can never publish. A Dev
   #      publish is the BETA channel: the tag/release name gets "-beta"
   #      appended and the release is marked pre-release; refresh_manifest
-  #      stays main-only, so a beta never reaches the on-router update check
-  #      and beta testers flash manually from the GitHub release page.
+  #      (v3.1.0) writes it into main's manifest as a separate
+  #      MODEL#VARIANT-beta# line that only v3.1.0+ firmware reads, and only
+  #      when the admin opted in - the stable line is never touched by a beta.
   #   3. the build succeeded.
   # `if:` REPLACES the implicit success() that `needs:` would otherwise apply,
   # which is why success() is written out. Without it these would run even after
@@ -571,14 +572,18 @@ jobs:
   # is a per-model matrix, so refreshing inside it would race five commits to
   # main. The concurrency group serializes it across overlapping runs too.
   #
-  # DELIBERATELY main-only, even though tag/release now also run on Dev: the
-  # manifest IS the stable update channel. A Dev/beta publish must never be
-  # offered to fielded routers -- promotion to main is what flips the channel.
+  # ALWAYS WRITES TO MAIN, whichever branch was dispatched: the manifest lives
+  # on main because that is the URL baked into every fielded router. A main
+  # publish rewrites the stable line; a Dev publish (v3.1.0) adds or moves the
+  # MODEL#VARIANT-beta# line and leaves the stable line and latest.json alone.
+  # Firmware before v3.1.0 cannot match the beta line, and v3.1.0+ reads it
+  # only behind the admin's opt-in and only above the stable number, so a beta
+  # can never displace a stable offer. The beta note comes from Dev's CHANGELOG.
   # ---------------------------------------------------------------------------
   refresh_manifest:
     name: Refresh update manifest
     needs: [tag, release]
-    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -627,9 +632,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           V: ${{ needs.tag.outputs.version }}
           MODELSEL: ${{ inputs.model }}
+          SRC_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           export VNUM="${V#v}"
+          # A beta's "what's new" is the CHANGELOG section on Dev, which main
+          # does not have yet; hand the script that copy instead of main's.
+          if [ "$SRC_REF" = "refs/heads/Dev" ]; then
+            git fetch --depth=1 origin Dev
+            git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-dev.md
+            export CHANGELOG=/tmp/changelog-dev.md
+          fi
           if [ "$MODELSEL" = "all" ]; then
             export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
           else
@@ -645,7 +658,11 @@ jobs:
             echo "manifest already advertises $V -- nothing to commit"
             exit 0
           fi
-          git commit -m "updates: advertise Reaper $V in the firmware update manifest [skip ci]"
+          if [ "$SRC_REF" = "refs/heads/Dev" ]; then
+            git commit -m "updates: advertise Reaper $V on the beta line of the firmware update manifest [skip ci]"
+          else
+            git commit -m "updates: advertise Reaper $V in the firmware update manifest [skip ci]"
+          fi
           # Single-writer, but guard against a concurrent main push anyway.
           for i in 1 2 3; do
             if git push origin HEAD:main; then

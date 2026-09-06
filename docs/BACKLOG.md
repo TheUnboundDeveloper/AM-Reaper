@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.0.7** · 2026-09-03 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -42,23 +42,39 @@ The ordered short list.
 2. **[P2] Apply and Confirm on Policy Routing rebooted the router** — no reboot primitive in the
    path; needs the three captures on the next occurrence.
 3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
-4. **[P2] Main Wi-Fi network sits on the primary BSS after a factory reset** — the no-wizard
-   first-boot flow must own the SDN migration QIS used to trigger.
-5. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
-6. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
-7. **[P3] CVE check 2026-08-30 residue** — cheap backports and known-limitation notes.
-8. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
+4. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
+5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
+6. **[P3] CVE check 2026-08-30 residue** — cheap backports and known-limitation notes.
+7. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
 ---
 
 ## Open bugs / under investigation
 
+- **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98 tester, 2026-09-06) — WAN on DHCP,
+  IPv6 native and stateful, working until about v2.7.1; since then the router shows its IPv6, a laptop
+  and a NAS get it, but hosts behind a Proxmox server do not — a Windows VM fails testipv6.com even
+  with a static address. The tester also sees `nmbd: queue_query_name: interface 0 has NULL IP
+  address` in the log. Whether this is the router (RA/DHCPv6 behind an SDN bridge, an ip6tables
+  change in that window) or the hypervisor bridge is undecided; more detail promised.
+  **[needs data]** ↳ notes: `gt-be98-ipv6-partial-lan.md`
+- **[P3] Auto-logout setting has no effect** (GT-BE98 tester, 2026-09-06) — the session drops every
+  few minutes, and on returning to the tab, whatever the Administration timeout says; reported as
+  present since before Reaper. Which page, which browser, and whether a second login from another
+  device or tab is involved, still to be captured. **[needs data]** ↳ notes: `auto-logout-ineffective.md`
+- **[P2] Network page: Delete does nothing on a main-network card** (owner, 2026-09-06) — two empty
+  Main Network cards (per-band profiles left behind by a Smart Connect off-and-on) could not be removed
+  from the page; the same writes applied by hand cleared them. Whether the delete popup, the nvram set
+  or an injected-script interaction is at fault is still to be found. **[owed: repro on a spare
+  profile]** ↳ notes: `sdn-mainfh-delete-dead.md`
 - **[P2] Router UI on mobile-device browsers: compatibility investigation** (owner, 2026-09-06)
   — survey how the web UI behaves in phone and tablet browsers (iOS Safari, Android Chrome,
   Samsung Internet): layout at narrow widths, touch targets, the theme and loading overlays, the
   Devices/QoS/Traffic tables, and whether every page is reachable and applies correctly. Which
-  pages break, on which browser, and how, still to be captured before any fix is scoped.
-  **[needs data]** ↳ notes: `mobile-browser-ui-compat.md`
+  pages break, on which browser, and how, still to be captured before any fix is scoped. The
+  first fit shipped in v3.1.0: the shell and the dashboard collapse the rail into an icon strip
+  below 680px, so a phone gets the full width; framed stock pages pan sideways until each is
+  replaced by a native one. **[needs data]** ↳ notes: `mobile-browser-ui-compat.md`
 - **[P2] Devices page: wrong connection method, and MLO combining no longer works — REGRESSION**
   (owner, 2026-09-05) — devices show the wrong link type again, and the page no longer folds an MLO
   client's per-band links into one device. Both shipped working earlier (v3.0.9 read the live mesh
@@ -69,21 +85,12 @@ The ordered short list.
 - **[P2] AiMesh nodes refuse the firmware** (owner report, 2026-09-05) — nodes decline the image the
   router offers them; which models, which message, and whether the refusal is the node's version check,
   the signature check, or the transfer are all unknown. **[needs data]** ↳ notes: `aimesh-node-firmware-refused.md`
-- **[P2] Mobile device metrics reported incorrect** (owner report, 2026-09-05) — the per-device figures
-  shown for phones and tablets do not match what the devices see; which page, which metric, and against
-  what reference still to be captured. **[needs data]** ↳ notes: `mobile-device-metrics.md`
-- **[P3] Connections page still labels the scheduler "WRR"** (owner, 2026-09-05) — the classful WRR
-  path was removed for its defects, yet the Connections page shows "WRR" as the scheduler in use. Stale
-  label or a stale read of the queue discipline; display only. **[owed]** ↳ notes: `conn-scheduler-wrr-label.md`
 - **[P2] Apply and Confirm on Policy Routing rebooted the router** (owner, logs dated Aug 27) — the
   flicker half shipped fixed in v3.0.5; the reboot half is unexplained, no reboot primitive exists in
   the path, not reproduced on v3.0.5. **[needs data]** ↳ notes: `pbr-apply-confirm-reboot.md`
 - **[P3] Policy Routing page: the first-open symptom was never identified** — the screenshot did not
   reach the record; the strongest candidate shipped fixed in v3.0.5. **[needs the screenshot]**
   ↳ notes: `pbr-first-open-symptom.md`
-- **[P1] Internet speed test fails on 10 Gbit/s links** (GT-BE98 field diag, v3.0.0) — not explainable
-  from source; instrumented in v3.0.5. Also a first-run-after-boot "Latency test failed" on the
-  BE96U. **[owed: one diag after a failing run]** ↳ notes: `speedtest-10g-links.md`
 - **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — rwatch, Warden refresh and the PBR
   deadline watcher all dead on that box. **[needs the GT-BE98 syslog]** ↳ notes: `gt-be98-empty-crontab.md`
 - **[P3] CVE / component check 2026-08-30 residue** — no reachable HIGH, nothing MED at defaults;
@@ -115,10 +122,6 @@ The ordered short list.
 
 ## UI / UX polish
 
-- **[P3] Advisor page: the "Pin to one client IP (optional)" field's placeholder renders wrong**
-  (owner, 2026-09-05) — the default text shown inside the empty input has formatting problems
-  (clipping, wrapping, or the placeholder colour/size not matching the other fields). Display only.
-  **[owed]** ↳ notes: `advisor-pin-ip-placeholder.md`
 - **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
   the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Loader z-index raise is class-wide** — benign; scope to `#Loading` if a modal ever renders
@@ -201,6 +204,10 @@ The ordered short list.
   expresses it. ↳ notes: `wad-firewall-rule-negation.md`
 - **`dig` on the Network Tools page — declined** (owner, 2026-08-24): a full dig would widen the
   shared input filter that guards the existing tools. ↳ notes: `wad-dig-network-tools.md`
+- **[P2] Mobile device metrics reported incorrect** (owner report, 2026-09-05) — the per-device figures
+  shown for phones and tablets do not match what the devices see; which page, which metric, and against
+  what reference still to be captured. **[working as designed]** — a page-rendering report,
+  not a data one. ↳ notes: `mobile-device-metrics.md`
 
 ---
 
@@ -218,3 +225,6 @@ The ordered short list.
   risk-accepted]** ↳ notes: `blocked-b3-guestpro-vlan-port.md`, `GUESTPRO-2.5G-VLAN-PLAN.md`
 - **B-4. [P3] Dynamic preamble puncturing needs the 2025 Broadcom SDK** — only the static bitmap
   exists on this SDK. **[blocked — SDK]** ↳ notes: `blocked-b4-dynamic-puncturing.md`
+- **B.5. [P1] Internet speed test fails on 10 Gbit/s links** (GT-BE98 field diag, v3.0.0) — not explainable
+  from source; instrumented in v3.0.5. Also a first-run-after-boot "Latency test failed" on the
+  BE96U. **[blocked — development]** ↳ notes: `speedtest-10g-links.md`

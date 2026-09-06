@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.0.9** · 2026-09-05 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.0.9 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -21,7 +21,7 @@ This guide is written for someone who will install and run the firmware: technic
 2. [Requirements and rules for running it properly](#2-requirements-and-rules-for-running-it-properly)
    - 2.1 [Supported models and the right file](#21-supported-models-and-the-right-file)
    - 2.2 [Flashing from stock ASUS or from Merlin](#22-flashing-from-stock-asus-or-from-merlin)
-   - 2.3 [The first-boot credential step](#23-the-first-boot-credential-step)
+   - 2.3 [First boot: one banner, one box](#23-first-boot-one-banner-one-box)
    - 2.4 [The internal /jffs partition: where Reaper keeps its lists](#24-the-internal-jffs-partition-where-reaper-keeps-its-lists)
    - 2.5 [Two backups, not one](#25-two-backups-not-one)
    - 2.6 [A USB disk for the long-term store](#26-a-usb-disk-for-the-long-term-store)
@@ -218,15 +218,16 @@ The project's install guide ([`INSTALL-AND-ROLLBACK.md`](INSTALL-AND-ROLLBACK.md
 
 **AiMesh nodes.** A router that you intend to add as a *new* Reaper node must be factory-reset on this firmware to become discoverable. A mesh that was already built under stock or Merlin and then flashed to Reaper is unaffected. Nodes can be updated from the main router's Firmware page (see 4.14). Reaper's theming stands aside entirely on a node, which is what fixed the blank-page loop some node owners saw in earlier versions.
 
-### 2.3 The first-boot credential step
+### 2.3 First boot: one banner, one box
 
-On a factory-fresh or factory-reset router, the web server itself forces you through Reaper's **First-time setup** page before any other page is reachable, and it cannot be bypassed by typing another page's address:
+There is no setup wizard and nothing blocks a page. A factory-fresh or factory-reset router boots usable on `admin` / `admin`, with its Wi-Fi **open** on the factory network name (`ASUS_xx…`), so it can be reached for setup over Wi-Fi without running a cable. Until both the router login and the Wi-Fi have left their factory values, every top-level admin page carries a banner that cannot be dismissed. Since v3.1.0 it has one button:
 
-1. Choose your **language** at the top of the card. The choice carries through to the rest of the interface.
-2. Set a **router username** (letters, numbers, `-` and `_`; you may keep `admin` if the password is strong) and a **password** (5–32 characters; it must differ from the username and from the factory default; `admin` is rejected as a password).
-3. You are then taken to **Set your Wi-Fi password**: the wireless network is still on its factory key until you change it. The wizard will not release you until both steps are done.
+- **Set up this router** (both still factory) opens Reaper's setup box: **network name**, **Wi-Fi password** and **router login password** in one step. The box writes exactly what the stock Wireless apply writes on every band — one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on — and fires the same wireless restart, then changes the login through the same committed path as the password page. A Wi-Fi key must be 8–63 characters (or a 64-digit hex key); a shorter key is refused in the page and in the router, because the access-point daemon silently drops a short key and would come up with no Wi-Fi at all. A network name is 1–32 printable characters.
+- If only the login is still factory, the button goes to the password page; if only the Wi-Fi is, it opens the box (which asks for all three fields).
 
-The gate only ever triggers on a genuinely unconfigured router — an upgrade of a configured router never sees it — and it does not apply in repeater or media-bridge modes, nor to AiMesh node onboarding. Earlier versions had a refresh-loop and a "rejects everything" failure at this step; both are fixed (v2.1.5, v2.2.0), and the page now self-recovers if a submit was applied but the confirmation did not reach the browser. If you are ever genuinely stuck, `nvram set reaper_fbdone=1` over SSH releases the interface. While the password is still the factory default the change form has no credential gate by design, so it carries the anti-forgery token instead; this is pending one clean factory-reset confirmation in the backlog.
+Why a Reaper box rather than the stock Wireless page: on this build the stock page edits each radio's primary network, which AiMesh turns into its hidden backhaul; the network your devices join lives on the virtual networks the mesh daemon rebuilds after every wireless apply. The box writes to the right place. The stock Wireless page is untouched for engineers.
+
+The banner only ever appears on a genuinely unconfigured router — an upgrade of a configured router never sees it. The forced first-boot page and its six gates were removed in v2.9.1 after they produced the login loops of the v2.1.x line; there is nothing to release over SSH any more, and no page is ever withheld.
 
 ### 2.4 The internal /jffs partition: where Reaper keeps its lists
 
@@ -396,7 +397,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 - Every page lands scrolled to the top. The admin session logs itself out after **15 minutes** of inactivity.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
 - **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It can be switched off from **Tools → Other Settings → Reaper interface theme** to serve the unmodified ASUS interface without reflashing (the web server restarts). The sign-in, set-password and logout screens show an animated model header that plays once.
-- **Tablets** are supported (the frame pans horizontally when a page is wider than the column); phone-size screens are out of scope by design.
+- **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width; stock pages framed in the shell still pan sideways until each is replaced by a native one.
 
 ---
 
@@ -1240,7 +1241,7 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 **Administration → Firmware Upgrade** is a Reaper page:
 
 - **Installed Firmware** — model, variant (Standard / AI Advisor), Reaper version, base build.
-- **Updates** — **Check for Update**, the release notes inline, **Download and Install** (verified end-to-end, 2.11), **Scheduled Check** with **Check at** hour.
+- **Updates** — **Check for Update**, the release notes inline, **Download and Install** (verified end-to-end, 2.11), **Scheduled Check** with **Check at** hour, and (v3.1.0) **Beta Channel**: off by default; on, the check also reads the Dev branch's beta line and offers a beta only when this router already runs the newest stable release and the beta's number is higher than that stable's — a beta with the stable's own number is never offered. A beta offer is labelled **Beta** here and on the dashboard badge, and its release note opens with the beta warning. The previous firmware stays in the standby partition either way.
 - **Manual Upload** — with a real progress bar; it warns if the file does not look like an image for this model or variant. The page gives a good image up to ~5 minutes to be verified before calling it rejected.
 - **Mesh Nodes** (at the bottom) — every AiMesh node with name, address, reported firmware version and online state; **Update** opens that node's own firmware page in a new tab where you flash it natively (the image is never relayed through this router), and **Update all nodes** pushes the current firmware the way the stock AiMesh upgrade does. Update one node at a time and let it come back.
 
@@ -1328,7 +1329,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 | Speed test dies partway through | Adaptive QoS → Internet Speed | Counter fixes in v2.4.5/v2.5.4; pending a multi-run confirmation. A genuine outage still fails on the real timeout. |
 | Reaper settings import reports rejections | Log `reaper_cfg: settings imported: N flag(s), M list(s), K rejected` | The rejected entries failed the same validation as typing them; fix them on the page. Firewall/routing lists still need Apply + Keep. |
 | Diag report tripwire says "review before sharing" | The report's ledger | Something still looked like a public address, MAC or e-mail. Read the file and redact by hand before attaching it. |
-| Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5 (the gate lives in the web server). Power-cycle and log in with the new credentials; `nvram set reaper_fbdone=1` over SSH as a last resort. |
+| Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5; the forced first-boot page and its gates were removed altogether in v2.9.1 (2.3). Power-cycle and log in with the new credentials. |
 | `logread` shows nothing | — | Expected on this platform. Use the System Log page or `/tmp/syslog.log`. |
 
 ---
@@ -1443,7 +1444,7 @@ three reachability probes after the boot grace period.
 `rmcp_client` empty. There is deliberately **no enable key**: the Advisor is armed by a session file
 in `/tmp`, so every reboot comes up dark.
 
-**Miscellaneous** — `reaper_fbdone` `0` (the first-boot card is still to be shown),
+**Miscellaneous** — `reaper_fwbeta` `0` (the update check ignores the beta channel),
 `reaper_fwsig_override` `0` (firmware-manifest signature checking stays on).
 
 ### 8.3 What a factory reset actually restores
@@ -1454,6 +1455,14 @@ stores live. For a genuinely clean box, format JFFS as well, from Administration
 
 The useful consequence: if you are resetting to clear a bad *setting*, your rules survive and you do
 not have to rebuild them.
+
+**What the page shows (v3.1.0).** A reset started from Backup & Restore puts up a veil that says how to
+get back: the router returns on its **open factory network** (`ASUS_xx…`) at its default address, with a
+link to it — rejoin that network before the page can see the router again. The page treats the web
+server's few busy seconds before the reboot as busy, not gone, so it no longer bounces to a sign-in page
+that is about to vanish; if the router has not gone down within three minutes it says so and hands the
+page back. On the router side three waits that did no work are gone (see the changelog), and the system
+log carries a timestamp at each step (`factory reset: begin` … `nvram erased, handing off to init`).
 
 ---
 

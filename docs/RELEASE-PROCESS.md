@@ -1,6 +1,6 @@
 # Release Process — from source rung to published firmware
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually
@@ -123,6 +123,8 @@ the rung is not shippable.
 
 8. MANIFEST           the refresh_manifest job rewrites updates/manifest_3006.txt,
                       latest.json and the release note from the PUBLISHED assets
+                      (always on main; a Dev publish writes only the model's
+                      MODEL#VARIANT-beta# line + a -beta note, v3.1.0)
 
 9. SIGN               CURRENTLY SHELVED (owner, 2026-08-23): while
                       build-scripts/signing.conf says MANIFEST_SIGNING=off,
@@ -161,7 +163,8 @@ Nothing promotes `Dev` to `main`, and nothing builds on merge. The build is
 always a deliberate dispatch. A dispatch **from `Dev`** is the safe dry run —
 `overlays`, `toolchain` and `build` all run, while `tag`, `release` and
 `refresh_manifest` are branch-gated off, so it cannot publish even with
-`publish` ticked.
+`publish` ticked. (With `publish` ticked, a Dev dispatch IS the beta channel:
+`-beta` tags, pre-releases, and the manifest's beta line - see Notes.)
 
 Releases are **per-model** so models can version independently (e.g. RT-BE96U at
 v2.4.1 while the siblings catch up on the fan-out).
@@ -207,7 +210,11 @@ v2.4.1 while the siblings catch up on the fan-out).
   on request.
 - `updates/manifest_3006.txt` is what the router's update check reads (one line
   per model/variant: `MODEL#VARIANT#X.Y.Z#url#sha#size`); `releases/latest.json`
-  is the machine-readable mirror.
+  is the machine-readable mirror. Since v3.1.0 a Dev publish adds a second line,
+  `MODEL#VARIANT-beta#X.Y.Z#url#sha#size`, that only v3.1.0+ firmware reads,
+  only behind the Firmware page's Beta Channel switch, and only when the beta's
+  number is higher than the stable line's; the refresh retires a beta line the
+  moment the stable line reaches its number. `latest.json` never records a beta.
 - The base pin (`3006.102.8-beta2`, `a7ebfa133a`) never moves. Upstream
   carry-forwards are cherry-picked, not rebased, so the reproduction recipe
   stays stable across releases.

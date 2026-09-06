@@ -42,7 +42,13 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # change - the wizard and all six of its gates are gone). Its RSEC_
        # tokens sit only in HTML text inside hidden spans, never in a JS
        # string, so any translation is structurally safe.
-       'Reaper_SecBanner.asp']
+       'Reaper_SecBanner.asp',
+       # Added 2026-09-05 with v3.1.0's first-boot box (SSID + Wi-Fi password + router
+       # login password in one step; the banner's Wi-Fi target). RWFS_ tokens sit in
+       # HTML text, double-quoted JS strings and one backtick template (RWFS_11 carries
+       # the %1$@ placeholder) - translations must stay free of ` ${ and ".
+       'Reaper_WiFiSetup.asp',
+       ]
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is
 # shelved and the file is not in the tree, so the entry only ever hit the

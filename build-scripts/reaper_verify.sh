@@ -336,6 +336,28 @@ else
   warn "check-symbols" "check_symbols.sh absent -- symbol resolution not checked"
 fi
 
+# ---- 22. who may still link the OpenSSL 1.1 SONAME (check_ossl_consumers.sh) -
+# check 21 proves every consumer RESOLVES. It cannot see a consumer that was
+# never relinked after a library swap: with a compat shim of the old name
+# present, the stale binary resolves through the shim and 21 is satisfied.
+# That was the v3.0.3 hostapd exactly (compiled 2026-07-27, never relinked).
+# This check names the only binaries allowed to depend on the 1.1 SONAME in an
+# OpenSSL 3.x image -- closed prebuilts and their hosts, per
+# openssl11-consumers.txt -- and fails on anything else; hostapd and the other
+# must3 entries must name libcrypto.so.3 outright. Inert on a 1.1 image.
+_cko="$(dirname "${BASH_SOURCE[0]}")/check_ossl_consumers.sh"
+_ckl="$(dirname "${BASH_SOURCE[0]}")/openssl11-consumers.txt"
+if [ -f "$_cko" ]; then
+  if _ckoout=$(bash "$_cko" "$FS" "$_ckl" 2>&1); then
+    pass "ossl-consumers" "$(echo "$_ckoout" | tail -1)"
+  else
+    echo "$_ckoout" | sed 's/^/        /'
+    fail "ossl-consumers" "a binary depends on the OpenSSL 1.1 SONAME that must not (stale link) -- see above"
+  fi
+else
+  warn "ossl-consumers" "check_ossl_consumers.sh absent -- 1.1-SONAME consumers not checked"
+fi
+
 # ---- 20. static source checks (reaper_static_checks.py) --------------------
 # Promotes this session's by-hand static checks into one gate: (1) *.dict line
 # lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips

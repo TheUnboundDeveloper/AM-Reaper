@@ -26,6 +26,47 @@ node, not only on the primary router.
 
 ---
 
+## v3.1.0 — OpenSSL 3.5, second attempt: the library every TLS path stands on *(built RT-BE96U)*
+
+- **The firmware moves from OpenSSL 1.1.1w (end of life since September 2023) to OpenSSL 3.5.8.**
+  Every source-built consumer — hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan,
+  inadyn, Tor, vsftpd, lighttpd, net-snmp, the Reaper Advisor daemon and 110 more — now links the
+  real 3.5 library directly. The closed ASUS binaries that cannot be rebuilt (AiMesh's cfg_server and
+  friends, the Let's Encrypt helper, the lighttpd modules) keep their OpenSSL 1.1 ABI through a small
+  forwarding shim that hands every call to 3.5. The port is Asuswrt-Merlin upstream work by **RSDNTWK**
+  (the shim and the 3.5 integration) and **Eric "Merlin" Sauvageau** (the parallel-compile fix),
+  carried as cherry-picks with their authorship intact; the Reaper Advisor daemon links 3.5 alone.
+- **Why the first attempt (v3.0.3) broke Wi-Fi and this one does not.** hostapd had been compiled in
+  the wireless SDK tree all along; its link rule never sees a library change, so the September 1 image
+  shipped a hostapd still bound to the 1.1 name — which now resolved to the shim, which does not carry
+  the elliptic-curve functions WPA3-SAE needs. This rung purges every object compiled against the old
+  headers before the swap — including the ones git ignores, which the first purge could not see — and
+  adds a release gate (check 22) that names the only binaries allowed to depend on the 1.1 name in a
+  3.5 image and fails on any other. hostapd is required by that gate to link `libcrypto.so.3`
+  outright, verified with `readelf`, not inferred from a green build.
+- **Proven on the RT-BE96U before it was written up:** 31 minutes on the test image with hostapd
+  never restarting, five stations through WPA3-SAE on 6 GHz at 320 MHz, HTTPS UI and outbound TLS
+  working, the router's certificate unchanged across the flash. A pre-flash kit now exists that
+  loader-traces every consumer of the new image on the running router from `/tmp` before anything
+  is flashed.
+- **Licensing.** OpenSSL 3.x is Apache-2.0; its text is added under `LICENSES/`, and the notices no
+  longer misdescribe OpenSSL as BSD/MIT. The move resolves a conflict rather than creating one:
+  1.1.1's OpenSSL/SSLeay advertising clause was never GPL-compatible.
+- **First boot is one box.** The security banner's Wi-Fi step used to open the stock Wireless page,
+  which shows the primary radios' settings; on this build those become the hidden AiMesh backhaul and
+  the network people join lives on the fronthaul VIFs the mesh daemon rebuilds afterwards. A factory box
+  now gets one Reaper page: network name, Wi-Fi password, router login password. It writes what the
+  stock apply writes on every band (one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect
+  on) and fires the same restart, so the mesh daemon's split is unchanged; the login change follows the
+  same committed path as the password page. Keys under 8 characters are refused in the page and in the
+  router, the rule that saved v2.9.1. The stock Wireless page is untouched for engineers, and a new
+  release check locks the whole chain - page, gate, banner target, 25 language packs - so it cannot
+  quietly regress.
+- **Packaging.** The 3.5 source (5,767 files) is too large to publish as a patch; it ships as the
+  hash-pinned `overlays/openssl-3.5-source.tar.gz`, unpacked by the public build after the patch
+  series, with only the integration diff and the shim in `patches/`. The reproduce recipe in the
+  docs gains that one step.
+
 ## v3.0.9 — Low-hanging fruit *(built RT-BE96U)*
 
 Six backlog items that needed no field data, plus one carry-over:
@@ -238,8 +279,10 @@ Two reports closed without a code change, because the router was right:
   WPA2 paths; then 6 GHz initialised WPA3-SAE, called a missing elliptic-curve function and died, 47
   restarts in one boot. The field symptom was a flash that appeared to freeze, then no WAN and no
   Wi-Fi. The line was rebuilt on v3.0.0 without the migration; the work is preserved on a tag for a
-  retry once hostapd is genuinely compiled in this tree. Confirmed on the RT-BE96U: all three hostapd
-  instances alive, 6 GHz serving a 320 MHz client, no restarts.
+  retry. *(Correction, 2026-09-05: this entry originally said hostapd was "not compiled in this tree".
+  It always was — in the wireless SDK tree, not the router tree — and its link rule never sees a library
+  change, so it was simply never relinked after the swap. The retry fixed the purge, not the build.)*
+  Confirmed on the RT-BE96U: hostapd alive, 6 GHz serving a 320 MHz client, no restarts.
 
 - **The release gate now checks symbols, not just libraries.** The link check had only ever asked
   whether each binary's needed libraries resolve, never whether the symbols in them do — the gap

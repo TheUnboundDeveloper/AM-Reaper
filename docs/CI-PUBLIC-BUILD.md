@@ -351,7 +351,7 @@ non-obvious failures that would otherwise be rediscovered.
 | `build-scripts/ci/container_build.sh` | Runs inside `ubuntu:20.04`: packages, locale, non-root `reaper` user, toolchain restore, series replay, overlay + platform archive, provenance, staged-fs digest, reproducibility comparison. |
 | `build-scripts/ci/check_overlays.py` | The overlay identity gate — asserts each overlay changes identity only, so a stale branch tip cannot ride in as a well-formed patch. |
 | `build-scripts/reaper_stale_configure.sh` | Detects (and clears) packages whose configure flags changed after they were last configured. |
-| `overlays/` | Five sibling identity overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U), the GT-BE98 platform archive, and the two u-boot rtl8372 archives — each with its SHA-256. |
+| `overlays/` | Five sibling identity overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U), the GT-BE98 platform archive, the two u-boot rtl8372 archives, and the OpenSSL 3.5 source archive (`openssl-3.5-source.tar.gz`, 53 MB, unpacked for every model after the series) — each with its SHA-256. |
 
 **Fixed — three environment defects, all the same shape**
 

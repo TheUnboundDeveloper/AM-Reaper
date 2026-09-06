@@ -539,6 +539,115 @@ def check_pbr_fwmark_regex(router):
 
 
 # ---------------------------------------------------------------------------
+# firstboot-wifi (v3.1.0): the first-boot box must stay wired end to end.
+# Reaper_WiFiSetup.asp replaced the stock Wireless page as the banner's Wi-Fi
+# target and sets SSID + key on every radio through reaper_wifisetup.cgi, then
+# fires the credential apply chained with restart_wireless. Each piece lives in
+# a different file (page, web.c, reaper_inject.c, 25 dicts) and any one of them
+# regressing silently returns a factory box to the clunky path or, worse, ships
+# a CGI that writes a weak auth mode or an unbounded key. Lock the contract:
+#   page   : exists, calls the CGI with http_id, uses httpApi.chpass, enforces
+#            the 8..63 key bound client-side, fires the exact action_script chain
+#   web.c  : the CGI exists, gates BEFORE any nvram write, writes auth_mode_x
+#            only as "sae"/"psk2sae", enforces 8..63, turns Smart Connect on,
+#            commits, never restarts services itself, registered with do_auth
+#   inject : the banner CTA points at the page; the page is in reaper_skip[] and
+#            reaper_css_only[] (theme yes, bounce no) and NOT in reaper_banner_only[]
+#   dicts  : every pack carries the same RWFS_ set as EN; the page uses only those
+# ---------------------------------------------------------------------------
+def check_firstboot_wifi(router):
+    www = os.path.join(router, "www")
+    page_p = os.path.join(www, "Reaper_WiFiSetup.asp")
+    web_p = os.path.join(router, "httpd", "web.c")
+    inj_p = os.path.join(router, "httpd", "reaper_inject.c")
+    bad = []
+    if not os.path.isfile(page_p):
+        return (False, "www/Reaper_WiFiSetup.asp missing", ["the first-boot box page is not in the tree"])
+    page = open(page_p, encoding="utf-8", errors="replace").read()
+    for needle, why in [
+        ("/reaper_wifisetup.cgi", "page does not call reaper_wifisetup.cgi"),
+        ("http_id=", "page does not send http_id to the CGI"),
+        ("httpApi.chpass(", "page does not change the login password through httpApi.chpass"),
+        ('"saveNvram;restart_chpass;restart_wireless"', "page does not fire the saveNvram;restart_chpass;restart_wireless chain"),
+        ('"saveNvram;restart_chpass"', "page has no password-only fallback apply (rule 28)"),
+        ('current_page" value="Reaper_WiFiSetup.asp"', "form current_page is not the page itself"),
+    ]:
+        if needle not in page:
+            bad.append(why)
+    if not re.search(r"length\s*<\s*8\s*\|\|\s*v\.length\s*>\s*63", page):
+        bad.append("page does not enforce the 8..63 Wi-Fi key bound client-side")
+    if re.search(r"'[^'\n]*<#[A-Za-z_0-9]+#>[^'\n]*'", page):
+        bad.append("a <#token#> sits inside a single-quoted JS string (rule 29)")
+
+    web = open(web_p, encoding="utf-8", errors="replace").read()
+    m = re.search(r"\ndo_reaper_wifisetup_cgi\(char \*url, FILE \*stream\)\n\{(.*?)\n\}\n", web, re.S)
+    if not m:
+        bad.append("web.c has no do_reaper_wifisetup_cgi")
+    else:
+        body = m.group(1)
+        g = body.find("reaper_gate()")
+        writes = [x for x in (body.find("nvram_set"), body.find("nvram_pf_set")) if x >= 0]
+        first_write = min(writes) if writes else len(body)
+        if g < 0 or g > first_write:
+            bad.append("CGI does not gate (reaper_gate) before its first nvram write")
+        auths = re.findall(r'auth\s*=\s*"([a-z0-9]+)"', body)
+        if not auths or any(a not in ("sae", "psk2sae") for a in auths):
+            bad.append("CGI auth modes are not limited to sae/psk2sae: %r" % auths)
+        if 'nvram_pf_set(prefix, "auth_mode_x", auth)' not in body:
+            bad.append("CGI does not write auth_mode_x from the checked auth value")
+        if not re.search(r"len\s*<\s*8\s*\|\|\s*len\s*>\s*63", body):
+            bad.append("CGI does not enforce the 8..63 key bound")
+        if 'nvram_set("smart_connect_x", "1")' not in body:
+            bad.append("CGI does not turn Smart Connect on")
+        if "nvram_commit()" not in body:
+            bad.append("CGI does not commit")
+        if "notify_rc(" in body:
+            bad.append("CGI restarts services itself (the page must chain the restart behind the password apply)")
+    if not re.search(r'\{\s*"reaper_wifisetup\.cgi\*",[^\n]*do_reaper_wifisetup_cgi,\s*do_auth\s*\}', web):
+        bad.append("reaper_wifisetup.cgi is not registered in mime_handlers with do_auth")
+
+    inj = open(inj_p, encoding="utf-8", errors="replace").read()
+    if 'href=\\"Reaper_WiFiSetup.asp\\"' not in inj:
+        bad.append("banner Wi-Fi CTA does not point at Reaper_WiFiSetup.asp")
+    if 'href=\\"Advanced_Wireless_Content.asp\\"' in inj:
+        bad.append("banner still links the stock Wireless page")
+    def in_list(name):
+        i = inj.find("static const char *%s[] = {" % name)
+        if i < 0:
+            return False
+        j = inj.find("NULL", i)
+        return '"Reaper_WiFiSetup.asp"' in inj[i:j]
+    if not in_list("reaper_skip"):
+        bad.append("Reaper_WiFiSetup.asp is not in reaper_skip[] (it would be bounced into the shell)")
+    if not in_list("reaper_css_only"):
+        bad.append("Reaper_WiFiSetup.asp is not in reaper_css_only[] (it would render as raw stock)")
+    if in_list("reaper_banner_only"):
+        bad.append("Reaper_WiFiSetup.asp is in reaper_banner_only[] (must not be)")
+
+    langs = "BR CN CZ DA DE EN ES FI FR HU IT JP KR MS NL NO PL RO RU SL SV TH TR TW UK".split()
+    def rwfs(lang):
+        p = os.path.join(www, lang + ".dict")
+        try:
+            return set(re.findall(r"^(RWFS_\d+)=", open(p, encoding="utf-8", errors="replace").read(), re.M))
+        except OSError:
+            return None
+    en_keys = rwfs("EN") or set()
+    if not en_keys:
+        bad.append("EN.dict has no RWFS_ tokens")
+    for L in langs:
+        keys = rwfs(L)
+        if keys is None:
+            bad.append("%s.dict missing" % L)
+        elif keys != en_keys:
+            bad.append("%s.dict RWFS_ set differs from EN (%d vs %d)" % (L, len(keys), len(en_keys)))
+    used = set(re.findall(r"<#(RWFS_\d+)#>", page))
+    if used - en_keys:
+        bad.append("page uses undefined tokens: %s" % sorted(used - en_keys))
+    if bad:
+        return (False, "%d contract break(s)" % len(bad), bad)
+    return (True, "box page + gated CGI + banner CTA + %d RWFS_ tokens x 25 packs consistent" % len(en_keys), [])
+
+# ---------------------------------------------------------------------------
 def main(argv):
     if len(argv) != 2:
         sys.stderr.write("usage: reaper_static_checks.py <router-src-dir>\n")
@@ -565,6 +674,7 @@ def main(argv):
         ("pbr-reassert",       check_pbr_reassert(router)),
         ("warden-log-prefix",  check_warden_log_prefixes(router)),
         ("pbr-fwmark-regex",   check_pbr_fwmark_regex(router)),
+        ("firstboot-wifi",     check_firstboot_wifi(router)),
     ]
 
     npass = 0

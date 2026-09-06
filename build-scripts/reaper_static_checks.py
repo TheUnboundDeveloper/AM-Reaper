@@ -60,6 +60,20 @@ The eight checks
                         a multi-line #define but lost its trailing backslash
                         silently truncates the macro (line-splicing happens before
                         comment removal). Fail names file:line.
+ 10. factory-reset-fast The v3.1.0 factory-reset timing pass: prepare_restore()
+                        sends stop_app only when a USB application is mounted,
+                        both Restore branches use the waiting notify_rc form,
+                        factory_reset() takes ACT_REBOOT before stop_wan(), and
+                        the Backup page's reset poll keeps its miss latch, its
+                        never-went-down cap and the RBKP_50/51 tokens that every
+                        pack must carry. Three files, each valid on its own.
+ 11. fw-beta-channel    The v3.1.0 beta channel of the update check: the check
+                        script reads the MODEL#VARIANT-beta# line only behind
+                        reaper_fwbeta and offers a beta only when it beats BOTH
+                        the running and the stable number, the note script
+                        reads the -beta note, defaults.c registers the key, the
+                        Firmware page carries the opt-in + the RFWU_54-57
+                        tokens every pack must hold.
 """
 import os
 import re
@@ -648,6 +662,154 @@ def check_firstboot_wifi(router):
     return (True, "box page + gated CGI + banner CTA + %d RWFS_ tokens x 25 packs consistent" % len(en_keys), [])
 
 # ---------------------------------------------------------------------------
+# factory-reset-fast (v3.1.0): the factory-reset timing pass lives in three
+# files and each half stays valid C/JS when the other regresses:
+#   web.c      : prepare_restore() sends stop_app only when a USB application
+#                is mounted (apps_dev + apps_mounted_path, stop_app()'s own
+#                precondition), and both Restore branches use the waiting
+#                notify_rc_and_wait_2min() form so a busy rc cannot drop the
+#                reset after 15 s (the plain macro gives up silently)
+#   services.c : factory_reset() takes ACT_REBOOT (after wait_action_idle)
+#                BEFORE stop_wan(), the way the "reboot" handler does, so
+#                shutdn() never spins 30 s on a stale action lock; and keeps
+#                its three syslog timers (the only wall-clock evidence)
+#   page       : Reaper_Backup.asp's reset poll latches "down" only after
+#                consecutive misses, caps the never-went-down wait, shows the
+#                RBKP_50 rejoin hint and the RBKP_51 not-accepted line, which
+#                every pack must carry (missing key = raw token, no fallback)
+# ---------------------------------------------------------------------------
+def check_factory_reset_fast(router):
+    www = os.path.join(router, "www")
+    web_p = os.path.join(router, "httpd", "web.c")
+    svc_p = os.path.join(router, "rc", "services.c")
+    page_p = os.path.join(www, "Reaper_Backup.asp")
+    for p in (web_p, svc_p, page_p):
+        if not os.path.isfile(p):
+            return (False, "%s missing" % os.path.relpath(p, router), [])
+    bad = []
+    web = open(web_p, encoding="utf-8", errors="replace").read()
+    m = re.search(r"\nprepare_restore\(webs_t wp\)\{(.*?)\n\}\n", web, re.S)
+    if not m:
+        bad.append("web.c: prepare_restore() body not found")
+    else:
+        body = m.group(1)
+        if 'nvram_safe_get("apps_dev")' not in body or 'nvram_safe_get("apps_mounted_path")' not in body:
+            bad.append("web.c: prepare_restore() no longer gates stop_app on apps_dev + apps_mounted_path")
+        if 'notify_rc_and_wait_2min("stop_app")' not in body:
+            bad.append("web.c: prepare_restore() lost the stop_app send")
+    for ev in ("resetdefault", "resetdefault_erase"):
+        if 'notify_rc_and_wait_2min("%s")' % ev not in web:
+            bad.append("web.c: apply_cgi does not send %s in the waiting form" % ev)
+    if re.search(r"prepare_restore\(wp\);\s*\n\s*sys_default(_erase)?\(\);", web):
+        bad.append("web.c: a Restore branch fell back to the 15-s sys_default() macro")
+    svc = open(svc_p, encoding="utf-8", errors="replace").read()
+    m = re.search(r"\nvoid factory_reset\(void\)\n\{(.*?)\n\}\n", svc, re.S)
+    if not m:
+        bad.append("services.c: factory_reset() body not found")
+    else:
+        body = m.group(1)
+        i_act = body.find("set_action(ACT_REBOOT)")
+        i_wan = body.find("stop_wan()")
+        if i_act < 0:
+            bad.append("services.c: factory_reset() does not take ACT_REBOOT")
+        elif i_wan >= 0 and i_act > i_wan:
+            bad.append("services.c: factory_reset() takes ACT_REBOOT after stop_wan()")
+        if "wait_action_idle(10)" not in body:
+            bad.append("services.c: factory_reset() does not wait_action_idle(10) before ACT_REBOOT")
+        if body.count('logmessage("reaper", "factory reset:') < 3:
+            bad.append("services.c: factory_reset() lost its syslog timers")
+    page = open(page_p, encoding="utf-8", errors="replace").read()
+    for needle, why in [
+        ("run >= 5", "page: pollBack no longer latches down on consecutive misses"),
+        ("pollBack(0, 0, 90,", "page: factoryReset() has no never-went-down cap"),
+        ("`<#RBKP_50#>`", "page: reset hint token RBKP_50 not used (or not in backticks)"),
+        ("`<#RBKP_51#>`", "page: never-restarted token RBKP_51 not used (or not in backticks)"),
+        ('id="st_fd"', "page: factory card has no st_fd status line"),
+    ]:
+        if needle not in page:
+            bad.append(why)
+    npacks = 0
+    for fn in sorted(os.listdir(www)):
+        if not fn.endswith(".dict") or fn == "temp.dict":
+            continue
+        npacks += 1
+        d = open(os.path.join(www, fn), encoding="utf-8", errors="replace").read()
+        for k in ("RBKP_50", "RBKP_51"):
+            if "\n%s=" % k not in d:
+                bad.append("%s lacks %s" % (fn, k))
+    if bad:
+        return (False, "%d contract break(s)" % len(bad), bad)
+    return (True, "stop_app gated, waiting resetdefault x2, ACT_REBOOT before stop_wan, page latch + cap, 2 tokens x %d packs" % npacks, [])
+
+# ---------------------------------------------------------------------------
+# fw-beta-channel (v3.1.0): the beta channel is a contract across five files.
+# A router older than v3.1.0 anchors its grep on "VARIANT#" and never sees the
+# beta line; a router on v3.1.0+ must (a) read it only when the admin opted in,
+# (b) offer it only when it is newer than both the running version and the
+# stable line - the rule the owner set - and (c) label it. Each file stays
+# valid when another regresses, so only a check catches the drift.
+# ---------------------------------------------------------------------------
+def check_fw_beta_channel(router):
+    www = os.path.join(router, "www")
+    upd_p = os.path.join(router, "rom", "webs_scripts", "reaper_webs_update.sh")
+    note_p = os.path.join(router, "rom", "webs_scripts", "reaper_webs_note.sh")
+    def_p = os.path.join(router, "shared", "defaults.c")
+    page_p = os.path.join(www, "Reaper_Firmware.asp")
+    dash_p = os.path.join(www, "Main_ReaperDash.asp")
+    for p in (upd_p, note_p, def_p, page_p, dash_p):
+        if not os.path.isfile(p):
+            return (False, "%s missing" % os.path.relpath(p, router), [])
+    bad = []
+    upd = open(upd_p, encoding="utf-8", errors="replace").read()
+    for needle, why in [
+        ('grep "^${model}#${variant}-beta#"', "update script does not read the MODEL#VARIANT-beta# line"),
+        ('BETA_EN="$(nvram get reaper_fwbeta)"', "update script does not gate the beta line on reaper_fwbeta"),
+        ('[ "$b_n" -gt "$cur_n" ] 2>/dev/null && [ "$b_n" -gt "$s_n" ] 2>/dev/null', "update script lost the beta rule (newer than running AND newer than stable)"),
+        ('nvram set webs_state_channel=beta', "update script does not mark a beta offer in webs_state_channel"),
+        ('nvram set webs_state_channel=""', "update script does not clear webs_state_channel at the start of a check"),
+    ]:
+        if needle not in upd:
+            bad.append("reaper_webs_update.sh: " + why)
+    # the beta line must be consulted only when the stable branch did not fire
+    i_stable = upd.find('if [ "$s_n" -gt "$cur_n" ] 2>/dev/null; then')
+    i_beta = upd.find('elif [ -n "$beta_line" ]; then')
+    if i_stable < 0 or i_beta < 0 or i_beta < i_stable:
+        bad.append("reaper_webs_update.sh: the beta branch is not the elif of the stable branch")
+    note = open(note_p, encoding="utf-8", errors="replace").read()
+    if 'Reaper_v${ver}-beta.txt' not in note or 'nvram get webs_state_channel' not in note:
+        bad.append("reaper_webs_note.sh: does not read the -beta note for a beta offer")
+    defs = open(def_p, encoding="utf-8", errors="replace").read()
+    if '{ "reaper_fwbeta", "0",' not in defs:
+        bad.append("defaults.c: reaper_fwbeta not registered (saveNvram would refuse it)")
+    page = open(page_p, encoding="utf-8", errors="replace").read()
+    for needle, why in [
+        ('id="betaChk"', "page has no beta opt-in checkbox"),
+        ("reaper_fwbeta: v", "page does not save reaper_fwbeta"),
+        ("'webs_state_channel'", "page does not read webs_state_channel after a check"),
+        ('id="betaTag"', "page has no beta label on the offer"),
+    ]:
+        if needle not in page:
+            bad.append("Reaper_Firmware.asp: " + why)
+    for k in ("RFWU_54", "RFWU_55", "RFWU_56", "RFWU_57"):
+        if "<#%s#>" % k not in page:
+            bad.append("Reaper_Firmware.asp: token %s not used" % k)
+    dash = open(dash_p, encoding="utf-8", errors="replace").read()
+    if 'nvram_get("webs_state_channel")' not in dash:
+        bad.append("Main_ReaperDash.asp: the update badge does not label a beta")
+    npacks = 0
+    for fn in sorted(os.listdir(www)):
+        if not fn.endswith(".dict") or fn == "temp.dict":
+            continue
+        npacks += 1
+        d = open(os.path.join(www, fn), encoding="utf-8", errors="replace").read()
+        for k in ("RFWU_54", "RFWU_55", "RFWU_56", "RFWU_57"):
+            if "\n%s=" % k not in d:
+                bad.append("%s lacks %s" % (fn, k))
+    if bad:
+        return (False, "%d contract break(s)" % len(bad), bad)
+    return (True, "beta line gated + ruled in the check script, beta note, key registered, page opt-in + label, 4 tokens x %d packs" % npacks, [])
+
+# ---------------------------------------------------------------------------
 def main(argv):
     if len(argv) != 2:
         sys.stderr.write("usage: reaper_static_checks.py <router-src-dir>\n")
@@ -675,6 +837,8 @@ def main(argv):
         ("warden-log-prefix",  check_warden_log_prefixes(router)),
         ("pbr-fwmark-regex",   check_pbr_fwmark_regex(router)),
         ("firstboot-wifi",     check_firstboot_wifi(router)),
+        ("factory-reset-fast", check_factory_reset_fast(router)),
+        ("fw-beta-channel",    check_fw_beta_channel(router)),
     ]
 
     npass = 0

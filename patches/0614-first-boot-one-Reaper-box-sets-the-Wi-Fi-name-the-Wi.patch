@@ -1,0 +1,1334 @@
+From 6e3a2418338f16a4b9650f289e76c3cc7d240008 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 5 Sep 2026 17:56:28 -0400
+Subject: [PATCH] first boot: one Reaper box sets the Wi-Fi name, the Wi-Fi
+ password and the router login
+
+The security banner's Wi-Fi step pointed at the stock Wireless page, which shows
+the PRIMARY BSS settings; on this build the primaries become the hidden AiMesh
+backhaul and the user's network lives on the wlN.1 fronthaul VIFs, rebuilt by
+cfg_server after a plain wireless apply. Filling that page in and hoping the
+migration follows was the clunky part of a factory box.
+
+Reaper_WiFiSetup.asp replaces it as the banner target: network name, Wi-Fi
+password and router login password in one step. reaper_wifisetup.cgi (gated on
+http_id, do_auth) writes for every radio exactly what the stock apply writes -
+one SSID and key, psk2sae on 2.4/5 GHz, sae on 6 GHz, protected management
+frames, the crypto suite the radio's WiFi 7 mode selects, hidden off, Smart
+Connect on with the interface mask computed by the js/asus.js rule - then
+commits and returns. It never restarts anything itself. The page changes the
+login through httpApi.chpass first (it needs the current session), then the
+CGI, then one start_apply with "saveNvram;restart_chpass;restart_wireless", so
+the radios restart only after the password is committed and shadow rebuilt
+(reaper-ui rule 28). A refused password stops everything; a refused Wi-Fi
+setting still persists the password change.
+
+The key bound (8..63 printable or 64 hex) is enforced in the page AND the CGI:
+hostapd accepts nothing else and then runs with no key line, which killed every
+band in v2.9.1. The stock Wireless page is untouched and stays for engineers.
+
+13 RWFS_ tokens, English-seeded in all 25 packs (lockstep 6860). Page in
+reaper_skip[] + reaper_css_only[] like Main_Password.asp.
+---
+ release/src/router/httpd/reaper_inject.c    |   4 +-
+ release/src/router/httpd/web.c              | 101 ++++
+ release/src/router/www/BR.dict              |  13 +
+ release/src/router/www/CN.dict              |  13 +
+ release/src/router/www/CZ.dict              |  13 +
+ release/src/router/www/DA.dict              |  13 +
+ release/src/router/www/DE.dict              |  13 +
+ release/src/router/www/EN.dict              |  13 +
+ release/src/router/www/ES.dict              |  13 +
+ release/src/router/www/FI.dict              |  13 +
+ release/src/router/www/FR.dict              |  13 +
+ release/src/router/www/HU.dict              |  13 +
+ release/src/router/www/IT.dict              |  13 +
+ release/src/router/www/JP.dict              |  13 +
+ release/src/router/www/KR.dict              |  13 +
+ release/src/router/www/MS.dict              |  13 +
+ release/src/router/www/NL.dict              |  13 +
+ release/src/router/www/NO.dict              |  13 +
+ release/src/router/www/PL.dict              |  13 +
+ release/src/router/www/RO.dict              |  13 +
+ release/src/router/www/RU.dict              |  13 +
+ release/src/router/www/Reaper_WiFiSetup.asp | 589 ++++++++++++++++++++
+ release/src/router/www/SL.dict              |  13 +
+ release/src/router/www/SV.dict              |  13 +
+ release/src/router/www/TH.dict              |  13 +
+ release/src/router/www/TR.dict              |  13 +
+ release/src/router/www/TW.dict              |  13 +
+ release/src/router/www/UK.dict              |  13 +
+ 28 files changed, 1018 insertions(+), 1 deletion(-)
+ create mode 100644 release/src/router/www/Reaper_WiFiSetup.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 1c7cbf7a84..7398822a3a 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -162,7 +162,7 @@
+ 	":('<li class=\"d\"><span class=\"k\">&#10003;</span><span class=\"w\">'" \
+ 	"+q('rsec_t_pw_done')+'</span></li>');" \
+ 	"rows+=wf?('<li><span class=\"w\">'+q('rsec_t_wifi_todo')" \
+-	"+'</span><a href=\"Advanced_Wireless_Content.asp\">'+q('rsec_t_wifi_cta')+'</a></li>')" \
++	"+'</span><a href=\"Reaper_WiFiSetup.asp\">'+q('rsec_t_wifi_cta')+'</a></li>')" \
+ 	":('<li class=\"d\"><span class=\"k\">&#10003;</span><span class=\"w\">'" \
+ 	"+q('rsec_t_wifi_done')+'</span></li>');" \
+ 	"b.innerHTML='<div class=\"i\">!</div><div class=\"c\"><h3>'" \
+@@ -237,6 +237,7 @@ static const char *reaper_skip[] = {
+ 	   AiMesh add-node flow loads it framed and it must render untouched. (All
+ 	   QIS_* pages are also matched by the prefix check in reaper_should_inject().) */
+ 	"Main_Password.asp",
++	"Reaper_WiFiSetup.asp",	/* v3.1.0 first-boot box: theme yes, bounce no - same as Main_Password */
+ 	"QIS_wizard.htm",
+ 	/* NOTE: Advanced_Wireless_Content.asp (state.js gate 3) moved to
+ 	   reaper_css_only[] on 2026-08-13 - it must still stay TOP-LEVEL, but a full
+@@ -319,6 +320,7 @@ static const char *reaper_css_only[] = {
+ 	   is skip-listed, and this list is tested first) but themed, so first boot is
+ 	   Reaper end to end and no stock ASUS page is ever presented as ours. */
+ 	"Main_Password.asp",
++	"Reaper_WiFiSetup.asp",	/* v3.1.0 first-boot box: theme yes, bounce no - same as Main_Password */
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 0e13134806..61af58eaee 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21773,6 +21773,106 @@ static void reaper_gate_deny(FILE *stream, int why, const char *ns)
+ 		reaper_gate_msg(why), ns, reaper_gate_ek(why));
+ }
+ 
++/*
++ * reaper_wifisetup.cgi - the first-boot box (Reaper_WiFiSetup.asp), v3.1.0.
++ *
++ * Writes, for every radio, exactly what the stock Advanced_Wireless_Content.asp
++ * apply writes when Smart Connect is on: one SSID and key on all bands, psk2sae
++ * on 2.4/5 GHz, sae on 6 GHz (mandatory there), protected management frames,
++ * the crypto suite the radio's WiFi 7 mode selects, hidden off, Smart Connect
++ * on with the interface mask computed by the same rule as js/asus.js
++ * (bit 0 = 2g1, 1 = 5g1, 2 = 5g2, 3 = 6g1, 4 = 6g2 - the RT-BE96U yields 11).
++ * cfg_server then performs the fronthaul/backhaul split off the same
++ * restart_wireless the stock page fires; nothing about that path is touched.
++ *
++ * nvram + commit ONLY. The page fires the restart itself, chained behind the
++ * password apply ("saveNvram;restart_chpass;restart_wireless"), so the radios
++ * never restart with a half-applied box. Gated on http_id like every other
++ * state-changing Reaper CGI; the caller must already be authenticated (do_auth).
++ *
++ * The key bound is enforced HERE as well as in the page: hostapd accepts
++ * 8..63 characters or 64 hex and otherwise emits NO key line, which kills
++ * every band on this platform (v2.9.1). A too-short key never reaches nvram.
++ */
++static int rwfs_printable(const char *s, int allow_space)
++{
++	for (; *s; s++) {
++		unsigned char c = (unsigned char)*s;
++		if (c < 0x20 || c > 0x7e) return 0;
++		if (!allow_space && c == ' ') return 0;
++	}
++	return 1;
++}
++
++static void
++do_reaper_wifisetup_cgi(char *url, FILE *stream)
++{
++	char *ssid = get_cgi("ssid");
++	char *psk = get_cgi("psk");
++	char prefix[16], buf[16];
++	int unit, n, len, i, blank = 1, n5 = 0, n6 = 0, selif = 0, why;
++
++	why = reaper_gate();
++	if (why != RGATE_OK) {
++		reaper_gate_deny(stream, why, "RWFS");
++		return;
++	}
++	if (!ssid || !psk) {
++		websWrite(stream, "{\"ok\":0,\"error\":\"ssid and psk are required\",\"ek\":\"RWFS_1\"}");
++		return;
++	}
++	len = strlen(ssid);
++	for (i = 0; i < len; i++) if (ssid[i] != ' ') { blank = 0; break; }
++	if (len < 1 || len > 32 || blank || !rwfs_printable(ssid, 1)) {
++		websWrite(stream, "{\"ok\":0,\"error\":\"network name must be 1 to 32 printable characters\",\"ek\":\"RWFS_2\"}");
++		return;
++	}
++	len = strlen(psk);
++	if (len == 64) {
++		for (i = 0; i < 64; i++) if (!isxdigit((unsigned char)psk[i])) break;
++		if (i < 64) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"a 64-character key must be hexadecimal\",\"ek\":\"RWFS_3\"}");
++			return;
++		}
++	} else if (len < 8 || len > 63 || !rwfs_printable(psk, 1)) {
++		websWrite(stream, "{\"ok\":0,\"error\":\"Wi-Fi password must be 8 to 63 printable characters\",\"ek\":\"RWFS_4\"}");
++		return;
++	}
++
++	n = num_of_wl_if();
++	if (n > MAX_NR_WL_IF) n = MAX_NR_WL_IF;
++	if (n < 1) {
++		websWrite(stream, "{\"ok\":0,\"error\":\"no radios\",\"ek\":\"RWFS_5\"}");
++		return;
++	}
++	for (unit = 0; unit < n; unit++) {
++		const char *auth, *mfp;
++		int bit;
++		snprintf(prefix, sizeof(prefix), "wl%d_", unit);
++		if (is_6g(unit)) {
++			auth = "sae"; mfp = "2"; bit = 3 + (n6 < 1 ? 0 : 1); n6++;
++		} else if (nvram_pf_match(prefix, "nband", "1")) {
++			auth = "psk2sae"; mfp = "1"; bit = 1 + (n5 < 1 ? 0 : 1); n5++;
++		} else {
++			auth = "psk2sae"; mfp = "1"; bit = 0;
++		}
++		nvram_pf_set(prefix, "ssid", ssid);
++		nvram_pf_set(prefix, "auth_mode_x", auth);
++		nvram_pf_set(prefix, "wpa_psk", psk);
++		nvram_pf_set(prefix, "crypto", nvram_pf_match(prefix, "11be", "1") ? "aes+gcmp256" : "aes");
++		nvram_pf_set(prefix, "mfp", mfp);
++		nvram_pf_set(prefix, "closed", "0");
++		selif |= (1 << bit);
++	}
++	nvram_set("smart_connect_x", "1");
++	snprintf(buf, sizeof(buf), "%d", selif);
++	nvram_set("smart_connect_selif_x", buf);
++	nvram_set("w_Setting", "1");
++	nvram_commit();
++	logmessage("reaper", "wifisetup: network name and key set on %d radio(s), Smart Connect on (selif %d); restart follows the password apply", n, selif);
++	websWrite(stream, "{\"ok\":1,\"radios\":%d,\"selif\":%d}", n, selif);
++}
++
+ static void
+ do_reaper_diag_cgi(char *url, FILE *stream)
+ {
+@@ -35414,6 +35514,7 @@ struct mime_handler mime_handlers[] =
+ #ifdef RTCONFIG_AUPNPC
+ 	{ "get_upnpc_redirection_list.cgi", "text/html", no_cache_IE7, do_html_post_and_get, get_upnpc_redirection_list_cgi, do_auth },
+ #endif
++	{ "reaper_wifisetup.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_wifisetup_cgi, do_auth },
+ 	{ "chpass.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_chpass_cgi, do_auth },
+ 	{ "get_cta_info.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_cta_info_cgi, NULL },
+ 	{ "upload_config_sync.cgi*", "text/html", no_cache_IE7, do_upload_config_sync_post, do_upload_config_sync_cgi, do_auth },
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 42c3789b4d..ffa33494fc 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index e249c1533d..4f565a477b 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index a60a5be4a9..4557895b86 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index f774caaeaa..1cbb0ae45f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index cd7f9212de..338fa08ddd 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index fad0f7baac..0399f62b96 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index ccacc4055a..84bffe9d8a 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 80f8669193..6b8c2e333e 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e929847ba1..0e25f014b4 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 5ec0ceab83..0307cb80fa 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index aabe21f719..971a86b7dc 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 1e31dd514c..36c1d29784 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 14a507d646..b51c1e53a3 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 56621dcfd3..3fccb74750 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index a88c52256e..fda11753e9 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index be464e722a..9e98218dd9 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 9a9a027dc1..8dfaef2f38 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index a936489246..ef03508755 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index fc8ee4d986..2ed8a1dec2 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/Reaper_WiFiSetup.asp b/release/src/router/www/Reaper_WiFiSetup.asp
+new file mode 100644
+index 0000000000..44f9e6303e
+--- /dev/null
++++ b/release/src/router/www/Reaper_WiFiSetup.asp
+@@ -0,0 +1,589 @@
++<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
++<html xmlns="http://www.w3.org/1999/xhtml">
++<!--
++	Reaper_WiFiSetup.asp - first-boot setup box (v3.1.0)
++
++	One step for a factory box: Wi-Fi network name, Wi-Fi password, router login
++	password. Replaces the stock Advanced_Wireless_Content.asp as the security
++	banner's Wi-Fi target. That page shows the PRIMARY BSS settings; on this
++	build the primaries become the hidden AiMesh backhaul and the user's network
++	lives on the wlN.1 fronthaul VIFs, both rebuilt by cfg_server after a plain
++	wireless apply. This box does not reimplement that: reaper_wifisetup.cgi
++	writes exactly what the stock page's apply writes (one SSID on every radio,
++	psk2sae on 2.4/5 GHz, sae on 6 GHz, Smart Connect on) and the form fires the
++	same restart_wireless, so the fronthaul/backhaul split is the same code path.
++
++	CREDENTIALS follow Main_Password.asp exactly (reaper-ui rule 28): the
++	synchronous httpApi.chpass() call (it supplies http_id itself), then the
++	start_apply form with action_script "saveNvram;restart_chpass" so the new
++	password is committed and reaches /etc/shadow. restart_wireless is appended
++	to that chain so the radios restart AFTER the password is persisted, and only
++	when both halves were accepted.
++
++	ORDER MATTERS: chpass first (it needs the CURRENT session), then the Wi-Fi
++	CGI (nvram only, no restart), then the single form submit that restarts both.
++	A refused password stops everything; a refused Wi-Fi setting still persists
++	the password change so the box is never left half-done.
++
++	i18n: RWFS_* tokens (English-seeded, 25 packs) plus reused stock tokens.
++	Tokens appear only in double-quoted or backtick JS strings (rule 29) and in
++	HTML text. ASCII only (rule 1). Rendered with the reaper theme via
++	reaper_css_only[] and never bounced (reaper_skip[]), like Main_Password.asp.
++-->
++<head>
++<meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
++<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
++<meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
++<meta HTTP-EQUIV="Expires" CONTENT="-1">
++<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
++<link rel="shortcut icon" href="images/favicon.png">
++<link rel="icon" href="images/favicon.png">
++<title>Reaper</title>
++<script language="JavaScript" type="text/javascript" src="/js/jquery.js"></script>
++<script type="text/javascript" src="/js/httpApi.js"></script>
++<script type="text/javascript" src="/js/https_redirect/https_redirect.js"></script>
++<style>
++body{
++	font-family: Arial, MS UI Gothic, MS P Gothic, Microsoft Yahei UI, sans-serif;
++}
++.wrapper{
++	background:#1F1F1F url(images/New_ui/login_bg.png) no-repeat center center fixed;
++	background-size: cover;
++}
++.button{
++	background-color: #279FD9;
++	border: 0px;
++	border-radius: 4px ;
++	transition: visibility 0s linear 0.218s,opacity 0.218s,background-color 0.218s;
++	height: 48px;
++	width: 260px;
++	font-size: 14pt;
++	color:#fff;
++	text-align:center;
++	vertical-align:center;
++	cursor:pointer;
++}
++.form_input{
++	background-color:rgba(255,255,255,0.2);
++	background-color:#576D73\9;
++	border-radius: 4px;
++	padding:13px 11px;
++	width: 380px;
++	border: 0;
++	height:25px;
++	color:#fff;
++	font-size:16px
++}
++.main_content{
++	width: 100%;
++	max-width: 640px;
++	color: #FFF;
++}
++.main_content > div{
++	position: relative;
++	margin: 22px 0px 0px 78px;
++}
++.main_content .title_name{
++	font-size: 30pt;
++	color:#93d2d9;
++}
++.main_content .title_name:before{
++	position: absolute;
++	content: "";
++	background-image: url(/images/New_ui/icon_titleName.png);
++	width: 73px;
++	height: 73px;
++	background-repeat: no-repeat;
++	left: -73px;
++	background-position: 0% 50%;
++}
++.main_content .sub_title_name{
++	font-size: 14pt;
++	color: #fff;
++	margin-top: 12px;
++}
++.main_content .sect{
++	margin-top: 26px;
++	font-size: 15pt;
++	color:#93d2d9;
++}
++.main_content .lbl{
++	margin-top: 14px;
++	font-size: 12pt;
++}
++.main_content .hint{
++	margin-top: 6px;
++	font-size: 10.5pt;
++	color: #b9c4c7;
++	max-width: 420px;
++}
++.main_content .show_row{
++	margin-top: 12px;
++	font-size: 11pt;
++}
++.main_content #error_status_field{
++	color: rgb(255, 204, 0);
++	margin: 12px 0px -10px 78px;
++	display: none;
++	max-width: 420px;
++}
++.main_content #done_field{
++	color: #7fd9a3;
++	margin: 12px 0px -10px 78px;
++	display: none;
++	max-width: 420px;
++	font-size: 12pt;
++	line-height: 1.5;
++}
++.main_content .btn_bg{
++	display: flex;
++	justify-content: flex-end;
++	height: 68px;
++}
++.main_content .btn_bg #loadingIcon{
++	background-image: url(/images/InternetScan.gif);
++	width: 300px;
++	background-repeat: no-repeat;
++	background-size: 35px 35px;
++	background-position: 50%;
++	display: none;
++}
++.main_content .btn_bg > div{
++	margin-right: 8px;
++	height: 100%;
++}
++/*for mobile device*/
++@media screen and (max-width: 1000px){
++	.main_content{
++		max-width: initial;
++		padding: 0px 10px;
++	}
++	.main_content > div{
++		margin: 16px 0px 0px 0px;
++	}
++	.main_content .title_name:before{
++		display: none;
++	}
++	.main_content #error_status_field, .main_content #done_field{
++		margin: 10px 0px -10px 0px;
++	}
++	.main_content .btn_bg{
++		justify-content: center;
++	}
++	.main_content .btn_bg > div{
++		width: 100%;
++		margin-right: initial;
++	}
++	.form_input{
++		padding: 10px 11px;
++		width: 100%;
++		height: 30px;
++		font-size: 16px;
++	}
++	.button{
++		height: 50px;
++		font-size: 14pt;
++		width: calc(100% - -22px);
++	}
++}
++</style>
++<script>
++String.prototype.repeat = function(times) {
++	return (new Array(times + 1)).join(this);
++};
++String.prototype.strReverse = function() {
++	var newstring = "";
++	for (var s=0; s < this.length; s++) {
++		newstring = this.charAt(s) + newstring;
++	}
++	return newstring;
++};
++var is_AA_sku = (function(){
++	var ttc = '<% nvram_get("territory_code"); %>';
++	return (ttc.search("AA") == -1) ? false : true;
++})();
++var is_KR_sku = (function(){
++	var ttc = '<% nvram_get("territory_code"); %>';
++	return (ttc.search("KR") == -1) ? false : true;
++})();
++var is_SG_sku = (function(){
++	var ttc = '<% nvram_get("territory_code"); %>';
++	return (ttc.search("SG") == -1) ? false : true;
++})();
++var defaultPass = ("<% check_pw(); %>" == "1");
++var secure_default = isSupport("secure_default");
++function isSupport(_ptn){
++	var ui_support = [<% get_ui_support(); %>][0];
++	return (ui_support[_ptn]) ? ui_support[_ptn] : 0;
++}
++function initial(){
++	top.name = "";
++	var windowHeight = (function(){
++		if(window.innerHeight)
++			return window.innerHeight;
++		else if(document.body && document.body.clientHeight)
++			return document.body.clientHeight;
++		else if(document.documentElement && document.documentElement.clientHeight)
++			return document.documentElement.clientHeight;
++		else
++			return 800;
++	})();
++	document.getElementById("loginTable").style.minHeight = (windowHeight-16) + "px";
++	document.getElementById("loginTable").style.display = "";
++	if(is_KR_sku || is_SG_sku || is_AA_sku || secure_default)
++		$("#KRHint").show();
++	/* a box whose admin password is already set needs the current one for
++	   do_chpass (401 without it) - same rule as Main_Password.asp */
++	if(!defaultPass){
++		document.getElementById("cur_password_tr").style.display = "";
++		document.getElementById("cur_password_field").style.display = "";
++	}
++	document.getElementById("wifi_ssid").focus();
++	var order = ["wifi_ssid", "wifi_psk", "http_username_x", "http_passwd_x"];
++	for(var i = 0; i < order.length; i++){
++		(function(idx){
++			document.getElementById(order[idx]).onkeyup = function(e){
++				if(e.keyCode == 13){
++					if(idx + 1 < order.length) document.getElementById(order[idx + 1]).focus();
++					else submitForm();
++				}
++			};
++		})(i);
++	}
++}
++function toggleShow(){
++	var t = document.getElementById("show_pw").checked ? "text" : "password";
++	document.getElementById("wifi_psk").type = t;
++	document.getElementById("http_passwd_x").type = t;
++	var c = document.getElementById("http_passwd_cur");
++	if(c) c.type = t;
++}
++function check_common_string(pwd, flag){
++	var termAlphas = "abcdefghijklmnopqrstuvwxyz";
++	var termNumerics = "01234567890";
++	var termSymbols = "~!@#$%^&*()_+";
++	var termKeyboards1 = "qwertyuiop";
++	var termKeyboards2 = "asdfghjkl";
++	var termKeyboards3 = "zxcvbnm";
++	var termCommon5 = ["123123","abc123","letmein","master","qazwsx","admin"];
++	var termCommon8 = ["adminpassword","loginpassword","passw0rd","password","useradmin","userpassword"];
++	var nSeqString = 0;
++	if(termAlphas.toLowerCase().indexOf(pwd) != -1 || termAlphas.strReverse().toLowerCase().indexOf(pwd) != -1) { nSeqString++; }
++	if(termNumerics.toLowerCase().indexOf(pwd) != -1 || termNumerics.strReverse().toLowerCase().indexOf(pwd) != -1) { nSeqString++; }
++	if(termSymbols.toLowerCase().indexOf(pwd) != -1 || termSymbols.strReverse().toLowerCase().indexOf(pwd) != -1) { nSeqString++; }
++	if(termKeyboards1.toLowerCase().indexOf(pwd) != -1 || termKeyboards1.strReverse().toLowerCase().indexOf(pwd) != -1) { nSeqString++; }
++	if(termKeyboards2.toLowerCase().indexOf(pwd) != -1 || termKeyboards2.strReverse().toLowerCase().indexOf(pwd) != -1) { nSeqString++; }
++	if(flag == "httpd_password"){
++		if(termKeyboards3.toLowerCase().indexOf(pwd) != -1 || termKeyboards3.strReverse().toLowerCase().indexOf(pwd) != -1) { nSeqString++; }
++		for(var s=0;s<termCommon5.length;s++){ if(pwd == termCommon5[s]) { nSeqString++; } }
++	}
++	for(var t=0;t<termCommon8.length;t++){ if(pwd == termCommon8[t]) { nSeqString++; } }
++	if(pwd == pwd.charAt(0).repeat(pwd.length)) { nSeqString++; }
++	return nSeqString > 0;
++}
++function printableAscii(s, allowSpace){
++	for(var i = 0; i < s.length; i++){
++		var c = s.charCodeAt(i);
++		if(c < 32 || c > 126) return false;
++		if(!allowSpace && c == 32) return false;
++	}
++	return true;
++}
++function validSsid(obj){
++	var v = obj.value;
++	/* 1..32 bytes, not blank, printable - the same bounds the wireless page's
++	   validator.stringSSID enforces */
++	if(v.length < 1 || v.length > 32 || v.replace(/ /g, "").length == 0 || !printableAscii(v, true)){
++		showError("<#RWFS_10#>");
++		obj.focus(); obj.select();
++		return false;
++	}
++	return true;
++}
++function validPsk(obj){
++	var v = obj.value;
++	/* 8..63 printable characters, or a 64-hex raw key. hostapd rejects anything
++	   else and then runs with NO key line, which is fatal for every band on this
++	   platform (the v2.9.1 lesson) - so the bound is enforced here AND in the CGI. */
++	var hex64 = (v.length == 64 && /^[0-9a-fA-F]{64}$/.test(v));
++	if(!hex64 && (v.length < 8 || v.length > 63 || !printableAscii(v, true))){
++		showError("<#RWFS_9#>");
++		obj.focus(); obj.select();
++		return false;
++	}
++	return true;
++}
++function validForm(){
++	if(!defaultPass && $("#http_passwd_cur").val().length == 0){
++		showError("<#Input_Current_Password#>");
++		$("#http_passwd_cur").focus();
++		return false;
++	}
++	if(!validSsid(document.getElementById("wifi_ssid"))) return false;
++	if(!validPsk(document.getElementById("wifi_psk"))) return false;
++	if(!validator.chkLoginId(document.form.http_username_x)) return false;
++	if(is_KR_sku || is_SG_sku || is_AA_sku || secure_default){
++		if(!validator.chkLoginPw_KR(document.form.http_passwd_x)) return false;
++		if(document.form.http_passwd_x.value == document.form.http_username_x.value){
++			showError("<#JS_validLoginPWD_same#>");
++			document.form.http_passwd_x.focus(); document.form.http_passwd_x.select();
++			return false;
++		}
++	}
++	else{
++		if(!validator.chkLoginPw(document.form.http_passwd_x)) return false;
++	}
++	if(document.form.http_passwd_x.value == '<% nvram_default_get("http_passwd"); %>'){
++		showError("<#QIS_adminpass_confirm0#>");
++		document.form.http_passwd_x.value = "";
++		document.form.http_passwd_x.focus(); document.form.http_passwd_x.select();
++		return false;
++	}
++	if(check_common_string(document.form.http_passwd_x.value, "httpd_password")){
++		if(!confirm("<#JS_common_passwd#>")){
++			document.form.http_passwd_x.focus(); document.form.http_passwd_x.select();
++			return false;
++		}
++	}
++	if(check_common_string(document.getElementById("wifi_psk").value, "wpa_key")){
++		if(!confirm("<#JS_common_passwd#>")){
++			document.getElementById("wifi_psk").focus(); document.getElementById("wifi_psk").select();
++			return false;
++		}
++	}
++	if(document.getElementById("wifi_psk").value == document.form.http_passwd_x.value){
++		if(!confirm("<#RWFS_13#>")){
++			document.form.http_passwd_x.focus(); document.form.http_passwd_x.select();
++			return false;
++		}
++	}
++	return true;
++}
++/* nvram only - no restart. Returns the parsed JSON reply or null. */
++function applyWifi(ssid, psk){
++	var body = "ssid=" + encodeURIComponent(ssid) + "&psk=" + encodeURIComponent(psk)
++	         + "&http_id=" + encodeURIComponent("<% nvram_get("http_id"); %>");
++	var x = new XMLHttpRequest();
++	x.open("POST", "/reaper_wifisetup.cgi", false);
++	x.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
++	try{ x.send(body); }catch(e){ return null; }
++	if(x.status != 200) return null;
++	try{ return JSON.parse(x.responseText); }catch(e){ return null; }
++}
++var busy = false;
++function submitForm(){
++	if(busy) return;
++	if(!validForm()) return;
++	busy = true;
++	$("#error_status_field").hide();
++	$("#btn_modify").hide();
++	$("#loadingIcon").show();
++
++	var ssid = document.getElementById("wifi_ssid").value;
++	var psk = document.getElementById("wifi_psk").value;
++	var postData = {
++		"restart_httpd": "0",
++		"new_username": document.form.http_username_x.value,
++		"new_passwd": document.form.http_passwd_x.value,
++		"defpass_enable": "0"
++	};
++	if(!defaultPass){
++		postData.cur_username = '<% nvram_get("http_username"); %>';
++		postData.cur_passwd = $("#http_passwd_cur").val();
++	}
++
++	setTimeout(function(){
++		/* 1. the login password, synchronously, against the CURRENT session.
++		   httpApi.chpass hashes both to hexMD5 and adds http_id itself. */
++		var rc = httpApi.chpass(postData);
++		if(rc != "200"){
++			var msg = "<#Fail_change_password#>";
++			if(rc == "401") msg = "<#Wrong_current_password#>";
++			else if(rc == "402") msg = "<#Five_attempts_logout_hint#>";
++			fail(msg);
++			return;
++		}
++		/* 2. the Wi-Fi settings - nvram + commit only, nothing restarts yet */
++		var r = applyWifi(ssid, psk);
++		if(!r || r.ok != 1){
++			/* persist the password change regardless (rule 28), report the Wi-Fi refusal */
++			document.form.action_script.value = "saveNvram;restart_chpass";
++			document.form.submit();
++			fail("<#RWFS_12#> " + (r && r.error ? r.error : "HTTP"));
++			return;
++		}
++		/* 3. one apply: commit, rebuild shadow, then restart the radios */
++		document.form.action_script.value = "saveNvram;restart_chpass;restart_wireless";
++		document.form.submit();
++		$("#loadingIcon").hide();
++		var done = `<#RWFS_11#>`.replace("%1$@", ssid.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
++		$("#done_field").html(done).show();
++		setTimeout(function(){ location.href = "/"; }, 12000);
++	}, 100);
++}
++function fail(msg){
++	busy = false;
++	$("#loadingIcon").hide();
++	$("#btn_modify").show();
++	showError(msg);
++}
++var validator = {
++	chkLoginId: function(obj){
++		var re = new RegExp("^[a-zA-Z0-9][a-zA-Z0-9\-\_]+$","gi");
++		if(obj.value == ""){
++			showError("<#File_Pop_content_alert_desc1#>");
++			obj.focus(); obj.select();
++			return false;
++		}
++		else if(re.test(obj.value)){
++			if(obj.value == "root" || obj.value == "guest" || obj.value == "anonymous"){
++				showError("<#USB_Application_account_alert#>");
++				obj.focus(); obj.select();
++				return false;
++			}
++			return true;
++		}
++		else{
++			if(obj.value.length < 2) showError("<#JS_short_username#>");
++			else showError("<#JS_validhostname#>");
++			obj.focus(); obj.select();
++			return false;
++		}
++	},
++	chkLoginPw: function(obj){
++		if(obj.value.length > 0 && obj.value.length < 5){
++			showError("<#JS_short_password#> <#JS_password_length#>");
++			obj.focus(); obj.select();
++			return false;
++		}
++		if(obj.value.length > 32){
++			var str_valid_max_password = `<#JS_max_password_var#>`;
++			str_valid_max_password = str_valid_max_password.replace("%1$@", "5");
++			showError(str_valid_max_password);
++			obj.focus(); obj.select();
++			return false;
++		}
++		if(obj.value.charAt(0) == '"'){
++			showError("<#JS_validstr1#> [\"]");
++			obj.focus(); obj.select();
++			return false;
++		}
++		else if(obj.value.charAt(obj.value.length - 1) == '"'){
++			showError("<#JS_validstr3#> [\"]");
++			obj.focus(); obj.select();
++			return false;
++		}
++		else{
++			var invalid_char = "";
++			for(var i = 0; i < obj.value.length; ++i){
++				if(obj.value.charAt(i) < ' ' || obj.value.charAt(i) > '~'){
++					invalid_char = invalid_char+obj.value.charAt(i);
++				}
++			}
++			if(invalid_char != ""){
++				showError("<#JS_validstr2#> '"+invalid_char+"' !");
++				obj.focus(); obj.select();
++				return false;
++			}
++		}
++		return true;
++	},
++	chkLoginPw_KR: function(obj){
++		var string_length = obj.value.length;
++		if(!/[A-Za-z]/.test(obj.value) || !/[0-9]/.test(obj.value) || string_length < 10
++				|| !/[\!\"\#\$\%\&\'\(\)\*\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\_\`\{\|\}\~]/.test(obj.value)){
++			showError("Password must contain at least 10 characters in length, including 1 letter, 1 special character, and 1 numeric character.");
++			obj.focus(); obj.select();
++			return false;
++		}
++		if(obj.value.length > 32){
++			var str_valid_max_password = `<#JS_max_password_var#>`;
++			str_valid_max_password = str_valid_max_password.replace("%1$@", "10");
++			showError(str_valid_max_password);
++			obj.focus(); obj.select();
++			return false;
++		}
++		var invalid_char = "";
++		for(var i = 0; i < obj.value.length; ++i){
++			if(obj.value.charAt(i) <= ' ' || obj.value.charAt(i) > '~'){
++				invalid_char = invalid_char+obj.value.charAt(i);
++			}
++		}
++		if(invalid_char != ""){
++			showError("<#JS_validstr2#> '"+invalid_char+"' !");
++			obj.focus(); obj.select();
++			return false;
++		}
++		return true;
++	}
++};
++function showError(str){
++	$("#error_status_field").show();
++	$("#error_status_field").html(str);
++}
++</script>
++</head>
++<body class="wrapper" onload="initial();">
++<iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0"></iframe>
++
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++<input type="hidden" name="group_id" value="">
++<input type="hidden" name="action_mode" value="apply">
++<input type="hidden" name="action_script" value="saveNvram;restart_chpass;restart_wireless">
++<input type="hidden" name="action_wait" value="0">
++<input type="hidden" name="current_page" value="Reaper_WiFiSetup.asp">
++<input type="hidden" name="next_page" value="">
++<input type="hidden" name="flag" value="">
++<input type="hidden" name="login_authorization" value="">
++<input name="foilautofill" style="display: none;" type="password">
++<input type="hidden" name="cfg_pause" value="0">
++<table id="loginTable" align="center" cellpadding="0" cellspacing="0" style="display:none">
++	<tr>
++		<td>
++			<div class="main_content">
++				<div style="text-align:center;margin:0 auto 14px"><img class="reaper_hdr_anim" src="images/RT-96U_REAPER_Header_anim.png" alt="Reaper" style="width:400px;max-width:100%;height:auto;display:block;margin:0 auto"></div>
++				<div class="title_name"><#RWFS_1#></div>
++				<div class="sub_title_name"><#RWFS_2#></div>
++
++				<div class="sect"><#QIS_finish_wireless_item1#></div>
++				<div>
++					<!-- no name= attributes on the Wi-Fi fields: they must not ride the
++					     start_apply form POST; reaper_wifisetup.cgi is their only path -->
++					<input type="text" id="wifi_ssid" tabindex="1" class="form_input" maxlength="32" value="" autocapitalize="off" autocomplete="off" placeholder="<#QIS_finish_wireless_item1#>">
++				</div>
++				<div class="lbl"><#RWFS_3#></div>
++				<div>
++					<input type="password" id="wifi_psk" tabindex="2" class="form_input" maxlength="64" value="" autocapitalize="off" autocomplete="off" placeholder="<#RWFS_3#>">
++				</div>
++				<div class="hint"><#RWFS_4#></div>
++
++				<div class="sect"><#PASS_changepasswd#></div>
++				<div id="cur_password_tr" class="lbl" style="display:none"><#Current_Login_Password#></div>
++				<div id="cur_password_field" style="display:none">
++					<input type="password" autocapitalize="off" autocomplete="off" value="" id="http_passwd_cur" class="form_input" maxlength="33" placeholder="<#Current_Login_Password#>">
++				</div>
++				<div class="lbl"><#Router_Login_Name#></div>
++				<div>
++					<input type="text" name="http_username_x" id="http_username_x" tabindex="3" class="form_input" maxlength="32" value="<% nvram_get("http_username"); %>" autocapitalize="off" autocomplete="off" placeholder="<#Router_Login_Name#>">
++				</div>
++				<div class="lbl"><#RWFS_5#></div>
++				<div>
++					<input type="password" autocapitalize="off" autocomplete="off" value="" name="http_passwd_x" id="http_passwd_x" tabindex="4" class="form_input" maxlength="33" placeholder="<#RWFS_5#>">
++				</div>
++				<div class="hint"><#RWFS_6#></div>
++				<div id="KRHint" class="hint" style="display:none">Password must contain at least 10 characters in length, including 1 letter, 1 special character, and 1 numeric character.</div>
++				<div class="show_row"><label><input type="checkbox" id="show_pw" onchange="toggleShow()" style="vertical-align:middle;margin-right:8px"><#RWFS_7#></label></div>
++
++				<div id="error_status_field"></div>
++				<div id="done_field"></div>
++				<div class="btn_bg">
++					<div id="loadingIcon"></div>
++					<div><input id="btn_modify" type="button" class="button" onclick="submitForm();" value="<#RWFS_8#>"></div>
++				</div>
++			</div>
++		</td>
++	</tr>
++</table>
++</form>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 4b56754546..3e008424ce 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 90fae3f1ee..0d103bf92b 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index b7be9a43ec..c305cf6f8f 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index caf5d769db..b0581eb9c9 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 601865b105..c4a77e6ba0 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 52c22f8c7e..0bfadd32fd 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6845,3 +6845,16 @@ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
+ RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
++RWFS_1=Set up this router
++RWFS_2=Name your Wi-Fi, choose its password, and choose the router login password. One network name is used on every band, with Smart Connect steering each device to the best one. This is all the router needs to leave the factory state.
++RWFS_3=Wi-Fi password
++RWFS_4=8 to 63 characters. This is what people type to join the network.
++RWFS_5=Router login password
++RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
++RWFS_7=Show passwords
++RWFS_8=Set up and restart Wi-Fi
++RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
++RWFS_10=The network name must be 1 to 32 characters.
++RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_12=The router refused the Wi-Fi settings:
++RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+-- 
+2.25.1
+

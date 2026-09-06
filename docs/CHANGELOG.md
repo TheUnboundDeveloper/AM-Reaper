@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.0.7** · 2026-09-03 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -61,11 +61,47 @@ node, not only on the primary router.
   same committed path as the password page. Keys under 8 characters are refused in the page and in the
   router, the rule that saved v2.9.1. The stock Wireless page is untouched for engineers, and a new
   release check locks the whole chain - page, gate, banner target, 25 language packs - so it cannot
-  quietly regress.
+  quietly regress. The security banner that points at it is down to one row and one button: while
+  both the login and the Wi-Fi are factory it says so once and offers "Set up this router"; only the
+  half that remains gets its own button after that.
 - **Packaging.** The 3.5 source (5,767 files) is too large to publish as a patch; it ships as the
   hash-pinned `overlays/openssl-3.5-source.tar.gz`, unpacked by the public build after the patch
   series, with only the integration diff and the shim in `patches/`. The reproduce recipe in the
   docs gains that one step.
+- **Factory reset takes the short road, and the page says how to get back.** Three waits came out of
+  the reset chain, none of them doing work: the web server no longer waits up to two minutes for a
+  USB application to stop when none is mounted; the reset request is handed to the service manager
+  in the form that waits for it rather than the one that gives up after 15 seconds; and the reset
+  routine takes the reboot lock first, the way a plain reboot does, so the shutdown can never spin
+  half a minute on a lock left by a daemon that died mid-write. The router logs a timestamp at each
+  step so the next report carries numbers. The Backup page changed too: the veil now says that the
+  router comes back on its open factory network with its default address, and links to it, instead
+  of polling in silence; it no longer mistakes the few seconds the web server is busy for the reboot
+  and bounces to a login page that is about to vanish; and if the router has not gone down within
+  three minutes it says so and hands the page back. A new release check pins all three files.
+- **AiMesh backhaul parking stays in sync with wireless restarts.** Any apply that restarts the
+  radios, from the Network or Wireless page or from the mesh daemon itself, re-creates the parked
+  carriers, and the parking service kept believing they were down. It now checks the live state on
+  every pass, logs that the carrier came back, and parks it again within five seconds.
+- **Phones get the full width.** Below 680px the shell collapses its rail into a sticky icon strip
+  under the header, the way the dashboard already did, and the page takes the whole screen; stock
+  pages framed in the shell pan sideways until each is replaced by a native one. Two small labels
+  with it: the Connections page no longer calls a weighted class "WRR" (every port has run strict
+  priority since v2.5.4), and the Advisor's client-pin hint no longer clips inside its box.
+- **The update check learns a beta channel.** A **Beta Channel** switch on the Firmware page (off by
+  default) lets the check also read the Dev branch's beta line in the update manifest. The rule is
+  the owner's: a beta is offered only to a router that already runs the newest stable release, and
+  only when the beta's number is higher than that stable's; when the stable release carries the same
+  number, only the stable one is offered. A beta offer is labelled as one on the page and on the
+  dashboard badge, its release note opens with the beta warning, and the previous firmware stays in
+  the standby partition as always. On the publishing side a Dev-branch publish now writes a separate
+  `MODEL#VARIANT-beta#` line into the manifest and leaves the stable line untouched; firmware older
+  than v3.1.0 cannot match that line and keeps seeing stable releases only. A release check pins the
+  chain (check script, note script, the nvram key, the page, 25 language packs).
+- **The QoS page stops explaining Weighted classes.** The hint under the class list, and the "Priority
+  vs Weighted" explainer below it, described a scheduler mode that was removed in v2.5.4 and cannot be
+  selected; the hint now says only that classes are served strictly top to bottom, in all 25 language
+  packs, and the explainer is gone.
 
 ## v3.0.9 — Low-hanging fruit *(built RT-BE96U)*
 

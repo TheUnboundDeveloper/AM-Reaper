@@ -1,0 +1,36 @@
+From 58c595b0adf7b3c620609cc88c6d2d5a03253871 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 5 Sep 2026 13:57:04 -0400
+Subject: [PATCH] rmcpd: link the real OpenSSL only - it has no closed input,
+ so it needs no 1.1 shim
+
+The shim block added on 2026-09-01 was copied from httpd, which links the closed
+libletsencrypt.so and therefore must satisfy the 1.1 SONAME at link time. rmcpd
+links nothing closed; with the block it named libcrypto.so.1.1 for no reason and
+would have been a permanent false positive for reaper_verify check 22 (must3).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rmcpd/Makefile | 6 ------
+ 1 file changed, 6 deletions(-)
+
+diff --git a/release/src/router/rmcpd/Makefile b/release/src/router/rmcpd/Makefile
+index af76efbe3a..0d29dae5eb 100644
+--- a/release/src/router/rmcpd/Makefile
++++ b/release/src/router/rmcpd/Makefile
+@@ -14,12 +14,6 @@ LDFLAGS += -L$(TOP)/json-c/.libs -ljson-c
+ # TLS via the router's own httpd cert: reuse the mssl wrapper httpd uses.
+ LDFLAGS += -L$(TOP)/mssl -lmssl -L$(TOP)/openssl -lssl -lcrypto -ldl
+ # reaper v1.4.5: PIE + full RELRO (-z now upgrades the base's partial RELRO)
+-# reaper: with OpenSSL 3.5 the real libs are .so.3; the shim supplies the
+-# 1.1 SONAME + OPENSSL_1_1_0/1_1_1 version nodes the closed ASUS prebuilts
+-# we link against still demand. Same wiring upstream gave httpd/infosvr.
+-ifeq ($(RTCONFIG_OPENSSL35),y)
+-LDFLAGS += -L$(TOP)/openssl11-compat -l:libcrypto.so.1.1 -l:libssl.so.1.1
+-endif
+ LDFLAGS += -pie -Wl,-z,relro,-z,now
+ ifeq ($(RTCONFIG_BCM_502L07P2),y)
+ LDFLAGS += -L$(TOP_PLATFORM)/ethctl_lib -lethctl
+-- 
+2.25.1
+

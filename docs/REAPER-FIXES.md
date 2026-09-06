@@ -1,6 +1,6 @@
 # RT-BEXXU "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -612,3 +612,28 @@ because a backup is the whole network in one file and the file was plain gzip be
 
 Verified off-router with the exact functions cut from `web.c`: seal→unseal round trip (82 B and 3 MB), interoperation both ways with an independent Python implementation (`hashlib.scrypt` + `cryptography` AES-GCM), and refusal of a wrong passphrase, a flipped ciphertext byte, an altered meta line and an out-of-range scrypt cost; the symlink check on benign, addon-style, space-in-name, look-alike-prefix and two escaping archives.
 
+
+## OpenSSL 1.1.1w retired — the library under every TLS path (v3.1.0)
+
+Inherited component. OpenSSL 1.1.1 reached end of life in September 2023; the firmware carried 1.1.1w,
+the last release of that line, with no upstream fixes since. v3.1.0 moves every source-built consumer —
+hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan, inadyn, Tor, vsftpd, lighttpd,
+net-snmp, the Reaper Advisor daemon and the rest, 123 binaries — to **OpenSSL 3.5.8**, linked directly.
+The closed ASUS binaries that cannot be rebuilt (AiMesh's `cfg_server` and its relatives, the Let's
+Encrypt helper, the lighttpd modules) keep the 1.1 ABI through a forwarding shim that hands every call to
+3.5, so they too run on the maintained library. The port is Asuswrt-Merlin upstream work by RSDNTWK (the
+shim and the 3.5 integration) and Eric "Merlin" Sauvageau (the parallel-compile fix), carried as
+cherry-picks with their authorship intact.
+
+Why the first attempt (v3.0.3, withdrawn in v3.0.4) took Wi-Fi down, and the guard that stops it
+recurring: hostapd is compiled inside the wireless SDK tree, whose link rule never sees a library change,
+so the earlier image shipped a hostapd still bound to the 1.1 name — by then the shim, which does not carry
+the elliptic-curve calls WPA3-SAE needs. The rung purges every object built against the old headers,
+including the ones git ignores, and release check 22 (`build-scripts/check_ossl_consumers.sh`) names the
+only binaries allowed to depend on the 1.1 name and fails the build on any other; hostapd must link
+`libcrypto.so.3` outright, verified with `readelf`, never inferred from a green build. Proven on the
+RT-BE96U: 31 minutes with hostapd never restarting, WPA3-SAE clients on 6 GHz at 320 MHz, HTTPS UI and
+outbound TLS working, the router certificate unchanged across the flash.
+
+Residual: the closed binaries still present the 1.1 API surface to the shim, so any 1.1-specific behaviour
+they rely on is emulated rather than removed. Nothing else in the tree links 1.1.

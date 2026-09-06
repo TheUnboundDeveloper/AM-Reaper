@@ -1,0 +1,55 @@
+From d01ef91017879adc533844ff465a56f336b2307b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 1 Sep 2026 19:04:59 -0400
+Subject: [PATCH] rmcpd: build against the selected OpenSSL, not a hardcoded
+ openssl-1.1
+
+Belongs to the v3.0.2 rung and was left uncommitted in the working tree - the
+v3.0.2 and v3.0.3 images were built with it (make reads the tree), but a rebuild
+from the commits alone would have failed at the rmcpd link exactly as the first
+v3.0.2 build did. Capturing it so the history reproduces the image.
+
+rmcpd is Reaper-authored, so upstream's OpenSSL 3.5 commit could not cover it.
+It hardcoded -I$(TOP)/openssl-1.1/include and -L$(TOP)/openssl-1.1, so it
+compiled against 1.1 headers and linked 1.1 libs while the rebuilt libmssl.so
+demanded @OPENSSL_3.0.0-versioned symbols. Now uses $(TOP)/openssl - the symlink
+the top-level Makefile retargets to $(OPENSSL) (Makefile:3771) - plus the same
+RTCONFIG_OPENSSL35 shim block upstream gave httpd and infosvr.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rmcpd/Makefile | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rmcpd/Makefile b/release/src/router/rmcpd/Makefile
+index baef036ecf..af76efbe3a 100644
+--- a/release/src/router/rmcpd/Makefile
++++ b/release/src/router/rmcpd/Makefile
+@@ -4,7 +4,7 @@
+ include ../common.mak
+ 
+ CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
+-CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared -I$(TOP)/json-c -I$(TOP)/mssl -I$(TOP)/openssl-1.1/include
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared -I$(TOP)/json-c -I$(TOP)/mssl -I$(TOP)/openssl/include
+ # reaper v1.4.5: exploit-mitigation hardening for this listener daemon. The BCM base
+ # ships no stack canaries and only partial RELRO; add FORTIFY + strong canaries +
+ # format-security (needs -Wformat, which -Wall enables but state it explicitly) + PIE.
+@@ -12,8 +12,14 @@ CFLAGS	+= -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-securit
+ LDFLAGS	= -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared
+ LDFLAGS += -L$(TOP)/json-c/.libs -ljson-c
+ # TLS via the router's own httpd cert: reuse the mssl wrapper httpd uses.
+-LDFLAGS += -L$(TOP)/mssl -lmssl -L$(TOP)/openssl-1.1 -lssl -lcrypto -ldl
++LDFLAGS += -L$(TOP)/mssl -lmssl -L$(TOP)/openssl -lssl -lcrypto -ldl
+ # reaper v1.4.5: PIE + full RELRO (-z now upgrades the base's partial RELRO)
++# reaper: with OpenSSL 3.5 the real libs are .so.3; the shim supplies the
++# 1.1 SONAME + OPENSSL_1_1_0/1_1_1 version nodes the closed ASUS prebuilts
++# we link against still demand. Same wiring upstream gave httpd/infosvr.
++ifeq ($(RTCONFIG_OPENSSL35),y)
++LDFLAGS += -L$(TOP)/openssl11-compat -l:libcrypto.so.1.1 -l:libssl.so.1.1
++endif
+ LDFLAGS += -pie -Wl,-z,relro,-z,now
+ ifeq ($(RTCONFIG_BCM_502L07P2),y)
+ LDFLAGS += -L$(TOP_PLATFORM)/ethctl_lib -lethctl
+-- 
+2.25.1
+

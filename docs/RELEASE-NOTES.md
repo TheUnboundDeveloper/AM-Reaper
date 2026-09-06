@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.0.9** · 2026-09-05 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.0.9** <!--@treever--> — `3006.102.8_Reaper_v3.0.9`, built on RT-BE96U. Two rungs in one cut: **v3.0.8** (the backup file guarded five ways — sealed with a passphrase, the admin password asked again to export, the puller's address in the log, named credentials on every card, a restore that refuses to write through a planted link — and AiMesh backhaul parking, which takes the idle hidden backhaul network off the 2.4 and 5 GHz air until a node is searched for or paired) and **v3.0.9** (six low-hanging fixes: the Wireless Quality page repaints when the router is back, Gatekeeper stops calling a wireless client wired, rwatch heals a missing Warden chain, the dashboard device list caps at four rows, parking sees the GT-BE98 family's fourth radio, housekeeping). The cut itself now refuses code a person cannot read. The series stands at **608 patches** (0594–0602 for v3.0.1–v3.0.7, 0603–0608 for v3.0.8–v3.0.9). |
+| **Current rung** | **v3.1.0** <!--@treever--> — `3006.102.8_Reaper_v3.1.0`, built on RT-BE96U. The library every TLS path stands on: OpenSSL 1.1.1w (end of life since 2023) gives way to **OpenSSL 3.5.8** on every source-built consumer, a forwarding shim keeps the closed ASUS binaries on the maintained library, and a release gate names the only binaries allowed to keep the old name — the guard the withdrawn v3.0.3 attempt lacked. With it: **first boot is one box** (network name, Wi-Fi password, router login) behind a one-button security banner; a **factory reset takes the short road** and the page says how to get back; backhaul parking stays in sync with wireless restarts; phones get the full width; the update check gains an opt-in **beta channel**. The series stands at **620 patches** (0594–0602 for v3.0.1–v3.0.7, 0603–0608 for v3.0.8–v3.0.9, 0609–0620 for v3.1.0); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
@@ -19,6 +19,75 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.1.0 — OpenSSL 3.5 under every TLS path, first boot in one box, a faster factory reset
+
+*Built on RT-BE96U. Cut as patches 0609–0620, bringing the series to 620. The OpenSSL 3.5 source (5,767
+files) is too large to publish as a patch and ships beside the series as the hash-pinned
+`overlays/openssl-3.5-source.tar.gz`, unpacked by the public build after the series is applied. The
+RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+
+**The firmware moves from OpenSSL 1.1.1w to OpenSSL 3.5.8.** 1.1.1 has been end of life since September
+2023. Every source-built consumer — hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan,
+inadyn, Tor, vsftpd, lighttpd, net-snmp, the Reaper Advisor daemon and 110 more — now links the real 3.5
+library directly. The closed ASUS binaries that cannot be rebuilt (AiMesh's cfg_server and friends, the
+Let's Encrypt helper, the lighttpd modules) keep their OpenSSL 1.1 ABI through a small forwarding shim that
+hands every call to 3.5. The port is Asuswrt-Merlin upstream work by **RSDNTWK** (the shim and the 3.5
+integration) and **Eric "Merlin" Sauvageau** (the parallel-compile fix), carried as cherry-picks with their
+authorship intact; the Reaper Advisor daemon links 3.5 alone.
+
+**Why the first attempt (v3.0.3) broke Wi-Fi and this one does not.** hostapd is compiled in the wireless
+SDK tree, and its link rule never sees a library change, so the September 1 image shipped a hostapd still
+bound to the 1.1 name — which now resolved to the shim, which does not carry the elliptic-curve functions
+WPA3-SAE needs. This rung purges every object compiled against the old headers before the swap, including
+the ones git ignores, and adds a release gate (check 22) that names the only binaries allowed to depend on
+the 1.1 name in a 3.5 image and fails on any other; hostapd is required by that gate to link
+`libcrypto.so.3` outright, verified with `readelf`. Proven on the RT-BE96U before it was written up: 31
+minutes on the test image with hostapd never restarting, five stations through WPA3-SAE on 6 GHz at
+320 MHz, HTTPS UI and outbound TLS working, the router's certificate unchanged across the flash. OpenSSL 3.x
+is Apache-2.0; its text is added under `LICENSES/`, and the notices no longer misdescribe OpenSSL as
+BSD/MIT.
+
+**First boot is one box.** The security banner's Wi-Fi step used to open the stock Wireless page, which
+edits the primary radios — on this build the hidden AiMesh backhaul, while the network people join lives on
+the virtual networks the mesh daemon rebuilds afterwards. A factory box now gets one Reaper page: network
+name, Wi-Fi password, router login password. It writes what the stock apply writes on every band (one name,
+WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on) and fires the same restart, so the mesh
+daemon's split is unchanged; the login change follows the same committed path as the password page. Keys
+under 8 characters are refused in the page and in the router. The banner itself is down to one row and one
+button: while both the login and the Wi-Fi are factory it says so once and offers **Set up this router**;
+only the half that remains gets its own button after that. A release check locks the whole chain — page,
+gate, banner target, 25 language packs.
+
+**Factory reset takes the short road, and the page says how to get back.** Three waits came out of the
+reset chain, none of them doing work: the web server no longer waits up to two minutes for a USB
+application to stop when none is mounted; the reset request is handed to the service manager in the form
+that waits for it rather than the one that gives up after 15 seconds; and the reset routine takes the
+reboot lock first, the way a plain reboot does, so the shutdown can never spin half a minute on a lock left
+by a daemon that died mid-write. The router logs a timestamp at each step. The Backup page's veil now says
+that the router comes back on its open factory network at its default address, and links to it; it no
+longer mistakes the web server's busy seconds for the reboot and bounces to a sign-in page that is about to
+vanish; and if the router has not gone down within three minutes it says so and hands the page back.
+
+**AiMesh backhaul parking stays in sync with wireless restarts.** Any apply that restarts the radios, from
+the Network or Wireless page or from the mesh daemon itself, re-creates the parked carriers, and the parking
+service kept believing they were down. It now checks the live state on every pass, logs that the carrier
+came back, and parks it again within five seconds.
+
+**Phones get the full width.** Below 680 px the shell collapses its rail into a sticky icon strip under the
+header, the way the dashboard already did, and the page takes the whole screen; stock pages framed in the
+shell pan sideways until each is replaced by a native one. Two small labels with it: the Connections page
+no longer calls a class "WRR" (every port has run strict priority since v2.5.4), the QoS page no longer
+explains Weighted classes that cannot be created, and the Advisor's client-pin hint no longer clips inside
+its box.
+
+**The update check learns a beta channel.** A **Beta Channel** switch on the Firmware page, off by
+default, lets the check also read the Dev branch's beta line in the update manifest. A beta is offered
+only to a router that already runs the newest stable release, and only when the beta's number is higher
+than that stable's; when the stable release carries the same number, only the stable one is offered. A
+beta offer is labelled as one on the page and on the dashboard badge, and its release note opens with
+the beta warning. Firmware older than v3.1.0 cannot match the beta line and keeps seeing stable releases
+only.
 
 ## What's new in v3.0.9 — the backup file guarded five ways, the idle backhaul parked, six small fixes
 

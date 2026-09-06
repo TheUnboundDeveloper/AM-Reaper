@@ -85,7 +85,8 @@ extracted from it).
 Two source-tree hashes are recorded per release, and they are not the same:
 
 - `source_tree` — the tree of the build commit on the model branch.
-- `source_tree_from_series` — what `git am --keep-cr patches/[0-9]*.patch` onto
+- `source_tree_from_series` — what `git am --keep-cr patches/[0-9]*.patch` (then unpacking
+  `overlays/openssl-3.5-source.tar.gz`, as `cut_rung.sh` step 5 and CI both do) onto
   the pinned base yields. **This is what CI computes and compares**, so this is
   the one that must be right.
 

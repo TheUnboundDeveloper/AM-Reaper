@@ -12,6 +12,7 @@ The texts below cover the additional licenses of components the image bundles.
 | **GPL-2.0-only** | [`../LICENSE`](../LICENSE) (repo root) | Asuswrt-Merlin base, the Reaper modifications ([`../LICENSE.reaper`](../LICENSE.reaper)), busybox, dnsmasq, iptables, and the bulk of the userspace |
 | **GPL-3.0-or-later** | [`GPL-3.0.txt`](GPL-3.0.txt) | Samba 4.15.13a (SMB3 file server), GNU wget, GNU nano |
 | **LGPL-2.1-or-later** | [`LGPL-2.1.txt`](LGPL-2.1.txt) | glib, avahi, libdaemon, and other shared libraries |
+| **Apache-2.0** | [`Apache-2.0.txt`](Apache-2.0.txt) | OpenSSL 3.5.8 (`release/src/router/openssl-3.5`, shipped from `overlays/openssl-3.5-source.tar.gz`; unmodified by Reaper, built with `--api=1.1.1`). Replaces the OpenSSL/SSLeay-licensed 1.1.1 library, whose advertising clause was never GPL-compatible |
 | **OFL-1.1** | [`OFL-1.1.txt`](OFL-1.1.txt) | the Inter and Rajdhani web fonts added by the Reaper UI |
 | MIT | [`MIT-qrcode.txt`](MIT-qrcode.txt), [`MIT-jsTree.txt`](MIT-jsTree.txt) | jquery.qrcode, jsTree |
 | BSD / ISC (OpenSSH) | [`OpenSSH.txt`](OpenSSH.txt) | openssh `sftp-server` |

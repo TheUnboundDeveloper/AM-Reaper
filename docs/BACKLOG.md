@@ -53,6 +53,28 @@ The ordered short list.
 
 ## Open bugs / under investigation
 
+- **[P2] Router UI on mobile-device browsers: compatibility investigation** (owner, 2026-09-06)
+  — survey how the web UI behaves in phone and tablet browsers (iOS Safari, Android Chrome,
+  Samsung Internet): layout at narrow widths, touch targets, the theme and loading overlays, the
+  Devices/QoS/Traffic tables, and whether every page is reachable and applies correctly. Which
+  pages break, on which browser, and how, still to be captured before any fix is scoped.
+  **[needs data]** ↳ notes: `mobile-browser-ui-compat.md`
+- **[P2] Devices page: wrong connection method, and MLO combining no longer works — REGRESSION**
+  (owner, 2026-09-05) — devices show the wrong link type again, and the page no longer folds an MLO
+  client's per-band links into one device. Both shipped working earlier (v3.0.9 read the live mesh
+  client lists; MLO folding predates it), so a recent change broke one or both: candidates are the
+  v3.0.9 Gatekeeper/Devices live-list read, the amaspark backhaul parking (MLO link-set handling in
+  v3.0.8), and the OpenSSL rung's rebuild of every consumer. Bisect on the ladder first.
+  **[needs data]** ↳ notes: `devices-conn-method-mlo-regression.md`
+- **[P2] AiMesh nodes refuse the firmware** (owner report, 2026-09-05) — nodes decline the image the
+  router offers them; which models, which message, and whether the refusal is the node's version check,
+  the signature check, or the transfer are all unknown. **[needs data]** ↳ notes: `aimesh-node-firmware-refused.md`
+- **[P2] Mobile device metrics reported incorrect** (owner report, 2026-09-05) — the per-device figures
+  shown for phones and tablets do not match what the devices see; which page, which metric, and against
+  what reference still to be captured. **[needs data]** ↳ notes: `mobile-device-metrics.md`
+- **[P3] Connections page still labels the scheduler "WRR"** (owner, 2026-09-05) — the classful WRR
+  path was removed for its defects, yet the Connections page shows "WRR" as the scheduler in use. Stale
+  label or a stale read of the queue discipline; display only. **[owed]** ↳ notes: `conn-scheduler-wrr-label.md`
 - **[P2] Apply and Confirm on Policy Routing rebooted the router** (owner, logs dated Aug 27) — the
   flicker half shipped fixed in v3.0.5; the reboot half is unexplained, no reboot primitive exists in
   the path, not reproduced on v3.0.5. **[needs data]** ↳ notes: `pbr-apply-confirm-reboot.md`
@@ -93,6 +115,10 @@ The ordered short list.
 
 ## UI / UX polish
 
+- **[P3] Advisor page: the "Pin to one client IP (optional)" field's placeholder renders wrong**
+  (owner, 2026-09-05) — the default text shown inside the empty input has formatting problems
+  (clipping, wrapping, or the placeholder colour/size not matching the other fields). Display only.
+  **[owed]** ↳ notes: `advisor-pin-ip-placeholder.md`
 - **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
   the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Loader z-index raise is class-wide** — benign; scope to `#Loading` if a modal ever renders
@@ -118,6 +144,11 @@ The ordered short list.
   Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/Advisor/Conn/QoSDiag/Analytics/Storage/Firmware/
   Firewall/VPNRouting/About. **[ongoing]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
+- **[P2] OpenSSL 3.5 migration, second attempt** — the v3.0.4 withdrawal was a warm-tree stale relink,
+  not a missing build: hostapd is compiled here (impl103 wireless tree) and links whatever `openssl`
+  points at, but its link rule never sees the library change and the artifact purge stopped at the
+  router tree. Retry = widened purge + a gate naming every binary still allowed to link the 1.1 name,
+  6 GHz WPA3 as the canary. **[project — test image v3.0.9a passed metal 2026-09-05; packaging + CI + licence paperwork next]** ↳ notes: `openssl35-retry.md`
 - **[P3] Switch port mirroring to an external IDS** — the software `tc mirred` path is present;
   whether it sees accelerated flows is the decisive unknown. **[project]** ↳ notes: `port-mirroring-ids.md`
 

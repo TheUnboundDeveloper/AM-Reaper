@@ -12,7 +12,11 @@
 #
 # What it does, in order:
 #   1. preflight        branch, clean tree, version format, EXTENDNO agreement
-#   2. export           format-patch since the last rung, doc hunks excluded
+#   2. export           format-patch since the last rung, doc hunks excluded,
+#                       and release/src/router/openssl-3.5 excluded (it ships as
+#                       an overlay archive: 5,767 files, 129 MB as a patch)
+#   2b. source overlay  regenerate overlays/openssl-3.5-source.tar.gz + .sha256
+#                       + .tree from HEAD when the directory's tree id changed
 #   3. normalize        From: identity + message scrub
 #   3b. hidden chars    the new patches' ADDED lines must be readable by a
 #                       person: no bidi overrides, zero-width/format or control
@@ -20,7 +24,8 @@
 #                       identifiers (reaper_hiddencheck.py). Runs BEFORE
 #                       install so a hit leaves the lean repo untouched.
 #   4. install          copy into patches/, assert gapless
-#   5. replay           git am the WHOLE series onto the pinned base; capture
+#   5. replay           git am the WHOLE series onto the pinned base, unpack the
+#                       source overlay the same way CI does; capture
 #                       both tree hashes; assert the version and the diff
 #   6. provenance       gen_provenance.py + source_tree_from_series + metadata
 #   7. overlays         file-overlap check against overlays/<MODEL>.patch
@@ -107,11 +112,39 @@ trap '[ "$KEEP_WT" = 0 ] && rm -rf "$STAGE"' EXIT
 git -C "$CLONE" format-patch "$SINCE..HEAD" -o "$STAGE" -N --no-cover-letter \
     --start-number "$START" -- \
     . ':(exclude)*.md' ':(exclude)docs' ':(exclude).mailmap' \
-    ':(exclude).gitattributes' ':(exclude).gitignore' >/dev/null \
+    ':(exclude).gitattributes' ':(exclude).gitignore' \
+    ':(exclude)release/src/router/openssl-3.5' >/dev/null \
   || die "format-patch failed"
 made=$(ls -1 "$STAGE"/*.patch 2>/dev/null | wc -l)
 [ "$made" -gt 0 ] || die "format-patch produced nothing (was the rung docs-only?)"
 echo "  $made patch file(s)"
+
+# ------------------------------------------------------- 2b. source overlay
+# The OpenSSL 3.5 source is 5,767 files; as a patch it is 129 MB, over GitHub's
+# 100 MB hard limit. It ships the way the GT-BE98 platform tree does: a
+# hash-pinned archive under overlays/, unpacked by CI after the series is
+# applied. `git archive` of HEAD's subtree + `gzip -n` is byte-reproducible, so
+# the archive is regenerated only when the subtree's git tree id changes and
+# an unchanged rung leaves the lean repo's 53 MB blob untouched.
+step "2b. source overlay (openssl-3.5)"
+OSSL_DIR=release/src/router/openssl-3.5
+OSSL_TGZ="$LEAN/overlays/openssl-3.5-source.tar.gz"
+if git -C "$CLONE" cat-file -e "HEAD:$OSSL_DIR" 2>/dev/null; then
+  OSSL_TREE=$(git -C "$CLONE" rev-parse "HEAD:$OSSL_DIR")
+  have_tree=$(cat "${OSSL_TGZ%.tar.gz}.tree" 2>/dev/null || true)
+  if [ -f "$OSSL_TGZ" ] && [ "$have_tree" = "$OSSL_TREE" ]; then
+    echo "  unchanged (tree $OSSL_TREE) - archive kept"
+  else
+    git -C "$CLONE" archive --format=tar HEAD "$OSSL_DIR" | gzip -n -9 > "$OSSL_TGZ" || die "archive failed"
+    ( cd "$LEAN/overlays" && sha256sum openssl-3.5-source.tar.gz > openssl-3.5-source.sha256 ) || die "sha256 failed"
+    echo "$OSSL_TREE" > "${OSSL_TGZ%.tar.gz}.tree"
+    echo "  regenerated (tree $OSSL_TREE)"
+  fi
+  sz=$(stat -c%s "$OSSL_TGZ"); [ "$sz" -lt $((95*1024*1024)) ] || die "source overlay is $((sz/1024/1024)) MB - too close to GitHub's 100 MB limit"
+  echo "  $(cut -c1-16 "$LEAN/overlays/openssl-3.5-source.sha256")... $((sz/1024/1024)) MB, $(tar -tzf "$OSSL_TGZ" | grep -vc '/$') files"
+else
+  echo "  HEAD has no $OSSL_DIR - nothing to archive"
+fi
 
 # ---------------------------------------------------------------- 3. normalize
 step "3. normalize identity + scrub messages"
@@ -121,11 +154,11 @@ OLDHOME='/home/na'"than"
 OLDREPO='ASUS-Merlin''-Reaper'
 for p in "$STAGE"/*.patch; do
   sed -i \
-    -e "/^From: Eric Sauvageau <merlin@asuswrt-merlin.net>/! s|^From: .*|From: $IDENTITY|" \
+    -e "/^From: \\(Eric Sauvageau <merlin@asuswrt-merlin.net>\\|RSDNTWK <75706303+RSDNTWK@users.noreply.github.com>\\)/! s|^From: .*|From: $IDENTITY|" \
     -e "s|$OLDHOME|/home/builder|g" \
     -e "s|$OLDREPO|AM-Reaper|g" "$p"
 done
-echo "  From: -> $IDENTITY, build-host + repo-name strings scrubbed"
+echo "  From: -> $IDENTITY (upstream authors Eric Sauvageau + RSDNTWK kept), build-host + repo-name strings scrubbed"
 
 # ------------------------------------------------------- 3b. hidden characters
 step "3b. hidden characters (the new code must be readable by a person)"
@@ -164,6 +197,17 @@ cleanup_wt() { [ "$KEEP_WT" = 1 ] || { git -C "$CLONE" worktree remove --force "
 if ! git -C "$WT" am --keep-cr $(ls -1 "$LEAN"/patches/[0-9]*.patch | sort) >"$STAGE/am.log" 2>&1; then
   tail -20 "$STAGE/am.log"
   KEEP_WT=1; die "the series does not apply cleanly - worktree kept at $WT"
+fi
+# The source overlay, unpacked and committed exactly as ci/container_build.sh
+# does, so the replayed tree id below is the one CI will assert against.
+if [ -f "$OSSL_TGZ" ]; then
+  want=$(awk '{print $1}' "$LEAN/overlays/openssl-3.5-source.sha256" | head -1)
+  got=$(sha256sum "$OSSL_TGZ" | cut -d' ' -f1)
+  [ "$want" = "$got" ] || { cleanup_wt; die "source overlay hash mismatch ($want vs $got)"; }
+  tar -xzf "$OSSL_TGZ" -C "$WT" || { cleanup_wt; die "source overlay failed to unpack"; }
+  git -C "$WT" add -A -- release/src/router/openssl-3.5
+  git -C "$WT" -c user.name='Reaper CI' -c user.email='ci@localhost' commit -q -m 'overlay: openssl-3.5 source (overlays/openssl-3.5-source.tar.gz)' || { cleanup_wt; die "overlay commit failed"; }
+  echo "  source overlay unpacked + committed ($(git -C "$WT" rev-parse HEAD:release/src/router/openssl-3.5))"
 fi
 
 SER_ROUTER=$(git -C "$WT" rev-parse HEAD:release/src/router)

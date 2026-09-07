@@ -636,20 +636,22 @@ jobs:
         run: |
           set -euo pipefail
           export VNUM="${V#v}"
-          # A beta's "what's new" is the CHANGELOG section on Dev, which main
-          # does not have yet; hand the script that copy instead of main's.
-          if [ "$SRC_REF" = "refs/heads/Dev" ]; then
-            git fetch --depth=1 origin Dev
-            git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-dev.md
-            export CHANGELOG=/tmp/changelog-dev.md
-          fi
+          # This checkout is MAIN (the files live there), but the script and
+          # the changelog must come from the ref that was DISPATCHED: on the
+          # first beta publish (2026-09-07) main's pre-beta copy of the script
+          # ran here and wrote "3.1.0-beta" into every stable line, which no
+          # router accepts. Fetch the dispatched ref and run its copy.
+          git fetch --depth=1 origin "$SRC_REF"
+          git show FETCH_HEAD:build-scripts/refresh_manifest.py > /tmp/refresh_manifest.py
+          git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
+          export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
             export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
           else
             export MODELS="$MODELSEL"
           fi
           export DATE="$(date -u +%Y-%m-%d)"
-          python3 build-scripts/refresh_manifest.py
+          python3 /tmp/refresh_manifest.py
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

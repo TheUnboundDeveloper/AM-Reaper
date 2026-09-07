@@ -87,8 +87,16 @@ v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is
   device was never found in the list: Gatekeeper kept the cached "wired" (it has no bridge-FDB pass
   to correct it, which is why the Devices page was mostly right), and the MLO fold, which asked the
   driver for a line this client no longer prints, left two rows. None of the three bisect candidates
-  was the cause. **[fixed in tree `e8c0995520`, metal owed]**
-  ↳ notes: `devices-conn-method-mlo-regression.md`
+  was the cause. **Metal 2026-09-07: the device now shows as wireless — the connection-method half is
+  confirmed fixed.** The band it shows is a separate, smaller item, below.
+  **[fixed; MLO one-row check still owed]** ↳ notes: `devices-conn-method-mlo-regression.md`
+- **[P3] Gatekeeper shows a stale band for a multi-link client** (owner, on metal 2026-09-07) — with
+  the wired/wireless fix in, Nates-PC lists as Wi-Fi **5 GHz** while it is associated on **6 GHz**.
+  The live-list correction only fills a band that is missing or replaces a "wired" record, so it can
+  fix an absent band but never a stale one; the watcher wrote 5 GHz once, never clears a band, and can
+  no longer see that MAC on any radio because the client associates under its link address. The live
+  list has the right answer and is not consulted. One capture from confirmed, and the fix looks like
+  letting a live band win over a stale cached one. **[owed]** ↳ notes: `gk-stale-band-multilink.md`
 - **[P2] Apply and Confirm on Policy Routing rebooted the router** (owner, logs dated Aug 27) — the
   flicker half shipped fixed in v3.0.5; the reboot half is unexplained, no reboot primitive exists in
   the path, not reproduced on v3.0.5. **[needs data]** ↳ notes: `pbr-apply-confirm-reboot.md`

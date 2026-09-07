@@ -55,15 +55,14 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 ## Documentation — read in this order
 
 1. **[docs/REAPER-GUIDE.md](docs/REAPER-GUIDE.md)** — **the owner's guide: start here.** What Reaper is, the requirements and rules for running it properly (the `/jffs` store, the two backups, USB, Apply and Keep, the sanitized report), every feature page, good practice, troubleshooting, glossary.
-2. **[docs/FIREWALL-GUIDE.md](docs/FIREWALL-GUIDE.md)** — the firewall suite for its users: what each tab is for, how to use it, an example rule per tab.
-3. **[docs/PROJECT.md](docs/PROJECT.md)** — what this fork is, scope, hard rules, threat model, flashing, legal. (The collapsed version of the upstream READMEs.)
-4. **[docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)** — what the current release contains, the two build variants, and how to flash it.
-5. **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — big changes per version, v1.0 → the current release.
-6. **[docs/DEV-SETUP.md](docs/DEV-SETUP.md)** — the hard-won contributor build/edit environment: WSL 20.04, gcc-10.3 toolchains, host deps, the build recipe and its traps, the editing/tooling gotchas, and how to verify a change. **If you want to build or patch the firmware, this is the one.**
-7. **[docs/REAPER-FIXES.md](docs/REAPER-FIXES.md)** — authoritative list of every security fix applied (all audit rounds), with commits.
-8. **[docs/GPL-MERGE.md](docs/GPL-MERGE.md)** — maintainer guide for rebasing the hardening onto a new upstream/GPL drop.
-9. **[patches/](patches/)** — the hardening itself, as patches you apply onto an upstream checkout.
-10. **[docs/CI-PUBLIC-BUILD.md](docs/CI-PUBLIC-BUILD.md)** — building the firmware in GitHub Actions from a fork, with no local setup: what each run proves, how to read the log, and current limits.
+2. **[docs/PROJECT.md](docs/PROJECT.md)** — what this fork is, scope, hard rules, threat model, flashing, legal. (The collapsed version of the upstream READMEs.)
+3. **[docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)** — what the current release contains, the two build variants, and how to flash it.
+4. **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — big changes per version, v1.0 → the current release.
+5. **[docs/DEV-SETUP.md](docs/DEV-SETUP.md)** — the hard-won contributor build/edit environment: WSL 20.04, gcc-10.3 toolchains, host deps, the build recipe and its traps, the editing/tooling gotchas, and how to verify a change. **If you want to build or patch the firmware, this is the one.**
+6. **[docs/REAPER-FIXES.md](docs/REAPER-FIXES.md)** — authoritative list of every security fix applied (all audit rounds), with commits.
+7. **[docs/GPL-MERGE.md](docs/GPL-MERGE.md)** — maintainer guide for rebasing the hardening onto a new upstream/GPL drop.
+8. **[patches/](patches/)** — the hardening itself, as patches you apply onto an upstream checkout.
+9. **[docs/CI-PUBLIC-BUILD.md](docs/CI-PUBLIC-BUILD.md)** — building the firmware in GitHub Actions from a fork, with no local setup: what each run proves, how to read the log, and current limits.
 
 Retained upstream originals kept for reference: `docs/README.proprietary` (the blob-licensing notice, summarized in `PROJECT.md` § Legal) and `docs/ASUS-Merlin_Changelog-3006.txt` (upstream 3006.102 history; Reaper's own history is in [docs/CHANGELOG.md](docs/CHANGELOG.md)). The other upstream READMEs (generic multi-model build notes, stale project blurbs, upstream support pointers) were out of date for this RT-BE-series fork; their still-relevant content was folded into `PROJECT.md` / `DEV-SETUP.md`.
 

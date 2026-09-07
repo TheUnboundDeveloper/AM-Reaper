@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.1.1** · 2026-09-07 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -37,8 +37,8 @@ internal quality, or deferred by decision.
 
 The ordered short list.
 
-1. **[P1] Internet speed test fails on 10 Gbit/s links** — instrumented in v3.0.5; owed one diag
-   (section 10b) after a failing run, plus the first-run-after-boot "Latency test failed" cause.
+1. **[P2] Devices/Gatekeeper: wrong connection method, MLO combining broken** — root-caused and
+   fixed in tree 2026-09-07 (a multi-link client is listed under its link MAC); **metal check owed**.
 2. **[P2] Apply and Confirm on Policy Routing rebooted the router** — no reboot primitive in the
    path; needs the three captures on the next occurrence.
 3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
@@ -46,6 +46,10 @@ The ordered short list.
 5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
 6. **[P3] CVE check 2026-08-30 residue** — cheap backports and known-limitation notes.
 7. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
+
+*In beta (v3.1.0 on Dev, 2026-09-06): OpenSSL 3.5, the first-boot box, the faster factory reset,
+backhaul-parking reconcile, the phone-width shell, the update check's beta channel. Building toward
+v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is listed here.*
 
 ---
 
@@ -74,17 +78,17 @@ The ordered short list.
   pages break, on which browser, and how, still to be captured before any fix is scoped. The
   first fit shipped in v3.1.0: the shell and the dashboard collapse the rail into an icon strip
   below 680px, so a phone gets the full width; framed stock pages pan sideways until each is
-  replaced by a native one. **[needs data]** ↳ notes: `mobile-browser-ui-compat.md`
-- **[P2] Devices page: wrong connection method, and MLO combining no longer works — REGRESSION**
-  (owner, 2026-09-05) — devices show the wrong link type again, and the page no longer folds an MLO
-  client's per-band links into one device. Both shipped working earlier (v3.0.9 read the live mesh
-  client lists; MLO folding predates it), so a recent change broke one or both: candidates are the
-  v3.0.9 Gatekeeper/Devices live-list read, the amaspark backhaul parking (MLO link-set handling in
-  v3.0.8), and the OpenSSL rung's rebuild of every consumer. Bisect on the ladder first.
-  **[needs data]** ↳ notes: `devices-conn-method-mlo-regression.md`
-- **[P2] AiMesh nodes refuse the firmware** (owner report, 2026-09-05) — nodes decline the image the
-  router offers them; which models, which message, and whether the refusal is the node's version check,
-  the signature check, or the transfer are all unknown. **[needs data]** ↳ notes: `aimesh-node-firmware-refused.md`
+  replaced by a native one. **[minor adjustments]** ↳ notes: `mobile-browser-ui-compat.md`
+- **[P2] Devices/Gatekeeper: wrong connection method, and MLO combining no longer works**
+  (owner, 2026-09-05; narrowed 2026-09-07 to "mostly Gatekeeper", "Nates-PC is on 6Ghz but Gatekeeper
+  shows wired") — **root-caused and fixed in tree, metal owed.** The live client list keys a
+  multi-link client under its per-link MAC and names the device's MLD MAC in a field every reader
+  ignored, while the lease, the ARP entry and every Reaper row are keyed by that MLD MAC. So the
+  device was never found in the list: Gatekeeper kept the cached "wired" (it has no bridge-FDB pass
+  to correct it, which is why the Devices page was mostly right), and the MLO fold, which asked the
+  driver for a line this client no longer prints, left two rows. None of the three bisect candidates
+  was the cause. **[fixed in tree `e8c0995520`, metal owed]**
+  ↳ notes: `devices-conn-method-mlo-regression.md`
 - **[P2] Apply and Confirm on Policy Routing rebooted the router** (owner, logs dated Aug 27) — the
   flicker half shipped fixed in v3.0.5; the reboot half is unexplained, no reboot primitive exists in
   the path, not reproduced on v3.0.5. **[needs data]** ↳ notes: `pbr-apply-confirm-reboot.md`
@@ -99,9 +103,6 @@ The ordered short list.
 - **[P2] MLO ON kills the AiMesh backhaul; MLO OFF restores it** (tester, GT-BE98 CAP + RT-AX92U
   nodes) — rule out the nodes' MLO capability, the cold-cycle rule and dirty-install residue before
   calling it Reaper's; a missing guardrail would be ours. **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`
-- **[P2] Main Wi-Fi sits on the primary BSS after a factory reset** — the SDN MAINFH/MAINBH migration
-  QIS used to trigger never runs until an unrelated apply; the no-wizard first-boot flow must own it,
-  without forcing `x_Setting=1` at factory. **[owed]** ↳ notes: `main-wifi-primary-bss-after-reset.md`
 - **[P2] Warden "crash" on the BE92U addon box** after an amtm + Diversion update — one code-plausible
   path (addon nvram storm → wlcsm wedge → Warden chain missing). The defensive half is built: rwatch
   re-applies a missing chain. The root cause still wants the tester's syslog.
@@ -122,6 +123,12 @@ The ordered short list.
 
 ## UI / UX polish
 
+- **[P2] Firmware page: the overlay's "Close" should be "Cancel", and cancel** (owner, 2026-09-07)
+  — the escape hatch that appears on the blocking overlay during a download or upload only hides the
+  overlay; the transfer it was covering keeps running to the end. It should read Cancel, close the
+  overlay AND abort the upload or download it covers, and it must not be offered once the upload has
+  completed (the router is being written from that point and nothing can stop it, which the page
+  already knows). **[owed]** ↳ notes: `firmware-veil-cancel.md`
 - **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
   the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Loader z-index raise is class-wide** — benign; scope to `#Loading` if a modal ever renders
@@ -147,11 +154,17 @@ The ordered short list.
   Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/Advisor/Conn/QoSDiag/Analytics/Storage/Firmware/
   Firewall/VPNRouting/About. **[ongoing]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
-- **[P2] OpenSSL 3.5 migration, second attempt** — the v3.0.4 withdrawal was a warm-tree stale relink,
-  not a missing build: hostapd is compiled here (impl103 wireless tree) and links whatever `openssl`
-  points at, but its link rule never sees the library change and the artifact purge stopped at the
-  router tree. Retry = widened purge + a gate naming every binary still allowed to link the 1.1 name,
-  6 GHz WPA3 as the canary. **[project — test image v3.0.9a passed metal 2026-09-05; packaging + CI + licence paperwork next]** ↳ notes: `openssl35-retry.md`
+- **[P3] DNS Privacy (DoT): sequential failover instead of round-robin** — stubby is configured
+  `round_robin_upstreams: 1`, so several DoT servers rotate rather than fail over, and DoT replaces the
+  WAN DNS list outright; a switch to sequential order is one line, the LAN-filter interaction needs
+  a note. **[project]** ↳ notes: `dot-strict-order.md`
+- **[P3] Resolver health check: IPv6 first, not IPv6 only** (owner, 2026-09-07) — today an IPv6
+  server is honoured only while the router's IPv6 service is on, and idles otherwise. Instead let
+  the watched server carry both addresses: probe over IPv6 first and fall back to the IPv4 address
+  when IPv6 is down, disabled, or not supported on the path, so the check keeps watching the same
+  server through an IPv6 outage; the failover then moves whichever address family's line is in the
+  router's list. Needs a second address field (or an IPv4/IPv6 pair in one), a family-aware probe
+  order, and a status line that says which family answered. **[project]** ↳ notes: `dnshc-ipv6-first.md`
 - **[P3] Switch port mirroring to an external IDS** — the software `tc mirred` path is present;
   whether it sees accelerated flows is the decisive unknown. **[project]** ↳ notes: `port-mirroring-ids.md`
 
@@ -159,13 +172,9 @@ The ordered short list.
 
 ## Documentation
 
-- **[P3] Fold `FIREWALL-GUIDE.md` and `VPN-ROUTING-GUIDE.md` into `REAPER-GUIDE.md`** — repoint
-  the in-UI `?` links and the httpd doc whitelist as the files retire. ↳ notes: `fold-howto-guides.md`
 - **[P3] Translations — one residual** — the pinned protocol values and the deliberately literal
   strings; the About-page humour stays English by choice. ↳ notes: `translations-residual.md`
 - **[P3] Make `cut_rung` own the version/count restatements** across the docs. ↳ notes: `cut-rung-restatements.md`
-- **[P3] Retire the two guide stubs** once the per-tab `?` links point at guide anchors and older
-  images are out of circulation. **[owed]** ↳ notes: `retire-guide-stubs.md`
 
 ---
 
@@ -204,10 +213,26 @@ The ordered short list.
   expresses it. ↳ notes: `wad-firewall-rule-negation.md`
 - **`dig` on the Network Tools page — declined** (owner, 2026-08-24): a full dig would widen the
   shared input filter that guards the existing tools. ↳ notes: `wad-dig-network-tools.md`
+- **`possible DNS-rebind attack detected` for names a LAN filter blocks** (owner, 2026-09-06) — the
+  filter's `0.0.0.0` block answers trip the router's rebind guard once clients go through the router;
+  set the filter's blocking mode to NXDOMAIN, keep the guard. ↳ notes: `wad-rebind-lan-filter-blocks.md`
+- **DNSSEC validation on the router fails every blocked name in a signed zone** (owner, 2026-09-06)
+  — `limit exceeded: per-query subqueries` / `resource limit exceeded`: a validator downstream of a
+  filter cannot validate answers the filter invents; validate in the filter, not the router.
+  ↳ notes: `wad-rebind-lan-filter-blocks.md`
 - **[P2] Mobile device metrics reported incorrect** (owner report, 2026-09-05) — the per-device figures
   shown for phones and tablets do not match what the devices see; which page, which metric, and against
   what reference still to be captured. **[working as designed]** — a page-rendering report,
   not a data one. ↳ notes: `mobile-device-metrics.md`
+- **[P2] AiMesh nodes refuse the firmware** (owner report, 2026-09-05) — nodes decline the image the
+  router offers them; which models, which message, and whether the refusal is the node's version check,
+  the signature check, or the transfer are all unknown. User reset the device and it worked fine. 
+  **[watch]** ↳ notes: `aimesh-node-firmware-refused.md`
+- **[P2] Service Intercept in redirect-to-router mode with nothing listening** (owner, 2026-09-06) —
+  an NTP intercept set to redirect to the router silently sent every client's time request to a closed
+  port because "Enable local NTP server" was off; clients then polled every public server they knew.
+  The page should refuse or warn when the redirect target port has no listener, or offer to switch the
+  local server on. **[enabled router NTPS]** ↳ notes: `intercept-redirect-no-listener.md`
 
 ---
 

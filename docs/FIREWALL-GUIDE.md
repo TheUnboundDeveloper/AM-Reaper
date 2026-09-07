@@ -1,6 +1,6 @@
 # Reaper Firewall — user guide
 
-> **Doc status:** current as of **v2.8.6** · 2026-08-28 <!--@stamp-->
+> **Doc status:** current as of **v3.1.1** · 2026-09-06 <!--@stamp-->
 
 > **This guide has moved.** Every section below now lives in
 > **[`REAPER-GUIDE.md`](REAPER-GUIDE.md)**, the single Reaper manual, under
@@ -56,23 +56,22 @@ Moved → **[4.1.7 Forwards](REAPER-GUIDE.md#417-forwards)**
 
 ## Network Services
 
-Moved → **[4.1.8 Network Services](REAPER-GUIDE.md#418-network-services)**
+Moved → **[4.1.9 Network Services](REAPER-GUIDE.md#419-network-services)**
 
 ## URL Filter
 
-Moved → **[4.1.9 URL Filter](REAPER-GUIDE.md#419-url-filter)**
+Moved → **[4.1.10 URL Filter](REAPER-GUIDE.md#4110-url-filter)**
 
 ## Keyword Filter
 
-Moved → **[4.1.10 Keyword Filter](REAPER-GUIDE.md#4110-keyword-filter)**
+Moved → **[4.1.11 Keyword Filter](REAPER-GUIDE.md#4111-keyword-filter)**
 
 ## Logging
 
-Moved → **[4.1.11 Logging](REAPER-GUIDE.md#4111-logging)**
+Moved → **[4.1.12 Logging](REAPER-GUIDE.md#4112-logging)**
 
 ---
 
-*Maintainers: do not add content here. This file exists only to keep the deep links in shipped
-firmware resolving. When a firmware release ships whose **?** buttons point directly at
-`REAPER-GUIDE.md`, and enough time has passed that older images are out of circulation, this file
-can be deleted.*
+*Maintainers: do not add content here. Since v3.1.1 the **?** buttons link `REAPER-GUIDE.md`
+directly; this file exists only for the buttons of images before that, and can be deleted once
+v2.8.8 and the v3.1.0 beta are out of circulation.*

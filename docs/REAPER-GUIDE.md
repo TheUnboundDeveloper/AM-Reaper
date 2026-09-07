@@ -108,6 +108,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.12 [USB Disks](#412-usb-disks)
    - 4.13 [Diagnostics](#413-diagnostics)
    - 4.14 [Firmware](#414-firmware)
+   - 4.14a [Resolver health check](#414a-resolver-health-check-administration--failover-v311)
    - 4.15 [About](#415-about)
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
    - 4.17 [Tools → Other Settings: the Reaper switches](#417-tools--other-settings-the-reaper-switches)
@@ -1246,6 +1247,44 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 - **Mesh Nodes** (at the bottom) — every AiMesh node with name, address, reported firmware version and online state; **Update** opens that node's own firmware page in a new tab where you flash it natively (the image is never relayed through this router), and **Update all nodes** pushes the current firmware the way the stock AiMesh upgrade does. Update one node at a time and let it come back.
 
 The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat; a Close button appears on any error and during download/upload, but not during the flash itself. After the flash the page waits for the router and returns you to sign-in. Known open item: cancelling at the upgrade confirmation during an upload leaves the buttons dead until the page is reloaded.
+
+### 4.14a Resolver health check (Administration → Failover, v3.1.1)
+
+dnsmasq, the router's resolver, keeps no memory of an upstream that stopped answering. In strict order it
+tries the first server again for every new name and only a client's retransmission moves the query to the
+next one, so an outage of a LAN resolver such as AdGuard or Pi-hole costs a client timeout per uncached
+name, and a client that lists the router as its second DNS server can need three attempts before the
+router's own second server answers. The **Reaper resolver health check** lives on the **Failover** tab
+of the Administration group (between System and Firmware Upgrade) together with the three dnsmasq
+switches below, and watches **one DNS server you name** with a real query every few seconds; the tab's
+state strip shows Watch / Fail over / Restore and lights the middle step while the server is down.
+The server can
+be an IPv4 address or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the
+matching family, and the server is found in the router's list whatever spelling the list uses for it. An
+IPv6 server named while IPv6 is off is refused by the page, and a daemon that finds one that way (IPv6
+switched off later) idles and says so once in the system log. After the number
+of **misses** you set it moves that server to the **end of the router's upstream list** and reloads
+dnsmasq, so the first server asked is one that answers; after the number of **hits** you set it puts the
+server back first. You choose the interval, the reply timeout, the name queried, and whether any reply
+counts as alive or only a real answer. The **Status** line shows the live state and how long it has held;
+every switch is written to the system log with the reason. The server has to be in the router's own DNS
+list (the WAN DNS servers, or a VPN client's) for the move to have any effect, and clients that talk to
+the LAN resolver directly still pay one retry against it before they reach the router.
+
+**Upstream order** on the same tab turns on dnsmasq's strict order: the router asks its DNS servers in
+the listed order and moves on only when one does not answer, instead of its default of probing all of
+them every 50 queries and settling on the fastest, which sends a share of every query past a LAN filter.
+Pair the two: strict order keeps the LAN resolver first while it is healthy, the health check supplies
+the memory of a dead one that strict order lacks.
+
+Two more switches sit beneath, for the layout where **clients are handed the router alone as their DNS**
+and the router forwards to the LAN filter, which makes the failover complete (no client ever retries)
+and catches devices with a hard-coded DNS when paired with the port-53 intercept. **Client addresses**
+attaches the asking client's address to every forwarded query as EDNS Client Subnet, so AdGuard Home
+(with "Use EDNS Client Subnet" on in its DNS settings) or Pi-hole (on by default) still shows and filters
+per client instead of seeing only the router. **Router DNS cache** off turns the router into a pure
+forwarder: a per-client decision is never served from the router's cache to a different client, and the
+filter sees every lookup, as it does when clients talk to it directly. The filter keeps its own cache.
 
 ### 4.15 About
 

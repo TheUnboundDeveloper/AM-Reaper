@@ -1,6 +1,6 @@
 # Reaper Policy Routing — user guide
 
-> **Doc status:** current as of **v2.8.6** · 2026-08-28 <!--@stamp-->
+> **Doc status:** current as of **v3.1.1** · 2026-09-06 <!--@stamp-->
 
 > **This guide has moved.** Every section below now lives in
 > **[`REAPER-GUIDE.md`](REAPER-GUIDE.md)**, the single Reaper manual, under
@@ -61,7 +61,6 @@ Moved → **[4.4.9 Limits and gotchas](REAPER-GUIDE.md#449-limits-and-gotchas)**
 
 ---
 
-*Maintainers: do not add content here. This file exists only to keep the deep links in shipped
-firmware resolving. When a firmware release ships whose **?** buttons point directly at
-`REAPER-GUIDE.md`, and enough time has passed that older images are out of circulation, this file
-can be deleted.*
+*Maintainers: do not add content here. Since v3.1.1 the **?** buttons link `REAPER-GUIDE.md`
+directly; this file exists only for the buttons of images before that, and can be deleted once
+v2.8.8 and the v3.1.0 beta are out of circulation.*

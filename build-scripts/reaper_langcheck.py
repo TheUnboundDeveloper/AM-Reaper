@@ -48,6 +48,11 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # HTML text, double-quoted JS strings and one backtick template (RWFS_11 carries
        # the %1$@ placeholder) - translations must stay free of ` ${ and ".
        'Reaper_WiFiSetup.asp',
+       # Added 2026-09-07 with v3.1.1's Failover tab (the resolver health check +
+       # the dnsmasq switches moved off the System page). RDHC_ tokens sit in HTML
+       # text, double-quoted attributes and backtick JS - translations stay free
+       # of ` ${ " and '.
+       'Reaper_Failover.asp',
        ]
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is

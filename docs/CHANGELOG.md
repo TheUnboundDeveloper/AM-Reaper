@@ -26,6 +26,61 @@ node, not only on the primary router.
 
 ---
 
+## v3.1.1 — a primary/standby for the router's DNS list *(in progress)*
+
+- **A health check for the LAN resolver, and a strict-order switch.** dnsmasq keeps no memory of an
+  upstream that stopped answering: in strict order every new name is tried against the first server
+  again and only a client's retransmission moves it along, so an outage of a LAN resolver such as AdGuard
+  costs a client timeout per new name, and a client that lists the router second can need three attempts
+  before the router's second server answers. The new **Reaper resolver health check** on its own **Failover** tab of
+  Administration (between System and Firmware Upgrade; it began the day before as a block on the System
+  page), a native Reaper page with a live Watch / Fail over / Restore strip that lights while the server is
+  down, watches one DNS
+  server you name with a real query every few seconds; after a run of misses it moves that server to the
+  end of the router's upstream list and reloads dnsmasq, so the first server tried is one that answers,
+  and after a run of hits it puts it back first. Interval, timeout, both thresholds, the name queried and
+  whether a refusal counts as alive are all yours to set; the page shows the live state and every switch
+  is in the system log. Beside it, three dnsmasq switches that used to need a config-add file: **Upstream
+  order** (strict order), **Client addresses** (EDNS Client Subnet, so a LAN filter fed through the router
+  still sees which client asked; AdGuard Home reads it with its own switch on, Pi-hole by default) and
+  **Router DNS cache** off (the router only forwards, so a per-client decision is never served from the
+  router's cache to another client and the filter sees every lookup). Together they let the DHCP DNS be
+  the router alone, which makes the failover complete: no client ever retries. The server you watch can
+  be an IPv4 or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the matching
+  family and the server is matched in the router's list by value, whatever spelling the list uses; an
+  IPv6 server is refused by the page while IPv6 is off, and a daemon that meets one that way idles with one
+  log line rather than pretending to watch. Marked for the verify markers.
+- **The dashboard clock shows its seconds in red again.** The seconds have their own colour, and on
+  the dashboard they had quietly gone back to the same bone as the rest of the time, while every other
+  page still showed them correctly. A tidy-up in v3.0.9 removed the rule that colours them after a check
+  that looked for the class inside the page and did not find it: the element that carries it is created
+  while the page runs, by the shared script that drives the clock, so it appears nowhere in the page
+  itself. The dashboard and the shell each draw their own copy of that top bar, and only the dashboard's
+  copy was swept, which is why the fault appeared in exactly one place. The rule is back, and the build
+  now refuses an image whose clock is missing it.
+- **Gatekeeper no longer calls a Wi-Fi 6 device "Wired", and a multi-link client is one row again.**
+  The router's live client list records a multi-link client under the address of the individual radio
+  link it is using, and names the device's real address in a separate field. Everything else — the
+  DHCP lease, the address table, the device's name, its access rule — is filed under that real
+  address, and nothing was reading the field that connects the two. So the device was simply absent
+  from the list as far as those pages were concerned: Gatekeeper kept the guess it had cached at first
+  sight, which for such a client is "wired with no band", and showed a 6 GHz PC as Wired. The Devices
+  page mostly escaped it because it also classifies from the bridge's own forwarding table. The same
+  gap stopped the page folding a client's per-band links into one device, because the only other clue
+  it used is a line the Wi-Fi driver prints for some multi-link clients and not others. All of it now
+  reads the field that ties a link to its device, and the wired list still wins over a stale wireless
+  entry, so a device that moved onto a cable is never dragged back to Wi-Fi.
+- **Gatekeeper and Devices no longer call a device "Unknown device" because dnsmasq handed its name to
+  another one.** dnsmasq lets one lease hold a given hostname at a time: when several iPhones all
+  announce "iPhone", the newest keeps the name and the others' lease lines drop to `*`, and every Reaper
+  name reader took a device's self-reported name from that file, so those devices sat in Gatekeeper as
+  "Unknown device" and stayed so after approval. The lease-change script now records the name each
+  client announced, per MAC, in a small tmpfs store that Gatekeeper's watcher and both pages read when the
+  lease file has nothing. A device that announces no name at all (a printer, a Fire TV, a Lutron hub)
+  falls back to the vendor label the stock network map already shows for it, and the Devices page marks
+  that source as *vendor* rather than *lease*. Names still come from the client and are still escaped on
+  the way out; the store keeps 32 printable characters per device. Marked for the verify markers.
+
 ## v3.1.0 — OpenSSL 3.5, second attempt: the library every TLS path stands on *(built RT-BE96U)*
 
 - **The firmware moves from OpenSSL 1.1.1w (end of life since September 2023) to OpenSSL 3.5.8.**

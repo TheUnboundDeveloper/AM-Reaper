@@ -222,7 +222,13 @@ def balance_js(js):
     return (True, "balanced")
 
 
-SCRIPT_RE = re.compile(r"<script([^>]*)>(.*?)</script\s*>", re.S | re.I)
+# End tag as the HTML tokenizer sees it, not just `</script>`: a browser closes
+# the block at `</script` followed by whitespace or `/` plus ANY attribute junk
+# up to the `>`, so `</script foo="bar">` closes it too. Matching only
+# `</script\s*>` would run the block body past that tag and balance-check the
+# wrong text (CodeQL py/bad-tag-filter). `</scriptfoo>` is still not an end tag.
+# This is a build-time reader of our OWN source pages, not a sanitizer.
+SCRIPT_RE = re.compile(r"<script([^>]*)>(.*?)</script(?:>|[\s/][^>]*>)", re.S | re.I)
 
 
 # ---------------------------------------------------------------------------

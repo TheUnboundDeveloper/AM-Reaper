@@ -120,7 +120,9 @@ def strip_comments(text):
     def blank(m):
         return re.sub(r"[^\n]", " ", m.group(0))
     text = re.sub(r"/\*.*?\*/", blank, text, flags=re.S)
-    text = re.sub(r"<!--.*?-->", blank, text, flags=re.S)
+    # `--!>` ends a comment for a browser exactly as `-->` does (HTML "comment
+    # end bang state"), so blank both forms.
+    text = re.sub(r"<!--.*?--!?>", blank, text, flags=re.S)
     text = re.sub(r"(?m)^\s*//.*$", blank, text)
     text = re.sub(r"(?m)^\s*\*.*$", blank, text)
     return text

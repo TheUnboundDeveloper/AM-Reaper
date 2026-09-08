@@ -1,0 +1,615 @@
+From 4547c31fb3787c5ceb7cf15b7cfc427a9651975a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 16:29:42 -0400
+Subject: [PATCH] www/httpd: one Backup & Restore master panel owns every
+ backup surface
+
+The Reaper settings (JSON) export/import moves off Reaper_Storage.asp and
+into the injected card on Administration > Restore/Save/Upload, which is
+rebuilt as a master Backup & Restore panel: an intro line that says which
+of the two files does which job, side-by-side sections for the full .rbk
+backup (everything, model-locked, one reboot) and the portable settings
+file (Reaper features only, no reboot), each with its scope badge,
+description and guidance note, one shared pending-restore banner and one
+message line, and a ? link to the owner's guide (2.5 Two backups, not one).
+
+The settings wiring that lived duplicated on the Storage page (export,
+import, pending check, complete-restore) now exists once, in the
+reaper_inject.c mode-4 block - pure logic, every string still rides a
+hidden span in the fragment, new XHRs on onloadend. The Storage page keeps
+only the long-term store selection and data export, as its header comment
+always claimed. Stock page stays byte-pristine.
+
+Four new tokens (RBKP_15-18: panel title, chooser line, two scope badges)
+appended to all 25 dicts in lockstep (6746 -> 6750). Everything else
+reuses the existing RBKP_1-14 + RDST_68-77 strings.
+
+Validated: extracted macro JS parses under node --check with every span
+and element id resolving against the fragment; macro region compiles
+standalone; reaper_langcheck 0 breakers / 22 pages; ASCII-clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c     | 33 +++++++
+ release/src/router/www/BR.dict               |  4 +
+ release/src/router/www/CN.dict               |  4 +
+ release/src/router/www/CZ.dict               |  4 +
+ release/src/router/www/DA.dict               |  4 +
+ release/src/router/www/DE.dict               |  4 +
+ release/src/router/www/EN.dict               |  4 +
+ release/src/router/www/ES.dict               |  4 +
+ release/src/router/www/FI.dict               |  4 +
+ release/src/router/www/FR.dict               |  4 +
+ release/src/router/www/HU.dict               |  4 +
+ release/src/router/www/IT.dict               |  4 +
+ release/src/router/www/JP.dict               |  4 +
+ release/src/router/www/KR.dict               |  4 +
+ release/src/router/www/MS.dict               |  4 +
+ release/src/router/www/NL.dict               |  4 +
+ release/src/router/www/NO.dict               |  4 +
+ release/src/router/www/PL.dict               |  4 +
+ release/src/router/www/RO.dict               |  4 +
+ release/src/router/www/RU.dict               |  4 +
+ release/src/router/www/Reaper_BackupCard.asp | 64 ++++++++++---
+ release/src/router/www/Reaper_Storage.asp    | 98 +-------------------
+ release/src/router/www/SL.dict               |  4 +
+ release/src/router/www/SV.dict               |  4 +
+ release/src/router/www/TH.dict               |  4 +
+ release/src/router/www/TR.dict               |  4 +
+ release/src/router/www/TW.dict               |  4 +
+ release/src/router/www/UK.dict               |  4 +
+ 28 files changed, 187 insertions(+), 108 deletions(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 0ecbc91982..df20c02ef3 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -145,6 +145,39 @@
+ 	"msg(1,t(\"rbk_s_reboot\"));};" \
+ 	"p.send(fd);};" \
+ 	"rd.readAsText(f.slice(0,2048));};}" \
++	"var cx=document.getElementById(\"rbk_cx\");" \
++	"if(cx)cx.onclick=function(){" \
++	"var g=new XMLHttpRequest();" \
++	"g.open(\"GET\",\"/reaper_cfg.cgi?action=export&http_id=\"+encodeURIComponent(hid)+\"&_=\"+Date.now(),true);" \
++	"g.onloadend=function(){" \
++	"var j=null;try{j=JSON.parse(g.responseText);}catch(e){}" \
++	"if(!j||!j.ok){msg(0,t(\"rbk_s_cfail\"));return;}" \
++	"var name=\"reaper-settings-\"+String(j.model||\"router\").replace(/[^A-Za-z0-9_-]/g,\"\")+\"-\"+String(j.version||\"\").replace(/[^A-Za-z0-9_.-]/g,\"\")+\"-\"+new Date().toISOString().slice(0,10)+\".json\";" \
++	"var blob=new Blob([JSON.stringify(j,null,1)],{type:\"application/json\"});" \
++	"var a=document.createElement(\"a\");a.href=URL.createObjectURL(blob);a.download=name;" \
++	"document.body.appendChild(a);a.click();" \
++	"setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},2000);" \
++	"msg(1,t(\"rbk_s_saved\")+\" \"+name);};" \
++	"g.send();};" \
++	"var ci=document.getElementById(\"rbk_ci\"),cf=document.getElementById(\"rbk_cfile\");" \
++	"if(ci&&cf){ci.onclick=function(){cf.click();};" \
++	"cf.onchange=function(){" \
++	"var f=cf.files&&cf.files[0];if(!f)return;" \
++	"if(f.size>60000){msg(0,t(\"rbk_s_cbad\"));cf.value=\"\";return;}" \
++	"var rd=new FileReader();" \
++	"rd.onload=function(){" \
++	"var j=null;try{j=JSON.parse(String(rd.result||\"\"));}catch(e){}" \
++	"if(!j||!j.reaper_cfg){msg(0,t(\"rbk_s_cbad\"));cf.value=\"\";return;}" \
++	"if(!confirm(t(\"rbk_s_cconfirm\"))){cf.value=\"\";return;}" \
++	"var p2=new XMLHttpRequest();p2.open(\"POST\",\"/reaper_cfg.cgi\",true);" \
++	"p2.setRequestHeader(\"Content-Type\",\"application/x-www-form-urlencoded\");" \
++	"p2.onloadend=function(){" \
++	"var r=null;try{r=JSON.parse(p2.responseText);}catch(e){}" \
++	"cf.value=\"\";" \
++	"if(!r||!r.ok){msg(0,t(\"rbk_s_cfail\"));return;}" \
++	"msg(1,t(\"rbk_s_cdone\").replace(\"%1\",r.flags).replace(\"%2\",r.lists).replace(\"%3\",r.rejected));};" \
++	"p2.send(\"action=import&http_id=\"+encodeURIComponent(hid)+\"&cfg=\"+encodeURIComponent(JSON.stringify(j)));};" \
++	"rd.readAsText(f);};}" \
+ 	"var x2=new XMLHttpRequest();" \
+ 	"x2.open(\"GET\",\"/reaper_cfg.cgi?action=pending&http_id=\"+encodeURIComponent(hid)+\"&_=\"+Date.now(),true);" \
+ 	"x2.onload=function(){var j=null;try{j=JSON.parse(x2.responseText);}catch(e){}" \
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 1815e1696f..19e25f8680 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Complementos
+ RWDN_91=Estatísticas indisponíveis - tentando novamente
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 82adefb340..138d437772 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=插件
+ RWDN_91=统计不可用 - 正在重试
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index bbd30ccdf3..ca28180e0d 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Doplňky
+ RWDN_91=Statistiky nedostupné - opakuji
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 496ad7743c..90a5fa7ecf 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Tilføjelser
+ RWDN_91=Statistik utilgængelig - prøver igen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 6926aa8424..4984dd6975 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Add-ons
+ RWDN_91=Statistik nicht verfügbar - neuer Versuch
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index c94b8f386a..2285ef7b2f 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Addons
+ RWDN_91=Stats unavailable - retrying
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 64129cfc48..6f03db5598 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Complementos
+ RWDN_91=Estadísticas no disponibles - reintentando
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index af4f8f8feb..3ce2158425 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Lisäosat
+ RWDN_91=Tilastot eivät ole saatavilla - yritetään uudelleen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 26c535ac30..b941f36cd8 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Modules complémentaires
+ RWDN_91=Statistiques indisponibles - nouvelle tentative
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index df2fd25eaa..7f3457a36c 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Bővítmények
+ RWDN_91=A statisztika nem érhető el - újrapróbálás
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index c54de8f630..360bf0025a 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Componenti aggiuntivi
+ RWDN_91=Statistiche non disponibili - nuovo tentativo
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index a7d0233dea..88e96dade0 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=アドオン
+ RWDN_91=統計を取得できません - 再試行中
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 23553027a9..481abb6827 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=애드온
+ RWDN_91=통계를 사용할 수 없음 - 재시도 중
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 08db7ee5f3..b98071c431 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Tambahan
+ RWDN_91=Statistik tidak tersedia - mencuba semula
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index ae8abd46c7..98fc15cacd 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Add-ons
+ RWDN_91=Statistieken niet beschikbaar - opnieuw proberen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index baf8a2f877..859d019d91 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Tillegg
+ RWDN_91=Statistikk utilgjengelig - prøver igjen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 7f78e3b315..0b3b31c0ca 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Dodatki
+ RWDN_91=Statystyki niedostępne - ponawianie
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 253d877af7..9c6558a508 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Suplimente
+ RWDN_91=Statistici indisponibile - se reîncearcă
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 4d492b26df..7cadeef289 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Дополнения
+ RWDN_91=Статистика недоступна - повтор
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/Reaper_BackupCard.asp b/release/src/router/www/Reaper_BackupCard.asp
+index 8b73188822..a36a708580 100644
+--- a/release/src/router/www/Reaper_BackupCard.asp
++++ b/release/src/router/www/Reaper_BackupCard.asp
+@@ -5,31 +5,60 @@
+      do_ej, all behavior JS lives in reaper_inject.c's block (scripts inside
+      innerHTML never execute), and every string the JS needs is carried in a
+      hidden span so no translation ever sits inside an attribute or a JS
+-     string. Listed in reaper_skip[] - served pristine, never re-injected. -->
++     string. Listed in reaper_skip[] - served pristine, never re-injected.
++     2026-08-28: now the MASTER Backup & Restore panel - the Reaper settings
++     (JSON) export/import moved here from Reaper_Storage.asp, so one panel
++     owns every backup surface and the pending-restore banner lives only
++     here and can never drift between two copies. -->
+ <div id="rbk_card">
+ <style>
+-#rbk_card{margin:0 0 14px;width:760px;max-width:96%;box-sizing:border-box;border:1px solid #3a3a3e;border-radius:6px;padding:14px 18px;background:#101012;color:#ECE7DB;font-family:Arial,Helvetica,sans-serif;text-align:left}
++#rbk_card{margin:0 0 14px;width:760px;max-width:96%;box-sizing:border-box;border:1px solid #3a3a3e;border-radius:6px;padding:14px 18px 16px;background:#101012;color:#ECE7DB;font-family:Arial,Helvetica,sans-serif;text-align:left}
+ #rbk_card .rbk_h{font-size:15px;font-weight:bold;color:#ECE7DB;margin:0 0 6px}
+ #rbk_card .rbk_h em{font-style:normal;color:#E10600}
+-#rbk_card .rbk_d{font-size:12px;line-height:1.55;color:#b8b3a7;margin:0 0 10px}
+-#rbk_card .rbk_row{margin:0 0 8px}
++#rbk_card .rbk_help{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:bold 11px Arial,sans-serif;text-decoration:none;vertical-align:middle}
++#rbk_card .rbk_help:hover{border-color:#E10600;color:#ECE7DB}
++#rbk_card .rbk_d{font-size:12px;line-height:1.55;color:#b8b3a7;margin:0 0 12px}
++#rbk_card .rbk_grid{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap}
++#rbk_card .rbk_sec{flex:1 1 300px;display:flex;flex-direction:column;min-width:0;border:1px solid rgba(255,255,255,.09);border-radius:6px;background:#151518;padding:12px 14px}
++#rbk_card .rbk_sh{font-size:13px;font-weight:bold;color:#ECE7DB;margin:0 0 3px}
++#rbk_card .rbk_tag{font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:.07em;color:#8d897f;margin:0 0 8px;padding-bottom:7px;border-bottom:1px solid rgba(255,255,255,.07)}
++#rbk_card .rbk_sd{font-size:12px;line-height:1.55;color:#b8b3a7;margin:0 0 10px}
++#rbk_card .rbk_row{margin:auto 0 9px;padding-top:2px}
+ #rbk_card button{background:#1c1c1f;color:#ECE7DB;border:1px solid #555;border-radius:4px;padding:7px 14px;font-size:12px;cursor:pointer;margin-right:8px}
+ #rbk_card button:hover{border-color:#E10600}
+-#rbk_card .rbk_note{font-size:11px;color:#8d897f;line-height:1.5;margin:6px 0 0}
+-#rbk_card #rbk_pending{display:none;margin:10px 0 2px;padding:8px 10px;border:1px solid #E10600;border-radius:4px;background:#1a0d0d;font-size:12px}
+-#rbk_card #rbk_msg{display:none;margin:8px 0 0;font-size:12px}
++#rbk_card .rbk_note{font-size:11px;color:#8d897f;line-height:1.5;margin:0}
++#rbk_card #rbk_pending{display:none;margin:0 0 12px;padding:8px 10px;border:1px solid #E10600;border-radius:4px;background:#1a0d0d;font-size:12px}
++#rbk_card #rbk_msg{display:none;margin:10px 0 0;font-size:12px}
+ #rbk_card .rbk_ok{color:#4FB286}
+ #rbk_card .rbk_err{color:#E10600}
+ </style>
+-<div class="rbk_h"><em>REAPER</em> &middot; <#RBKP_1#></div>
+-<div class="rbk_d"><#RBKP_2#></div>
+-<div class="rbk_row">
+-  <button id="rbk_dl" type="button"><#RBKP_3#></button>
+-  <button id="rbk_up" type="button"><#RBKP_4#></button>
+-  <input id="rbk_file" type="file" accept=".rbk" style="display:none">
+-</div>
+-<div class="rbk_note"><#RBKP_5#></div>
++<div class="rbk_h"><em>REAPER</em> &middot; <#RBKP_15#><a class="rbk_help" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#25-two-backups-not-one" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>">?</a></div>
++<div class="rbk_d"><#RBKP_16#></div>
+ <div id="rbk_pending"><span><#RBKP_6#></span> <button id="rbk_complete" type="button"><#RBKP_7#></button></div>
++<div class="rbk_grid">
++  <div class="rbk_sec">
++    <div class="rbk_sh"><#RBKP_1#></div>
++    <div class="rbk_tag"><#RBKP_17#></div>
++    <div class="rbk_sd"><#RBKP_2#></div>
++    <div class="rbk_row">
++      <button id="rbk_dl" type="button"><#RBKP_3#></button>
++      <button id="rbk_up" type="button"><#RBKP_4#></button>
++      <input id="rbk_file" type="file" accept=".rbk" style="display:none">
++    </div>
++    <div class="rbk_note"><#RBKP_5#></div>
++  </div>
++  <div class="rbk_sec">
++    <div class="rbk_sh"><#RDST_68#></div>
++    <div class="rbk_tag"><#RBKP_18#></div>
++    <div class="rbk_sd"><#RDST_69#></div>
++    <div class="rbk_row">
++      <button id="rbk_cx" type="button"><#RDST_70#></button>
++      <button id="rbk_ci" type="button"><#RDST_71#></button>
++      <input id="rbk_cfile" type="file" accept=".json,application/json" style="display:none">
++    </div>
++    <div class="rbk_note"><#RDST_72#></div>
++  </div>
++</div>
+ <div id="rbk_msg"></div>
+ <span id="rbk_hid" style="display:none"><% nvram_get("http_id"); %></span>
+ <span id="rbk_model" style="display:none"><% nvram_get("productid"); %></span>
+@@ -41,4 +70,9 @@
+ <span id="rbk_s_done" style="display:none"><#RBKP_11#></span>
+ <span id="rbk_s_confirm" style="display:none"><#RBKP_13#></span>
+ <span id="rbk_s_fail" style="display:none"><#RBKP_14#></span>
++<span id="rbk_s_saved" style="display:none"><#RDST_73#></span>
++<span id="rbk_s_cfail" style="display:none"><#RDST_74#></span>
++<span id="rbk_s_cbad" style="display:none"><#RDST_75#></span>
++<span id="rbk_s_cconfirm" style="display:none"><#RDST_76#></span>
++<span id="rbk_s_cdone" style="display:none"><#RDST_77#></span>
+ </div>
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 438f2e7987..a67e8e3285 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -95,24 +95,11 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+   <p class="note" id="timeline_note" style="margin-top:12px"><#RDST_36#></p>
+ </div>
+ 
+-<div class="card">
+-  <h2><#RDST_68#></h2>
+-  <p class="note" style="margin-top:0"><#RDST_69#></p>
+-  <div class="tblbar" style="margin-top:10px;gap:10px;flex-wrap:wrap">
+-    <button class="btn" id="cfg_export"><#RDST_70#></button>
+-    <label class="btn" for="cfg_file" style="display:inline-block"><#RDST_71#></label>
+-    <input type="file" id="cfg_file" accept=".json,application/json" style="display:none">
+-    <span class="note" id="cfg_msg" style="margin:0"></span>
+-  </div>
+-  <p class="note"><#RDST_72#></p>
+-  <!-- v2.7.2: a full-backup restore (Administration page) leaves its Reaper half
+-       pending across the reboot; surface it here too so the operator finds it
+-       wherever they land first -->
+-  <div id="cfg_pending" style="display:none;margin-top:10px;padding:8px 12px;border:1px solid var(--crimson);border-radius:6px">
+-    <span class="note" style="margin:0"><#RBKP_6#></span>
+-    <button class="btn" id="cfg_complete" style="margin-left:10px"><#RBKP_7#></button>
+-  </div>
+-</div>
++<!-- 2026-08-28: the Reaper settings backup card (RDST_68 export/import) and
++     the pending-restore banner moved to the master Backup & Restore panel on
++     Administration > Restore/Save/Upload (Reaper_BackupCard.asp + the
++     reaper_inject.c mode-4 block) - one panel now owns every backup surface,
++     and the duplicated wiring that lived here was removed with it. -->
+ 
+ <div class="card">
+   <h2><#RDST_50#></h2>
+@@ -305,81 +292,6 @@ function boot(){ loadStatus(); }
+ if(document.readyState !== 'loading') boot();
+ else document.addEventListener('DOMContentLoaded', boot);
+ 
+-/* v2.6.10: Reaper-wide settings backup. Export = a JSON file the browser
+-   saves; import = the same file posted back, replayed through each feature's
+-   own save path (firewall / routing lists land as drafts - apply + keep them
+-   on their pages; Gatekeeper + Warden restart at once). */
+-(function(){
+-  var HTTPID_CFG = '<% nvram_get("http_id"); %>';
+-  function cfgMsg(ok, t){ var m=document.getElementById('cfg_msg'); if(!m) return; m.textContent=t; m.style.color = ok ? 'var(--jade)' : 'var(--danger)'; }
+-  var ex = document.getElementById('cfg_export');
+-  if(ex) ex.onclick = function(){
+-    var x = new XMLHttpRequest();
+-    x.open('GET', '/reaper_cfg.cgi?action=export&http_id=' + encodeURIComponent(HTTPID_CFG) + '&_=' + Date.now(), true);
+-    x.onreadystatechange = function(){
+-      if(x.readyState !== 4) return;
+-      var j = null; try{ j = JSON.parse(x.responseText); }catch(e){}
+-      if(!j || !j.ok){ cfgMsg(false, `<#RDST_74#>`); return; }
+-      var name = 'reaper-settings-' + String(j.model||'router').replace(/[^A-Za-z0-9_-]/g,'') + '-' + String(j.version||'').replace(/[^A-Za-z0-9_.-]/g,'') + '-' + new Date().toISOString().slice(0,10) + '.json';
+-      var blob = new Blob([JSON.stringify(j, null, 1)], {type:'application/json'});
+-      var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+-      document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+-      cfgMsg(true, `<#RDST_73#>` + ' ' + name);
+-    };
+-    x.send();
+-  };
+-  var fi = document.getElementById('cfg_file');
+-  if(fi) fi.onchange = function(){
+-    var f = fi.files && fi.files[0]; if(!f) return;
+-    if(f.size > 60000){ cfgMsg(false, `<#RDST_75#>`); fi.value=''; return; }
+-    var rd = new FileReader();
+-    rd.onload = function(){
+-      var txt = String(rd.result||''), j = null;
+-      try{ j = JSON.parse(txt); }catch(e){}
+-      if(!j || !j.reaper_cfg){ cfgMsg(false, `<#RDST_75#>`); fi.value=''; return; }
+-      if(!confirm(`<#RDST_76#>`)){ fi.value=''; return; }
+-      var x = new XMLHttpRequest();
+-      x.open('POST', '/reaper_cfg.cgi', true);
+-      x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+-      x.onreadystatechange = function(){
+-        if(x.readyState !== 4) return;
+-        var r = null; try{ r = JSON.parse(x.responseText); }catch(e){}
+-        fi.value = '';
+-        if(!r || !r.ok){ cfgMsg(false, (r && r.error) || `<#RDST_74#>`); return; }
+-        cfgMsg(true, `<#RDST_77#>`.replace('%1', r.flags).replace('%2', r.lists).replace('%3', r.rejected));
+-      };
+-      x.send('action=import&http_id=' + encodeURIComponent(HTTPID_CFG) + '&cfg=' + encodeURIComponent(JSON.stringify(j)));
+-    };
+-    rd.readAsText(f);
+-  };
+-  /* v2.7.2: full-backup restore pending across the reboot (written by
+-     reaper_restore.cgi) - offer to complete it here as well as on the
+-     Administration page card */
+-  (function(){
+-    var x = new XMLHttpRequest();
+-    x.open('GET', '/reaper_cfg.cgi?action=pending&http_id=' + encodeURIComponent(HTTPID_CFG) + '&_=' + Date.now(), true);
+-    x.onload = function(){
+-      var j = null; try{ j = JSON.parse(x.responseText); }catch(e){}
+-      if(j && j.ok && j.pending){ var b = document.getElementById('cfg_pending'); if(b) b.style.display = ''; }
+-    };
+-    x.send();
+-  })();
+-  var cp = document.getElementById('cfg_complete');
+-  if(cp) cp.onclick = function(){
+-    cp.disabled = true;
+-    var x = new XMLHttpRequest();
+-    x.open('POST', '/reaper_cfg.cgi', true);
+-    x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+-    x.onloadend = function(){
+-      var r = null; try{ r = JSON.parse(x.responseText); }catch(e){}
+-      cp.disabled = false;
+-      if(!r || !r.ok){ cfgMsg(false, (r && r.error) || `<#RBKP_14#>`); return; }
+-      var b = document.getElementById('cfg_pending'); if(b) b.style.display = 'none';
+-      cfgMsg(true, `<#RBKP_11#>`.replace('%1', r.flags).replace('%2', r.lists).replace('%3', r.rejected));
+-    };
+-    x.send('action=import_pending&http_id=' + encodeURIComponent(HTTPID_CFG));
+-  };
+-})();
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 4b705d4f92..ed9c54bf3a 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Dodatki
+ RWDN_91=Statistika ni na voljo - ponovni poskus
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 6b5ca11518..7ec1635513 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Tillägg
+ RWDN_91=Statistik otillgänglig - försöker igen
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 2fba4166c3..f4707450a1 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=ส่วนเสริม
+ RWDN_91=สถิติไม่พร้อมใช้งาน - กำลังลองใหม่
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index c716c59b20..33acd4b629 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Eklentiler
+ RWDN_91=İstatistikler kullanılamıyor - yeniden deneniyor
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index cb599fa8d2..822a0fe1c8 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=附加元件
+ RWDN_91=統計資料無法取得 - 重試中
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 23c3ce3f0c..06df93ce4b 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6744,3 +6744,7 @@ Reaper_c_addons=Додатки
+ RWDN_91=Статистика недоступна - повторна спроба
+ RVR_63=Live now, but not saved yet - press Keep to make this survive the timer and a reboot.
+ RWDN_100=Threat entries:
++RBKP_15=Backup & Restore
++RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
++RBKP_17=Everything - router settings + Reaper data
++RBKP_18=Reaper features only - no reboot
+-- 
+2.25.1
+

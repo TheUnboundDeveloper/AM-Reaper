@@ -61,9 +61,13 @@ with their own license files in-tree.
 The wider upstream tree contains many additional open-source packages under a mix
 of licenses: **GPL v2** (busybox, dnsmasq, iptables, hostapd, …), **GPL v3** (GNU
 **wget**, GNU **nano**), **LGPL v2.1** (**glib**, **avahi**, **libdaemon**, …), and
-BSD/MIT (openssl, net-snmp, …). Each retains its own in-tree license notice; the
+**Apache-2.0** (**OpenSSL 3.5.8** — the TLS/crypto library since the OpenSSL 3.5 rung; carried
+exactly as Asuswrt-Merlin ships it, no Reaper source changes, built with `--api=1.1.1`; the small
+`openssl11-compat` forwarding shim that lets the closed ASUS binaries keep their OpenSSL 1.1 ABI is
+upstream Asuswrt-Merlin code by RSDNTWK, GPL v2 like the rest of the base), and BSD/MIT
+(net-snmp, …). Each retains its own in-tree license notice; the
 full license texts are collected in [`LICENSES/`](LICENSES/) — [`GPL-3.0.txt`](LICENSES/GPL-3.0.txt),
-[`LGPL-2.1.txt`](LICENSES/LGPL-2.1.txt), [`OFL-1.1.txt`](LICENSES/OFL-1.1.txt) (GPL v2
+[`LGPL-2.1.txt`](LICENSES/LGPL-2.1.txt), [`Apache-2.0.txt`](LICENSES/Apache-2.0.txt), [`OFL-1.1.txt`](LICENSES/OFL-1.1.txt) (GPL v2
 is the repo-root [`LICENSE`](LICENSE)) — mapped in [`LICENSES/README.md`](LICENSES/README.md),
 and all are covered by the source availability in
 [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md).

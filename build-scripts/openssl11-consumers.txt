@@ -1,0 +1,91 @@
+# openssl11-consumers.txt -- reaper_verify check 22 allowlist (check_ossl_consumers.sh)
+#
+# In an image that carries the real OpenSSL 3.x, these are the ONLY binaries
+# allowed to depend on the OpenSSL 1.1 SONAME (libcrypto.so.1.1 / libssl.so.1.1,
+# supplied by the openssl11-compat shim). Anything else naming it is a stale
+# build artifact that was never relinked -- the v3.0.3 hostapd -- and FAILS.
+#
+#   <path-in-rootfs>|closed  tracked prebuilt, shipped as a binary; may link only
+#                            the 1.1 SONAME. The shim exists for these and nothing else.
+#   <path-in-rootfs>|host    source-built, but links a closed DSO (libletsencrypt,
+#                            libamas-utils, libasc) or absorbs prebuilt objects, so
+#                            the linker needs the 1.1 name too. A rebuilt host ALWAYS
+#                            also names libcrypto.so.3; one that names only 1.1 is stale.
+#   <path-in-rootfs>|must3   source-built with no closed input: must name
+#                            libcrypto.so.3 and must NOT name the 1.1 SONAME.
+#
+# Absent paths are fine (per-model blob sets; Reaper removed aaews, mastiff, asd,
+# the AiCloud/AiDisk lighttpd modules and libasusnatnl -- they stay listed so a
+# sibling or a future re-add is still classified). The check is inert on a 1.1 image.
+#
+# Ground truth: upstream's clean-room 3006.102.9 alpha1 RT-BE96U image, decomposed
+# 2026-08-31 (32 consumers of the 1.1 SONAME: 28 closed, 4 hosts; 126 binaries on
+# .so.3 only), cross-checked against git-tracked prebuilts in the canon tree
+# (2026-09-05). Upstream links the four hosts against BOTH libraries.
+
+# --- closed prebuilts (the shim's whole reason to exist) ---
+/bin/bp3|closed
+/usr/bin/asd|closed
+/usr/lib/libamas-utils.so|closed
+/usr/lib/libasc.so|closed
+/usr/lib/libasd.so|closed
+/usr/lib/libasusnatnl.so|closed
+/usr/lib/libletsencrypt.so|closed
+/usr/lib/mod_aicloud_auth.so|closed
+/usr/lib/mod_aicloud_invite.so|closed
+/usr/lib/mod_aicloud_sharelink.so|closed
+/usr/lib/mod_aidisk_access.so|closed
+/usr/lib/mod_captive_portal_uam.so|closed
+/usr/lib/mod_create_captcha_image.so|closed
+/usr/lib/mod_query_field_json.so|closed
+/usr/lib/mod_smbdav.so|closed
+/usr/sbin/Notify_Event2NC|closed
+/usr/sbin/aaews|closed
+/usr/sbin/amas-utils-cli|closed
+/usr/sbin/arpstorm|closed
+/usr/sbin/asusdiscovery|closed
+/usr/sbin/cfg_client|closed
+/usr/sbin/cfg_reportstatus|closed
+/usr/sbin/cfg_server|closed
+/usr/sbin/find_cap|closed
+/usr/sbin/mastiff|closed
+/usr/sbin/networkmap|closed
+/usr/sbin/nt_center|closed
+/usr/sbin/nt_monitor|closed
+# fleet survey 2026-09-05 (tracked ELF prebuilts per model that NEED the 1.1 SONAME): three more closed
+# binaries exist in every model tree; none is staged in the RT-BE96U image, listed so a sibling stays classified
+/usr/sbin/ahs|closed
+/usr/bin/bccmd|closed
+/usr/sbin/ftpclient|closed
+
+# --- hosts: source-built, link a closed DSO or absorb prebuilt objects ---
+/sbin/rc|host
+/sbin/wps_pbcd|host
+/usr/sbin/httpd|host
+/usr/sbin/infosvr|host
+
+# --- must3: source-built, no closed input -> the real library, no shim ---
+# rmcpd is Reaper-authored and links nothing closed; the shim block its Makefile
+# gained on 2026-09-01 was cargo-culted from httpd and is removed on the retry.
+/bin/rmcpd|must3
+/usr/sbin/hostapd|must3
+/usr/sbin/hostapd_cli|must3
+/usr/sbin/wpa_supplicant-2.7|must3
+/usr/sbin/wpa_cli-2.7|must3
+/usr/sbin/openssl|must3
+/usr/sbin/curl|must3
+/usr/lib/libcurl.so.4.8.0|must3
+/usr/sbin/openvpn|must3
+/usr/lib/libovpn.so|must3
+/usr/lib/libmssl.so|must3
+/usr/sbin/wget|must3
+/usr/sbin/inadyn|must3
+/usr/sbin/stubby|must3
+/usr/lib/ipsec/charon|must3
+/usr/lib/ipsec/plugins/libstrongswan-openssl.so|must3
+/usr/sbin/lighttpd|must3
+/usr/sbin/vsftpd|must3
+/usr/sbin/snmpd|must3
+/usr/sbin/pppd|must3
+/usr/sbin/Tor|must3
+/usr/sbin/chilli|must3

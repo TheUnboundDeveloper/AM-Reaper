@@ -1,6 +1,6 @@
 # Release Process — from source rung to published firmware
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually
@@ -58,10 +58,23 @@ change you are deliberately not fanning out.
 It refuses to run unless the canon clone is on the right branch, has no
 uncommitted tracked changes, and already carries the version bump. Then it
 exports the new patches (doc hunks excluded), normalizes the `From:` identity
-and scrubs the build-host strings, replays the **whole** series onto the pinned
-base to capture `source_tree_from_series` and prove the version and the tree,
-writes the provenance entry, checks the rung against every overlay, moves the
-CI pin, and re-runs the PII rules. It never commits and never pushes.
+and scrubs the build-host strings, **scans the added lines for anything a
+reviewer cannot see** and stops before installing if it finds one, replays the
+**whole** series onto the pinned base to capture `source_tree_from_series` and
+prove the version and the tree, writes the provenance entry, checks the rung
+against every overlay, moves the CI pin, and re-runs the PII rules. It never
+commits and never pushes.
+
+The hidden-character scan (`build-scripts/reaper_hiddencheck.py`) is the
+project's basic supply-chain filter. Fatal: bidirectional overrides (the
+"Trojan Source" class), zero-width and other format characters, control bytes,
+invalid UTF-8, and letters from look-alike scripts inside identifiers in code.
+Reported but not fatal: no-break and other odd spaces, `eval`/`atob`/escape-run
+shapes in JavaScript, lines over 2000 characters. `.github/hidden-allowlist.txt`
+downgrades vendored third-party paths; a hit in Reaper code is fixed in the
+source commit, never by editing the allowlist. `cut_fleet.sh` runs the same scan
+on the regenerated overlays, and `repo-hygiene.yml` repeats it over the whole
+series on every push.
 
 Two things it deliberately leaves to you: the provenance `summary` prose (it
 writes a `TODO`) and the `docs/CHANGELOG.md` section (release notes are
@@ -72,7 +85,8 @@ extracted from it).
 Two source-tree hashes are recorded per release, and they are not the same:
 
 - `source_tree` — the tree of the build commit on the model branch.
-- `source_tree_from_series` — what `git am --keep-cr patches/[0-9]*.patch` onto
+- `source_tree_from_series` — what `git am --keep-cr patches/[0-9]*.patch` (then unpacking
+  `overlays/openssl-3.5-source.tar.gz`, as `cut_rung.sh` step 5 and CI both do) onto
   the pinned base yields. **This is what CI computes and compares**, so this is
   the one that must be right.
 
@@ -109,6 +123,8 @@ the rung is not shippable.
 
 8. MANIFEST           the refresh_manifest job rewrites updates/manifest_3006.txt,
                       latest.json and the release note from the PUBLISHED assets
+                      (always on main; a Dev publish writes only the model's
+                      MODEL#VARIANT-beta# line + a -beta note, v3.1.0)
 
 9. SIGN               CURRENTLY SHELVED (owner, 2026-08-23): while
                       build-scripts/signing.conf says MANIFEST_SIGNING=off,
@@ -147,7 +163,8 @@ Nothing promotes `Dev` to `main`, and nothing builds on merge. The build is
 always a deliberate dispatch. A dispatch **from `Dev`** is the safe dry run —
 `overlays`, `toolchain` and `build` all run, while `tag`, `release` and
 `refresh_manifest` are branch-gated off, so it cannot publish even with
-`publish` ticked.
+`publish` ticked. (With `publish` ticked, a Dev dispatch IS the beta channel:
+`-beta` tags, pre-releases, and the manifest's beta line - see Notes.)
 
 Releases are **per-model** so models can version independently (e.g. RT-BE96U at
 v2.4.1 while the siblings catch up on the fan-out).
@@ -173,7 +190,7 @@ v2.4.1 while the siblings catch up on the fan-out).
 | `public-build.yml` | manual dispatch | Clean-room build, model × variant matrix. Applies `patches/`, asserts `EXPECTED_VERSION`, compares the series tree against `provenance/manifest.json`, runs the packaging gate, uploads artifacts, optionally hands off to `release.yml` |
 | ↳ `overlays` job | first, gates the matrix | Asserts each `overlays/<MODEL>.patch` carries **identity only** — in the seven banner-referencing files every changed line must be a banner swap, the banner must be that model's, and no `.dict` may appear. Seconds, no base clone. `git apply` cannot catch a stale overlay: one that reverts shared code still applies cleanly, which is how a fixed first-boot login loop was silently reintroduced in Aug 2026 |
 | `release.yml` | per-model tag `v*-*`, dispatch, or called | Parses `v<version>-<MODEL>`, verifies checksums, extracts CHANGELOG notes, creates/updates the per-model Release. Accepts a `run_id` to publish an existing green build with no rebuild |
-| `repo-hygiene.yml` | push **to `main`**, or a PR **targeting `main`** | Series gapless; no disallowed `From:` identity; PII scan against `.github/pii-allowlist.txt`; no file at GitHub's 100 MB limit; staged checksums verify |
+| `repo-hygiene.yml` | push **to `main`**, or a PR **targeting `main`** | Series gapless; no disallowed `From:` identity; PII scan against `.github/pii-allowlist.txt`; hidden-character scan of patches, overlays and scripts against `.github/hidden-allowlist.txt`; no file at GitHub's 100 MB limit; staged checksums verify |
 | `verify-provenance.yml` | dispatch, or PR touching `patches/`/manifest | Lints the manifest and reproduces `verifiable` entries from the pinned base |
 | `patch-apply-check.yml` | manual, or PR touching `patches/` | Applies the whole series with `git am --keep-cr` — mechanical proof the corresponding source is complete |
 
@@ -193,7 +210,11 @@ v2.4.1 while the siblings catch up on the fan-out).
   on request.
 - `updates/manifest_3006.txt` is what the router's update check reads (one line
   per model/variant: `MODEL#VARIANT#X.Y.Z#url#sha#size`); `releases/latest.json`
-  is the machine-readable mirror.
+  is the machine-readable mirror. Since v3.1.0 a Dev publish adds a second line,
+  `MODEL#VARIANT-beta#X.Y.Z#url#sha#size`, that only v3.1.0+ firmware reads,
+  only behind the Firmware page's Beta Channel switch, and only when the beta's
+  number is higher than the stable line's; the refresh retires a beta line the
+  moment the stable line reaches its number. `latest.json` never records a beta.
 - The base pin (`3006.102.8-beta2`, `a7ebfa133a`) never moves. Upstream
   carry-forwards are cherry-picked, not rebased, so the reproduction recipe
   stays stable across releases.

@@ -1,0 +1,2473 @@
+From eb7923981d128431e4c711f2d107ae5451fd34fe Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 4 Sep 2026 17:24:40 -0400
+Subject: [PATCH] v3.0.8: the backup file guarded five ways; park the idle
+ AiMesh backhaul
+
+Backup & Restore (httpd/web.c, Reaper_Backup.asp, RBKP_37-49 x25):
+- Sealed backups: either export can be wrapped in an AES-256-GCM container
+  keyed from a passphrase (scrypt 32768/8/1); the two header lines are the
+  authenticated additional data, so a wrong passphrase and an altered byte
+  are refused identically before anything is parsed. A sealed .rbk keeps its
+  inner header (rbk_up.base offsets every part read); a sealed settings file
+  is opened on the router (same model: settings + reboot; other model: the
+  no-reboot Reaper import) instead of the browser rebuild. Plain files and
+  older archives restore unchanged. The passphrase is never stored.
+- Re-authentication on export: the admin password rides in the POST body and
+  is checked in the download handler itself (compare_passwd_in_shadow); the
+  page pre-checks it (action=reauth) so a wrong answer is a message, not a
+  one-line file. Five failures lock exports for a minute.
+- Client address on every export, import and refusal log line.
+- Each card names the credentials its file carries.
+- /jffs restore refuses a member written through an earlier symlink member
+  (ec jffslink) - the one traversal busybox tar does not strip.
+
+AiMesh backhaul parking (rc/amaspark.c, Reaper_Wireless.asp, RWIF_85-93 x25):
+- Measured on the RT-BE96U with no node paired: every band's primary is up,
+  hidden, carrying the MAINBH SSID; on 2.4/5 GHz each BSS beacons on its own
+  (txbcnfrm = 3 streams vs 1 on 6 GHz), so the idle carrier is a full beacon
+  stream and a WPA listener with a blob-derived key. `wl bss down` on the
+  primary leaves the virtual BSSs serving every client.
+- Opt-in daemon (amas_bh_park): parks the 2.4/5 GHz primaries while this is
+  the AiMesh primary, no node is paired and no search is running; releases
+  within 5 s when cfg_obstatus leaves idle (search/add node), on a paired
+  node, on disable, on stop; re-parks when the window closes without a node;
+  20-min stuck-window cap; never 6 GHz; only releases what it parked. Every
+  transition is a syslog line with interface, band and reason.
+- rc applet + /sbin symlink, restart_amaspark service, Wireless page panel.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             | 742 ++++++++++++++++++---
+ release/src/router/rc/Makefile             |   2 +
+ release/src/router/rc/amaspark.c           | 274 ++++++++
+ release/src/router/rc/rc.c                 |   2 +
+ release/src/router/rc/rc.h                 |   3 +
+ release/src/router/rc/services.c           |   7 +
+ release/src/router/shared/defaults.c       |   2 +
+ release/src/router/www/BR.dict             |  22 +
+ release/src/router/www/CN.dict             |  22 +
+ release/src/router/www/CZ.dict             |  22 +
+ release/src/router/www/DA.dict             |  22 +
+ release/src/router/www/DE.dict             |  22 +
+ release/src/router/www/EN.dict             |  22 +
+ release/src/router/www/ES.dict             |  22 +
+ release/src/router/www/FI.dict             |  22 +
+ release/src/router/www/FR.dict             |  22 +
+ release/src/router/www/HU.dict             |  22 +
+ release/src/router/www/IT.dict             |  22 +
+ release/src/router/www/JP.dict             |  22 +
+ release/src/router/www/KR.dict             |  22 +
+ release/src/router/www/MS.dict             |  22 +
+ release/src/router/www/NL.dict             |  22 +
+ release/src/router/www/NO.dict             |  22 +
+ release/src/router/www/PL.dict             |  22 +
+ release/src/router/www/RO.dict             |  22 +
+ release/src/router/www/RU.dict             |  22 +
+ release/src/router/www/Reaper_Backup.asp   | 212 +++++-
+ release/src/router/www/Reaper_Wireless.asp |  45 ++
+ release/src/router/www/SL.dict             |  22 +
+ release/src/router/www/SV.dict             |  22 +
+ release/src/router/www/TH.dict             |  22 +
+ release/src/router/www/TR.dict             |  22 +
+ release/src/router/www/TW.dict             |  22 +
+ release/src/router/www/UK.dict             |  22 +
+ 34 files changed, 1734 insertions(+), 105 deletions(-)
+ create mode 100644 release/src/router/rc/amaspark.c
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 23a6f68995..068b1e2cc0 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24457,6 +24457,18 @@ static int rcfg_flag_ok(const char *v, size_t max)
+ /* v2.7.2: the export writer, shared by action=export (bare JSON reply) and
+  * the full-backup archive (the same JSON embedded as one part). */
+ static int rbk_make_cfg(const char *path);	/* defined with the .rbk code below */
++/* reaper v3.0.8: the export guards, also defined with the .rbk code below */
++#define RBK_PASS_MAX	128
++static const char *rbk_peer(void);
++static int rbk_reauth(const char *pw, const char *what);
++typedef struct {
++	FILE *out;
++	EVP_CIPHER_CTX *ctx;
++	int err;
++} rbk_seal_t;
++static int rbk_seal_begin(rbk_seal_t *sl, FILE *out, const char *pass, const char *kind, long plain_len);
++static void rbk_seal_write(rbk_seal_t *sl, const void *p, size_t n);
++static int rbk_seal_end(rbk_seal_t *sl);
+ #define RCFG_EXPORT_TMP_CFG	"/tmp/reaper_cfgexp.cfg"
+ /* reaper v3.0.6: with_cfg embeds the stock Settings .CFG - the same file the
+  * .rbk carries, produced by the same rbk_make_cfg() - as one base64 string
+@@ -24647,8 +24659,46 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 		}
+ 	}
+ 
++	/* reaper v3.0.8 guard 2: the page asks this before it starts a download,
++	 * so a wrong password is a message in the page, not a one-line file. The
++	 * download handlers check again - this is UX, they are the gate. */
++	if (strcmp(action, "reauth") == 0) {
++		int r = rbk_reauth(get_cgi("admpw"), "export pre-check");
++		if (r) websWrite(stream, "{\"ok\":0,\"ek\":\"%s\"}", r == 2 ? "pwlock" : "pw");
++		else websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
+ 	if (strcmp(action, "export") == 0) {
++		const char *pass = get_cgi("pass");
++		int r = rbk_reauth(get_cgi("admpw"), "settings export");
++		if (r) { websWrite(stream, "{\"ok\":0,\"ek\":\"%s\"}", r == 2 ? "pwlock" : "pw"); return; }
++		if (pass && *pass) {
++			/* reaper v3.0.8 guard 1: the same JSON, sealed. The export is built in
++			 * memory first because the container header declares its length. */
++			char *jb = NULL;
++			size_t jl = 0;
++			FILE *m;
++			rbk_seal_t seal;
++			if (strlen(pass) > RBK_PASS_MAX) { websWrite(stream, "{\"ok\":0,\"ek\":\"pass\"}"); return; }
++			if ((m = open_memstream(&jb, &jl)) != NULL) { rcfg_export_json(m, 1); fclose(m); }
++			if (!jb || jl < 2) { free(jb); websWrite(stream, "{\"ok\":0,\"ek\":\"export\"}"); return; }
++			if (!rbk_seal_begin(&seal, stream, pass, "json", (long)jl)) {
++				free(jb);
++				logmessage("reaper_cfg", "settings export for %s: sealing could not start - nothing exported", rbk_peer());
++				websWrite(stream, "{\"ok\":0,\"ek\":\"seal\"}");
++				return;
++			}
++			rbk_seal_write(&seal, jb, jl);
++			OPENSSL_cleanse(jb, jl);
++			free(jb);
++			if (!rbk_seal_end(&seal))
++				logmessage("reaper_cfg", "settings export for %s: sealing FAILED mid-stream - the file is unusable", rbk_peer());
++			logmessage("reaper_cfg", "settings exported by %s [sealed, %zu bytes]", rbk_peer(), jl);
++			return;
++		}
+ 		rcfg_export_json(stream, 1);
++		logmessage("reaper_cfg", "settings exported by %s", rbk_peer());
+ 		return;
+ 	}
+ 
+@@ -24662,6 +24712,7 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ 		r = rcfg_import_json(body, &nflags, &nlists, &rejected);
+ 		if (r == -1) { websWrite(stream, "{\"ok\":0,\"error\":\"not a settings file\"}"); return; }
+ 		if (r == -2) { websWrite(stream, "{\"ok\":0,\"error\":\"not a Reaper settings file\"}"); return; }
++		logmessage("reaper_cfg", "settings imported by %s: %d setting(s), %d list(s), %d rejected - no reboot", rbk_peer(), nflags, nlists, rejected);
+ 		websWrite(stream, "{\"ok\":1,\"flags\":%d,\"lists\":%d,\"rejected\":%d}", nflags, nlists, rejected);
+ 		return;
+ 	}
+@@ -24781,6 +24832,54 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+ #define RBK_UPLOAD_JFFS	"/tmp/reaper_restore_jffs.tgz"	/* the restore's carved-out copy */
+ #define RBK_JFFS_MAX	(96L * 1024 * 1024)
+ 
++/* ===================================================================
++ * reaper v3.0.8: the backup file as a data-harvesting surface (owner
++ * review 2026-09-04). Five independent guards, one per compromise path:
++ *   1. SEALED backups - either export can be wrapped in an AES-256-GCM
++ *      container keyed from a passphrase (scrypt). Protects the file AT
++ *      REST - a backup in a synced folder or a forum post is the whole
++ *      network in the clear: Wi-Fi keys, the reversibly scrambled admin
++ *      password, VPN/TLS/SSH private keys, the traffic and web history
++ *      databases - and gives INTEGRITY: a tampered or attacker-supplied
++ *      archive fails authentication before a byte of it is parsed.
++ *   2. RE-AUTHENTICATION on export - the admin password travels with the
++ *      request, on top of the session and the http_id/referer gate. A
++ *      stolen session or an XSS foothold is no longer one fetch away from
++ *      the whole network. Five wrong answers lock exports for a minute
++ *      (httpd is single-threaded; an in-memory counter is enough).
++ *   3. The CLIENT ADDRESS in every export and refusal line, so syslog
++ *      says WHICH machine pulled, or tried to pull, the file.
++ *   4. The page names the credentials the file carries (RBKP_37).
++ *   5. RESTORE refuses a /jffs tar in which a later member is written
++ *      THROUGH an earlier symlink member - the one way a crafted archive
++ *      reaches outside /jffs (busybox already strips "/" and "..").
++ *
++ * Container (byte-exact):
++ *   REAPER-SEALED 1\n
++ *   {"model":..,"fw":..,"when":N,"kind":"rbk"|"json","kdf":"scrypt",
++ *    "n":32768,"r":8,"p":1,"salt":<b64 16 B>,"iv":<b64 12 B>,"len":N}\n
++ *   <N bytes: AES-256-GCM ciphertext of the UNSEALED file, byte-identical
++ *    to what the plain download would have been><16-byte GCM tag>
++ * The two header lines are the GCM additional data, so the meta is
++ * authenticated too. The outer "model" lets a wrong-model file be refused
++ * before the passphrase is asked for; the inner, authenticated model check
++ * still runs after decryption. The passphrase is never stored.
++ * =================================================================== */
++#define RBK_SEAL_MAGIC	"REAPER-SEALED 1\n"
++#define RBK_UPLOAD_SEAL	"/tmp/reaper_restore.sealed"
++#define RBK_SEAL_TAG	16
++#define RBK_SEAL_SALT	16
++#define RBK_SEAL_IV	12
++#define RBK_SCRYPT_N	32768
++#define RBK_SCRYPT_R	8
++#define RBK_SCRYPT_P	1
++#define RBK_SCRYPT_MEM	(64L * 1024 * 1024)
++#define RBK_JSON_MAX	(4L * 1024 * 1024)	/* a sealed settings file, decrypted */
++#define RBK_SEAL_HDR_MAX	768
++#define RBK_SEAL_PLAIN_MAX	(RBK_CFG_MAX + RCFG_PENDING_MAX + RBK_FQDN_MAX + RBK_JFFS_MAX + 4096L)
++#define RBK_PW_LOCK_AFTER	5
++#define RBK_PW_LOCK_SECS	60
++
+ static int rbk_setname_ok(const char *n)
+ {
+ 	const char *p;
+@@ -24944,15 +25043,211 @@ static long rbk_make_jffs(const char *path)
+ 	return (long)st.st_size;
+ }
+ 
+-/* GET /REAPER_<model>_<ver>_settings.rbk?http_id=... - the one-file backup */
++/* reaper v3.0.8 guard 3: the address of the client behind the current request */
++static const char *rbk_peer(void)
++{
++	static char ip[64];
++	const char *p = safe_uaddr_ntop(&login_uip_tmp, ip, sizeof(ip));
++	if (reaper_client_ip[0]) return reaper_client_ip;
++	return (p && *p) ? p : "?";
++}
++
++/* reaper v3.0.8 guard 2: the admin password, again, for THIS request.
++ * 0 = ok, 1 = wrong, 2 = locked after too many wrong answers. */
++static int rbk_pwfail = 0;
++static time_t rbk_pwlock = 0;
++static int rbk_reauth(const char *pw, const char *what)
++{
++	time_t now = time(NULL);
++	char user[64];
++	int ok = 0;
++
++	strlcpy(user, nvram_safe_get("http_username"), sizeof(user));
++	if (rbk_pwlock && now < rbk_pwlock) {
++		logmessage("reaper_cfg", "%s REFUSED from %s: exports locked after %d wrong admin passwords (%ld s left)",
++		           what, rbk_peer(), RBK_PW_LOCK_AFTER, (long)(rbk_pwlock - now));
++		return 2;
++	}
++	rbk_pwlock = 0;
++	if (pw && *pw && strlen(pw) <= 64) {
++		ok = compare_passwd_in_shadow(user, pw);
++		/* mirror the login page: an unconfigured box compares the first 16 chars */
++		if (!ok && !nvram_get_int("p_Setting") && strlen(pw) > 16) {
++			char t[17];
++			strlcpy(t, pw, sizeof(t));
++			ok = compare_passwd_in_shadow(user, t);
++		}
++	}
++	if (!ok) {
++		if (++rbk_pwfail >= RBK_PW_LOCK_AFTER) {
++			rbk_pwlock = now + RBK_PW_LOCK_SECS;
++			rbk_pwfail = 0;
++		}
++		logmessage("reaper_cfg", "%s REFUSED from %s: wrong admin password", what, rbk_peer());
++		return 1;
++	}
++	rbk_pwfail = 0;
++	return 0;
++}
++
++/* reaper v3.0.8 guard 1: the sealed container - writer side (rbk_seal_t is
++ * declared beside rcfg_export_json, which the settings export needs first) */
++static int rbk_seal_kdf(const char *pass, const unsigned char *salt, long n, long r, long p, unsigned char key[32])
++{
++	return EVP_PBE_scrypt(pass, strlen(pass), salt, RBK_SEAL_SALT,
++			      (uint64_t)n, (uint64_t)r, (uint64_t)p, (uint64_t)RBK_SCRYPT_MEM, key, 32) == 1;
++}
++
++/* header + cipher init. Nothing is written on failure. */
++static int rbk_seal_begin(rbk_seal_t *sl, FILE *out, const char *pass, const char *kind, long plain_len)
++{
++	unsigned char salt[RBK_SEAL_SALT], iv[RBK_SEAL_IV], key[32];
++	char b64s[32], b64i[24];
++	char *hbuf = NULL;
++	size_t hlen = 0;
++	FILE *m;
++	int outl = 0, ok = 0;
++
++	memset(sl, 0, sizeof(*sl));
++	sl->out = out;
++	if (RAND_bytes(salt, sizeof(salt)) != 1 || RAND_bytes(iv, sizeof(iv)) != 1) return 0;
++	if (!rbk_seal_kdf(pass, salt, RBK_SCRYPT_N, RBK_SCRYPT_R, RBK_SCRYPT_P, key)) return 0;
++	b64s[base64_encode(salt, b64s, sizeof(salt))] = 0;
++	b64i[base64_encode(iv, b64i, sizeof(iv))] = 0;
++	if ((m = open_memstream(&hbuf, &hlen)) == NULL) goto done;
++	fputs(RBK_SEAL_MAGIC, m);
++	fputs("{\"model\":", m);
++	gk_json_esc(m, nvram_safe_get("productid"));
++	fputs(",\"fw\":", m);
++	gk_json_esc(m, nvram_safe_get("extendno"));
++	fprintf(m, ",\"when\":%ld,\"kind\":\"%s\",\"kdf\":\"scrypt\",\"n\":%d,\"r\":%d,\"p\":%d,\"salt\":\"%s\",\"iv\":\"%s\",\"len\":%ld}\n",
++		(long)time(NULL), kind, RBK_SCRYPT_N, RBK_SCRYPT_R, RBK_SCRYPT_P, b64s, b64i, plain_len);
++	fclose(m);
++	if (!hbuf || hlen == 0 || hlen >= RBK_SEAL_HDR_MAX) goto done;
++	if ((sl->ctx = EVP_CIPHER_CTX_new()) == NULL) goto done;
++	if (EVP_EncryptInit_ex(sl->ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
++	    EVP_CIPHER_CTX_ctrl(sl->ctx, EVP_CTRL_GCM_SET_IVLEN, RBK_SEAL_IV, NULL) != 1 ||
++	    EVP_EncryptInit_ex(sl->ctx, NULL, NULL, key, iv) != 1 ||
++	    EVP_EncryptUpdate(sl->ctx, NULL, &outl, (const unsigned char *)hbuf, (int)hlen) != 1)
++		goto done;
++	fwrite(hbuf, 1, hlen, out);
++	ok = 1;
++done:
++	OPENSSL_cleanse(key, sizeof(key));
++	free(hbuf);
++	if (!ok && sl->ctx) { EVP_CIPHER_CTX_free(sl->ctx); sl->ctx = NULL; }
++	return ok;
++}
++
++static void rbk_seal_write(rbk_seal_t *sl, const void *p, size_t n)
++{
++	unsigned char obuf[4096 + 32];
++	const unsigned char *q = p;
++	while (n > 0 && !sl->err) {
++		int take = n > 4096 ? 4096 : (int)n, outl = 0;
++		if (EVP_EncryptUpdate(sl->ctx, obuf, &outl, q, take) != 1) { sl->err = 1; break; }
++		if (outl > 0) fwrite(obuf, 1, outl, sl->out);
++		q += take;
++		n -= take;
++	}
++}
++
++static int rbk_seal_end(rbk_seal_t *sl)
++{
++	unsigned char obuf[32], tag[RBK_SEAL_TAG];
++	int outl = 0, ok = !sl->err;
++	if (ok && EVP_EncryptFinal_ex(sl->ctx, obuf, &outl) != 1) ok = 0;
++	if (ok && outl > 0) fwrite(obuf, 1, outl, sl->out);
++	if (ok && EVP_CIPHER_CTX_ctrl(sl->ctx, EVP_CTRL_GCM_GET_TAG, RBK_SEAL_TAG, tag) != 1) ok = 0;
++	if (ok) fwrite(tag, 1, RBK_SEAL_TAG, sl->out);
++	EVP_CIPHER_CTX_free(sl->ctx);
++	sl->ctx = NULL;
++	return ok;
++}
++
++/* one writer for both shapes of download: straight to the socket, or through the seal */
++typedef struct { FILE *stream; rbk_seal_t *seal; } rbk_out_t;
++static void rbk_out(rbk_out_t *o, const void *p, size_t n)
++{
++	if (o->seal) rbk_seal_write(o->seal, p, n);
++	else fwrite(p, 1, n, o->stream);
++}
++static void rbk_out_file(rbk_out_t *o, const char *path)
++{
++	FILE *f = fopen(path, "r");
++	char b[4096];
++	size_t n;
++	if (!f) return;
++	while ((n = fread(b, 1, sizeof(b), f)) > 0)
++		rbk_out(o, b, n);
++	fclose(f);
++}
++
++/* reaper v3.0.8 guard 5: a member laid down THROUGH an earlier symlink member
++ * would land wherever that link points - the one traversal busybox does not
++ * strip. Relative or absolute, a link that nothing is written through is just
++ * a link the user had (addon boxes carry them), so only the write-through is
++ * refused. Parses `tar -tv`: "<mode> <uid/gid> <size> <date> <time> <name>[ -> <target>]". */
++static int rbk_tar_links_ok(const char *path)
++{
++	char cmd[256], line[1024];
++	char (*links)[256] = NULL;
++	int nl = 0, cap = 0, ok = 1;
++	FILE *p;
++
++	snprintf(cmd, sizeof(cmd), "tar -tvzf %s 2>/dev/null", path);
++	if ((p = popen(cmd, "r")) == NULL) return 0;
++	while (fgets(line, sizeof(line), p)) {
++		char *name = line, *arrow;
++		int i;
++		for (i = 0; i < 5 && name; i++) {
++			name = strchr(name, ' ');
++			while (name && *name == ' ') name++;
++		}
++		if (!name || !*name) continue;
++		name[strcspn(name, "\r\n")] = 0;
++		if ((arrow = strstr(name, " -> ")) != NULL) *arrow = 0;
++		while (!strncmp(name, "./", 2)) name += 2;
++		if (!*name) continue;
++		for (i = 0; i < nl; i++) {
++			size_t ln = strlen(links[i]);
++			if (ln && !strncmp(name, links[i], ln) && name[ln] == '/') {
++				logmessage("reaper_cfg", "full-backup restore: /jffs archive writes '%s' through the symlink member '%s' - REFUSED", name, links[i]);
++				ok = 0;
++				break;
++			}
++		}
++		if (!ok) break;
++		if (line[0] == 'l') {
++			if (nl >= cap) {
++				void *nb;
++				if (cap >= 4096) { ok = 0; break; }	/* nobody has 4096 symlinks on /jffs */
++				cap = cap ? cap * 2 : 64;
++				if ((nb = realloc(links, (size_t)cap * sizeof(*links))) == NULL) { ok = 0; break; }
++				links = nb;
++			}
++			strlcpy(links[nl++], name, sizeof(*links));
++		}
++	}
++	pclose(p);
++	free(links);
++	return ok;
++}
++
++/* GET/POST /REAPER_<model>_<ver>_settings.rbk[.enc] - the one-file backup.
++ * reaper v3.0.8: POST with http_id + admpw [+ pass]; the URL still names the
++ * file the browser saves. */
+ static void
+ do_reaper_fullbak_file(char *url, FILE *stream)
+ {
+-	char *buf_rcfg = NULL, *buf_fqdn = NULL;
+-	size_t len_rcfg = 0, len_fqdn = 0;
++	char *buf_rcfg = NULL, *buf_fqdn = NULL, *hdr = NULL;
++	size_t len_rcfg = 0, len_fqdn = 0, hlen = 0;
+ 	long len_jffs = 0;
+-	int len_cfg;
+-	FILE *m, *cf;
++	int len_cfg, sealed = 0, r;
++	FILE *m;
++	rbk_seal_t seal;
++	rbk_out_t o = { stream, NULL };
++	const char *pass = get_cgi("pass");
+ 	{
+ 		int why = reaper_gate();
+ 		if (why != RGATE_OK) {
+@@ -24960,6 +25255,19 @@ do_reaper_fullbak_file(char *url, FILE *stream)
+ 			return;
+ 		}
+ 	}
++	/* reaper v3.0.8 guard 2: the admin password, for this request. The page
++	 * pre-checks it over XHR so this path is the backstop; what a refused
++	 * request downloads is one readable line, not an archive. */
++	if ((r = rbk_reauth(get_cgi("admpw"), "full backup download")) != 0) {
++		websWrite(stream, "REAPER: full backup refused - %s. Nothing was exported.\n",
++			  r == 2 ? "exports are locked for a minute after repeated wrong admin passwords" : "wrong admin password");
++		return;
++	}
++	if (pass && strlen(pass) > RBK_PASS_MAX) {
++		websWrite(stream, "REAPER: passphrase too long. Nothing was exported.\n");
++		return;
++	}
++	sealed = (pass && *pass);
+ 	if ((len_cfg = rbk_make_cfg(RBK_TMP_CFG)) < 0) {
+ 		websWrite(stream, "settings snapshot failed");
+ 		return;
+@@ -24971,35 +25279,46 @@ do_reaper_fullbak_file(char *url, FILE *stream)
+ 	len_jffs = rbk_make_jffs(RBK_TMP_JFFS);
+ 	if (len_jffs < 0) len_jffs = 0;
+ 
+-	websWrite(stream, "%s", RBK_MAGIC);
+-	websWrite(stream, "{\"model\":");
+-	gk_json_esc(stream, nvram_safe_get("productid"));
+-	websWrite(stream, ",\"fw\":");
+-	gk_json_esc(stream, nvram_safe_get("extendno"));
+-	websWrite(stream, ",\"when\":%ld,\"cfg\":%d,\"rcfg\":%zu,\"fqdn\":%zu,\"jffs\":%ld}\n",
+-		  (long)time(NULL), len_cfg, len_rcfg, len_fqdn, len_jffs);
+-	if ((cf = fopen(RBK_TMP_CFG, "r")) != NULL) {
+-		char cbuf[4096];
+-		size_t n;
+-		while ((n = fread(cbuf, 1, sizeof(cbuf), cf)) > 0)
+-			fwrite(cbuf, 1, n, stream);
+-		fclose(cf);
+-	}
+-	if (buf_rcfg) fwrite(buf_rcfg, 1, len_rcfg, stream);
+-	if (buf_fqdn) fwrite(buf_fqdn, 1, len_fqdn, stream);
+-	if (len_jffs > 0 && (cf = fopen(RBK_TMP_JFFS, "r")) != NULL) {
+-		char cbuf[4096];
+-		size_t n;
+-		while ((n = fread(cbuf, 1, sizeof(cbuf), cf)) > 0)
+-			fwrite(cbuf, 1, n, stream);
+-		fclose(cf);
++	/* the unsealed header: what a plain file begins with, and the first
++	 * bytes a sealed container encrypts */
++	if ((m = open_memstream(&hdr, &hlen)) != NULL) {
++		fputs(RBK_MAGIC, m);
++		fputs("{\"model\":", m);
++		gk_json_esc(m, nvram_safe_get("productid"));
++		fputs(",\"fw\":", m);
++		gk_json_esc(m, nvram_safe_get("extendno"));
++		fprintf(m, ",\"when\":%ld,\"cfg\":%d,\"rcfg\":%zu,\"fqdn\":%zu,\"jffs\":%ld}\n",
++			(long)time(NULL), len_cfg, len_rcfg, len_fqdn, len_jffs);
++		fclose(m);
++	}
++	if (!hdr) {
++		websWrite(stream, "settings snapshot failed");
++		goto out;
+ 	}
++	if (sealed) {
++		long plain = (long)hlen + len_cfg + (long)len_rcfg + (long)len_fqdn + len_jffs;
++		if (!rbk_seal_begin(&seal, stream, pass, "rbk", plain)) {
++			logmessage("reaper_cfg", "full backup for %s: sealing could not start - nothing exported", rbk_peer());
++			websWrite(stream, "REAPER: sealing failed. Nothing was exported.\n");
++			goto out;
++		}
++		o.seal = &seal;
++	}
++	rbk_out(&o, hdr, hlen);
++	rbk_out_file(&o, RBK_TMP_CFG);
++	if (buf_rcfg) rbk_out(&o, buf_rcfg, len_rcfg);
++	if (buf_fqdn) rbk_out(&o, buf_fqdn, len_fqdn);
++	if (len_jffs > 0) rbk_out_file(&o, RBK_TMP_JFFS);
++	if (sealed && !rbk_seal_end(&seal))
++		logmessage("reaper_cfg", "full backup for %s: sealing FAILED mid-stream - the downloaded file is unusable", rbk_peer());
++	logmessage("reaper_cfg", "full backup downloaded by %s%s (cfg %d, reaper %zu, fqdn %zu, jffs %ld bytes)",
++		   rbk_peer(), sealed ? " [sealed]" : "", len_cfg, len_rcfg, len_fqdn, len_jffs);
++out:
++	free(hdr);
+ 	free(buf_rcfg);
+ 	free(buf_fqdn);
+ 	unlink(RBK_TMP_CFG);
+ 	unlink(RBK_TMP_JFFS);
+-	logmessage("reaper_cfg", "full backup downloaded (cfg %d, reaper %zu, fqdn %zu, jffs %ld bytes)",
+-		   len_cfg, len_rcfg, len_fqdn, len_jffs);
+ }
+ 
+ /* upload state handed from the POST half to the reply half (httpd serves one
+@@ -25010,8 +25329,246 @@ static struct {
+ 	char hid[80];
+ 	char model[32];
+ 	long cfg, rcfg, fqdn, jffs;	/* jffs: reaper v3.0.6, 0 for an older archive */
++	/* reaper v3.0.8: the sealed container, when the upload is one */
++	int sealed;
++	char kind[8];			/* "rbk" | "json" */
++	char pass[RBK_PASS_MAX + 2];
++	char shdr[RBK_SEAL_HDR_MAX];	/* magic + meta lines, byte-exact: the GCM additional data */
++	unsigned char salt[RBK_SEAL_SALT], iv[RBK_SEAL_IV];
++	long n, r, p, slen;		/* scrypt cost + plaintext length */
++	long base;			/* header bytes before the parts in RBK_UPLOAD (a sealed .rbk keeps its header) */
+ } rbk_up;
+ 
++/* the plain .rbk meta line -> rbk_up.model/cfg/rcfg/fqdn/jffs. 1 = parsed. */
++static int rbk_meta_parse(const char *line)
++{
++	json_object *meta = json_tokener_parse(line), *jv;
++	if (!meta || json_object_get_type(meta) != json_type_object) {
++		if (meta) json_object_put(meta);
++		return 0;
++	}
++	if (json_object_object_get_ex(meta, "model", &jv)) {
++		const char *mv = json_object_get_string(jv);
++		strlcpy(rbk_up.model, mv ? mv : "", sizeof(rbk_up.model));
++	}
++	rbk_up.cfg = json_object_object_get_ex(meta, "cfg", &jv) ? json_object_get_int64(jv) : -1;
++	rbk_up.rcfg = json_object_object_get_ex(meta, "rcfg", &jv) ? json_object_get_int64(jv) : -1;
++	rbk_up.fqdn = json_object_object_get_ex(meta, "fqdn", &jv) ? json_object_get_int64(jv) : -1;
++	rbk_up.jffs = json_object_object_get_ex(meta, "jffs", &jv) ? json_object_get_int64(jv) : 0;
++	json_object_put(meta);
++	return 1;
++}
++
++static int rbk_meta_ranges_ok(void)
++{
++	return !(rbk_up.cfg < 8 || rbk_up.cfg > RBK_CFG_MAX ||
++		 rbk_up.rcfg < 2 || rbk_up.rcfg > RCFG_PENDING_MAX ||
++		 rbk_up.fqdn < 0 || rbk_up.fqdn > RBK_FQDN_MAX ||
++		 rbk_up.jffs < 0 || rbk_up.jffs > RBK_JFFS_MAX);
++}
++
++/* the sealed container's meta line -> kind, kdf cost, salt, iv, len, outer model. 1 = parsed and sane. */
++static int rbk_seal_meta(const char *line)
++{
++	json_object *meta = json_tokener_parse(line), *jv;
++	const char *sv;
++	unsigned char tmp[32];
++	int ok = 0;
++
++	if (!meta || json_object_get_type(meta) != json_type_object) goto done;
++	if (json_object_object_get_ex(meta, "model", &jv) && (sv = json_object_get_string(jv)) != NULL)
++		strlcpy(rbk_up.model, sv, sizeof(rbk_up.model));
++	if (!json_object_object_get_ex(meta, "kind", &jv) || (sv = json_object_get_string(jv)) == NULL) goto done;
++	if (strcmp(sv, "rbk") != 0 && strcmp(sv, "json") != 0) goto done;
++	strlcpy(rbk_up.kind, sv, sizeof(rbk_up.kind));
++	if (!json_object_object_get_ex(meta, "kdf", &jv) || (sv = json_object_get_string(jv)) == NULL || strcmp(sv, "scrypt") != 0) goto done;
++	rbk_up.n = json_object_object_get_ex(meta, "n", &jv) ? json_object_get_int64(jv) : 0;
++	rbk_up.r = json_object_object_get_ex(meta, "r", &jv) ? json_object_get_int64(jv) : 0;
++	rbk_up.p = json_object_object_get_ex(meta, "p", &jv) ? json_object_get_int64(jv) : 0;
++	if (rbk_up.n < 1024 || rbk_up.n > (1L << 20) || (rbk_up.n & (rbk_up.n - 1)) ||
++	    rbk_up.r < 1 || rbk_up.r > 16 || rbk_up.p < 1 || rbk_up.p > 4)
++		goto done;
++	rbk_up.slen = json_object_object_get_ex(meta, "len", &jv) ? json_object_get_int64(jv) : -1;
++	if (rbk_up.slen < 16 || rbk_up.slen > RBK_SEAL_PLAIN_MAX) goto done;
++	if (!json_object_object_get_ex(meta, "salt", &jv) || (sv = json_object_get_string(jv)) == NULL ||
++	    strlen(sv) > 28 || base64_decode(sv, tmp, strlen(sv)) != RBK_SEAL_SALT) goto done;
++	memcpy(rbk_up.salt, tmp, RBK_SEAL_SALT);
++	if (!json_object_object_get_ex(meta, "iv", &jv) || (sv = json_object_get_string(jv)) == NULL ||
++	    strlen(sv) > 20 || base64_decode(sv, tmp, strlen(sv)) != RBK_SEAL_IV) goto done;
++	memcpy(rbk_up.iv, tmp, RBK_SEAL_IV);
++	ok = 1;
++done:
++	if (meta) json_object_put(meta);
++	return ok;
++}
++
++/* one multipart text field (the blank line, then the value line) */
++static void rbk_mp_value(FILE *stream, int *len, char *dst, size_t dstlen)
++{
++	char buf[1024];
++	dst[0] = 0;
++	while (*len > 0) {
++		if (!fgets(buf, MIN(*len + 1, (int)sizeof(buf)), stream)) return;
++		*len -= strlen(buf);
++		if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n")) break;
++	}
++	if (*len > 0 && fgets(buf, MIN(*len + 1, (int)sizeof(buf)), stream)) {
++		*len -= strlen(buf);
++		buf[strcspn(buf, "\r\n")] = 0;
++		strlcpy(dst, buf, dstlen);
++	}
++}
++
++/* reaper v3.0.8 guard 1, reader side: authenticate and decrypt RBK_UPLOAD_SEAL
++ * into RBK_UPLOAD. 0 = ok; 1 = wrong passphrase or altered file (the tag did
++ * not verify - nothing decrypted is kept); 2 = could not run. */
++static int rbk_unseal(void)
++{
++	unsigned char key[32], ibuf[4096], obuf[4096 + 32], tag[RBK_SEAL_TAG];
++	EVP_CIPHER_CTX *ctx = NULL;
++	FILE *in = NULL, *out = NULL;
++	long left = rbk_up.slen;
++	int outl = 0, ret = 2, ofd;
++
++	unlink(RBK_UPLOAD);
++	if (!rbk_up.pass[0]) { ret = 1; goto done; }
++	if (!rbk_seal_kdf(rbk_up.pass, rbk_up.salt, rbk_up.n, rbk_up.r, rbk_up.p, key)) goto done;
++	if ((in = fopen(RBK_UPLOAD_SEAL, "r")) == NULL) goto done;
++	ofd = open(RBK_UPLOAD, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++	if (ofd < 0 || (out = fdopen(ofd, "w")) == NULL) { if (ofd >= 0) close(ofd); goto done; }
++	if ((ctx = EVP_CIPHER_CTX_new()) == NULL) goto done;
++	if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
++	    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, RBK_SEAL_IV, NULL) != 1 ||
++	    EVP_DecryptInit_ex(ctx, NULL, NULL, key, rbk_up.iv) != 1 ||
++	    EVP_DecryptUpdate(ctx, NULL, &outl, (const unsigned char *)rbk_up.shdr, (int)strlen(rbk_up.shdr)) != 1)
++		goto done;
++	while (left > 0) {
++		size_t n = fread(ibuf, 1, MIN(left, (long)sizeof(ibuf)), in);
++		if (n == 0) goto done;
++		if (EVP_DecryptUpdate(ctx, obuf, &outl, ibuf, (int)n) != 1) goto done;
++		if (outl > 0) fwrite(obuf, 1, outl, out);
++		left -= (long)n;
++	}
++	if (fread(tag, 1, RBK_SEAL_TAG, in) != RBK_SEAL_TAG) goto done;
++	if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, RBK_SEAL_TAG, tag) != 1) goto done;
++	if (EVP_DecryptFinal_ex(ctx, obuf, &outl) != 1) { ret = 1; goto done; }
++	if (outl > 0) fwrite(obuf, 1, outl, out);
++	ret = 0;
++done:
++	OPENSSL_cleanse(key, sizeof(key));
++	OPENSSL_cleanse(rbk_up.pass, sizeof(rbk_up.pass));
++	if (ctx) EVP_CIPHER_CTX_free(ctx);
++	if (in) fclose(in);
++	if (out) fclose(out);
++	unlink(RBK_UPLOAD_SEAL);
++	if (ret) unlink(RBK_UPLOAD);
++	return ret;
++}
++
++/* a sealed .rbk, decrypted: its own magic + meta lead the file. Parse them,
++ * remember how many header bytes precede the parts, and check the parts fit
++ * the file exactly (what the plain upload's declared length did). 1 = ok. */
++static int rbk_inner_head(void)
++{
++	char buf[RBK_META_MAX];
++	struct stat st;
++	FILE *f = fopen(RBK_UPLOAD, "r");
++	long base;
++	int ok = 0;
++	if (!f) return 0;
++	if (!fgets(buf, sizeof(buf), f) || strcmp(buf, RBK_MAGIC) != 0) goto done;
++	base = (long)strlen(buf);
++	if (!fgets(buf, sizeof(buf), f) || strlen(buf) >= RBK_META_MAX - 1) goto done;
++	base += (long)strlen(buf);
++	if (!rbk_meta_parse(buf) || !rbk_meta_ranges_ok()) goto done;
++	if (fstat(fileno(f), &st) != 0) goto done;
++	if ((long)st.st_size != base + rbk_up.cfg + rbk_up.rcfg + rbk_up.fqdn + rbk_up.jffs) goto done;
++	rbk_up.base = base;
++	ok = 1;
++done:
++	fclose(f);
++	return ok;
++}
++
++/* a sealed SETTINGS file, decrypted to RBK_UPLOAD: the same JSON the plain
++ * export produces (cfg_b64 inside). What the page does for a plain one in the
++ * browser happens here instead. Same model: rebuild the two-part archive
++ * (CFG + JSON without cfg_b64) in place and return 0 so the normal restore
++ * below runs it. Other model, or no CFG: strip the CFG and run the no-reboot
++ * import here, answer, return 1. -1 = refused, *ec names why. */
++static int rbk_sealed_settings(FILE *stream, const char **ec)
++{
++	struct stat st;
++	FILE *f = NULL;
++	char *body = NULL;
++	unsigned char *cfg = NULL;
++	json_object *j = NULL, *jv;
++	const char *model = "", *b64 = NULL, *js;
++	char mbuf[32] = "";
++	int cfglen = 0, ret = -1;
++
++	*ec = "rcfgread";
++	if ((f = fopen(RBK_UPLOAD, "r")) == NULL || fstat(fileno(f), &st) != 0 ||
++	    st.st_size < 2 || st.st_size > RBK_JSON_MAX) goto done;
++	if ((body = malloc(st.st_size + 1)) == NULL || fread(body, 1, st.st_size, f) != (size_t)st.st_size) goto done;
++	body[st.st_size] = 0;
++	fclose(f);
++	f = NULL;
++	*ec = "rcfgjson";
++	if ((j = json_tokener_parse(body)) == NULL || json_object_get_type(j) != json_type_object ||
++	    !json_object_object_get_ex(j, "reaper_cfg", &jv)) goto done;
++	if (json_object_object_get_ex(j, "model", &jv) && (model = json_object_get_string(jv)) == NULL) model = "";
++	strlcpy(mbuf, model, sizeof(mbuf));
++	if (json_object_object_get_ex(j, "cfg_b64", &jv)) b64 = json_object_get_string(jv);
++	if (b64 && *b64) {
++		int bl = (int)strlen(b64);
++		if ((cfg = malloc(base64_decoded_len(bl) + 4)) == NULL) goto done;
++		cfglen = base64_decode(b64, cfg, bl);
++		if (cfglen < 8 || cfglen > RBK_CFG_MAX ||
++		    (strncmp((char *)cfg, PROFILE_HEADER, 4) != 0 && strncmp((char *)cfg, PROFILE_HEADER_NEW, 4) != 0)) {
++			*ec = "cfghdr";
++			goto done;
++		}
++	}
++	json_object_object_del(j, "cfg_b64");
++	js = json_object_to_json_string_ext(j, JSON_C_TO_STRING_PLAIN);
++	if (!js || strlen(js) < 2) goto done;
++	if (cfg && strcmp(mbuf, nvram_safe_get("productid")) == 0) {
++		size_t jl = strlen(js);
++		int ufd;
++		if (jl > RCFG_PENDING_MAX) goto done;
++		unlink(RBK_UPLOAD);
++		ufd = open(RBK_UPLOAD, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++		if (ufd < 0 || (f = fdopen(ufd, "w")) == NULL) { if (ufd >= 0) close(ufd); *ec = "stage"; goto done; }
++		fwrite(cfg, 1, cfglen, f);
++		fwrite(js, 1, jl, f);
++		fclose(f);
++		f = NULL;
++		strlcpy(rbk_up.model, mbuf, sizeof(rbk_up.model));
++		rbk_up.cfg = cfglen;
++		rbk_up.rcfg = (long)jl;
++		rbk_up.fqdn = 0;
++		rbk_up.jffs = 0;
++		rbk_up.base = 0;
++		logmessage("reaper_cfg", "sealed settings file from %s: router settings + Reaper configuration - restoring", rbk_peer());
++		ret = 0;
++	} else {
++		int nflags = 0, nlists = 0, rejected = 0, r;
++		r = rcfg_import_json(js, &nflags, &nlists, &rejected);
++		if (r != 0) goto done;
++		logmessage("reaper_cfg", "sealed settings file made on %s imported by %s: %d setting(s), %d list(s), %d rejected - no reboot",
++			   mbuf[0] ? mbuf : "?", rbk_peer(), nflags, nlists, rejected);
++		websWrite(stream, "{\"ok\":1,\"imported\":1,\"flags\":%d,\"lists\":%d,\"rejected\":%d}", nflags, nlists, rejected);
++		ret = 1;
++	}
++done:
++	if (f) fclose(f);
++	free(body);
++	free(cfg);
++	if (j) json_object_put(j);
++	return ret;
++}
++
+ static void
+ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ {
+@@ -25019,7 +25576,7 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	FILE *fifo = NULL;
+ 	long want = 0;
+ 	int ch, count;
+-	json_object *meta = NULL, *jv;
++	const char *stage = RBK_UPLOAD;
+ 	/* reaper v2.9.6: which stage refused the upload. Until now every failure
+ 	 * in this half was silent and the reply half reported all of them as
+ 	 * "magic" - a field report could not tell a wrong file from a dropped
+@@ -25029,25 +25586,17 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	memset(&rbk_up, 0, sizeof(rbk_up));
+ 	rbk_up.err = 1;	/* "file" until everything below succeeds */
+ 
+-	/* walk the parts: capture http_id, stop at the file */
++	/* walk the parts: capture http_id (and, reaper v3.0.8, the passphrase of
++	 * a sealed archive), stop at the file */
+ 	while (len > 0) {
+ 		if (!fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+ 		len -= strlen(buf);
+ 		if (strncasecmp(buf, "Content-Disposition:", 20) != 0) continue;
+ 		if (strstr(buf, "name=\"file\"")) break;
+-		if (strstr(buf, "name=\"http_id\"")) {
+-			/* blank line then the value line */
+-			while (len > 0) {
+-				if (!fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+-				len -= strlen(buf);
+-				if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n")) break;
+-			}
+-			if (len > 0 && fgets(buf, MIN(len + 1, sizeof(buf)), stream)) {
+-				len -= strlen(buf);
+-				buf[strcspn(buf, "\r\n")] = '\0';
+-				strlcpy(rbk_up.hid, buf, sizeof(rbk_up.hid));
+-			}
+-		}
++		if (strstr(buf, "name=\"http_id\""))
++			rbk_mp_value(stream, &len, rbk_up.hid, sizeof(rbk_up.hid));
++		else if (strstr(buf, "name=\"pass\""))
++			rbk_mp_value(stream, &len, rbk_up.pass, sizeof(rbk_up.pass));
+ 	}
+ 	if (len <= 0) goto out;
+ 
+@@ -25063,34 +25612,42 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	why = "magic";
+ 	if (len <= 0 || !fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+ 	len -= strlen(buf);
+-	if (strcmp(buf, RBK_MAGIC) != 0) goto out;
+-	why = "meta";
+-	if (len <= 0 || !fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
+-	len -= strlen(buf);
+-	if (strlen(buf) >= RBK_META_MAX) goto out;
+-	meta = json_tokener_parse(buf);
+-	if (!meta || json_object_get_type(meta) != json_type_object) goto out;
+-	if (json_object_object_get_ex(meta, "model", &jv)) {
+-		const char *mv = json_object_get_string(jv);
+-		strlcpy(rbk_up.model, mv ? mv : "", sizeof(rbk_up.model));
++	if (strcmp(buf, RBK_SEAL_MAGIC) == 0) {
++		/* reaper v3.0.8: a sealed container. Keep both header lines byte-exact
++		 * (they are the GCM additional data), take the kdf parameters, and
++		 * stream the declared ciphertext plus its tag. Nothing inside is
++		 * looked at until the reply half has authenticated it. */
++		char meta_line[RBK_META_MAX];
++		strlcpy(rbk_up.shdr, buf, sizeof(rbk_up.shdr));
++		why = "seal-meta";
++		if (len <= 0 || !fgets(meta_line, MIN(len + 1, (int)sizeof(meta_line)), stream)) goto out;
++		len -= strlen(meta_line);
++		if (strlen(meta_line) >= RBK_META_MAX - 1 ||
++		    strlen(rbk_up.shdr) + strlen(meta_line) >= sizeof(rbk_up.shdr)) goto out;
++		strlcat(rbk_up.shdr, meta_line, sizeof(rbk_up.shdr));
++		if (!rbk_seal_meta(meta_line)) goto out;
++		rbk_up.sealed = 1;
++		want = rbk_up.slen + RBK_SEAL_TAG;
++		stage = RBK_UPLOAD_SEAL;
++	} else {
++		if (strcmp(buf, RBK_MAGIC) != 0) goto out;
++		why = "meta";
++		if (len <= 0 || !fgets(buf, MIN(len + 1, sizeof(buf)), stream)) goto out;
++		len -= strlen(buf);
++		if (strlen(buf) >= RBK_META_MAX) goto out;
++		if (!rbk_meta_parse(buf)) goto out;
++		why = "meta-ranges";
++		if (!rbk_meta_ranges_ok()) goto out;
++		want = rbk_up.cfg + rbk_up.rcfg + rbk_up.fqdn + rbk_up.jffs;
++		stage = RBK_UPLOAD;
+ 	}
+-	rbk_up.cfg = json_object_object_get_ex(meta, "cfg", &jv) ? json_object_get_int64(jv) : -1;
+-	rbk_up.rcfg = json_object_object_get_ex(meta, "rcfg", &jv) ? json_object_get_int64(jv) : -1;
+-	rbk_up.fqdn = json_object_object_get_ex(meta, "fqdn", &jv) ? json_object_get_int64(jv) : -1;
+-	rbk_up.jffs = json_object_object_get_ex(meta, "jffs", &jv) ? json_object_get_int64(jv) : 0;
+-	why = "meta-ranges";
+-	if (rbk_up.cfg < 8 || rbk_up.cfg > RBK_CFG_MAX ||
+-	    rbk_up.rcfg < 2 || rbk_up.rcfg > RCFG_PENDING_MAX ||
+-	    rbk_up.fqdn < 0 || rbk_up.fqdn > RBK_FQDN_MAX ||
+-	    rbk_up.jffs < 0 || rbk_up.jffs > RBK_JFFS_MAX)
+-		goto out;
+ 
+ 	/* stream exactly the declared bytes to the staging file */
+-	want = rbk_up.cfg + rbk_up.rcfg + rbk_up.fqdn + rbk_up.jffs;
+ 	unlink(RBK_UPLOAD);
++	unlink(RBK_UPLOAD_SEAL);
+ 	why = "staging-open";
+ 	{
+-		int ufd = open(RBK_UPLOAD, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++		int ufd = open(stage, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
+ 		if (ufd < 0 || (fifo = fdopen(ufd, "w")) == NULL) { if (ufd >= 0) close(ufd); goto out; }
+ 	}
+ 	why = "body-read";
+@@ -25143,9 +25700,8 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	rbk_up.err = 0;
+ out:
+ 	if (rbk_up.err)
+-		logmessage("reaper_cfg", "full-backup restore: upload REFUSED at stage %s (body left %d, bytes owed %ld)", why, len, want);
+-	if (meta) json_object_put(meta);
+-	if (fifo) { fclose(fifo); unlink(RBK_UPLOAD); }
++		logmessage("reaper_cfg", "full-backup restore: upload from %s REFUSED at stage %s (body left %d, bytes owed %ld)", rbk_peer(), why, len, want);
++	if (fifo) { fclose(fifo); unlink(stage); }
+ 	/* slurp the trailing boundary + anything else */
+ 	while (len-- > 0)
+ 		if ((ch = fgetc(stream)) == EOF) break;
+@@ -25206,7 +25762,12 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+  * field report can quote the exact cause even when the GUI shows nothing. */
+ #define RBK_FAIL(ek, ec) do { \
+ 	websWrite(stream, "{\"ok\":0,\"ek\":\"" ek "\",\"ec\":\"" ec "\"}"); \
+-	logmessage("reaper_cfg", "full-backup restore REFUSED: %s/%s", ek, ec); \
++	logmessage("reaper_cfg", "full-backup restore REFUSED: %s/%s (from %s)", ek, ec, rbk_peer()); \
++	goto done; } while (0)
++/* reaper v3.0.8: the same, with the cause in a variable */
++#define RBK_FAILV(ek, ecv) do { \
++	websWrite(stream, "{\"ok\":0,\"ek\":\"" ek "\",\"ec\":\"%s\"}", ecv); \
++	logmessage("reaper_cfg", "full-backup restore REFUSED: %s/%s (from %s)", ek, ecv, rbk_peer()); \
+ 	goto done; } while (0)
+ 
+ 	/* same CSRF discipline as every Reaper control (the token traveled as a
+@@ -25222,18 +25783,41 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 		}
+ 	}
+ 	if (rbk_up.err) RBK_FAIL("file", "magic");
+-	if (strcmp(rbk_up.model, nvram_safe_get("productid")) != 0) RBK_FAIL("model", "model");
++	/* the outer model: a plain archive's meta, or a sealed one's header. A
++	 * sealed SETTINGS file is allowed to come from another model (the Reaper
++	 * half imports without the CFG), so its check happens after decryption. */
++	if (!(rbk_up.sealed && strcmp(rbk_up.kind, "json") == 0) &&
++	    strcmp(rbk_up.model, nvram_safe_get("productid")) != 0) RBK_FAIL("model", "model");
++	if (rbk_up.sealed) {
++		/* reaper v3.0.8 guard 1: authenticate + decrypt before a byte is parsed.
++		 * ec: badpass = the tag did not verify (wrong passphrase, or the file
++		 * was altered - GCM cannot tell them apart, and must not); unseal = the
++		 * cipher could not run at all. */
++		int r = rbk_unseal();
++		if (r == 1) RBK_FAIL("seal", "badpass");
++		if (r != 0) RBK_FAIL("seal", "unseal");
++		if (strcmp(rbk_up.kind, "json") == 0) {
++			const char *ec = "rcfgjson";
++			r = rbk_sealed_settings(stream, &ec);
++			if (r < 0) RBK_FAILV("file", ec);
++			if (r == 1) goto done;	/* answered: the no-reboot import ran */
++		} else {
++			if (!rbk_inner_head()) RBK_FAIL("file", "magic");
++			/* the inner, authenticated model - the outer line was only a courtesy */
++			if (strcmp(rbk_up.model, nvram_safe_get("productid")) != 0) RBK_FAIL("model", "model");
++		}
++	}
+ 	if (!rbk_jffs_ok()) RBK_FAIL("jffs", "jffsfull");
+ 
+ 	if ((in = fopen(RBK_UPLOAD, "r")) == NULL) RBK_FAIL("file", "stage");
+ 
+ 	/* ---- validate everything before writing anything ---- */
+ 	/* the CFG part must itself carry the stock profile magic */
+-	if (fread(buf, 1, 8, in) != 8 ||
++	if (fseek(in, rbk_up.base, SEEK_SET) != 0 || fread(buf, 1, 8, in) != 8 ||
+ 	    (strncmp(buf, PROFILE_HEADER, 4) != 0 && strncmp(buf, PROFILE_HEADER_NEW, 4) != 0))
+ 		RBK_FAIL("file", "cfghdr");
+ 	/* the Reaper JSON must parse and be ours */
+-	if (fseek(in, rbk_up.cfg, SEEK_SET) != 0 ||
++	if (fseek(in, rbk_up.base + rbk_up.cfg, SEEK_SET) != 0 ||
+ 	    (rcfg = malloc(rbk_up.rcfg + 1)) == NULL ||
+ 	    fread(rcfg, 1, rbk_up.rcfg, in) != (size_t)rbk_up.rcfg)
+ 		RBK_FAIL("file", "rcfgread");
+@@ -25273,7 +25857,7 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 		long jleft = rbk_up.jffs;
+ 		unlink(RBK_UPLOAD_JFFS);
+ 		if (!rbk_jffs_mounted()) RBK_FAIL("jffs", "jffsmount");
+-		if (fseek(in, rbk_up.cfg + rbk_up.rcfg + rbk_up.fqdn, SEEK_SET) != 0) RBK_FAIL("file", "jffsseek");
++		if (fseek(in, rbk_up.base + rbk_up.cfg + rbk_up.rcfg + rbk_up.fqdn, SEEK_SET) != 0) RBK_FAIL("file", "jffsseek");
+ 		{
+ 			int jfd = open(RBK_UPLOAD_JFFS, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
+ 			if (jfd < 0 || (jf = fdopen(jfd, "w")) == NULL) {
+@@ -25288,6 +25872,8 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 		fclose(jf);
+ 		if (jleft > 0) RBK_FAIL("file", "jffsshort");
+ 		if (system("tar -tzf " RBK_UPLOAD_JFFS " >/dev/null 2>&1") != 0) RBK_FAIL("file", "jffstar");
++		/* reaper v3.0.8 guard 5: no member may be written through a symlink member */
++		if (!rbk_tar_links_ok(RBK_UPLOAD_JFFS)) RBK_FAIL("file", "jffslink");
+ 	}
+ 
+ 	/* ---- all checks passed: lay the pieces down ---- */
+@@ -25353,7 +25939,7 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 		if (out) { fclose(out); out = NULL; }
+ 	}
+ 	/* 3. the stock CFG, staged where the stock restore path expects it */
+-	if (fseek(in, 0, SEEK_SET) != 0) RBK_FAIL("file", "cfgseek");
++	if (fseek(in, rbk_up.base, SEEK_SET) != 0) RBK_FAIL("file", "cfgseek");
+ 	{
+ 		FILE *cf = fopen("/tmp/settings_u.prf", "w");
+ 		if (!cf) RBK_FAIL("file", "cfgtmp");
+@@ -25396,9 +25982,9 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 
+ 	ok = 1;
+ 	if (jffs_done)
+-		logmessage("reaper_cfg", "full-backup restore: settings staged, /jffs restored - restoring and rebooting");
++		logmessage("reaper_cfg", "full-backup restore by %s%s: settings staged, /jffs restored - restoring and rebooting", rbk_peer(), rbk_up.sealed ? " [sealed]" : "");
+ 	else
+-		logmessage("reaper_cfg", "full-backup restore: settings staged, Reaper half parked at %s - restoring and rebooting", RCFG_PENDING);
++		logmessage("reaper_cfg", "full-backup restore by %s%s: settings staged, Reaper half parked at %s - restoring and rebooting", rbk_peer(), rbk_up.sealed ? " [sealed]" : "", RCFG_PENDING);
+ 	websWrite(stream, "{\"ok\":1,\"reboot\":1,\"jffs\":%d}", jffs_done);
+ done:
+ 	if (in) fclose(in);
+@@ -25407,6 +25993,8 @@ done:
+ 	free(fqdn);
+ 	unlink(RBK_UPLOAD);
+ 	unlink(RBK_UPLOAD_JFFS);
++	unlink(RBK_UPLOAD_SEAL);
++	OPENSSL_cleanse(rbk_up.pass, sizeof(rbk_up.pass));
+ 	if (ok) {
+ 		/* mirror do_upload_cgi: get the reply out, then hand the CFG to the
+ 		 * stock restore path (jffs cfgs + nvram restore + commit + reboot) */
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 0cb9492cf2..fc63990c14 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -450,6 +450,7 @@ OBJS += reaper_hook.o
+ OBJS += reaper_pbr.o
+ # reaper v1.8.8: watchdog - WAN/DNS/Warden/accelerator health probe -> syslog
+ OBJS += rwatch.o
++OBJS += amaspark.o
+ # reaper v2.2.2: analytics exporter - push per-device health to Splunk/Datadog/etc.
+ OBJS += rexport.o
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+@@ -1790,6 +1791,7 @@ endif
+ # rwatch self-heal (policy routing AND the Warden CRITICAL heal) silently does
+ # nothing - which is exactly what happened from v2.7.3 to v3.0.0.
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_lockrun
++	@cd $(INSTALLDIR)/sbin && ln -sf rc amaspark
+ 
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc free_caches
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc get_phy_status
+diff --git a/release/src/router/rc/amaspark.c b/release/src/router/rc/amaspark.c
+new file mode 100644
+index 0000000000..8fc5b314c7
+--- /dev/null
++++ b/release/src/router/rc/amaspark.c
+@@ -0,0 +1,274 @@
++/*
++ * SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ *
++ * reaper v3.0.8: park the AiMesh backhaul carriers while no node is paired.
++ *
++ * Measured on the owner's RT-BE96U (2026-09-04, no node ever paired): the
++ * primary BSS on every band is up, hidden, and carries the AiMesh backhaul
++ * SSID. On 2.4 and 5 GHz each BSS beacons on its own, so the idle carrier is
++ * a full 10/s beacon stream (a third of the beacon load, ~2 % of 2.4 GHz
++ * airtime at the basic rate) AND a WPA network, on the air around the clock,
++ * whose key the owner never chose. On 6 GHz the co-located BSSs share one
++ * beacon and the primary is the transmitter, so there is nothing to save
++ * there and parking it could take the whole set down - 6 GHz is never touched.
++ * `wl -i wl1 bss down` was proven to leave wl1.1/wl1.2 serving every client.
++ *
++ * Rules (opt-in, nvram amas_bh_park=1):
++ *   PARK    the 2.4/5 GHz primaries when this router is the AiMesh primary
++ *           (router mode, not a node), the paired-node registry is empty
++ *           (cfg_relist + cfg_relist_x, the same registry Gatekeeper exempts)
++ *           and no search/onboarding is running (cfg_obstatus idle = "1").
++ *   RELEASE the moment a search or onboarding starts (cfg_obstatus leaves
++ *           "1": 2 = search, 3 = a node asked, 4 = onboarding) - the node
++ *           must be able to find and join the carrier - or a node becomes
++ *           paired, or the feature is switched off, or this daemon stops.
++ *   RE-PARK when the window closes with the registry still empty (the search
++ *           found nothing, or timed out - cfg_server's own 120/300 s timers),
++ *           and, as a backstop, if cfg_obstatus sticks non-idle for 20 min.
++ *   Only what THIS daemon parked is ever released: a radio the operator or a
++ *   schedule turned off is left alone, and a radio with wlN_radio=0 is skipped.
++ *   Every park and release is one syslog line naming the interface, the band
++ *   and the reason. A wireless restart brings the primaries back up by itself;
++ *   the next tick (5 s) parks them again, which is why this is a daemon and
++ *   not a one-shot at wireless start.
++ *
++ * Runs as an rc applet (/sbin/amaspark -> rc). Started from start_services()
++ * in router mode; restart_amaspark is the service the Wireless page fires.
++ * The daemon keeps running while the feature is off (one nvram read every
++ * 30 s) so a disable releases through the same path as everything else.
++ */
++#include "rc.h"
++#include <signal.h>
++#include <net/if.h>
++#include <sys/sysinfo.h>
++
++#define AP_TAG		"amaspark"
++#define AP_POLL_ON	5		/* s, feature enabled: a search must be answered fast */
++#define AP_POLL_OFF	30		/* s, feature disabled: only the switch is watched */
++#define AP_OB_MAX	1200		/* s, a stuck non-idle cfg_obstatus is treated as closed */
++#define AP_STATE	"/tmp/amaspark.state"
++#define AP_MAXU		3
++
++static volatile sig_atomic_t g_stop;
++static void on_sig(int s) { (void)s; g_stop = 1; }
++
++static long now_s(void)
++{
++	struct sysinfo si;
++	return sysinfo(&si) == 0 ? (long)si.uptime : (long)time(NULL);
++}
++
++/* 1 = up, 0 = down, -1 = unknown (no such interface, wl unavailable) */
++static int bss_state(const char *ifn)
++{
++	char cmd[80], buf[32] = "";
++	FILE *p;
++	snprintf(cmd, sizeof(cmd), "wl -i %s bss 2>/dev/null", ifn);
++	if ((p = popen(cmd, "r")) == NULL) return -1;
++	if (!fgets(buf, sizeof(buf), p)) buf[0] = 0;
++	pclose(p);
++	if (!strncmp(buf, "up", 2)) return 1;
++	if (!strncmp(buf, "down", 4)) return 0;
++	return -1;
++}
++
++static void bss_set(const char *ifn, int up)
++{
++	eval("wl", "-i", (char *)ifn, "bss", up ? "up" : "down");
++}
++
++static const char *band_name(int nband)
++{
++	switch (nband) {
++	case 2: return "2.4 GHz";
++	case 1: return "5 GHz";
++	case 4: return "6 GHz";
++	default: return "?";
++	}
++}
++
++/* the paired-node registry: cfg_server's own list of the STA MACs nodes
++ * connect with. Non-empty = at least one node is paired. */
++static int nodes_paired(void)
++{
++	char *a = get_cfg_relist(0), *b = get_cfg_relist(1);
++	int r = (a && *a) || (b && *b);
++	free(a);
++	free(b);
++	return r;
++}
++
++static void state_write(const char parked[AP_MAXU], char ifn[AP_MAXU][IFNAMSIZ], const char *why)
++{
++	char line[160] = "";
++	int u, n = 0;
++	for (u = 0; u < AP_MAXU; u++) {
++		if (!parked[u]) continue;
++		if (n++) strlcat(line, " ", sizeof(line));
++		strlcat(line, ifn[u], sizeof(line));
++	}
++	if (n) {
++		char st[200];
++		f_write_string(AP_STATE, line, 0, 0);
++		snprintf(st, sizeof(st), "parked: %s", line);
++		nvram_set("amas_bh_state", st);
++	} else {
++		unlink(AP_STATE);
++		nvram_set("amas_bh_state", why ? why : "released");
++	}
++}
++
++int amaspark_main(int argc, char *argv[])
++{
++	char parked[AP_MAXU] = { 0 };
++	char ifn[AP_MAXU][IFNAMSIZ];
++	int nband[AP_MAXU];
++	int last_enabled = -1, last_window = 0, ob_capped = 0;
++	long ob_start = 0;
++	(void)argc; (void)argv;
++
++	signal(SIGTERM, on_sig);
++	signal(SIGINT, on_sig);
++	signal(SIGHUP, SIG_IGN);
++	if (daemon(1, 0) < 0) return 1;
++
++	memset(ifn, 0, sizeof(ifn));
++	memset(nband, 0, sizeof(nband));
++
++	/* adopt what a previous instance left parked (restart_amaspark, or it
++	 * died): those carriers are ours to release when the rules say so */
++	{
++		char prev[160] = "";
++		if (f_read_string(AP_STATE, prev, sizeof(prev)) > 0) {
++			int u;
++			for (u = 0; u < AP_MAXU; u++) {
++				char key[24], *v;
++				snprintf(key, sizeof(key), "wl%d_ifname", u);
++				v = nvram_safe_get(key);
++				if (*v && strstr(prev, v) && bss_state(v) == 0)
++					parked[u] = 1;
++			}
++		}
++	}
++	logmessage(AP_TAG, "started - AiMesh backhaul parking %s", nvram_get_int("amas_bh_park") ? "ENABLED" : "disabled");
++
++	while (!g_stop) {
++		int enabled = nvram_get_int("amas_bh_park");
++		int cap = nvram_get_int("sw_mode") == 1 && nvram_get_int("re_mode") != 1;
++		int paired = 0, window = 0, want, u, changed = 0, i, poll;
++		const char *ob = "", *why_park = NULL, *why_rel = NULL;
++		char obv[8] = "";
++		long now = now_s();
++
++		if (enabled != last_enabled) {
++			if (last_enabled >= 0 || enabled)
++				logmessage(AP_TAG, enabled
++					? "ENABLED: the 2.4/5 GHz AiMesh backhaul carriers will be parked while no node is paired and no search is running; 6 GHz is never touched; every change is logged here"
++					: "DISABLED: parked carriers are being released; the backhaul stays on the air as stock");
++			last_enabled = enabled;
++		}
++
++		if (enabled && cap) {
++			paired = nodes_paired();
++			ob = nvram_safe_get("cfg_obstatus");
++			strlcpy(obv, ob, sizeof(obv));
++			window = obv[0] && strcmp(obv, "1") != 0;
++			/* cfg_onboarding.h: 1 = idle, 2 = search (AVAILABLE), 3 = a node
++			 * asked (REQ), 4 = onboarding (LOCKED). No defaults.c entry, so a
++			 * stuck value would keep the carriers up for ever: cap it. */
++			if (!window) { ob_start = 0; ob_capped = 0; }
++			else if (!ob_start) ob_start = now;
++			else if (!ob_capped && now - ob_start > AP_OB_MAX) {
++				logmessage(AP_TAG, "cfg_obstatus has been %s for %ld s with no node paired - treating the search window as closed", obv, (long)AP_OB_MAX);
++				ob_capped = 1;
++			}
++			if (ob_capped) window = 0;
++		}
++		want = enabled && cap && !paired && !window;
++
++		if (want) {
++			if (last_window) why_park = "the search/onboarding window closed with no node paired";
++			else if (ob_capped) why_park = "the search window was stuck open and has been treated as closed";
++			else why_park = "no AiMesh node is paired and no search or onboarding is running";
++		} else {
++			if (!enabled) why_rel = "backhaul parking was switched off";
++			else if (!cap) why_rel = "this router is not the AiMesh primary";
++			else if (paired) why_rel = "an AiMesh node is paired - it needs the carrier to reconnect";
++			else {
++				static char wbuf[96];
++				snprintf(wbuf, sizeof(wbuf), "an AiMesh search or onboarding started (cfg_obstatus=%s)", obv);
++				why_rel = wbuf;
++			}
++		}
++		last_window = window;
++
++		for (u = 0; u < AP_MAXU; u++) {
++			char key[24], *v;
++			int st, radio;
++			snprintf(key, sizeof(key), "wl%d_ifname", u);
++			v = nvram_safe_get(key);
++			if (!*v) { ifn[u][0] = 0; continue; }
++			strlcpy(ifn[u], v, sizeof(ifn[u]));
++			snprintf(key, sizeof(key), "wl%d_nband", u);
++			nband[u] = nvram_get_int(key);
++			if (nband[u] == 4) continue;		/* 6 GHz: never */
++			snprintf(key, sizeof(key), "wl%d_radio", u);
++			v = nvram_safe_get(key);
++			radio = *v ? atoi(v) : 1;
++			if (!radio) { if (parked[u]) { parked[u] = 0; changed = 1; } continue; }
++
++			if (want) {
++				if (parked[u]) continue;
++				st = bss_state(ifn[u]);
++				if (st != 1) continue;	/* down already (not ours) or unknown */
++				bss_set(ifn[u], 0);
++				parked[u] = 1;
++				changed = 1;
++				logmessage(AP_TAG, "parked %s (%s backhaul carrier): %s", ifn[u], band_name(nband[u]), why_park);
++			} else if (parked[u]) {
++				st = bss_state(ifn[u]);
++				if (st == 0) bss_set(ifn[u], 1);
++				parked[u] = 0;
++				changed = 1;
++				logmessage(AP_TAG, "released %s (%s backhaul carrier): %s", ifn[u], band_name(nband[u]), why_rel);
++			}
++		}
++		if (changed) state_write(parked, ifn, why_rel);
++
++		poll = enabled ? AP_POLL_ON : AP_POLL_OFF;
++		for (i = 0; i < poll && !g_stop; i++) sleep(1);
++	}
++
++	/* stopping (service stop, reboot, restart_amaspark): hand the carriers
++	 * back so the stock picture is restored whatever comes next */
++	{
++		int u, n = 0;
++		for (u = 0; u < AP_MAXU; u++) {
++			if (!parked[u] || !ifn[u][0]) continue;
++			if (bss_state(ifn[u]) == 0) bss_set(ifn[u], 1);
++			logmessage(AP_TAG, "released %s (%s backhaul carrier): the parking service is stopping", ifn[u], band_name(nband[u]));
++			parked[u] = 0;
++			n++;
++		}
++		(void)n;
++		unlink(AP_STATE);
++		nvram_set("amas_bh_state", "");
++	}
++	logmessage(AP_TAG, "stopped");
++	return 0;
++}
++
++void stop_amaspark(void)
++{
++	if (pids("amaspark"))
++		killall_tk("amaspark");
++}
++
++void start_amaspark(void)
++{
++	stop_amaspark();
++	if (!is_routing_enabled())
++		return;
++	xstart("amaspark");
++}
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index 31ea27c28f..78660b025f 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -3097,6 +3097,8 @@ static const applets_t applets[] = {
+ 	{ "init",			init_main				},
+ 	/* v2.7.3: rwatch self-heals under the firewall fcntl lock (rc/rwatch.c) */
+ 	{ "reaper_lockrun",		reaper_lockrun_main			},
++	/* v3.0.8: park the AiMesh backhaul carriers while no node is paired (rc/amaspark.c) */
++	{ "amaspark",			amaspark_main				},
+ 	{ "console",			console_main				},
+ #ifdef DEBUG_RCTEST
+ 	{ "rc",				rctest_main				},
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 3d6c703ce6..69fb658730 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3029,6 +3029,9 @@ extern void reaper_pbr_rollback(void);
+ extern void rw_teardown_rules(void);
+ extern void stop_rwatch(void);	/* reaper v1.8.8 watchdog: WAN/DNS/Warden/accelerator health probe (rc/rwatch.c) */
+ extern void start_rwatch(void);
++extern int amaspark_main(int argc, char *argv[]);	/* v3.0.8: AiMesh backhaul parking daemon (rc/amaspark.c) */
++extern void start_amaspark(void);
++extern void stop_amaspark(void);
+ extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 38cd82f109..d62787da2d 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7174,6 +7174,7 @@ stop_misc(void)
+ 	stop_rtraf();	/* reaper v1.3.0 */
+ 	stop_rchqd();	/* reaper v1.6.1 */
+ 	stop_gk();	/* reaper v1.6.8 Gatekeeper */
++	stop_amaspark();	/* reaper v3.0.8 AiMesh backhaul parking (releases what it parked) */
+ 	stop_rwarden();	/* reaper v1.8.0 Warden */
+ 	stop_reaper_fw();	/* reaper v2.3.8 native firewall rules engine */
+ 	stop_reaper_pbr();	/* reaper v2.5.x ipset policy routing */
+@@ -13858,6 +13859,7 @@ start_services(void)
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
+ 	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
+ 	start_gk();	/* reaper v1.6.8 Gatekeeper (no-op unless gk_enable) */
++	start_amaspark();	/* reaper v3.0.8 AiMesh backhaul parking (router mode; idle unless amas_bh_park) */
+ 	start_rwarden();	/* reaper v1.8.0 Warden (no-op unless rwarden_enable) */
+ 	start_reaper_fw();	/* reaper v2.3.8 native firewall (no-op unless reaper_fw_enable) */
+ 	start_reaper_pbr();	/* reaper v2.5.x ipset policy routing (no-op unless reaper_pbr_enable) */
+@@ -22077,6 +22079,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_gk();
+ 		if(action & RC_SERVICE_START) start_gk();
+ 	}
++	else if (strcmp(script, "amaspark") == 0)	/* reaper v3.0.8: the Wireless page toggle */
++	{
++		if(action & RC_SERVICE_STOP) stop_amaspark();
++		if(action & RC_SERVICE_START) start_amaspark();
++	}
+ 	else if (strcmp(script, "gk_refresh") == 0)
+ 	{
+ 		/* v2.8.0: the per-device Gatekeeper actions used to fire a full
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 4446585b91..5fe7be9485 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3166,6 +3166,8 @@ struct nvram_tuple router_defaults[] = {
+ 	 * default; enabling snapshots every currently-known device as approved so
+ 	 * nothing breaks at turn-on. The device list is authoritative here (not in
+ 	 * /jffs) so approvals survive reboot on every box. */
++	/* reaper v3.0.8: park the AiMesh backhaul carriers on 2.4/5 GHz while no node is paired (rc/amaspark.c) */
++	{ "amas_bh_park", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "gk_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ebtables) */
+ 	{ "gk_default", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* new unknown MAC: 0 = quarantine until approved, 1 = alert only */
+ 	{ "gk_guest_hours", "24", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* guest pass length in hours (internet-only + expiry) */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 5e38661a7a..3fcacbc439 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Restaurar as configurações do roteador e importar a configuração do
+ RBKP_34=Este arquivo foi criado em %1. As configurações do roteador nele contidas serão ignoradas; apenas a configuração do Reaper será importada, sem reinicialização. Continuar?
+ RBKP_35=Armazenamentos do Reaper
+ RBKP_36=Cache de conjuntos de domínios
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 3916bca970..7e78190abe 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=要还原路由器设置并从此文件导入 Reaper 配置吗？路由
+ RBKP_34=此文件创建于 %1。其中的路由器设置将被跳过；仅会导入 Reaper 配置，且不重启。是否继续？
+ RBKP_35=Reaper 存储
+ RBKP_36=域名集缓存
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index cbdc32b3ca..290c58eb1a 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Obnovit nastavení routeru a naimportovat konfiguraci Reaper z tohoto so
+ RBKP_34=Tento soubor byl vytvořen dne %1. Nastavení routeru uvnitř se přeskočí; naimportuje se pouze konfigurace Reaper, bez restartu. Pokračovat?
+ RBKP_35=Úložiště Reaper
+ RBKP_36=Mezipaměť sad domén
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index fc67e9294a..4cf0702b02 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Gendan routerindstillingerne, og importer Reaper-konfigurationen fra den
+ RBKP_34=Denne fil blev lavet den %1. Routerindstillingerne i filen springes over; kun Reaper-konfigurationen importeres, uden genstart. Vil du fortsætte?
+ RBKP_35=Reaper-lagre
+ RBKP_36=Domænesæt-cache
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 5ab8a3896f..fff440b64b 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Die Router-Einstellungen wiederherstellen und die Reaper-Konfiguration a
+ RBKP_34=Diese Datei wurde am %1 erstellt. Die enthaltenen Router-Einstellungen werden übersprungen; es wird nur die Reaper-Konfiguration importiert, ohne Neustart. Fortfahren?
+ RBKP_35=Reaper-Speicher
+ RBKP_36=Domain-Set-Cache
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 2137c36994..6f1eb218ee 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Restore the router settings and import the Reaper configuration from thi
+ RBKP_34=This file was made on %1. The router settings inside are skipped; only the Reaper configuration will be imported, with no reboot. Continue?
+ RBKP_35=Reaper stores
+ RBKP_36=Domain-set cache
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 9b7d0cf59e..1b7561f031 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=¿Restaurar los ajustes del router e importar la configuración de Reape
+ RBKP_34=Este archivo se creó el %1. Los ajustes del router que contiene se omiten; solo se importará la configuración de Reaper, sin reinicio. ¿Continuar?
+ RBKP_35=Almacenes de Reaper
+ RBKP_36=Caché de conjuntos de dominios
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 125011f058..f47cbbb242 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Palautetaanko reitittimen asetukset ja tuodaanko Reaper-kokoonpano täst
+ RBKP_34=Tämä tiedosto on tehty mallilla %1. Sen sisältämät reitittimen asetukset ohitetaan; vain Reaper-kokoonpano tuodaan, ilman uudelleenkäynnistystä. Jatketaanko?
+ RBKP_35=Reaper-varastot
+ RBKP_36=Verkkotunnusjoukkojen välimuisti
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d2770c10e0..d9fd968609 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Restaurer les paramètres du routeur et importer la configuration Reaper
+ RBKP_34=Ce fichier a été créé sur %1. Les paramètres du routeur qu’il contient sont ignorés ; seule la configuration Reaper sera importée, sans redémarrage. Continuer ?
+ RBKP_35=Stockages Reaper
+ RBKP_36=Cache de jeux de domaines
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 916bb46aed..daf9922685 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Visszaállítja a router-beállításokat, és importálja a Reaper-konf
+ RBKP_34=Ez a fájl %1 modellen készült. A benne lévő router-beállítások kimaradnak; csak a Reaper-konfiguráció kerül importálásra, újraindítás nélkül. Folytatja?
+ RBKP_35=Reaper adattárak
+ RBKP_36=Domainkészlet-gyorsítótár
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index b62f328a90..0cc42df868 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Ripristinare le impostazioni del router e importare la configurazione Re
+ RBKP_34=Questo file è stato creato su %1. Le impostazioni del router al suo interno vengono ignorate; verrà importata solo la configurazione Reaper, senza riavvio. Continuare?
+ RBKP_35=Archivi Reaper
+ RBKP_36=Cache dei set di domini
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 93a8e4a920..5c6950109a 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=このファイルからルーター設定を復元し、Reaper の設
+ RBKP_34=このファイルは %1 で作成されました。含まれるルーター設定はスキップされ、Reaper の設定のみがインポートされます。再起動は行われません。続行しますか？
+ RBKP_35=Reaper のデータストア
+ RBKP_36=ドメインセットキャッシュ
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index b0b57066d2..3425e958e9 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=이 파일에서 라우터 설정을 복원하고 Reaper 구성을 가
+ RBKP_34=이 파일은 %1에서 만들어졌습니다. 파일에 포함된 라우터 설정은 건너뛰며, Reaper 구성만 가져오고 재부팅하지 않습니다. 계속할까요?
+ RBKP_35=Reaper 저장소
+ RBKP_36=도메인 세트 캐시
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 26627618c4..f9bd425741 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Pulihkan tetapan penghala dan import konfigurasi Reaper daripada fail in
+ RBKP_34=Fail ini dibuat pada %1. Tetapan penghala di dalamnya akan dilangkau; hanya konfigurasi Reaper akan diimport, tanpa but semula. Teruskan?
+ RBKP_35=Stor Reaper
+ RBKP_36=Cache set-domain
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 02af1991e7..f4d1b7ba97 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Routerinstellingen herstellen en de Reaper-configuratie uit dit bestand
+ RBKP_34=Dit bestand is gemaakt op %1. De routerinstellingen erin worden overgeslagen; alleen de Reaper-configuratie wordt geïmporteerd, zonder opnieuw op te starten. Doorgaan?
+ RBKP_35=Reaper-opslag
+ RBKP_36=Domeinset-cache
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 1bba17ac95..f05ff7f929 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Gjenopprette ruterinnstillingene og importere Reaper-konfigurasjonen fra
+ RBKP_34=Denne filen ble laget %1. Ruterinnstillingene i den hoppes over; bare Reaper-konfigurasjonen importeres, uten omstart. Fortsette?
+ RBKP_35=Reaper-lagre
+ RBKP_36=Domenesett-cache
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 02147c10a3..5b891e7bb6 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Przywrócić ustawienia routera i zaimportować konfigurację Reaper z t
+ RBKP_34=Ten plik został utworzony %1. Ustawienia routera w nim zawarte zostaną pominięte; zaimportowana zostanie wyłącznie konfiguracja Reaper, bez ponownego uruchamiania. Kontynuować?
+ RBKP_35=Magazyny Reaper
+ RBKP_36=Pamięć podręczna zestawów domen
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index bb41261723..9546c99a5d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Restaurați setările routerului și importați configurația Reaper din
+ RBKP_34=Acest fișier a fost creat pe %1. Setările routerului din interior sunt omise; se va importa doar configurația Reaper, fără repornire. Continuați?
+ RBKP_35=Stocările Reaper
+ RBKP_36=Memoria cache a seturilor de domenii
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 5727140195..cfb9ebad14 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Восстановить настройки роутера и импор
+ RBKP_34=Этот файл был создан %1. Настройки роутера внутри будут пропущены; будет импортирована только конфигурация Reaper, без перезагрузки. Продолжить?
+ RBKP_35=Хранилища Reaper
+ RBKP_36=Кэш наборов доменов
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/Reaper_Backup.asp b/release/src/router/www/Reaper_Backup.asp
+index 7b2094bf98..e93cd88c33 100644
+--- a/release/src/router/www/Reaper_Backup.asp
++++ b/release/src/router/www/Reaper_Backup.asp
+@@ -23,6 +23,16 @@
+          the no-reboot JSON import as before.
+        - the stock Router settings (.CFG) and JFFS Partition cards are gone;
+          each remaining card lists what its file carries.
++     reaper v3.0.8 (owner review 2026-09-04 - the backup file as a harvesting
++     surface): every export asks for the admin password again and the server
++     checks it (action=reauth first, so a wrong one is a message here and not a
++     one-line file in Downloads); either file can be SEALED with a passphrase
++     (AES-256-GCM, scrypt - the server does the crypto, the page only carries
++     the passphrase in the request); a sealed file restores through the same
++     reaper_restore.cgi with the passphrase as a multipart field, and a sealed
++     settings file is handled server-side (same model: settings + reboot;
++     other model: the no-reboot import, answered with "imported":1). Each card
++     names the credentials its file carries (RBKP_37).
+      Behavior kept from v2.9.8:
+        - full .rbk backup/restore (reaper_restore.cgi / the .rbk download)
+        - Reaper settings JSON export/import (reaper_cfg.cgi)
+@@ -156,6 +166,16 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+ .stat{display:none;font-size:12px;margin-top:11px}
+ .stat.ok{display:block;color:var(--jade)}
+ .stat.err{display:block;color:var(--danger)}
++/* reaper v3.0.8: the credentials line under each card, and the re-auth / passphrase modal */
++.fine.haz{color:var(--amber);margin-top:8px}
++.fine.haz::before{content:"! ";font-weight:700}
++.ovl .box.auth{background:var(--panel);border:1px solid var(--line-crimson);border-radius:14px;text-align:left;width:460px;max-width:92%;padding:22px 24px}
++.ovl .box.auth .s{margin-bottom:4px}
++.af{display:block;margin:12px 0 0;font-size:11.5px;color:var(--bone-dim)}
++.af input{display:block;width:100%;margin-top:5px;padding:9px 10px;background:#0b0b0d;border:1px solid #3a3a3e;border-radius:6px;color:var(--bone);font:600 13px var(--body);letter-spacing:.04em}
++.af input:focus{outline:none;border-color:var(--crimson-deep)}
++.ovl .box.auth .acts{margin-top:16px;justify-content:flex-end}
++.ovl .box.auth .stat{margin-top:10px}
+ 
+ /* ---------- danger quarantine ---------- */
+ .dzone{margin-top:24px;border:1px solid rgba(225,6,0,.4);border-radius:14px;background:var(--panel);overflow:hidden}
+@@ -229,9 +249,10 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+     <div class="acts">
+       <button class="btn hot" id="rbk_dl" type="button"><#RBKP_3#></button>
+       <button class="btn" id="rbk_up" type="button"><#RBKP_4#></button>
+-      <input id="rbk_file" type="file" accept=".rbk" style="display:none">
++      <input id="rbk_file" type="file" accept=".rbk,.enc" style="display:none">
+     </div>
+     <div class="fine"><#RBKP_5#></div>
++    <div class="fine haz"><#RBKP_37#></div>
+     <div class="stat" id="st_rbk"></div>
+   </div>
+ 
+@@ -246,9 +267,10 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+     <div class="acts">
+       <button class="btn" id="rbk_cx" type="button"><#RDST_70#></button>
+       <button class="btn" id="rbk_ci" type="button"><#RDST_71#></button>
+-      <input id="rbk_cfile" type="file" accept=".json,application/json" style="display:none">
++      <input id="rbk_cfile" type="file" accept=".json,.enc,application/json" style="display:none">
+     </div>
+     <div class="fine"><#RDST_72#></div>
++    <div class="fine haz"><#RBKP_37#></div>
+     <div class="stat" id="st_cfg"></div>
+   </div>
+ </div>
+@@ -351,12 +373,13 @@ function pendingComplete(){
+    Shared by the full backup and (v3.0.6) the same-model settings import,
+    which rebuilds a .rbk in memory. `f` is a File or Blob; statId names the
+    card whose status line reports. */
+-function rbkSend(f, statId){
++function rbkSend(f, statId, pass){
+   if(busy) return;
+   busy = 1;
+   setStat(statId, '', '');
+   var fd = new FormData();
+   fd.append('http_id', HID);
++  if(pass) fd.append('pass', pass);   /* v3.0.8: a sealed archive's passphrase, checked server-side */
+   fd.append('file', f, 'restore.rbk');
+   var p = new XMLHttpRequest();
+   p.open('POST', '/reaper_restore.cgi', true);
+@@ -365,52 +388,161 @@ function rbkSend(f, statId){
+     if(!r || !r.ok){
+       busy = 0;
+       var ek = r && r.ek;
+-      var em = ek === 'model' ? `<#RBKP_8#>` : ek === 'jffs' ? `<#RBKP_9#>` : ek === 'file' ? `<#RBKP_12#>` : `<#RBKP_14#>`;
+-      if(r && r.ec) em += ' [' + r.ec + ']';
++      var em = ek === 'model' ? `<#RBKP_8#>` : ek === 'jffs' ? `<#RBKP_9#>` : ek === 'seal' ? `<#RBKP_46#>` : ek === 'file' ? `<#RBKP_12#>` : `<#RBKP_14#>`;
++      if(r && r.ec && ek !== 'seal') em += ' [' + r.ec + ']';
+       setStat(statId, em, 'err');
+       return;
+     }
++    if(r.imported){
++      /* a sealed settings file from another model: the Reaper half was imported, no reboot */
++      busy = 0;
++      setStat(statId, `<#RDST_77#>`.replace('%1', r.flags).replace('%2', r.lists).replace('%3', r.rejected), 'ok');
++      return;
++    }
+     veil(`<#RBKP_15#>`, `<#RBKP_10#>`);
+     pollBack(0, 0, 0, function(){}, `<#Main_alert_proceeding_desc3#> <#LANConfig_ChangedLANIP#>`);
+   };
+   p.send(fd);
+ }
+ 
++/* ---------------- reaper v3.0.8: re-auth + sealed files ----------------
++   askAuth(opts, cb): a modal in the page's own style. opts.admin asks for the
++   admin password (every export); opts.create asks for an optional passphrase
++   + repeat (export); opts.seal asks for the passphrase of a sealed file
++   (restore). cb(null) on cancel, else {admpw, pass}. Nothing is kept. */
++function askAuth(opts, cb){
++  var old = $id('rauth'); if(old && old.parentNode) old.parentNode.removeChild(old);
++  var ov = document.createElement('div'); ov.id = 'rauth'; ov.className = 'ovl on'; ov.style.zIndex = '9999';
++  var p = document.createElement('div'); p.className = 'box auth';
++  var t = document.createElement('div'); t.className = 't'; t.textContent = opts.title || ''; p.appendChild(t);
++  if(opts.note){ var nt = document.createElement('div'); nt.className = 's'; nt.textContent = opts.note; p.appendChild(nt); }
++  function field(label, id, ac){
++    var l = document.createElement('label'); l.className = 'af'; l.textContent = label;
++    var i = document.createElement('input'); i.type = 'password'; i.id = id; i.maxLength = 128; i.autocomplete = ac; i.spellcheck = false;
++    l.appendChild(i); p.appendChild(l); return i;
++  }
++  var iA = opts.admin ? field(`<#RBKP_39#>`, 'ra_pw', 'current-password') : null;
++  var iP = (opts.seal || opts.create) ? field(opts.create ? `<#RBKP_40#>` : `<#RBKP_45#>`, 'ra_pass', 'off') : null;
++  var iR = opts.create ? field(`<#RBKP_41#>`, 'ra_pass2', 'off') : null;
++  var err = document.createElement('div'); err.className = 'stat'; p.appendChild(err);
++  var row = document.createElement('div'); row.className = 'acts';
++  var bC = document.createElement('button'); bC.type = 'button'; bC.className = 'btn'; bC.textContent = `<#CTL_Cancel#>`;
++  var bO = document.createElement('button'); bO.type = 'button'; bO.className = 'btn hot'; bO.textContent = opts.okLabel || `<#CTL_ok#>`;
++  row.appendChild(bC); row.appendChild(bO); p.appendChild(row);
++  ov.appendChild(p); document.body.appendChild(ov);
++  function fail(msg, el){ err.className = 'stat err'; err.textContent = msg; if(el) el.focus(); }
++  function done(v){ document.removeEventListener('keydown', onkey, true); if(ov.parentNode) ov.parentNode.removeChild(ov); cb(v); }
++  function go(){
++    var admpw = iA ? iA.value : '', pass = iP ? iP.value : '';
++    if(iA && !admpw) return fail(`<#RBKP_43#>`, iA);
++    if(iR && pass !== iR.value) return fail(`<#RBKP_42#>`, iR);
++    if(opts.seal && !pass) return fail(`<#RBKP_46#>`, iP);
++    done({ admpw: admpw, pass: pass });
++  }
++  function onkey(e){ if(e.key === 'Escape'){ e.stopPropagation(); done(null); } else if(e.key === 'Enter'){ e.stopPropagation(); go(); } }
++  bC.onclick = function(){ done(null); }; bO.onclick = go;
++  ov.onclick = function(e){ if(e.target === ov) done(null); };
++  document.addEventListener('keydown', onkey, true);
++  (iA || iP).focus();
++}
++/* the server checks the admin password before a download starts, so a wrong
++   one is a message here and not a one-line file in Downloads. The download
++   handler checks it again - this call is the UX, that check is the gate. */
++function reauth(admpw, statId, cb){
++  var x = new XMLHttpRequest();
++  x.open('POST', '/reaper_cfg.cgi', true);
++  x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++  x.onloadend = function(){
++    var r = null; try{ r = JSON.parse(x.responseText); }catch(e){}
++    if(r && r.ok){ cb(true); return; }
++    setStat(statId, (r && r.ek === 'pwlock') ? `<#RBKP_44#>` : `<#RBKP_43#>`, 'err');
++    cb(false);
++  };
++  x.send('action=reauth&http_id=' + encodeURIComponent(HID) + '&admpw=' + encodeURIComponent(admpw));
++}
++/* a POST the browser treats as a download: the URL names the file, the
++   credentials ride in the body and never in the address bar or history */
++function postDownload(url, fields){
++  var f = document.createElement('form'); f.method = 'POST'; f.action = url; f.style.display = 'none';
++  for(var k in fields){ var i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = fields[k]; f.appendChild(i); }
++  document.body.appendChild(f); f.submit();
++  setTimeout(function(){ f.remove(); }, 4000);
++}
++/* the sealed-container head: magic + one JSON meta line, or null */
++function sealHead(head){
++  if(head.indexOf('REAPER-SEALED 1\n') !== 0) return null;
++  var m = null; try{ m = JSON.parse(head.split('\n')[1]); }catch(e){}
++  return m;
++}
++
+ /* ---------------- full backup (.rbk) ---------------- */
+-function rbkDownload(){ location.href = '/REAPER_' + clean(MODEL) + '_' + clean(VER) + '_settings.rbk?http_id=' + encodeURIComponent(HID); }
++function rbkDownload(){
++  askAuth({ title: `<#RBKP_38#>`, note: `<#RBKP_47#>`, admin: 1, create: 1, okLabel: `<#RBKP_3#>` }, function(a){
++    if(!a) return;
++    reauth(a.admpw, 'st_rbk', function(ok){
++      if(!ok) return;
++      postDownload('/REAPER_' + clean(MODEL) + '_' + clean(VER) + '_settings.rbk' + (a.pass ? '.enc' : ''),
++                   { http_id: HID, admpw: a.admpw, pass: a.pass });
++      setStat('st_rbk', a.pass ? `<#RBKP_48#>` : '', 'ok');
++    });
++  });
++}
+ function rbkRestore(f){
+   if(f.size > RBK_MAX || f.size < 64){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
+   var rd = new FileReader();
+   rd.onload = function(){
+-    var head = String(rd.result || '');
+-    if(head.indexOf('REAPER-BACKUP 1\n') !== 0){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
+-    var meta = null; try{ meta = JSON.parse(head.split('\n')[1]); }catch(e){}
+-    if(!meta){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
++    var head = String(rd.result || ''), meta = sealHead(head), sealed = !!meta;
++    if(!sealed){
++      if(head.indexOf('REAPER-BACKUP 1\n') !== 0){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
++      try{ meta = JSON.parse(head.split('\n')[1]); }catch(e){ meta = null; }
++    }
++    if(!meta || (sealed && meta.kind !== 'rbk')){ setStat('st_rbk', `<#RBKP_12#>`, 'err'); return; }
+     if(String(meta.model) !== MODEL){ setStat('st_rbk', `<#RBKP_8#>`, 'err'); return; }
+-    reaperConfirm(`<#RBKP_13#>`, { danger: true, okLabel: `<#CTL_restore#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
+-      if(!go) return;
+-      rbkSend(f, 'st_rbk');
+-    });
++    var proceed = function(pass){
++      reaperConfirm(`<#RBKP_13#>`, { danger: true, okLabel: `<#CTL_restore#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++        if(!go) return;
++        rbkSend(f, 'st_rbk', pass);
++      });
++    };
++    if(sealed) askAuth({ title: `<#RBKP_49#>`, seal: 1 }, function(a){ if(a) proceed(a.pass); });
++    else proceed('');
+   };
+   rd.readAsText(f.slice(0, 2048));
+ }
+ 
+ /* ---------------- Reaper settings JSON ---------------- */
+ function cfgExport(){
+-  var g = new XMLHttpRequest();
+-  g.open('GET', '/reaper_cfg.cgi?action=export&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
+-  g.onloadend = function(){
+-    var j = null; try{ j = JSON.parse(g.responseText); }catch(e){}
+-    if(!j || !j.ok){ setStat('st_cfg', `<#RDST_74#>`, 'err'); return; }
+-    var name = 'reaper-settings-' + String(j.model || 'router').replace(/[^A-Za-z0-9_-]/g, '') + '-' + String(j.version || '').replace(/[^A-Za-z0-9_.-]/g, '') + '-' + new Date().toISOString().slice(0, 10) + '.json';
+-    var blob = new Blob([JSON.stringify(j, null, 1)], { type: 'application/json' });
+-    var a = document.createElement('a');
+-    a.href = URL.createObjectURL(blob); a.download = name;
+-    document.body.appendChild(a); a.click();
+-    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+-    setStat('st_cfg', `<#RDST_73#>` + ' ' + name, 'ok');
+-  };
+-  g.send();
++  askAuth({ title: `<#RBKP_38#>`, note: `<#RBKP_47#>`, admin: 1, create: 1, okLabel: `<#RDST_70#>` }, function(a){
++    if(!a) return;
++    var g = new XMLHttpRequest();
++    g.open('POST', '/reaper_cfg.cgi', true);
++    g.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++    g.responseType = a.pass ? 'arraybuffer' : 'text';
++    g.onloadend = function(){
++      var name = 'reaper-settings-' + clean(MODEL) + '-' + clean(VER) + '-' + new Date().toISOString().slice(0, 10);
++      var blob, r = null, txt = '';
++      if(a.pass){
++        var u8 = new Uint8Array(g.response || new ArrayBuffer(0));
++        try{ txt = String.fromCharCode.apply(null, u8.subarray(0, 64)); }catch(e){}
++        if(g.status !== 200 || txt.indexOf('REAPER-SEALED') !== 0){
++          try{ r = JSON.parse(String.fromCharCode.apply(null, u8.subarray(0, 512))); }catch(e){}
++          setStat('st_cfg', (r && r.ek === 'pwlock') ? `<#RBKP_44#>` : (r && r.ek === 'pw') ? `<#RBKP_43#>` : `<#RDST_74#>`, 'err');
++          return;
++        }
++        blob = new Blob([g.response], { type: 'application/octet-stream' }); name += '.json.enc';
++      } else {
++        try{ r = JSON.parse(g.responseText); }catch(e){}
++        if(!r || !r.ok){ setStat('st_cfg', (r && r.ek === 'pwlock') ? `<#RBKP_44#>` : (r && r.ek === 'pw') ? `<#RBKP_43#>` : `<#RDST_74#>`, 'err'); return; }
++        blob = new Blob([JSON.stringify(r, null, 1)], { type: 'application/json' }); name += '.json';
++      }
++      var el = document.createElement('a');
++      el.href = URL.createObjectURL(blob); el.download = name;
++      document.body.appendChild(el); el.click();
++      setTimeout(function(){ URL.revokeObjectURL(el.href); el.remove(); }, 2000);
++      setStat('st_cfg', `<#RDST_73#>` + ' ' + name, 'ok');
++    };
++    g.send('action=export&http_id=' + encodeURIComponent(HID) + '&admpw=' + encodeURIComponent(a.admpw) + '&pass=' + encodeURIComponent(a.pass || ''));
++  });
+ }
+ /* base64 text -> bytes; null when it is not base64 */
+ function b64bytes(s){
+@@ -434,6 +566,30 @@ function cfgImportJson(j){
+ }
+ function cfgImport(f){
+   if(f.size > JSON_MAX){ setStat('st_cfg', `<#RDST_75#>`, 'err'); return; }
++  /* v3.0.8: a sealed settings file is opened on the router - same model
++     restores settings + Reaper and reboots, another model imports the Reaper
++     half without a reboot - so decide from the container head first */
++  var hd = new FileReader();
++  hd.onload = function(){
++    var meta = sealHead(String(hd.result || ''));
++    if(meta){
++      if(meta.kind !== 'json'){ setStat('st_cfg', `<#RDST_75#>`, 'err'); return; }
++      var same = String(meta.model) === MODEL;
++      var msg = same ? `<#RBKP_33#>` : `<#RBKP_34#>`.replace('%1', String(meta.model || '?'));
++      askAuth({ title: `<#RBKP_49#>`, seal: 1 }, function(a){
++        if(!a) return;
++        reaperConfirm(msg, { danger: same, okLabel: same ? `<#CTL_restore#>` : `<#CTL_ok#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
++          if(!go) return;
++          rbkSend(f, 'st_cfg', a.pass);
++        });
++      });
++      return;
++    }
++    cfgImportPlain(f);
++  };
++  hd.readAsText(f.slice(0, 2048));
++}
++function cfgImportPlain(f){
+   var rd = new FileReader();
+   rd.onload = function(){
+     var j = null; try{ j = JSON.parse(String(rd.result || '')); }catch(e){}
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 9af95613e2..32c351d6c8 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -182,6 +182,25 @@ tr.curchan td{background:rgba(224,169,59,.07)}
+   <div class="note" id="chqbody" style="margin-top:10px"></div>
+ </div>
+ 
++<div class="panel">
++  <h2><#RWIF_85#></h2>
++  <div class="sub"><#RWIF_86#></div>
++  <div class="note" id="parkstate" style="margin-top:6px"></div>
++  <div style="margin-top:10px">
++    <button class="btn" id="parktog" onclick="parkToggle()">&ndash;</button>
++  </div>
++</div>
++
++<!-- reaper v3.0.8: the parking toggle - nvram + restart_amaspark, no wireless restart -->
++<form method="post" name="parkform" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_Wireless.asp">
++  <input type="hidden" name="next_page" value="Reaper_Wireless.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_amaspark">
++  <input type="hidden" name="action_wait" value="3">
++  <input type="hidden" name="amas_bh_park" value="">
++</form>
++
+ <form method="post" name="lockform" action="/start_apply.htm" target="hidden_frame">
+   <input type="hidden" name="current_page" value="Reaper_Wireless.asp">
+   <input type="hidden" name="next_page" value="Reaper_Wireless.asp">
+@@ -199,6 +218,32 @@ tr.curchan td{background:rgba(224,169,59,.07)}
+ 
+ <script src="/reaper_util.js"></script>
+ <script>
++/* reaper v3.0.8: AiMesh backhaul parking (rc/amaspark.c). The daemon reads the
++   switch within seconds; the state line is what it last wrote to nvram. */
++var PARK_ON = ('<% nvram_get("amas_bh_park"); %>' === '1');
++var PARK_STATE = '<% nvram_get("amas_bh_state"); %>';
++var PARK_NODE = ('<% nvram_get("re_mode"); %>' === '1');
++function parkRender(){
++  var b = document.getElementById("parktog"), s = document.getElementById("parkstate");
++  if(!b || !s) return;
++  if(PARK_NODE){ b.disabled = true; b.textContent = `<#RWIF_91#>`; s.textContent = `<#RWIF_90#>`; return; }
++  b.textContent = PARK_ON ? `<#RWIF_92#>` : `<#RWIF_91#>`;
++  b.className = PARK_ON ? "btn" : "btn hot";
++  s.textContent = (PARK_ON ? `<#RWIF_88#>` : `<#RWIF_89#>`) + (PARK_STATE ? " \u2014 " + PARK_STATE : "");
++}
++function parkToggle(){
++  var f = document.parkform;
++  PARK_ON = !PARK_ON;
++  f.amas_bh_park.value = PARK_ON ? "1" : "0";
++  PARK_STATE = "";
++  parkRender();
++  if(typeof showToast === "function") showToast(`<#RWIF_93#>`);
++  f.submit();
++}
++if(document.readyState !== "loading") parkRender();
++else document.addEventListener("DOMContentLoaded", parkRender);
++</script>
++<script>
+ (function(){
+ "use strict";
+ 
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 57c6303116..06121cbe07 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Ali želite obnoviti nastavitve usmerjevalnika in uvoziti konfiguracijo
+ RBKP_34=Ta datoteka je bila ustvarjena na %1. Nastavitve usmerjevalnika v njej so izpuščene; uvožena bo le konfiguracija Reaper, brez ponovnega zagona. Želite nadaljevati?
+ RBKP_35=Shrambe Reaper
+ RBKP_36=Predpomnilnik nizov domen
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index e24e0f45d8..a0a08d7878 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Återställ routerinställningarna och importera Reaper-konfigurationen
+ RBKP_34=Den här filen gjordes på %1. Routerinställningarna i den hoppas över; endast Reaper-konfigurationen importeras, utan omstart. Vill du fortsätta?
+ RBKP_35=Reaper-lager
+ RBKP_36=Domänuppsättningscache
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 640c3d7b4d..50dab95dcb 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=ต้องการกู้คืนการตั้งค่าเ
+ RBKP_34=ไฟล์นี้สร้างขึ้นบน %1 การตั้งค่าเราเตอร์ภายในจะถูกข้าม จะนำเข้าเฉพาะการตั้งค่า Reaper เท่านั้น โดยไม่รีบูต ต้องการดำเนินการต่อหรือไม่
+ RBKP_35=คลังข้อมูล Reaper
+ RBKP_36=แคชชุดโดเมน
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 81e8f665f4..cef8f8f771 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Yönlendirici ayarları geri yüklensin ve bu dosyadan Reaper yapıland
+ RBKP_34=Bu dosya %1 üzerinde oluşturuldu. İçindeki yönlendirici ayarları atlanır; yalnızca Reaper yapılandırması içe aktarılır, yeniden başlatma olmadan. Devam edilsin mi?
+ RBKP_35=Reaper depoları
+ RBKP_36=Alan adı kümesi önbelleği
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 80d8e60c5a..0e9a036058 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=是否要還原路由器設定，並從此檔案匯入 Reaper 設定？
+ RBKP_34=此檔案是在 %1 上建立的。其中的路由器設定將被略過；僅會匯入 Reaper 設定，且不會重新啟動。是否要繼續？
+ RBKP_35=Reaper 儲存區
+ RBKP_36=網域集快取
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 803d0ff72f..58ee002436 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6822,3 +6822,25 @@ RBKP_33=Відновити налаштування маршрутизатора
+ RBKP_34=Цей файл створено на %1. Налаштування маршрутизатора в ньому пропускаються; буде імпортовано лише конфігурацію Reaper, без перезавантаження. Продовжити?
+ RBKP_35=Сховища Reaper
+ RBKP_36=Кеш наборів доменів
++RBKP_37=Contains credentials: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins - and, in the full backup, the HTTPS and SSH private keys and the traffic-history databases. Seal it with a passphrase, or store it the way you would store a password.
++RBKP_38=Confirm your admin password to export
++RBKP_39=Admin password
++RBKP_40=Backup passphrase (optional - leave blank for an unsealed file)
++RBKP_41=Repeat the passphrase
++RBKP_42=The passphrases do not match.
++RBKP_43=Wrong admin password. Nothing was exported.
++RBKP_44=Too many wrong passwords - exports are locked for a minute.
++RBKP_45=Passphrase of this sealed backup
++RBKP_46=Wrong passphrase, or the file was altered. Nothing was changed.
++RBKP_47=A sealed file is encrypted with AES-256-GCM. The passphrase is not stored anywhere: without it the file cannot be opened, and a file that was altered will not open either.
++RBKP_48=Sealed backup download started.
++RBKP_49=This backup is sealed
++RWIF_85=AiMesh backhaul parking
++RWIF_86=With no mesh node paired, the hidden AiMesh backhaul network still beacons on every band and accepts connections with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air until you search for or add a node, then puts them back; if the search ends without a node they park again. 6 GHz is never touched: its carrier shares the beacon your main network rides on. Every park and release is written to the system log with its reason.
++RWIF_87=Park the backhaul while no node is paired
++RWIF_88=Parking is on
++RWIF_89=Parking is off
++RWIF_90=This router is an AiMesh node, not the primary; parking applies to the primary only.
++RWIF_91=Turn parking on
++RWIF_92=Turn parking off
++RWIF_93=Applying. The system log records what happens next.
+-- 
+2.25.1
+

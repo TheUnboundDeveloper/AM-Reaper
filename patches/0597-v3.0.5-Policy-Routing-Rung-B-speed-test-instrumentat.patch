@@ -1,0 +1,1531 @@
+From 64e8d7c70ba4c6d4e87ae49b7be9703a7ea2866e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 2 Sep 2026 17:42:58 -0400
+Subject: [PATCH] v3.0.5: Policy Routing Rung B, speed-test instrumentation,
+ diag v1.3.13, Warden resolver carve-out
+
+Policy Routing commit-confirm (Rung B, F6-F11): the page polls the whole confirm
+window instead of 8.4 s; the duplicate ipset rebuild per apply is gone
+(PBR_SETS_DONE); Keep/Revert acknowledge their responses on both pages; the
+deadline is stamped after the work; the revert runs under the firewall lock,
+checks its result and reports REVERT FAILED; the arm token is taken first so
+confirm and revert cannot race; confirm reports an incomplete save; error
+codes (E_*) replace prose and the page translates them; runtime keys get
+router_defaults entries.
+
+/tmp/resolv.dnsmasq is dnsmasq's servers-file (server= lines): the Warden
+self-filter resolver carve-out and reaper_diag section 5 both parsed it for
+nameserver lines and matched nothing. Both fixed.
+
+Internet speed test (10 Gbit/s field reports): every engine launch goes
+through /usr/sbin/ookla_run (stderr kept per run, nice -10, argv untouched);
+the page names the failure (timeout / engine error with the engine's message /
+launch failed / WAN down); reaper_diag 10b reports the host-TCP offload state,
+RT throttling, and the last run's messages.
+
+reaper_diag v1.3.13: socket ceilings, QoS cap finding, rmcpd shown as arm-gated,
+resolver derivation fixed. Speed-test page shows the QoS cap. Long translations
+clip to one line with a hover tooltip on every new message surface. 17 new
+dict tokens x 25 languages, lockstep 6820.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src-rt-5.04behnd.4916/version.conf   |  10 +-
+ release/src/router/httpd/web.c               |  17 ++-
+ release/src/router/others/Makefile           |   1 +
+ release/src/router/others/ookla_run          |  20 +++
+ release/src/router/others/reaper_diag        |  91 +++++++++++-
+ release/src/router/rc/reaper_pbr.c           | 148 ++++++++++++++-----
+ release/src/router/rc/rwarden.c              |   8 +-
+ release/src/router/rc/rwatch.c               |   1 +
+ release/src/router/shared/defaults.c         |   6 +
+ release/src/router/www/BR.dict               |  17 +++
+ release/src/router/www/CN.dict               |  17 +++
+ release/src/router/www/CZ.dict               |  17 +++
+ release/src/router/www/DA.dict               |  17 +++
+ release/src/router/www/DE.dict               |  17 +++
+ release/src/router/www/EN.dict               |  17 +++
+ release/src/router/www/ES.dict               |  17 +++
+ release/src/router/www/FI.dict               |  17 +++
+ release/src/router/www/FR.dict               |  17 +++
+ release/src/router/www/HU.dict               |  17 +++
+ release/src/router/www/IT.dict               |  17 +++
+ release/src/router/www/JP.dict               |  17 +++
+ release/src/router/www/KR.dict               |  17 +++
+ release/src/router/www/MS.dict               |  17 +++
+ release/src/router/www/NL.dict               |  17 +++
+ release/src/router/www/NO.dict               |  17 +++
+ release/src/router/www/PL.dict               |  17 +++
+ release/src/router/www/RO.dict               |  17 +++
+ release/src/router/www/RU.dict               |  17 +++
+ release/src/router/www/Reaper_Firewall.asp   |  12 +-
+ release/src/router/www/Reaper_VPNRouting.asp |  54 +++++--
+ release/src/router/www/SL.dict               |  17 +++
+ release/src/router/www/SV.dict               |  17 +++
+ release/src/router/www/TH.dict               |  17 +++
+ release/src/router/www/TR.dict               |  17 +++
+ release/src/router/www/TW.dict               |  17 +++
+ release/src/router/www/UK.dict               |  17 +++
+ release/src/router/www/internet_speed.html   |  57 ++++++-
+ 37 files changed, 786 insertions(+), 64 deletions(-)
+ mode change 120000 => 100644 release/src-rt-5.04behnd.4916/version.conf
+ create mode 100755 release/src/router/others/ookla_run
+
+diff --git a/release/src-rt-5.04behnd.4916/version.conf b/release/src-rt-5.04behnd.4916/version.conf
+deleted file mode 120000
+index d98cc20cad..0000000000
+--- a/release/src-rt-5.04behnd.4916/version.conf
++++ /dev/null
+@@ -1 +0,0 @@
+-../src-rt/version.conf
+\ No newline at end of file
+diff --git a/release/src-rt-5.04behnd.4916/version.conf b/release/src-rt-5.04behnd.4916/version.conf
+new file mode 100644
+index 0000000000..9ad201f58c
+--- /dev/null
++++ b/release/src-rt-5.04behnd.4916/version.conf
+@@ -0,0 +1,9 @@
++KERNEL_VER=3.0
++FS_VER=0.6
++KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
++FS_VER_AM=$(subst .,,$(FS_VER))
++
++SERIALNO=102.8
++EXTENDNO=Reaper_v3.0.5
++
++RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 0e0a675195..69641ff154 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24353,7 +24353,8 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 			}
+ 		}
+ 		if (nvram_match("reaper_pbr_armed", "1")) {
+-			websWrite(stream, "{\"ok\":0,\"error\":\"a change is already awaiting confirmation\"}");
++			/* v3.0.5 (F11): a code, mapped to a translated string by the page */
++			websWrite(stream, "{\"ok\":0,\"error\":\"E_ARMED\"}");
+ 			return;
+ 		}
+ 		nvram_set("reaper_pbr_enable", en);       /* RAM only - see the note above */
+@@ -39485,6 +39486,12 @@ ej_dns_wanStat_detail(int eid, webs_t wp, int argc, char_t **argv)
+ #define OOKLA_HISTORY     OOKLA_FOLDER"ookla_history"
+ #define OOKLA_HISTORY_T   OOKLA_FOLDER"ookla_history_t"
+ #define OOKLA_SERVERS     OOKLA_FOLDER"ookla_servers"
++/* reaper v3.0.5: the engine's stderr, kept per run by /usr/sbin/ookla_run
++ * (_eval only redirects stdout). reaper_diag 10b reads it. The server-list
++ * fetch runs right after every test, so it gets its own file or it would
++ * overwrite the run's log a second later. */
++#define OOKLA_STDERR      OOKLA_FOLDER"ookla_stderr"
++#define OOKLA_LIST_STDERR OOKLA_FOLDER"ookla_list_stderr"
+ #define OOKLA_HISTORY_MAX 49
+ #if defined(RTCONFIG_ETH_MONITOR)
+ #define ETH_MONITOR_RESULT      OOKLA_FOLDER"ookla_data"
+@@ -39532,20 +39539,22 @@ ookla_exec(char *type, char *id, char *iface)
+ 		iface_arg = "-I";
+ 
+ 	nvram_set_int("ookla_state", OOKLA_STATE_RUN);
++	/* reaper v3.0.5: every launch goes through ookla_run (stderr kept, nice -10,
++	 * argv passed through untouched) - see others/ookla_run. */
+ 	if (!strcmp(type, "") && !strcmp(id, "")) {
+-		char *cmd[] = {"ookla", "-c", config, "-f", "jsonl", iface_arg, iface, NULL};
++		char *cmd[] = {"ookla_run", OOKLA_STDERR, "-c", config, "-f", "jsonl", iface_arg, iface, NULL};
+ 		if (f_exists(OOKLA_RESULT)) unlink(OOKLA_RESULT);
+ 		retval = _eval(cmd, ">"OOKLA_RESULT, 0, &pid);
+ 	}
+ 	else if (!strcmp(type, "list") && !strcmp(id, "")) {
+-		char *cmd[] = {"ookla", "-c", config, "-f", "jsonl", "-L", NULL};
++		char *cmd[] = {"ookla_run", OOKLA_LIST_STDERR, "-c", config, "-f", "jsonl", "-L", NULL};
+ 		if (f_exists(OOKLA_SERVERS)) unlink(OOKLA_SERVERS);
+ 		retval = _eval(cmd, ">"OOKLA_SERVERS, 0, &pid);
+ 	}
+ 	else if (!strcmp(type, "") && strcmp(id, "")) {
+ 		/* check xss for input "id" */
+ 		if (check_xss_blacklist(id, 0)) return retval;
+-		char *cmd[] = {"ookla", "-c", config, "-f", "jsonl", "-s", id, iface_arg, iface, NULL};
++		char *cmd[] = {"ookla_run", OOKLA_STDERR, "-c", config, "-f", "jsonl", "-s", id, iface_arg, iface, NULL};
+ 		if (f_exists(OOKLA_RESULT)) unlink(OOKLA_RESULT);
+ 		retval = _eval(cmd, ">"OOKLA_RESULT, 0, &pid);
+ 	}
+diff --git a/release/src/router/others/Makefile b/release/src/router/others/Makefile
+index b06616ecfa..4331cf7576 100755
+--- a/release/src/router/others/Makefile
++++ b/release/src/router/others/Makefile
+@@ -34,6 +34,7 @@ endif
+ # amtm script
+ 	install -m 0700 amtm $(INSTALLDIR)/usr/sbin
+ 	install -m 0700 reaper_diag $(INSTALLDIR)/usr/sbin
++	install -m 0755 ookla_run $(INSTALLDIR)/usr/sbin
+ 
+ ifeq ($(RTN14U)$(RTAC52U)$(RTAC51U)$(RTN11P)$(RTN300)$(RTN54U)$(RTAC1200HP)$(RTN56UB1)$(RTN56UB2)$(RTAC54U)$(RTAC1200)$(RTAC1200V2)$(RTAC1200GA1)$(RTAC1200GU)$(RTN11PB1)$(RTAC85U)$(RTAC85P)$(RPAC87)$(RTN800HP)$(RTACRH26),y)
+ # for read/write Ralink PHY registers
+diff --git a/release/src/router/others/ookla_run b/release/src/router/others/ookla_run
+new file mode 100755
+index 0000000000..55058bdd57
+--- /dev/null
++++ b/release/src/router/others/ookla_run
+@@ -0,0 +1,20 @@
++#!/bin/sh
++# reaper v3.0.5 - Internet speed test launcher (the 10 Gbit/s field reports).
++#
++# (a) KEEP THE ENGINE'S STDERR. httpd starts the Ookla engine through _eval(),
++#     which redirects stdout only; every complaint the engine wrote to stderr
++#     was discarded, so a failing multi-gigabit run left nothing behind to
++#     read. $1 is the log path (one file per run, truncated each time).
++# (b) PRIORITY. During a multi-gigabit run Broadcom's real-time packet threads
++#     own the cores and the kernel logs "RT throttling activated"; the engine's
++#     own threads are SCHED_OTHER and were competing at nice 0 with httpd, the
++#     collectors and everything else in userspace. nice -10 keeps them ahead of
++#     that crowd without touching the RT budget (Tier 3 of the triage: never
++#     raise sched_rt_runtime_us).
++#
++# The engine's argv is passed through untouched - never re-parsed by a shell -
++# so a server id or interface name from the page cannot become a command.
++# `exec` keeps the pid, so httpd's pidof("ookla") / killall still see it.
++LOG="$1"; shift
++[ -n "$LOG" ] || LOG=/dev/null
++exec nice -n -10 ookla "$@" 2>"$LOG"
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index fc8fbaa973..c88805e8e2 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.12"
++VER="REAPER-DIAG v1.3.13"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -410,9 +410,19 @@ case "$WPROTO" in
+   pppoe) echo "  pppoe             : $(grep -i 'up with MTU' /tmp/syslog.log 2>/dev/null | tail -1 | cut -c17- | sed 's/^ *//')"
+          echo "  pppoe mtu/mru     : mtu=$(nvram get wan0_pppoe_mtu 2>/dev/null) mru=$(nvram get wan0_pppoe_mru 2>/dev/null) (both >1492 needed for RFC 4638)";;
+ esac
+-UPR="$(awk '/^nameserver/{print $2}' /tmp/resolv.dnsmasq 2>/dev/null | tr '\n' ' ')"
+-[ -n "$UPR" ] || UPR="$(nvram get wan0_dns 2>/dev/null) (from wan0_dns; dnsmasq not forwarding upstream)"
+-echo "  upstream resolvers: $UPR"
++# v1.3.13: /tmp/resolv.dnsmasq is dnsmasq's SERVERS-FILE (rc/wan.c wan_add_resolv_dnsmasq
++# writes `server=<ip>` and `server=/<domain>/<ip>` lines), NOT a resolv.conf - the old
++# `nameserver` match could never hit, so EVERY report said "dnsmasq not forwarding
++# upstream" while the syslog plainly showed "using nameserver X#53". In router mode
++# dnsmasq runs no-resolv, so this file IS its complete upstream list.
++UPR="$(sed -n 's/^server=\([^/][^# ]*\).*/\1/p' /tmp/resolv.dnsmasq 2>/dev/null | sort -u | tr '\n' ' ')"
++UPRD="$(grep -c '^server=/' /tmp/resolv.dnsmasq 2>/dev/null)"; case "$UPRD" in ''|*[!0-9]*) UPRD=0;; esac
++if [ -n "$UPR" ]; then
++  echo "  upstream resolvers: $UPR(dnsmasq servers-file; $UPRD domain-scoped entries)"
++else
++  echo "  upstream resolvers: NONE in /tmp/resolv.dnsmasq (wan0_dns=$(nvram get wan0_dns 2>/dev/null)) - dnsmasq is forwarding nowhere; the syslog 'using nameserver' lines in 19 are the truth"
++  [ "$(nvram get wan0_state_t 2>/dev/null)" = 2 ] && finding INFO "dnsmasq has no upstream resolver in its servers-file while the WAN is up (see 5)"
++fi
+ echo "  dns-over-tls      : dnspriv_enable=$(nvram get dnspriv_enable 2>/dev/null)"
+ echo "  wanduck           : link_internet=$(nvram get link_internet 2>/dev/null) wandog=$(nvram get wandog_enable 2>/dev/null)"
+ WSPD="$(cat /sys/class/net/$WANIF/speed 2>/dev/null)"
+@@ -534,6 +544,58 @@ if have tmctl; then
+   done
+ fi
+ 
++# v1.3.13: an enabled QoS engine shapes the WAN below line rate BY DESIGN, and that
++# ceiling sits ABOVE every socket/CPU limit a speed test could otherwise hit. Metal
++# 2026-09-01: a 10G WAN with type-11 qos_obw=qos_ibw=2200000 read ~2.0-2.2 Gbit/s on
++# every test and no socket-buffer work could move it. Name the ceiling up front.
++_qo="$(nvram get qos_obw 2>/dev/null)"; case "$_qo" in ''|*[!0-9]*) _qo=0;; esac
++_qi="$(nvram get qos_ibw 2>/dev/null)"; case "$_qi" in ''|*[!0-9]*) _qi=0;; esac
++if [ "$QE" = 1 ] && [ "$_qo" -gt 0 ]; then
++  _ls="$(cat /sys/class/net/$WANIF/speed 2>/dev/null)"; case "$_ls" in ''|*[!0-9]*) _ls=0;; esac
++  _qp=""; if [ "$QT" = 9 ] || { [ "$QT" = 11 ] && [ "$(nvram get qos_ipolicer 2>/dev/null)" != 0 ]; }; then _qp=" (policed at 90%)"; fi
++  _qd=""; [ "$_qi" -gt 0 ] && [ "$QT" != 10 ] && _qd=" / $((_qi/1000)) Mbit/s down$_qp"
++  _ql=""; [ "$_ls" -gt 0 ] && _ql=" - the link itself negotiated $_ls Mbit/s"
++  finding INFO "QoS (type $QT) caps the WAN at $((_qo/1000)) Mbit/s up$_qd; no speed test - built-in or through the router - can read above that while QoS is on$_ql (see 10)"
++fi
++
++sec "10b. INTERNET SPEED TEST (engine, host-TCP offload, last run - addresses never printed)"
++# v1.3.13 (2026-09-02, the 10 Gbit/s field reports): what a failing run leaves behind. Stock and
++# Reaper ship the SAME engine, config, kernel and RT budget (verified against the stock GPL
++# drops and an inflated stock kernel); no stock model carries a speed-test driver. Multi-gigabit
++# is reachable only because host TCP rides the Runner (GDX/HTOA, license-gated), so the offload
++# state comes first. The engine's stderr was discarded until v3.0.5 (ookla_run keeps it).
++OK_DIR=/jffs/.sys/OOKLA; [ -d /tmp/OOKLA ] && [ ! -d "$OK_DIR" ] && OK_DIR=/tmp/OOKLA
++echo "  engine            : v$(grep -a -o -m1 -E '3\.[0-9]+\.[0-9]+\.[0-9]+' /usr/sbin/ookla 2>/dev/null || echo ?)  $(ls -l /usr/sbin/ookla 2>/dev/null | awk '{print $5}') bytes  launcher=$([ -x /usr/sbin/ookla_run ] && echo ookla_run || echo direct)  rc_support ookla=$(nvram get rc_support 2>/dev/null | grep -c -w ookla)"
++echo "  ookla_state       : $(nvram get ookla_state 2>/dev/null)  (0 idle, 1 running, 2 wan-down, 3 timeout, 4 engine-error, 5 launch-failed)"
++_hl="$(dmesg 2>/dev/null | grep -o 'HTOA license[^*]*' | tail -1)"
++echo "  host tcp offload  : ${_hl:-license line no longer in the kernel ring buffer - read /proc/gdx/stats below}"
++echo "  gdx blogtcp_local : $(awk '/blogtcp_local/{f=1} f&&/dev_tx_pkts/{print "tx_pkts=" $3; exit}' /proc/gdx/stats 2>/dev/null) $(awk '/blogtcp_local/{f=1} f&&/dev_rx_pkts/{print "rx_pkts=" $3; exit}' /proc/gdx/stats 2>/dev/null)  (a multi-gigabit run adds millions here; 0 = host TCP is NOT offloaded)"
++echo "  conntrack hwaccel : $(grep -c 'hwaccel=[1-9]' /proc/net/nf_conntrack 2>/dev/null) of $(wc -l < /proc/net/nf_conntrack 2>/dev/null) flows"
++echo "  rt budget         : sched_rt_runtime_us=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null) of period $(cat /proc/sys/kernel/sched_rt_period_us 2>/dev/null)   'RT throttling activated' this boot: $(dmesg 2>/dev/null | grep -c 'RT throttling')"
++if [ -f "$OK_DIR/ookla_result" ]; then
++  echo "  -- last run: $OK_DIR/ookla_result ($(ls -l "$OK_DIR/ookla_result" 2>/dev/null | awk '{print $6, $7, $8}')) --"
++  echo "  entries by type   : $(grep -o '"type":"[a-zA-Z]*"' "$OK_DIR/ookla_result" 2>/dev/null | sed 's/"type"://; s/"//g' | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
++  echo "  error lines       : level=error $(grep -c '"level":"error"' "$OK_DIR/ookla_result" 2>/dev/null)   fatal {\"error\"} $(grep -c '^{"error"' "$OK_DIR/ookla_result" 2>/dev/null)"
++  _r="$(grep '"type":"result"' "$OK_DIR/ookla_result" 2>/dev/null | tail -1)"
++  if [ -n "$_r" ]; then
++    echo "  result            : down=$(echo "$_r" | sed -n 's/.*"download":{"bandwidth":\([0-9]*\).*/\1/p') B/s  up=$(echo "$_r" | sed -n 's/.*"upload":{"bandwidth":\([0-9]*\).*/\1/p') B/s  ping=$(echo "$_r" | sed -n 's/.*"latency":\([0-9.]*\).*/\1/p') ms"
++  else
++    echo "  result            : NONE - the run never produced a result entry"
++  fi
++  echo "  -- engine messages (last 8, error/warning level; the engine's own words) --"
++  grep -E '"level":"(error|warning)"' "$OK_DIR/ookla_result" 2>/dev/null | tail -8 | sed -n 's/.*"message":"\([^"]*\)".*/     \1/p'
++  grep '^{"error"' "$OK_DIR/ookla_result" 2>/dev/null | tail -2 | cut -c1-200 | sed 's/^/     /'
++else
++  echo "  -- last run: no result file under $OK_DIR (never run, or /jffs/.sys wiped) --"
++fi
++if [ -s "$OK_DIR/ookla_stderr" ]; then echo "  -- engine stderr (tail) --"; tail -8 "$OK_DIR/ookla_stderr" | cut -c1-200 | sed 's/^/     /'; else echo "  engine stderr     : empty, or not kept (pre-v3.0.5 build)"; fi
++case "$(nvram get ookla_state 2>/dev/null)" in
++  3) finding WARN "the last Internet speed test TIMED OUT (ookla_state=3) - see 10b for the engine's last messages";;
++  4) finding WARN "the last Internet speed test ended on an ENGINE ERROR (ookla_state=4) - see 10b for its message";;
++  5) finding WARN "the last Internet speed test could not START its engine (ookla_state=5) - see 10b";;
++esac
++[ "$(dmesg 2>/dev/null | grep -c 'RT throttling')" -gt 0 ] && finding INFO "the kernel throttled Broadcom's real-time packet threads at least once this boot ('RT throttling activated') - normal during a multi-gigabit speed test; correlate with a failed run (see 10b)"
++
+ sec "11. DHCP LEASES (identities pseudonymized)"
+ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases; do
+   if [ -f "$LF" ]; then
+@@ -562,6 +624,17 @@ for k in nf_conntrack_tcp_timeout_established nf_conntrack_tcp_timeout_time_wait
+   printf "  %-40s %s\n" "$k" "$(cat /proc/sys/net/netfilter/$k 2>/dev/null)"
+ done
+ echo "  ct_tcp_timeout (nvram) : $(nvram get ct_tcp_timeout 2>/dev/null)"
++# v1.3.13: the socket-buffer ceilings. net.core.rmem_max/wmem_max cap any socket that
++# sets SO_RCVBUF/SO_SNDBUF explicitly (throughput tools, the Ookla engine); the stock
++# 212992 holds a single explicit-buffer stream near 85 Mbit/s over a 20 ms path. Since
++# v3.0.3 rc raises both to 16 MB (and netdev_max_backlog to 4096) when the firewall
++# starts. The diag never printed them, so that change was unverifiable in the field.
++echo "  -- socket / queue ceilings (v3.0.3+: rmem_max=wmem_max=16777216, backlog 4096) --"
++for k in core/rmem_max core/wmem_max core/rmem_default core/wmem_default core/netdev_max_backlog core/somaxconn ipv4/tcp_rmem ipv4/tcp_wmem ipv4/tcp_congestion_control; do
++  printf "  %-40s %s\n" "net.$(echo $k | tr / .)" "$(cat /proc/sys/net/$k 2>/dev/null | tr '\t' ' ')"
++done
++_rmx="$(cat /proc/sys/net/core/rmem_max 2>/dev/null)"; case "$_rmx" in ''|*[!0-9]*) _rmx=0;; esac
++[ "$_rmx" -lt 16777216 ] && finding INFO "net.core.rmem_max is $_rmx, below the 16 MB Reaper sets at firewall start since v3.0.3 - an older build, or start_firewall has not run this boot; a single stream to the router itself is capped accordingly (see 11b)"
+ 
+ sec "12. PROCESSES / LISTENING SOCKETS"
+ ps w 2>/dev/null | sed 's/^/  /'
+@@ -604,7 +677,15 @@ svc() { # name knob expected-running-when
+   printf "  %-8s %-22s running=%s\n" "$1" "$2=${_on:-unset}" "$_run"
+   if [ "$_on" = "$3" ] && [ "$_run" = 0 ]; then finding WARN "$1 is enabled ($2=$3) but not running"; fi
+ }
+-svc rtrafd rtraf_enable 1; svc gkd gk_enable 1; svc rchqd rchq_enable 1; svc rmcpd rmcp_port x
++svc rtrafd rtraf_enable 1; svc gkd gk_enable 1; svc rchqd rchq_enable 1
++# v1.3.13: rmcpd is NOT switch-driven. It is never launched at boot; it starts only on an
++# explicit ARM from the Advisor page (httpd writes /tmp/reaper_mcp/session, rc start_rmcp
++# refuses without it) and exits on the arming timeout or Disable. running=0 with no
++# session is the DESIGNED idle state - the old line made it read like a dead service.
++_ms=none; [ -f /tmp/reaper_mcp/session ] && _ms=ARMED
++_mr="$(pidof rmcpd 2>/dev/null | wc -w)"
++printf "  %-8s %-22s running=%s  session=%s (arm-gated: idle=0 is normal)\n" rmcpd "rmcp_port=$(nvram get rmcp_port 2>/dev/null)" "$_mr" "$_ms"
++[ "$_ms" = ARMED ] && [ "$_mr" = 0 ] && finding WARN "an Advisor session is armed (/tmp/reaper_mcp/session) but rmcpd is not running - the daemon exited uncleanly; re-arm from the Advisor page (see 12c)"
+ echo "  rwatch            : rwatch_enable=$(nvram get rwatch_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -c '#rwatch#')"
+ echo "  warden            : rwarden_enable=$(nvram get rwarden_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -cE '#rwarden')  chain=$(iptables -nL REAPER_WARDEN >/dev/null 2>&1 && echo present || echo absent)"
+ echo "  rules engine      : reaper_fw_enable=$(nvram get reaper_fw_enable 2>/dev/null) active=$(nvram get reaper_fw_active 2>/dev/null) armed=$(nvram get reaper_fw_armed 2>/dev/null)"
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 0ecc30d437..6d03eeab88 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -360,7 +360,13 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	   * alone, which created no sets - so a boot-time shortfall was permanent
+ 	   * until reaper_pbr_apply() (the UI) rebuilt them. Run the sets script here,
+ 	   * first, on every apply: idempotent (`-exist`, fqdn sets never flushed). */
+-	  "[ -f " RFW_SETS " ] && sh " RFW_SETS " 2>/dev/null\n"
++	  /* v3.0.5 (F6): reaper_pbr_apply() and start_reaper_pbr() have JUST run
++	   * this same sets script through reaper_fw_sets_only(), so running it here
++	   * too did the whole ipset rebuild twice per apply - behind the Keep
++	   * button, inside the commit-confirm window. Those two callers export
++	   * PBR_SETS_DONE=1 (ppbr_run); the shell-only paths - rwatch heals, the
++	   * reassert, the rollback - still run it here, first, exactly as before. */
++	  "[ -n \"$PBR_SETS_DONE\" ] || { [ -f " RFW_SETS " ] && sh " RFW_SETS " 2>/dev/null; }\n"
+ 	  "\n");
+ 	ppbr_emit_skip_helpers(f);
+ 	fprintf(f,
+@@ -545,7 +551,13 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "echo $NEXPECT > " PPBR_DIR "/expect\n"
+ 	  "ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000' > " PPBR_DIR "/expect_rules\n"
+ 	  "echo $NFAIL > " PPBR_DIR "/failcount\n"
+-	  "[ \"$NFAIL\" -gt 0 ] && logger -t reaper_pbr \"$NFAIL of $NEXPECT mark rule(s) failed to load - the watchdog will retry\"\n"
++	  /* v3.0.5 (F9): a partial load exits 2, so a CHECKED caller can tell
++	   * "every rule live" from "some rules missing". It always exited 0
++	   * before, so even a caller that looked at the status saw success.
++	   * ppbr_run()'s callers keep the old arm-and-let-rwatch-retry behaviour
++	   * on 2 (only a hard failure rolls back) but now SAY so (E_PARTIAL);
++	   * the revert script treats it as a failed revert. */
++	  "if [ \"$NFAIL\" -gt 0 ]; then logger -t reaper_pbr \"$NFAIL of $NEXPECT mark rule(s) failed to load - the watchdog will retry\"; exit 2; fi\n"
+ 	  "exit 0\n");
+ 	fclose(f);
+ 	if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+@@ -560,11 +572,15 @@ static int ppbr_cfg_load(ppbr_cfg_t *c, int from_good)
+ 	int ex;
+ 	memset(c, 0, sizeof(*c));
+ 	if (from_good) {
++		/* v3.0.5 (F9): rjf_get() reports "present but unreadable" as
++		 * *exists = -1, which `if (!ex)` accepted as valid - an unreadable
++		 * lastgood therefore reverted to an EMPTY ruleset while logging
++		 * success. reaper_fw.c's rfw_cfg_load has used `ex <= 0` all along. */
+ 		char *en = rjf_get(PPBR_LG_ENABLE, &ex);
+-		if (!ex) return 0;
++		if (ex <= 0) return 0;
+ 		c->enable = (strcmp(en, "1") == 0);
+ 		c->rulelist = strdup(rjf_get(REAPER_PBR_RL, &ex));
+-		if (!ex) { free(c->rulelist); c->rulelist = NULL; return 0; }
++		if (ex <= 0) { free(c->rulelist); c->rulelist = NULL; return 0; }
+ 		return c->rulelist != NULL;
+ 	}
+ 	/* the draft: enable from nvram RAM, the list from the staged file (P8) */
+@@ -642,15 +658,33 @@ static int ppbr_gen_rollback(void)
+ 	 * execute). Only the enable flag lives in nvram; dropping the staged draft
+ 	 * file IS the list rollback (P8: the confirmed list never left /jffs). */
+ 	fprintf(f,
++	  /* v3.0.5 (F10): the arm marker is the single-arm CAS token, and this
++	   * script used to remove it LAST - after a multi-second ipset rebuild and
++	   * the teardown loop - so a Confirm landing inside that window succeeded:
++	   * flash and lastgood took the NEW list while this script was installing
++	   * the OLD rules. Taking the token FIRST makes confirm and revert mutually
++	   * exclusive (reaper_pbr_confirm() does the same rmdir test-and-clear):
++	   * whichever wins proceeds, the other is a logged no-op. */
++	  "rmdir " PPBR_ARMED " 2>/dev/null || { logger -t reaper_pbr 'commit-confirm: nothing is awaiting confirmation - revert skipped'; exit 0; }\n"
++	  "nvram unset reaper_pbr_err\n"
+ 	  "[ -f " PPBR_LG_ENABLE " ] && nvram set reaper_pbr_enable=\"$(cat " PPBR_LG_ENABLE ")\"\n"
+ 	  "rm -f " REAPER_PBR_DRAFT "\n"
+-	  "sh " PPBR_ROLLBACK ".rules 2>/dev/null\n"
++	  /* v3.0.5 (F9): under the firewall lock (reaper_lockrun allowlists this
++	   * path) and CHECKED. The status was discarded and the success line was
++	   * unconditional, so a revert whose rules never loaded still announced
++	   * "reverted to the last confirmed routing rules". */
++	  "reaper_lockrun " PPBR_ROLLBACK ".rules >/dev/null 2>&1; _rc=$?\n"
++	  "_nf=$(cat " PPBR_DIR "/failcount 2>/dev/null); case \"$_nf\" in ''|*[!0-9]*) _nf=0;; esac\n"
+ 	  "[ \"$(_nv reaper_pbr_enable)\" = 1 ] && nvram set reaper_pbr_active=1 || nvram set reaper_pbr_active=0\n"
+ 	  "rm -f " PPBR_DEADLINE " " PPBR_CAND "\n"
+-	  "rmdir " PPBR_ARMED " 2>/dev/null\n"
+ 	  "cru d reaper_pbr_cc 2>/dev/null\n"
+ 	  "nvram set reaper_pbr_armed=0\n"
+-	  "logger -t reaper_pbr 'commit-confirm: reverted to the last confirmed routing rules'\n");
++	  "if [ \"$_rc\" != 0 ]; then\n"
++	  "  nvram set reaper_pbr_err=E_REVERT\n"
++	  "  logger -t reaper_pbr \"commit-confirm: REVERT FAILED (rc=$_rc, $_nf rule(s) failed) - policy routing state is UNKNOWN; apply and keep again, or reboot\"\n"
++	  "else\n"
++	  "  logger -t reaper_pbr 'commit-confirm: reverted to the last confirmed routing rules'\n"
++	  "fi\n");
+ 	fclose(f);
+ 	chmod(PPBR_ROLLBACK, 0700);
+ 	chmod(PPBR_ROLLBACK ".rules", 0700);
+@@ -682,12 +716,14 @@ static void ppbr_disarm_files(void)
+ 	nvram_set("reaper_pbr_armed", "0");
+ }
+ 
+-/* run a generated script under the firewall lock; returns the exit code */
+-static int ppbr_run(const char *path)
++/* run a generated script under the firewall lock; returns the exit code.
++ * sets_done=1: the caller has just run the object-sets script itself
++ * (reaper_fw_sets_only), so the script must not run it a second time. */
++static int ppbr_run(const char *path, int sets_done)
+ {
+ 	char cmd[200];
+ 	int lock, rc;
+-	snprintf(cmd, sizeof(cmd), "sh %s 2>/dev/null", path);
++	snprintf(cmd, sizeof(cmd), "%ssh %s 2>/dev/null", sets_done ? "PBR_SETS_DONE=1 " : "", path);
+ 	lock = file_lock("firewall");                   /* P4 */
+ 	chmod(path, 0700);
+ 	rc = system(cmd);
+@@ -706,7 +742,7 @@ void stop_reaper_pbr(void)
+ 	mkdir(PPBR_DIR, 0700);
+ 	ppbr_disarm_files();
+ 	if (ppbr_gen(PPBR_APPLY, 1, &empty))
+-		ppbr_run(PPBR_APPLY);
++		ppbr_run(PPBR_APPLY, 0);
+ 	unlink(PPBR_APPLY);
+ 	unlink(PPBR_CAND);
+ 	unlink(PPBR_CC);
+@@ -780,7 +816,10 @@ void start_reaper_pbr(void)
+ 		nvram_commit();
+ 	}
+ 	unlink(REAPER_PBR_DRAFT);                  /* a draft never survives a boot */
+-	if (!ppbr_cfg_load(&c, from_good)) return;
++	if (!ppbr_cfg_load(&c, from_good)) {
++		logmessage("reaper_pbr", "boot: the %s config could not be read - policy routing NOT started", from_good ? "confirmed" : "nvram");
++		return;
++	}
+ 	if (from_good)
+ 		/* what is live must be what the page shows (RAM only) */
+ 		nvram_set("reaper_pbr_enable", c.enable ? "1" : "0");
+@@ -798,18 +837,25 @@ void start_reaper_pbr(void)
+ 	 * rule-load failure, not an empty match. Idempotent when the engine is on. */
+ 	reaper_fw_sets_only();
+ 	if (ppbr_gen(PPBR_APPLY, 0, &c)) {
+-		ppbr_run(PPBR_APPLY);
++		ppbr_run(PPBR_APPLY, 1);               /* sets were just built above */
+ 		nvram_set("reaper_pbr_active", "1");
+ 	}
+ 	ppbr_cfg_free(&c);
+ }
+ 
++/* reaper_pbr_err carries a short CODE, not prose (v3.0.5, F11): the page maps
++ * it to a translated string (Reaper_VPNRouting.asp errText) and reaper_diag
++ * prints it verbatim. Codes: E_NOSNAP E_ARMED E_NORECOVERY E_BUILD E_RUN
++ * E_PARTIAL (this file), E_REVERT (rollback.sh), E_SAVE (confirm). A refused
++ * or failed apply leaves its code until the next apply; confirm and revert
++ * clear it, so a resolved window never paints a stale banner. */
++
+ /* Apply the DRAFT (nvram RAM, not committed) and arm the revert (P7). */
+ void reaper_pbr_apply(void)
+ {
+ 	ppbr_cfg_t c;
+ 	FILE *f;
+-	int secs;
++	int secs, rc;
+ 
+ 	if (!is_routing_enabled()) return;
+ 	mkdir(PPBR_CACHE, 0700);
+@@ -819,14 +865,14 @@ void reaper_pbr_apply(void)
+ 		 * build): there is nothing to roll back TO, so this apply is not
+ 		 * revertible. Refuse rather than arm a timer that cannot do its job. */
+ 		logmessage("reaper_pbr", "apply REFUSED: no confirmed snapshot exists yet (reboot once on this firmware)");
+-		nvram_set("reaper_pbr_err", "no confirmed snapshot exists yet - reboot once on this firmware");
++		nvram_set("reaper_pbr_err", "E_NOSNAP");
+ 		return;
+ 	}
+ 	/* single-arm compare-and-set: a second apply while one is pending is
+ 	 * refused rather than silently replacing the pending deadline. */
+ 	if (mkdir(PPBR_ARMED, 0700) != 0) {
+ 		logmessage("reaper_pbr", "apply REFUSED: a change is already awaiting confirmation");
+-		nvram_set("reaper_pbr_err", "a change is already awaiting confirmation");
++		nvram_set("reaper_pbr_err", "E_ARMED");
+ 		return;
+ 	}
+ 	nvram_unset("reaper_pbr_err");
+@@ -835,71 +881,107 @@ void reaper_pbr_apply(void)
+ 	/* recovery path on disk BEFORE the candidate goes live */
+ 	if (!ppbr_gen_rollback()) {
+ 		rmdir(PPBR_ARMED);
+-		nvram_set("reaper_pbr_err", "could not generate the recovery script - not applied");
++		nvram_set("reaper_pbr_err", "E_NORECOVERY");
+ 		logmessage("reaper_pbr", "apply REFUSED: could not generate the recovery script");
+ 		ppbr_cfg_free(&c);
+ 		return;
+ 	}
+ 	ppbr_gen_cc();
+ 	secs = ppbr_confirm_secs();
+-	if ((f = fopen(PPBR_DEADLINE, "w")) != NULL) {
+-		fprintf(f, "%ld", (long)time(NULL) + secs);
+-		fclose(f);
+-	}
++	/* the watcher is registered before the candidate runs so a crash
++	 * mid-apply still has a revert path; it exits until the deadline file
++	 * exists, which is written after the work (F8, below). */
+ 	eval("cru", "a", "reaper_pbr_cc", "* * * * * sh " PPBR_CC);
+ 
+ 	if (c.enable) reaper_fw_sets_only();
+ 	if (!ppbr_gen(PPBR_CAND, !c.enable, &c)) {
+-		nvram_set("reaper_pbr_err", "candidate failed to build - rolled back");
+ 		logmessage("reaper_pbr", "candidate FAILED to build - rolling back now");
+-		system("sh " PPBR_ROLLBACK " 2>/dev/null");
++		system("sh " PPBR_ROLLBACK " 2>/dev/null");   /* takes the arm token, clears _err */
++		nvram_set("reaper_pbr_err", "E_BUILD");
+ 		ppbr_cfg_free(&c);
+ 		return;
+ 	}
+-	if (ppbr_run(PPBR_CAND) != 0) {
++	rc = ppbr_run(PPBR_CAND, c.enable);             /* sets were just built when enabled */
++	if (rc != 0 && rc != 2) {
+ 		/* security review 2026-08-22: a candidate that did not run is not a
+ 		 * candidate - roll back now rather than arm a timer on nothing
+ 		 * (reaper_fw_apply does the same). */
+-		nvram_set("reaper_pbr_err", "candidate failed to run - rolled back");
+ 		logmessage("reaper_pbr", "candidate FAILED to run - rolling back now");
+ 		system("sh " PPBR_ROLLBACK " 2>/dev/null");
++		nvram_set("reaper_pbr_err", "E_RUN");
++		ppbr_cfg_free(&c);
++		return;
++	}
++	/* v3.0.5 (F8): stamp the deadline AFTER the work. It was written before
++	 * the sets rebuild and the candidate run, so a 60 s window was ~54 s of
++	 * operator time; the announced figure and the real one now agree. A
++	 * deadline that cannot be written is a window that never closes - an
++	 * armed-forever state - so it is treated like a candidate that failed. */
++	if ((f = fopen(PPBR_DEADLINE, "w")) == NULL) {
++		logmessage("reaper_pbr", "could not write the deadline - rolling back now");
++		system("sh " PPBR_ROLLBACK " 2>/dev/null");
++		nvram_set("reaper_pbr_err", "E_NORECOVERY");
+ 		ppbr_cfg_free(&c);
+ 		return;
+ 	}
++	fprintf(f, "%ld", (long)time(NULL) + secs);
++	fclose(f);
+ 	nvram_set("reaper_pbr_active", c.enable ? "1" : "0");
+ 	nvram_set("reaper_pbr_armed", "1");
+-	logmessage("reaper_pbr", "routing rules applied - reverting in %ds unless confirmed", secs);
++	/* rc == 2: some rules did not load (the script logged which). The
++	 * candidate is live and armed exactly as before - the rwatch heal
++	 * retries - but the page is now TOLD instead of shown a clean apply. */
++	if (rc == 2) nvram_set("reaper_pbr_err", "E_PARTIAL");
++	logmessage("reaper_pbr", "routing rules applied%s - reverting in %ds unless confirmed", rc == 2 ? " (some rules failed to load)" : "", secs);
+ 	ppbr_cfg_free(&c);
+ }
+ 
+ /* Operator confirmed: keep it. The ONLY path that writes flash. */
+ void reaper_pbr_confirm(void)
+ {
++	int ok = 1;
+ 	/* test-and-clear: a stray confirm must never persist a config nobody applied */
+ 	if (rmdir(PPBR_ARMED) != 0) {
+ 		logmessage("reaper_pbr", "confirm ignored - nothing is awaiting confirmation");
+ 		return;
+ 	}
+-	eval("cru", "d", "reaper_pbr_cc");
++	if (eval("cru", "d", "reaper_pbr_cc") != 0)
++		/* harmless on its own - cc_check exits while the arm token is gone -
++		 * but it means the box is not behaving, so it is said, not hidden */
++		logmessage("reaper_pbr", "confirm: could not remove the deadline watcher (cru d failed)");
+ 	unlink(PPBR_DEADLINE);
++	nvram_unset("reaper_pbr_err");
+ 	nvram_set("reaper_pbr_armed", "0");   /* clear BEFORE commit: flash must never persist armed=1 (phantom "awaiting confirmation" after reboot) */
+ 	nvram_commit();                             /* reaper_pbr_enable */
+ 	{
+ 		/* the confirmed list = the staged draft (or, for an enable-only
+ 		 * change with no draft, the list already confirmed) */
+ 		char *rl = strdup(reaper_pbr_rl_get());
+-		ppbr_write_lastgood(rl);
++		if (!rl || !ppbr_write_lastgood(rl)) ok = 0;
+ 		free(rl);
+-		unlink(REAPER_PBR_DRAFT);
++		/* keep the draft when the snapshot is incomplete: it is then the only
++		 * copy of what the operator confirmed, and the page still shows it */
++		if (ok) unlink(REAPER_PBR_DRAFT);
+ 	}
+ 	reaper_fw_promote_objects();	/* v2.6.9: the domain lists edited on this page persist too */
+-	if (nvram_match("reaper_pbr_enable", "1"))
+-		rename(PPBR_CAND, PPBR_APPLY);          /* the confirmed candidate becomes the boot-time script */
+-	else {
++	if (nvram_match("reaper_pbr_enable", "1")) {
++		if (rename(PPBR_CAND, PPBR_APPLY) != 0) {   /* the confirmed candidate becomes the boot-time script */
++			logmessage("reaper_pbr", "confirm: could not promote the candidate to the boot-time script");
++			ok = 0;
++		}
++	} else {
+ 		unlink(PPBR_CAND);
+ 		unlink(PPBR_APPLY);
+ 	}
+-	logmessage("reaper_pbr", "routing rules confirmed and saved");
++	/* v3.0.5 (F10): the writes above were unchecked and the success line was
++	 * unconditional, so a confirm whose snapshot never landed still told the
++	 * operator it was saved - and the next boot loaded the previous rules. */
++	if (ok)
++		logmessage("reaper_pbr", "routing rules confirmed and saved");
++	else {
++		nvram_set("reaper_pbr_err", "E_SAVE");
++		logmessage("reaper_pbr", "routing rules confirmed but NOT fully saved - apply and keep again so they survive a reboot");
++	}
+ }
+ 
+ /* Operator declined, or the deadline passed while rc was alive. */
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 115f28ae77..e0ab51a8f7 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -547,7 +547,13 @@ static void rw_emit_self_chain(FILE *f, const char *ipt, int v6)
+ 	rw_emit_local_dst(f, ipt, "RW_SELF", v6);
+ 	fprintf(f,
+ 	  "if [ -f /tmp/resolv.dnsmasq ]; then\n"
+-	  "  awk '/^nameserver/{print $2}' /tmp/resolv.dnsmasq | while read -r d; do\n"
++	  /* v3.0.5: /tmp/resolv.dnsmasq is dnsmasq's SERVERS-FILE - rc/wan.c
++	   * wan_add_resolv_dnsmasq() writes `server=<ip>` and `server=/<dom>/<ip>`
++	   * lines, never resolv.conf `nameserver` lines - so the awk that stood
++	   * here matched nothing and this carve-out exempted no resolver from the
++	   * day it shipped (v2.6.2). Bare-address entries only; the domain-scoped
++	   * form names the same upstreams. reaper_diag had the identical misread. */
++	  "  sed -n 's/^server=\\([^/][^# ]*\\).*/\\1/p' /tmp/resolv.dnsmasq | sort -u | while read -r d; do\n"
+ 	  /* Value gate, not a shell-safety one: awk already guarantees no
+ 	   * whitespace and both uses are quoted. A prefix here would be ACCEPTED
+ 	   * by iptables - `nameserver 0.0.0.0/0` becomes a RETURN for everything
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index da59f945ed..2d314886e5 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -476,6 +476,7 @@ int reaper_lockrun_main(int argc, char *argv[])
+ 	static const char * const ok[] = {
+ 		"/tmp/reaper_pbr/apply.sh",
+ 		"/tmp/reaper_pbr/candidate.sh",
++		"/tmp/reaper_pbr/rollback.sh.rules",	/* v3.0.5 (F9): the commit-confirm revert takes the lock too */
+ 		"/tmp/rwarden/apply.sh",
+ 		NULL
+ 	};
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 6ad63c265d..4446585b91 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3217,6 +3217,12 @@ struct nvram_tuple router_defaults[] = {
+ 	/* reaper v2.5.x: ipset-based policy routing (VPN Director PBR, rc/reaper_pbr.c). Marks ipset/domain/src/mac selector matches in mangle (bits 16-19, mask 0x000F0000) and steers them via `ip rule fwmark lookup <ovpncN|main>` at pref 9000 - BELOW VPN Director's 10000 band so an explicit PBR rule OVERRIDES it. Fail-closed (prohibit) for tunnel targets. MVP: OVPN/WAN/BLOCK targets, IPv4; WGC deferred (HW-offload accel skip). */
+ 	{ "reaper_pbr_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (default OFF) */
+ 	{ "reaper_pbr_rulelist", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* rules: <en>desc>seltype>selval>proto>port>target ; seltype=ipset|domain|src|mac, target=OVPN1..5|WGC1..5|WAN|BLOCK */
++	/* runtime state, not settings - the reaper_fw_* twins below have carried
++	 * entries since v2.6; these three never did (v3.0.5, F11). armed's truth
++	 * is the tmpfs arm token; the flag is reset on every stop/confirm/revert. */
++	{ "reaper_pbr_armed", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = a change is awaiting confirmation */
++	{ "reaper_pbr_active", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = the generated ruleset actually ran */
++	{ "reaper_pbr_err", "", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* last refusal/failure CODE (E_*), mapped to text by the page */
+ 	{ "reaper_fw_zpol", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* zone default-policy matrix: <srczone>dstzone>action (action=accept|drop|reject). CKN_STR_MAX (was 2048) for a full 8x8 matrix. */
+ 	{ "reaper_fw_rules", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* committed policy: <en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment (dir=in|out|fwd) */
+ 	/* Phase 2: per-device egress defaults. Zones are interface-based, so they cannot say
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index a0b0289d8f..1327bf1e93 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=IP reservado
+ RDEV_95=Estado
+ RDSH_90=%1 nucleos
+ RWDN_101=Nao foi possivel salvar as listas de bloqueio/permissao.
++RFW_278=A ação Manter não foi concluída. A alteração continua ativa e será revertida automaticamente no prazo - recarregue a página e tente novamente.
++RFW_279=A solicitação de reversão não foi concluída. Mesmo assim, o roteador reverterá a alteração automaticamente no prazo.
++RFW_280=O roteador ainda não informou que a alteração está ativa. Recarregue a página em instantes; se ela nunca aparecer como aguardando confirmação, verifique o log do sistema.
++RFW_281=Não foi possível carregar as regras de roteamento do roteador. Recarregue a página.
++RFW_282=Ainda não existe um snapshot confirmado. Reinicie uma vez com este firmware e aplique novamente.
++RFW_283=Já existe uma alteração aguardando confirmação. Primeiro mantenha ou reverta essa alteração.
++RFW_284=Não foi possível preparar o script de recuperação, portanto nada foi aplicado.
++RFW_285=Não foi possível gerar as novas regras; a configuração anterior foi restaurada.
++RFW_286=As novas regras não foram carregadas; a configuração anterior foi restaurada.
++RFW_287=Algumas regras não foram carregadas. O watchdog continua tentando; o log do sistema indica quais são.
++RFW_288=A reversão não foi concluída, portanto o estado atual do roteamento é desconhecido. Aplique e mantenha novamente, ou reinicie.
++RFW_289=Mantido, mas a cópia salva está incompleta. Aplique e mantenha novamente para que a alteração sobreviva a uma reinicialização.
++RSPD_1=O QoS está ativado e limita esta conexão a cerca de %1. Nenhum teste de velocidade pode registrar mais do que isso enquanto o QoS estiver ativado.
++RSPD_2=O teste expirou antes que o mecanismo informasse um resultado.
++RSPD_3=O mecanismo do teste de velocidade informou um erro: %1
++RSPD_5=Não foi possível iniciar o mecanismo do teste de velocidade.
++RSPD_6=A conexão com a Internet foi detectada como inativa durante o teste.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index eae4e950fb..62a92d1094 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=保留 IP
+ RDEV_95=状态
+ RDSH_90=%1 核心
+ RWDN_101=无法保存阻止/允许列表。
++RFW_278=保留操作未能完成。更改仍在生效，并将在截止时间自动还原。请重新加载页面后重试。
++RFW_279=还原请求未能完成。路由器仍会在截止时间自动还原。
++RFW_280=路由器尚未报告更改已生效。请稍后重新加载页面；如果始终未显示为等待确认，请检查系统日志。
++RFW_281=无法从路由器加载路由规则。请重新加载页面。
++RFW_282=尚不存在已确认的快照。请在此固件上重启一次，然后重新应用。
++RFW_283=已有一项更改正在等待确认。请先保留或还原该更改。
++RFW_284=无法准备恢复脚本，因此未应用任何更改。
++RFW_285=无法构建新规则，已回滚。
++RFW_286=新规则加载失败，已回滚。
++RFW_287=部分规则未能加载。看门狗会持续重试；系统日志中列出了这些规则。
++RFW_288=还原未完成，因此当前生效的路由状态未知。请重新应用并保留，或重启路由器。
++RFW_289=已保留，但保存的副本不完整。请重新应用并保留，以确保重启后仍然有效。
++RSPD_1=QoS 已开启，并将此连接的速率限制在约 %1。启用 QoS 期间，任何速度测试都无法测得高于该值的结果。
++RSPD_2=测试在引擎返回结果之前已超时。
++RSPD_3=测速引擎报告了错误：%1
++RSPD_5=无法启动测速引擎。
++RSPD_6=测试期间检测到互联网连接已断开。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 35b000e337..012320dcaf 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Rezervovana IP
+ RDEV_95=Stav
+ RDSH_90=%1 jader
+ RWDN_101=Seznamy blokovani/povoleni se nepodarilo ulozit.
++RFW_278=Zachování se nezdařilo. Změna je stále aktivní a po vypršení lhůty se sama vrátí zpět – obnovte stránku a zkuste to znovu.
++RFW_279=Požadavek na vrácení zpět se nezdařil. Router změnu po vypršení lhůty stále vrátí zpět sám.
++RFW_280=Router zatím nenahlásil změnu jako aktivní. Za chvíli obnovte stránku; pokud se nikdy nezobrazí jako čekající na potvrzení, zkontrolujte systémový protokol.
++RFW_281=Pravidla směrování se z routeru nepodařilo načíst. Obnovte stránku.
++RFW_282=Zatím neexistuje žádný potvrzený snímek konfigurace. Na tomto firmwaru jednou restartujte router a poté použijte změny znovu.
++RFW_283=Jedna změna už čeká na potvrzení. Nejprve ji zachovejte, nebo vraťte zpět.
++RFW_284=Obnovovací skript se nepodařilo připravit, takže nebylo použito nic.
++RFW_285=Nová pravidla se nepodařilo sestavit a byla vrácena zpět.
++RFW_286=Nová pravidla se nepodařilo načíst a byla vrácena zpět.
++RFW_287=Některá pravidla se nenačetla. Watchdog to zkouší dál; systémový protokol je uvádí jmenovitě.
++RFW_288=Vrácení zpět nebylo dokončeno, takže aktuální stav směrování není znám. Použijte a zachovejte změny znovu, nebo restartujte router.
++RFW_289=Zachováno, ale uložená kopie je neúplná. Použijte a zachovejte změny znovu, aby přežily restart.
++RSPD_1=QoS je zapnuto a omezuje toto připojení přibližně na %1. Dokud je QoS zapnuto, žádný test rychlosti nemůže naměřit víc.
++RSPD_2=Test vypršel dříve, než modul oznámil výsledek.
++RSPD_3=Modul testu rychlosti ohlásil chybu: %1
++RSPD_5=Modul testu rychlosti se nepodařilo spustit.
++RSPD_6=Během testu bylo ohlášeno, že připojení k internetu není dostupné.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index a66909ddb1..3824918667 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Reserveret IP
+ RDEV_95=Tilstand
+ RDSH_90=%1 kerner
+ RWDN_101=Bloker-/tillad-listerne kunne ikke gemmes.
++RFW_278=Det lykkedes ikke at beholde ændringen. Ændringen er stadig aktiv og gendannes automatisk, når fristen udløber - genindlæs siden og prøv igen.
++RFW_279=Anmodningen om at gendanne gik ikke igennem. Routeren gendanner stadig automatisk, når fristen udløber.
++RFW_280=Routeren har endnu ikke meldt ændringen som aktiv. Genindlæs siden om et øjeblik; hvis den aldrig vises som afventende bekræftelse, så tjek systemloggen.
++RFW_281=Routingreglerne kunne ikke indlæses fra routeren. Genindlæs siden.
++RFW_282=Der findes endnu ikke et bekræftet snapshot. Genstart routeren én gang på denne firmware, og anvend derefter ændringen igen.
++RFW_283=En ændring afventer allerede bekræftelse. Behold eller gendan den først.
++RFW_284=Gendannelsesscriptet kunne ikke forberedes, så intet blev anvendt.
++RFW_285=De nye regler kunne ikke opbygges og blev rullet tilbage.
++RFW_286=De nye regler kunne ikke indlæses og blev rullet tilbage.
++RFW_287=Nogle regler blev ikke indlæst. Watchdog-processen bliver ved med at prøve igen; systemloggen viser hvilke.
++RFW_288=Gendannelsen blev ikke fuldført, så den aktive routingtilstand er ukendt. Anvend og behold igen, eller genstart routeren.
++RFW_289=Beholdt, men den gemte kopi er ufuldstændig. Anvend og behold igen, så den overlever en genstart.
++RSPD_1=QoS er slået til og begrænser denne forbindelse til cirka %1. Ingen hastighedstest kan måle højere end det, så længe QoS er aktiveret.
++RSPD_2=Testen fik timeout, før motoren rapporterede et resultat.
++RSPD_3=Hastighedstestmotoren rapporterede en fejl: %1
++RSPD_5=Hastighedstestmotoren kunne ikke startes.
++RSPD_6=Internetforbindelsen blev rapporteret som nede under testen.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index e47f4e36f4..44e5184b20 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Reservierte IP
+ RDEV_95=Status
+ RDSH_90=%1 Kerne
+ RWDN_101=Die Block-/Erlaubnislisten konnten nicht gespeichert werden.
++RFW_278=Das Behalten ist fehlgeschlagen. Die Änderung ist weiterhin aktiv und wird zum Ablauf der Frist automatisch zurückgesetzt - laden Sie die Seite neu und versuchen Sie es erneut.
++RFW_279=Die Anfrage zum Zurücksetzen ist fehlgeschlagen. Der Router setzt die Änderung zum Ablauf der Frist trotzdem automatisch zurück.
++RFW_280=Der Router hat die Änderung noch nicht als aktiv gemeldet. Laden Sie die Seite gleich neu; wird sie nie als bestätigungsbedürftig angezeigt, prüfen Sie das Systemprotokoll.
++RFW_281=Die Routing-Regeln konnten nicht vom Router geladen werden. Laden Sie die Seite neu.
++RFW_282=Es gibt noch keinen bestätigten Snapshot. Starten Sie den Router einmal mit dieser Firmware neu und wenden Sie die Änderung dann erneut an.
++RFW_283=Eine Änderung wartet bereits auf Bestätigung. Behalten Sie diese zuerst oder setzen Sie sie zurück.
++RFW_284=Das Wiederherstellungsskript konnte nicht vorbereitet werden, daher wurde nichts angewendet.
++RFW_285=Die neuen Regeln konnten nicht erstellt werden und wurden zurückgerollt.
++RFW_286=Die neuen Regeln konnten nicht geladen werden und wurden zurückgerollt.
++RFW_287=Einige Regeln wurden nicht geladen. Der Watchdog versucht es weiter; das Systemprotokoll nennt die betroffenen Regeln.
++RFW_288=Das Zurücksetzen wurde nicht abgeschlossen, daher ist der aktive Routing-Zustand unbekannt. Erneut anwenden und behalten oder den Router neu starten.
++RFW_289=Behalten, aber die gespeicherte Kopie ist unvollständig. Erneut anwenden und behalten, damit sie einen Neustart übersteht.
++RSPD_1=QoS ist aktiv und begrenzt diese Verbindung auf etwa %1. Solange QoS aktiviert ist, kann kein Geschwindigkeitstest höhere Werte messen.
++RSPD_2=Der Test ist abgelaufen, bevor die Engine ein Ergebnis gemeldet hat.
++RSPD_3=Die Speedtest-Engine hat einen Fehler gemeldet: %1
++RSPD_5=Die Speedtest-Engine konnte nicht gestartet werden.
++RSPD_6=Die Internetverbindung wurde während des Tests als unterbrochen gemeldet.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index c1827d4d14..1e2f904a68 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Reserved IP
+ RDEV_95=State
+ RDSH_90=%1-core
+ RWDN_101=Could not save the block/allow lists.
++RFW_278=Keep did not go through. The change is still live and reverts on its own at the deadline - reload the page and try again.
++RFW_279=The revert request did not go through. The router still reverts on its own at the deadline.
++RFW_280=The router has not reported the change as live yet. Reload the page in a moment; if it never shows as awaiting confirmation, check the system log.
++RFW_281=The routing rules could not be loaded from the router. Reload the page.
++RFW_282=No confirmed snapshot exists yet. Reboot once on this firmware, then apply again.
++RFW_283=A change is already awaiting confirmation. Keep or revert it first.
++RFW_284=The recovery script could not be prepared, so nothing was applied.
++RFW_285=The new rules could not be built and were rolled back.
++RFW_286=The new rules failed to load and were rolled back.
++RFW_287=Some rules did not load. The watchdog keeps retrying; the system log names them.
++RFW_288=The revert did not complete, so the live routing state is unknown. Apply and keep again, or reboot.
++RFW_289=Kept, but the saved copy is incomplete. Apply and keep again so it survives a reboot.
++RSPD_1=QoS is on and shapes this connection to about %1. No speed test can read higher than that while QoS is enabled.
++RSPD_2=The test timed out before the engine reported a result.
++RSPD_3=The speed-test engine reported an error: %1
++RSPD_5=The speed-test engine could not be started.
++RSPD_6=The Internet connection was reported as down during the test.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 9d4c08c26d..928f9e2473 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=IP reservada
+ RDEV_95=Estado
+ RDSH_90=%1 nucleos
+ RWDN_101=No se pudieron guardar las listas de bloqueo/permiso.
++RFW_278=La acción Conservar no se completó. El cambio sigue activo y se revertirá automáticamente al vencer el plazo - recargue la página e inténtelo de nuevo.
++RFW_279=La solicitud de revertir no se completó. El router revertirá el cambio automáticamente al vencer el plazo de todas formas.
++RFW_280=El router aún no ha notificado el cambio como activo. Recargue la página en un momento; si nunca aparece como pendiente de confirmación, consulte el registro del sistema.
++RFW_281=No se pudieron cargar las reglas de enrutamiento desde el router. Recargue la página.
++RFW_282=Aún no existe ninguna instantánea confirmada. Reinicie una vez con este firmware y vuelva a aplicar.
++RFW_283=Ya hay un cambio pendiente de confirmación. Primero consérvelo o reviértalo.
++RFW_284=No se pudo preparar el script de recuperación, así que no se aplicó nada.
++RFW_285=No se pudieron generar las nuevas reglas; se restauró la configuración anterior.
++RFW_286=Las nuevas reglas no se cargaron correctamente; se restauró la configuración anterior.
++RFW_287=Algunas reglas no se cargaron. El watchdog sigue reintentando; el registro del sistema indica cuáles son.
++RFW_288=La reversión no se completó, así que el estado actual del enrutamiento es desconocido. Aplique y conserve de nuevo, o reinicie.
++RFW_289=Conservado, pero la copia guardada está incompleta. Aplique y conserve de nuevo para que sobreviva a un reinicio.
++RSPD_1=QoS está activado y limita esta conexión a aproximadamente %1. Ninguna prueba de velocidad puede mostrar un valor superior mientras QoS esté activado.
++RSPD_2=Se agotó el tiempo de la prueba antes de que el motor informara un resultado.
++RSPD_3=El motor de la prueba de velocidad informó un error: %1
++RSPD_5=No se pudo iniciar el motor de la prueba de velocidad.
++RSPD_6=Se detectó que la conexión a Internet estaba caída durante la prueba.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 52dc18b246..386aaf6030 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Varattu IP
+ RDEV_95=Tila
+ RDSH_90=%1 ydinta
+ RWDN_101=Esto-/sallintaluetteloita ei voitu tallentaa.
++RFW_278=Säilyttäminen ei onnistunut. Muutos on yhä käytössä ja palautuu automaattisesti määräajan päättyessä - lataa sivu uudelleen ja yritä uudestaan.
++RFW_279=Palautuspyyntö ei onnistunut. Reititin palauttaa muutoksen silti automaattisesti määräajan päättyessä.
++RFW_280=Reititin ei ole vielä ilmoittanut muutosta käyttöön otetuksi. Lataa sivu hetken kuluttua uudelleen; jos se ei koskaan näy vahvistusta odottavana, tarkista järjestelmäloki.
++RFW_281=Reitityssääntöjä ei voitu ladata reitittimestä. Lataa sivu uudelleen.
++RFW_282=Vahvistettua tilannevedosta ei ole vielä olemassa. Käynnistä reititin kerran uudelleen tällä laiteohjelmistolla ja ota muutos sitten uudelleen käyttöön.
++RFW_283=Yksi muutos odottaa jo vahvistusta. Säilytä tai palauta se ensin.
++RFW_284=Palautusskriptiä ei voitu valmistella, joten mitään ei otettu käyttöön.
++RFW_285=Uusia sääntöjä ei voitu muodostaa, ja ne peruttiin.
++RFW_286=Uusien sääntöjen lataaminen epäonnistui, ja ne peruttiin.
++RFW_287=Osa säännöistä ei latautunut. Valvontaprosessi yrittää edelleen uudelleen; järjestelmäloki kertoo, mitkä säännöt.
++RFW_288=Palautus ei valmistunut, joten käytössä oleva reititystila on tuntematon. Ota käyttöön ja säilytä uudelleen tai käynnistä reititin uudelleen.
++RFW_289=Säilytetty, mutta tallennettu kopio on puutteellinen. Ota käyttöön ja säilytä uudelleen, jotta muutos säilyy uudelleenkäynnistyksen yli.
++RSPD_1=QoS on käytössä ja rajoittaa tämän yhteyden nopeuden noin arvoon %1. Mikään nopeustesti ei voi mitata tätä suurempaa nopeutta, kun QoS on käytössä.
++RSPD_2=Testi aikakatkaistiin ennen kuin moottori ilmoitti tuloksen.
++RSPD_3=Nopeustestimoottori ilmoitti virheestä: %1
++RSPD_5=Nopeustestimoottoria ei voitu käynnistää.
++RSPD_6=Internet-yhteyden ilmoitettiin katkenneen testin aikana.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 45d7225f42..376a67e174 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=IP reservee
+ RDEV_95=Etat
+ RDSH_90=%1 coeurs
+ RWDN_101=Impossible d enregistrer les listes de blocage/autorisation.
++RFW_278=La commande Conserver a échoué. La modification reste active et sera annulée automatiquement à échéance du délai - rechargez la page et réessayez.
++RFW_279=La commande Annuler a échoué. Le routeur annulera quand même la modification automatiquement à échéance du délai.
++RFW_280=Le routeur ne signale pas encore la modification comme active. Rechargez la page dans un instant ; si elle ne passe jamais en attente de confirmation, consultez le journal système.
++RFW_281=Impossible de charger les règles de routage depuis le routeur. Rechargez la page.
++RFW_282=Aucun instantané confirmé pour le moment. Redémarrez une fois sous ce micrologiciel, puis appliquez à nouveau.
++RFW_283=Une modification est déjà en attente de confirmation. Conservez-la ou annulez-la avant de continuer.
++RFW_284=Impossible de préparer le script de récupération ; aucune modification appliquée.
++RFW_285=Impossible de générer les nouvelles règles ; la configuration précédente a été rétablie.
++RFW_286=Le chargement des nouvelles règles a échoué ; la configuration précédente a été rétablie.
++RFW_287=Certaines règles ne se sont pas chargées. Le chien de garde continue de réessayer ; le journal système les identifie.
++RFW_288=Annulation incomplète ; le routage actif est dans un état inconnu. Appliquez puis conservez à nouveau, ou redémarrez.
++RFW_289=Modification conservée, mais la copie enregistrée est incomplète. Appliquez puis conservez à nouveau afin de la préserver au redémarrage.
++RSPD_1=La QoS est activée et limite cette connexion à environ %1. Aucun test de débit ne peut afficher davantage tant que la QoS est activée.
++RSPD_2=Le test a expiré avant que le moteur ne renvoie un résultat.
++RSPD_3=Le moteur de test de débit a signalé une erreur : %1
++RSPD_5=Impossible de lancer le moteur de test de débit.
++RSPD_6=La connexion Internet a été signalée comme coupée pendant le test.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 684c80d6df..1b3e9c3b66 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Fenntartott IP
+ RDEV_95=Allapot
+ RDSH_90=%1 mag
+ RWDN_101=A tilto/engedelyezo listakat nem sikerult menteni.
++RFW_278=A megtartás nem sikerült. A módosítás továbbra is aktív, és a határidő lejártakor magától visszaáll – töltse be újra az oldalt, és próbálja meg ismét.
++RFW_279=A visszaállítási kérés nem sikerült. A router a határidő lejártakor továbbra is magától visszaállítja a módosítást.
++RFW_280=A router még nem jelezte, hogy a módosítás aktív. Rövidesen töltse be újra az oldalt; ha soha nem jelenik meg megerősítésre váróként, ellenőrizze a rendszernaplót.
++RFW_281=Az útválasztási szabályokat nem sikerült betölteni a routerről. Töltse be újra az oldalt.
++RFW_282=Még nincs megerősített konfigurációs pillanatkép. Indítsa újra egyszer a routert ezzel a firmware-rel, majd alkalmazza újra a módosításokat.
++RFW_283=Egy módosítás már megerősítésre vár. Előbb tartsa meg vagy állítsa vissza.
++RFW_284=A helyreállító szkriptet nem sikerült előkészíteni, ezért semmi sem került alkalmazásra.
++RFW_285=Az új szabályokat nem sikerült összeállítani, ezért vissza lettek vonva.
++RFW_286=Az új szabályok betöltése nem sikerült, ezért vissza lettek vonva.
++RFW_287=Néhány szabály nem töltődött be. A watchdog folyamatosan újrapróbálkozik; a rendszernapló név szerint felsorolja őket.
++RFW_288=A visszaállítás nem fejeződött be, ezért az aktív útválasztási állapot ismeretlen. Alkalmazza és tartsa meg újra a módosításokat, vagy indítsa újra a routert.
++RFW_289=Megtartva, de a mentett példány hiányos. Alkalmazza és tartsa meg újra a módosításokat, hogy túléljék az újraindítást.
++RSPD_1=A QoS be van kapcsolva, és körülbelül %1 értékre korlátozza ezt a kapcsolatot. Amíg a QoS be van kapcsolva, egyetlen sebességteszt sem mérhet ennél többet.
++RSPD_2=A teszt időtúllépés miatt megszakadt, mielőtt a motor eredményt jelentett volna.
++RSPD_3=A sebességteszt motorja hibát jelzett: %1
++RSPD_5=A sebességteszt motorját nem sikerült elindítani.
++RSPD_6=A teszt közben az internetkapcsolat megszakadását jelezte a rendszer.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 8a5c700a32..9098f59ce3 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=IP riservato
+ RDEV_95=Stato
+ RDSH_90=%1 core
+ RWDN_101=Impossibile salvare le liste di blocco/consenso.
++RFW_278=Il comando Mantieni non è andato a buon fine. La modifica è ancora attiva e verrà ripristinata automaticamente alla scadenza - ricarica la pagina e riprova.
++RFW_279=La richiesta di ripristino non è andata a buon fine. Il router ripristinerà comunque la configurazione automaticamente alla scadenza.
++RFW_280=Il router non ha ancora segnalato la modifica come attiva. Ricarica la pagina tra un istante; se non risulta mai in attesa di conferma, controlla il registro di sistema.
++RFW_281=Impossibile caricare le regole di routing dal router. Ricarica la pagina.
++RFW_282=Non esiste ancora uno snapshot confermato. Riavvia una volta con questo firmware, poi applica di nuovo.
++RFW_283=Una modifica è già in attesa di conferma. Prima mantienila o ripristinala.
++RFW_284=Impossibile preparare lo script di recupero, quindi non è stato applicato nulla.
++RFW_285=Impossibile generare le nuove regole; è stata ripristinata la configurazione precedente.
++RFW_286=Le nuove regole non sono state caricate; è stata ripristinata la configurazione precedente.
++RFW_287=Alcune regole non sono state caricate. Il watchdog continua a riprovare; il registro di sistema le elenca.
++RFW_288=Il ripristino non è stato completato, quindi lo stato attuale del routing è sconosciuto. Applica e mantieni di nuovo, oppure riavvia.
++RFW_289=Modifiche mantenute, ma la copia salvata è incompleta. Applica e mantieni di nuovo affinché sopravvivano a un riavvio.
++RSPD_1=Il QoS è attivo e limita questa connessione a circa %1. Nessun test di velocità può rilevare valori superiori finché il QoS è abilitato.
++RSPD_2=Il test è scaduto prima che il motore restituisse un risultato.
++RSPD_3=Il motore dello speed test ha segnalato un errore: %1
++RSPD_5=Impossibile avviare il motore dello speed test.
++RSPD_6=La connessione Internet è risultata assente durante il test.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 0647154d0c..eff1b85452 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=予約 IP
+ RDEV_95=状態
+ RDSH_90=%1 コア
+ RWDN_101=ブロック/許可リストを保存できませんでした。
++RFW_278=保持は完了しませんでした。変更は引き続き有効で、期限になると自動的に元に戻ります。ページを再読み込みしてからやり直してください。
++RFW_279=元に戻す要求は完了しませんでした。ルーターは期限になると引き続き自動的に元に戻します。
++RFW_280=ルーターはまだ変更が有効になったと報告していません。しばらくしてからページを再読み込みしてください。確認待ちとして一向に表示されない場合は、システムログを確認してください。
++RFW_281=ルーターからルーティングルールを読み込めませんでした。ページを再読み込みしてください。
++RFW_282=確認済みのスナップショットがまだありません。このファームウェアで一度再起動してから、再度適用してください。
++RFW_283=すでに確認待ちの変更があります。先にそれを保持するか、元に戻してください。
++RFW_284=復旧スクリプトを準備できなかったため、何も適用されませんでした。
++RFW_285=新しいルールを構築できなかったため、ロールバックされました。
++RFW_286=新しいルールの読み込みに失敗したため、ロールバックされました。
++RFW_287=一部のルールが読み込まれませんでした。ウォッチドッグが再試行を続けています。該当するルールはシステムログに記録されています。
++RFW_288=元に戻す処理が完了しなかったため、現在有効なルーティング状態は不明です。もう一度適用して保持するか、再起動してください。
++RFW_289=保持されましたが、保存されたコピーが不完全です。再起動後も維持されるように、もう一度適用して保持してください。
++RSPD_1=QoS が有効になっており、この接続は約 %1 に制限されています。QoS が有効な間は、どのスピードテストでもこれより高い値は測定できません。
++RSPD_2=エンジンが結果を返す前にテストがタイムアウトしました。
++RSPD_3=速度テストエンジンがエラーを報告しました：%1
++RSPD_5=速度テストエンジンを起動できませんでした。
++RSPD_6=テスト中にインターネット接続が切断されたと報告されました。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 366332ad4e..6b4e47095f 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=예약 IP
+ RDEV_95=상태
+ RDSH_90=%1코어
+ RWDN_101=차단/허용 목록을 저장하지 못했습니다.
++RFW_278=유지가 완료되지 않았습니다. 변경 사항은 여전히 적용 중이며 기한이 되면 자동으로 되돌려집니다. 페이지를 새로 고친 후 다시 시도하세요.
++RFW_279=되돌리기 요청이 완료되지 않았습니다. 라우터는 기한이 되면 여전히 자동으로 되돌립니다.
++RFW_280=라우터가 아직 변경 사항이 적용되었다고 보고하지 않았습니다. 잠시 후 페이지를 새로 고치세요. 계속 확인 대기 중으로 표시되지 않으면 시스템 로그를 확인하세요.
++RFW_281=라우터에서 라우팅 규칙을 불러올 수 없습니다. 페이지를 새로 고치세요.
++RFW_282=확인된 스냅샷이 아직 없습니다. 이 펌웨어에서 한 번 재부팅한 후 다시 적용하세요.
++RFW_283=이미 확인을 기다리는 변경 사항이 있습니다. 먼저 해당 변경 사항을 유지하거나 되돌리세요.
++RFW_284=복구 스크립트를 준비할 수 없어 아무것도 적용되지 않았습니다.
++RFW_285=새 규칙을 생성할 수 없어 롤백되었습니다.
++RFW_286=새 규칙을 불러오지 못해 롤백되었습니다.
++RFW_287=일부 규칙이 로드되지 않았습니다. 워치독이 계속 재시도하며, 해당 규칙은 시스템 로그에 기록되어 있습니다.
++RFW_288=되돌리기가 완료되지 않아 현재 적용 중인 라우팅 상태를 알 수 없습니다. 다시 적용하고 유지하거나 재부팅하세요.
++RFW_289=유지되었지만 저장된 사본이 불완전합니다. 재부팅 후에도 유지되도록 다시 적용하고 유지하세요.
++RSPD_1=QoS가 켜져 있어 이 연결의 속도가 약 %1로 제한됩니다. QoS가 활성화된 동안에는 어떤 속도 테스트도 그보다 높은 값을 측정할 수 없습니다.
++RSPD_2=엔진이 결과를 보고하기 전에 테스트 시간이 초과되었습니다.
++RSPD_3=속도 테스트 엔진에서 오류를 보고했습니다: %1
++RSPD_5=속도 테스트 엔진을 시작할 수 없습니다.
++RSPD_6=테스트 중 인터넷 연결이 끊어진 것으로 보고되었습니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 83de3e5195..1d5ea53550 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=IP simpanan
+ RDEV_95=Keadaan
+ RDSH_90=%1 teras
+ RWDN_101=Senarai sekat/benarkan tidak dapat disimpan.
++RFW_278=Tindakan kekalkan tidak berjaya. Perubahan masih aktif dan akan dikembalikan secara automatik apabila tiba tempoh tamat. Muat semula halaman dan cuba lagi.
++RFW_279=Permintaan kembalikan tidak berjaya. Penghala masih akan mengembalikannya secara automatik apabila tiba tempoh tamat.
++RFW_280=Penghala belum melaporkan perubahan itu sebagai aktif. Muat semula halaman sebentar lagi; jika ia tidak pernah dipaparkan sebagai menunggu pengesahan, semak log sistem.
++RFW_281=Peraturan penghalaan tidak dapat dimuatkan daripada penghala. Muat semula halaman.
++RFW_282=Belum ada syot kilat yang disahkan. But semula sekali pada perisian tegar ini, kemudian gunakan sekali lagi.
++RFW_283=Sudah ada perubahan yang menunggu pengesahan. Kekalkan atau kembalikan perubahan itu dahulu.
++RFW_284=Skrip pemulihan tidak dapat disediakan, jadi tiada apa-apa yang digunakan.
++RFW_285=Peraturan baharu tidak dapat dibina dan telah dikembalikan.
++RFW_286=Peraturan baharu gagal dimuatkan dan telah dikembalikan.
++RFW_287=Sesetengah peraturan tidak dimuatkan. Watchdog terus mencuba semula; log sistem menyenaraikan peraturan tersebut.
++RFW_288=Pengembalian tidak selesai, jadi keadaan penghalaan yang aktif tidak diketahui. Gunakan dan kekalkan sekali lagi, atau but semula.
++RFW_289=Dikekalkan, tetapi salinan yang disimpan tidak lengkap. Gunakan dan kekalkan sekali lagi supaya ia kekal selepas but semula.
++RSPD_1=QoS dihidupkan dan mengehadkan sambungan ini kepada kira-kira %1. Tiada ujian kelajuan boleh membaca lebih tinggi daripada itu semasa QoS diaktifkan.
++RSPD_2=Ujian tamat masa sebelum enjin melaporkan keputusan.
++RSPD_3=Enjin ujian kelajuan melaporkan ralat: %1
++RSPD_5=Enjin ujian kelajuan tidak dapat dimulakan.
++RSPD_6=Sambungan Internet dilaporkan terputus semasa ujian.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 68e765f66d..cf40e0563d 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Gereserveerd IP
+ RDEV_95=Status
+ RDSH_90=%1 kernen
+ RWDN_101=De blokkeer-/toestaan-lijsten konden niet worden opgeslagen.
++RFW_278=Behouden is niet gelukt. De wijziging is nog actief en wordt bij het verstrijken van de termijn automatisch teruggedraaid - laad de pagina opnieuw en probeer het nogmaals.
++RFW_279=Het verzoek om terug te draaien is niet gelukt. De router draait de wijziging bij het verstrijken van de termijn alsnog automatisch terug.
++RFW_280=De router heeft de wijziging nog niet als actief gemeld. Laad de pagina zo meteen opnieuw; als deze nooit als wachtend op bevestiging verschijnt, controleer dan het systeemlogboek.
++RFW_281=De routeringsregels konden niet van de router worden geladen. Laad de pagina opnieuw.
++RFW_282=Er bestaat nog geen bevestigde momentopname. Start de router eenmaal opnieuw op met deze firmware en pas de wijziging daarna opnieuw toe.
++RFW_283=Er wacht al een wijziging op bevestiging. Behoud deze eerst of draai deze terug.
++RFW_284=Het herstelscript kon niet worden voorbereid, dus er is niets toegepast.
++RFW_285=De nieuwe regels konden niet worden opgebouwd en zijn teruggedraaid.
++RFW_286=De nieuwe regels konden niet worden geladen en zijn teruggedraaid.
++RFW_287=Sommige regels zijn niet geladen. De watchdog blijft het opnieuw proberen; het systeemlogboek vermeldt welke regels het betreft.
++RFW_288=Het terugdraaien is niet voltooid, dus de actieve routeringsstatus is onbekend. Pas opnieuw toe en behoud de wijziging, of start de router opnieuw op.
++RFW_289=Behouden, maar de opgeslagen kopie is onvolledig. Pas opnieuw toe en behoud de wijziging, zodat deze een herstart overleeft.
++RSPD_1=QoS is ingeschakeld en beperkt deze verbinding tot ongeveer %1. Zolang QoS is ingeschakeld, kan geen enkele snelheidstest hoger meten.
++RSPD_2=De test is verlopen voordat de engine een resultaat meldde.
++RSPD_3=De speedtest-engine heeft een fout gemeld: %1
++RSPD_5=De speedtest-engine kon niet worden gestart.
++RSPD_6=De internetverbinding werd tijdens de test als verbroken gemeld.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 6ae131052f..dcd1f2c835 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Reservert IP
+ RDEV_95=Tilstand
+ RDSH_90=%1 kjerner
+ RWDN_101=Blokker-/tillat-listene kunne ikke lagres.
++RFW_278=Det gikk ikke å beholde endringene. Endringen er fortsatt aktiv og tilbakestilles automatisk når fristen utløper - last inn siden på nytt og prøv igjen.
++RFW_279=Forespørselen om tilbakestilling gikk ikke gjennom. Ruteren tilbakestiller likevel automatisk når fristen utløper.
++RFW_280=Ruteren har ennå ikke rapportert endringen som aktiv. Last inn siden på nytt om et øyeblikk; hvis den aldri vises som ventende på bekreftelse, sjekk systemloggen.
++RFW_281=Rutingreglene kunne ikke lastes fra ruteren. Last inn siden på nytt.
++RFW_282=Det finnes ennå ingen bekreftet snapshot. Start ruteren på nytt én gang på denne fastvaren, og bruk deretter endringen på nytt.
++RFW_283=En endring venter allerede på bekreftelse. Behold eller tilbakestill den først.
++RFW_284=Gjenopprettingsskriptet kunne ikke klargjøres, så ingenting ble tatt i bruk.
++RFW_285=De nye reglene kunne ikke bygges og ble rullet tilbake.
++RFW_286=De nye reglene kunne ikke lastes og ble rullet tilbake.
++RFW_287=Noen regler ble ikke lastet. Watchdog-prosessen fortsetter å prøve; systemloggen viser hvilke.
++RFW_288=Tilbakestillingen ble ikke fullført, så den aktive rutingtilstanden er ukjent. Bruk og behold på nytt, eller start ruteren på nytt.
++RFW_289=Beholdt, men den lagrede kopien er ufullstendig. Bruk og behold på nytt slik at den overlever en omstart.
++RSPD_1=QoS er på og begrenser denne tilkoblingen til omtrent %1. Ingen hastighetstest kan måle høyere enn det så lenge QoS er aktivert.
++RSPD_2=Testen fikk tidsavbrudd før motoren rapporterte et resultat.
++RSPD_3=Hastighetstestmotoren rapporterte en feil: %1
++RSPD_5=Hastighetstestmotoren kunne ikke startes.
++RSPD_6=Internettforbindelsen ble rapportert som nede under testen.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 2d60e95ec6..bb4d4bb3be 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Zarezerwowane IP
+ RDEV_95=Stan
+ RDSH_90=%1 rdzeni
+ RWDN_101=Nie udalo sie zapisac list blokowania/zezwolen.
++RFW_278=Zachowanie zmian nie powiodło się. Zmiana nadal jest aktywna i po upływie terminu zostanie automatycznie cofnięta – odśwież stronę i spróbuj ponownie.
++RFW_279=Żądanie cofnięcia nie powiodło się. Router i tak automatycznie cofnie zmianę po upływie terminu.
++RFW_280=Router jeszcze nie zgłosił zmiany jako aktywnej. Za chwilę odśwież stronę; jeśli zmiana nigdy nie pojawi się jako oczekująca na potwierdzenie, sprawdź dziennik systemowy.
++RFW_281=Nie udało się wczytać reguł routingu z routera. Odśwież stronę.
++RFW_282=Nie ma jeszcze potwierdzonej migawki konfiguracji. Uruchom router ponownie raz na tej wersji oprogramowania, a potem zastosuj zmiany jeszcze raz.
++RFW_283=Jedna zmiana już oczekuje na potwierdzenie. Najpierw ją zachowaj lub cofnij.
++RFW_284=Nie udało się przygotować skryptu odzyskiwania, więc nic nie zostało zastosowane.
++RFW_285=Nie udało się zbudować nowych reguł i zostały one wycofane.
++RFW_286=Nowe reguły nie wczytały się i zostały wycofane.
++RFW_287=Niektóre reguły nie wczytały się. Watchdog nadal ponawia próby; dziennik systemowy wymienia je z nazwy.
++RFW_288=Cofnięcie nie zostało ukończone, więc bieżący stan routingu jest nieznany. Zastosuj i zachowaj zmiany ponownie albo uruchom router ponownie.
++RFW_289=Zachowano, ale zapisana kopia jest niekompletna. Zastosuj i zachowaj zmiany ponownie, aby przetrwały ponowne uruchomienie.
++RSPD_1=QoS jest włączony i ogranicza to połączenie do około %1. Dopóki QoS jest włączony, żaden test prędkości nie pokaże wyższej wartości.
++RSPD_2=Upłynął limit czasu testu, zanim silnik zgłosił wynik.
++RSPD_3=Silnik testu prędkości zgłosił błąd: %1
++RSPD_5=Nie udało się uruchomić silnika testu prędkości.
++RSPD_6=Podczas testu zgłoszono brak połączenia z internetem.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 2c137d1b96..43d1759fcf 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=IP rezervat
+ RDEV_95=Stare
+ RDSH_90=%1 nuclee
+ RWDN_101=Listele de blocare/permitere nu au putut fi salvate.
++RFW_278=Comanda Păstrează nu a reușit. Modificarea rămâne activă și routerul va reveni automat la configurația anterioară la expirarea termenului - reîncarcă pagina și încearcă din nou.
++RFW_279=Cererea de revenire nu a reușit. Routerul va reveni oricum automat la configurația anterioară la expirarea termenului.
++RFW_280=Routerul nu a raportat încă modificarea ca fiind activă. Reîncarcă pagina peste câteva momente; dacă nu apare niciodată ca fiind în așteptarea confirmării, verifică jurnalul de sistem.
++RFW_281=Regulile de rutare nu au putut fi încărcate de pe router. Reîncarcă pagina.
++RFW_282=Nu există încă un snapshot confirmat. Repornește o dată cu acest firmware, apoi aplică din nou.
++RFW_283=O modificare așteaptă deja confirmarea. Mai întâi păstrează modificarea sau revino la configurația anterioară.
++RFW_284=Scriptul de recuperare nu a putut fi pregătit, așa că nu s-a aplicat nimic.
++RFW_285=Noile reguli nu au putut fi generate; s-a revenit la configurația anterioară.
++RFW_286=Noile reguli nu s-au încărcat; s-a revenit la configurația anterioară.
++RFW_287=Unele reguli nu s-au încărcat. Watchdog-ul reîncearcă în continuare; jurnalul de sistem le indică.
++RFW_288=Revenirea nu s-a finalizat, așa că starea curentă a rutării este necunoscută. Aplică și păstrează din nou sau repornește routerul.
++RFW_289=Modificările au fost păstrate, dar copia salvată este incompletă. Aplică și păstrează din nou pentru ca ele să reziste la o repornire.
++RSPD_1=QoS este activat și limitează această conexiune la aproximativ %1. Niciun test de viteză nu poate indica o valoare mai mare cât timp QoS este activat.
++RSPD_2=Testul a expirat înainte ca motorul să raporteze un rezultat.
++RSPD_3=Motorul testului de viteză a raportat o eroare: %1
++RSPD_5=Motorul testului de viteză nu a putut fi pornit.
++RSPD_6=Conexiunea la Internet a fost raportată ca întreruptă în timpul testului.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 937d85e337..d88e401f70 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Зарезервированный IP
+ RDEV_95=Состояние
+ RDSH_90=%1 ядра
+ RWDN_101=Не удалось сохранить списки блокировки/разрешения.
++RFW_278=Сохранить не удалось. Изменение по-прежнему активно и по истечении срока откатится само – обновите страницу и попробуйте снова.
++RFW_279=Запрос на откат не прошёл. Роутер всё равно откатит изменение сам по истечении срока.
++RFW_280=Роутер ещё не сообщил, что изменение применено. Обновите страницу чуть позже; если оно так и не появится как ожидающее подтверждения, проверьте системный журнал.
++RFW_281=Не удалось загрузить правила маршрутизации с роутера. Обновите страницу.
++RFW_282=Подтверждённого снимка конфигурации пока нет. Один раз перезагрузите роутер на этой прошивке, затем примените изменения снова.
++RFW_283=Одно изменение уже ожидает подтверждения. Сначала сохраните или откатите его.
++RFW_284=Не удалось подготовить скрипт восстановления, поэтому ничего не было применено.
++RFW_285=Не удалось собрать новые правила, они были откачены.
++RFW_286=Новые правила не загрузились и были откачены.
++RFW_287=Некоторые правила не загрузились. Сторожевой процесс продолжает попытки; они перечислены в системном журнале.
++RFW_288=Откат не завершился, поэтому текущее состояние маршрутизации неизвестно. Примените и сохраните изменения снова или перезагрузите роутер.
++RFW_289=Сохранено, но записанная копия неполная. Примените и сохраните изменения снова, чтобы они пережили перезагрузку.
++RSPD_1=QoS включён и ограничивает это соединение примерно до %1. Пока QoS включён, ни один тест скорости не покажет больше.
++RSPD_2=Время ожидания теста истекло, прежде чем движок сообщил результат.
++RSPD_3=Движок теста скорости сообщил об ошибке: %1
++RSPD_5=Не удалось запустить движок теста скорости.
++RSPD_6=Во время теста было получено сообщение об отсутствии подключения к интернету.
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 5029fa075b..b3a02a41d5 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -95,6 +95,10 @@ textarea.fld:focus{outline:2px solid rgba(225,6,0,.4);outline-offset:1px;border-
+ .note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:8px}
+ .note.warn{color:var(--amber)}
+ .saved{font-size:12px;color:var(--jade);margin-left:10px}
++/* v3.0.5: never let a long translation stretch the button row - clip to one
++   line, full text on hover while clipped (rule 26). :not(.hidden) keeps the
++   existing hide rule authoritative. */
++.saved:not(.hidden){display:inline-block;max-width:420px;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .saved.err{color:var(--danger)}
+ table.rt{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px}
+ table.rt th{font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;color:var(--steel);text-align:left;padding:7px 10px;border-bottom:1px solid var(--line-soft)}
+@@ -678,7 +682,7 @@ function xhr(url,cb){
+ function fwcgi(q,cb){xhr('/reaper_fw.cgi?'+q+'&http_id='+encodeURIComponent(REAPER_HTTPID),cb||function(){});}
+ function tgSet(el,on){el.classList.toggle('on',!!on);}
+ function tgGet(el){return el.classList.contains('on')?'1':'0';}
+-function showSaved(el,ok,msg){el.className='saved'+(ok?'':' err');el.textContent=msg;el.classList.remove('hidden');setTimeout(function(){el.classList.add('hidden');},4000);}
++function showSaved(el,ok,msg){el.className='saved'+(ok?'':' err');el.textContent=msg;el.classList.remove('hidden');if(el.scrollWidth>el.clientWidth+1)el.title=msg;else el.removeAttribute('title');setTimeout(function(){el.classList.add('hidden');},4000);}
+ 
+ /* dirty-only apply: writes the given nvram map, then restart_firewall */
+ /* reaper v2.9.3: fwApply posts into a hidden iframe and then blindly reloads 7 s
+@@ -1690,11 +1694,13 @@ function initRfw(){
+   };
+   /* the banner is page-level but Apply / Keep / Revert all live on Rules */
+   if($('rf_pending_go'))$('rf_pending_go').onclick=function(){ showTab('rules'); };
++  /* v3.0.5 (F7): Keep / Revert acknowledge their response instead of assuming
++     the request landed (same gap the Policy Routing page had). */
+   $('rf_keep').onclick=function(){
+-    fwcgi('action=confirm',function(){setTimeout(function(){rfwLoad();},800);});
++    fwcgi('action=confirm',function(j){if(!j||!j.ok){showSaved($('rf_saved'),false,(j&&j.error)||`<#RFW_278#>`);return;}setTimeout(function(){rfwLoad();},800);});
+   };
+   $('rf_revert').onclick=function(){
+-    fwcgi('action=rollback',function(){setTimeout(function(){rfwLoad();},1500);});
++    fwcgi('action=rollback',function(j){if(!j||!j.ok){showSaved($('rf_saved'),false,(j&&j.error)||`<#RFW_279#>`);return;}setTimeout(function(){rfwLoad();},1500);});
+   };
+ }
+ 
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 8d7a1b2a6f..d3390c89e2 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -66,7 +66,7 @@ td.sel{font-family:ui-monospace,Consolas,monospace;font-size:11.7px;color:var(--
+ .armcard{border-color:rgba(224,169,59,.45)}
+ .armcard .row{display:flex;gap:10px;margin-top:12px}
+ .btng{background:transparent;border:1px solid rgba(255,255,255,.18);border-radius:7px;color:var(--bone-dim);padding:7px 14px;cursor:pointer;font-family:var(--body);font-size:12.5px}
+-.errnote{font-size:12px;color:var(--danger);margin-top:8px;display:none}
++.errnote{font-size:12px;color:var(--danger);margin-top:8px;display:none;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .rowdel{color:var(--danger);background:transparent;border:1px solid rgba(255,59,48,.3);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px}
+ .rowedt{color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11px;margin-right:6px}
+ .rowedt:hover{color:var(--bone);border-color:var(--crimson-deep)}
+@@ -366,7 +366,17 @@ function serialize(){
+ /* v2.6.7 commit-confirm. The rules go live at once and the router reverts them
+    itself (a cru watcher) unless Keep is pressed within the timer shared with the
+    Firewall page. The deadline is the router's: a closed tab still gets reverted. */
+-var ARM={armed:0,left:0}, armTimer=null;
++var ARM={armed:0,left:0}, armTimer=null, CONFIRM=60;
++/* v3.0.5 (F11): rc reports a refusal or failure as a short CODE in
++   reaper_pbr_err; the page owns the words, so they translate. An unknown
++   code is shown as-is. */
++var ERRT={E_NOSNAP:`<#RFW_282#>`,E_ARMED:`<#RFW_283#>`,E_NORECOVERY:`<#RFW_284#>`,E_BUILD:`<#RFW_285#>`,E_RUN:`<#RFW_286#>`,E_PARTIAL:`<#RFW_287#>`,E_REVERT:`<#RFW_288#>`,E_SAVE:`<#RFW_289#>`};
++function errText(c){ return ERRT[c]||c; }
++/* v3.0.5 (F7): every Keep / Revert acknowledges its own response. A stale
++   http_id after a reboot, an expired session (login HTML, not JSON) or the
++   8 s XHR timeout used to leave the timer running with the operator
++   believing they had confirmed. */
++function pbrAck(j,fallback){ if(j&&j.ok)return true; showErr((j&&j.error)?errText(j.error):fallback); return false; }
+ function pbrcgi(q,cb){
+   var x=new XMLHttpRequest();
+   x.open('GET','/reaper_pbr.cgi?'+q+'&http_id='+encodeURIComponent(HTTPID),true);
+@@ -376,7 +386,13 @@ function pbrcgi(q,cb){
+   x.onerror=x.ontimeout=x.onabort=function(){fin(null);};
+   x.send();
+ }
+-function showErr(m){ var e=document.getElementById('pbrerr'); e.textContent=m||''; e.style.display=m?'block':'none'; }
++/* v3.0.5: a long translation must not reflow the card. The banner is ONE
++   line, clipped with an ellipsis (.errnote), and carries the full text as a
++   hover tooltip (native title, gone on mouse-out) only while it is actually
++   clipped - the .rtip / reaperTips pattern the chrome uses (rule 26). */
++function rtipFit(e){ if(!e)return; if(e.scrollWidth>e.clientWidth+1)e.title=e.textContent; else e.removeAttribute('title'); }
++function showErr(m){ var e=document.getElementById('pbrerr'); e.textContent=m||''; e.style.display=m?'block':'none'; rtipFit(e); }
++window.addEventListener('resize',function(){ rtipFit(document.getElementById('pbrerr')); });
+ function armUI(){
+   document.getElementById('armcard').style.display=ARM.armed?'':'none';
+   document.getElementById('armleft').textContent=ARM.armed?ARM.left:'\u2014';
+@@ -386,7 +402,7 @@ function armUI(){
+ }
+ function armPoll(){
+   pbrcgi('action=cfg',function(j){
+-    if(j&&j.ok){ ARM.armed=j.armed?1:0; ARM.left=j.left||0; NV.active=String(j.active); WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); if(j.err)showErr(j.err); }
++    if(j&&j.ok){ ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; NV.active=String(j.active); WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); showErr(j.err?errText(j.err):''); }
+     else ARM.armed=0;
+     syncMaster(); armUI();
+   });
+@@ -397,19 +413,25 @@ function applyPBR(){
+   document.getElementById('applying').className='applying show';
+   pbrcgi(q,function(j){
+     document.getElementById('applying').className='applying';
+-    if(!j||!j.ok){ showErr((j&&j.error)||`<#RFW_155#>`); return; }
++    if(!j||!j.ok){ showErr((j&&j.error)?errText(j.error):`<#RFW_155#>`); return; }
+     NV.rulelist=serialize(); NV.enable=masterOn?'1':'0';
+-document.getElementById('applybtn').disabled=true;
+-    var tries=0;
++    document.getElementById('applybtn').disabled=true;
++    /* v3.0.5 (F6): poll to the REAL deadline, not a fixed 8.4 s. The apply
++       CGI returns as soon as rc is signalled; the armed state lands after the
++       sets rebuild, the teardown loop and the candidate run, which routinely
++       takes longer than 12 x 700 ms - and on timeout this stopped looking
++       FOREVER, so the Keep button never appeared and the timer fired. The
++       budget is the commit-confirm window itself (floor 15 s). */
++    var t0=Date.now(), budget=Math.max(15,CONFIRM|0)*1000;
+     (function poll(){
+       pbrcgi('action=cfg',function(j){
+         if(j&&j.ok){
+-          if(j.wg)WGON=j.wg; if(j.ov)OVON=j.ov; renderTargets();
+-          if(j.err){ showErr(j.err); document.getElementById('applybtn').disabled=false; return; }
+-          if(j.armed){ ARM.armed=1; ARM.left=j.left||0; NV.active=String(j.active); syncMaster(); armUI(); return; }
++          if(j.wg)WGON=j.wg; if(j.ov)OVON=j.ov; renderTargets(); if(j.confirm)CONFIRM=j.confirm;
++          if(j.err&&j.err!=='E_PARTIAL'){ showErr(errText(j.err)); document.getElementById('applybtn').disabled=false; return; }
++          if(j.armed){ ARM.armed=1; ARM.left=j.left||0; NV.active=String(j.active); if(j.err)showErr(errText(j.err)); syncMaster(); armUI(); return; }
+         }
+-        if(++tries<12){ setTimeout(poll,700); return; }
+-        document.getElementById('applybtn').disabled=false; showErr(`<#RFW_155#>`);
++        if(Date.now()-t0<budget){ setTimeout(poll,1000); return; }
++        document.getElementById('applybtn').disabled=false; showErr(`<#RFW_280#>`);
+       });
+     })();
+   });
+@@ -537,13 +559,13 @@ function objDelete(k){
+   pbrTypeChange();
+   pbrTargetChange();
+   loadObjects();
+-  document.getElementById('armkeep').onclick=function(){ pbrcgi('action=confirm',function(){ setTimeout(armPoll,800); }); };
+-  document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(){ setTimeout(function(){ location.reload(); },1500); }); };
++  document.getElementById('armkeep').onclick=function(){ pbrcgi('action=confirm',function(j){ if(pbrAck(j,`<#RFW_278#>`)) setTimeout(armPoll,800); }); };
++  document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(j){ if(pbrAck(j,`<#RFW_279#>`)) setTimeout(function(){ location.reload(); },1500); }); };
+   /* an apply from another tab, or a page reload inside the window */
+   pbrcgi('action=cfg',function(j){
+-    if(j&&j.ok){ WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.err)showErr(j.err);
++    if(j&&j.ok){ WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; showErr(j.err?errText(j.err):'');
+       NV.rulelist=j.rulelist||''; parseRules(); render(); armUI(); }
+-    else showErr(`<#RFW_155#>`);
++    else showErr(`<#RFW_281#>`);   /* v3.0.5 (F11): a LOAD failure is not "could not be saved" */
+   });
+ })();
+ </script>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 2e971c0810..f66bf82c49 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Rezerviran IP
+ RDEV_95=Stanje
+ RDSH_90=%1 jeder
+ RWDN_101=Seznamov za blokiranje/dovolitev ni bilo mogoce shraniti.
++RFW_278=Ohranitev ni uspela. Sprememba je še vedno aktivna in se bo ob izteku roka samodejno povrnila – znova naložite stran in poskusite znova.
++RFW_279=Zahteva za povrnitev ni uspela. Usmerjevalnik bo spremembo ob izteku roka vseeno samodejno povrnil.
++RFW_280=Usmerjevalnik še ni sporočil, da je sprememba aktivna. Čez trenutek znova naložite stran; če se nikoli ne prikaže kot čakajoča na potrditev, preverite sistemski dnevnik.
++RFW_281=Pravil usmerjanja ni bilo mogoče naložiti z usmerjevalnika. Znova naložite stran.
++RFW_282=Potrjenega posnetka konfiguracije še ni. Enkrat znova zaženite usmerjevalnik s to strojno programsko opremo, nato spremembe znova uveljavite.
++RFW_283=Ena sprememba že čaka na potrditev. Najprej jo ohranite ali povrnite.
++RFW_284=Obnovitvenega skripta ni bilo mogoče pripraviti, zato ni bilo uveljavljeno nič.
++RFW_285=Novih pravil ni bilo mogoče sestaviti, zato so bila razveljavljena.
++RFW_286=Nova pravila se niso naložila, zato so bila razveljavljena.
++RFW_287=Nekatera pravila se niso naložila. Nadzornik (watchdog) poskuša znova; sistemski dnevnik jih navaja po imenu.
++RFW_288=Povrnitev se ni dokončala, zato aktivno stanje usmerjanja ni znano. Znova uveljavite in ohranite spremembe ali pa znova zaženite usmerjevalnik.
++RFW_289=Ohranjeno, vendar je shranjena kopija nepopolna. Znova uveljavite in ohranite spremembe, da bodo preživele ponovni zagon.
++RSPD_1=QoS je vklopljen in omejuje to povezavo na približno %1. Dokler je QoS vklopljen, noben test hitrosti ne more izmeriti več.
++RSPD_2=Čas za test je potekel, preden je pogon sporočil rezultat.
++RSPD_3=Pogon testa hitrosti je sporočil napako: %1
++RSPD_5=Pogona testa hitrosti ni bilo mogoče zagnati.
++RSPD_6=Med testom je bila internetna povezava prijavljena kot prekinjena.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 190146429d..a298ec893e 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Reserverad IP
+ RDEV_95=Status
+ RDSH_90=%1 karnor
+ RWDN_101=Blockerings-/tillatlistorna kunde inte sparas.
++RFW_278=Det gick inte att behålla ändringarna. Ändringen är fortfarande aktiv och återställs automatiskt när tidsfristen löper ut - ladda om sidan och försök igen.
++RFW_279=Begäran om återställning gick inte igenom. Routern återställer ändå automatiskt när tidsfristen löper ut.
++RFW_280=Routern har ännu inte rapporterat ändringen som aktiv. Ladda om sidan om en stund; om den aldrig visas som väntande på bekräftelse, kontrollera systemloggen.
++RFW_281=Routingreglerna kunde inte läsas in från routern. Ladda om sidan.
++RFW_282=Det finns ännu ingen bekräftad ögonblicksbild. Starta om routern en gång på denna firmware och tillämpa sedan ändringen igen.
++RFW_283=En ändring väntar redan på bekräftelse. Behåll eller återställ den först.
++RFW_284=Återställningsskriptet kunde inte förberedas, så inget tillämpades.
++RFW_285=De nya reglerna kunde inte byggas och rullades tillbaka.
++RFW_286=De nya reglerna kunde inte läsas in och rullades tillbaka.
++RFW_287=Vissa regler lästes inte in. Watchdog-processen fortsätter att försöka; systemloggen anger vilka.
++RFW_288=Återställningen slutfördes inte, så det aktiva routingläget är okänt. Tillämpa och behåll igen, eller starta om routern.
++RFW_289=Behållet, men den sparade kopian är ofullständig. Tillämpa och behåll igen så att den överlever en omstart.
++RSPD_1=QoS är på och begränsar denna anslutning till ungefär %1. Inget hastighetstest kan mäta högre än så medan QoS är aktiverat.
++RSPD_2=Tiden gick ut innan motorn rapporterade ett resultat.
++RSPD_3=Hastighetstestmotorn rapporterade ett fel: %1
++RSPD_5=Hastighetstestmotorn kunde inte startas.
++RSPD_6=Internetanslutningen rapporterades vara nere under testet.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index fbc1800673..2e42e41ff3 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=IP ที่จอง
+ RDEV_95=สถานะ
+ RDSH_90=%1 คอร์
+ RWDN_101=ไม่สามารถบันทึกรายการบล็อก/อนุญาตได้
++RFW_278=การเก็บการเปลี่ยนแปลงไม่สำเร็จ การเปลี่ยนแปลงยังคงมีผลอยู่และจะย้อนกลับโดยอัตโนมัติเมื่อถึงกำหนดเวลา โปรดโหลดหน้าใหม่แล้วลองอีกครั้ง
++RFW_279=คำขอย้อนกลับไม่สำเร็จ เราเตอร์จะยังคงย้อนกลับโดยอัตโนมัติเมื่อถึงกำหนดเวลา
++RFW_280=เราเตอร์ยังไม่ได้รายงานว่าการเปลี่ยนแปลงมีผลแล้ว โปรดโหลดหน้าใหม่ในอีกสักครู่ หากไม่แสดงสถานะรอการยืนยันเลย ให้ตรวจสอบบันทึกระบบ
++RFW_281=ไม่สามารถโหลดกฎการกำหนดเส้นทางจากเราเตอร์ได้ โปรดโหลดหน้าใหม่
++RFW_282=ยังไม่มีสแนปช็อตที่ยืนยันแล้ว โปรดรีบูตหนึ่งครั้งบนเฟิร์มแวร์นี้ แล้วนำไปใช้อีกครั้ง
++RFW_283=มีการเปลี่ยนแปลงที่รอการยืนยันอยู่แล้ว โปรดเก็บหรือย้อนกลับการเปลี่ยนแปลงนั้นก่อน
++RFW_284=ไม่สามารถเตรียมสคริปต์กู้คืนได้ จึงไม่มีการนำสิ่งใดไปใช้
++RFW_285=ไม่สามารถสร้างกฎใหม่ได้ และได้ย้อนกลับแล้ว
++RFW_286=กฎใหม่โหลดไม่สำเร็จ และได้ย้อนกลับแล้ว
++RFW_287=กฎบางข้อโหลดไม่สำเร็จ วอตช์ด็อกจะลองใหม่เรื่อยๆ และบันทึกระบบระบุชื่อกฎเหล่านั้นไว้
++RFW_288=การย้อนกลับไม่เสร็จสมบูรณ์ จึงไม่ทราบสถานะการกำหนดเส้นทางที่มีผลอยู่ในขณะนี้ โปรดนำไปใช้และเก็บอีกครั้ง หรือรีบูต
++RFW_289=เก็บแล้ว แต่สำเนาที่บันทึกไว้ไม่สมบูรณ์ โปรดนำไปใช้และเก็บอีกครั้งเพื่อให้คงอยู่หลังรีบูต
++RSPD_1=QoS เปิดอยู่และจำกัดความเร็วของการเชื่อมต่อนี้ไว้ที่ประมาณ %1 ขณะที่เปิดใช้ QoS จะไม่มีการทดสอบความเร็วใดวัดได้สูงกว่านั้น
++RSPD_2=การทดสอบหมดเวลาก่อนที่เอนจินจะรายงานผลลัพธ์
++RSPD_3=เอนจินทดสอบความเร็วรายงานข้อผิดพลาด: %1
++RSPD_5=ไม่สามารถเริ่มเอนจินทดสอบความเร็วได้
++RSPD_6=ตรวจพบว่าการเชื่อมต่ออินเทอร์เน็ตขาดหายระหว่างการทดสอบ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 0bfc4b1d90..daa7252d55 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Ayrilmis IP
+ RDEV_95=Durum
+ RDSH_90=%1 cekirdek
+ RWDN_101=Engelleme/izin listeleri kaydedilemedi.
++RFW_278=Koruma işlemi gerçekleşmedi. Değişiklik hâlâ etkin ve süre dolduğunda kendiliğinden geri alınacak. Sayfayı yenileyip yeniden deneyin.
++RFW_279=Geri alma isteği gerçekleşmedi. Yönlendirici, süre dolduğunda yine kendiliğinden geri alacak.
++RFW_280=Yönlendirici değişikliğin etkin olduğunu henüz bildirmedi. Kısa bir süre sonra sayfayı yenileyin; onay bekliyor olarak hiç görünmezse sistem günlüğünü kontrol edin.
++RFW_281=Yönlendirme kuralları yönlendiriciden yüklenemedi. Sayfayı yenileyin.
++RFW_282=Henüz onaylanmış bir anlık görüntü yok. Bu donanım yazılımında bir kez yeniden başlatın, ardından yeniden uygulayın.
++RFW_283=Zaten onay bekleyen bir değişiklik var. Önce onu koruyun veya geri alın.
++RFW_284=Kurtarma betiği hazırlanamadığı için hiçbir şey uygulanmadı.
++RFW_285=Yeni kurallar oluşturulamadı ve geri alındı.
++RFW_286=Yeni kurallar yüklenemedi ve geri alındı.
++RFW_287=Bazı kurallar yüklenmedi. Watchdog yeniden denemeye devam ediyor; sistem günlüğü bu kuralları listeler.
++RFW_288=Geri alma tamamlanmadığı için etkin yönlendirme durumu bilinmiyor. Yeniden uygulayıp koruyun ya da yeniden başlatın.
++RFW_289=Korundu, ancak kaydedilen kopya eksik. Yeniden başlatmadan sonra da kalması için yeniden uygulayıp koruyun.
++RSPD_1=QoS açık ve bu bağlantıyı yaklaşık %1 ile sınırlıyor. QoS etkinken hiçbir hız testi bundan daha yüksek bir değer ölçemez.
++RSPD_2=Motor bir sonuç bildirmeden önce test zaman aşımına uğradı.
++RSPD_3=Hız testi motoru bir hata bildirdi: %1
++RSPD_5=Hız testi motoru başlatılamadı.
++RSPD_6=Test sırasında Internet bağlantısının kesildiği bildirildi.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 7566e7f83c..9f5c0bdf12 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=保留 IP
+ RDEV_95=狀態
+ RDSH_90=%1 核心
+ RWDN_101=無法儲存封鎖/允許清單。
++RFW_278=保留操作未能完成。變更仍在生效，並將在期限到達時自動還原。請重新載入頁面後再試一次。
++RFW_279=還原要求未能完成。路由器仍會在期限到達時自動還原。
++RFW_280=路由器尚未回報變更已生效。請稍後重新載入頁面；若一直未顯示為等待確認，請檢查系統記錄。
++RFW_281=無法從路由器載入路由規則。請重新載入頁面。
++RFW_282=尚無已確認的快照。請在此韌體上重新開機一次，然後再套用一次。
++RFW_283=已有一項變更正在等待確認。請先保留或還原該變更。
++RFW_284=無法準備復原指令碼，因此未套用任何變更。
++RFW_285=無法建立新規則，已回滾。
++RFW_286=新規則載入失敗，已回滾。
++RFW_287=部分規則未能載入。看門狗會持續重試；系統記錄中列出了這些規則。
++RFW_288=還原未完成，因此目前生效的路由狀態不明。請重新套用並保留，或重新開機。
++RFW_289=已保留，但儲存的副本不完整。請重新套用並保留，以確保重新開機後仍然有效。
++RSPD_1=QoS 已開啟，並將此連線的速率限制在約 %1。啟用 QoS 期間，任何速度測試都無法測得高於該值的結果。
++RSPD_2=測試在引擎回報結果之前已逾時。
++RSPD_3=測速引擎回報錯誤：%1
++RSPD_5=無法啟動測速引擎。
++RSPD_6=測試期間偵測到網際網路連線已中斷。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index ca78e929fa..885d635c7e 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6801,3 +6801,20 @@ RDEV_94=Зарезервована IP
+ RDEV_95=Стан
+ RDSH_90=%1 ядра
+ RWDN_101=Не вдалося зберегти списки блокування/дозволу.
++RFW_278=Зберегти не вдалося. Зміна досі активна і після завершення терміну відкотиться сама – оновіть сторінку та спробуйте ще раз.
++RFW_279=Запит на відкат не пройшов. Роутер усе одно відкотить зміну сам після завершення терміну.
++RFW_280=Роутер ще не повідомив, що зміну застосовано. Оновіть сторінку трохи пізніше; якщо вона так і не відобразиться як така, що очікує підтвердження, перевірте системний журнал.
++RFW_281=Не вдалося завантажити правила маршрутизації з роутера. Оновіть сторінку.
++RFW_282=Підтвердженого знімка конфігурації ще немає. Один раз перезавантажте роутер на цій прошивці, а потім застосуйте зміни знову.
++RFW_283=Одна зміна вже очікує підтвердження. Спершу збережіть або відкотіть її.
++RFW_284=Не вдалося підготувати скрипт відновлення, тому нічого не було застосовано.
++RFW_285=Не вдалося зібрати нові правила, їх відкочено.
++RFW_286=Нові правила не завантажилися, їх відкочено.
++RFW_287=Деякі правила не завантажилися. Сторожовий процес продовжує спроби; їх перелічено в системному журналі.
++RFW_288=Відкат не завершився, тому поточний стан маршрутизації невідомий. Застосуйте та збережіть зміни знову або перезавантажте роутер.
++RFW_289=Збережено, але записана копія неповна. Застосуйте та збережіть зміни знову, щоб вони пережили перезавантаження.
++RSPD_1=QoS увімкнено, і він обмежує швидкість цього підключення приблизно до %1. Поки QoS увімкнено, жоден тест швидкості не покаже більше.
++RSPD_2=Час очікування тесту минув, перш ніж рушій повідомив результат.
++RSPD_3=Рушій тесту швидкості повідомив про помилку: %1
++RSPD_5=Не вдалося запустити рушій тесту швидкості.
++RSPD_6=Під час тесту було отримано повідомлення про відсутність підключення до інтернету.
+diff --git a/release/src/router/www/internet_speed.html b/release/src/router/www/internet_speed.html
+index 5048f55e98..033b65a026 100644
+--- a/release/src/router/www/internet_speed.html
++++ b/release/src/router/www/internet_speed.html
+@@ -210,9 +210,39 @@ function init(){
+ 	else if(speedTest_history.length > 1)
+ 		show_latest_record();
+ 
++	show_qos_cap_hint();
+ 	check_wan_status();
+ }
+ 
++/* reaper v3.0.5: say what QoS caps this connection at, where the number is
++   read. Any enabled QoS engine shapes the WAN below line rate by design, and
++   that ceiling sits ABOVE every socket or CPU limit a speed test could hit -
++   on a 10G WAN with a 2.2 Gbit/s plan every result reads ~2.2 Gbit/s however
++   the sockets are tuned (metal, 2026-09-01). Per engine, mirroring rc/qos.c:
++   type 1 shapes both ways at the entered figures; type 9 (cake) applies the
++   90% headroom to both; type 11 upload = qos_obw (the port shaper; class
++   queues sit at 90-95% of it) and download = 90% of qos_ibw when the policer
++   is on; type 10 shapes upload only (qid0). */
++function show_qos_cap_hint(){
++	var q = httpApi.nvramGet(["qos_enable", "qos_type", "qos_obw", "qos_ibw", "qos_ipolicer"], true);
++	var obw = parseInt(q.qos_obw, 10) || 0, ibw = parseInt(q.qos_ibw, 10) || 0, t = String(q.qos_type);
++	if(q.qos_enable != "1" || obw <= 0) return;
++	var up = obw, down = 0;
++	if(t == "9"){ up = obw - Math.floor(obw / 10); down = ibw - Math.floor(ibw / 10); }
++	else if(t == "11"){ down = (q.qos_ipolicer != "0") ? ibw - Math.floor(ibw / 10) : 0; }
++	else if(t == "1"){ down = ibw; }
++	var mbps = function(k){ return (k / 1000).toFixed(0) + " <#InternetSpeed_Mbps#>"; };
++	var parts = [];
++	if(down > 0) parts.push(mbps(down) + " <#InternetSpeed_Download#>");
++	parts.push(mbps(up) + " <#InternetSpeed_Upload#>");
++	$("#qos_cap_text").text(`<#RSPD_1#>`.replace("%1", parts.join(", ")));
++	$("#qos_cap_hint").css("display", "flex");
++	/* one line, clipped; the full sentence rides on a hover tooltip only while
++	   it is actually clipped (measured after the pill is shown) */
++	var e = document.getElementById("qos_cap_text");
++	if(e.scrollWidth > e.clientWidth + 1) e.title = e.textContent; else e.removeAttribute("title");
++}
++
+ function continue_show_result(){
+ 	if(wanConnectStatus){
+ 		reset_speed_level_btn();
+@@ -619,6 +649,21 @@ function show_eth_monitor_result(){
+ 		setTimeout("show_eth_monitor_result();", 200);
+ }
+ 
++/* reaper v3.0.5: the engine's last complaint, from the jsonl buffer the page
++   already holds - a terminal {"error":...} entry, else the newest level=error
++   log line. Escaped: it is the engine's text, shown inside our HTML alert. */
++function last_engine_error(){
++	var i, e, s = "";
++	for(i = speedTest_result.length - 1; i >= 0; i--){
++		e = speedTest_result[i];
++		if(!e) continue;
++		if(typeof e.error == "string" && e.error){ s = e.error; break; }
++		if(e.level == "error" && typeof e.message == "string" && e.message){ s = e.message; break; }
++	}
++	if(!s) return "-";
++	return $("<div>").text(s.substring(0, 160)).html();
++}
++
+ function error_handling(error_status){//2: wan disconnected 3: timeout  4: error  5:unknown
+ 	/* reaper: the ookla binary fetches its config.speedtest.net config once with no
+ 	   retry, so the first run after boot/idle can abort on cold DNS or a pre-NTP TLS
+@@ -638,7 +683,16 @@ function error_handling(error_status){//2: wan disconnected 3: timeout  4: error
+ 		}, 2000);
+ 		return;
+ 	}
+-	var error_msg = "<#InternetSpeed_Failure_Hint#>"
++	var error_msg = "<#InternetSpeed_Failure_Hint#>";
++	/* reaper v3.0.5: one generic sentence covered four different failures, so a
++	   10 Gbit/s user could only report "it errors". Name the one that happened,
++	   with the engine's own words when it had any. */
++	var reason = "";
++	if(error_status == ookla_states.ERR_TIMEOUT) reason = `<#RSPD_2#>`;
++	else if(error_status == ookla_states.ERR_DISCON) reason = `<#RSPD_6#>`;
++	else if(error_status == ookla_states.ERR_UNKNOWN) reason = `<#RSPD_5#>`;
++	else if(error_status == ookla_states.ERR_TERMINATE) reason = `<#RSPD_3#>`.replace("%1", last_engine_error());
++	if(reason) error_msg += "<br>" + reason;
+ 	set_ookla_state(error_status);
+ 	reset_speedTest_div();
+ 	change_speedTestBtn("go");
+@@ -1489,6 +1543,7 @@ function adjustSpeedFontClass(id) {
+ 				<div class="mobile_show">
+ 					<div id="wan_disconn_hint" style="width: 100%; height: 50px; display: flex; justify-content: center;" onclick="show_alert_message();"><div class="wan_notice_m"><div class="notice_icon"></div><div style="margin: 0 10px;">WAN Disconnected</div></div></div>
+ 				</div>
++				<div id="qos_cap_hint" style="width: 100%; display: none; justify-content: center; margin: 4px 0 6px;"><div class="wan_notice_m" style="cursor: default; max-width: 100%; min-width: 0;"><div class="notice_icon" style="flex: 0 0 auto;"></div><div id="qos_cap_text" style="margin: 0 10px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div></div></div>
+ 				<div class="download_upload_container">
+ 					<div class="speedResult_container">
+ 						<div class="result_title_container">
+-- 
+2.25.1
+

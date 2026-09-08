@@ -51,7 +51,6 @@ BANNER_REFS=(release/src/router/www/Main_Login.asp
              release/src/router/www/reaper_shell.asp
              release/src/router/www/state.js
              release/src/router/www/Main_Password.asp
-             release/src/router/www/Reaper_FirstBoot.asp
              release/src/router/www/Logout.asp)
 
 MODEL="${1:-}"; shift 2>/dev/null || true

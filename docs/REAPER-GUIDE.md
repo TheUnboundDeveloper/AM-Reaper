@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v2.8.8** · 2026-08-28 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v2.8.8 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -21,7 +21,7 @@ This guide is written for someone who will install and run the firmware: technic
 2. [Requirements and rules for running it properly](#2-requirements-and-rules-for-running-it-properly)
    - 2.1 [Supported models and the right file](#21-supported-models-and-the-right-file)
    - 2.2 [Flashing from stock ASUS or from Merlin](#22-flashing-from-stock-asus-or-from-merlin)
-   - 2.3 [The first-boot credential step](#23-the-first-boot-credential-step)
+   - 2.3 [First boot: one banner, one box](#23-first-boot-one-banner-one-box)
    - 2.4 [The internal /jffs partition: where Reaper keeps its lists](#24-the-internal-jffs-partition-where-reaper-keeps-its-lists)
    - 2.5 [Two backups, not one](#25-two-backups-not-one)
    - 2.6 [A USB disk for the long-term store](#26-a-usb-disk-for-the-long-term-store)
@@ -108,6 +108,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.12 [USB Disks](#412-usb-disks)
    - 4.13 [Diagnostics](#413-diagnostics)
    - 4.14 [Firmware](#414-firmware)
+   - 4.14a [Resolver health check](#414a-resolver-health-check-administration--failover-v311)
    - 4.15 [About](#415-about)
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
    - 4.17 [Tools → Other Settings: the Reaper switches](#417-tools--other-settings-the-reaper-switches)
@@ -198,7 +199,7 @@ Images are hosted on the project's GitHub Releases page (also mirrored in-tree u
 
 Before you start, every time:
 
-1. **Save your current configuration** (Administration → Restore/Save/Upload Setting → Save) and keep the `.cfg` off the router.
+1. **Save a full backup** (Administration → Backup & Restore → Download full backup) and keep the `.rbk` off the router.
 2. **Download the stock ASUS firmware for your exact model** and keep it next to the Reaper image. It is your rollback and your rescue image.
 3. Be on a reasonably recent stock or Merlin firmware first, to avoid nvram and bootloader-format mismatches.
 4. **Use a wired connection.** Never flash over Wi-Fi.
@@ -218,15 +219,16 @@ The project's install guide ([`INSTALL-AND-ROLLBACK.md`](INSTALL-AND-ROLLBACK.md
 
 **AiMesh nodes.** A router that you intend to add as a *new* Reaper node must be factory-reset on this firmware to become discoverable. A mesh that was already built under stock or Merlin and then flashed to Reaper is unaffected. Nodes can be updated from the main router's Firmware page (see 4.14). Reaper's theming stands aside entirely on a node, which is what fixed the blank-page loop some node owners saw in earlier versions.
 
-### 2.3 The first-boot credential step
+### 2.3 First boot: one banner, one box
 
-On a factory-fresh or factory-reset router, the web server itself forces you through Reaper's **First-time setup** page before any other page is reachable, and it cannot be bypassed by typing another page's address:
+There is no setup wizard and nothing blocks a page. A factory-fresh or factory-reset router boots usable on `admin` / `admin`, with its Wi-Fi **open** on the factory network name (`ASUS_xx…`), so it can be reached for setup over Wi-Fi without running a cable. Until both the router login and the Wi-Fi have left their factory values, every top-level admin page carries a banner that cannot be dismissed. Since v3.1.0 it has one button:
 
-1. Choose your **language** at the top of the card. The choice carries through to the rest of the interface.
-2. Set a **router username** (letters, numbers, `-` and `_`; you may keep `admin` if the password is strong) and a **password** (5–32 characters; it must differ from the username and from the factory default; `admin` is rejected as a password).
-3. You are then taken to **Set your Wi-Fi password**: the wireless network is still on its factory key until you change it. The wizard will not release you until both steps are done.
+- **Set up this router** (both still factory) opens Reaper's setup box: **network name**, **Wi-Fi password** and **router login password** in one step. The box writes exactly what the stock Wireless apply writes on every band — one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on — and fires the same wireless restart, then changes the login through the same committed path as the password page. A Wi-Fi key must be 8–63 characters (or a 64-digit hex key); a shorter key is refused in the page and in the router, because the access-point daemon silently drops a short key and would come up with no Wi-Fi at all. A network name is 1–32 printable characters.
+- If only the login is still factory, the button goes to the password page; if only the Wi-Fi is, it opens the box (which asks for all three fields).
 
-The gate only ever triggers on a genuinely unconfigured router — an upgrade of a configured router never sees it — and it does not apply in repeater or media-bridge modes, nor to AiMesh node onboarding. Earlier versions had a refresh-loop and a "rejects everything" failure at this step; both are fixed (v2.1.5, v2.2.0), and the page now self-recovers if a submit was applied but the confirmation did not reach the browser. If you are ever genuinely stuck, `nvram set reaper_fbdone=1` over SSH releases the interface. While the password is still the factory default the change form has no credential gate by design, so it carries the anti-forgery token instead; this is pending one clean factory-reset confirmation in the backlog.
+Why a Reaper box rather than the stock Wireless page: on this build the stock page edits each radio's primary network, which AiMesh turns into its hidden backhaul; the network your devices join lives on the virtual networks the mesh daemon rebuilds after every wireless apply. The box writes to the right place. The stock Wireless page is untouched for engineers.
+
+The banner only ever appears on a genuinely unconfigured router — an upgrade of a configured router never sees it. The forced first-boot page and its six gates were removed in v2.9.1 after they produced the login loops of the v2.1.x line; there is nothing to release over SSH any more, and no page is ever withheld.
 
 ### 2.4 The internal /jffs partition: where Reaper keeps its lists
 
@@ -257,15 +259,24 @@ An existing list is migrated once, automatically, at the first boot on a firmwar
 
 ### 2.5 Two backups, not one
 
-| Backup | Where | What it contains | What it does not |
+Both live on **Administration → Backup & Restore** (the Reaper page that replaced the stock Restore/Save/Upload Setting page in v2.9.8).
+
+| Backup | Button | What it contains | What it does not |
 |---|---|---|---|
-| **Stock settings backup** | Administration → Restore/Save/Upload Setting | nvram: every stock setting, plus Reaper's switches, QoS configuration, storage choices, and so on. | The Reaper lists on `/jffs` (2.4). Device names and reservations *are* in nvram, so they are included. |
-| **Reaper settings backup** (v2.7.0) | Administration → Restore/Save/Upload Setting → *Backup & Restore* panel → **Export settings** | One JSON file, `reaper-settings-<model>-<version>-<date>.json`: Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all eight lists) and Warden (countries, feeds, ban/allow lists). | Stock settings. |
-| **Full backup** (`.rbk`, v2.7.2) | Administration → Restore/Save/Upload Setting → *Reaper full backup* card | **One file** carrying the stock settings (in the stock `.CFG` format, still restorable by stock/Merlin), the Reaper settings above, and the firewall's resolved domain-set cache — so a reset-and-restore keeps every Reaper store in a single archive. | — (this is the everything-in-one option). |
+| **Full backup** (`.rbk`, v2.7.2; carries `/jffs` since v3.0.6) | **Download full backup** | **One file** carrying the stock settings (in the stock `.CFG` format, still restorable by stock/Merlin if carved out), the Reaper settings below, the firewall's resolved domain-set cache, and — since v3.0.6 — **the whole `/jffs` partition** as a gzip tar: addon scripts, certificates, every Reaper data store. | — (this is the everything-in-one option). It restores only to the same model. |
+| **Reaper settings backup** (v2.7.0; embeds the `.CFG` since v3.0.6) | **Export settings** | One JSON file, `reaper-settings-<model>-<version>-<date>.json`: the stock settings (`.CFG`, embedded as base64) plus Gatekeeper (switches and the device list), Policy Routing (switch and rules), the Firewall engine (switches and all eight lists) and Warden (countries, feeds, ban/allow lists). | `/jffs` itself — addon scripts, certificates and the domain-set cache are not in it. |
 
-The one-file **`.rbk` full backup** (v2.7.2) is the simplest option and the one to reach for before a factory reset: it wraps the stock settings and every Reaper store together, checks the archive matches this router model and that `/jffs` is healthy before touching anything, restores the stock settings and reboots, and one click after you log back in completes the Reaper half (firewall and routing lists are staged as drafts to **Apply** then **Keep**). Otherwise, take both of the separate backups above, and take the Reaper one again after any significant change to those four features. Either Reaper file **contains your device addresses and your domain lists** — keep it with your other private backups.
+The **full backup** is the file to keep before a factory reset, a reflash or a hardware swap. Restore checks that the archive matches this router model, that `/jffs` is healthy, and that the `/jffs` tar lists cleanly before touching anything; then it replaces `/jffs` (wipe and extract, as the stock JFFS restore did), restores the stock settings and reboots. Everything is live when the router returns — there is nothing to click afterwards. An archive made **before v3.0.6** has no `/jffs` part and keeps the two-phase flow: after the reboot, log back in and click **Complete restore** when prompted; its firewall and routing lists are then staged as drafts to **Apply** then **Keep**.
 
-**Import** replays the file through each feature's own save path, so it faces exactly the same validation as typing the values in. Gatekeeper and Warden take effect at once. The Firewall and Policy Routing lists are loaded as **drafts**: open each page, **Apply**, then **Keep** — so a restored rule that cuts off your own access still reverts on its own (2.7). Nothing is written to `/jffs/configs`. The page reports `Imported: N setting(s), M list(s), K rejected`. The round trip is believed to work and is pending on-metal confirmation.
+The **settings file** is the small, portable one. Importing it **on the same model** restores the router settings and reboots, then Complete restore finishes the Reaper half exactly as above. Importing it **on a different model or firmware** skips the router settings inside and imports only the Reaper configuration, with no reboot: Gatekeeper and Warden take effect at once, and the Firewall and Policy Routing lists are loaded as **drafts** — open each page, **Apply**, then **Keep** — so a restored rule that cuts off your own access still reverts on its own (2.7). Nothing is written to `/jffs/configs`. The page reports `Imported: N setting(s), M list(s), K rejected`.
+
+Either file **contains credentials**: the Wi-Fi passwords, the admin password, VPN keys and the DDNS and PPPoE logins — and the full backup adds the HTTPS and SSH private keys and the traffic-history databases. Each card says so under its buttons. The stock `.CFG` save options ("remove password from file", "transfer DDNS") are gone with the stock panel: both files keep passwords and do not transfer DDNS. Since v3.0.8 there are two ways to hold such a file safely, and one guard on the way in:
+
+**Sealing (v3.0.8).** Every export asks for your **admin password** (checked on the router, on that request — a stolen session or a script foothold in the browser is not enough to pull the file; five wrong answers lock exports for a minute) and offers an optional **backup passphrase**. Give one and the file is **sealed**: encrypted with AES-256-GCM under a key derived from the passphrase with scrypt. A sealed file cannot be opened without the passphrase, and it refuses to open at all if a byte of it was changed, so a backup that someone "fixed" for you fails before the router parses any of it. The passphrase is **not stored anywhere** — lose it and the file is gone. Leave the field blank and the file is the plain one described above. Sealed files carry a second extension (`.rbk.enc`, `.json.enc`); restore and import recognise them and ask for the passphrase. A sealed settings file is opened on the router rather than in the browser and then behaves exactly like the plain one (same model: settings + reboot; other model: the Reaper half, no reboot).
+
+For the record, the sealed container is plain enough to open without a router: a line `REAPER-SEALED 1`, one JSON line with `salt`, `iv` (base64), the scrypt cost `n`/`r`/`p` and the plaintext `len`, then `len` bytes of AES-256-GCM ciphertext and the 16-byte tag; the two header lines are the authenticated additional data, the key is 32 bytes of scrypt over the passphrase. The plaintext is byte-for-byte the unsealed file.
+
+**On the way in.** Every export, import and refused request is logged with the client's address. A restore refuses a `/jffs` archive in which a later entry would be written **through** a symlink the archive itself planted (the one way a crafted archive could reach outside `/jffs`); links that nothing is written through restore as before, so addon setups are unaffected.
 
 ### 2.6 A USB disk for the long-term store
 
@@ -387,7 +398,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 - Every page lands scrolled to the top. The admin session logs itself out after **15 minutes** of inactivity.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
 - **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It can be switched off from **Tools → Other Settings → Reaper interface theme** to serve the unmodified ASUS interface without reflashing (the web server restarts). The sign-in, set-password and logout screens show an animated model header that plays once.
-- **Tablets** are supported (the frame pans horizontally when a page is wider than the column); phone-size screens are out of scope by design.
+- **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width; stock pages framed in the shell still pan sideways until each is replaced by a native one.
 
 ---
 
@@ -1186,6 +1197,28 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 **Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal). The Professional page's first load after an upgrade can take ~15 s; the cause is under investigation.
 
+**AiMesh backhaul parking (v3.0.8, off by default).** Even with no mesh node paired, AiMesh keeps its
+hidden backhaul network on the air on every band: the primary BSS of each radio carries a hashed
+SSID, beacons like any other network, and accepts WPA connections with a key derived inside the
+AiMesh components rather than chosen by you. On 2.4 and 5 GHz each network beacons on its own, so
+the idle carrier is a full beacon stream (about two percent of 2.4 GHz airtime, the band most IoT
+devices use). On 6 GHz the co-located networks share one beacon and the primary is the one that
+transmits it, so there is nothing to save there.
+
+Turn parking on and the 2.4 and 5 GHz carriers are taken off the air whenever this router is the
+AiMesh primary, no node is paired, and no search or onboarding is running. The moment you press
+**Search** or **Add node** on the Network Map they come back within five seconds, so a node can
+find and join them; if the search ends without a node, they park again. A paired mesh is never
+parked and a radio you have switched off is never touched. The daemon never parks 6 GHz by hand,
+but with MLO enabled the three carriers are one link set: parking one drops them all, and the
+daemon logs the linked drops and raises the whole set on release. Every park and
+release is written to the system log with the interface, the band and the reason
+(`amaspark: parked wl1 (5 GHz backhaul carrier): no AiMesh node is paired and no search or onboarding
+is running`), and the Wireless page shows the last state. Your own networks are unaffected: the
+virtual networks on each band keep serving while the carriers are down, which was verified on the
+RT-BE96U with MLO on and clients attached on all three bands. The gain is mostly hygiene, a listener fewer and a quieter channel,
+rather than speed.
+
 ### 4.11 Long-Term Storage and Data Export
 
 These share the **Storage** page under System Log.
@@ -1209,11 +1242,49 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 **Administration → Firmware Upgrade** is a Reaper page:
 
 - **Installed Firmware** — model, variant (Standard / AI Advisor), Reaper version, base build.
-- **Updates** — **Check for Update**, the release notes inline, **Download and Install** (verified end-to-end, 2.11), **Scheduled Check** with **Check at** hour.
+- **Updates** — **Check for Update**, the release notes inline, **Download and Install** (verified end-to-end, 2.11), **Scheduled Check** with **Check at** hour, and (v3.1.0) **Beta Channel**: off by default; on, the check also reads the Dev branch's beta line and offers a beta only when this router already runs the newest stable release and the beta's number is higher than that stable's — a beta with the stable's own number is never offered. A beta offer is labelled **Beta** here and on the dashboard badge, and its release note opens with the beta warning. The previous firmware stays in the standby partition either way.
 - **Manual Upload** — with a real progress bar; it warns if the file does not look like an image for this model or variant. The page gives a good image up to ~5 minutes to be verified before calling it rejected.
 - **Mesh Nodes** (at the bottom) — every AiMesh node with name, address, reported firmware version and online state; **Update** opens that node's own firmware page in a new tab where you flash it natively (the image is never relayed through this router), and **Update all nodes** pushes the current firmware the way the stock AiMesh upgrade does. Update one node at a time and let it come back.
 
 The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat; a Close button appears on any error and during download/upload, but not during the flash itself. After the flash the page waits for the router and returns you to sign-in. Known open item: cancelling at the upgrade confirmation during an upload leaves the buttons dead until the page is reloaded.
+
+### 4.14a Resolver health check (Administration → Failover, v3.1.1)
+
+dnsmasq, the router's resolver, keeps no memory of an upstream that stopped answering. In strict order it
+tries the first server again for every new name and only a client's retransmission moves the query to the
+next one, so an outage of a LAN resolver such as AdGuard or Pi-hole costs a client timeout per uncached
+name, and a client that lists the router as its second DNS server can need three attempts before the
+router's own second server answers. The **Reaper resolver health check** lives on the **Failover** tab
+of the Administration group (between System and Firmware Upgrade) together with the three dnsmasq
+switches below, and watches **one DNS server you name** with a real query every few seconds; the tab's
+state strip shows Watch / Fail over / Restore and lights the middle step while the server is down.
+The server can
+be an IPv4 address or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the
+matching family, and the server is found in the router's list whatever spelling the list uses for it. An
+IPv6 server named while IPv6 is off is refused by the page, and a daemon that finds one that way (IPv6
+switched off later) idles and says so once in the system log. After the number
+of **misses** you set it moves that server to the **end of the router's upstream list** and reloads
+dnsmasq, so the first server asked is one that answers; after the number of **hits** you set it puts the
+server back first. You choose the interval, the reply timeout, the name queried, and whether any reply
+counts as alive or only a real answer. The **Status** line shows the live state and how long it has held;
+every switch is written to the system log with the reason. The server has to be in the router's own DNS
+list (the WAN DNS servers, or a VPN client's) for the move to have any effect, and clients that talk to
+the LAN resolver directly still pay one retry against it before they reach the router.
+
+**Upstream order** on the same tab turns on dnsmasq's strict order: the router asks its DNS servers in
+the listed order and moves on only when one does not answer, instead of its default of probing all of
+them every 50 queries and settling on the fastest, which sends a share of every query past a LAN filter.
+Pair the two: strict order keeps the LAN resolver first while it is healthy, the health check supplies
+the memory of a dead one that strict order lacks.
+
+Two more switches sit beneath, for the layout where **clients are handed the router alone as their DNS**
+and the router forwards to the LAN filter, which makes the failover complete (no client ever retries)
+and catches devices with a hard-coded DNS when paired with the port-53 intercept. **Client addresses**
+attaches the asking client's address to every forwarded query as EDNS Client Subnet, so AdGuard Home
+(with "Use EDNS Client Subnet" on in its DNS settings) or Pi-hole (on by default) still shows and filters
+per client instead of seeing only the router. **Router DNS cache** off turns the router into a pure
+forwarder: a per-client decision is never served from the router's cache to a different client, and the
+filter sees every lookup, as it does when clients talk to it directly. The filter keeps its own cache.
 
 ### 4.15 About
 
@@ -1297,7 +1368,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 | Speed test dies partway through | Adaptive QoS → Internet Speed | Counter fixes in v2.4.5/v2.5.4; pending a multi-run confirmation. A genuine outage still fails on the real timeout. |
 | Reaper settings import reports rejections | Log `reaper_cfg: settings imported: N flag(s), M list(s), K rejected` | The rejected entries failed the same validation as typing them; fix them on the page. Firewall/routing lists still need Apply + Keep. |
 | Diag report tripwire says "review before sharing" | The report's ledger | Something still looked like a public address, MAC or e-mail. Read the file and redact by hand before attaching it. |
-| Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5 (the gate lives in the web server). Power-cycle and log in with the new credentials; `nvram set reaper_fbdone=1` over SSH as a last resort. |
+| Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5; the forced first-boot page and its gates were removed altogether in v2.9.1 (2.3). Power-cycle and log in with the new credentials. |
 | `logread` shows nothing | — | Expected on this platform. Use the System Log page or `/tmp/syslog.log`. |
 
 ---
@@ -1412,7 +1483,7 @@ three reachability probes after the boot grace period.
 `rmcp_client` empty. There is deliberately **no enable key**: the Advisor is armed by a session file
 in `/tmp`, so every reboot comes up dark.
 
-**Miscellaneous** — `reaper_fbdone` `0` (the first-boot card is still to be shown),
+**Miscellaneous** — `reaper_fwbeta` `0` (the update check ignores the beta channel),
 `reaper_fwsig_override` `0` (firmware-manifest signature checking stays on).
 
 ### 8.3 What a factory reset actually restores
@@ -1423,6 +1494,14 @@ stores live. For a genuinely clean box, format JFFS as well, from Administration
 
 The useful consequence: if you are resetting to clear a bad *setting*, your rules survive and you do
 not have to rebuild them.
+
+**What the page shows (v3.1.0).** A reset started from Backup & Restore puts up a veil that says how to
+get back: the router returns on its **open factory network** (`ASUS_xx…`) at its default address, with a
+link to it — rejoin that network before the page can see the router again. The page treats the web
+server's few busy seconds before the reboot as busy, not gone, so it no longer bounces to a sign-in page
+that is about to vanish; if the router has not gone down within three minutes it says so and hands the
+page back. On the router side three waits that did no work are gone (see the changelog), and the system
+log carries a timestamp at each step (`factory reset: begin` … `nvram erased, handing off to init`).
 
 ---
 

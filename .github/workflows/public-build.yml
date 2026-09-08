@@ -74,12 +74,14 @@ on:
         type: string
         required: false
         default: ''
-      # Publishing is OPT-IN and takes effect on main only. Left unticked (the
-      # default) the run builds, verifies and uploads its artifacts, and stops
-      # there -- no tag, no release, nothing user-facing. Tick it only when you
-      # intend these clean-room images to become the published ones.
+      # Publishing is OPT-IN and takes effect on main or Dev (Dev = the beta
+      # channel, published as a prerelease; only the stable on-router update
+      # manifest stays main-only). Left unticked (the default) the run builds,
+      # verifies and uploads its artifacts, and stops there -- no tag, no
+      # release, nothing user-facing. Tick it only when you intend these
+      # clean-room images to become the published ones.
       publish:
-        description: 'Publish a GitHub Release when the build succeeds (main only)'
+        description: 'Publish a GitHub Release when the build succeeds (prerelease on Dev, stable on main)'
         type: boolean
         default: false
 
@@ -114,7 +116,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v2.8.8'
+    ${{ inputs.version == '' && 'Reaper_v3.1.0'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -332,6 +334,11 @@ jobs:
             PL="reaper/overlays/${{ matrix.model }}-platform.tar.gz"
             if [ -f "$PL" ]; then echo "  ok   $PL ($(stat -c%s "$PL") bytes) + sha256"; fi
           fi
+          OS=reaper/overlays/openssl-3.5-source.tar.gz
+          if [ -f "$OS" ]; then
+            if [ -f "${OS%.tar.gz}.sha256" ]; then echo "  ok   $OS ($(stat -c%s "$OS") bytes) + sha256"
+            else echo "::error::$OS has no sha256 sidecar"; rc=1; fi
+          fi
           exit $rc
 
       - name: Restore pinned toolchains
@@ -432,13 +439,18 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # RELEASE HAND-OFF -- OPT-IN, and main only.
+  # RELEASE HAND-OFF -- OPT-IN, and branch-gated (main or Dev).
   #
   # THREE independent conditions must all hold before anything is published:
   #   1. inputs.publish  -- an explicit checkbox on the dispatch, default FALSE.
   #      Publishing is never a side effect of building; you ask for it.
-  #   2. the branch is main -- on Dev, a fork, or any other branch both jobs are
-  #      skipped entirely, so a development build can never publish.
+  #   2. the branch is main or Dev -- on a fork or any other branch both jobs
+  #      are skipped entirely, so a stray build can never publish. A Dev
+  #      publish is the BETA channel: the tag/release name gets "-beta"
+  #      appended and the release is marked pre-release; refresh_manifest
+  #      (v3.1.0) writes it into main's manifest as a separate
+  #      MODEL#VARIANT-beta# line that only v3.1.0+ firmware reads, and only
+  #      when the admin opted in - the stable line is never touched by a beta.
   #   3. the build succeeded.
   # `if:` REPLACES the implicit success() that `needs:` would otherwise apply,
   # which is why success() is written out. Without it these would run even after
@@ -453,7 +465,7 @@ jobs:
   tag:
     name: Tag for release
     needs: build
-    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write          # job-scoped -- the build job stays contents: read
@@ -473,6 +485,18 @@ jobs:
           set -euo pipefail
           # EXPECTED_VERSION is e.g. "Reaper_v2.3.7"; tags are "v2.3.7-<MODEL>".
           V="${EXPECTED_VERSION#Reaper_}"
+          # Dev = the beta channel. Same build, same series, same everything --
+          # only the published NAME differs: "-beta" is appended to the version
+          # segment of every tag/release (v3.0.0-beta-RT-BE96U) and release.yml
+          # marks it pre-release (both by the explicit input below and by its
+          # own *beta* match). Asset FILENAMES keep the built version string;
+          # the beta identity lives in the tag, the release name and the
+          # pre-release flag. A beta re-spin of the same version follows the
+          # normal re-release path: delete the beta tag or dispatch release.yml
+          # with allow_republish.
+          if [ "${{ github.ref }}" = "refs/heads/Dev" ]; then
+            V="$V-beta"
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
             MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
@@ -522,7 +546,7 @@ jobs:
   release:
     name: Publish
     needs: [build, tag]
-    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
     permissions:
       contents: write
     strategy:
@@ -532,6 +556,9 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
+      # Belt-and-braces: the -beta tag already trips release.yml's *beta* match,
+      # but a Dev publish is ALWAYS a pre-release even if the naming changes.
+      prerelease: ${{ github.ref == 'refs/heads/Dev' }}
 
   # ---------------------------------------------------------------------------
   # UPDATE-MANIFEST REFRESH -- runs ONCE, after the whole per-model release
@@ -544,11 +571,19 @@ jobs:
   # releases just published. It is a SINGLE writer on purpose: the release job
   # is a per-model matrix, so refreshing inside it would race five commits to
   # main. The concurrency group serializes it across overlapping runs too.
+  #
+  # ALWAYS WRITES TO MAIN, whichever branch was dispatched: the manifest lives
+  # on main because that is the URL baked into every fielded router. A main
+  # publish rewrites the stable line; a Dev publish (v3.1.0) adds or moves the
+  # MODEL#VARIANT-beta# line and leaves the stable line and latest.json alone.
+  # Firmware before v3.1.0 cannot match the beta line, and v3.1.0+ reads it
+  # only behind the admin's opt-in and only above the stable number, so a beta
+  # can never displace a stable offer. The beta note comes from Dev's CHANGELOG.
   # ---------------------------------------------------------------------------
   refresh_manifest:
     name: Refresh update manifest
     needs: [tag, release]
-    if: success() && github.ref == 'refs/heads/main' && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -597,16 +632,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           V: ${{ needs.tag.outputs.version }}
           MODELSEL: ${{ inputs.model }}
+          SRC_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           export VNUM="${V#v}"
+          # This checkout is MAIN (the files live there), but the script and
+          # the changelog must come from the ref that was DISPATCHED: on the
+          # first beta publish (2026-09-07) main's pre-beta copy of the script
+          # ran here and wrote "3.1.0-beta" into every stable line, which no
+          # router accepts. Fetch the dispatched ref and run its copy.
+          git fetch --depth=1 origin "$SRC_REF"
+          git show FETCH_HEAD:build-scripts/refresh_manifest.py > /tmp/refresh_manifest.py
+          git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
+          export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
             export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
           else
             export MODELS="$MODELSEL"
           fi
           export DATE="$(date -u +%Y-%m-%d)"
-          python3 build-scripts/refresh_manifest.py
+          python3 /tmp/refresh_manifest.py
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -615,7 +660,11 @@ jobs:
             echo "manifest already advertises $V -- nothing to commit"
             exit 0
           fi
-          git commit -m "updates: advertise Reaper $V in the firmware update manifest [skip ci]"
+          if [ "$SRC_REF" = "refs/heads/Dev" ]; then
+            git commit -m "updates: advertise Reaper $V on the beta line of the firmware update manifest [skip ci]"
+          else
+            git commit -m "updates: advertise Reaper $V in the firmware update manifest [skip ci]"
+          fi
           # Single-writer, but guard against a concurrent main push anyway.
           for i in 1 2 3; do
             if git push origin HEAD:main; then

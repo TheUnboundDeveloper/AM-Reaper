@@ -1,6 +1,6 @@
 # RT-BEXXU "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -596,3 +596,44 @@ CA bundle, host pin, model/variant and the manifest's SHA-256, and nothing flash
 but the manifest carries no author signature (a compromised repository could offer a matching pair);
 a key-custody decision, tracked in `BACKLOG.md`. **R7-REL-001** — the watchdog's routing self-heal
 runs the idempotent apply script without the firewall lock (transient inconsistency at worst).
+
+## Backup export as a data-harvesting surface — owner review 2026-09-04 (v3.0.8)
+
+Reaper-authored code (`httpd/web.c`, the Backup & Restore page); not an inherited defect. Reviewed
+because a backup is the whole network in one file and the file was plain gzip behind a session cookie.
+
+| # | Surface | Guard (v3.0.8) |
+|---|---|---|
+| B1 | A backup at rest (synced folder, forum attachment, stolen laptop) is the Wi-Fi keys, the reversibly scrambled admin password, VPN/TLS/SSH private keys and per-device history in the clear | Optional **sealed** export for both files: AES-256-GCM, 32-byte key from scrypt (N=32768, r=8, p=1), random 16-byte salt and 12-byte IV per file, both header lines as authenticated additional data. Passphrase never stored. |
+| B2 | Any archive with the right model string restores; a `/jffs` tar can carry boot scripts | The seal doubles as integrity: a modified or attacker-built sealed file fails the GCM tag before any parsing. Plain archives remain restorable for compatibility. |
+| B3 | One XSS hole or one stolen session = one same-origin fetch of the whole file (the token is in page JS) | **Re-authentication on export**: the admin password rides in the request body (POST, never the URL) and is checked with `compare_passwd_in_shadow()` in the download handler itself; the page pre-checks it (`action=reauth`) so a wrong answer is a message, not a junk file. In-memory lockout: 5 failures → 60 s. |
+| B4 | No forensics: the export log line said only that a download happened | Client address on every export, import and refusal line. |
+| B5 | A crafted `/jffs` archive: symlink member, then a member written through it — the one traversal busybox tar does not strip | `rbk_tar_links_ok()`: `tar -tv` pass before extraction; any entry whose path traverses an earlier symlink member refuses the restore (`ec: jffslink`). Links nothing is written through are allowed (addon boxes carry them). |
+
+Verified off-router with the exact functions cut from `web.c`: seal→unseal round trip (82 B and 3 MB), interoperation both ways with an independent Python implementation (`hashlib.scrypt` + `cryptography` AES-GCM), and refusal of a wrong passphrase, a flipped ciphertext byte, an altered meta line and an out-of-range scrypt cost; the symlink check on benign, addon-style, space-in-name, look-alike-prefix and two escaping archives.
+
+
+## OpenSSL 1.1.1w retired — the library under every TLS path (v3.1.0)
+
+Inherited component. OpenSSL 1.1.1 reached end of life in September 2023; the firmware carried 1.1.1w,
+the last release of that line, with no upstream fixes since. v3.1.0 moves every source-built consumer —
+hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan, inadyn, Tor, vsftpd, lighttpd,
+net-snmp, the Reaper Advisor daemon and the rest, 123 binaries — to **OpenSSL 3.5.8**, linked directly.
+The closed ASUS binaries that cannot be rebuilt (AiMesh's `cfg_server` and its relatives, the Let's
+Encrypt helper, the lighttpd modules) keep the 1.1 ABI through a forwarding shim that hands every call to
+3.5, so they too run on the maintained library. The port is Asuswrt-Merlin upstream work by RSDNTWK (the
+shim and the 3.5 integration) and Eric "Merlin" Sauvageau (the parallel-compile fix), carried as
+cherry-picks with their authorship intact.
+
+Why the first attempt (v3.0.3, withdrawn in v3.0.4) took Wi-Fi down, and the guard that stops it
+recurring: hostapd is compiled inside the wireless SDK tree, whose link rule never sees a library change,
+so the earlier image shipped a hostapd still bound to the 1.1 name — by then the shim, which does not carry
+the elliptic-curve calls WPA3-SAE needs. The rung purges every object built against the old headers,
+including the ones git ignores, and release check 22 (`build-scripts/check_ossl_consumers.sh`) names the
+only binaries allowed to depend on the 1.1 name and fails the build on any other; hostapd must link
+`libcrypto.so.3` outright, verified with `readelf`, never inferred from a green build. Proven on the
+RT-BE96U: 31 minutes with hostapd never restarting, WPA3-SAE clients on 6 GHz at 320 MHz, HTTPS UI and
+outbound TLS working, the router certificate unchanged across the flash.
+
+Residual: the closed binaries still present the 1.1 API surface to the shim, so any 1.1-specific behaviour
+they rely on is emulated rather than removed. Nothing else in the tree links 1.1.

@@ -1,0 +1,491 @@
+From 527460ce103e512f3942f2679e19edd59c706a9d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 29 Aug 2026 09:44:05 -0400
+Subject: [PATCH] firewall UI: say when changes are pending, and stop calling
+ "no exemption" any
+
+Two defects from the owner's first hands-on with Service Intercept on v2.8.9.
+
+1. THE EXEMPT COLUMN READ AS THE OPPOSITE OF THE TRUTH. An empty exemption
+rendered through rfwDash(), whose placeholder is RFW_160 - literally the word
+"any". In an Exempt column that says "everything is exempt"; it means "no
+ADDITIONAL exemption". (It is correct in the Forwards Source column, which is
+where it was copied from.) Now renders RFW_100 "None", which already exists in
+all 25 dicts. Cosmetic only - the engine always exempted the target regardless
+of this field, which is the exemption that actually matters.
+
+2. NOTHING TOLD YOU AN EDIT WAS INACTIVE, OR WHERE APPLY WAS. Reported as "do
+Zones and Forwards apply automatically? I don't see an apply button." They do
+not: every tab writes to the draft via action=save, and the single "Apply and
+confirm" - and the commit-confirm card with Keep/Revert - both live inside the
+Rules tab. From Zones, Forwards or Service Intercept there was no apply control,
+no indication the row was not in effect, and no pointer to where it was. A row
+appearing in a table read as "live".
+
+Added a page-level banner OUTSIDE the tab containers, so it shows from every
+tab, with the two states kept distinct because conflating them would be worse
+than silence:
+  dirty && !armed -> saved to the draft, NOTHING is in effect yet
+  armed           -> applied, waiting for Keep, reverts on its own if ignored
+plus a "Go to Rules" button, since Apply/Keep/Revert genuinely live there.
+
+`dirty` is a REAL signal from the engine, not a client-side guess: action=cfg
+now reports whether any of the eight draft files exists. That is exactly the
+right test - reaper_fw_list_get() resolves draft > lastgood > legacy nvram, and
+the confirm path deletes the whole draft dir once consumed into lastgood
+(reaper_fw.c:2733), so a leftover file can only mean unapplied or unconfirmed
+work. Because it comes from the router it survives a page reload, which a
+session flag would not; a save also sets it locally so the banner appears at
+once rather than on the next poll.
+
+3 tokens RFW_273-275 appended to all 25 dicts in lockstep (6765 -> 6768).
+
+Verified: the dirty block extracted and compiled standalone under -Wall -Wextra,
+then run against a fake draft dir - empty 0, draft/nat 1, draft/zone 1, dir
+removed 0. Page: every new id resolves, all tokens resolve in EN.dict, the
+inline block parses under node --check, div tags balance (173/173), ASCII-clean,
+reaper_langcheck 0 breakers / 22 pages.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             | 20 ++++++++++
+ release/src/router/www/BR.dict             |  3 ++
+ release/src/router/www/CN.dict             |  3 ++
+ release/src/router/www/CZ.dict             |  3 ++
+ release/src/router/www/DA.dict             |  3 ++
+ release/src/router/www/DE.dict             |  3 ++
+ release/src/router/www/EN.dict             |  3 ++
+ release/src/router/www/ES.dict             |  3 ++
+ release/src/router/www/FI.dict             |  3 ++
+ release/src/router/www/FR.dict             |  3 ++
+ release/src/router/www/HU.dict             |  3 ++
+ release/src/router/www/IT.dict             |  3 ++
+ release/src/router/www/JP.dict             |  3 ++
+ release/src/router/www/KR.dict             |  3 ++
+ release/src/router/www/MS.dict             |  3 ++
+ release/src/router/www/NL.dict             |  3 ++
+ release/src/router/www/NO.dict             |  3 ++
+ release/src/router/www/PL.dict             |  3 ++
+ release/src/router/www/RO.dict             |  3 ++
+ release/src/router/www/RU.dict             |  3 ++
+ release/src/router/www/Reaper_Firewall.asp | 43 ++++++++++++++++++++--
+ release/src/router/www/SL.dict             |  3 ++
+ release/src/router/www/SV.dict             |  3 ++
+ release/src/router/www/TH.dict             |  3 ++
+ release/src/router/www/TR.dict             |  3 ++
+ release/src/router/www/TW.dict             |  3 ++
+ release/src/router/www/UK.dict             |  3 ++
+ 27 files changed, 135 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index db8c2d9c0c..72749429c2 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24009,6 +24009,26 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			nvram_get_int("reaper_fw_confirm"),
+ 			nvram_match("reaper_fw_armed", "1") ? 1 : 0,
+ 			left);
++		/* `dirty` = at least one list is STAGED but not yet committed. The draft
++		 * file's existence IS the signal: reaper_fw_list_get() resolves
++		 * draft > lastgood > legacy nvram, and the confirm path deletes the
++		 * whole draft dir once it has been consumed into lastgood
++		 * (rc/reaper_fw.c "v2.6.9: consumed into lastgood"), so a leftover file
++		 * can only mean unapplied or unconfirmed work.
++		 * Added 2026-08-29: every tab except Rules saves to the draft with no
++		 * apply control of its own, and nothing told the operator their edit was
++		 * inactive or where Apply lived. Reported from the field as "do Zones and
++		 * Forwards apply automatically? I don't see an apply button." */
++		{
++			static const char *dkeys[] = { "obj","grp","svc","zone","zpol","rules","edef","nat" };
++			char dp[128];
++			int di, dirty = 0;
++			for (di = 0; di < (int)(sizeof(dkeys)/sizeof(dkeys[0])); di++) {
++				snprintf(dp, sizeof(dp), REAPER_FW_DRAFT_DIR "/%s", dkeys[di]);
++				if (f_exists(dp)) { dirty = 1; break; }
++			}
++			websWrite(stream, ",\"dirty\":%d", dirty);
++		}
+ 		websWrite(stream, ",\"warden\":%d,\"wgeo\":",
+ 			nvram_match("rwarden_enable", "1") ? 1 : 0);
+ 		gk_json_esc(stream, nvram_safe_get("rwarden_geo"));
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 22158824d6..b41cad7e3c 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index eb2397f860..f2d56306b7 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 11cf723adf..f6c1178f2e 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 33a26c7cbd..d713766ec4 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 4e5748949b..bfa3053183 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 90241d2698..b5deefb64b 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index d8cec64261..4fa4107286 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index f83c3356b3..fd17be1f8f 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index c5a95b83d8..7e9a3345b1 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index ad555acb27..dfc3a9bce9 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 8c98ea43c3..a5fa436706 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 49fd371338..334f64cf12 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index d73874a9c2..46ef2f3c5a 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 675f3e8d3d..9b023decab 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 8e5fc2998b..8fd16fde72 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 111b0eb0f8..7656b0f0ca 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index b8ed7c91b3..e3943769a0 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index c4fc9f890f..4721ddab38 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 7eff723d34..0ad85f07aa 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index c7cbb0cf7b..0ccd49e31e 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -143,6 +143,16 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ </div>
+ <p class="lede"><#RFW_1#></p>
+ 
++<!-- 2026-08-29: a page-level banner, deliberately OUTSIDE the tab containers.
++     Every tab except Rules saves straight to the draft and has no apply control,
++     and the commit-confirm card lives inside the Rules tab too - so from Zones or
++     Forwards there was nothing at all to say an edit was inactive, or where Apply
++     was. Two states: staged-but-not-applied, and applied-but-awaiting-Keep. -->
++<div id="rf_pending" class="card" style="display:none;border-color:var(--crimson);margin-bottom:14px">
++  <span id="rf_pending_txt"></span>
++  <button class="btn ghost sm" id="rf_pending_go" style="margin-left:12px"><#RFW_275#></button>
++</div>
++
+ <div class="wins" id="wins">
+   <div class="win" data-t="status"><#RFW_2#></div>
+   <div class="win" data-t="general"><#menu5_1_1#></div>
+@@ -871,7 +881,7 @@ function rfwLoad(cb){
+     RFW.obj=rfwSplit(j.obj); RFW.grp=rfwSplit(j.grp); RFW.svc=rfwSplit(j.svc);
+     RFW.zone=rfwSplit(j.zone); RFW.zpol=rfwSplit(j.zpol); RFW.rules=rfwSplit(j.rules);
+     RFW.edef=rfwSplit(j.edef); RFW.nat=rfwSplit(j.nat);
+-    RFW.armed=j.armed?1:0; RFW.left=j.left||0;
++    RFW.armed=j.armed?1:0; RFW.left=j.left||0; RFW.dirty=j.dirty?1:0;
+     RFW.warden=j.warden?1:0; RFW.wgeo=j.wgeo||'';
+     tgSet($('rf_en'),j.enable);
+     $('rf_confirm').value=j.confirm||60;
+@@ -885,6 +895,9 @@ function rfwLoad(cb){
+ function rfwSave(key,rows,el){
+   fwcgi('action=save&k='+key+'&v='+encodeURIComponent(rfwJoin(rows)),function(j){
+     if(el)showSaved(el,!!(j&&j.ok),(j&&j.ok)?`<#RFW_154#>`:((j&&j.error)||`<#RFW_155#>`));
++    /* a save writes the DRAFT, so the page is now pending - surface it at once
++       rather than only after the next action=cfg */
++    if(j&&j.ok){RFW.dirty=1;rfwPendingUI();}
+   });
+ }
+ 
+@@ -937,7 +950,13 @@ function rfwRenderIcpt(){
+     if(m==='forward')return;
+     var tr=rtRow([
+       (m==='redirect'?`<#RFW_262#>`:`<#RFW_261#>`), rfwDash(r[9]), r[1]||'', r[2]||'',
+-      (m==='redirect'?`<#RFW_262#>`:(r[3]||'')), rfwDash(r[10]),
++      /* An EMPTY exemption is "no ADDITIONAL exemption", so it must not render
++         through rfwDash() - that yields RFW_160 ("any"), which in an Exempt
++         column reads as "everything is exempt", the opposite of the truth.
++         (It is right in the Forwards Source column, which is where it came
++         from.) RFW_100 "None" already exists in all 25 dicts. Note the target
++         itself is ALWAYS exempt regardless of this field. */
++      (m==='redirect'?`<#RFW_262#>`:(r[3]||'')), (r[10]?r[10]:`<#RFW_100#>`),
+       (r[11]==='on'?`<#RFW_270#>`:(r[11]==='off'?`<#RFW_271#>`:`<#RFW_269#>`))
+     ],function(){
+       if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));},
+@@ -1072,21 +1091,37 @@ function rfwFillSelects(){
+   fill('ic_from',zones,false); fill('ic_ex',addr,true);
+ }
+ 
++/* Page-level pending banner (2026-08-29). Visible from EVERY tab, because every
++   tab except Rules writes to the draft and has no apply control of its own.
++   Two distinct states, and they must not be conflated:
++     armed            -> already applied, waiting for Keep, auto-reverts on timeout
++     dirty && !armed  -> saved to the draft only; NOTHING is in effect yet
++   `dirty` comes from the engine (action=cfg), which reports whether any draft
++   file exists - not from a client-side guess, so it survives a page reload. */
++function rfwPendingUI(){
++  var b=$('rf_pending'); if(!b)return;
++  var t=$('rf_pending_txt');
++  if(RFW.armed){ b.style.display=''; t.textContent=`<#RFW_274#>`; }
++  else if(RFW.dirty){ b.style.display=''; t.textContent=`<#RFW_273#>`; }
++  else b.style.display='none';
++}
+ /* commit-confirm banner + countdown. The deadline is owned by the router (a cru
+    watcher), so this only DISPLAYS it - a closed tab still gets reverted. */
+ function rfwArmUI(){
+   var card=$('rf_armcard');
+   card.style.display=RFW.armed?'':'none';
+   $('rf_left').textContent=RFW.armed?RFW.left:'\u2014';
++  rfwPendingUI();
+   if(rfwTimer){clearTimeout(rfwTimer);rfwTimer=null;}
+   if(RFW.armed)rfwTimer=setTimeout(rfwPoll,2000);
+ }
+ function rfwPoll(){
+   fwcgi('action=cfg',function(j){
+-    if(j&&j.ok){RFW.armed=j.armed?1:0;RFW.left=j.left||0;}
++    if(j&&j.ok){RFW.armed=j.armed?1:0;RFW.left=j.left||0;RFW.dirty=j.dirty?1:0;}
+     else{RFW.armed=0;}
+     $('rf_armcard').style.display=RFW.armed?'':'none';
+     $('rf_left').textContent=RFW.armed?RFW.left:'\u2014';
++    rfwPendingUI();
+     if(RFW.armed)rfwTimer=setTimeout(rfwPoll,2000);
+     else{rfwTimer=null;rfwLoad();}
+   });
+@@ -1620,6 +1655,8 @@ function initRfw(){
+       setTimeout(function(){rfwLoad();},1500);
+     });
+   };
++  /* the banner is page-level but Apply / Keep / Revert all live on Rules */
++  if($('rf_pending_go'))$('rf_pending_go').onclick=function(){ showTab('rules'); };
+   $('rf_keep').onclick=function(){
+     fwcgi('action=confirm',function(){setTimeout(function(){rfwLoad();},800);});
+   };
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index b5dda17343..08230c71cf 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index c442c042a9..dfe68bec5b 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ccdbd3628a..7b9f1239be 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 2ffcdd2199..a22c6caa05 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index bc65434bf5..39d1257cd2 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index d931363c70..cfa088d31c 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6763,3 +6763,6 @@ RFW_269=Auto
+ RFW_270=Always
+ RFW_271=Never
+ RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
++RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
++RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
++RFW_275=Go to Rules
+-- 
+2.25.1
+

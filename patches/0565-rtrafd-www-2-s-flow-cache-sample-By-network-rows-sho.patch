@@ -1,0 +1,83 @@
+From 7e64f121e51232aa3764260fc305a8aa36c596bc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 16:29:43 -0400
+Subject: [PATCH] rtrafd/www: 2 s flow-cache sample; By-network rows show their
+ DL/UL split
+
+Owner asks. HEAVY_EVERY drops 5 s -> 2 s so Top Devices, Top Talkers and
+By Network refresh every 2 s; FCACHE_SECS and every rate division derive
+from it, so no other constant moves. The ping probe stays at 5 s and the
+per-class tmctl cadence stays at 4 s. The page's ~1 Hz table-rebuild
+throttle is unchanged (it only paints, the data cadence is the collector's).
+
+The live By Network view summed rx+tx into one figure even though the
+collector has always published both directions per bridge; each row now
+shows down/up separately (arrows in the WAN-chart jade/crimson semantics)
+while the bar still ranks by the combined rate.
+
+Host ring harness recompiled against the new cadence: 9/9. Page inline
+scripts parse under node --check; ASCII-clean.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c        |  4 +++-
+ release/src/router/www/Reaper_Traffic.asp | 15 ++++++++++-----
+ 2 files changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index cda65d5f79..572593b6e4 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -75,7 +75,9 @@
+ #define TICK_MS		100	/* base tick / WAN + live.json cadence (ms) */
+ #define TPS		(1000 / TICK_MS)	/* ticks per second */
+ #define CLASS_EVERY	(4 * TPS)	/* poll per-QoS-class every 4 s (v1.7.1 I2: halve the 7x tmctl fork rate; ring binning is cadence-independent) */
+-#define HEAVY_EVERY	(5 * TPS)	/* poll flow cache (per-dev/net/top) every 5 s */
++#define HEAVY_EVERY	(2 * TPS)	/* poll flow cache (per-dev/net/top) every 2 s (2026-08-28
++					 * owner ask: livelier Top devices / Top talkers / By network.
++					 * FCACHE_SECS and every rate division derive from this). */
+ #define PROBE_EVERY	(5 * TPS)	/* ping probe every 5 s */
+ #define FCACHE_SECS	(HEAVY_EVERY * TICK_MS / 1000)	/* flow-cache sample interval (s) */
+ #define N5		288	/* 5-min slots  (24 h) */
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 9dcbb32a14..12ccf2a66a 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -600,8 +600,9 @@ function renderLive(d){
+   netCache(d);
+   curStore = d.store?d.store.toUpperCase():'RAM'; setPill();
+   /* the collector refreshes per-device/per-network/top-talker data only on its
+-     5 s flow-cache sample; rebuild those tables at ~1 Hz, not on every live poll
+-     (up to 10 Hz). The rolling WAN + per-class charts still draw every poll. */
++     2 s flow-cache sample (HEAVY_EVERY); rebuild those tables at ~1 Hz, not on
++     every live poll (up to 10 Hz). The rolling WAN + per-class charts still
++     draw every poll. */
+   var _nowMs=Date.now(); var drawTbl=(_nowMs-(renderLive.lastTbl||0)>=900); if(drawTbl) renderLive.lastTbl=_nowMs;
+   var wan=d.wan||{rx_bps:0,tx_bps:0};
+   /* tiles + top talkers update in any window */
+@@ -640,15 +641,19 @@ function renderLive(d){
+   }
+ 
+   /* By network + Top devices: live rate bars/rows (from the last flow-cache sample).
+-     Throttled to ~1 Hz (drawTbl) - the data only changes on the 5 s fcache sample. */
++     Throttled to ~1 Hz (drawTbl) - the data only changes on the 2 s fcache sample.
++     2026-08-28 (owner ask): each network row shows its DL/UL split - the collector
++     always published both directions (net[nm]=[rx,tx]) but this view summed them
++     into one figure. The bar still ranks by the combined rate; the arrows reuse
++     the WAN-chart color semantics (jade down / crimson up). */
+   if(drawTbl){
+   document.getElementById('netchart').innerHTML='';
+   var nets=d.net||{}, nrows=[], nmax=1;
+-  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; if(nm==="Router")continue; /* reaper: hide the router-self bucket (ntp/update/probe) from the per-network view */ var v=(nets[nm][0]||0)+(nets[nm][1]||0); nrows.push([nm,v]); if(v>nmax)nmax=v; }
++  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; if(nm==="Router")continue; /* reaper: hide the router-self bucket (ntp/update/probe) from the per-network view */ var nrx=nets[nm][0]||0, ntx=nets[nm][1]||0, v=nrx+ntx; nrows.push([nm,v,nrx,ntx]); if(v>nmax)nmax=v; }
+   nrows.sort(function(a,b){return b[1]-a[1];});
+   var nh='';
+   for(var n2=0;n2<nrows.length;n2++){ var col=NETCOLOR[n2%NETCOLOR.length];
+-    nh+='<div style="display:flex;width:100%;align-items:center;gap:10px;margin:7px 0"><span style="color:var(--bone);min-width:64px;font-size:12.5px" title="'+esc(netTitle(nrows[n2][0]))+'">'+esc(netLabel(nrows[n2][0]))+'</span><div class="bar" style="flex:1;margin:0"><span style="width:'+(nrows[n2][1]/nmax*100).toFixed(0)+'%;background:'+col+'"></span></div><span class="num" style="min-width:82px;text-align:right;font-size:12.5px">'+fmtBps(nrows[n2][1])+'</span></div>'; }
++    nh+='<div style="display:flex;width:100%;align-items:center;gap:10px;margin:7px 0"><span style="color:var(--bone);min-width:64px;font-size:12.5px" title="'+esc(netTitle(nrows[n2][0]))+'">'+esc(netLabel(nrows[n2][0]))+'</span><div class="bar" style="flex:1;margin:0"><span style="width:'+(nrows[n2][1]/nmax*100).toFixed(0)+'%;background:'+col+'"></span></div><span class="num" style="min-width:170px;text-align:right;font-size:12.5px">'+fmtBps(nrows[n2][2])+' <span style="color:var(--jade)">&darr;</span> &nbsp;'+fmtBps(nrows[n2][3])+' <span style="color:var(--crimson)">&uarr;</span></span></div>'; }
+   document.getElementById('netlegend').innerHTML = nh || `<span style="color:var(--steel)"><#RTRF_65#></span>`;
+ 
+   var devs=(d.dev||[]).slice().sort(function(a,b){return (b.dn+b.up)-(a.dn+a.up);}), dmax=1;
+-- 
+2.25.1
+

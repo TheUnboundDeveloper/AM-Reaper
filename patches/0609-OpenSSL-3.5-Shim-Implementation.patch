@@ -1,0 +1,1038 @@
+From 10799f63b4ab35868b8a1b3995cfc0f685adb816 Mon Sep 17 00:00:00 2001
+From: RSDNTWK <75706303+RSDNTWK@users.noreply.github.com>
+Date: Wed, 5 Aug 2026 09:25:38 +0100
+Subject: [PATCH] OpenSSL 3.5 + Shim Implementation.
+
+(cherry picked from commit 3505adf14ddf5626acb265ea1e45050517ffb49c)
+---
+ release/src/router/Makefile                   |  46 ++-
+ release/src/router/config/config.in           |   3 +
+ release/src/router/config_base                |   3 +-
+ release/src/router/httpd/Makefile             |   4 +
+ release/src/router/infosvr/Makefile           |   3 +
+ .../openssl-1.1/include/openssl/asn1_mac.h    |  10 -
+ release/src/router/openssl11-compat/Makefile  |  37 ++
+ .../router/openssl11-compat/crypto_compat.c   | 391 ++++++++++++++++++
+ .../src/router/openssl11-compat/libcrypto.map |  67 +++
+ .../src/router/openssl11-compat/libssl.map    |  32 ++
+ .../src/router/openssl11-compat/ssl_compat.c  | 283 +++++++++++++
+ release/src/router/rc/Makefile                |   2 +-
+ 12 files changed, 866 insertions(+), 15 deletions(-)
+ delete mode 100644 release/src/router/openssl-1.1/include/openssl/asn1_mac.h
+ create mode 100644 release/src/router/openssl11-compat/Makefile
+ create mode 100644 release/src/router/openssl11-compat/crypto_compat.c
+ create mode 100644 release/src/router/openssl11-compat/libcrypto.map
+ create mode 100644 release/src/router/openssl11-compat/libssl.map
+ create mode 100644 release/src/router/openssl11-compat/ssl_compat.c
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 340b7565aa..5414ac3596 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -805,6 +805,8 @@ ifeq ($(RTCONFIG_OPENSSL11),y)
+ OPENSSL := openssl-1.1
+ else ifeq ($(RTCONFIG_OPENSSL10),y)
+ OPENSSL := openssl-1.0
++else ifeq ($(RTCONFIG_OPENSSL35),y)
++OPENSSL := openssl-3.5
+ else
+ $(error OpenSSL is not defined)
+ endif
+@@ -3809,6 +3811,45 @@ HOSTCONFIG_OPENSSL:= linux-aarch64
+ endif
+ endif
+ 
++openssl11-compat:
++	@$(MAKE) -C $@
++
++openssl11-compat-clean:
++	@$(MAKE) -C openssl11-compat clean
++
++openssl-3.5/Makefile:
++	cd openssl-3.5 && \
++	./Configure $(HOSTCONFIG_OPENSSL) --prefix=/usr --openssldir=/etc --cross-compile-prefix=' ' \
++		$(if $(filter y,$(RTCONFIG_SFP) $(RTCONFIG_4M_SFP) $(RTCONFIG_8M_SFP)),-Os,-O2) \
++		$(if $(RTCONFIG_DEBUG),-g) \
++		-ffunction-sections -fdata-sections -Wl,--gc-sections \
++		shared $(OPENSSL_CIPHERS) no-async no-tests no-docs --api=1.1.1 \
++		no-aria no-sm2 no-sm3 no-sm4 \
++		--with-rand-seed=devrandom
++	@$(MAKE) -C openssl-3.5 depend
++	@$(MAKE) -C openssl-3.5 clean
++	@touch $@
++
++openssl-3.5: openssl-3.5/Makefile
++	$(MAKE) -C openssl-3.5 && $(MAKE) $@-stage
++
++openssl-3.5-clean:
++	[ ! -f openssl-3.5/Makefile ] || $(MAKE) -C openssl-3.5 clean
++	@rm -f openssl-3.5/Makefile
++
++openssl-3.5-install:
++	install -D openssl-3.5/libcrypto.so.3 $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libcrypto.so.3
++	install -D openssl-3.5/libssl.so.3 $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libssl.so.3
++	install -D openssl-3.5/apps/openssl $(INSTALLDIR)$(INSTALLSUBDIR)/usr/sbin/openssl
++	install -D openssl-3.5/providers/legacy.so $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/ossl-modules/legacy.so
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libcrypto.so.3)
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libssl.so.3)
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)$(INSTALLSUBDIR)/usr/sbin/openssl)
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/ossl-modules/legacy.so)
++	chmod 0500 $(INSTALLDIR)$(INSTALLSUBDIR)/usr/sbin/openssl
++	cd $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib && rm -f libcrypto.so && ln -sf libcrypto.so.3 libcrypto.so
++	cd $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib && rm -f libssl.so && ln -sf libssl.so.3 libssl.so
++
+ openssl-1.1/Makefile:
+ 	cd openssl-1.1 && \
+ 	./Configure $(HOSTCONFIG_OPENSSL) --prefix=/usr --openssldir=/etc --cross-compile-prefix=' ' \
+@@ -3984,6 +4025,7 @@ endif
+ 
+ rc: shared libev-4.33 $(if $(BCM_502L07P2),ethctl_lib) nvram$(BCMEX)$(EX7) libdisk $(if $(RTCONFIG_LIB_CODB),libcodb) $(if $(RTCONFIG_FBWIFI),fb_wifi) $(if $(RTCONFIG_QTN),libqcsapi_client) $(if $(CONFIG_LIBBCM),libbcm) $(if $(RTCONFIG_BWDPI),bwdpi_source) $(if $(RTCONFIG_USB_SMS_MODEM),smspdu) $(if $(RTCONFIG_OPENVPN),libvpn) $(if $(RTCONFIG_LANTIQ),libfapi-0.1) $(if $(RTCONFIG_CFGSYNC), $(CFGSYNC_PKG) $(if $(RTCONFIG_AMAS), amas-utils) $(if $(RTCONFIG_LANTIQ),hostapd-2.6)) json-c $(if $(or $(RTCONFIG_FRS_LIVE_UPDATE),$(RTCONFIG_FRS_FEEDBACK),$(RTCONFIG_URLFW),$(RTCONFIG_SOFTWIRE46)), curl) $(RC_EXT_PKG) $(if $(RTCONFIG_BRCM_HOSTAPD),wpa_supplicant-2.7) $(if $(RTCONFIG_MXL371X),mxl371x_sdk) libwebapi
+ 	@$(SEP)
++	$(if $(RTCONFIG_OPENSSL35),$(MAKE) -C openssl11-compat install,)
+ # Dig into our collection of prebuilt objects based on model
+ 	@-rm -f rc/prebuild/*.o || true
+ 	@-cp -f rc/prebuild/$(BUILD_NAME)/* rc/prebuild/
+@@ -8343,7 +8385,7 @@ curl/Makefile: curl/configure
+ 		--disable-doh --disable-netrc --disable-dnsshuffle \
+ 		--without-libpsl \
+ 		$(if $(RTCONFIG_TR069),--with-libssh2=$(STAGEDIR)/usr,--without-zlib) \
+-		$(if $(RTCONFIG_OPENSSL11)$(RTCONFIG_OPENSSL10),--with-ssl=$(TOP)/openssl --with-ca-fallback,--without-ssl) \
++		$(if $(OPENSSL),--with-ssl=$(STAGEDIR)/usr --with-ca-fallback,--without-ssl) \
+ 		$(if $(RTCONFIG_MBEDTLS),--with-mbedtls=$(STAGEDIR)/usr,--without-mbedtls) \
+ 		$(if $(RTCONFIG_WOLFSSL),--with-wolfssl=$(STAGEDIR)/usr,--without-wolfssl) \
+ 		--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
+@@ -11899,5 +11941,3 @@ $(obj-y) $(obj-n) $(obj-clean) $(obj-install): dummy
+ .PHONY: all clean distclean mrproper install package image
+ .PHONY: conf mconf oldconf kconf kmconf config menuconfig oldconfig
+ .PHONY: dummy libnet libpcap
+-
+-
+diff --git a/release/src/router/config/config.in b/release/src/router/config/config.in
+index b10fd6712c..c0c49d4f1c 100644
+--- a/release/src/router/config/config.in
++++ b/release/src/router/config/config.in
+@@ -2615,6 +2615,9 @@ config RTCONFIG_OPENSSL10
+ config RTCONFIG_OPENSSL11
+ 	bool "OpenSSL 1.1.x"
+ 
++config RTCONFIG_OPENSSL35
++	bool "OpenSSL 3.5.x"
++
+ endchoice
+ 
+ config RTCONFIG_NO_PTHREAD_TIMEDWAIT
+diff --git a/release/src/router/config_base b/release/src/router/config_base
+index 4c8b7daf15..acb42d5c82 100644
+--- a/release/src/router/config_base
++++ b/release/src/router/config_base
+@@ -612,7 +612,8 @@ RTCONFIG_DNSFILTER=y
+ # RTCONFIG_GEFORCENOW is not set
+ # RTCONFIG_FPROBE is not set
+ # RTCONFIG_OPENSSL10 is not set
+-RTCONFIG_OPENSSL11=y
++# RTCONFIG_OPENSSL11 is not set
++RTCONFIG_OPENSSL35=y
+ # RTCONFIG_ISP_CUSTOMIZE is not set
+ # RTCONFIG_IPERF3 is not set
+ # RTCONFIG_ASUSCTRL is not set
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index 9c5cbfc135..62c4bda078 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -286,6 +286,10 @@ endif
+ CFLAGS += -I$(TOP)/json-c
+ LIBS += -L$(TOP)/json-c/.libs -ljson-c
+ 
++ifeq ($(RTCONFIG_OPENSSL35),y)
++LIBS += -L$(TOP)/openssl11-compat -l:libcrypto.so.1.1 -l:libssl.so.1.1
++endif
++
+ ifeq ($(RTCONFIG_HNS),y)
+ CFLAGS += -I$(TOP)/sqlite
+ CFLAGS += -I$(TOP)/hns
+diff --git a/release/src/router/infosvr/Makefile b/release/src/router/infosvr/Makefile
+index ddfa19a871..e38a7f7ed9 100644
+--- a/release/src/router/infosvr/Makefile
++++ b/release/src/router/infosvr/Makefile
+@@ -40,6 +40,9 @@ endif
+ 
+ ifeq ($(RTCONFIG_AMAS),y)
+ LDFLAGS += -L$(TOP)/openssl -lcrypto -lssl
++ifeq ($(RTCONFIG_OPENSSL35),y)
++LDFLAGS += -L$(TOP)/openssl11-compat -l:libcrypto.so.1.1 -l:libssl.so.1.1
++endif
+ LDFLAGS += -L$(TOP)/json-c/.libs -ljson-c
+ ifeq ($(RTCONFIG_LLDPD_1_0_11),y)
+ LLDPD_DIR = $(TOP)/lldpd-1.0.11
+diff --git a/release/src/router/openssl-1.1/include/openssl/asn1_mac.h b/release/src/router/openssl-1.1/include/openssl/asn1_mac.h
+deleted file mode 100644
+index 7ac1782a3f..0000000000
+--- a/release/src/router/openssl-1.1/include/openssl/asn1_mac.h
++++ /dev/null
+@@ -1,10 +0,0 @@
+-/*
+- * Copyright 2015-2016 The OpenSSL Project Authors. All Rights Reserved.
+- *
+- * Licensed under the OpenSSL license (the "License").  You may not use
+- * this file except in compliance with the License.  You can obtain a copy
+- * in the file LICENSE in the source distribution or at
+- * https://www.openssl.org/source/license.html
+- */
+-
+-#error "This file is obsolete; please update your software."
+diff --git a/release/src/router/openssl11-compat/Makefile b/release/src/router/openssl11-compat/Makefile
+new file mode 100644
+index 0000000000..3e18b6a9aa
+--- /dev/null
++++ b/release/src/router/openssl11-compat/Makefile
+@@ -0,0 +1,37 @@
++include ../common.mak
++
++CFLAGS += -fPIC -Os -Wall $(EXTRACFLAGS) -Wno-deprecated-declarations \
++	-D_FORTIFY_SOURCE=2 -fstack-protector-strong -fvisibility=hidden \
++	-fno-semantic-interposition -Wformat -Wformat-security \
++	-I$(TOP)/openssl-3.5/include
++LIBS := -ldl
++SHARED_FLAGS := $(EXTRALDFLAGS) -shared -Wl,--gc-sections -Wl,--as-needed \
++	-Wl,-Bsymbolic-functions -Wl,-z,defs -Wl,-z,relro -Wl,-z,now \
++	-Wl,-z,noexecstack
++
++all: libcrypto.so.1.1 libssl.so.1.1
++
++crypto_compat.o: crypto_compat.c
++	$(CC) $(CFLAGS) -c $< -o $@
++
++ssl_compat.o: ssl_compat.c
++	$(CC) $(CFLAGS) -c $< -o $@
++
++libcrypto.so.1.1: crypto_compat.o libcrypto.map
++	$(CC) $(SHARED_FLAGS) -Wl,-soname,libcrypto.so.1.1 -Wl,--version-script=libcrypto.map -o $@ crypto_compat.o $(LIBS)
++
++libssl.so.1.1: ssl_compat.o libssl.map
++	$(CC) $(SHARED_FLAGS) -Wl,-soname,libssl.so.1.1 -Wl,--version-script=libssl.map -o $@ ssl_compat.o $(LIBS)
++
++stage: all
++	install -D libcrypto.so.1.1 $(DESTDIR)/usr/lib/libcrypto.so.1.1
++	install -D libssl.so.1.1 $(DESTDIR)/usr/lib/libssl.so.1.1
++
++install: all
++	install -D libcrypto.so.1.1 $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libcrypto.so.1.1
++	install -D libssl.so.1.1 $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libssl.so.1.1
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libcrypto.so.1.1)
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libssl.so.1.1)
++
++clean:
++	rm -f *.o libcrypto.so.1.1 libssl.so.1.1
+diff --git a/release/src/router/openssl11-compat/crypto_compat.c b/release/src/router/openssl11-compat/crypto_compat.c
+new file mode 100644
+index 0000000000..b2e5606ba2
+--- /dev/null
++++ b/release/src/router/openssl11-compat/crypto_compat.c
+@@ -0,0 +1,391 @@
++#define _GNU_SOURCE
++#include <dlfcn.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include <openssl/bio.h>
++#include <openssl/bn.h>
++#include <openssl/crypto.h>
++#include <openssl/dsa.h>
++#include <openssl/ec.h>
++#include <openssl/err.h>
++#include <openssl/engine.h>
++#include <openssl/evp.h>
++#include <openssl/md5.h>
++#include <openssl/pem.h>
++#include <openssl/rand.h>
++#include <openssl/rsa.h>
++#include <openssl/sha.h>
++#include <openssl/x509.h>
++
++#ifdef EVP_CIPHER_CTX_block_size
++#undef EVP_CIPHER_CTX_block_size
++#endif
++#ifdef EVP_PKEY_id
++#undef EVP_PKEY_id
++#endif
++
++/*
++ * Report a stable OpenSSL 1.1.1 compatibility version to legacy callers.
++ * The shim forwards to OpenSSL 3.5 internally, but callers loaded against
++ * libcrypto.so.1.1 should not see a 3.x version number.
++ */
++#define COMPAT_OPENSSL_VERSION_NUM 0x1010100fUL
++#define LIBCRYPTO_REAL_PATH "/usr/lib/libcrypto.so.3"
++
++static __attribute__((noreturn)) void compat_fatal(const char *what, const char *detail)
++{
++	fprintf(stderr, "openssl11-compat: %s: %s\n",
++		what, detail != NULL ? detail : "unknown error");
++	_Exit(127);
++}
++
++static void *volatile crypto_handle_cache;
++
++static void *bio_free_sym;
++static void *bio_new_mem_buf_sym;
++static void *bn_cmp_sym;
++static void *dsa_free_sym;
++static void *ec_key_free_sym;
++static void *ec_key_new_by_curve_name_sym;
++static void *ec_key_get0_group_sym;
++static void *ec_key_get0_public_key_sym;
++static void *ec_point_cmp_sym;
++static void *evp_cipher_ctx_free_sym;
++static void *evp_cipher_ctx_new_sym;
++static void *evp_decryptfinal_ex_sym;
++static void *evp_decryptinit_ex_sym;
++static void *evp_decryptupdate_sym;
++static void *evp_encryptfinal_ex_sym;
++static void *evp_encryptinit_ex_sym;
++static void *evp_encryptupdate_sym;
++static void *evp_pkey_free_sym;
++static void *evp_pkey_get1_dsa_sym;
++static void *evp_pkey_get1_ec_key_sym;
++static void *evp_pkey_get1_rsa_sym;
++static void *evp_aes_256_ecb_sym;
++static void *err_print_errors_fp_sym;
++static void *md5_final_sym;
++static void *md5_init_sym;
++static void *md5_update_sym;
++static void *pem_read_privatekey_sym;
++static void *pem_read_rsaprivatekey_sym;
++static void *pem_read_rsa_pubkey_sym;
++static void *pem_read_x509_sym;
++static void *pem_read_bio_rsaprivatekey_sym;
++static void *pem_read_bio_rsa_pubkey_sym;
++static void *rand_bytes_sym;
++static void *rsa_free_sym;
++static void *rsa_new_sym;
++static void *rsa_get0_n_sym;
++static void *rsa_private_decrypt_sym;
++static void *rsa_private_encrypt_sym;
++static void *rsa_public_decrypt_sym;
++static void *rsa_public_encrypt_sym;
++static void *rsa_size_sym;
++static void *sha256_final_sym;
++static void *sha256_init_sym;
++static void *sha256_update_sym;
++static void *x509_name_oneline_sym;
++static void *x509_free_sym;
++static void *x509_get_issuer_name_sym;
++static void *x509_get_pubkey_sym;
++static void *x509_get_subject_name_sym;
++static void *x509_getm_notafter_sym;
++static void *dsa_get0_pub_key_sym;
++static void *d2i_privatekey_fp_sym;
++static void *d2i_x509_fp_sym;
++static void *evp_cipher_ctx_get_block_size_sym;
++static void *evp_pkey_get_id_sym;
++
++static const char *compat_getenv(const char *name)
++{
++#if defined(__GLIBC__)
++	return secure_getenv(name);
++#else
++	return getenv(name);
++#endif
++}
++
++static void reject_unsafe_openssl_env(void)
++{
++	static const char *const env_names[] = {
++		"OPENSSL_CONF",
++		"OPENSSL_CONF_INCLUDE",
++		"OPENSSL_MODULES",
++		"OPENSSL_ENGINES",
++	};
++	size_t i;
++
++	for (i = 0; i < (sizeof(env_names) / sizeof(env_names[0])); ++i) {
++		const char *value = compat_getenv(env_names[i]);
++		if (value != NULL && *value != '\0')
++			compat_fatal("refusing OpenSSL runtime override from environment", env_names[i]);
++	}
++}
++
++static void *crypto_sym(void **slot, const char *name);
++
++static void validate_crypto_handle(void *handle)
++{
++	typedef unsigned long (*version_fn_t)(void);
++	version_fn_t version_fn;
++	const char *err;
++	unsigned long version;
++
++	dlerror();
++	version_fn = (version_fn_t)dlsym(handle, "OpenSSL_version_num");
++	err = dlerror();
++	if (err != NULL || version_fn == NULL)
++		compat_fatal("missing libcrypto.so.3 version probe", err);
++
++	version = version_fn();
++	if ((version >> 28) != 3)
++		compat_fatal("unexpected libcrypto.so.3 major version", "expected OpenSSL 3.x");
++}
++
++static void *crypto_handle(void)
++{
++	void *loaded;
++	void *expected;
++
++	loaded = __atomic_load_n(&crypto_handle_cache, __ATOMIC_ACQUIRE);
++	if (loaded != NULL)
++		return loaded;
++
++	reject_unsafe_openssl_env();
++
++	loaded = dlopen(LIBCRYPTO_REAL_PATH, RTLD_NOW | RTLD_LOCAL);
++	if (loaded == NULL)
++		compat_fatal("dlopen(libcrypto.so.3) failed", dlerror());
++
++	validate_crypto_handle(loaded);
++
++	expected = NULL;
++	if (!__atomic_compare_exchange_n(&crypto_handle_cache, &expected, loaded, 0,
++					 __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
++		dlclose(loaded);
++		loaded = expected;
++	}
++
++	return loaded;
++}
++
++static void *crypto_sym(void **slot, const char *name)
++{
++	void *sym;
++	const char *err;
++
++	sym = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
++	if (sym != NULL)
++		return sym;
++
++	dlerror();
++	sym = dlsym(crypto_handle(), name);
++	err = dlerror();
++	if (err != NULL || sym == NULL)
++		compat_fatal("missing libcrypto.so.3 symbol", name);
++
++	{
++		void *expected = NULL;
++		if (!__atomic_compare_exchange_n(slot, &expected, sym, 0,
++						 __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
++			sym = expected;
++	}
++
++	return sym;
++}
++
++static void preload_crypto_symbols(void)
++{
++	(void)crypto_handle();
++	(void)crypto_sym(&bio_free_sym, "BIO_free");
++	(void)crypto_sym(&bio_new_mem_buf_sym, "BIO_new_mem_buf");
++	(void)crypto_sym(&bn_cmp_sym, "BN_cmp");
++	(void)crypto_sym(&dsa_free_sym, "DSA_free");
++	(void)crypto_sym(&ec_key_free_sym, "EC_KEY_free");
++	(void)crypto_sym(&ec_key_new_by_curve_name_sym, "EC_KEY_new_by_curve_name");
++	(void)crypto_sym(&ec_key_get0_group_sym, "EC_KEY_get0_group");
++	(void)crypto_sym(&ec_key_get0_public_key_sym, "EC_KEY_get0_public_key");
++	(void)crypto_sym(&ec_point_cmp_sym, "EC_POINT_cmp");
++	(void)crypto_sym(&evp_cipher_ctx_free_sym, "EVP_CIPHER_CTX_free");
++	(void)crypto_sym(&evp_cipher_ctx_new_sym, "EVP_CIPHER_CTX_new");
++	(void)crypto_sym(&evp_decryptfinal_ex_sym, "EVP_DecryptFinal_ex");
++	(void)crypto_sym(&evp_decryptinit_ex_sym, "EVP_DecryptInit_ex");
++	(void)crypto_sym(&evp_decryptupdate_sym, "EVP_DecryptUpdate");
++	(void)crypto_sym(&evp_encryptfinal_ex_sym, "EVP_EncryptFinal_ex");
++	(void)crypto_sym(&evp_encryptinit_ex_sym, "EVP_EncryptInit_ex");
++	(void)crypto_sym(&evp_encryptupdate_sym, "EVP_EncryptUpdate");
++	(void)crypto_sym(&evp_pkey_free_sym, "EVP_PKEY_free");
++	(void)crypto_sym(&evp_pkey_get1_dsa_sym, "EVP_PKEY_get1_DSA");
++	(void)crypto_sym(&evp_pkey_get1_ec_key_sym, "EVP_PKEY_get1_EC_KEY");
++	(void)crypto_sym(&evp_pkey_get1_rsa_sym, "EVP_PKEY_get1_RSA");
++	(void)crypto_sym(&evp_aes_256_ecb_sym, "EVP_aes_256_ecb");
++	(void)crypto_sym(&err_print_errors_fp_sym, "ERR_print_errors_fp");
++	(void)crypto_sym(&md5_final_sym, "MD5_Final");
++	(void)crypto_sym(&md5_init_sym, "MD5_Init");
++	(void)crypto_sym(&md5_update_sym, "MD5_Update");
++	(void)crypto_sym(&pem_read_privatekey_sym, "PEM_read_PrivateKey");
++	(void)crypto_sym(&pem_read_rsaprivatekey_sym, "PEM_read_RSAPrivateKey");
++	(void)crypto_sym(&pem_read_rsa_pubkey_sym, "PEM_read_RSA_PUBKEY");
++	(void)crypto_sym(&pem_read_x509_sym, "PEM_read_X509");
++	(void)crypto_sym(&pem_read_bio_rsaprivatekey_sym, "PEM_read_bio_RSAPrivateKey");
++	(void)crypto_sym(&pem_read_bio_rsa_pubkey_sym, "PEM_read_bio_RSA_PUBKEY");
++	(void)crypto_sym(&rand_bytes_sym, "RAND_bytes");
++	(void)crypto_sym(&rsa_free_sym, "RSA_free");
++	(void)crypto_sym(&rsa_new_sym, "RSA_new");
++	(void)crypto_sym(&rsa_get0_n_sym, "RSA_get0_n");
++	(void)crypto_sym(&rsa_private_decrypt_sym, "RSA_private_decrypt");
++	(void)crypto_sym(&rsa_private_encrypt_sym, "RSA_private_encrypt");
++	(void)crypto_sym(&rsa_public_decrypt_sym, "RSA_public_decrypt");
++	(void)crypto_sym(&rsa_public_encrypt_sym, "RSA_public_encrypt");
++	(void)crypto_sym(&rsa_size_sym, "RSA_size");
++	(void)crypto_sym(&sha256_final_sym, "SHA256_Final");
++	(void)crypto_sym(&sha256_init_sym, "SHA256_Init");
++	(void)crypto_sym(&sha256_update_sym, "SHA256_Update");
++	(void)crypto_sym(&x509_name_oneline_sym, "X509_NAME_oneline");
++	(void)crypto_sym(&x509_free_sym, "X509_free");
++	(void)crypto_sym(&x509_get_issuer_name_sym, "X509_get_issuer_name");
++	(void)crypto_sym(&x509_get_pubkey_sym, "X509_get_pubkey");
++	(void)crypto_sym(&x509_get_subject_name_sym, "X509_get_subject_name");
++	(void)crypto_sym(&x509_getm_notafter_sym, "X509_getm_notAfter");
++	(void)crypto_sym(&dsa_get0_pub_key_sym, "DSA_get0_pub_key");
++	(void)crypto_sym(&d2i_privatekey_fp_sym, "d2i_PrivateKey_fp");
++	(void)crypto_sym(&d2i_x509_fp_sym, "d2i_X509_fp");
++	(void)crypto_sym(&evp_cipher_ctx_get_block_size_sym, "EVP_CIPHER_CTX_get_block_size");
++	(void)crypto_sym(&evp_pkey_get_id_sym, "EVP_PKEY_get_id");
++}
++
++static void __attribute__((constructor)) preload_crypto_compat(void)
++{
++	preload_crypto_symbols();
++}
++
++#define COMPAT_EXPORT __attribute__((visibility("default")))
++
++#define WRAP0(ret, name, slot) \
++	COMPAT_EXPORT ret name(void) { typedef ret (*fn_t)(void); return ((fn_t)crypto_sym(&(slot), #name))(); }
++#define WRAP1(ret, name, slot, t1, a1) \
++	COMPAT_EXPORT ret name(t1 a1) { typedef ret (*fn_t)(t1); return ((fn_t)crypto_sym(&(slot), #name))(a1); }
++#define WRAP2(ret, name, slot, t1, a1, t2, a2) \
++	COMPAT_EXPORT ret name(t1 a1, t2 a2) { typedef ret (*fn_t)(t1, t2); return ((fn_t)crypto_sym(&(slot), #name))(a1, a2); }
++#define WRAP3(ret, name, slot, t1, a1, t2, a2, t3, a3) \
++	COMPAT_EXPORT ret name(t1 a1, t2 a2, t3 a3) { typedef ret (*fn_t)(t1, t2, t3); return ((fn_t)crypto_sym(&(slot), #name))(a1, a2, a3); }
++#define WRAP4(ret, name, slot, t1, a1, t2, a2, t3, a3, t4, a4) \
++	COMPAT_EXPORT ret name(t1 a1, t2 a2, t3 a3, t4 a4) { typedef ret (*fn_t)(t1, t2, t3, t4); return ((fn_t)crypto_sym(&(slot), #name))(a1, a2, a3, a4); }
++#define WRAP5(ret, name, slot, t1, a1, t2, a2, t3, a3, t4, a4, t5, a5) \
++	COMPAT_EXPORT ret name(t1 a1, t2 a2, t3 a3, t4 a4, t5 a5) { typedef ret (*fn_t)(t1, t2, t3, t4, t5); return ((fn_t)crypto_sym(&(slot), #name))(a1, a2, a3, a4, a5); }
++#define WRAPV1(name, slot, t1, a1) \
++	COMPAT_EXPORT void name(t1 a1) { typedef void (*fn_t)(t1); ((fn_t)crypto_sym(&(slot), #name))(a1); }
++
++WRAP1(int, BIO_free, bio_free_sym, BIO *, bio)
++WRAP2(BIO *, BIO_new_mem_buf, bio_new_mem_buf_sym, const void *, buf, int, len)
++WRAP2(int, BN_cmp, bn_cmp_sym, const BIGNUM *, a, const BIGNUM *, b)
++WRAPV1(DSA_free, dsa_free_sym, DSA *, dsa)
++WRAPV1(EC_KEY_free, ec_key_free_sym, EC_KEY *, key)
++WRAP1(EC_KEY *, EC_KEY_new_by_curve_name, ec_key_new_by_curve_name_sym, int, nid)
++WRAP1(const EC_GROUP *, EC_KEY_get0_group, ec_key_get0_group_sym, const EC_KEY *, key)
++WRAP1(const EC_POINT *, EC_KEY_get0_public_key, ec_key_get0_public_key_sym, const EC_KEY *, key)
++WRAP4(int, EC_POINT_cmp, ec_point_cmp_sym, const EC_GROUP *, group, const EC_POINT *, a, const EC_POINT *, b, BN_CTX *, ctx)
++WRAPV1(EVP_CIPHER_CTX_free, evp_cipher_ctx_free_sym, EVP_CIPHER_CTX *, ctx)
++WRAP0(EVP_CIPHER_CTX *, EVP_CIPHER_CTX_new, evp_cipher_ctx_new_sym)
++WRAP3(int, EVP_DecryptFinal_ex, evp_decryptfinal_ex_sym, EVP_CIPHER_CTX *, ctx, unsigned char *, out, int *, outl)
++WRAP5(int, EVP_DecryptInit_ex, evp_decryptinit_ex_sym, EVP_CIPHER_CTX *, ctx, const EVP_CIPHER *, type, ENGINE *, impl, const unsigned char *, key, const unsigned char *, iv)
++WRAP5(int, EVP_DecryptUpdate, evp_decryptupdate_sym, EVP_CIPHER_CTX *, ctx, unsigned char *, out, int *, outl, const unsigned char *, in, int, inl)
++WRAP3(int, EVP_EncryptFinal_ex, evp_encryptfinal_ex_sym, EVP_CIPHER_CTX *, ctx, unsigned char *, out, int *, outl)
++WRAP5(int, EVP_EncryptInit_ex, evp_encryptinit_ex_sym, EVP_CIPHER_CTX *, ctx, const EVP_CIPHER *, type, ENGINE *, impl, const unsigned char *, key, const unsigned char *, iv)
++WRAP5(int, EVP_EncryptUpdate, evp_encryptupdate_sym, EVP_CIPHER_CTX *, ctx, unsigned char *, out, int *, outl, const unsigned char *, in, int, inl)
++WRAPV1(EVP_PKEY_free, evp_pkey_free_sym, EVP_PKEY *, pkey)
++WRAP1(DSA *, EVP_PKEY_get1_DSA, evp_pkey_get1_dsa_sym, EVP_PKEY *, pkey)
++WRAP1(EC_KEY *, EVP_PKEY_get1_EC_KEY, evp_pkey_get1_ec_key_sym, EVP_PKEY *, pkey)
++WRAP1(RSA *, EVP_PKEY_get1_RSA, evp_pkey_get1_rsa_sym, EVP_PKEY *, pkey)
++WRAP0(const EVP_CIPHER *, EVP_aes_256_ecb, evp_aes_256_ecb_sym)
++WRAPV1(ERR_print_errors_fp, err_print_errors_fp_sym, FILE *, fp)
++WRAP2(int, MD5_Final, md5_final_sym, unsigned char *, md, MD5_CTX *, c)
++WRAP1(int, MD5_Init, md5_init_sym, MD5_CTX *, c)
++WRAP3(int, MD5_Update, md5_update_sym, MD5_CTX *, c, const void *, data, size_t, len)
++WRAP4(EVP_PKEY *, PEM_read_PrivateKey, pem_read_privatekey_sym, FILE *, fp, EVP_PKEY **, x, pem_password_cb *, cb, void *, u)
++WRAP4(RSA *, PEM_read_RSAPrivateKey, pem_read_rsaprivatekey_sym, FILE *, fp, RSA **, x, pem_password_cb *, cb, void *, u)
++WRAP4(RSA *, PEM_read_RSA_PUBKEY, pem_read_rsa_pubkey_sym, FILE *, fp, RSA **, x, pem_password_cb *, cb, void *, u)
++WRAP4(X509 *, PEM_read_X509, pem_read_x509_sym, FILE *, fp, X509 **, x, pem_password_cb *, cb, void *, u)
++WRAP4(RSA *, PEM_read_bio_RSAPrivateKey, pem_read_bio_rsaprivatekey_sym, BIO *, bp, RSA **, x, pem_password_cb *, cb, void *, u)
++WRAP4(RSA *, PEM_read_bio_RSA_PUBKEY, pem_read_bio_rsa_pubkey_sym, BIO *, bp, RSA **, x, pem_password_cb *, cb, void *, u)
++WRAP2(int, RAND_bytes, rand_bytes_sym, unsigned char *, buf, int, num)
++WRAPV1(RSA_free, rsa_free_sym, RSA *, rsa)
++WRAP0(RSA *, RSA_new, rsa_new_sym)
++WRAP5(int, RSA_private_decrypt, rsa_private_decrypt_sym, int, flen, const unsigned char *, from, unsigned char *, to, RSA *, rsa, int, padding)
++WRAP5(int, RSA_private_encrypt, rsa_private_encrypt_sym, int, flen, const unsigned char *, from, unsigned char *, to, RSA *, rsa, int, padding)
++WRAP5(int, RSA_public_decrypt, rsa_public_decrypt_sym, int, flen, const unsigned char *, from, unsigned char *, to, RSA *, rsa, int, padding)
++WRAP5(int, RSA_public_encrypt, rsa_public_encrypt_sym, int, flen, const unsigned char *, from, unsigned char *, to, RSA *, rsa, int, padding)
++WRAP1(int, RSA_size, rsa_size_sym, const RSA *, rsa)
++WRAP2(int, SHA256_Final, sha256_final_sym, unsigned char *, md, SHA256_CTX *, c)
++WRAP1(int, SHA256_Init, sha256_init_sym, SHA256_CTX *, c)
++WRAP3(int, SHA256_Update, sha256_update_sym, SHA256_CTX *, c, const void *, data, size_t, len)
++WRAP3(char *, X509_NAME_oneline, x509_name_oneline_sym, const X509_NAME *, name, char *, buf, int, size)
++WRAPV1(X509_free, x509_free_sym, X509 *, x509)
++WRAP1(X509_NAME *, X509_get_issuer_name, x509_get_issuer_name_sym, const X509 *, x509)
++WRAP1(EVP_PKEY *, X509_get_pubkey, x509_get_pubkey_sym, X509 *, x509)
++WRAP1(X509_NAME *, X509_get_subject_name, x509_get_subject_name_sym, const X509 *, x509)
++WRAP1(ASN1_TIME *, X509_getm_notAfter, x509_getm_notafter_sym, const X509 *, x509)
++WRAP2(EVP_PKEY *, d2i_PrivateKey_fp, d2i_privatekey_fp_sym, FILE *, fp, EVP_PKEY **, a)
++WRAP2(X509 *, d2i_X509_fp, d2i_x509_fp_sym, FILE *, fp, X509 **, a)
++
++static const BIGNUM *compat_RSA_get0_n_impl(const RSA *rsa)
++{
++	typedef const BIGNUM *(*fn_t)(const RSA *);
++
++	return ((fn_t)crypto_sym(&rsa_get0_n_sym, "RSA_get0_n"))(rsa);
++}
++
++static const BIGNUM *compat_DSA_get0_pub_key_impl(const DSA *dsa)
++{
++	typedef const BIGNUM *(*fn_t)(const DSA *);
++
++	return ((fn_t)crypto_sym(&dsa_get0_pub_key_sym, "DSA_get0_pub_key"))(dsa);
++}
++
++COMPAT_EXPORT const BIGNUM *RSA_get0_n_v110(const RSA *rsa)
++{
++	return compat_RSA_get0_n_impl(rsa);
++}
++
++COMPAT_EXPORT const BIGNUM *RSA_get0_n_v111(const RSA *rsa)
++{
++	return compat_RSA_get0_n_impl(rsa);
++}
++
++COMPAT_EXPORT const BIGNUM *DSA_get0_pub_key_v110(const DSA *dsa)
++{
++	return compat_DSA_get0_pub_key_impl(dsa);
++}
++
++COMPAT_EXPORT const BIGNUM *DSA_get0_pub_key_v111(const DSA *dsa)
++{
++	return compat_DSA_get0_pub_key_impl(dsa);
++}
++
++__asm__(".symver RSA_get0_n_v110,RSA_get0_n@OPENSSL_1_1_0");
++__asm__(".symver RSA_get0_n_v111,RSA_get0_n@@OPENSSL_1_1_1");
++__asm__(".symver DSA_get0_pub_key_v110,DSA_get0_pub_key@OPENSSL_1_1_0");
++__asm__(".symver DSA_get0_pub_key_v111,DSA_get0_pub_key@@OPENSSL_1_1_1");
++
++COMPAT_EXPORT unsigned long OpenSSL_version_num(void)
++{
++	return COMPAT_OPENSSL_VERSION_NUM;
++}
++
++COMPAT_EXPORT int EVP_CIPHER_CTX_block_size(const EVP_CIPHER_CTX *ctx)
++{
++	typedef int (*fn_t)(const EVP_CIPHER_CTX *);
++
++	return ((fn_t)crypto_sym(&evp_cipher_ctx_get_block_size_sym,
++				 "EVP_CIPHER_CTX_get_block_size"))(ctx);
++}
++
++COMPAT_EXPORT int EVP_PKEY_id(const EVP_PKEY *pkey)
++{
++	typedef int (*fn_t)(const EVP_PKEY *);
++
++	return ((fn_t)crypto_sym(&evp_pkey_get_id_sym, "EVP_PKEY_get_id"))(pkey);
++}
+diff --git a/release/src/router/openssl11-compat/libcrypto.map b/release/src/router/openssl11-compat/libcrypto.map
+new file mode 100644
+index 0000000000..9c556a8206
+--- /dev/null
++++ b/release/src/router/openssl11-compat/libcrypto.map
+@@ -0,0 +1,67 @@
++OPENSSL_1_1_0 {
++    global:
++        BIO_free;
++        BIO_new_mem_buf;
++        BN_cmp;
++        DSA_free;
++        EC_KEY_free;
++        EC_KEY_new_by_curve_name;
++        EC_KEY_get0_group;
++        EC_KEY_get0_public_key;
++        EC_POINT_cmp;
++        EVP_CIPHER_CTX_block_size;
++        EVP_CIPHER_CTX_free;
++        EVP_CIPHER_CTX_new;
++        EVP_DecryptFinal_ex;
++        EVP_DecryptInit_ex;
++        EVP_DecryptUpdate;
++        EVP_EncryptFinal_ex;
++        EVP_EncryptInit_ex;
++        EVP_EncryptUpdate;
++        EVP_PKEY_free;
++        EVP_PKEY_get1_DSA;
++        EVP_PKEY_get1_EC_KEY;
++        EVP_PKEY_get1_RSA;
++        EVP_PKEY_id;
++        EVP_aes_256_ecb;
++        ERR_print_errors_fp;
++        MD5_Final;
++        MD5_Init;
++        MD5_Update;
++        OpenSSL_version_num;
++        PEM_read_PrivateKey;
++        PEM_read_RSAPrivateKey;
++        PEM_read_RSA_PUBKEY;
++        PEM_read_X509;
++        PEM_read_bio_RSAPrivateKey;
++        PEM_read_bio_RSA_PUBKEY;
++        RAND_bytes;
++        RSA_free;
++        RSA_new;
++        RSA_get0_n;
++        RSA_private_decrypt;
++        RSA_private_encrypt;
++        RSA_public_decrypt;
++        RSA_public_encrypt;
++        RSA_size;
++        SHA256_Final;
++        SHA256_Init;
++        SHA256_Update;
++        X509_NAME_oneline;
++        X509_free;
++        X509_get_issuer_name;
++        X509_get_pubkey;
++        X509_get_subject_name;
++        X509_getm_notAfter;
++        DSA_get0_pub_key;
++        d2i_PrivateKey_fp;
++        d2i_X509_fp;
++    local:
++        *;
++};
++
++OPENSSL_1_1_1 {
++    global:
++        DSA_get0_pub_key;
++        RSA_get0_n;
++} OPENSSL_1_1_0;
+diff --git a/release/src/router/openssl11-compat/libssl.map b/release/src/router/openssl11-compat/libssl.map
+new file mode 100644
+index 0000000000..17b7d4f904
+--- /dev/null
++++ b/release/src/router/openssl11-compat/libssl.map
+@@ -0,0 +1,32 @@
++OPENSSL_1_1_0 {
++    global:
++        SSL_CTX_free;
++        SSL_CTX_new;
++        SSL_CTX_use_certificate_chain_file;
++        SSL_CTX_set_verify;
++        SSL_CTX_set_cipher_list;
++        SSL_CTX_ctrl;
++        SSL_CTX_check_private_key;
++        SSL_CTX_set_options;
++        SSL_CTX_use_PrivateKey_file;
++        SSL_CTX_use_certificate_file;
++        SSL_connect;
++        SSL_ctrl;
++        SSL_accept;
++        SSL_free;
++        SSL_get_error;
++        SSL_get_peer_certificate;
++        SSL_get_verify_result;
++        OPENSSL_init_ssl;
++        SSL_new;
++        SSL_pending;
++        SSL_read;
++        SSL_set_fd;
++        SSL_set_verify;
++        SSL_shutdown;
++        SSL_write;
++        TLS_client_method;
++        TLS_server_method;
++    local:
++        *;
++};
+diff --git a/release/src/router/openssl11-compat/ssl_compat.c b/release/src/router/openssl11-compat/ssl_compat.c
+new file mode 100644
+index 0000000000..66d052ecc6
+--- /dev/null
++++ b/release/src/router/openssl11-compat/ssl_compat.c
+@@ -0,0 +1,283 @@
++#define _GNU_SOURCE
++#include <dlfcn.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#define SSL_CTX_set_options SSL_CTX_set_options__openssl3_decl
++#include <openssl/crypto.h>
++#include <openssl/ssl.h>
++#include <openssl/x509.h>
++#undef SSL_CTX_set_options
++
++#ifdef SSL_get_peer_certificate
++#undef SSL_get_peer_certificate
++#endif
++
++#if defined(__arm__) || defined(__thumb__)
++_Static_assert(sizeof(unsigned long) == 4,
++	       "OpenSSL 1.1 compatibility shim expects 32-bit unsigned long on ARM");
++#endif
++
++static __attribute__((noreturn)) void compat_fatal(const char *what, const char *detail)
++{
++	fprintf(stderr, "openssl11-compat: %s: %s\n",
++		what, detail != NULL ? detail : "unknown error");
++	_Exit(127);
++}
++
++#define LIBCRYPTO_REAL_PATH "/usr/lib/libcrypto.so.3"
++#define LIBSSL_REAL_PATH "/usr/lib/libssl.so.3"
++
++static void *volatile ssl_handle_cache;
++
++static void *ssl_ctx_free_sym;
++static void *ssl_ctx_new_sym;
++static void *ssl_ctx_check_private_key_sym;
++static void *ssl_ctx_ctrl_sym;
++static void *ssl_ctx_set_options_sym;
++static void *ssl_ctx_set_cipher_list_sym;
++static void *ssl_ctx_set_verify_sym;
++static void *ssl_ctx_use_privatekey_file_sym;
++static void *ssl_ctx_use_certificate_file_sym;
++static void *ssl_ctx_use_certificate_chain_file_sym;
++static void *ssl_accept_sym;
++static void *ssl_connect_sym;
++static void *ssl_ctrl_sym;
++static void *ssl_free_sym;
++static void *ssl_get_error_sym;
++static void *ssl_get_verify_result_sym;
++static void *ssl_pending_sym;
++static void *ssl_new_sym;
++static void *ssl_read_sym;
++static void *ssl_set_fd_sym;
++static void *ssl_set_verify_sym;
++static void *ssl_shutdown_sym;
++static void *ssl_write_sym;
++static void *tls_client_method_sym;
++static void *tls_server_method_sym;
++static void *openssl_init_ssl_sym;
++static void *ssl_get1_peer_certificate_sym;
++
++static const char *compat_getenv(const char *name)
++{
++#if defined(__GLIBC__)
++	return secure_getenv(name);
++#else
++	return getenv(name);
++#endif
++}
++
++static void reject_unsafe_openssl_env(void)
++{
++	static const char *const env_names[] = {
++		"OPENSSL_CONF",
++		"OPENSSL_CONF_INCLUDE",
++		"OPENSSL_MODULES",
++		"OPENSSL_ENGINES",
++	};
++	size_t i;
++
++	for (i = 0; i < (sizeof(env_names) / sizeof(env_names[0])); ++i) {
++		const char *value = compat_getenv(env_names[i]);
++		if (value != NULL && *value != '\0')
++			compat_fatal("refusing OpenSSL runtime override from environment", env_names[i]);
++	}
++}
++
++static void *ssl_sym(void **slot, const char *name);
++
++static void validate_ssl_handle(void *ssl_handle, void *crypto_handle)
++{
++	typedef unsigned long (*version_fn_t)(void);
++	version_fn_t version_fn;
++	version_fn_t crypto_version_fn;
++	version_fn_t ssl_version_fn;
++	const char *err;
++	unsigned long version;
++
++	dlerror();
++	version_fn = (version_fn_t)dlsym(ssl_handle, "OpenSSL_version_num");
++	err = dlerror();
++	if (err != NULL || version_fn == NULL)
++		compat_fatal("missing libssl.so.3 version probe", err);
++
++	version = version_fn();
++	if ((version >> 28) != 3)
++		compat_fatal("unexpected libssl.so.3 major version", "expected OpenSSL 3.x");
++
++	dlerror();
++	crypto_version_fn = (version_fn_t)dlsym(crypto_handle, "OpenSSL_version_num");
++	err = dlerror();
++	if (err != NULL || crypto_version_fn == NULL)
++		compat_fatal("missing libcrypto.so.3 version probe", err);
++
++	dlerror();
++	ssl_version_fn = (version_fn_t)dlsym(ssl_handle, "OpenSSL_version_num");
++	err = dlerror();
++	if (err != NULL || ssl_version_fn == NULL)
++		compat_fatal("missing libcrypto dependency probe from libssl.so.3", err);
++
++	if ((void *)crypto_version_fn != (void *)ssl_version_fn)
++		compat_fatal("libssl.so.3 resolved against an unexpected libcrypto.so.3 instance",
++			     LIBCRYPTO_REAL_PATH);
++}
++
++static void *ssl_handle(void)
++{
++	void *loaded;
++	void *expected;
++	void *crypto_handle;
++
++	loaded = __atomic_load_n(&ssl_handle_cache, __ATOMIC_ACQUIRE);
++	if (loaded != NULL)
++		return loaded;
++
++	reject_unsafe_openssl_env();
++
++	crypto_handle = dlopen(LIBCRYPTO_REAL_PATH, RTLD_NOW | RTLD_LOCAL);
++	if (crypto_handle == NULL)
++		compat_fatal("dlopen(libcrypto.so.3) failed", dlerror());
++
++	loaded = dlopen(LIBSSL_REAL_PATH, RTLD_NOW | RTLD_LOCAL);
++	if (loaded == NULL)
++		compat_fatal("dlopen(libssl.so.3) failed", dlerror());
++
++	validate_ssl_handle(loaded, crypto_handle);
++
++	expected = NULL;
++	if (!__atomic_compare_exchange_n(&ssl_handle_cache, &expected, loaded, 0,
++					 __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
++		dlclose(loaded);
++		loaded = expected;
++	}
++
++	return loaded;
++}
++
++static void *ssl_sym(void **slot, const char *name)
++{
++	void *sym;
++	const char *err;
++
++	sym = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
++	if (sym != NULL)
++		return sym;
++
++	dlerror();
++	sym = dlsym(ssl_handle(), name);
++	err = dlerror();
++	if (err != NULL || sym == NULL)
++		compat_fatal("missing libssl.so.3 symbol", name);
++
++	{
++		void *expected = NULL;
++		if (!__atomic_compare_exchange_n(slot, &expected, sym, 0,
++						 __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
++			sym = expected;
++	}
++
++	return sym;
++}
++
++static void preload_ssl_symbols(void)
++{
++	(void)ssl_handle();
++	(void)ssl_sym(&ssl_ctx_free_sym, "SSL_CTX_free");
++	(void)ssl_sym(&ssl_ctx_new_sym, "SSL_CTX_new");
++	(void)ssl_sym(&ssl_ctx_check_private_key_sym, "SSL_CTX_check_private_key");
++	(void)ssl_sym(&ssl_ctx_ctrl_sym, "SSL_CTX_ctrl");
++	(void)ssl_sym(&ssl_ctx_set_options_sym, "SSL_CTX_set_options");
++	(void)ssl_sym(&ssl_ctx_set_cipher_list_sym, "SSL_CTX_set_cipher_list");
++	(void)ssl_sym(&ssl_ctx_set_verify_sym, "SSL_CTX_set_verify");
++	(void)ssl_sym(&ssl_ctx_use_privatekey_file_sym, "SSL_CTX_use_PrivateKey_file");
++	(void)ssl_sym(&ssl_ctx_use_certificate_file_sym, "SSL_CTX_use_certificate_file");
++	(void)ssl_sym(&ssl_ctx_use_certificate_chain_file_sym, "SSL_CTX_use_certificate_chain_file");
++	(void)ssl_sym(&ssl_accept_sym, "SSL_accept");
++	(void)ssl_sym(&ssl_connect_sym, "SSL_connect");
++	(void)ssl_sym(&ssl_ctrl_sym, "SSL_ctrl");
++	(void)ssl_sym(&ssl_free_sym, "SSL_free");
++	(void)ssl_sym(&ssl_get_error_sym, "SSL_get_error");
++	(void)ssl_sym(&ssl_get_verify_result_sym, "SSL_get_verify_result");
++	(void)ssl_sym(&ssl_pending_sym, "SSL_pending");
++	(void)ssl_sym(&ssl_new_sym, "SSL_new");
++	(void)ssl_sym(&ssl_read_sym, "SSL_read");
++	(void)ssl_sym(&ssl_set_fd_sym, "SSL_set_fd");
++	(void)ssl_sym(&ssl_set_verify_sym, "SSL_set_verify");
++	(void)ssl_sym(&ssl_shutdown_sym, "SSL_shutdown");
++	(void)ssl_sym(&ssl_write_sym, "SSL_write");
++	(void)ssl_sym(&tls_client_method_sym, "TLS_client_method");
++	(void)ssl_sym(&tls_server_method_sym, "TLS_server_method");
++	(void)ssl_sym(&openssl_init_ssl_sym, "OPENSSL_init_ssl");
++	(void)ssl_sym(&ssl_get1_peer_certificate_sym, "SSL_get1_peer_certificate");
++}
++
++static void __attribute__((constructor)) preload_ssl_compat(void)
++{
++	preload_ssl_symbols();
++}
++
++#define COMPAT_EXPORT __attribute__((visibility("default")))
++
++#define WRAP0(ret, name, slot) \
++	COMPAT_EXPORT ret name(void) { typedef ret (*fn_t)(void); return ((fn_t)ssl_sym(&(slot), #name))(); }
++#define WRAP1(ret, name, slot, t1, a1) \
++	COMPAT_EXPORT ret name(t1 a1) { typedef ret (*fn_t)(t1); return ((fn_t)ssl_sym(&(slot), #name))(a1); }
++#define WRAP2(ret, name, slot, t1, a1, t2, a2) \
++	COMPAT_EXPORT ret name(t1 a1, t2 a2) { typedef ret (*fn_t)(t1, t2); return ((fn_t)ssl_sym(&(slot), #name))(a1, a2); }
++#define WRAP3(ret, name, slot, t1, a1, t2, a2, t3, a3) \
++	COMPAT_EXPORT ret name(t1 a1, t2 a2, t3 a3) { typedef ret (*fn_t)(t1, t2, t3); return ((fn_t)ssl_sym(&(slot), #name))(a1, a2, a3); }
++#define WRAP4(ret, name, slot, t1, a1, t2, a2, t3, a3, t4, a4) \
++	COMPAT_EXPORT ret name(t1 a1, t2 a2, t3 a3, t4 a4) { typedef ret (*fn_t)(t1, t2, t3, t4); return ((fn_t)ssl_sym(&(slot), #name))(a1, a2, a3, a4); }
++#define WRAPV1(name, slot, t1, a1) \
++	COMPAT_EXPORT void name(t1 a1) { typedef void (*fn_t)(t1); ((fn_t)ssl_sym(&(slot), #name))(a1); }
++#define WRAPV3(name, slot, t1, a1, t2, a2, t3, a3) \
++	COMPAT_EXPORT void name(t1 a1, t2 a2, t3 a3) { typedef void (*fn_t)(t1, t2, t3); ((fn_t)ssl_sym(&(slot), #name))(a1, a2, a3); }
++
++WRAPV1(SSL_CTX_free, ssl_ctx_free_sym, SSL_CTX *, ctx)
++WRAP1(SSL_CTX *, SSL_CTX_new, ssl_ctx_new_sym, const SSL_METHOD *, method)
++WRAP1(int, SSL_CTX_check_private_key, ssl_ctx_check_private_key_sym, const SSL_CTX *, ctx)
++WRAP4(long, SSL_CTX_ctrl, ssl_ctx_ctrl_sym, SSL_CTX *, ctx, int, cmd, long, larg, void *, parg)
++WRAP2(int, SSL_CTX_set_cipher_list, ssl_ctx_set_cipher_list_sym, SSL_CTX *, ctx, const char *, str)
++WRAPV3(SSL_CTX_set_verify, ssl_ctx_set_verify_sym, SSL_CTX *, ctx, int, mode, SSL_verify_cb, callback)
++WRAP3(int, SSL_CTX_use_PrivateKey_file, ssl_ctx_use_privatekey_file_sym, SSL_CTX *, ctx, const char *, file, int, type)
++WRAP3(int, SSL_CTX_use_certificate_file, ssl_ctx_use_certificate_file_sym, SSL_CTX *, ctx, const char *, file, int, type)
++WRAP2(int, SSL_CTX_use_certificate_chain_file, ssl_ctx_use_certificate_chain_file_sym, SSL_CTX *, ctx, const char *, file)
++WRAP1(int, SSL_accept, ssl_accept_sym, SSL *, ssl)
++WRAP1(int, SSL_connect, ssl_connect_sym, SSL *, ssl)
++WRAP4(long, SSL_ctrl, ssl_ctrl_sym, SSL *, ssl, int, cmd, long, larg, void *, parg)
++WRAPV1(SSL_free, ssl_free_sym, SSL *, ssl)
++WRAP2(int, SSL_get_error, ssl_get_error_sym, const SSL *, ssl, int, ret)
++WRAP1(long, SSL_get_verify_result, ssl_get_verify_result_sym, const SSL *, ssl)
++WRAP1(int, SSL_pending, ssl_pending_sym, const SSL *, ssl)
++WRAP1(SSL *, SSL_new, ssl_new_sym, SSL_CTX *, ctx)
++WRAP3(int, SSL_read, ssl_read_sym, SSL *, ssl, void *, buf, int, num)
++WRAP2(int, SSL_set_fd, ssl_set_fd_sym, SSL *, ssl, int, fd)
++WRAPV3(SSL_set_verify, ssl_set_verify_sym, SSL *, ssl, int, mode, SSL_verify_cb, callback)
++WRAP1(int, SSL_shutdown, ssl_shutdown_sym, SSL *, ssl)
++WRAP3(int, SSL_write, ssl_write_sym, SSL *, ssl, const void *, buf, int, num)
++WRAP0(const SSL_METHOD *, TLS_client_method, tls_client_method_sym)
++WRAP0(const SSL_METHOD *, TLS_server_method, tls_server_method_sym)
++
++COMPAT_EXPORT unsigned long SSL_CTX_set_options(SSL_CTX *ctx, unsigned long op)
++{
++	typedef uint64_t (*fn_t)(SSL_CTX *, uint64_t);
++	uint64_t ret;
++
++	ret = ((fn_t)ssl_sym(&ssl_ctx_set_options_sym, "SSL_CTX_set_options"))(ctx, (uint64_t)op);
++	return (unsigned long)ret;
++}
++
++COMPAT_EXPORT int OPENSSL_init_ssl(uint64_t opts, const OPENSSL_INIT_SETTINGS *settings)
++{
++	typedef int (*fn_t)(uint64_t, const OPENSSL_INIT_SETTINGS *);
++
++	return ((fn_t)ssl_sym(&openssl_init_ssl_sym, "OPENSSL_init_ssl"))(opts, settings);
++}
++
++COMPAT_EXPORT X509 *SSL_get_peer_certificate(const SSL *ssl)
++{
++	typedef X509 *(*fn_t)(const SSL *);
++
++	return ((fn_t)ssl_sym(&ssl_get1_peer_certificate_sym, "SSL_get1_peer_certificate"))(ssl);
++}
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index fc63990c14..02b7c2e4cf 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -1090,7 +1090,7 @@ LLDPD_DIR = $(TOP)/lldpd-1.0.11
+ else
+ LLDPD_DIR = $(TOP)/lldpd-0.9.8
+ endif
+-LDFLAGS += -L$(TOP)/amas-utils -lamas-utils -lpthread -L$(LLDPD_DIR)/src/lib/.libs -llldpctl -L$(STAGEDIR)/usr/lib/ -ljansson
++LDFLAGS += -L$(TOP)/amas-utils -lamas-utils -lpthread -L$(LLDPD_DIR)/src/lib/.libs -llldpctl -L$(STAGEDIR)/usr/lib/ -ljansson $(if $(RTCONFIG_OPENSSL35),-L$(TOP)/openssl11-compat -l:libcrypto.so.1.1 -l:libssl.so.1.1,)
+ CFLAGS += -I$(TOP)/amas-utils -I$(TOP)/shared/sysdeps/amas -D_REENTRANT -pthread -DPTHREAD_STACK_SIZE_128K -DUSE_GET_TLV_SUPPORT_MAC
+ OBJS += amas_wlcconnect.o
+ OBJS += amas_bhctrl.o
+-- 
+2.25.1
+

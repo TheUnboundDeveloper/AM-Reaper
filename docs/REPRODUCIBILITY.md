@@ -1,6 +1,6 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
-> **Doc status:** current as of **v2.8.8** · 2026-08-28 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
@@ -73,8 +73,12 @@ git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
 # --- (b) Apply this repo's published patches ----------------------------------
 git config user.email you@example.com && git config user.name reviewer
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
+# The OpenSSL 3.5 source (release/src/router/openssl-3.5, 5,767 files) is not in the series - it is
+# 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
+sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
+tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 563 <!--@patchcount--> patches (through v2.8.8).
+#   fails without it. This applies all 620 <!--@patchcount--> patches (through v2.8.8).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router

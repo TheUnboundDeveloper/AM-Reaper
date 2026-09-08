@@ -1,0 +1,47 @@
+From 55bde6ae539076b351a03a60a011d4a2bf307cdf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 13:43:20 -0400
+Subject: [PATCH] AiMesh backhaul parking: reconcile against the live carrier
+ state every tick
+
+A wireless restart - a Network or Wireless page apply, an SDN change, the
+mesh daemon's own rebuilds - re-creates every BSS, so a carrier the daemon
+had parked came back on the air while its record still said parked, and
+the park pass skipped it for ever. Only switching parking off and on
+cleared the record (owner, 2026-09-06, v3.1.0).
+
+The daemon now forgets a claim whose carrier reads "up", logs why, and
+parks it again on the same tick. Covers every source of a restart at once
+instead of hooking one entry point.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/amaspark.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/release/src/router/rc/amaspark.c b/release/src/router/rc/amaspark.c
+index 2aa87ae8d5..f5b9cc8c07 100644
+--- a/release/src/router/rc/amaspark.c
++++ b/release/src/router/rc/amaspark.c
+@@ -230,6 +230,18 @@ int amaspark_main(int argc, char *argv[])
+ 
+ 		if (want) {
+ 			int acted = 0;
++			/* reaper v3.1.0 (owner 2026-09-06): a wireless restart - a Network or
++			 * Wireless page apply, an SDN change, cfg_server's own rebuilds -
++			 * re-creates every BSS, so a carrier we parked is back on the air
++			 * while our record still says parked, and the loop below would skip
++			 * it for ever. Reconcile against the live state every tick: forget
++			 * the stale claim, say so, and let the pass below park it again. */
++			for (u = 0; u < AP_MAXU; u++) {
++				if (!parked[u] || !ifn[u][0] || before[u] != 1) continue;
++				parked[u] = 0;
++				changed = 1;
++				logmessage(AP_TAG, "%s (%s backhaul carrier) came back up - a wireless restart re-created it; parking it again", ifn[u], band_name(nband[u]));
++			}
+ 			for (u = 0; u < AP_MAXU; u++) {
+ 				if (!ifn[u][0] || !radio[u] || parked[u]) continue;
+ 				if (nband[u] == 4) continue;		/* 6 GHz: never by our hand */
+-- 
+2.25.1
+

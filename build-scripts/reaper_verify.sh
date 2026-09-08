@@ -318,6 +318,69 @@ else
   fi
 fi
 
+# ---- 21. dynamic symbol resolution (check_symbols.sh) ----------------------
+# httpd-link (check 5) asks "do the NEEDED libraries exist?". It does NOT ask
+# "do the symbols inside them exist?". v3.0.3 shipped because of that gap: the
+# OpenSSL 1.1 SONAME was replaced by a 143-symbol compat shim under a hostapd
+# that needs 338, so 6 GHz WPA3-SAE called a missing EC function and hostapd
+# restart-looped 41 times. Every library resolved; the gate passed.
+_cks="$(dirname "${BASH_SOURCE[0]}")/check_symbols.sh"
+if [ -f "$_cks" ]; then
+  if _cksout=$(bash "$_cks" "$FS" 2>&1); then
+    pass "check-symbols" "$(echo "$_cksout" | tail -1)"
+  else
+    echo "$_cksout" | sed 's/^/        /'
+    fail "check-symbols" "unresolved dynamic symbols in the staged fs"
+  fi
+else
+  warn "check-symbols" "check_symbols.sh absent -- symbol resolution not checked"
+fi
+
+# ---- 22. who may still link the OpenSSL 1.1 SONAME (check_ossl_consumers.sh) -
+# check 21 proves every consumer RESOLVES. It cannot see a consumer that was
+# never relinked after a library swap: with a compat shim of the old name
+# present, the stale binary resolves through the shim and 21 is satisfied.
+# That was the v3.0.3 hostapd exactly (compiled 2026-07-27, never relinked).
+# This check names the only binaries allowed to depend on the 1.1 SONAME in an
+# OpenSSL 3.x image -- closed prebuilts and their hosts, per
+# openssl11-consumers.txt -- and fails on anything else; hostapd and the other
+# must3 entries must name libcrypto.so.3 outright. Inert on a 1.1 image.
+_cko="$(dirname "${BASH_SOURCE[0]}")/check_ossl_consumers.sh"
+_ckl="$(dirname "${BASH_SOURCE[0]}")/openssl11-consumers.txt"
+if [ -f "$_cko" ]; then
+  if _ckoout=$(bash "$_cko" "$FS" "$_ckl" 2>&1); then
+    pass "ossl-consumers" "$(echo "$_ckoout" | tail -1)"
+  else
+    echo "$_ckoout" | sed 's/^/        /'
+    fail "ossl-consumers" "a binary depends on the OpenSSL 1.1 SONAME that must not (stale link) -- see above"
+  fi
+else
+  warn "ossl-consumers" "check_ossl_consumers.sh absent -- 1.1-SONAME consumers not checked"
+fi
+
+# ---- 20. static source checks (reaper_static_checks.py) --------------------
+# Promotes this session's by-hand static checks into one gate: (1) *.dict line
+# lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips
+# non-ASCII), (3) forbidden control-byte scan of the Reaper www + all *.dict,
+# (4) brace/paren/bracket parity of the inline JS in each Reaper page, and
+# (5) #define comment-continuation integrity in httpd/reaper_inject.c. Unlike
+# most checks here it runs on the SOURCE tree ($R/release/src/router), not the
+# staged fs, because it is guarding what the build transforms. Located next to
+# THIS script (via _SDIR, set above) so a lean/CI checkout runs its own copy.
+STATICCHK="$_SDIR/reaper_static_checks.py"
+[ -f "$STATICCHK" ] || STATICCHK=/home/reaper/reaper_build/reaper_static_checks.py
+RSRC="$R/release/src/router"
+if [ ! -f "$STATICCHK" ]; then
+  warn "static-checks" "reaper_static_checks.py not found - check skipped"
+elif [ ! -d "$RSRC" ]; then
+  warn "static-checks" "no source tree at $RSRC - check skipped"
+elif out=$(python3 "$STATICCHK" "$RSRC" 2>&1); then
+  pass "static-checks" "$(echo "$out" | tail -1)"
+else
+  echo "$out" | sed 's/^/    /'
+  fail "static-checks" "a static source check failed (see above)"
+fi
+
 echo "reaper_verify: $PASSN pass, $WARNN warn, $FAILN FAIL  ($MODEL $VARIANT)"
 [ "$FAILN" -gt 0 ] && { echo "== VERIFY FAILED =="; exit 1; }
 echo "== VERIFY OK =="; exit 0

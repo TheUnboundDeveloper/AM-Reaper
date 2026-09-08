@@ -1,0 +1,107 @@
+From 0de6654f42e55c7a5f9baa9fb233be03b1c98472 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 22:59:23 -0400
+Subject: [PATCH] reaper_shell: the header WAN poll no longer dies on a single
+ failed request
+
+The topbar WAN pill rescheduled itself ONLY from the success path:
+
+    x.onreadystatechange=function(){ if(x.readyState!==4||x.status!==200) return;
+      ... try{ ... }catch(e){ return; }
+      setTimeout(tick, apply(st,ip)?SLOW:FAST); };
+
+so a non-200, a JSON parse failure or a network error returned before the
+setTimeout and ended the chain for the rest of the session; with no x.timeout
+a hung socket did the same. The shell outlives every framed navigation, so the
+pill then sat frozen on every page until a manual reload - and the window that
+opens it is any apply that restarts httpd, i.e. the common case.
+
+Main_ReaperDash.asp already fixed this exact defect in its own copy of the
+poll (its comment even records that the old shape "killed the poll outright for
+the rest of the session"); the shell copy never got the fix. This ports it:
+a single always-fires completion point fin(ok) behind a `done` once-guard,
+x.timeout=8000, onerror/ontimeout/onabort routed to the same handler, and a
+schedule() helper that clears before setting. Standing rule 34 is satisfied in
+both directions - exactly one request in flight per round, and every outcome
+reschedules. A failure reschedules WITHOUT touching the UI, so a transient blip
+keeps the last good reading instead of flapping to "Disconnected".
+
+Verified by running the SHIPPED IIFE (extracted verbatim) in node under a
+stubbed DOM/XHR and a virtual clock, five simulated minutes per case, with the
+pre-fix code from HEAD as a negative control:
+
+                                          BEFORE            AFTER
+  success baseline                 10 req, alive     10 req, alive
+  HTTP 500 every round              1 req, DEAD      74 req, alive
+  network error (rsc4/0 + onerror)  1 req, DEAD      74 req, alive
+  malformed JSON                    1 req, DEAD      74 req, alive
+  socket timeout                    1 req, DEAD      74 req, alive
+  httpd restart then recovery       1 req, DEAD      15 req, alive, recovers
+
+maxInFlight stayed 1 in every case, including the failure that fires both
+readystatechange(4,status 0) and onerror - the once-guard absorbs the second
+without a duplicate reschedule. reaper_langcheck 0 breakers / 22 pages; both
+inline script blocks parse under node --check; ASCII-clean.
+
+pollPills() in the same file is NOT affected - it runs on setInterval, so it
+cannot die this way. Its missing timeout and hidden-tab gating are separate
+audit items and are left alone here.
+
+Found by the 2026-08-28 audit (report section 0 item B / section 3 B2).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 33 +++++++++++++++++++++----
+ 1 file changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 43743fd746..ec95a2a997 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -915,15 +915,38 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+       if(d){ if(u){ d.style.background=''; d.style.boxShadow=''; } else { d.style.background='#E10600'; d.style.boxShadow='0 0 0 3px rgba(225,6,0,.15)'; } }
+       return u;
+     }
++    var timer=null;
++    function schedule(ms){ if(timer) clearTimeout(timer); timer=setTimeout(tick, ms); }
+     function tick(){
+-      var x=new XMLHttpRequest();
++      var x=new XMLHttpRequest(), done=false;
++      /* ONE completion path per request (standing rule 34), and it must ALWAYS
++         reschedule. The previous version scheduled the next poll only from the
++         readState-4-and-200 branch and returned early otherwise - so a non-200,
++         a JSON parse failure, or a network error ended the chain for the rest of
++         the session, and with no x.timeout a hung socket did the same. The shell
++         outlives every framed navigation, so the pill then sat frozen on every
++         page until a manual reload. That window is exactly what an apply which
++         restarts httpd opens - i.e. the common case, not an edge case. This is
++         the identical defect the dashboard already fixed in its own copy; the
++         shell copy never got it. A failure reschedules WITHOUT touching the UI,
++         so a transient blip keeps the last good reading instead of flapping to
++         "Disconnected". Fixed 2026-08-28. */
++      function fin(ok){
++        if(done) return; done=true;
++        var up=false;
++        if(ok){
++          try{ var j=JSON.parse(x.responseText);
++               up=apply(j.wan0_state_t||'', j.wan0_ipaddr||''); }catch(e){}
++        }
++        schedule(up?SLOW:FAST);
++      }
+       x.open('GET','/appGet.cgi?hook=nvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)&_='+(new Date()).getTime(),true);
+-      x.onreadystatechange=function(){ if(x.readyState!==4||x.status!==200) return;
+-        var st='',ip=''; try{ var j=JSON.parse(x.responseText); st=j.wan0_state_t||''; ip=j.wan0_ipaddr||''; }catch(e){ return; }
+-        setTimeout(tick, apply(st,ip)?SLOW:FAST); };
++      x.timeout=8000;
++      x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
++      x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
+       x.send();
+     }
+-    setTimeout(tick, FAST);
++    schedule(FAST);
+   })();
+   /* operation mode */
+   var opNames={rt:`<#Reaper_c_opmode_rt#>`,ap:`<#Device_type_03_AP#>`,rp:`<#Clientlist_Repeater#>`,mb:`<#OP_MB_item#>`,ew2:`<#Reaper_c_opmode_ew#>`,ew5:`<#Reaper_c_opmode_ew#>`,hs:`<#Reaper_c_opmode_hs#>`,wisp:`<#Reaper_c_opmode_wisp#>`};
+-- 
+2.25.1
+

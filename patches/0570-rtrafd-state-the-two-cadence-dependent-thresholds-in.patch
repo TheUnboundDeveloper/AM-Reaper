@@ -1,0 +1,148 @@
+From 2f539292ed2b9f04542c9e44b1cc2bc8619d9f3b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 28 Aug 2026 23:06:45 -0400
+Subject: [PATCH] rtrafd: state the two cadence-dependent thresholds in
+ seconds, not poll counts
+
+Fixes a regression I introduced in 7e64f121e5 (HEAVY_EVERY 5 s -> 2 s). Two
+thresholds were written as bare poll counts, so their real meaning was a
+function of the sample cadence and both silently changed by 2.5x with nothing
+in that diff to show it:
+
+  threshold                       @5 s      @2 s     intent
+  flow slot reclaim  `> 2` gens    15 s   ->  6 s     15 s
+  connseen grace     `> 12` polls  65 s   -> 26 s     ~60 s ("~12 polls (60 s)")
+
+Neither is cosmetic:
+
+  - The flow table's stale threshold gates when an entry's slot may be handed
+    to another key. Reclaim a live flow's slot early and the entry is missing
+    on its next sighting, `fl->key == key` fails, and the else branch credits
+    the flow's WHOLE cumulative byte counter as a single delta - the 100 GB
+    spike that flow_compact()'s own comment and the parse loop's both warn
+    about. Tightening 15 s -> 6 s widened that window.
+  - The connseen grace is the Connections page's flow age. poll_fcache drops
+    zero-delta flows from the list, so ANY flow quiet for one sample is
+    "missing"; at 26 s a keepalive connection was evicted and its age restarted,
+    reporting a much younger flow than the real one (and dirtying
+    /tmp/reaper_conn_seen more often than needed).
+
+Both are now stated in SECONDS and converted to polls - FLOW_STALE_SECS (15)
+behind a flow_stale() helper, CONNSEEN_GRACE_SECS (60) behind
+CONNSEEN_MISS_MAX with a floor of 1 poll. At the old 5 s cadence flow_stale()
+reduces to exactly the previous `> 2`, so this restores the prior behaviour
+rather than redefining it. The header comment now records the cadences
+correctly (per-class 4 s, flow cache 2 s, probe 5 s - it still claimed the flow
+cache ran at 5 s) and states the rule: any constant whose meaning depends on a
+cadence is written in seconds and divided by that cadence, never as a bare poll
+count.
+
+Verified: computed both thresholds through the exact macro chain at 5 s, 2 s
+and 1 s cadences - after, flow reclaim is 15/16/15 s and the grace is ~60 s at
+all three; before, they were 15/6/3 s and 65/26/13 s. Host ring harness rebuilt
+against the change: 9/9. No new compiler warnings (the only notes on the file
+are the pre-existing format-truncation ones in resolve_store).
+
+Found by the 2026-08-28 audit (report section 0 item C / section 2 C1-C3).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c | 47 +++++++++++++++++++++++++-----
+ 1 file changed, 39 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 572593b6e4..8047de0757 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -68,8 +68,12 @@
+  * live.json write) so the page's "Live" refresh mode gets true 100 ms samples
+  * (v1.5.3, owner ask - was 200 ms; the page poll and this tick are a matched
+  * pair, change them together). The heavier sources keep their wall-clock
+- * cadences - per-class every 2 s (tmctl popens), the flow-cache scan
+- * (per-device/per-network/top-talkers) and the ping probe every 5 s. History
++ * cadences - per-class every 4 s (tmctl popens), the flow-cache scan
++ * (per-device/per-network/top-talkers) every 2 s and the ping probe every 5 s.
++ * ANY constant whose real meaning depends on one of those cadences must be
++ * written in seconds and divided by the cadence, never as a bare poll count -
++ * see FLOW_STALE_SECS and CONNSEEN_GRACE_SECS, both of which silently changed
++ * meaning when the flow-cache scan went 5 s -> 2 s. History
+  * rings just accumulate finer deltas - still binned into the same
+  * 5-min/hour/day/month slots. */
+ #define TICK_MS		100	/* base tick / WAN + live.json cadence (ms) */
+@@ -166,6 +170,24 @@ static flow_t *flows;			/* conntrack-fallback delta table */
+ static uint32_t flowgen = 0;
+ static int flow_strain = 0;		/* a probe ran long this poll - compact after */
+ 
++/* How long an unseen entry must sit before its slot may be reclaimed.
++ *
++ * flowgen advances once per conntrack poll, so a generation is FCACHE_SECS
++ * long. This threshold was written as a bare generation count (`> 2`), which
++ * silently meant 15 s only while the poll ran every 5 s; when HEAVY_EVERY went
++ * 5 s -> 2 s on 2026-08-28 the same literal became 6 s, tightening it 2.5x with
++ * nothing in the diff to show it. Reclaiming a live flow's slot early matters:
++ * the entry is then missing on its next sighting, `fl->key == key` fails, and
++ * the else branch credits the flow's WHOLE cumulative counter as one delta -
++ * the 100 GB-spike hazard the comments at flow_compact() and in the parse loop
++ * both warn about. So state it in SECONDS and derive the generation count; a
++ * future cadence change now cannot move it. */
++#define FLOW_STALE_SECS	15
++static int flow_stale(uint32_t g)
++{
++	return (int)(flowgen - g) * FCACHE_SECS >= FLOW_STALE_SECS;
++}
++
+ /* Open addressing has no cheap delete: zeroing a stale slot in place would cut
+  * a probe chain and orphan any live entry behind it, and the caller would then
+  * re-count that flow from zero (its whole cumulative counter as one delta).
+@@ -183,7 +205,7 @@ static void flow_compact(void)
+ 	if (!(nt = calloc(NFLOW, sizeof(flow_t)))) return;	/* keep the old table */
+ 	for (i = 0; i < NFLOW; i++) {
+ 		flow_t *e = &flows[i];
+-		if (!e->key || (int)(flowgen - e->gen) > 2) continue;
++		if (!e->key || flow_stale(e->gen)) continue;
+ 		idx = (uint32_t)(e->key & (NFLOW - 1));
+ 		for (j = 0; j < NFLOW; j++) {
+ 			flow_t *d = &nt[(idx + j) & (NFLOW - 1)];
+@@ -1043,9 +1065,18 @@ struct fcf {
+ 
+ /* reaper v2.0.6: resident first-seen table for the Connections page (true age).
+  * Keyed by the nf_conn pointer; records when each flow was first observed and
+- * writes /tmp/reaper_conn_seen for do_reaper_conn_cgi. Grace of ~12 polls (60 s)
+- * so a briefly-idle flow (temporarily dropped from the delta list) keeps its
+- * start time instead of resetting. */
++ * writes /tmp/reaper_conn_seen for do_reaper_conn_cgi. A briefly-idle flow
++ * (temporarily dropped from the delta list, which happens to any flow that is
++ * quiet for a sample - poll_fcache skips zero-delta flows) keeps its start
++ * time instead of resetting.
++ *
++ * The grace is stated in SECONDS and converted to polls. It used to be the bare
++ * literal `> 12`, which meant the documented 60 s only while the poll ran every
++ * 5 s; the 2026-08-28 cadence change to 2 s silently made it 24 s, so idle
++ * connections started reporting a much younger age than their real one. */
++#define CONNSEEN_GRACE_SECS 60
++#define CONNSEEN_MISS_MAX ((CONNSEEN_GRACE_SECS) / (FCACHE_SECS) > 0 \
++                           ? (CONNSEEN_GRACE_SECS) / (FCACHE_SECS) : 1)
+ #define CONNSEEN_MAX 2048
+ static struct { uint64_t nfc; time_t seen; int miss; } connseen[CONNSEEN_MAX];
+ static int connseen_n = 0;
+@@ -1071,7 +1102,7 @@ static void connseen_update(struct fcf *fl, int nfl)
+ 		connseen[j].miss = 0;
+ 	}
+ 	for (i = 0; i < connseen_n; ) {
+-		if (connseen[i].miss > 12) { connseen[i] = connseen[--connseen_n]; dirty = 1; }
++		if (connseen[i].miss > CONNSEEN_MISS_MAX) { connseen[i] = connseen[--connseen_n]; dirty = 1; }
+ 		else i++;
+ 	}
+ 	/* the file holds only (nfc, seen) per live flow, and neither changes for an
+@@ -1375,7 +1406,7 @@ static void poll_conntrack(void)
+ 				for (j = 0; j < NFLOW; j++) {
+ 					flow_t *e = &flows[(idx + j) & (NFLOW - 1)];
+ 					if (e->key == key) { fl = e; break; }
+-					if (!reuse && (e->key == 0 || (int)(flowgen - e->gen) > 2))
++					if (!reuse && (e->key == 0 || flow_stale(e->gen)))
+ 						reuse = e;
+ 					if (e->key == 0) break;
+ 				}
+-- 
+2.25.1
+

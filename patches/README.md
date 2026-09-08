@@ -16,9 +16,13 @@ git checkout 3006.102.8-beta2
 #  - git am (not plain `patch`): 4 patches carry git binary payloads (fonts, logo,
 #    USB ring sprite) that `patch` cannot apply.
 git am --keep-cr /path/to/AM-Reaper/patches/*.patch
+# The OpenSSL 3.5 source (release/src/router/openssl-3.5, 5,767 files) is not in the series - it is
+# 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
+sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
+tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
 ```
 
-Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
+Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout plus the `overlays/openssl-3.5-source.tar.gz` archive (from the rung that moved to OpenSSL 3.5) reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
 ## What the series contains (535 patches, v1.0 → v2.7.6)
 

@@ -1,0 +1,117 @@
+From 677f9d896ce5f9ef99aa59b931257b9d36fd1daa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 1 Sep 2026 21:06:34 -0400
+Subject: [PATCH] v3.0.4: hold the revived self-heals off until the box is past
+ early boot
+
+FIELD FAILURE, v3.0.3 (owner, 2026-09-01): flashing froze the router, it needed a
+manual reboot, it did not come online, and Wi-Fi never started. Ethernet DID
+work, which is the detail that narrows it: the box booted, the LAN bridge came
+up, rc got that far - then the WAN never completed and the radios never started.
+Rolled back to v3.0.0, which is fine.
+
+Cause not proven. This change removes the most suspicious thing v3.0.1
+introduced, on the reasoning below, without giving up the fix that rung existed
+for.
+
+WHAT v3.0.1 ACTUALLY CHANGED, beyond the stated fix: making `reaper_lockrun`
+dispatchable revived THREE self-heals that had been silent no-ops since v2.7.3 -
+14 months of code that had never once executed in the field. Two of them run
+BEFORE the boot grace deliberately (rwatch.c: "boot is when it happens"), and
+each takes file_lock("firewall") and runs a chain-rebuilding script. v3.0.1 also
+put reaper_pbr_reassert() into wan_up(), which wants that SAME lock while the WAN
+is coming up. So the rung created two new firewall-lock-taking, script-executing
+paths during boot where there had been none, and the symptom shape - LAN up, WAN
+never completes, radios never start, boot looks frozen - is what contention or a
+stall in that window would look like.
+
+That is exactly the class the wifi-accelerator rule warns about: dormant periodic
+code enabled wholesale without field lineage. It was described as a pure win in
+the v3.0.1 message; reviving it was a behavioural change and deserved its own
+validation.
+
+THE FIX: gate all three heals behind HEALGRACE (300s uptime). They still work -
+this only stops them firing in the fragile early-boot window, which also closes
+the lock-contention window against the wan_up() re-assert. The PBR boot heal is
+redundant now anyway: v3.0.1 fixes the fail-open at its source by re-asserting
+after add_multi_routes(), so the heal is defence-in-depth, not the mechanism.
+rwatch_enable=0 remains the full kill switch.
+
+KEPT, deliberately: the IPv4 fail-open fix (the reason v3.0.1 exists - marks set
+with no ip rule to select on, traffic leaving unencrypted), the Warden
+drops-viewer prefix fix, OpenSSL 3.5.8, and the v3.0.3 speed-test work.
+
+ALSO FOUND while investigating, real but NOT the cause: hostapd and
+wpa_supplicant-2.7 ship with 141/236 unresolved OpenSSL symbols, because they
+were never rebuilt after the 1.1 -> shim swap and the shim exports only 143.
+They are harmless here - RTCONFIG_BRCM_HOSTAPD is unset, they are never built or
+launched, and Wi-Fi auth runs through eapd/nas which link no OpenSSL. Left alone
+in this rung; the new check_symbols.sh gate reports them.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+(cherry picked from commit 16c879a7d63c151ce93e804cc428fdee9f8cc810)
+---
+ release/src/router/rc/rwatch.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index fb57a5aefc..da59f945ed 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -85,6 +85,16 @@ static void rwatch_gen(void)
+ 	  "case \"$DS\" in *,watch,*) [ \"$VOLATILE\" = 0 ] && DUMPROOT=\"$BASE/rwatch\";; esac\n"
+ 	  "\n"
+ 	  "UP=$(cut -d. -f1 /proc/uptime)\n"
++	  /* reaper v3.0.4: HEAL BOOT GRACE. Until v3.0.1 the three heals below
++	   * were silent no-ops - `rc reaper_lockrun` never dispatched (see
++	   * rc-applet-dispatch). Making them real revived 14 months of untested
++	   * code that takes file_lock("firewall") and rebuilds chains, and two of
++	   * them ran BEFORE the boot grace on purpose. That collides with the
++	   * reaper_pbr_reassert() v3.0.1 added to wan_up(), which wants the same
++	   * lock while the WAN is still coming up. Hold them off until the box is
++	   * past early boot; the fail-open they guarded is fixed at its source
++	   * now, so a boot-time heal is no longer the mechanism that matters. */
++	  "HEALGRACE=300\n"
+ 	  /* reaper v2.6.1: reap `nvram` readers stuck in the libnvram netlink
+ 	   * wait-forever (see reaper_nv.h). _nv guards OUR scripts; this catches
+ 	   * every other caller (stock cron jobs, httpd children, ad-hoc shells).
+@@ -126,7 +136,8 @@ static void rwatch_gen(void)
+ 	   * load when its ipset is not there yet at the instant apply.sh runs.
+ 	   * apply.sh records how many mark rules it meant to load (expect); when
+ 	   * the live chain is short, re-run it (idempotent) - once per 2 minutes,
+-	   * logged. Runs before the boot grace on purpose: boot is when it happens. */
++	   * logged. Held off until HEALGRACE (v3.0.4): the boot case is now covered
++	   * at source by reaper_pbr_reassert() after add_multi_routes(). */
+ 	  "if [ \"$(_nv reaper_pbr_active)\" = 1 ] && [ -s /tmp/reaper_pbr/expect ]; then\n"
+ 	  "  _ex=$(cat /tmp/reaper_pbr/expect 2>/dev/null); case \"$_ex\" in ''|*[!0-9]*) _ex=0;; esac\n"
+ 	  "  _sh=/tmp/reaper_pbr/apply.sh; [ -d /tmp/reaper_pbr/armed ] && [ -f /tmp/reaper_pbr/candidate.sh ] && _sh=/tmp/reaper_pbr/candidate.sh\n"
+@@ -145,7 +156,7 @@ static void rwatch_gen(void)
+ 	  "  if [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ \"$_n\" -ge 5 ]; then\n"
+ 	  "    [ -f /tmp/reaper_pbr/heal.gaveup ] || { : > /tmp/reaper_pbr/heal.gaveup; logger -t rwatch \"policy routing: $_live of $_ex mark rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
+ 	  "  fi\n"
+-	  "  if [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ \"$_n\" -lt 5 ] && [ $((UP-_last)) -ge 120 ] && [ -x \"$_sh\" ]; then\n"
++	  "  if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ \"$_ex\" -gt 0 ] && [ \"$_live\" -lt \"$_ex\" ] && [ \"$_n\" -lt 5 ] && [ $((UP-_last)) -ge 120 ] && [ -x \"$_sh\" ]; then\n"
+ 	  "    echo $UP > /tmp/reaper_pbr/heal.at; echo $((_n+1)) > /tmp/reaper_pbr/heal.n\n"
+ 	  "    logger -t rwatch \"policy routing: $_live of $_ex mark rule(s) live - re-applying\"\n"
+ 	  /* v2.7.3 (code-review P3): under rc's firewall lock. shell flock(1)
+@@ -166,7 +177,7 @@ static void rwatch_gen(void)
+ 	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -ge 5 ]; then\n"
+ 	  "    [ -f /tmp/reaper_pbr/heal.rgaveup ] || { : > /tmp/reaper_pbr/heal.rgaveup; logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
+ 	  "  fi\n"
+-	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -lt 5 ] && [ $((UP-_lstr)) -ge 120 ] && [ -x \"$_shr\" ]; then\n"
++	  "  if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -lt 5 ] && [ $((UP-_lstr)) -ge 120 ] && [ -x \"$_shr\" ]; then\n"
+ 	  "    echo $UP > /tmp/reaper_pbr/heal.rat; echo $((_nr+1)) > /tmp/reaper_pbr/heal.rn\n"
+ 	  "    logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live - re-applying\"\n"
+ 	  "    reaper_lockrun \"$_shr\" >/dev/null 2>&1\n"
+@@ -290,7 +301,7 @@ static void rwatch_gen(void)
+ 	  "if [ -n \"$CRIT\" ]; then\n"
+ 	  "  logger -t rwatch \"CRITICAL:$CRIT - LAN/loopback found in a Warden block set (ingest filter breached); re-applied warden chain\"\n"
+ 	  /* v2.7.3: same firewall-lock discipline as the PBR heal above */
+-	  "  [ -f /tmp/rwarden/apply.sh ] && reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
++	  "  [ \"$UP\" -ge \"$HEALGRACE\" ] && [ -f /tmp/rwarden/apply.sh ] && reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  "if [ -n \"$FAIL$CRIT\" ]; then\n"
+-- 
+2.25.1
+

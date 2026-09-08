@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v2.8.8** · 2026-08-27 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -23,6 +23,619 @@ a runtime setting; the relevant components are excluded from the build entirely.
 AiMesh has been retained because no suitable open-source replacement is currently known. 
 Replacing AiMesh would also require a compatible replacement implementation on every mesh 
 node, not only on the primary router.
+
+---
+
+## v3.1.1 — a primary/standby for the router's DNS list *(in progress)*
+
+- **A health check for the LAN resolver, and a strict-order switch.** dnsmasq keeps no memory of an
+  upstream that stopped answering: in strict order every new name is tried against the first server
+  again and only a client's retransmission moves it along, so an outage of a LAN resolver such as AdGuard
+  costs a client timeout per new name, and a client that lists the router second can need three attempts
+  before the router's second server answers. The new **Reaper resolver health check** on its own **Failover** tab of
+  Administration (between System and Firmware Upgrade; it began the day before as a block on the System
+  page), a native Reaper page with a live Watch / Fail over / Restore strip that lights while the server is
+  down, watches one DNS
+  server you name with a real query every few seconds; after a run of misses it moves that server to the
+  end of the router's upstream list and reloads dnsmasq, so the first server tried is one that answers,
+  and after a run of hits it puts it back first. Interval, timeout, both thresholds, the name queried and
+  whether a refusal counts as alive are all yours to set; the page shows the live state and every switch
+  is in the system log. Beside it, three dnsmasq switches that used to need a config-add file: **Upstream
+  order** (strict order), **Client addresses** (EDNS Client Subnet, so a LAN filter fed through the router
+  still sees which client asked; AdGuard Home reads it with its own switch on, Pi-hole by default) and
+  **Router DNS cache** off (the router only forwards, so a per-client decision is never served from the
+  router's cache to another client and the filter sees every lookup). Together they let the DHCP DNS be
+  the router alone, which makes the failover complete: no client ever retries. The server you watch can
+  be an IPv4 or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the matching
+  family and the server is matched in the router's list by value, whatever spelling the list uses; an
+  IPv6 server is refused by the page while IPv6 is off, and a daemon that meets one that way idles with one
+  log line rather than pretending to watch. Marked for the verify markers.
+- **The dashboard clock shows its seconds in red again.** The seconds have their own colour, and on
+  the dashboard they had quietly gone back to the same bone as the rest of the time, while every other
+  page still showed them correctly. A tidy-up in v3.0.9 removed the rule that colours them after a check
+  that looked for the class inside the page and did not find it: the element that carries it is created
+  while the page runs, by the shared script that drives the clock, so it appears nowhere in the page
+  itself. The dashboard and the shell each draw their own copy of that top bar, and only the dashboard's
+  copy was swept, which is why the fault appeared in exactly one place. The rule is back, and the build
+  now refuses an image whose clock is missing it.
+- **Gatekeeper no longer calls a Wi-Fi 6 device "Wired", and a multi-link client is one row again.**
+  The router's live client list records a multi-link client under the address of the individual radio
+  link it is using, and names the device's real address in a separate field. Everything else — the
+  DHCP lease, the address table, the device's name, its access rule — is filed under that real
+  address, and nothing was reading the field that connects the two. So the device was simply absent
+  from the list as far as those pages were concerned: Gatekeeper kept the guess it had cached at first
+  sight, which for such a client is "wired with no band", and showed a 6 GHz PC as Wired. The Devices
+  page mostly escaped it because it also classifies from the bridge's own forwarding table. The same
+  gap stopped the page folding a client's per-band links into one device, because the only other clue
+  it used is a line the Wi-Fi driver prints for some multi-link clients and not others. All of it now
+  reads the field that ties a link to its device, and the wired list still wins over a stale wireless
+  entry, so a device that moved onto a cable is never dragged back to Wi-Fi.
+- **Gatekeeper and Devices no longer call a device "Unknown device" because dnsmasq handed its name to
+  another one.** dnsmasq lets one lease hold a given hostname at a time: when several iPhones all
+  announce "iPhone", the newest keeps the name and the others' lease lines drop to `*`, and every Reaper
+  name reader took a device's self-reported name from that file, so those devices sat in Gatekeeper as
+  "Unknown device" and stayed so after approval. The lease-change script now records the name each
+  client announced, per MAC, in a small tmpfs store that Gatekeeper's watcher and both pages read when the
+  lease file has nothing. A device that announces no name at all (a printer, a Fire TV, a Lutron hub)
+  falls back to the vendor label the stock network map already shows for it, and the Devices page marks
+  that source as *vendor* rather than *lease*. Names still come from the client and are still escaped on
+  the way out; the store keeps 32 printable characters per device. Marked for the verify markers.
+
+## v3.1.0 — OpenSSL 3.5, second attempt: the library every TLS path stands on *(built RT-BE96U)*
+
+- **The firmware moves from OpenSSL 1.1.1w (end of life since September 2023) to OpenSSL 3.5.8.**
+  Every source-built consumer — hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan,
+  inadyn, Tor, vsftpd, lighttpd, net-snmp, the Reaper Advisor daemon and 110 more — now links the
+  real 3.5 library directly. The closed ASUS binaries that cannot be rebuilt (AiMesh's cfg_server and
+  friends, the Let's Encrypt helper, the lighttpd modules) keep their OpenSSL 1.1 ABI through a small
+  forwarding shim that hands every call to 3.5. The port is Asuswrt-Merlin upstream work by **RSDNTWK**
+  (the shim and the 3.5 integration) and **Eric "Merlin" Sauvageau** (the parallel-compile fix),
+  carried as cherry-picks with their authorship intact; the Reaper Advisor daemon links 3.5 alone.
+- **Why the first attempt (v3.0.3) broke Wi-Fi and this one does not.** hostapd had been compiled in
+  the wireless SDK tree all along; its link rule never sees a library change, so the September 1 image
+  shipped a hostapd still bound to the 1.1 name — which now resolved to the shim, which does not carry
+  the elliptic-curve functions WPA3-SAE needs. This rung purges every object compiled against the old
+  headers before the swap — including the ones git ignores, which the first purge could not see — and
+  adds a release gate (check 22) that names the only binaries allowed to depend on the 1.1 name in a
+  3.5 image and fails on any other. hostapd is required by that gate to link `libcrypto.so.3`
+  outright, verified with `readelf`, not inferred from a green build.
+- **Proven on the RT-BE96U before it was written up:** 31 minutes on the test image with hostapd
+  never restarting, five stations through WPA3-SAE on 6 GHz at 320 MHz, HTTPS UI and outbound TLS
+  working, the router's certificate unchanged across the flash. A pre-flash kit now exists that
+  loader-traces every consumer of the new image on the running router from `/tmp` before anything
+  is flashed.
+- **Licensing.** OpenSSL 3.x is Apache-2.0; its text is added under `LICENSES/`, and the notices no
+  longer misdescribe OpenSSL as BSD/MIT. The move resolves a conflict rather than creating one:
+  1.1.1's OpenSSL/SSLeay advertising clause was never GPL-compatible.
+- **First boot is one box.** The security banner's Wi-Fi step used to open the stock Wireless page,
+  which shows the primary radios' settings; on this build those become the hidden AiMesh backhaul and
+  the network people join lives on the fronthaul VIFs the mesh daemon rebuilds afterwards. A factory box
+  now gets one Reaper page: network name, Wi-Fi password, router login password. It writes what the
+  stock apply writes on every band (one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect
+  on) and fires the same restart, so the mesh daemon's split is unchanged; the login change follows the
+  same committed path as the password page. Keys under 8 characters are refused in the page and in the
+  router, the rule that saved v2.9.1. The stock Wireless page is untouched for engineers, and a new
+  release check locks the whole chain - page, gate, banner target, 25 language packs - so it cannot
+  quietly regress. The security banner that points at it is down to one row and one button: while
+  both the login and the Wi-Fi are factory it says so once and offers "Set up this router"; only the
+  half that remains gets its own button after that.
+- **Packaging.** The 3.5 source (5,767 files) is too large to publish as a patch; it ships as the
+  hash-pinned `overlays/openssl-3.5-source.tar.gz`, unpacked by the public build after the patch
+  series, with only the integration diff and the shim in `patches/`. The reproduce recipe in the
+  docs gains that one step.
+- **Factory reset takes the short road, and the page says how to get back.** Three waits came out of
+  the reset chain, none of them doing work: the web server no longer waits up to two minutes for a
+  USB application to stop when none is mounted; the reset request is handed to the service manager
+  in the form that waits for it rather than the one that gives up after 15 seconds; and the reset
+  routine takes the reboot lock first, the way a plain reboot does, so the shutdown can never spin
+  half a minute on a lock left by a daemon that died mid-write. The router logs a timestamp at each
+  step so the next report carries numbers. The Backup page changed too: the veil now says that the
+  router comes back on its open factory network with its default address, and links to it, instead
+  of polling in silence; it no longer mistakes the few seconds the web server is busy for the reboot
+  and bounces to a login page that is about to vanish; and if the router has not gone down within
+  three minutes it says so and hands the page back. A new release check pins all three files.
+- **AiMesh backhaul parking stays in sync with wireless restarts.** Any apply that restarts the
+  radios, from the Network or Wireless page or from the mesh daemon itself, re-creates the parked
+  carriers, and the parking service kept believing they were down. It now checks the live state on
+  every pass, logs that the carrier came back, and parks it again within five seconds.
+- **Phones get the full width.** Below 680px the shell collapses its rail into a sticky icon strip
+  under the header, the way the dashboard already did, and the page takes the whole screen; stock
+  pages framed in the shell pan sideways until each is replaced by a native one. Two small labels
+  with it: the Connections page no longer calls a weighted class "WRR" (every port has run strict
+  priority since v2.5.4), and the Advisor's client-pin hint no longer clips inside its box.
+- **The update check learns a beta channel.** A **Beta Channel** switch on the Firmware page (off by
+  default) lets the check also read the Dev branch's beta line in the update manifest. The rule is
+  the owner's: a beta is offered only to a router that already runs the newest stable release, and
+  only when the beta's number is higher than that stable's; when the stable release carries the same
+  number, only the stable one is offered. A beta offer is labelled as one on the page and on the
+  dashboard badge, its release note opens with the beta warning, and the previous firmware stays in
+  the standby partition as always. On the publishing side a Dev-branch publish now writes a separate
+  `MODEL#VARIANT-beta#` line into the manifest and leaves the stable line untouched; firmware older
+  than v3.1.0 cannot match that line and keeps seeing stable releases only. A release check pins the
+  chain (check script, note script, the nvram key, the page, 25 language packs).
+- **The QoS page stops explaining Weighted classes.** The hint under the class list, and the "Priority
+  vs Weighted" explainer below it, described a scheduler mode that was removed in v2.5.4 and cannot be
+  selected; the hint now says only that classes are served strictly top to bottom, in all 25 language
+  packs, and the explainer is gone.
+
+## v3.0.9 — Low-hanging fruit *(built RT-BE96U)*
+
+Six backlog items that needed no field data, plus one carry-over:
+
+- **Wireless Quality: the page refreshes when the router is back.** Lock and Unlock restart the
+  radio the admin is usually connected through, and the old single fetch landed mid-outage, so a
+  lock that worked looked like it did nothing. The page now polls until the router answers again
+  and repaints; if it never does within two minutes it says so.
+- **Gatekeeper no longer calls a wireless client "Wired"** because of a snapshot taken before the
+  station table caught up. The status action now reads the live mesh client lists the Devices page
+  already uses and lets a live wireless signal win over the cached flag. Display only.
+- **rwatch heals a missing Warden chain.** It healed a poisoned one; an absent one, the end state
+  of the stuck-nvram path that fits the BE92U addon-box report, had no healer. Once per ten minutes,
+  under the firewall lock, with a log line.
+- **Dashboard device list caps at four rows** and scrolls the rest, as asked; the old bound was
+  whatever the neighbouring card's height happened to be.
+- **AiMesh backhaul parking sees four radios**, so the GT-BE98 family's fourth carrier is handled
+  in the MLO link set too.
+- **The speed test's notice box grows with its text.** Stock fixes it at 200 px for its own three
+  lines; the failure reason added in v3.0.5 is a fifth line and the engine's own error wraps past the
+  box, so a 10 Gbit/s user saw "Cannot read:" and nothing after it. Desktop layout only; the stock
+  stylesheet is untouched.
+- Housekeeping: the metrics-export MAC masking rewrites its file once instead of once per device;
+  five orphaned dashboard style blocks removed after a cross-page usage check; the developer setup
+  guide's first section is no longer numbered zero.
+- **The cut refuses code a person cannot read.** Before a rung's patches are installed, their added
+  lines are scanned for bidirectional overrides, zero-width and control characters, invalid UTF-8 and
+  look-alike letters inside identifiers; the regenerated overlays get the same scan, and CI repeats
+  it over the whole series on every push. Vendored third-party paths are downgraded to warnings by an
+  allowlist; a hit in Reaper code is fixed in the source, never in the allowlist.
+
+## v3.0.8 — The backup file is no longer the softest way in *(built RT-BE96U)*
+
+A backup is the whole router in one file: Wi-Fi passwords, the admin password, VPN keys, the HTTPS
+and SSH private keys, and the traffic and web-history databases. Until now the file was plain gzip,
+and pulling it needed only a logged-in session. Five guards, each for a different way that file can
+be turned against its owner:
+
+- **Sealed backups.** Both exports — the full backup and the settings file — can be sealed with a
+  passphrase (AES-256-GCM, key from scrypt). A sealed file is unreadable without the passphrase and
+  refuses to open if a single byte was altered, so a "fixed" backup from a stranger fails before the
+  router parses any of it. The passphrase is never stored. Leave it blank and the file is the plain
+  one it always was. The format is documented in the guide so a sealed file can be opened off-router
+  with standard tools.
+- **The admin password, again, to export.** Every download asks for it and the router checks it on
+  the request itself, on top of the session and the anti-cross-site token. Five wrong answers lock
+  exports for a minute.
+- **Who pulled it.** Every export, import and refusal line in the syslog now carries the client
+  address.
+- **Named credentials.** Each backup card says plainly what its file contains.
+- **Restore refuses a write-through.** A crafted `/jffs` archive can no longer place a file through a
+  symlink it planted earlier, the one path out of `/jffs` that busybox does not already strip. Links
+  that nothing is written through — addon boxes have them — restore as before.
+
+The restore of a sealed settings file happens on the router rather than in the browser: on the same
+model it restores the router settings and reboots, on another model it imports the Reaper half without
+a reboot, exactly as the plain file does. Older backups restore unchanged.
+
+**AiMesh backhaul parking** (Wireless page, off by default). With no mesh node paired, the hidden AiMesh
+backhaul network is still on the air on every band: a full beacon stream on 2.4 and 5 GHz (a third of
+the beacon load there, about two percent of 2.4 GHz airtime) and a WPA network accepting connections
+with a key you never chose. Parking takes the 2.4 and 5 GHz carriers off the air while no node is
+paired and no search is running, releases them the moment you search for or add a node, and parks
+them again if the search ends without one. The daemon never parks 6 GHz by hand; with MLO enabled the
+three carriers form one link set and drop and return together, which the daemon detects, logs and
+handles on release. Every park and release is a syslog line with the interface, the band and the
+reason. Measured on the RT-BE96U with MLO on: every network on every band kept its clients while
+all three carriers were down.
+
+## v3.0.7 — The 3.0.x window on every model *(built RT-BE96U)*
+
+The fleet rung. It consolidates every rung since v3.0.0 — v3.0.1 through v3.0.6, each built and
+verified on the RT-BE96U as it landed — into one cut, so the RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro
+and RT-BE92U take the whole window from the patch series (0594–0602, bringing the series to 602). The
+per-version sections below carry the detail; in brief:
+
+- **Policy Routing keeps its word.** It no longer fails open on every boot and WAN re-dial, its
+  self-heal actually runs, and Apply, Keep and Revert report what really happened (v3.0.1, v3.0.5).
+- **The speed test says why it failed.** The engine's output is kept per run, a failed run's output is
+  kept aside, the page names the failure, and it says when the Hardware QoS shaper is the ceiling
+  (v3.0.3, v3.0.5).
+- **The self-heals wait for the box to finish booting**, and the OpenSSL 3.5 migration is withdrawn —
+  the release gate gained a symbol-resolution check so a library swap that strands a consumer can
+  never ship again (v3.0.4).
+- **Diagnostics v1.3.13**, Warden's resolver carve-out, and the diagnostics report reading the
+  dnsmasq servers file in its real format (v3.0.5).
+- **One backup that really is everything:** the `.rbk` carries `/jffs`, the settings export embeds
+  the router `.CFG`, and the Backup & Restore page is two panels instead of four (v3.0.6).
+- Housekeeping: the `reaper_diag` header comment names the version the script actually is; the
+  build engine's new gate pieces (`check_symbols.sh`, the `pbr-fwmark-regex` static check, the
+  v3.0.5/v3.0.6 patch markers) ride in this commit so the clean-room build enforces them too.
+
+## v3.0.6 — One backup that really is everything, and a settings file that carries the router settings too *(built RT-BE96U)*
+
+Owner request against the Backup & Restore page: the full backup was still leaving `/jffs`
+behind, the settings file still needed the stock `.CFG` beside it, and the page carried four
+panels for what are two jobs.
+
+- **The full backup now carries the whole `/jffs` partition.** The `.rbk` gains a fourth part: a
+  gzip tar of `/jffs` in the shape the stock JFFS backup used (addon scripts, certificates, every
+  Reaper data store). A restore that has that part checks the archive lists cleanly before it
+  touches anything, then replaces `/jffs` exactly as the stock JFFS restore did (wipe, extract),
+  stages the router settings and reboots. Because every Reaper store comes back as a file, no
+  pending half is parked and there is nothing to click after the reboot — step 03 on the page
+  only arms for an archive made without `/jffs`. If the extraction ever fails after the wipe,
+  the restore falls back to the pending path so the Reaper half is replayed from the archive's
+  JSON after the reboot. The archive magic is unchanged, so an older `.rbk` restores as before
+  and an older firmware reads a new one (it ignores the part it does not know). The `/jffs` part
+  is capped at 96 MB and the page accepts archives up to 128 MB.
+
+- **The settings file now includes the router settings.** The JSON export embeds the stock
+  `.CFG` (base64, `cfg_b64`) — the same file the `.rbk` carries, from the same generator.
+  Importing it on the same model rebuilds a `.rbk` in the browser (CFG + JSON) and sends it
+  through the full-restore path: router settings restore, reboot, Complete restore. On any other
+  model, or for an export made before v3.0.6, the router settings are skipped and the Reaper
+  half is imported without a reboot, exactly as before. Nothing new on the server's upload side —
+  only the export writer changed.
+
+- **Two panels instead of four.** The stock *Router settings (.CFG)* and *JFFS Partition* cards
+  are gone from the page; each remaining card now lists what its file carries. With the `.CFG`
+  card went its two save options, "remove password from file" and "transfer DDNS": the embedded
+  `.CFG` keeps passwords and does not transfer DDNS, which is what the `.rbk` already did.
+
+- Housekeeping: 9 page strings reworded and 4 added, translated into all 24 languages
+  (lockstep 6824); the `jffsupload.cgi` verify marker retired in favour of `cfg_b64` and the new
+  `/jffs restored from the archive` syslog line; the stray untracked `www/temp.dict` removed
+  again.
+
+## v3.0.5 — Policy Routing's Apply, Keep and Revert tell the truth, the speed test says why it failed, and the diagnostics stop misleading you *(built RT-BE96U)*
+
+Five owner field reports against Policy Routing and one against the speed test, all traced to
+source, plus the diagnostics gaps the v3.0.4 field report exposed. Confirmed working on the RT-BE96U.
+
+- **Apply and Confirm works on the first click, and Keep and Revert acknowledge themselves.** The
+  page polled for the armed state for only 8.4 s while the apply built its ipsets twice and ran a
+  48-step teardown, so on a box with more than a few rules the poll gave up before the work finished:
+  the Keep button never appeared, the deadline fired, and the second click was refused with "a change
+  is already awaiting confirmation" — the "first attempt only flickers" report. The page now polls
+  for the whole commit-confirm window, the duplicate ipset rebuild is gone, and Keep and Revert (on
+  both the Policy Routing and Firewall pages) check the router's answer instead of assuming it.
+
+- **The revert can no longer log success while it failed, and confirm and revert can no longer
+  race.** Three "the log lies" defects: the rules script exited 0 with failures, the revert discarded
+  the script's exit status and logged success unconditionally, and a present-but-unreadable last-good
+  snapshot was treated as valid — reverting to an empty ruleset while reporting success. The revert
+  now runs under the firewall lock, checks its result and reports REVERT FAILED; the arm token is
+  taken first on both paths, so a confirm and a timer revert cannot interleave; the deadline is
+  stamped after the work rather than before it (the 60 s window was really about 54); and a confirm
+  whose save did not complete says so and keeps the draft.
+
+- **Errors are codes the page translates, and an old error no longer haunts every page load.** The
+  five error strings were raw English written by rc into a value nothing cleared except the next
+  apply, so one failed apply painted the same red line on every open of the page for the rest of the
+  uptime. The router now sets a code, the page maps it to a translated line, a clean poll clears it,
+  confirm and rollback unset it, and a load failure says it is a load failure instead of "that could
+  not be saved".
+
+- **The speed test names its failure and keeps the evidence.** Four different failures collapsed
+  into one sentence, and the engine's own error output was discarded, so a failing run on a 10 Gbit/s
+  link (a GT-BE98 field report) left nothing to read. Every engine run now goes through a small
+  launcher that keeps its error output per run and runs it at a higher priority; the page says which
+  of timeout, engine error (with the engine's message), launch failure or WAN-down it was; a run that
+  ends without a result is kept aside so the next successful run cannot overwrite it; and the page
+  states the Hardware QoS ceiling where the number is read, because a 2.2 Gbit/s port shaper is a
+  ceiling no socket tuning lifts.
+
+- **The Warden self-filter now exempts the upstream resolvers it was written to exempt, and the
+  diagnostics stop saying dnsmasq is not forwarding.** The file both read is dnsmasq's servers-file
+  (`server=` lines), not a resolv.conf; both looked for `nameserver` lines and matched nothing. The
+  Warden half had been inert since v2.6.2; the diag half misled every report. Both fixed and pinned
+  by negative markers.
+
+- **Diagnostics report v1.3.13.** Prints the socket ceilings (so the v3.0.3 change is verifiable in
+  the field), reports the QoS shaper ceiling as a finding, shows the Advisor daemon as arm-gated
+  rather than as a dead service, lists the resolvers correctly, and gains section 10b for the speed
+  test: host-TCP offload state, RT throttling count, and the last run's messages including a kept
+  failed run.
+
+- **Long translations clip.** Every new message surface clips to one line with a hover tooltip, so a
+  long translation cannot break a layout. Seventeen new dictionary tokens across all 25 language
+  packs, lockstep 6820.
+
+- **Regression pins.** An eighth static check pins the fwmark regex shared by rc and the watchdog
+  (proven to go red on a drifted literal and on a moved mask), plus new markers for the revert path,
+  the launcher, the diag section and the two negative parses.
+
+Two reports closed without a code change, because the router was right:
+
+- **"The QoS class-1 mark knocks flows off the hardware accelerator."** It does not: classful QoS
+  uses CONNMARK, and the kernel's skip-acceleration check reads only the low bits of the packet MARK.
+  Reaper's netfilter layers do not take flows off the offload.
+- **"Commit-confirm logged a revert but the rules were still live minutes later."** The revert is a
+  full rebuild from the last confirmed snapshot, not a teardown — the rules seen afterwards were the
+  previously confirmed generation, so the revert did take. The operator had no way to tell which
+  generation was live; the acknowledgements above are the answer to that.
+
+## v3.0.4 — The self-heals wait for the box to finish booting, and an OpenSSL migration is withdrawn *(built RT-BE96U)*
+
+- **The revived self-heals hold off for the first five minutes of uptime.** v3.0.1 made the
+  watchdog's runner dispatchable, which revived three self-heals that had been silent since v2.7.3.
+  Two of them ran before the boot grace by design, and each took the firewall lock and ran a
+  chain-rebuilding script — in the same window the new WAN-up re-assert wants that lock. All three
+  are now gated behind the 300 s boot grace. The Policy Routing boot heal is defence-in-depth anyway:
+  v3.0.1 fixes the fail-open at its source. `rwatch_enable=0` remains the full kill switch.
+
+- **OpenSSL 3.5 is withdrawn from this line.** The v3.0.2 and v3.0.3 test images carried a migration
+  to OpenSSL 3.5 with a compatibility shim in place of the 1.1 library. The shim exported 95 symbols;
+  hostapd — which authenticates every Wi-Fi client on this platform and is launched by the Broadcom
+  radio monitor rather than by rc — needs 338. Lazy binding let it start, so 2.4 and 5 GHz came up on
+  WPA2 paths; then 6 GHz initialised WPA3-SAE, called a missing elliptic-curve function and died, 47
+  restarts in one boot. The field symptom was a flash that appeared to freeze, then no WAN and no
+  Wi-Fi. The line was rebuilt on v3.0.0 without the migration; the work is preserved on a tag for a
+  retry. *(Correction, 2026-09-05: this entry originally said hostapd was "not compiled in this tree".
+  It always was — in the wireless SDK tree, not the router tree — and its link rule never sees a library
+  change, so it was simply never relinked after the swap. The retry fixed the purge, not the build.)*
+  Confirmed on the RT-BE96U: hostapd alive, 6 GHz serving a 320 MHz client, no restarts.
+
+- **The release gate now checks symbols, not just libraries.** The link check had only ever asked
+  whether each binary's needed libraries resolve, never whether the symbols in them do — the gap
+  v3.0.3 shipped through. A new check resolves every OpenSSL symbol of every consumer in the image
+  (142 of them) against the shipped libraries, and was proven to fail on a deliberately gutted
+  library before it was accepted.
+
+## v3.0.3 — Speed test: the half-enabled feature, the socket ceiling, and saying when the accelerator is off *(built RT-BE96U; withdrawn, see v3.0.4)*
+
+Its content is carried forward unchanged in v3.0.4 and later; the image itself is the one the
+OpenSSL shim broke.
+
+- **The speed test's capability flag now matches the shipped contents.** The engine, page and CGI
+  handlers all shipped, but the build flag that announces the capability to the UI was unset, so the
+  feature was only ever half-declared.
+- **Socket-buffer ceilings raised.** The stock 212992-byte ceiling caps a single stream over a 20 ms
+  path near 85 Mbit/s; raised to 16 MB (ceilings, not allocations) plus a larger device backlog. TCP
+  autotuning is deliberately left alone — ASUS's own commented-out "NAT performance" block would pin
+  it far below the kernel default.
+- **The diagnostics say when forwarded traffic is off the hardware fast path.** Traditional QoS
+  takes the accelerator down and caps a wired client at CPU forwarding speed; nothing surfaced that.
+  New findings cover the accelerator switches, that trap, and the WireGuard skip list. Diagnostics
+  v1.3.12.
+- **Not the speed test:** the `sched: RT throttling activated` line in the field reports is the
+  kernel throttling Broadcom's real-time packet threads while moving packets, and is left alone on
+  purpose.
+
+## v3.0.1 — Policy Routing was failing open on every boot and WAN re-dial, and its self-heal had never run *(built RT-BE96U)*
+
+Four owner field reports traced to source; the headline finding was in none of them.
+
+- **Policy Routing no longer fails open.** A closed ASUS routine that runs on every WAN-up opens with
+  an unconditional flush of the IPv4 rule table, nineteen lines after the firewall installed the
+  policy-routing rules. The marks kept being set with no rule left to select on, and there is no
+  iptables backstop — so IPv4 traffic pinned to a tunnel left through the WAN in the clear, and a
+  BLOCK rule stopped blocking, on every boot and every re-dial. Upstream re-asserts its own VPN
+  killswitch on the very next line; Reaper re-asserted nothing. The rules are now re-asserted after
+  every call site of that routine. This is also the "does not come up at boot" report: the v2.7.6
+  boot fix was intact and the rules applied, then vanished.
+
+- **The watchdog's self-heal runner had been dead code since v2.7.3.** It invoked its applet through
+  a form rc silently ignores, so every "re-applying" line in the log re-applied nothing — the Policy
+  Routing heal and the Warden CRITICAL self-heal alike. It is now installed and called by name, and
+  the ip-rule heal owns its own counters, so the five-strike give-up can actually fire instead of
+  looping every five minutes forever.
+
+- **Warden's outbound blocks are visible in the drops viewer again.** The firewall never stopped
+  logging them; the viewer's server-side filter required the inbound prefix with a trailing space,
+  which cannot match the outbound or self-filter prefixes. Dates to v2.3.3, exposed when v2.4.2 gave
+  outbound its own prefix.
+
+- **Both WireGuard accelerator-bypass writes are now correctly terminated** for a kernel handler that
+  never NUL-terminates its buffer. Userspace only.
+
+- **Regression pins:** seven new markers and two new static checks (the re-assert call sites, and
+  the log-prefix contract shared by rc, httpd and the diag), both proven to go red against the
+  pre-fix tree. Diagnostics v1.3.11 adds findings for the same three faults.
+
+## v3.0.0 — Backup & Restore you can trust, a finished first-boot story, and the whole window locked behind a regression gate
+
+The first 3.x release. It rolls up everything staged since v2.9.4 (v2.9.6 through v2.9.9a)
+and closes the release gate on all of it. Four things stand out.
+
+- **Backup & Restore is one page you can actually trust.** The stock Administration
+  "Restore/Save/Upload Setting" page is gone. In its place is a single Reaper-native
+  Backup & Restore panel that also owns factory reset and the JFFS save/restore, so every
+  way to save or recover a configuration lives in one themed place. The one-file `.rbk`
+  full backup/restore — "Complete restore" — is reachable straight from the landing banner,
+  and the defect that made restores fail on real hardware (the upload's last, TLS-buffered
+  chunk was silently dropped, a problem present since v2.7.2) is fixed. Both restore modes
+  were confirmed working on hardware. Every label on the new page was translated across all
+  24 languages and the English was proofread in the same pass.
+
+- **First boot is finished, and it is not a wizard.** The old setup wizard / EULA gate is
+  retired for good. A new box shows an un-dismissable banner until you have changed the
+  admin login off its factory value — nothing is blocked behind a multi-step flow, you just
+  can't ignore the one thing that matters. Factory Wi-Fi ships open again (an owner call),
+  and the path that actually changes the admin password on a factory-clean box — which a
+  regression had quietly broken — works again.
+
+- **Upstream security, pulled forward from Asuswrt-Merlin 3006.102.9.** With thanks to
+  Eric "Merlin" Sauvageau: two OpenSSL 1.1.1 CVE backports, the kernel's Brahma-B53
+  Spectre/Meltdown mitigation whitelists, Tor updated to 0.4.9.11 (with IPv6 LAN clients now
+  routed through Tor as well), and four further pull-forwards from the 3006.102.9 alpha.
+
+- **Nothing in this window can quietly regress.** A fresh adversarial security review of the
+  whole window was run and its four actionable findings fixed — among them the inherited DNS
+  Traffic Analyzer query handlers, which passed four request fields unchecked into a prebuilt SQL
+  sink and now validate them the way the neighbouring status handler always did. A new build-time regression
+  framework (`reaper_static_checks.py` — dictionary lockstep, ASCII/control-byte scanning,
+  brace-parity, macro-continuity — plus a hardened CSRF checker) is wired into the release
+  gate, so a later change that drops any of these fixes stops the image from shipping.
+
+- **Field fixes carried along the way:** AiMesh node search and a restore-time LAN lockout,
+  Apply-button correctness, Firewall Status now reporting port forwards and service intercepts,
+  the Service Intercept feature itself, Traffic Analyzer cadence and the header rail-clock, a
+  DNS resolver that was feeding its own address back to itself, and the DNS-over-TLS
+  (stubby) crash-restart watchdog.
+
+## v2.9.4 — Firewall Status reports everything that is enforcing, and five small things the field asked for
+
+Five owner-picked items from a week of hands-on use, plus six new regression markers in the build
+gate so that none of them can quietly regress: a later change that drops any of these fixes now
+stops the image from shipping.
+
+- **Firewall Status now reports Port forwards and Service intercepts.** The posture page counted
+  rules, objects, groups, services, zones and zone policies and stopped there — the NAT store that
+  holds both port forwards and Service Intercepts had no row, so an operator who had just redirected
+  all LAN NTP to an internal server could read the page top to bottom and see no trace of it. Two
+  new rows, one for each, from the same store the rules engine reads.
+
+- **The Smart Connect switch no longer pretends to work after the network migration.** Once the
+  main Wi-Fi network is owned by the Network page's profiles, the classic Smart Connect toggle
+  writes settings nothing reads any more, and the Rule page's hint pointed at a control that no
+  longer exists. The page now detects that state: the button becomes a pointer to the Network page
+  (where band merging actually happens), the inert post is blocked, and both stale hints are
+  reworded. Un-migrated routers keep the working classic toggle.
+
+- **The Devices export keeps the address of an offline device that holds a reservation or a pin.**
+  The export used to carry only the current lease, so a reserved device that happened to be offline
+  exported with a blank address. The live lease stays as it was; two new columns carry the reserved
+  address and its state — reserved, reserved outside the DHCP pool, orphaned or duplicated — in the
+  CSV, JSON and HTML exports alike, so a broken reservation can never be copied elsewhere as fact.
+
+- **The QoS class table explains its drop counters.** A short note under the class explainer states
+  the rule of thumb: drops are cumulative since the last QoS restart and normally grow only while
+  the link is saturated, such as during a speed test; counters that climb while the link is idle,
+  or while a class sits well below its ceiling, are the signal of a real problem.
+
+- **The diagnostic report counts a Wi-Fi network name's length correctly.** Every guest network line
+  read one character too long because the trailing newline was counted; the primary radios were
+  right, so a single report disagreed with itself. REAPER-DIAG v1.3.10.
+
+Two reports from the same week closed without a code change, because the router was right:
+
+- **"The QoS class breakdown reads almost entirely Default and Streaming while games and browsing
+  are live."** That is the design: Reaper does no deep packet inspection, so beyond DSCP marks and
+  the preset rules there is no classifier, and unmarked game and web traffic lands in the catch-all.
+  The panel is also upload-only, which it says on its badge. Classification rules are a feature
+  request, not a defect, and are tracked as one.
+- **"The Traffic Analyzer resets visually every so often."** This router has no battery-backed
+  clock, so its time steps forward when NTP first corrects it after a boot — a four-hour step was
+  observed in the system log the same day. The live view redraws across a step; the stored history
+  is written by wrapped index specifically to survive one, and no data is lost.
+
+---
+
+## v2.9.3 — Ten field fixes: mesh node search, restore lockout, and every Apply button acknowledges itself
+
+The first day of v2.9.2 on hardware produced this list. Nothing here changes a default.
+
+- **AiMesh "Add Node" finds nodes again.** The search discarded any candidate the router had heard
+  only on 2.4 GHz, because it required signal readings on every band before it would consider one —
+  and the mesh controller only reports the bands it actually heard. The existing 2.4 GHz fallback
+  was unreachable behind that gate; it now runs.
+
+- **A settings restore can no longer lock out the person performing it.** Gatekeeper's on/off switch
+  comes back with the router settings in the first half of a restore, but its device list lives in
+  flash and only returns in the second half, after the reboot — so the router came back armed with
+  an empty list and default-denied everyone, including the operator. Gatekeeper now holds
+  enforcement off while a restore is pending and re-arms once the list has landed, and the operator's
+  own device is stamped approved before the reboot and again after the import.
+
+- **The restore card's messages can no longer be dropped without a trace.** Its message function
+  silently returned when its target element was missing; it now falls back to a browser alert and
+  the console, and every failure carries a bracketed cause code.
+
+- **Wireless Apply shows that it worked.** Its "applying" overlay lived inside the success callback of
+  the very request that restarts the radio and disconnects the browser, so the page sat inert while
+  the router applied the change perfectly. The overlay now appears before the request, and a change
+  to the Wi-Fi security shows a notice that you will need to reconnect.
+
+- **The firewall's sub-editor Apply buttons acknowledge the click.** Seven of them posted into a
+  hidden frame and reloaded the page seven seconds later with nothing in between; each now shows a
+  brief "applying" notice first. The Rules tab's own Apply already did this and is unchanged.
+
+- **The Firewall Status refresh button confirms it ran.** A successful refresh on an unchanged
+  posture was pixel-identical to no refresh at all; it now acknowledges instantly and shows the
+  time of the last update, hung off the one completion point that always fires — a failed poll can
+  never wedge the button.
+
+- **Guest passes say "h".** Gatekeeper's guest-pass length offered 4 / 8 / 24 / 48 with no unit; the
+  unit now appears on the selector and on the per-device grant button, through a translatable token
+  rather than the hardcoded English abbreviation the button had been using.
+
+- **The diagnostic report's two preamble blocks lose their "0." and "0b." numbers** — the body's
+  numbering, which everything cites, is untouched. REAPER-DIAG v1.3.9.
+
+- **A wireless helper stops returning an empty network name** on one code path that lacked its
+  fallback.
+
+- Also riding this image: the v2.8.7 diagnostic counter fixes and the v2.7.8 Warden feed ceilings.
+
+---
+
+## v2.9.2 — A factory-fresh router can set its password again, and Wi-Fi comes back
+
+Two faults found the first time v2.9.1 met a factory reset, both confirmed fixed on hardware the
+same day.
+
+- **The admin password can be changed on a factory-default router.** The web server refuses a
+  password change from the factory default unless the request carries the session token, and the
+  only page that supplied it was the setup wizard v2.9.1 removed. Neither the password page nor the
+  stock setup path could change the password, and the failure was silent. The token now travels with
+  every password change centrally, so no page can forget it again. The stock password page also
+  stopped hopping to the removed wizard, which is what the brief flash of ASUS setup pages was.
+
+- **Wi-Fi comes back after a factory reset.** v2.9.1 shipped a five-character factory Wi-Fi key;
+  the access-point daemon requires eight to sixty-three, treated the key as empty, refused the
+  configuration and exited — and one daemon serves every radio, so no band came up. By owner
+  decision the factory Wi-Fi is **open again**, as stock ships it, so a reset router is reachable
+  over Wi-Fi without a cable; the "Secure Your Router" banner reports an open factory network as
+  unsecured until a key is set.
+
+- A per-radio defaults block that v2.9.1 edited turned out never to compile for this model; the
+  edit was a no-op and is reverted.
+
+---
+
+## v2.9.1 — First boot rebuilt: no wizard, no gates, one banner
+
+An owner-directed redesign of what a factory-reset router does.
+
+- **The setup wizard and all six first-boot gates are gone.** Nothing blocks a page any more. The
+  router boots usable on the factory login.
+- **One un-dismissable banner** on every top-level admin page until both the login password and the
+  Wi-Fi key are off their factory values. It reads live state, not a latch: setting either back to
+  the factory value later brings it back. It is deliberately absent from the login page.
+- Twelve new banner strings in all 25 languages.
+
+*(The factory Wi-Fi key this release introduced did not survive contact with hardware — see v2.9.2.)*
+
+---
+
+## v2.9.0 — Service Intercept, one Backup & Restore panel, and the performance audit's first tier
+
+*v2.8.9 was built with most of this and superseded before it was applied in the field; its content
+is folded in here.*
+
+- **Service Intercept (Firewall → NAT).** Redirect a service from every device on a network to a
+  host of your choosing — the owner's case is LAN NTP to an internal time server — without breaking
+  the target itself: the target is automatically exempted as a source, so it still reaches its own
+  upstream, and the return path is masqueraded only when the target sits on the same subnet as its
+  clients, the two things a naive redirect gets wrong. Rules go through the same apply-and-keep
+  confirmation as the rest of the firewall; the pending-changes banner now shows on every firewall
+  tab, and an empty exemption reads "None". All strings in 25 languages.
+
+- **Backup & Restore is one panel.** The Reaper settings export/import moved off the Storage page
+  into the card on Administration → Restore/Save/Upload, beside the one-file full backup, so a single
+  place owns every backup surface and the pending-restore prompt cannot drift between two copies.
+
+- **Traffic Analyzer: Top Devices, Top Talkers and By Network update every 2 s** instead of 5, and
+  By Network shows download and upload separately.
+
+- **From the 2026-08-28 performance audit, first tier:** the firewall's domain-name sets are no
+  longer poisoned with the router's own DNS address; the header's WAN indicator survives a request
+  that fails; the traffic collector's cadence thresholds are stated in seconds rather than poll
+  counts; the DNS-over-TLS resolver is restarted if it crashes (inherited dead code); a leftover
+  factory-test hook that could run a script from a USB stick every 30 s is removed; the firmware
+  check and its notification fire once, not twice; Warden's "Update now" no longer blocks the
+  router's service manager; the Policy Routing self-heal gives up after five attempts instead of
+  retrying forever; list writes tighten permissions before content is written.
 
 ---
 
@@ -210,6 +823,14 @@ error. Every layer said it had succeeded.
   as it is switched on; a firewall list that exists but cannot be read is no longer treated as an
   empty one; and every generated maintenance script now reads settings through the guarded path,
   so none of them can hang waiting on the router's settings store.
+
+- **Sibling models: the System Information temperature chart caught up with the primary.** On
+  RT-BE86U, RT-BE88U, GT-BE98 and GT-BE98 Pro the page had been excluded from the port on the
+  mistaken belief that it differed per model; it selects its radio layout at run time, so one copy
+  serves every model. Those four had shipped half of one two-file rewrite - the QoS diagnostics
+  chart on the new time axis, the temperature chart on the old one. The page (and the wireless
+  status page, same story) is now identical to the primary on every model, and the port rule that
+  hid the lag is gone.
 
 ## v2.7.9 — Turning the firewall off actually turns it off, and Gatekeeper stops locking you out
 

@@ -1,0 +1,528 @@
+From d1ed232aa04d4097103fee52be0e3a9c070f2503 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 4 Sep 2026 18:58:45 -0400
+Subject: [PATCH] v3.0.9: low-hanging fruit - six backlog items that needed no
+ field data
+
+- Wireless Quality (Reaper_Wireless.asp): Lock/Unlock restart the radio the
+  admin is usually on, and the single 18 s fetch landed mid-outage, so a lock
+  that worked looked like it did nothing. refreshWhenBack() polls
+  /httpd_check.xml with backoff (12 s, x1.5, 15 s cap, 20 tries) and repaints
+  twice; RWIF_94 says so if the router never answers (x25 dicts).
+- Gatekeeper (web.c do_reaper_gk_cgi status): seen.tsv is gkd's first-sight
+  snapshot and could say Wired for a wireless client. Load the live cfg_mnt
+  client lists once per request and let a wireless hit that is not listed
+  wired override band/wired - on a copy, the static record stays gkd's.
+  Display only; enforcement is by MAC.
+- rwatch check 3c: a MISSING Warden chain while Warden is enabled is
+  re-applied under the firewall lock, once per 10 min, logged, with the
+  warden-chain-missing token - the end state of the stuck-nvram path behind
+  the BE92U addon-box report (the defensive half; root cause still owes
+  the tester's syslog).
+- Dashboard: the per-band device list caps at four rows and scrolls
+  (max-height 254px); five orphaned style blocks removed after a cross-page
+  usage check (arrow, railsearch, rc-sec, spark, speeds).
+- rexport: MAC masking applies one sed script instead of one rewrite per MAC.
+- amaspark: four radio slots, so the GT-BE98 family's fourth carrier is part
+  of the MLO link-set handling.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c             | 52 ++++++++++++++++++++++
+ release/src/router/rc/amaspark.c           |  2 +-
+ release/src/router/rc/rexport.c            |  7 ++-
+ release/src/router/rc/rwatch.c             | 17 +++++++
+ release/src/router/www/BR.dict             |  1 +
+ release/src/router/www/CN.dict             |  1 +
+ release/src/router/www/CZ.dict             |  1 +
+ release/src/router/www/DA.dict             |  1 +
+ release/src/router/www/DE.dict             |  1 +
+ release/src/router/www/EN.dict             |  1 +
+ release/src/router/www/ES.dict             |  1 +
+ release/src/router/www/FI.dict             |  1 +
+ release/src/router/www/FR.dict             |  1 +
+ release/src/router/www/HU.dict             |  1 +
+ release/src/router/www/IT.dict             |  1 +
+ release/src/router/www/JP.dict             |  1 +
+ release/src/router/www/KR.dict             |  1 +
+ release/src/router/www/MS.dict             |  1 +
+ release/src/router/www/Main_ReaperDash.asp | 18 +++-----
+ release/src/router/www/NL.dict             |  1 +
+ release/src/router/www/NO.dict             |  1 +
+ release/src/router/www/PL.dict             |  1 +
+ release/src/router/www/RO.dict             |  1 +
+ release/src/router/www/RU.dict             |  1 +
+ release/src/router/www/Reaper_Wireless.asp | 24 +++++++++-
+ release/src/router/www/SL.dict             |  1 +
+ release/src/router/www/SV.dict             |  1 +
+ release/src/router/www/TH.dict             |  1 +
+ release/src/router/www/TR.dict             |  1 +
+ release/src/router/www/TW.dict             |  1 +
+ release/src/router/www/UK.dict             |  1 +
+ 31 files changed, 129 insertions(+), 16 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 068b1e2cc0..0e13134806 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23382,6 +23382,9 @@ reaper_requester_mac(char *out, size_t n)
+ 	return got;
+ }
+ 
++#ifdef RTCONFIG_CFGSYNC
++static int rdev_amesh_is_wired(json_object *wired, const char *mac);	/* defined with the Devices page classifier below */
++#endif
+ static void
+ do_reaper_gk_cgi(char *url, FILE *stream)
+ {
+@@ -23404,6 +23407,27 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		int ns = gk_load_seen(seen, GK_SEEN_MAX);
+ 		int i, first;
+ 		char *buf, *tok, *sp = NULL;
++#ifdef RTCONFIG_CFGSYNC
++		/* v3.0.9 (backlog "Gatekeeper labels a wireless client Wired"): seen.tsv is
++		 * gkd's snapshot from the moment the device was FIRST seen - a client that
++		 * reached DHCP before the station table caught up, a roamer, a client
++		 * behind a node - is recorded band="" wired=1 and shows as Wired until the
++		 * file is rewritten. The Devices page beside this one reads the live
++		 * cfg_mnt lists instead. Do the same here, once per request: a MAC found
++		 * in the wireless list (and not in the wired list) is Wireless, whatever
++		 * the snapshot said. Display only - enforcement is by MAC. */
++		json_object *gk_wl = NULL, *gk_wired = NULL;
++		{
++			int lock = file_lock(ALLWEVENT_FILE_LOCK);
++			gk_wl = json_object_from_file(ALLWCLIENT_LIST_JSON_PATH);
++			file_unlock(lock);
++			if (gk_wl && !json_object_is_type(gk_wl, json_type_object)) { json_object_put(gk_wl); gk_wl = NULL; }
++			lock = file_lock(WIREDCLIENTLIST_FILE_LOCK);
++			gk_wired = json_object_from_file(WIRED_CLIENT_LIST_JSON_PATH);
++			file_unlock(lock);
++			if (gk_wired && !json_object_is_type(gk_wired, json_type_object)) { json_object_put(gk_wired); gk_wired = NULL; }
++		}
++#endif
+ 
+ 		/* reaper v1.7.3: "armed" reflects whether the enforcement chains are
+ 		 * actually present (gkd stamps /tmp/gk/chains.ok when they are). It can
+@@ -23459,6 +23483,30 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 					snprintf(off.mac, sizeof(off.mac), "%s", mac);
+ 					d = &off;
+ 				}
++#ifdef RTCONFIG_CFGSYNC
++				/* v3.0.9: a live wireless signal beats the cached wired flag (see above).
++				 * Work on a copy - `seen` is static and must keep gkd's own record. */
++				if (gk_wl && (d->wired || !d->band[0]) && !(gk_wired && rdev_amesh_is_wired(gk_wired, mac))) {
++					const char *bl = NULL;
++					json_object_object_foreach(gk_wl, nodemac, bands) {
++						(void)nodemac;
++						if (bl || !json_object_is_type(bands, json_type_object)) continue;
++						json_object_object_foreach(bands, bandkey, stas) {
++							if (bl || !json_object_is_type(stas, json_type_object)) continue;
++							if (bandkey[0] != '2' && bandkey[0] != '5' && bandkey[0] != '6') continue;
++							json_object_object_foreach(stas, stamac, staval) {
++								(void)staval;
++								if (!bl && !strcasecmp(stamac, mac)) bl = bandkey[0] == '2' ? "2.4" : bandkey[0] == '5' ? "5" : "6";
++							}
++						}
++					}
++					if (bl) {
++						if (d != &off) { off = *d; d = &off; }
++						snprintf(d->band, sizeof(d->band), "%s", bl);
++						d->wired = 0;
++					}
++				}
++#endif
+ 				if (!first) websWrite(stream, ",");
+ 				first = 0;
+ 				websWrite(stream, "{\"mac\":\"%s\",\"state\":%d,\"expiry\":%ld,\"ip\":", d->mac, st, exp);
+@@ -23479,6 +23527,10 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 			}
+ 			free(buf);
+ 		}
++#ifdef RTCONFIG_CFGSYNC
++		if (gk_wl) json_object_put(gk_wl);
++		if (gk_wired) json_object_put(gk_wired);
++#endif
+ 		websWrite(stream, "]}");
+ 		return;
+ 	}
+diff --git a/release/src/router/rc/amaspark.c b/release/src/router/rc/amaspark.c
+index 6bb7052140..2aa87ae8d5 100644
+--- a/release/src/router/rc/amaspark.c
++++ b/release/src/router/rc/amaspark.c
+@@ -55,7 +55,7 @@
+ #define AP_POLL_OFF	30		/* s, feature disabled: only the switch is watched */
+ #define AP_OB_MAX	1200		/* s, a stuck non-idle cfg_obstatus is treated as closed */
+ #define AP_STATE	"/tmp/amaspark.state"
+-#define AP_MAXU		3
++#define AP_MAXU		4		/* radios: the GT-BE98 family has four (2.4, 5-1, 5-2, 6); the band comes from wlN_nband, never the unit number */
+ 
+ static volatile sig_atomic_t g_stop;
+ static void on_sig(int s) { (void)s; g_stop = 1; }
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index 59717bce48..4fd69b572e 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -95,11 +95,16 @@ static void rexport_gen(void)
+ 	  "# optional MAC-hash for privacy: replace each MAC with a short salted digest\n"
+ 	  "if [ \"$MASK\" = 1 ]; then\n"
+ 	  "  cp \"$H\" /tmp/rexport.src 2>/dev/null || exit 0\n"
++	  /* v3.0.9 (code-review tail): one sed script applied once, not one whole-
++	   * file rewrite per MAC. The md5 forks stay (busybox awk has no hash). */
++	  "  : > /tmp/rexport.sed\n"
+ 	  "  for m in $(grep -o '\"mac\":\"[^\"]*\"' /tmp/rexport.src | sed 's/\"mac\":\"//;s/\"$//' | sort -u); do\n"
+ 	  "    [ -n \"$m\" ] || continue\n"
+ 	  "    hh=$(printf 'reaper:%s' \"$m\" | md5sum | cut -c1-12)\n"
+-	  "    sed -i \"s/$m/$hh/g\" /tmp/rexport.src 2>/dev/null\n"
++	  "    echo \"s/$m/$hh/g\" >> /tmp/rexport.sed\n"
+ 	  "  done\n"
++	  "  [ -s /tmp/rexport.sed ] && sed -i -f /tmp/rexport.sed /tmp/rexport.src 2>/dev/null\n"
++	  "  rm -f /tmp/rexport.sed\n"
+ 	  "  SRCF=/tmp/rexport.src\n"
+ 	  "fi\n"
+ 	  "\n"
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 2d314886e5..5eb1b4633e 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -246,6 +246,23 @@ static void rwatch_gen(void)
+ 	  "  echo \"$SD\" > /tmp/rwatch_selfdrop 2>/dev/null\n"
+ 	  "fi\n"
+ 	  "\n"
++	  /* v3.0.9 (backlog "Warden crash on the BE92U addon box", the held defensive
++	   * fix): the canary above heals a POISONED chain, nothing healed an ABSENT
++	   * one - the end state of the only code-plausible path (apply.sh bailed
++	   * "lan not ready" after the flush while nvram was wedged). Same lock, same
++	   * boot grace, at most once per 10 min, and it says so in the log. */
++	  "# 3c) Warden chain missing while Warden is enabled: re-apply (once per 10 min)\n"
++	  "if [ \"$(_nv rwarden_enable)\" = 1 ] && [ -f /tmp/rwarden/apply.sh ] && [ \"$UP\" -ge \"$HEALGRACE\" ] \\\n"
++	  "   && ! iptables -nL REAPER_WARDEN >/dev/null 2>&1; then\n"
++	  "  _wl=$(cat /tmp/rwarden/heal.at 2>/dev/null || echo 0); case \"$_wl\" in ''|*[!0-9]*) _wl=0;; esac\n"
++	  "  if [ $((UP - _wl)) -ge 600 ]; then\n"
++	  "    echo $UP > /tmp/rwarden/heal.at 2>/dev/null\n"
++	  "    logger -t rwatch \"Warden chain REAPER_WARDEN is MISSING while Warden is enabled - re-applying (the apply may have bailed before the LAN was ready)\"\n"
++	  "    reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
++	  "    FAIL=\"$FAIL warden-chain-missing\"\n"
++	  "  fi\n"
++	  "fi\n"
++	  "\n"
+ 	  "# 4) GDX host-TCP pool: 0 available = the silent accelerator-wedge\n"
+ 	  "#    signature. OPT-IN (rwatch_gdx=1): reads a kernel accelerator /proc\n"
+ 	  "#    surface every tick; default-off until skb_idx is field-proven non-\n"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 9659e8a1b6..42c3789b4d 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index aee2e5416a..e249c1533d 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 58a7b6051b..a60a5be4a9 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index b791af0ff6..f774caaeaa 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 3b43102936..cd7f9212de 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 26c5639d42..fad0f7baac 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index ecc1e8d523..ccacc4055a 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index c9fba568a0..80f8669193 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d2e6a0d017..e929847ba1 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index a74a476b6d..5ec0ceab83 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 98548183f3..aabe21f719 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index f7a11b1a51..1e31dd514c 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 6ed0471875..14a507d646 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index a2f6c111b9..56621dcfd3 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index d5ed77b156..b6d6b04501 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -49,7 +49,11 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ /* fixed height (not max-height): the card must not grow/shrink with the device
+    count &mdash; the row it shares with Security Posture stays constant; scrollbar handles overflow */
+ .clcard{display:flex;flex-direction:column}
+-.cl-list{margin-top:10px;flex:1 1 auto;min-height:170px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
++/* v3.0.9 (owner ask 2026-08-30): the viewport is FOUR rows, scroll for the rest. A row is
++   9px+9px padding + 2px border + name line (13.5px, ~18px) + 3px + detail line (12px x1.5)
++   = ~59px; four rows + three 6px gaps = 254px. The bound used to be indirect (the sibling
++   card's height) and was lost whenever this card was the taller one. */
++.cl-list{margin-top:10px;flex:1 1 auto;min-height:170px;max-height:254px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
+ .cl-item{border:1px solid var(--line-soft);border-radius:8px;padding:9px 11px;background:rgba(255,255,255,.03)}
+ .cl-item .cn{color:var(--bone);font-size:13.5px;font-weight:600}
+ .cl-item .cd{color:var(--bone-dim);font-size:12px;line-height:1.5;margin-top:3px;word-break:break-all}
+@@ -73,13 +77,7 @@ main{min-width:0}
+   display:flex;flex-direction:column;padding:14px 12px 14px;gap:2px}
+ .railclock{padding:6px 6px 14px;text-align:center;line-height:1.05}
+ .railclock .rc-time{font-family:var(--hdr);font-weight:700;font-size:23px;letter-spacing:.07em;color:var(--bone);font-variant-numeric:tabular-nums}
+-.railclock .rc-sec{color:var(--crimson)}
+ .railclock .rc-date{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);margin-top:4px}
+-.railsearch{margin:2px 4px 8px}
+-.railsearch input{width:100%;background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);
+-  padding:9px 11px;font-family:var(--body);font-size:12px;outline:none}
+-.railsearch input:focus{border-color:var(--line)}
+-.railsearch input:disabled{opacity:.4;cursor:not-allowed}
+ /* reaper 2026-08-17: STICKY, so the signet stays reachable no matter how long
+    the rail gets. margin-top:auto alone pins it to the foot of the RAIL, and the
+    rail deliberately has no scrollbar of its own (see the .rail comment) - it
+@@ -235,15 +233,10 @@ main{min-width:0}
+ .meta{display:flex;gap:26px;margin-top:16px;flex-wrap:wrap}
+ .meta .m .k{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel)}
+ .meta .m .v{font-family:var(--hdr);font-size:16px;color:var(--bone);margin-top:3px}
+-.speeds{display:flex;gap:22px}
+ .spd{flex:1}
+ .spd .k{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--steel);display:flex;align-items:center;gap:6px}
+ .spd .v{font-family:var(--hdr);font-weight:700;font-size:26px;color:var(--bone);margin-top:2px}
+ .spd .v small{font-size:12px;color:var(--bone-dim);font-weight:500;letter-spacing:.05em}
+-.arrow{width:0;height:0}
+-.dl .arrow{border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--jade)}
+-.ul .arrow{border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:7px solid var(--crimson)}
+-.spark{margin-top:12px}
+ 
+ /* meters */
+ .meters{display:flex;gap:16px;justify-content:space-between;flex-wrap:wrap}
+@@ -354,7 +347,6 @@ main{min-width:0}
+     justify-content:flex-start;gap:4px;padding:8px 10px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line-soft)}
+   .railclock{padding:0 10px 0 0;text-align:left}
+   .railclock .rc-time{font-size:16px} .railclock .rc-date{display:none}
+-  .railsearch,.grp{display:none}
+   .nav{flex-direction:row;width:auto}
+   .nav a .nl{display:none}
+   .nav a{padding:0 10px}
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index fe03a3cae2..a88c52256e 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 4585414eef..be464e722a 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 8caf2e007d..9a9a027dc1 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 789e2e543c..a936489246 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 78cc6d1643..fc8ee4d986 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 32c351d6c8..7c1dfa907e 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -416,7 +416,29 @@ function submitApply(unit,cs,bw){
+   e1.disabled=false; e1.value=cs;
+   e2.disabled=false; e2.value=bw;
+   f.submit();
+-  setTimeout(function(){fetchStatus();},18000);
++  /* v3.0.9 (backlog "refresh after Lock/Unlock"): the radio restart drops the
++     admin's own band for ~20 s, so the old single 18 s fetch landed mid-outage
++     and the table kept the pre-lock channel until a manual reload. Poll a
++     lightweight endpoint until the router answers again, then repaint. Rule 34:
++     every completion path runs through once(), a still-down router keeps the
++     last-known view. */
++  refreshWhenBack(12000, 0);
++}
++function onceFn(fn){ var done=0; return function(a){ if(done) return; done=1; fn(a); }; }
++function refreshWhenBack(delay, tries){
++  setTimeout(function(){
++    var x=new XMLHttpRequest();
++    var next=onceFn(function(ok){
++      if(ok){ fetchStatus(); setTimeout(function(){fetchStatus();},6000); return; }   /* twice: the chanspec settles after httpd does */
++      if(tries>=20){ showToast(`<#RWIF_94#>`); return; }
++      refreshWhenBack(Math.min(Math.round(delay*1.5),15000), tries+1);
++    });
++    x.open("GET","/httpd_check.xml?_="+Date.now(),true);
++    x.timeout=4000;
++    x.onreadystatechange=function(){ if(x.readyState===4) next(x.status===200); };
++    x.onerror=x.ontimeout=x.onabort=function(){ next(false); };
++    x.send();
++  }, delay);
+ }
+ 
+ /* v1.7.1 (audit M1): CSRF token for every state-changing reaper_wifi.cgi call */
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 980f99839d..4b56754546 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 648bcb3e37..90fae3f1ee 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index b5f2ad3395..b7be9a43ec 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 0aa50a728c..caf5d769db 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index ddb7053556..601865b105 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index ba48f0e3b9..52c22f8c7e 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6844,3 +6844,4 @@ RWIF_90=This router is an AiMesh node, not the primary; parking applies to the p
+ RWIF_91=Turn parking on
+ RWIF_92=Turn parking off
+ RWIF_93=Applying. The system log records what happens next.
++RWIF_94=The router did not answer within two minutes. Reload the page to see the current channel.
+-- 
+2.25.1
+

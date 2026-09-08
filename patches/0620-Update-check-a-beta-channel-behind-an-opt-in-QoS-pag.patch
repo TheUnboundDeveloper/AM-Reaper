@@ -1,0 +1,927 @@
+From f915d6ed819c37a5105d215797c8e2bb8d3e0fdc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 16:35:19 -0400
+Subject: [PATCH] Update check: a beta channel behind an opt-in; QoS page:
+ retire the Weighted-class prose
+
+The update manifest may now carry a second line per model and variant,
+MODEL#VARIANT-beta#X.Y.Z#url#sha#size, written by the Dev-branch publish.
+reaper_webs_update.sh reads it only when reaper_fwbeta=1 (new key,
+defaults.c, default 0) and offers a beta only to a router that is already on
+the newest stable release and only when the beta carries a HIGHER number than
+that stable - a beta with the stable's own number is never offered. A beta
+offer is marked in webs_state_channel: the Firmware page and the dashboard
+badge label it, reaper_webs_note.sh fetches the -beta note first. Firmware
+before this commit anchors its grep on "VARIANT#" and never sees the line.
+
+Reaper_Firmware.asp gains the Beta Channel switch (saveNvram reaper_fwbeta)
+and the label; RFWU_54-57 in all 25 packs, translated.
+
+Reaper_QoS.asp: the hint under the class list and the "Priority vs Weighted"
+explainer described a scheduler mode removed in v2.5.4. RQOS_28 is cut to its
+Priority sentence in every pack; the explainer block is gone from the page
+(the RQOS_51-54 and RQOS_95 keys stay, unused).
+
+Gates: reaper_static_checks 11/11 (new check fw-beta-channel), langcheck 0,
+csrfcheck 0, node --check on both pages, dicts lockstep 6867; the check
+script's decision matrix (11 cases) run offline against fake nvram/wget.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../rom/webs_scripts/reaper_webs_note.sh      | 22 ++++-
+ .../rom/webs_scripts/reaper_webs_update.sh    | 99 +++++++++++++------
+ release/src/router/shared/defaults.c          |  5 +
+ release/src/router/www/BR.dict                |  6 +-
+ release/src/router/www/CN.dict                |  6 +-
+ release/src/router/www/CZ.dict                |  6 +-
+ release/src/router/www/DA.dict                |  6 +-
+ release/src/router/www/DE.dict                |  6 +-
+ release/src/router/www/EN.dict                |  6 +-
+ release/src/router/www/ES.dict                |  6 +-
+ release/src/router/www/FI.dict                |  6 +-
+ release/src/router/www/FR.dict                |  6 +-
+ release/src/router/www/HU.dict                |  6 +-
+ release/src/router/www/IT.dict                |  6 +-
+ release/src/router/www/JP.dict                |  6 +-
+ release/src/router/www/KR.dict                |  6 +-
+ release/src/router/www/MS.dict                |  6 +-
+ release/src/router/www/Main_ReaperDash.asp    |  3 +-
+ release/src/router/www/NL.dict                |  6 +-
+ release/src/router/www/NO.dict                |  6 +-
+ release/src/router/www/PL.dict                |  6 +-
+ release/src/router/www/RO.dict                |  6 +-
+ release/src/router/www/RU.dict                |  6 +-
+ release/src/router/www/Reaper_Firmware.asp    | 30 +++++-
+ release/src/router/www/Reaper_QoS.asp         |  8 --
+ release/src/router/www/SL.dict                |  6 +-
+ release/src/router/www/SV.dict                |  6 +-
+ release/src/router/www/TH.dict                |  6 +-
+ release/src/router/www/TR.dict                |  6 +-
+ release/src/router/www/TW.dict                |  6 +-
+ release/src/router/www/UK.dict                |  6 +-
+ 31 files changed, 250 insertions(+), 67 deletions(-)
+
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_note.sh b/release/src/router/rom/webs_scripts/reaper_webs_note.sh
+index ef64a11340..417f1c6ec4 100755
+--- a/release/src/router/rom/webs_scripts/reaper_webs_note.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_note.sh
+@@ -28,10 +28,26 @@ fi
+ ver=$(echo "$info" | sed 's/.*Reaper_v//; s/[^0-9.].*//')
+ [ -z "$ver" ] && { nvram set cfg_note=2; exit 0; }
+ 
+-/usr/sbin/wget $wget_options "$RAW_BASE/Reaper_v${ver}.txt" -O "$NOTE_PATH"
+-if [ "$?" != "0" ] || [ ! -s "$NOTE_PATH" ]; then
++# v3.1.0: a beta offer (webs_state_channel=beta, set by the update check)
++# reads the beta note first - the Dev-branch publish writes Reaper_v<ver>-beta.txt
++# - and falls back to the plain note of the same number, then to the pointer.
++chan=$(nvram get webs_state_channel)
++got=0
++if [ "$chan" = "beta" ]; then
++	/usr/sbin/wget $wget_options "$RAW_BASE/Reaper_v${ver}-beta.txt" -O "$NOTE_PATH"
++	[ "$?" = "0" ] && [ -s "$NOTE_PATH" ] && got=1
++fi
++if [ "$got" != "1" ]; then
++	/usr/sbin/wget $wget_options "$RAW_BASE/Reaper_v${ver}.txt" -O "$NOTE_PATH"
++	[ "$?" = "0" ] && [ -s "$NOTE_PATH" ] && got=1
++fi
++if [ "$got" != "1" ]; then
+ 	# no per-version note published; point at the GitHub release page instead
+-	echo "Reaper v${ver} is available." > "$NOTE_PATH"
++	if [ "$chan" = "beta" ]; then
++		echo "Reaper v${ver} (beta, Dev branch) is available." > "$NOTE_PATH"
++	else
++		echo "Reaper v${ver} is available." > "$NOTE_PATH"
++	fi
+ 	echo "" >> "$NOTE_PATH"
+ 	echo "Release notes: https://github.com/TheUnboundDeveloper/AM-Reaper/releases" >> "$NOTE_PATH"
+ fi
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index 7a8d93a34f..1873adfc39 100755
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -6,6 +6,14 @@
+ # stock webs_state_* nvram the firmware page already renders. It NEVER downloads
+ # or flashes an image (Phase 1). Opt-in: rc only runs this when the user has
+ # enabled the check (firmware_check_enable=1; default 0).
++#
++# v3.1.0: a BETA channel. The manifest may carry a second line per model and
++# variant, MODEL#VARIANT-beta#..., written by the Dev-branch publish. It is
++# read only when the admin opted in (reaper_fwbeta=1), and a beta is offered
++# only to a router that is already on the newest stable release and only when
++# the beta carries a HIGHER number than that stable; a beta with the stable's
++# own number is never offered. Firmware older than v3.1.0 anchors its grep on
++# "VARIANT#" and so never sees the beta line at all.
+ 
+ wget_options="-q -t 2 -T 30"
+ MANIFEST_URL="https://raw.githubusercontent.com/TheUnboundDeveloper/AM-Reaper/main/updates/manifest_3006.txt"
+@@ -18,6 +26,7 @@ nvram set webs_state_error=0
+ nvram set webs_state_url=""
+ nvram set webs_state_sha256=""
+ nvram set webs_state_size=""
++nvram set webs_state_channel=""
+ 
+ echo "---- reaper update check $(date) ----" > "$LOG"
+ 
+@@ -125,38 +134,48 @@ else
+ 	echo "---- manifest signature enforcement disabled in this build ----" >> "$LOG"
+ fi
+ 
+-# manifest line: MODEL#VARIANT#X.Y.Z#<download-url>[#SHA256[#SIZE]]
++# manifest lines: MODEL#VARIANT#X.Y.Z#<download-url>[#SHA256[#SIZE]]       stable
++#                 MODEL#VARIANT-beta#X.Y.Z#<download-url>#SHA256#SIZE       beta (v3.1.0)
+ # (fields 5/6 arrived with Phase 2; older manifests lack them - the page then
+ # offers notify-only and the upgrade script refuses to flash unverified)
+ line=$(grep "^${model}#${variant}#" "$TMP" | head -1)
++beta_line=""
++BETA_EN="$(nvram get reaper_fwbeta)"
++if [ "$BETA_EN" = "1" ]; then
++	beta_line=$(grep "^${model}#${variant}-beta#" "$TMP" | head -1)
++	echo "---- beta channel enabled ($([ -n "$beta_line" ] && echo "beta entry present" || echo "no beta entry")) ----" >> "$LOG"
++fi
++rm -f "$TMP"
+ if [ -z "$line" ]; then
+ 	echo "---- no manifest entry for ${model}#${variant} ----" >> "$LOG"
+ 	nvram set webs_state_error=1
+ 	nvram set webs_state_update=1
+-	rm -f "$TMP"
+ 	exit 0
+ fi
+ 
+-rem_ver=$(echo "$line" | cut -d'#' -f3)
+-rem_url=$(echo "$line" | cut -d'#' -f4)
+-rem_sha=$(echo "$line" | cut -d'#' -f5)
+-rem_size=$(echo "$line" | cut -d'#' -f6)
+-rm -f "$TMP"
++# parse_entry LINE: fills rem_ver/rem_url/rem_sha/rem_size, fails on ANY
++# malformed field. The manifest is fetched over the network; its fields land
++# in nvram, are rendered in the admin GUI, and (url) are handed to the
++# downloader, so a tampered or spoofed entry is rejected whole rather than
++# trusted in part. GitHub-hosted URLs use only [A-Za-z0-9._:/-].
++parse_entry() {
++	rem_ver=$(echo "$1" | cut -d'#' -f3)
++	rem_url=$(echo "$1" | cut -d'#' -f4)
++	rem_sha=$(echo "$1" | cut -d'#' -f5)
++	rem_size=$(echo "$1" | cut -d'#' -f6)
++	bad=
++	case "$rem_ver" in ''|*[!0-9.]*) bad=1 ;; esac
++	case "$rem_url" in https://*) ;; *) bad=1 ;; esac
++	case "$rem_url" in *[!A-Za-z0-9._:/-]*) bad=1 ;; esac
++	if [ -n "$rem_sha" ]; then
++		case "$rem_sha" in *[!0-9a-fA-F]*) bad=1 ;; esac
++		[ ${#rem_sha} -eq 64 ] || bad=1
++	fi
++	case "$rem_size" in *[!0-9]*) rem_size="" ;; esac
++	[ -z "$bad" ]
++}
+ 
+-# The manifest is fetched over the network; its fields land in nvram, are
+-# rendered in the admin GUI, and (url) are handed to the downloader. Reject
+-# the whole entry on ANY malformed field rather than trust a tampered or
+-# spoofed manifest. GitHub-hosted URLs use only [A-Za-z0-9._:/-].
+-bad=
+-case "$rem_ver" in ''|*[!0-9.]*) bad=1 ;; esac
+-case "$rem_url" in https://*) ;; *) bad=1 ;; esac
+-case "$rem_url" in *[!A-Za-z0-9._:/-]*) bad=1 ;; esac
+-if [ -n "$rem_sha" ]; then
+-	case "$rem_sha" in *[!0-9a-fA-F]*) bad=1 ;; esac
+-	[ ${#rem_sha} -eq 64 ] || bad=1
+-fi
+-case "$rem_size" in *[!0-9]*) rem_size="" ;; esac
+-if [ -n "$bad" ]; then
++if ! parse_entry "$line"; then
+ 	echo "---- manifest entry REJECTED: malformed field(s) ----" >> "$LOG"
+ 	nvram set webs_state_error=1
+ 	nvram set webs_state_update=1
+@@ -166,12 +185,31 @@ fi
+ # numeric compare: X.Y.Z -> XXXYYYZZZ (zero-padded), integer -gt
+ ver_num() { echo "$1" | awk -F. '{printf "%d%03d%03d\n", $1+0, $2+0, $3+0}'; }
+ cur_n=$(ver_num "$cur_ver")
+-rem_n=$(ver_num "$rem_ver")
+-
+-echo "---- published=$rem_ver ($rem_n) running=$cur_ver ($cur_n) ----" >> "$LOG"
++s_n=$(ver_num "$rem_ver")
++
++echo "---- published=$rem_ver ($s_n) running=$cur_ver ($cur_n) ----" >> "$LOG"
++
++offer=""
++if [ "$s_n" -gt "$cur_n" ] 2>/dev/null; then
++	offer=stable
++elif [ -n "$beta_line" ]; then
++	# The stable branch above did not fire, so this router is on (or past) the
++	# newest stable. Offer the beta only when it is newer than BOTH what is
++	# running and that stable - the same number as the stable is never a beta.
++	if parse_entry "$beta_line"; then
++		b_n=$(ver_num "$rem_ver")
++		echo "---- beta=$rem_ver ($b_n) ----" >> "$LOG"
++		if [ "$b_n" -gt "$cur_n" ] 2>/dev/null && [ "$b_n" -gt "$s_n" ] 2>/dev/null; then
++			offer=beta
++		fi
++	else
++		echo "---- beta entry IGNORED: malformed field(s) ----" >> "$LOG"
++	fi
++fi
+ 
+-if [ "$rem_n" -gt "$cur_n" ] 2>/dev/null; then
+-	echo "---- update available: Reaper v$rem_ver ----" >> "$LOG"
++case "$offer" in
++stable|beta)
++	echo "---- update available: Reaper v$rem_ver ($offer) ----" >> "$LOG"
+ 	nvram set webs_state_flag=1
+ 	# firmware-string shape the page renders; keeps the Reaper version visible
+ 	nvram set webs_state_info="3006.102.8_Reaper_v${rem_ver}"
+@@ -179,9 +217,14 @@ if [ "$rem_n" -gt "$cur_n" ] 2>/dev/null; then
+ 	nvram set webs_state_url="$rem_url"
+ 	nvram set webs_state_sha256="$rem_sha"
+ 	nvram set webs_state_size="$rem_size"
+-else
++	# the page and the dashboard badge label a beta; the note script fetches
++	# the beta note
++	[ "$offer" = "beta" ] && nvram set webs_state_channel=beta
++	;;
++*)
+ 	echo "---- up to date ----" >> "$LOG"
+ 	nvram set webs_state_flag=0
+-fi
++	;;
++esac
+ 
+ nvram set webs_state_update=1
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 5fe7be9485..1c298d8acb 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5319,6 +5319,11 @@ struct nvram_tuple router_defaults[] = {
+ 	 * Set only by the Firmware page's type-to-confirm dialog; consumed and
+ 	 * cleared by reaper_webs_update.sh on its next run, needed or not. */
+ 	{ "reaper_fwsig_override", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* v3.1.0: opt in to the beta channel of the update check. With it set,
++	 * reaper_webs_update.sh also reads the manifest's MODEL#VARIANT-beta# line
++	 * and offers a beta only to a router already on the newest stable release,
++	 * and only when the beta's number is higher than that stable's. */
++	{ "reaper_fwbeta", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* reaper 2026-08-17: which HOUR the scheduled update check runs in. Empty =
+ 	   automatic, which is the behaviour that shipped before this key existed:
+ 	   02:00 plus a random 0-3 h offset drawn at boot. A value of 0-23 pins the
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index a533d1685a..260093723f 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Mín %
+ RQOS_25=Teto %
+ RQOS_26=Taxa (ao vivo)
+ RQOS_27=Descartes
+-RQOS_28=Classes <b>Prioridade</b> são sempre atendidas primeiro, de cima para baixo. Classes <b>Ponderadas</b> formam um pool abaixo delas que divide a largura de banda restante por peso (1&ndash;63) em vez de posição &mdash; use quando duas classes de volume devem compartilhar de forma justa em vez de esfomear uma à outra. Classes Ponderadas devem ficar juntas no fim da lista.
++RQOS_28=Classes <b>Prioridade</b> são sempre atendidas primeiro, de cima para baixo.
+ RQOS_29=Não classificado (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=O roteador está sendo redefinido e vai reiniciar com as configurações de fábrica. O Wi-Fi volta como uma rede aberta chamada ASUS_xx. Conecte-se a essa rede ou use uma porta com fio e depois abra o roteador no endereço padrão:
+ RBKP_51=O roteador não reiniciou em 3 minutos, portanto o pedido de redefinição não foi aceito e nada foi alterado. Verifique o registro do sistema e tente novamente.
+ RSEC_13=O login do roteador e a senha do Wi-Fi ainda são admin
++RFWU_54=Canal beta
++RFWU_55=Oferecer também versões beta do ramo Dev. Uma beta só é oferecida quando este roteador já executa a versão estável mais recente e a beta tem um número de versão maior; quando a versão estável tem o mesmo número, só a estável é oferecida. As betas foram menos testadas que as versões estáveis.
++RFWU_56=Beta
++RFWU_57=Esta é uma versão beta do ramo Dev. Foi menos testada que uma versão estável; o firmware anterior permanece na partição de reserva.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index c49033f89a..de1ec63843 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=最低 %
+ RQOS_25=上限 %
+ RQOS_26=速率（实时）
+ RQOS_27=丢弃
+-RQOS_28=<b>优先级</b>类别始终从上到下最先服务。<b>加权</b>类别在其下方组成一个池，按权重（1&ndash;63）而非排名分配剩余带宽 &mdash; 当两个批量类别应公平共享而非互相饿死时使用。加权类别必须一起位于列表底部。
++RQOS_28=<b>优先级</b>类别始终从上到下最先服务。
+ RQOS_29=未分类（Q0）
+ RQOS_30=LAN / 组播（Q6）
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=路由器正在重置，并将以出厂设置重新启动。Wi-Fi 会恢复为名为 ASUS_xx 的开放网络。请重新连接该网络或使用有线端口，然后通过默认地址打开路由器：
+ RBKP_51=路由器在 3 分钟内没有重新启动，重置请求未被接受，未作任何更改。请查看系统日志后重试。
+ RSEC_13=路由器登录密码和 Wi-Fi 密码都仍为 admin
++RFWU_54=测试版通道
++RFWU_55=同时提供来自 Dev 分支的测试版。仅当本路由器已运行最新稳定版且测试版的版本号更高时才会提供测试版；当稳定版的版本号相同时，只提供稳定版。测试版的测试程度低于稳定版。
++RFWU_56=测试版
++RFWU_57=这是来自 Dev 分支的测试版。它的测试程度低于稳定版；先前的固件仍保留在备用分区中。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 6208dc9204..9891e2d646 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Strop %
+ RQOS_26=Rychlost (za běhu)
+ RQOS_27=Zahození
+-RQOS_28=Třídy s <b>prioritou</b> jsou vždy obslouženy jako první, shora dolů. <b>Vážené</b> třídy tvoří pod nimi společný fond, který rozděluje zbývající šířku pásma podle váhy (1&ndash;63) místo pořadí &mdash; použijte to, když by dvě hromadné třídy měly sdílet férově, ne se navzájem vyhladovět. Vážené třídy musí být pohromadě na konci seznamu.
++RQOS_28=Třídy s <b>prioritou</b> jsou vždy obslouženy jako první, shora dolů.
+ RQOS_29=Nezařazeno (Q0)
+ RQOS_30=LAN / Vícesměrové vysílání (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Router se resetuje a restartuje se s továrním nastavením. Wi-Fi se vrátí jako otevřená síť s názvem ASUS_xx. Připojte se znovu k této síti nebo použijte kabelový port a poté otevřete router na výchozí adrese:
+ RBKP_51=Router se do 3 minut nerestartoval, požadavek na reset tedy nebyl přijat a nic se nezměnilo. Zkontrolujte systémový protokol a zkuste to znovu.
+ RSEC_13=Přihlášení k routeru i heslo Wi-Fi jsou stále admin
++RFWU_54=Beta kanál
++RFWU_55=Nabízet také beta verze z větve Dev. Beta se nabídne jen tehdy, když už router běží na nejnovější stabilní verzi a beta má vyšší číslo verze; má-li stabilní verze stejné číslo, nabídne se pouze stabilní. Beta verze jsou méně otestované než stabilní.
++RFWU_56=Beta
++RFWU_57=Toto je beta verze z větve Dev. Je méně otestovaná než stabilní verze; předchozí firmware zůstává v záložním oddílu.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 4d1d59c1b0..7f92274ebc 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min. %
+ RQOS_25=Loft %
+ RQOS_26=Hastighed (live)
+ RQOS_27=Drop
+-RQOS_28=<b>Prioritets</b>klasser betjenes altid først, oppefra og ned. <b>Vægtede</b> klasser danner en pulje under dem, der deler den resterende båndbredde efter vægt (1&ndash;63) i stedet for rang &mdash; brug det, når to bulk-klasser bør dele fair frem for at udsulte hinanden. Vægtede klasser skal sidde sammen nederst på listen.
++RQOS_28=<b>Prioritets</b>klasser betjenes altid først, oppefra og ned.
+ RQOS_29=Uklassificeret (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Routeren nulstilles og genstarter med fabriksindstillingerne. Wi-Fi vender tilbage som et åbent netværk med navnet ASUS_xx. Opret forbindelse til det netværk igen, eller brug en kablet port, og åbn derefter routeren på standardadressen:
+ RBKP_51=Routeren genstartede ikke inden for 3 minutter, så nulstillingsanmodningen blev ikke accepteret, og intet blev ændret. Kontrollér systemloggen, og prøv igen.
+ RSEC_13=Routerens login og Wi-Fi-adgangskoden er stadig admin
++RFWU_54=Betakanal
++RFWU_55=Tilbyd også betaudgivelser fra Dev-grenen. En beta tilbydes kun, når denne router allerede kører den nyeste stabile udgivelse, og betaen har et højere versionsnummer; har den stabile udgivelse samme nummer, tilbydes kun den stabile. Betaer er mindre testet end stabile udgivelser.
++RFWU_56=Beta
++RFWU_57=Dette er en betaudgivelse fra Dev-grenen. Den er mindre testet end en stabil udgivelse; den forrige firmware bliver i standby-partitionen.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 307a705afb..1163a0b0e5 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min. %
+ RQOS_25=Obergrenze %
+ RQOS_26=Rate (Live)
+ RQOS_27=Verwürfe
+-RQOS_28=<b>Prioritäts</b>-Klassen werden immer zuerst bedient, von oben nach unten. <b>Gewichtete</b> Klassen bilden darunter einen Pool, der die verbleibende Bandbreite nach Gewicht (1&ndash;63) statt nach Rang aufteilt &mdash; nutzen Sie das, wenn zwei Massentraffic-Klassen fair teilen statt sich aushungern sollen. Gewichtete Klassen müssen zusammen am Ende der Liste stehen.
++RQOS_28=<b>Prioritäts</b>-Klassen werden immer zuerst bedient, von oben nach unten.
+ RQOS_29=Unklassifiziert (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Der Router wird zurückgesetzt und startet mit den Werkseinstellungen neu. Das WLAN kommt als offenes Netzwerk mit dem Namen ASUS_xx zurück. Verbinden Sie sich erneut mit diesem Netzwerk oder nutzen Sie einen LAN-Anschluss und öffnen Sie den Router dann unter der Standardadresse:
+ RBKP_51=Der Router hat innerhalb von 3 Minuten nicht neu gestartet, die Zurücksetzung wurde also nicht angenommen und nichts wurde geändert. Prüfen Sie das Systemprotokoll und versuchen Sie es erneut.
+ RSEC_13=Router-Login und WLAN-Passwort sind beide noch admin
++RFWU_54=Beta-Kanal
++RFWU_55=Auch Beta-Versionen aus dem Dev-Zweig anbieten. Eine Beta wird nur angeboten, wenn dieser Router bereits die neueste stabile Version ausführt und die Beta eine höhere Versionsnummer trägt; hat die stabile Version dieselbe Nummer, wird nur die stabile angeboten. Betas sind weniger getestet als stabile Versionen.
++RFWU_56=Beta
++RFWU_57=Dies ist eine Beta-Version aus dem Dev-Zweig. Sie ist weniger getestet als eine stabile Version; die vorherige Firmware bleibt in der Standby-Partition.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index bbcd7ae443..1f1a559f6b 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Ceiling %
+ RQOS_26=Rate (live)
+ RQOS_27=Drops
+-RQOS_28=<b>Priority</b> classes are always served first, top to bottom. <b>Weighted</b> classes form a pool below them that splits the remaining bandwidth by weight (1&ndash;63) instead of rank &mdash; use it when two bulk classes should share fairly rather than starve each other. Weighted classes must sit together at the bottom of the list.
++RQOS_28=<b>Priority</b> classes are always served first, top to bottom.
+ RQOS_29=Unclassified (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=The router is resetting and will reboot with its factory settings. Its Wi-Fi comes back as an open network named ASUS_xx. Reconnect to that network or use a wired port, then open the router at its default address:
+ RBKP_51=The router did not restart within 3 minutes, so the reset request was not accepted and nothing was changed. Check the system log, then try again.
+ RSEC_13=Router login and Wi-Fi password are both still admin
++RFWU_54=Beta Channel
++RFWU_55=Also offer beta releases from the Dev branch. A beta is offered only when this router already runs the newest stable release and the beta carries a higher version number; when the stable release has the same number, only the stable one is offered. Betas have had less testing than stable releases.
++RFWU_56=Beta
++RFWU_57=This is a beta release from the Dev branch. It has had less testing than a stable release; the previous firmware stays in the standby partition.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index ab3e96a2bc..b11f9bf8ef 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Mín %
+ RQOS_25=Techo %
+ RQOS_26=Tasa (en vivo)
+ RQOS_27=Descartes
+-RQOS_28=Las clases de <b>Prioridad</b> siempre se atienden primero, de arriba abajo. Las clases <b>Ponderadas</b> forman un grupo por debajo que reparte el ancho de banda restante por peso (1&ndash;63) en lugar de por rango &mdash; úsalas cuando dos clases masivas deban compartir de forma justa en vez de asfixiarse entre sí. Las clases ponderadas deben ir juntas al final de la lista.
++RQOS_28=Las clases de <b>Prioridad</b> siempre se atienden primero, de arriba abajo.
+ RQOS_29=Sin clasificar (Q0)
+ RQOS_30=LAN / Multidifusión (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=El router se está restableciendo y se reiniciará con la configuración de fábrica. El Wi-Fi vuelve como una red abierta llamada ASUS_xx. Vuelva a conectarse a esa red o use un puerto por cable y luego abra el router en su dirección predeterminada:
+ RBKP_51=El router no se reinició en 3 minutos, por lo que la solicitud de restablecimiento no fue aceptada y no se cambió nada. Revise el registro del sistema e inténtelo de nuevo.
+ RSEC_13=El acceso al router y la contraseña del Wi-Fi siguen siendo admin
++RFWU_54=Canal beta
++RFWU_55=Ofrecer también versiones beta de la rama Dev. Una beta solo se ofrece cuando este router ya ejecuta la versión estable más reciente y la beta tiene un número de versión mayor; cuando la versión estable tiene el mismo número, solo se ofrece la estable. Las betas se han probado menos que las versiones estables.
++RFWU_56=Beta
++RFWU_57=Esta es una versión beta de la rama Dev. Se ha probado menos que una versión estable; el firmware anterior permanece en la partición de reserva.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 7b7785d2f7..714527df0d 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Katto %
+ RQOS_26=Nopeus (live)
+ RQOS_27=Pudotukset
+-RQOS_28=<b>Prioriteetti</b>-luokat palvellaan aina ensin, ylhäältä alas. <b>Painotetut</b> luokat muodostavat niiden alle altaan, joka jakaa jäljellä olevan kaistanleveyden painon (1&ndash;63) mukaan sijoituksen sijaan &mdash; käytä sitä, kun kahden bulkkiluokan pitäisi jakaa reilusti sen sijaan, että ne näännyttäisivät toisensa. Painotettujen luokkien on oltava yhdessä listan alaosassa.
++RQOS_28=<b>Prioriteetti</b>-luokat palvellaan aina ensin, ylhäältä alas.
+ RQOS_29=Luokittelematon (Q0)
+ RQOS_30=LAN / Ryhmälähetys (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Reititin palautetaan ja se käynnistyy uudelleen tehdasasetuksilla. Wi-Fi palaa avoimena verkkona nimeltä ASUS_xx. Yhdistä uudelleen kyseiseen verkkoon tai käytä kaapeliporttia ja avaa sitten reititin sen oletusosoitteessa:
+ RBKP_51=Reititin ei käynnistynyt uudelleen 3 minuutin kuluessa, joten palautuspyyntöä ei hyväksytty eikä mitään muutettu. Tarkista järjestelmäloki ja yritä uudelleen.
+ RSEC_13=Reitittimen kirjautuminen ja Wi-Fi-salasana ovat molemmat yhä admin
++RFWU_54=Beetakanava
++RFWU_55=Tarjoa myös Dev-haaran beetajulkaisuja. Beeta tarjotaan vain, kun tämä reititin on jo uusimmassa vakaassa julkaisussa ja beetan versionumero on suurempi; jos vakaalla julkaisulla on sama numero, tarjotaan vain vakaa. Beetoja on testattu vähemmän kuin vakaita julkaisuja.
++RFWU_56=Beeta
++RFWU_57=Tämä on Dev-haaran beetajulkaisu. Sitä on testattu vähemmän kuin vakaata julkaisua; edellinen laiteohjelmisto säilyy varaosiossa.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index c4b063263f..ed8b80eb84 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Plafond %
+ RQOS_26=Débit (direct)
+ RQOS_27=Pertes
+-RQOS_28=Les classes <b>Priorité</b> sont toujours servies en premier, de haut en bas. Les classes <b>Pondérées</b> forment un pool en dessous qui partage la bande passante restante selon le poids (1&ndash;63) plutôt que le rang &mdash; à utiliser quand deux classes de masse doivent partager équitablement au lieu de s'affamer. Les classes pondérées doivent rester ensemble en bas de la liste.
++RQOS_28=Les classes <b>Priorité</b> sont toujours servies en premier, de haut en bas.
+ RQOS_29=Non classé (Q0)
+ RQOS_30=LAN / Multidiffusion (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Le routeur se réinitialise et va redémarrer avec ses réglages d’usine. Le Wi-Fi revient sous la forme d’un réseau ouvert nommé ASUS_xx. Reconnectez-vous à ce réseau ou utilisez un port filaire, puis ouvrez le routeur à son adresse par défaut :
+ RBKP_51=Le routeur n’a pas redémarré dans les 3 minutes : la demande de réinitialisation n’a pas été acceptée et rien n’a été modifié. Consultez le journal système, puis réessayez.
+ RSEC_13=L’identifiant du routeur et le mot de passe Wi-Fi sont encore admin
++RFWU_54=Canal bêta
++RFWU_55=Proposer aussi les versions bêta de la branche Dev. Une bêta n’est proposée que lorsque ce routeur exécute déjà la version stable la plus récente et que la bêta porte un numéro de version supérieur ; quand la version stable porte le même numéro, seule la stable est proposée. Les bêtas sont moins testées que les versions stables.
++RFWU_56=Bêta
++RFWU_57=Ceci est une version bêta de la branche Dev. Elle est moins testée qu’une version stable ; le micrologiciel précédent reste dans la partition de secours.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 3af44783ff..beccee612e 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Felső határ %
+ RQOS_26=Sebesség (élő)
+ RQOS_27=Eldobások
+-RQOS_28=A <b>Prioritásos</b> osztályok mindig elsőként szolgálódnak ki, fentről lefelé. A <b>Súlyozott</b> osztályok alattuk egy közös csoportot alkotnak, amely a maradék sávszélességet súly (1&ndash;63) szerint osztja el rangsor helyett &mdash; használja, ha két tömeges osztály inkább igazságosan osztozzon, mintsem kiéheztessék egymást. A súlyozott osztályoknak együtt kell lenniük a lista alján.
++RQOS_28=A <b>Prioritásos</b> osztályok mindig elsőként szolgálódnak ki, fentről lefelé.
+ RQOS_29=Osztályozatlan (Q0)
+ RQOS_30=LAN / Többesküldés (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=A router visszaállítás alatt áll, és a gyári beállításokkal indul újra. A Wi-Fi ASUS_xx nevű nyílt hálózatként tér vissza. Csatlakozzon újra ehhez a hálózathoz, vagy használjon vezetékes portot, majd nyissa meg a routert az alapértelmezett címén:
+ RBKP_51=A router 3 percen belül nem indult újra, így a visszaállítási kérést nem fogadta el, és semmi sem változott. Ellenőrizze a rendszernaplót, majd próbálja újra.
+ RSEC_13=A router bejelentkezése és a Wi-Fi jelszó még mindig admin
++RFWU_54=Béta csatorna
++RFWU_55=A Dev ág béta kiadásainak felajánlása is. Béta csak akkor kerül felajánlásra, ha a router már a legújabb stabil kiadást futtatja és a béta verziószáma magasabb; ha a stabil kiadás száma ugyanaz, csak a stabil kerül felajánlásra. A béták kevésbé teszteltek, mint a stabil kiadások.
++RFWU_56=Béta
++RFWU_57=Ez egy béta kiadás a Dev ágból. Kevésbé tesztelt, mint egy stabil kiadás; az előző firmware a tartalék partíción marad.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 295f141611..6ddc49107f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Tetto %
+ RQOS_26=Velocità (live)
+ RQOS_27=Scarti
+-RQOS_28=Le classi <b>Priorità</b> sono sempre servite per prime, dall'alto verso il basso. Le classi <b>Pesate</b> formano un pool sotto di esse che divide la banda restante per peso (1&ndash;63) invece che per rango &mdash; usalo quando due classi di massa dovrebbero condividere equamente invece di affamarsi a vicenda. Le classi pesate devono stare insieme in fondo alla lista.
++RQOS_28=Le classi <b>Priorità</b> sono sempre servite per prime, dall'alto verso il basso.
+ RQOS_29=Non classificato (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Il router si sta ripristinando e si riavvierà con le impostazioni di fabbrica. Il Wi-Fi torna come rete aperta chiamata ASUS_xx. Ricollegati a quella rete o usa una porta cablata, poi apri il router al suo indirizzo predefinito:
+ RBKP_51=Il router non si è riavviato entro 3 minuti, quindi la richiesta di ripristino non è stata accettata e nulla è cambiato. Controlla il registro di sistema e riprova.
+ RSEC_13=L’accesso al router e la password Wi-Fi sono ancora admin
++RFWU_54=Canale beta
++RFWU_55=Offri anche le versioni beta del ramo Dev. Una beta viene offerta solo quando questo router esegue già la versione stabile più recente e la beta ha un numero di versione maggiore; quando la versione stabile ha lo stesso numero, viene offerta solo la stabile. Le beta sono meno testate delle versioni stabili.
++RFWU_56=Beta
++RFWU_57=Questa è una versione beta del ramo Dev. È meno testata di una versione stabile; il firmware precedente resta nella partizione di riserva.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 3fc997a59e..7de0ed45a8 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=最小 %
+ RQOS_25=上限 %
+ RQOS_26=レート（ライブ）
+ RQOS_27=ドロップ
+-RQOS_28=<b>優先度</b>クラスは常に上から順に最初に処理されます。<b>加重</b>クラスはその下にプールを形成し、順位ではなく重み（1&ndash;63）で残りの帯域を分け合います &mdash; 2つの大容量クラスが互いを飢餓状態にせず公平に共有すべき場合に使います。加重クラスはリストの最下部にまとめて配置する必要があります。
++RQOS_28=<b>優先度</b>クラスは常に上から順に最初に処理されます。
+ RQOS_29=未分類 (Q0)
+ RQOS_30=LAN / マルチキャスト (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=ルーターをリセット中です。工場出荷時の設定で再起動します。Wi-Fi は ASUS_xx という名前のオープンネットワークとして復帰します。そのネットワークに再接続するか有線ポートを使い、初期アドレスでルーターを開いてください：
+ RBKP_51=ルーターが 3 分以内に再起動しなかったため、リセット要求は受け付けられず、何も変更されていません。システムログを確認してからもう一度お試しください。
+ RSEC_13=ルーターのログインと Wi-Fi パスワードはどちらもまだ admin です
++RFWU_54=ベータチャネル
++RFWU_55=Dev ブランチのベータ版も提供します。ベータ版が提供されるのは、このルーターが既に最新の安定版を実行しており、かつベータ版のバージョン番号がより大きい場合だけです。安定版が同じ番号の場合は安定版のみが提供されます。ベータ版は安定版よりテストが少ない状態です。
++RFWU_56=ベータ
++RFWU_57=これは Dev ブランチのベータ版です。安定版よりテストが少なく、以前のファームウェアは待機パーティションに残ります。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index bc20067540..aaff42522b 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=최소 %
+ RQOS_25=상한 %
+ RQOS_26=속도 (실시간)
+ RQOS_27=드롭
+-RQOS_28=<b>우선순위</b> 클래스는 위에서 아래로 항상 먼저 처리됩니다. <b>가중치</b> 클래스는 그 아래에 풀을 형성하여 순위 대신 가중치(1&ndash;63)에 따라 남은 대역폭을 나눕니다 &mdash; 두 벌크 클래스가 서로 굶기지 않고 공정하게 공유해야 할 때 사용하세요. 가중치 클래스는 목록 맨 아래에 함께 있어야 합니다.
++RQOS_28=<b>우선순위</b> 클래스는 위에서 아래로 항상 먼저 처리됩니다.
+ RQOS_29=미분류 (Q0)
+ RQOS_30=LAN / 멀티캐스트 (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=공유기를 초기화하는 중이며 공장 설정으로 다시 시작됩니다. Wi-Fi는 ASUS_xx라는 이름의 개방형 네트워크로 돌아옵니다. 해당 네트워크에 다시 연결하거나 유선 포트를 사용한 다음 기본 주소로 공유기를 여십시오:
+ RBKP_51=공유기가 3분 안에 다시 시작되지 않아 초기화 요청이 수락되지 않았고 아무것도 변경되지 않았습니다. 시스템 로그를 확인한 후 다시 시도하십시오.
+ RSEC_13=공유기 로그인과 Wi-Fi 비밀번호가 모두 아직 admin입니다
++RFWU_54=베타 채널
++RFWU_55=Dev 브랜치의 베타 릴리스도 제공합니다. 베타는 이 공유기가 이미 최신 안정 릴리스를 실행 중이고 베타의 버전 번호가 더 높을 때만 제공됩니다. 안정 릴리스의 번호가 같으면 안정 릴리스만 제공됩니다. 베타는 안정 릴리스보다 테스트가 적습니다.
++RFWU_56=베타
++RFWU_57=이것은 Dev 브랜치의 베타 릴리스입니다. 안정 릴리스보다 테스트가 적으며, 이전 펌웨어는 대기 파티션에 남아 있습니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 2910094a64..f1ee5b1293 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Siling %
+ RQOS_26=Kadar (langsung)
+ RQOS_27=Jatuh
+-RQOS_28=Kelas <b>Keutamaan</b> sentiasa dilayan dahulu, atas ke bawah. Kelas <b>Berpemberat</b> membentuk kolam di bawahnya yang membahagikan baki lebar jalur mengikut berat (1&ndash;63) dan bukan pangkat &mdash; gunakannya apabila dua kelas pukal patut berkongsi secara adil dan bukan saling melaparkan. Kelas berpemberat mesti duduk bersama di bawah senarai.
++RQOS_28=Kelas <b>Keutamaan</b> sentiasa dilayan dahulu, atas ke bawah.
+ RQOS_29=Tak dikelaskan (Q0)
+ RQOS_30=LAN / Multisiar (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Penghala sedang ditetapkan semula dan akan but semula dengan tetapan kilang. Wi-Fi kembali sebagai rangkaian terbuka bernama ASUS_xx. Sambung semula ke rangkaian itu atau gunakan port berwayar, kemudian buka penghala di alamat lalainya:
+ RBKP_51=Penghala tidak dimulakan semula dalam masa 3 minit, jadi permintaan tetapan semula tidak diterima dan tiada apa yang diubah. Semak log sistem, kemudian cuba lagi.
+ RSEC_13=Log masuk penghala dan kata laluan Wi-Fi masih admin
++RFWU_54=Saluran beta
++RFWU_55=Tawarkan juga keluaran beta daripada cabang Dev. Beta hanya ditawarkan apabila penghala ini sudah menjalankan keluaran stabil terbaru dan beta itu membawa nombor versi yang lebih tinggi; apabila keluaran stabil mempunyai nombor yang sama, hanya yang stabil ditawarkan. Beta kurang diuji berbanding keluaran stabil.
++RFWU_56=Beta
++RFWU_57=Ini ialah keluaran beta daripada cabang Dev. Ia kurang diuji berbanding keluaran stabil; perisian tegar sebelumnya kekal dalam partition sandaran.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index b6d6b04501..5dd4f628c3 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -503,11 +503,12 @@ main{min-width:0}
+            Reaper release. All state is server-rendered - no fetch, no polling. */
+         var flag='<% nvram_get("webs_state_flag"); %>';
+         var info='<% nvram_get("webs_state_info"); %>';
++        var chan='<% nvram_get("webs_state_channel"); %>';
+         if(flag==='1'){
+           var b=document.getElementById('fw_update_badge');
+           var v=document.getElementById('p_fwnew');
+           var m=(info||'').match(/Reaper_v([0-9.]+)/);
+-          if(v) v.textContent = m ? ('v'+m[1]) : (info||'');
++          if(v) v.textContent = (m ? ('v'+m[1]) : (info||'')) + (chan==='beta' ? ' <#RFWU_56#>' : '');
+           if(b) b.style.display='';
+         }
+       })();</script>
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 423bd8b792..033d9111f7 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Plafond %
+ RQOS_26=Snelheid (live)
+ RQOS_27=Verliezen
+-RQOS_28=<b>Prioriteits</b>klassen worden altijd het eerst bediend, van boven naar beneden. <b>Gewogen</b> klassen vormen een pool eronder die de resterende bandbreedte verdeelt op gewicht (1&ndash;63) in plaats van rang &mdash; gebruik het wanneer twee bulk-klassen eerlijk moeten delen in plaats van elkaar uit te hongeren. Gewogen klassen moeten samen onderaan de lijst staan.
++RQOS_28=<b>Prioriteits</b>klassen worden altijd het eerst bediend, van boven naar beneden.
+ RQOS_29=Ongeclassificeerd (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=De router wordt gereset en start opnieuw op met de fabrieksinstellingen. De wifi komt terug als een open netwerk met de naam ASUS_xx. Maak opnieuw verbinding met dat netwerk of gebruik een bekabelde poort en open de router daarna op het standaardadres:
+ RBKP_51=De router is niet binnen 3 minuten opnieuw gestart, dus het resetverzoek is niet geaccepteerd en er is niets gewijzigd. Controleer het systeemlogboek en probeer het opnieuw.
+ RSEC_13=De routerlogin en het wifi-wachtwoord zijn allebei nog admin
++RFWU_54=Bètakanaal
++RFWU_55=Bied ook bètaversies uit de Dev-tak aan. Een bèta wordt alleen aangeboden wanneer deze router al de nieuwste stabiele versie draait en de bèta een hoger versienummer heeft; heeft de stabiele versie hetzelfde nummer, dan wordt alleen de stabiele aangeboden. Bèta’s zijn minder getest dan stabiele versies.
++RFWU_56=Bèta
++RFWU_57=Dit is een bètaversie uit de Dev-tak. Ze is minder getest dan een stabiele versie; de vorige firmware blijft in de stand-bypartitie.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 71c33038ae..96ed9cefe8 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Tak %
+ RQOS_26=Hastighet (live)
+ RQOS_27=Slipp
+-RQOS_28=<b>Prioritet</b>-klasser betjenes alltid først, ovenfra og ned. <b>Vektede</b> klasser danner en pool under dem som deler den gjenværende båndbredden etter vekt (1&ndash;63) i stedet for rang &mdash; bruk det når to bulkklasser skal dele rettferdig i stedet for å sulte hverandre. Vektede klasser må stå sammen nederst i listen.
++RQOS_28=<b>Prioritet</b>-klasser betjenes alltid først, ovenfra og ned.
+ RQOS_29=Uklassifisert (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Ruteren tilbakestilles og starter på nytt med fabrikkinnstillingene. Wi-Fi kommer tilbake som et åpent nettverk med navnet ASUS_xx. Koble til det nettverket på nytt, eller bruk en kablet port, og åpne deretter ruteren på standardadressen:
+ RBKP_51=Ruteren startet ikke på nytt innen 3 minutter, så tilbakestillingsforespørselen ble ikke godtatt og ingenting ble endret. Sjekk systemloggen og prøv igjen.
+ RSEC_13=Ruterens pålogging og Wi-Fi-passordet er fortsatt admin
++RFWU_54=Betakanal
++RFWU_55=Tilby også betautgivelser fra Dev-grenen. En beta tilbys bare når denne ruteren allerede kjører den nyeste stabile utgivelsen og betaen har et høyere versjonsnummer; har den stabile utgivelsen samme nummer, tilbys bare den stabile. Betaer er mindre testet enn stabile utgivelser.
++RFWU_56=Beta
++RFWU_57=Dette er en betautgivelse fra Dev-grenen. Den er mindre testet enn en stabil utgivelse; den forrige fastvaren blir værende i reservepartisjonen.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 8c329334a9..98daf2d89d 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Pułap %
+ RQOS_26=Przepływność (na żywo)
+ RQOS_27=Odrzucenia
+-RQOS_28=Klasy <b>Priorytet</b> są zawsze obsługiwane pierwsze, od góry do dołu. Klasy <b>Ważone</b> tworzą pod nimi pulę, która dzieli pozostałą przepustowość według wagi (1&ndash;63) zamiast rangi &mdash; użyj tego, gdy dwie klasy masowe mają się dzielić sprawiedliwie, a nie głodzić nawzajem. Klasy ważone muszą znajdować się razem na dole listy.
++RQOS_28=Klasy <b>Priorytet</b> są zawsze obsługiwane pierwsze, od góry do dołu.
+ RQOS_29=Niesklasyfikowane (Q0)
+ RQOS_30=LAN / Multiemisja (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Router jest resetowany i uruchomi się ponownie z ustawieniami fabrycznymi. Wi-Fi wraca jako otwarta sieć o nazwie ASUS_xx. Połącz się ponownie z tą siecią lub użyj portu przewodowego, a następnie otwórz router pod adresem domyślnym:
+ RBKP_51=Router nie uruchomił się ponownie w ciągu 3 minut, więc żądanie resetu nie zostało przyjęte i nic nie zmieniono. Sprawdź dziennik systemowy i spróbuj ponownie.
+ RSEC_13=Login routera i hasło Wi-Fi nadal mają wartość admin
++RFWU_54=Kanał beta
++RFWU_55=Oferuj także wydania beta z gałęzi Dev. Beta jest oferowana tylko wtedy, gdy ten router ma już najnowsze wydanie stabilne, a beta ma wyższy numer wersji; gdy wydanie stabilne ma ten sam numer, oferowane jest tylko stabilne. Wersje beta są mniej przetestowane niż stabilne.
++RFWU_56=Beta
++RFWU_57=To jest wydanie beta z gałęzi Dev. Jest mniej przetestowane niż wydanie stabilne; poprzednie oprogramowanie pozostaje na partycji zapasowej.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 97bfa0e850..3e3be99827 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Plafon %
+ RQOS_26=Rată (live)
+ RQOS_27=Pierderi
+-RQOS_28=Clasele <b>Prioritare</b> sunt întotdeauna servite primele, de sus în jos. Clasele <b>Ponderate</b> formează un grup sub ele care împarte lățimea de bandă rămasă după pondere (1&ndash;63) în loc de rang &mdash; folosește-l când două clase de volum ar trebui să împartă corect în loc să se înfometeze reciproc. Clasele ponderate trebuie să stea împreună la baza listei.
++RQOS_28=Clasele <b>Prioritare</b> sunt întotdeauna servite primele, de sus în jos.
+ RQOS_29=Neclasificat (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Routerul se resetează și va reporni cu setările din fabrică. Wi-Fi-ul revine ca rețea deschisă numită ASUS_xx. Reconectați-vă la acea rețea sau folosiți un port cu fir, apoi deschideți routerul la adresa sa implicită:
+ RBKP_51=Routerul nu a repornit în 3 minute, deci cererea de resetare nu a fost acceptată și nimic nu a fost modificat. Verificați jurnalul sistemului, apoi încercați din nou.
+ RSEC_13=Datele de conectare la router și parola Wi-Fi sunt încă admin
++RFWU_54=Canal beta
++RFWU_55=Oferă și versiuni beta din ramura Dev. O beta este oferită doar când acest router rulează deja cea mai nouă versiune stabilă și beta are un număr de versiune mai mare; când versiunea stabilă are același număr, se oferă doar cea stabilă. Versiunile beta sunt mai puțin testate decât cele stabile.
++RFWU_56=Beta
++RFWU_57=Aceasta este o versiune beta din ramura Dev. Este mai puțin testată decât o versiune stabilă; firmware-ul anterior rămâne în partiția de rezervă.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 823f7f29b1..6b7ac532ba 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Мин %
+ RQOS_25=Потолок %
+ RQOS_26=Скорость (в реальном времени)
+ RQOS_27=Сбросы
+-RQOS_28=<b>Приоритетные</b> классы всегда обслуживаются первыми, сверху вниз. <b>Взвешенные</b> классы образуют пул под ними, который делит оставшуюся полосу по весу (1&ndash;63), а не по рангу &mdash; используйте, когда два массовых класса должны делиться честно, а не голодать. Взвешенные классы должны стоять вместе внизу списка.
++RQOS_28=<b>Приоритетные</b> классы всегда обслуживаются первыми, сверху вниз.
+ RQOS_29=Неклассифицированный (Q0)
+ RQOS_30=LAN / мультикаст (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Роутер сбрасывается и перезагрузится с заводскими настройками. Wi-Fi вернётся в виде открытой сети с именем ASUS_xx. Подключитесь к этой сети заново или используйте проводной порт, затем откройте роутер по адресу по умолчанию:
+ RBKP_51=Роутер не перезагрузился в течение 3 минут, поэтому запрос на сброс не был принят и ничего не изменилось. Проверьте системный журнал и повторите попытку.
+ RSEC_13=Логин роутера и пароль Wi-Fi всё ещё admin
++RFWU_54=Бета-канал
++RFWU_55=Также предлагать бета-версии из ветки Dev. Бета предлагается только когда роутер уже работает на новейшей стабильной версии и номер бета-версии выше; если у стабильной версии тот же номер, предлагается только стабильная. Бета-версии протестированы меньше стабильных.
++RFWU_56=Бета
++RFWU_57=Это бета-версия из ветки Dev. Она протестирована меньше стабильной; предыдущая прошивка остаётся в резервном разделе.
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index e370597ece..249a502b48 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -108,8 +108,9 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+     <button class="btn2" id="btnSigOv" style="display:none;border-color:#E10600;color:#E10600" onclick="sigOverride()"><#RFWU_50#></button>
+   </div>
+   <div class="avail" id="availBox">
+-    <div class="avtag"><#RFWU_6#></div>
++    <div class="avtag"><#RFWU_6#> <span class="badge" id="betaTag" style="display:none"><#RFWU_56#></span></div>
+     <div class="av" id="availVer"></div>
++    <p class="note" id="betaNote" style="display:none;margin-top:4px"><#RFWU_57#></p>
+     <div class="acts">
+       <button class="btnP" id="btnInstall" onclick="doInstall()"><#RFWU_8#></button>
+       <span class="note" id="shaNote" style="margin-top:0"></span>
+@@ -129,6 +130,12 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+       <select id="schedHour" onchange="schedSave()"></select>
+     </div>
+     <p class="note" id="schedTimeNote" style="display:none"><#RFWU_47#></p>
++    <div class="tgl" style="margin-top:12px">
++      <input type="checkbox" id="betaChk" onchange="betaSave()">
++      <label for="betaChk"><#RFWU_54#></label>
++      <span class="stat ok" id="betaStat" style="margin-top:0;display:none">&#10003;</span>
++    </div>
++    <p class="note"><#RFWU_55#></p>
+   </div>
+ </div>
+ 
+@@ -186,6 +193,7 @@ var EXTENDNO = '<% nvram_get("extendno"); %>';
+ var PREF_LANG = '<% nvram_get("preferred_lang"); %>';
+ var FW = {
+   flag: '<% nvram_get("webs_state_flag"); %>',
++  chan: '<% nvram_get("webs_state_channel"); %>',
+   info: decodeURIComponent('<% nvram_char_to_ascii("", "webs_state_info"); %>'),
+   url:  decodeURIComponent('<% nvram_char_to_ascii("", "webs_state_url"); %>'),
+   sha:  decodeURIComponent('<% nvram_char_to_ascii("", "webs_state_sha256"); %>'),
+@@ -194,6 +202,7 @@ var FW = {
+ };
+ var CHK_EN = '<% nvram_get("firmware_check_enable"); %>';
+ var CHK_HR = '<% nvram_get("firmware_check_hour"); %>';
++var BETA_EN = '<% nvram_get("reaper_fwbeta"); %>';
+ /* the noMCP build stamps "_noMCP" into EXTENDNO (same signal the backend
+    scripts read from the filesystem) - no extra probe needed */
+ var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
+@@ -383,7 +392,7 @@ function pollCheck(tries){
+   if(tries > 40){ checkDone({ 'webs_state_error': '1' }); return; }
+   nvGet('webs_state_update', function(v){
+     if(v !== '1'){ setTimeout(function(){ pollCheck(tries + 1); }, 1500); return; }
+-    nvGetMany(['webs_state_flag','webs_state_error','webs_state_info','webs_state_url','webs_state_sha256'], checkDone);
++    nvGetMany(['webs_state_flag','webs_state_error','webs_state_info','webs_state_url','webs_state_sha256','webs_state_channel'], checkDone);
+   });
+ }
+ 
+@@ -395,6 +404,7 @@ function checkDone(r){
+   FW.info = r['webs_state_info'] || '';
+   FW.url  = r['webs_state_url'] || '';
+   FW.sha  = r['webs_state_sha256'] || '';
++  FW.chan = r['webs_state_channel'] || '';
+   $id('btnSigOv').style.display = (FW.err === '9') ? '' : 'none';
+   if(FW.err !== '' && FW.err !== '0'){
+     /* v2.7.3: error 9 = the manifest failed its signature check. Say so
+@@ -429,6 +439,10 @@ function showAvail(){
+   if(sigOverrode) setStat('chkStat', esc(`<#RFWU_53#>`), 'err');
+   else setStat('chkStat', '', '');
+   $id('availVer').textContent = prettyVer(FW.info);
++  /* v3.1.0: a beta offer is labelled as one, here and on the dashboard badge */
++  var beta = (FW.chan === 'beta');
++  $id('betaTag').style.display = beta ? '' : 'none';
++  $id('betaNote').style.display = beta ? '' : 'none';
+   $id('btnInstall').disabled = !FW.sha;
+   $id('shaNote').innerHTML = FW.sha ? ('SHA-256 ' + esc(FW.sha.substring(0, 16)) + '&hellip;') : esc(`<#RFWU_22#>`);
+   $id('availBox').style.display = 'block';
+@@ -703,6 +717,17 @@ function schedSave(){
+   setTimeout(function(){ s.style.display = 'none'; }, 2500);
+ }
+ 
++/* v3.1.0: opt in to the beta channel. The rule lives in the check script:
++   a beta is offered only when this router already runs the newest stable
++   release and the beta's number is higher than that stable's. */
++function betaSave(){
++  var v = $id('betaChk').checked ? '1' : '0';
++  post({ action_script: 'saveNvram', reaper_fwbeta: v });
++  var s = $id('betaStat');
++  s.style.display = 'inline';
++  setTimeout(function(){ s.style.display = 'none'; }, 2500);
++}
++
+ /* ---------------- manual upload ---------------- */
+ 
+ function doUpload(){
+@@ -786,6 +811,7 @@ function boot(){
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
+   loadNodes();
+   $id('schedChk').checked = (CHK_EN === '1');
++  $id('betaChk').checked = (BETA_EN === '1');
+   schedFill();
+   schedTimeVis();
+   /* a previous check (scheduled or manual) already found an update ->
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index e2803ef0ac..5274489303 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -336,14 +336,6 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+         <#RQOS_50#>
+       </div>
+     </details>
+-    <details>
+-      <summary><#RQOS_51#></summary>
+-      <div class="fc">
+-        <#RQOS_52#>
+-        <#RQOS_53#>
+-        <#RQOS_54#>
+-      </div>
+-    </details>
+     <details>
+       <summary><#RQOS_55#></summary>
+       <div class="fc"><#RQOS_56#></div>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index ca4b69a66c..7cc5c8683f 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min. %
+ RQOS_25=Zgornja meja %
+ RQOS_26=Hitrost (v živo)
+ RQOS_27=Izpadi
+-RQOS_28=Razredi s <b>prioriteto</b> se vedno postrežejo prvi, od zgoraj navzdol. <b>Uteženi</b> razredi tvorijo skupino pod njimi, ki preostalo pasovno širino deli po uteži (1&ndash;63) namesto po rangu &mdash; uporabite jo, ko naj si dva količinska razreda pravično delita namesto da drug drugega stradata. Uteženi razredi morajo biti skupaj na dnu seznama.
++RQOS_28=Razredi s <b>prioriteto</b> se vedno postrežejo prvi, od zgoraj navzdol.
+ RQOS_29=Nerazvrščeno (Q0)
+ RQOS_30=LAN / Skupinsko oddajanje (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Usmerjevalnik se ponastavlja in se bo znova zagnal s tovarniškimi nastavitvami. Wi-Fi se vrne kot odprto omrežje z imenom ASUS_xx. Znova se povežite s tem omrežjem ali uporabite žični priključek, nato odprite usmerjevalnik na privzetem naslovu:
+ RBKP_51=Usmerjevalnik se v 3 minutah ni znova zagnal, zato zahteva za ponastavitev ni bila sprejeta in nič ni bilo spremenjeno. Preverite sistemski dnevnik in poskusite znova.
+ RSEC_13=Prijava v usmerjevalnik in geslo Wi-Fi sta še vedno admin
++RFWU_54=Kanal beta
++RFWU_55=Ponudi tudi izdaje beta iz veje Dev. Beta se ponudi le, kadar ta usmerjevalnik že teče na najnovejši stabilni izdaji in ima beta višjo številko različice; kadar ima stabilna izdaja isto številko, se ponudi samo stabilna. Izdaje beta so manj preizkušene kot stabilne.
++RFWU_56=Beta
++RFWU_57=To je izdaja beta iz veje Dev. Manj je preizkušena kot stabilna izdaja; prejšnja strojna programska oprema ostane na rezervni particiji.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 24e153e116..353a555bc7 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Tak %
+ RQOS_26=Hastighet (live)
+ RQOS_27=Förkastade
+-RQOS_28=<b>Prioritetsklasser</b> betjänas alltid först, uppifrån och ner. <b>Viktade</b> klasser bildar en pool under dem som delar den återstående bandbredden efter vikt (1&ndash;63) istället för rang &mdash; använd det när två bulkklasser bör dela rättvist istället för att svälta ut varandra. Viktade klasser måste sitta tillsammans längst ner i listan.
++RQOS_28=<b>Prioritetsklasser</b> betjänas alltid först, uppifrån och ner.
+ RQOS_29=Oklassificerad (Q0)
+ RQOS_30=LAN / Multicast (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Routern återställs och startar om med fabriksinställningarna. Wi-Fi kommer tillbaka som ett öppet nätverk med namnet ASUS_xx. Anslut till det nätverket igen eller använd en trådbunden port och öppna sedan routern på standardadressen:
+ RBKP_51=Routern startade inte om inom 3 minuter, så återställningsbegäran godtogs inte och inget ändrades. Kontrollera systemloggen och försök igen.
+ RSEC_13=Routerns inloggning och Wi-Fi-lösenordet är fortfarande admin
++RFWU_54=Betakanal
++RFWU_55=Erbjud även betautgåvor från Dev-grenen. En beta erbjuds bara när den här routern redan kör den senaste stabila utgåvan och betan har ett högre versionsnummer; har den stabila utgåvan samma nummer erbjuds bara den stabila. Betor är mindre testade än stabila utgåvor.
++RFWU_56=Beta
++RFWU_57=Det här är en betautgåva från Dev-grenen. Den är mindre testad än en stabil utgåva; den tidigare inbyggda programvaran finns kvar i reservpartitionen.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 633d252769..4246cba83c 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=ขั้นต่ำ %
+ RQOS_25=เพดาน %
+ RQOS_26=อัตรา (สด)
+ RQOS_27=ดรอป
+-RQOS_28=คลาส<b>ลำดับความสำคัญ</b>ถูกให้บริการก่อนเสมอ จากบนลงล่าง คลาส<b>ถ่วงน้ำหนัก</b>รวมกันเป็นกลุ่มด้านล่าง แบ่งแบนด์วิดท์ที่เหลือตามน้ำหนัก (1&ndash;63) แทนลำดับ &mdash; ใช้เมื่อคลาสจำนวนมากสองคลาสควรแบ่งกันอย่างเป็นธรรมแทนที่จะแย่งกัน คลาสถ่วงน้ำหนักต้องอยู่ด้วยกันที่ล่างสุดของรายการ
++RQOS_28=คลาส<b>ลำดับความสำคัญ</b>ถูกให้บริการก่อนเสมอ จากบนลงล่าง
+ RQOS_29=ไม่จัดคลาส (Q0)
+ RQOS_30=LAN / มัลติคาสต์ (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=เราเตอร์กำลังรีเซ็ตและจะรีบูตด้วยการตั้งค่าจากโรงงาน Wi-Fi จะกลับมาเป็นเครือข่ายเปิดชื่อ ASUS_xx ให้เชื่อมต่อเครือข่ายนั้นอีกครั้งหรือใช้พอร์ตแบบมีสาย จากนั้นเปิดเราเตอร์ที่ที่อยู่เริ่มต้น:
+ RBKP_51=เราเตอร์ไม่ได้รีสตาร์ทภายใน 3 นาที คำขอรีเซ็ตจึงไม่ได้รับการยอมรับและไม่มีการเปลี่ยนแปลงใด ๆ โปรดตรวจสอบบันทึกระบบแล้วลองอีกครั้ง
+ RSEC_13=การเข้าสู่ระบบเราเตอร์และรหัสผ่าน Wi-Fi ยังคงเป็น admin
++RFWU_54=ช่องทางเบต้า
++RFWU_55=เสนอรุ่นเบต้าจากสาขา Dev ด้วย รุ่นเบต้าจะถูกเสนอเฉพาะเมื่อเราเตอร์นี้ใช้รุ่นเสถียรล่าสุดอยู่แล้วและรุ่นเบต้ามีหมายเลขเวอร์ชันสูงกว่า หากรุ่นเสถียรมีหมายเลขเดียวกันจะเสนอเฉพาะรุ่นเสถียร รุ่นเบต้าผ่านการทดสอบน้อยกว่ารุ่นเสถียร
++RFWU_56=เบต้า
++RFWU_57=นี่คือรุ่นเบต้าจากสาขา Dev ซึ่งผ่านการทดสอบน้อยกว่ารุ่นเสถียร เฟิร์มแวร์รุ่นก่อนหน้ายังคงอยู่ในพาร์ติชันสำรอง
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 37e6dbdad3..bb3bba0705 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Min %
+ RQOS_25=Tavan %
+ RQOS_26=Hız (canlı)
+ RQOS_27=Düşüşler
+-RQOS_28=<b>Öncelik</b> sınıfları her zaman yukarıdan aşağıya önce sunulur. <b>Ağırlıklı</b> sınıflar bunların altında, kalan bant genişliğini sıra yerine ağırlığa (1&ndash;63) göre bölen bir havuz oluşturur &mdash; iki toplu sınıfın birbirini aç bırakmak yerine adil paylaşması gerektiğinde kullanın. Ağırlıklı sınıflar listenin en altında birlikte durmalıdır.
++RQOS_28=<b>Öncelik</b> sınıfları her zaman yukarıdan aşağıya önce sunulur.
+ RQOS_29=Sınıflandırılmamış (Q0)
+ RQOS_30=LAN / Çoklu Yayın (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Yönlendirici sıfırlanıyor ve fabrika ayarlarıyla yeniden başlayacak. Wi-Fi, ASUS_xx adlı açık bir ağ olarak geri gelir. O ağa yeniden bağlanın veya kablolu bir bağlantı noktası kullanın, ardından yönlendiriciyi varsayılan adresinden açın:
+ RBKP_51=Yönlendirici 3 dakika içinde yeniden başlamadı; sıfırlama isteği kabul edilmedi ve hiçbir şey değiştirilmedi. Sistem günlüğünü kontrol edip yeniden deneyin.
+ RSEC_13=Yönlendirici girişi ve Wi-Fi parolası hâlâ admin
++RFWU_54=Beta kanalı
++RFWU_55=Dev dalındaki beta sürümleri de sun. Beta yalnızca bu yönlendirici zaten en yeni kararlı sürümü çalıştırıyorsa ve betanın sürüm numarası daha yüksekse sunulur; kararlı sürüm aynı numaraya sahipse yalnızca kararlı sürüm sunulur. Betalar kararlı sürümlerden daha az test edilmiştir.
++RFWU_56=Beta
++RFWU_57=Bu, Dev dalından bir beta sürümüdür. Kararlı bir sürümden daha az test edilmiştir; önceki bellenim yedek bölümde kalır.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index dbbc4242da..9ecde2db6d 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=最低 %
+ RQOS_25=上限 %
+ RQOS_26=速率（即時）
+ RQOS_27=丟棄
+-RQOS_28=<b>優先權</b>類別永遠依序（由上至下）最先服務。<b>加權</b>類別在其下方形成一個資源池，依權重（1&ndash;63）而非排名分配剩餘頻寬 &mdash; 當兩個大量傳輸類別應公平共享而非互相耗竭時使用。加權類別必須一起置於清單底部。
++RQOS_28=<b>優先權</b>類別永遠依序（由上至下）最先服務。
+ RQOS_29=未分類（Q0）
+ RQOS_30=LAN / 多播（Q6）
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=路由器正在重設，並將以出廠設定重新啟動。Wi-Fi 會恢復為名為 ASUS_xx 的開放網路。請重新連線至該網路或使用有線連接埠，然後以預設位址開啟路由器：
+ RBKP_51=路由器在 3 分鐘內未重新啟動，重設要求未被接受，未做任何變更。請檢查系統記錄後再試一次。
+ RSEC_13=路由器登入與 Wi-Fi 密碼都仍是 admin
++RFWU_54=測試版頻道
++RFWU_55=同時提供來自 Dev 分支的測試版。僅當本路由器已執行最新穩定版且測試版的版本號較高時才會提供測試版；當穩定版的版本號相同時，只提供穩定版。測試版的測試程度低於穩定版。
++RFWU_56=測試版
++RFWU_57=這是來自 Dev 分支的測試版。它的測試程度低於穩定版；先前的韌體仍保留在備用分割區中。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 7a3c63b92d..b62a8a1e4b 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5408,7 +5408,7 @@ RQOS_24=Мін. %
+ RQOS_25=Стеля %
+ RQOS_26=Швидкість (наживо)
+ RQOS_27=Відкидання
+-RQOS_28=<b>Пріоритетні</b> класи завжди обслуговуються першими, зверху вниз. <b>Зважені</b> класи утворюють пул під ними, що ділить решту пропускної здатності за вагою (1&ndash;63), а не за рангом &mdash; використовуйте, коли два об'ємні класи мають ділитися справедливо, а не голодувати один одного. Зважені класи мають стояти разом унизу списку.
++RQOS_28=<b>Пріоритетні</b> класи завжди обслуговуються першими, зверху вниз.
+ RQOS_29=Некласифіковано (Q0)
+ RQOS_30=LAN / мультикаст (Q6)
+ RQOS_31=AQM
+@@ -6861,3 +6861,7 @@ RWFS_13=Using the same password for Wi-Fi and for the router login is not recomm
+ RBKP_50=Маршрутизатор скидається й перезавантажиться із заводськими налаштуваннями. Wi-Fi повернеться як відкрита мережа з назвою ASUS_xx. Підключіться до цієї мережі знову або скористайтеся дротовим портом, а потім відкрийте маршрутизатор за адресою за замовчуванням:
+ RBKP_51=Маршрутизатор не перезавантажився протягом 3 хвилин, тому запит на скидання не прийнято й нічого не змінено. Перевірте системний журнал і спробуйте ще раз.
+ RSEC_13=Логін маршрутизатора та пароль Wi-Fi досі admin
++RFWU_54=Бета-канал
++RFWU_55=Також пропонувати бета-версії з гілки Dev. Бета пропонується лише тоді, коли маршрутизатор уже працює на найновішій стабільній версії й номер бета-версії вищий; якщо стабільна версія має той самий номер, пропонується лише стабільна. Бета-версії протестовано менше, ніж стабільні.
++RFWU_56=Бета
++RFWU_57=Це бета-версія з гілки Dev. Її протестовано менше, ніж стабільну; попередня прошивка залишається в резервному розділі.
+-- 
+2.25.1
+

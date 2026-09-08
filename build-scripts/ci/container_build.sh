@@ -293,6 +293,25 @@ if ! git am --keep-cr "${PATCHES[@]}"; then
   echo "--- status ---"; git status --short | head -20 || true
   exit 1
 fi
+# --- the OpenSSL 3.5 source overlay -----------------------------------------
+# The 3.5 source tree (5,767 files) is too large to publish as a patch, so the
+# series carries only the integration diff + the compat shim, and the source
+# ships as a hash-pinned archive (same rule as the GT-BE98 platform tree). It is
+# committed here so the tree id below is the one cut_rung.sh recorded.
+OSSL_TGZ="$REPO_DIR/overlays/openssl-3.5-source.tar.gz"
+if [ -f "$OSSL_TGZ" ]; then
+  OSSL_SUM="$REPO_DIR/overlays/openssl-3.5-source.sha256"
+  [ -f "$OSSL_SUM" ] || { echo "::error::$OSSL_TGZ has no recorded sha256 -- refusing to unpack an unverified archive"; exit 1; }
+  want=$(awk '{print $1}' "$OSSL_SUM" | head -1); got=$(sha256sum "$OSSL_TGZ" | cut -d' ' -f1)
+  echo "   source overlay sha256 $got"
+  [ "$want" = "$got" ] || { echo "::error::openssl-3.5 source archive hash mismatch"; echo "   expected $want"; echo "   got      $got"; exit 1; }
+  tar -xzf "$OSSL_TGZ" || { echo "::error::openssl-3.5 source archive failed to unpack"; exit 1; }
+  git add -A -- release/src/router/openssl-3.5
+  git commit -q -m 'overlay: openssl-3.5 source (overlays/openssl-3.5-source.tar.gz)' || { echo "::error::openssl-3.5 overlay commit failed"; exit 1; }
+  echo "   [MATCH] unpacked $(git ls-tree -r --name-only HEAD release/src/router/openssl-3.5 | wc -l) openssl-3.5 files, committed"
+elif grep -q '^RTCONFIG_OPENSSL35=y' release/src/router/config_base 2>/dev/null; then
+  echo "::error::the series selects OpenSSL 3.5 but overlays/openssl-3.5-source.tar.gz is missing"; exit 1
+fi
 SOURCE_COMMIT="$(git rev-parse HEAD)"
 ROUTER_TREE="$(git rev-parse "HEAD:release/src/router")"
 SRC_RT_TREE="$(git rev-parse "HEAD:release/src-rt")"

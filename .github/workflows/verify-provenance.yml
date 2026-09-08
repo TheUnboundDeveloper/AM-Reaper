@@ -17,6 +17,14 @@ on:
     paths:
       - 'patches/**'
       - 'provenance/manifest.json'
+      # The replay unpacks the pinned OpenSSL 3.5 source archive, so a change to
+      # it changes the tree this gate asserts. Only these overlay files are read
+      # here -- the per-model identity patches are not, and are far too large to
+      # be worth waking a two-hour job for.
+      - 'overlays/openssl-3.5-source.*'
+      # A change to the gate itself must re-run the gate, or a fix to it lands
+      # with the previous run's verdict still standing on the PR.
+      - '.github/workflows/verify-provenance.yml'
 
 permissions:
   contents: read
@@ -68,6 +76,7 @@ jobs:
           sparse-checkout: |
             patches
             provenance
+            overlays
 
       - name: Plan (which releases to reproduce, in patch order)
         id: plan
@@ -123,6 +132,38 @@ jobs:
               exit 1
             fi
             applied=$count
+            # The OpenSSL 3.5 source (5,767 files) is too large to publish as a
+            # patch, so from v3.1.0 the series carries only the integration diff
+            # and the shim, and the source ships as the hash-pinned archive
+            # overlays/openssl-3.5-source.tar.gz. cut_rung.sh records
+            # source_tree_from_series AFTER unpacking it and ci/container_build.sh
+            # builds the same way, so the replay has to do it too or every
+            # checkpoint from v3.1.0 on reports a tree short of 5,767 files.
+            # Gated on the replayed tree itself, not a version: patch 0609 is the
+            # only patch that touches config_base and it is the one that selects
+            # OpenSSL 3.5, so this is false for every earlier checkpoint.
+            if [ -f ../reaper/overlays/openssl-3.5-source.tar.gz ] \
+               && grep -q '^RTCONFIG_OPENSSL35=y' release/src/router/config_base 2>/dev/null \
+               && [ ! -d release/src/router/openssl-3.5 ]; then
+              ossl=../reaper/overlays/openssl-3.5-source.tar.gz
+              sum="${ossl%.tar.gz}.sha256"
+              if [ ! -f "$sum" ]; then
+                echo "::error::$ossl has no recorded sha256 -- refusing to unpack an unverified archive"
+                exit 1
+              fi
+              want=$(awk '{print $1}' "$sum" | head -1)
+              gotsum=$(sha256sum "$ossl" | cut -d' ' -f1)
+              if [ "$want" != "$gotsum" ]; then
+                echo "::error::openssl-3.5 source archive hash mismatch"
+                echo "    expected $want"
+                echo "    got      $gotsum"
+                exit 1
+              fi
+              tar -xzf "$ossl"
+              git add -A -- release/src/router/openssl-3.5
+              git commit -q -m 'overlay: openssl-3.5 source (overlays/openssl-3.5-source.tar.gz)'
+              echo "  source overlay unpacked + committed ($(git ls-tree -r --name-only HEAD release/src/router/openssl-3.5 | wc -l) files)"
+            fi
             got=$(git rev-parse HEAD:release/src/router)
             if [ "$got" = "$expected" ]; then
               echo "  [MATCH] $version  release/src/router = $got"

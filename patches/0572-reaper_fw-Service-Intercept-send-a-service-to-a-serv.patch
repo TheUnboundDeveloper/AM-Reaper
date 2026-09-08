@@ -1,0 +1,1118 @@
+From 735864f65b86ffa43d1d70efa4cee863123df6f3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 29 Aug 2026 00:28:02 -0400
+Subject: [PATCH] reaper_fw: Service Intercept - send a service to a server of
+ your choosing
+
+Owner's case: every LAN device must take NTP from an internal time server, and
+only the router and that server may reach external time as a fallback. The
+egress half was already expressible (Rules tab, dir=fwd), but the interception
+half was not: the existing Forwards feature hardcodes -i "$WANIF", so it can
+only translate WAN-INBOUND traffic. This adds the LAN-side direction.
+
+Same record type, not a new one. reaper_fw_nat gains four APPEND-ONLY optional
+fields - mode>szone>exempt>snat - so every existing forward keeps working
+untouched: a pre-existing record has no field 8, rfw_field() returns false, and
+it defaults to mode=forward, which is exactly its old meaning. Verified by
+emitting a legacy 8-field record and getting byte-identical output.
+
+  mode=forward    unchanged, WAN-inbound DNAT
+  mode=intercept  traffic from a source zone to a port is DNAT'd to a server
+  mode=redirect   the same, but to the router itself (-j REDIRECT --to-ports)
+
+Two things a plain DNAT gets wrong, both emitted automatically because an
+operator should not have to know them:
+
+  - THE TARGET IS ALWAYS EXEMPT AS A SOURCE (! -s target, plus ! -d target so
+    traffic already addressed to it is not re-translated). Without this the
+    server's own upstream query is intercepted straight back to itself, so it can
+    never sync and the fallback the whole arrangement exists for is dead.
+  - THE RETURN PATH. If the server shares a segment with the clients it answers
+    them DIRECTLY from its own address and the client discards the reply - it
+    expected the address it originally addressed. That needs a MASQUERADE, and it
+    must NOT be emitted when the server is on another VLAN (the reply already
+    routes back through us, and masquerading would cost the server the client's
+    identity for nothing). snat=auto asks the LIVE routing table at apply time
+    (ip route get <target>) whether the translated packet would leave by the
+    interface it arrived on, and only then emits it. on/off override.
+
+The router needs no exemption at all: PREROUTING never sees locally generated
+traffic, which is also why its own fallback keeps working - the same structural
+reason a dir=fwd rule cannot lock the router out.
+
+New chain REAPER_FWM in nat POSTROUTING for the return path, with its own hook
+and its own teardown. The teardown runs on the rollback path too: a MASQUERADE
+left behind after an auto-revert would keep rewriting traffic to a server whose
+intercept no longer exists. Appended (not inserted) to POSTROUTING so it runs
+after the stock WAN masquerade; it only matches traffic already aimed at an
+intercept target, so it cannot shadow anything.
+
+Validation fails CLOSED, and the UI mirrors each refusal so a bad record is
+rejected at save rather than silently dropped into syslog: unknown mode (a
+record from a newer build must not degrade into an arbitrary forward), a
+redirect carrying a target IP, a source zone that resolves to no interface (an
+unbound rule would match every interface including the WAN), and an exemption
+that does not resolve (applying an intercept without the exemption it was
+designed around is worse than not applying it).
+
+UI: a Service Intercept card on the NAT tab, sharing RFW.nat with Forwards -
+each card renders only its own rows and skips (rather than filters) the others,
+so the array index stays true for delete and edit. The server field and the
+return-path selector hide for a redirect instead of reading as ignored settings.
+15 tokens RFW_258-272 appended to all 25 dicts in lockstep (6750 -> 6765).
+
+Scope, stated on purpose: IPv4 only, matching the existing if (!v6) gate - on a
+dual-stack LAN an intercept is bypassable over IPv6, and the mitigation is a v6
+drop rule the Rules tab already does. Port-based, so it cannot catch a device
+that fetches time over HTTPS or NTS. DNS is deliberately NOT in scope: DNS
+Director already ships, does per-client policy and blocks DoT on 853, which this
+would not.
+
+Verified without a build: extracted the real rfw_emit_nat() and compiled it with
+stubs over nine records - legacy forward byte-identical; intercept emits both
+exclusions, the DNAT, the companion FORWARD accept and the guarded MASQUERADE;
+multi-interface zone emits per interface; proto=both expands to tcp+udp with a
+distinct REAPER-ICPT log prefix; all four rejections fire with their log lines.
+The emitted script passes sh -n. Page: every new element id resolves, every new
+token resolves in EN.dict, the inline block parses under node --check, div tags
+balance in the tab and the document, ASCII-clean, reaper_langcheck 0 breakers.
+
+Specced in ASUS/SPEC-service-intercept.md. Two deviations from that spec, both
+deliberate: an unknown mode is DROPPED rather than treated as a forward (fail
+closed - the spec's fallback would emit a DNAT nobody asked for), and the
+"refuse an intercept on the WAN zone" check is left out because it needs the
+apply-time $WANIF and its outcome is equivalent to a forward, not a hole.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_fw.c          | 211 ++++++++++++++++++---
+ release/src/router/www/BR.dict             |  15 ++
+ release/src/router/www/CN.dict             |  15 ++
+ release/src/router/www/CZ.dict             |  15 ++
+ release/src/router/www/DA.dict             |  15 ++
+ release/src/router/www/DE.dict             |  15 ++
+ release/src/router/www/EN.dict             |  15 ++
+ release/src/router/www/ES.dict             |  15 ++
+ release/src/router/www/FI.dict             |  15 ++
+ release/src/router/www/FR.dict             |  15 ++
+ release/src/router/www/HU.dict             |  15 ++
+ release/src/router/www/IT.dict             |  15 ++
+ release/src/router/www/JP.dict             |  15 ++
+ release/src/router/www/KR.dict             |  15 ++
+ release/src/router/www/MS.dict             |  15 ++
+ release/src/router/www/NL.dict             |  15 ++
+ release/src/router/www/NO.dict             |  15 ++
+ release/src/router/www/PL.dict             |  15 ++
+ release/src/router/www/RO.dict             |  15 ++
+ release/src/router/www/RU.dict             |  15 ++
+ release/src/router/www/Reaper_Firewall.asp |  95 +++++++++-
+ release/src/router/www/SL.dict             |  15 ++
+ release/src/router/www/SV.dict             |  15 ++
+ release/src/router/www/TH.dict             |  15 ++
+ release/src/router/www/TR.dict             |  15 ++
+ release/src/router/www/TW.dict             |  15 ++
+ release/src/router/www/UK.dict             |  15 ++
+ 27 files changed, 651 insertions(+), 30 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 212b0cae95..2643fec699 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -80,6 +80,12 @@
+  *   zpol:  <srczone>dstzone>action              action = accept|drop|reject
+  *   rule:  <en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment
+  *          en=0|1  dir=in|out|fwd  action=accept|drop|reject|log
++ *   nat:   <en>proto>eport>iip>iport>sobj>log>sched>mode>szone>exempt>snat
++ *          mode=forward|intercept|redirect   snat=auto|on|off
++ *          Fields 8-11 are APPEND-ONLY and optional: a record written before
++ *          Service Intercept existed has no field 8, rfw_field() returns false
++ *          and it defaults to mode=forward, which is exactly its old meaning.
++ *          Never renumber or reuse 0-7.
+  */
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -163,6 +169,15 @@
+  * forwards. It is a SEPARATE table, so S4 ("we touch only what we own") needs
+  * the teardown to cover nat as well - the filter-table sweep would not. */
+ #define RFW_CHAIN_NAT  "REAPER_FWN"
++/* Service Intercept (2026-08-29): the return path for a hairpin intercept. When
++ * a client's traffic is DNAT'd to a server that sits on the SAME segment the
++ * client is on, the server answers the client DIRECTLY from its own address and
++ * the client discards the reply - it was expecting the address it originally
++ * addressed. Masquerading the translated packet forces the answer back through
++ * the router, which then un-does both translations. Lives in nat POSTROUTING,
++ * so it needs its own chain, its own hook and its own teardown; the PREROUTING
++ * sweep below cannot reach it and a stray MASQUERADE would survive a rollback. */
++#define RFW_CHAIN_MASQ "REAPER_FWM"
+ 
+ #define RFW_MAX_EDEF        64    /* per-device egress defaults (Phase 2) */
+ #define RFW_MAX_NAT         64    /* hardened forwards (Phase 3) */
+@@ -1593,6 +1608,12 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		rfw_setname_t sets[RFW_MAX_SETS];
+ 		int ns = 0, pv;
+ 		const char *protos[2]; int nproto = 1;
++		/* Service Intercept additions */
++		char mode[12], szone[RFW_NAME_MAX + 2], exempt[RFW_NAME_MAX + 2], snat[8];
++		char ifs[RFW_MAX_IFACE][IFNAMSIZ + 2];
++		char exfrag[512] = "", selffrag[160] = "";
++		rfw_setname_t exsets[RFW_MAX_SETS];
++		int nif = 0, nex = 0, ifi, fwdmode, redir;
+ 
+ 		if (++n > RFW_MAX_NAT) {
+ 			logmessage("reaper_fw", "more than %d forwards - the rest are IGNORED", RFW_MAX_NAT);
+@@ -1615,9 +1636,32 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		 * record - loads cleanly, leaving an unconditional WAN-inbound ACCEPT
+ 		 * above the zone default-policy matrix. The two are only "emitted
+ 		 * together" at generation time, not at load time. */
+-		if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip) ||
+-		    strchr(iip, '/') || strchr(iip, ':')) {
+-			logmessage("reaper_fw", "forward: internal IP must be a single IPv4 host - DROPPED");
++		/* mode first: it decides whether iip is required or forbidden. An absent
++		 * field 8 is a pre-Service-Intercept record and means "forward". An
++		 * unknown value is a record from a NEWER build than this firmware: drop
++		 * it rather than falling back to "forward", which would silently emit a
++		 * WAN-inbound DNAT nobody asked for. Fail closed. */
++		if (!rfw_field(tok, 8, mode, sizeof(mode)) || !*mode)
++			strlcpy(mode, "forward", sizeof(mode));
++		if (strcmp(mode, "forward") && strcmp(mode, "intercept") && strcmp(mode, "redirect")) {
++			logmessage("reaper_fw", "nat: unknown mode '%s' - DROPPED", mode);
++			continue;
++		}
++		fwdmode = !strcmp(mode, "forward");
++		redir   = !strcmp(mode, "redirect");
++
++		if (redir) {
++			/* REDIRECT goes to the router itself and takes no destination
++			 * address; a target here would be silently ignored, so refuse it
++			 * rather than let the record read as something it is not. */
++			if (rfw_field(tok, 3, iip, sizeof(iip)) && *iip) {
++				logmessage("reaper_fw", "redirect %s: must not carry a target IP - DROPPED", eport);
++				continue;
++			}
++			iip[0] = 0;
++		} else if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip) ||
++		           strchr(iip, '/') || strchr(iip, ':')) {
++			logmessage("reaper_fw", "%s: internal IP must be a single IPv4 host - DROPPED", mode);
+ 			continue;
+ 		}
+ 		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) { logmessage("reaper_fw", "forward: invalid internal port - DROPPED"); continue; }
+@@ -1631,9 +1675,65 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		/* an internal port must be a single port or a contiguous range - DNAT
+ 		 * cannot map a comma list (or an empty value) to a target */
+ 		if (!*iport || strchr(iport, ',')) {
+-			logmessage("reaper_fw", "forward %s: internal port must be a single port or range - DROPPED", eport);
++			logmessage("reaper_fw", "%s %s: internal port must be a single port or range - DROPPED", mode, eport);
+ 			continue;
+ 		}
++
++		if (!rfw_field(tok,  9, szone,  sizeof(szone)))  szone[0]  = 0;
++		if (!rfw_field(tok, 10, exempt, sizeof(exempt))) exempt[0] = 0;
++		if (!rfw_field(tok, 11, snat,   sizeof(snat)))   snat[0]   = 0;
++		if (!*snat) strlcpy(snat, "auto", sizeof(snat));
++		if (strcmp(snat, "auto") && strcmp(snat, "on") && strcmp(snat, "off")) {
++			logmessage("reaper_fw", "%s %s: unknown return-path mode '%s' - DROPPED", mode, eport, snat);
++			continue;
++		}
++
++		/* Which interfaces does this record match on? A classic forward is
++		 * WAN-inbound and resolves its interface at apply time from $WANIF; an
++		 * intercept/redirect names a source zone, and a zone that resolves to
++		 * nothing would otherwise emit an UNBOUND rule matching every interface
++		 * on the router - including the WAN. Fail closed. */
++		if (!fwdmode) {
++			if (!*szone) {
++				logmessage("reaper_fw", "%s %s: a source zone is required - DROPPED", mode, eport);
++				continue;
++			}
++			nif = rfw_zone_ifaces(c, szone, ifs, RFW_MAX_IFACE);
++			if (!nif) {
++				logmessage("reaper_fw", "%s %s: source zone %s resolved to no interface - DROPPED",
++				           mode, eport, szone);
++				continue;
++			}
++		}
++
++		/* Exemptions. Two of them, and both matter:
++		 *  - the user's optional object/group. An exemption that does not
++		 *    resolve is dropped WITH the record: applying an intercept without
++		 *    the exemption it was designed around is worse than not applying it.
++		 *  - the target itself, always, automatically. Without this the server's
++		 *    OWN upstream query is intercepted straight back to itself, so it can
++		 *    never reach the outside and the fallback the whole arrangement
++		 *    exists for is dead. The user cannot be asked to remember this.
++		 * The router needs no exemption: PREROUTING never sees locally
++		 * generated traffic, which is also why its own service keeps working. */
++		exfrag[0] = selffrag[0] = 0;
++		if (*exempt) {
++			int xi;
++			nex = rfw_resolve(c, exempt, 0, exsets, RFW_MAX_SETS);
++			if (!nex) {
++				logmessage("reaper_fw", "%s %s: exemption %s did not resolve - DROPPED",
++				           mode, eport, exempt);
++				continue;
++			}
++			for (xi = 0; xi < nex; xi++) {
++				char one[128];	/* set name is 40 - leave no room to truncate */
++				snprintf(one, sizeof(one), " -m set ! --match-set %s src", exsets[xi].name);
++				if (strlen(exfrag) + strlen(one) >= sizeof(exfrag)) break;
++				strlcat(exfrag, one, sizeof(exfrag));
++			}
++		}
++		if (!fwdmode && !redir && *iip)
++			snprintf(selffrag, sizeof(selffrag), " ! -s %s ! -d %s", iip, iip);
+ 		/* DNAT --to-destination wants a HYPHEN between the low and high port of a
+ 		 * range (ip:lo-hi), whereas iptables --dport takes the COLON form (lo:hi).
+ 		 * iport arrives colon-separated and comma-free (checked just above), so
+@@ -1665,26 +1765,69 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 
+ 		for (pv = 0; pv < nproto; pv++) {
+ 			int si, lim = ns ? ns : 1;
+-			for (si = 0; si < lim; si++) {
+-				srcfrag[0] = 0;
+-				if (ns)
+-					snprintf(srcfrag, sizeof(srcfrag), " -m set --match-set %s src", sets[si].name);
+-
+-				if (logf[0] == '1')
+-					fprintf(f, "[ -n \"$WANIF\" ] && RFWR iptables -t nat -A " RFW_CHAIN_NAT
+-					           " -i \"$WANIF\" -p %s --dport %s%s%s"
+-					           " -j LOG --log-prefix \"REAPER-FWD \" --log-level 6\n",
+-					        protos[pv], eport, srcfrag, schedfrag);
+-
+-				fprintf(f, "[ -n \"$WANIF\" ] && RFWR iptables -t nat -A " RFW_CHAIN_NAT
+-				           " -i \"$WANIF\" -p %s --dport %s%s%s"
+-				           " -j DNAT --to-destination %s:%s\n",
+-				        protos[pv], eport, srcfrag, schedfrag, iip, toport);
+-
+-				/* the companion filter ACCEPT - see the header comment */
+-				fprintf(f, "[ -n \"$WANIF\" ] && RFWR iptables -A " RFW_CHAIN_FWD
+-				           " -i \"$WANIF\" -p %s -d %s --dport %s%s%s -j ACCEPT\n",
+-				        protos[pv], iip, iport, srcfrag, schedfrag);
++			/* one pass per matching interface: the WAN for a forward (resolved
++			 * at apply time, hence the guard), each source-zone interface for an
++			 * intercept or redirect. */
++			for (ifi = 0; ifi < (fwdmode ? 1 : nif); ifi++) {
++				const char *guard = fwdmode ? "[ -n \"$WANIF\" ] && " : "";
++				const char *ifx   = fwdmode ? "\"$WANIF\"" : ifs[ifi];
++
++				for (si = 0; si < lim; si++) {
++					srcfrag[0] = 0;
++					if (ns)
++						snprintf(srcfrag, sizeof(srcfrag), " -m set --match-set %s src", sets[si].name);
++
++					if (logf[0] == '1')
++						fprintf(f, "%sRFWR iptables -t nat -A " RFW_CHAIN_NAT
++						           " -i %s -p %s --dport %s%s%s%s%s"
++						           " -j LOG --log-prefix \"REAPER-%s \" --log-level 6\n",
++						        guard, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag,
++						        fwdmode ? "FWD" : "ICPT");
++
++					if (redir)
++						fprintf(f, "%sRFWR iptables -t nat -A " RFW_CHAIN_NAT
++						           " -i %s -p %s --dport %s%s%s%s"
++						           " -j REDIRECT --to-ports %s\n",
++						        guard, ifx, protos[pv], eport, exfrag, srcfrag, schedfrag, toport);
++					else
++						fprintf(f, "%sRFWR iptables -t nat -A " RFW_CHAIN_NAT
++						           " -i %s -p %s --dport %s%s%s%s%s"
++						           " -j DNAT --to-destination %s:%s\n",
++						        guard, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag,
++						        iip, toport);
++
++					/* The companion filter ACCEPT, keyed on the TRANSLATED
++					 * destination - see the header comment. A redirect lands on
++					 * the router itself (INPUT), not through FORWARD, so it gets
++					 * none: Reaper's chains RETURN rather than deny, so it works
++					 * unless the operator has written an explicit INPUT drop for
++					 * the service, which is documented on the page. */
++					if (!redir)
++						fprintf(f, "%sRFWR iptables -A " RFW_CHAIN_FWD
++						           " -i %s -p %s -d %s --dport %s%s%s -j ACCEPT\n",
++						        guard, ifx, protos[pv], iip, iport, srcfrag, schedfrag);
++				}
++
++				/* Return path for a hairpin intercept. `auto` asks the LIVE
++				 * routing table whether the translated packet would leave by the
++				 * interface it arrived on; only then is the reply going to reach
++				 * the client directly and be discarded. Same-segment is the
++				 * common case and the one that silently fails without this;
++				 * a target on another VLAN routes back through us already and
++				 * must NOT be masqueraded, or the server loses the client's
++				 * address for nothing. */
++				if (!fwdmode && !redir && strcmp(snat, "off")) {
++					if (!strcmp(snat, "on"))
++						fprintf(f, "RFWR iptables -t nat -A " RFW_CHAIN_MASQ
++						           " -o %s -p %s -d %s --dport %s -j MASQUERADE\n",
++						        ifs[ifi], protos[pv], iip, toport);
++					else
++						fprintf(f,
++						  "RFW_HP=$(ip route get %s 2>/dev/null | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -1)\n"
++						  "[ \"$RFW_HP\" = \"%s\" ] && RFWR iptables -t nat -A " RFW_CHAIN_MASQ
++						  " -o %s -p %s -d %s --dport %s -j MASQUERADE\n",
++						  iip, ifs[ifi], ifs[ifi], protos[pv], iip, toport);
++				}
+ 			}
+ 		}
+ 	}
+@@ -1827,7 +1970,14 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	   * engine was disabled or rolled back. v4 only, matching the emitter. */
+ 	  "while iptables -t nat -D PREROUTING -j " RFW_CHAIN_NAT " 2>/dev/null; do :; done\n"
+ 	  "iptables -t nat -F " RFW_CHAIN_NAT " 2>/dev/null\n"
+-	  "iptables -t nat -X " RFW_CHAIN_NAT " 2>/dev/null\n");
++	  "iptables -t nat -X " RFW_CHAIN_NAT " 2>/dev/null\n"
++	  /* and the intercept return path, in POSTROUTING. This runs on the
++	   * teardown AND rollback paths: a MASQUERADE left behind after an
++	   * auto-revert would keep rewriting the source address of traffic to a
++	   * server whose intercept no longer exists. */
++	  "while iptables -t nat -D POSTROUTING -j " RFW_CHAIN_MASQ " 2>/dev/null; do :; done\n"
++	  "iptables -t nat -F " RFW_CHAIN_MASQ " 2>/dev/null\n"
++	  "iptables -t nat -X " RFW_CHAIN_MASQ " 2>/dev/null\n");
+ 
+ 	if (teardown_only || !c->enable || strcmp(c->enable, "1") != 0) {
+ 		/* disabled: teardown only. Leaves the base firewall untouched (S4). */
+@@ -1898,7 +2048,9 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	 * explicit about the ordering rather than relying on it. */
+ 	if (c->nat && *c->nat)
+ 		fprintf(f, "iptables -t nat -N " RFW_CHAIN_NAT " 2>/dev/null; "
+-		           "RFWH iptables -t nat -F " RFW_CHAIN_NAT "\n\n");
++		           "RFWH iptables -t nat -F " RFW_CHAIN_NAT "\n"
++		           "iptables -t nat -N " RFW_CHAIN_MASQ " 2>/dev/null; "
++		           "RFWH iptables -t nat -F " RFW_CHAIN_MASQ "\n\n");
+ 
+ 	for (d = RFW_D_IN; d <= RFW_D_OUT; d++) {
+ 		int v6;
+@@ -1929,7 +2081,12 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	/* Phase 3: hook the nat chain only after it is fully populated, so a
+ 	 * PREROUTING jump never exists while the chain is half-built. */
+ 	if (c->nat && *c->nat)
+-		fprintf(f, "RFWH iptables -t nat -I PREROUTING -j " RFW_CHAIN_NAT "\n\n");
++		fprintf(f, "RFWH iptables -t nat -I PREROUTING -j " RFW_CHAIN_NAT "\n"
++		           /* POSTROUTING is APPENDED, not inserted: the return-path
++		            * MASQUERADE must run after the stock WAN masquerade has had
++		            * its say, and it only matches traffic already aimed at an
++		            * intercept target, so it cannot shadow anything. */
++		           "RFWH iptables -t nat -A POSTROUTING -j " RFW_CHAIN_MASQ "\n\n");
+ 
+ 	/* ---- sweep sets belonging to objects that no longer exist ----
+ 	 * after the chains are rebuilt, so nothing still in use is destroyed. */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 2201029280..22158824d6 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Backup e restauração
+ RBKP_16=Duas ferramentas para dois trabalhos. O backup completo é o arquivo a guardar antes de um reset de fábrica, um reflash ou uma troca de hardware: ele captura este roteador por completo, restaura apenas no mesmo modelo e reinicia uma vez. O arquivo de configurações é pequeno e portátil: carrega apenas a configuração dos recursos do Reaper, transita entre roteadores e versões de firmware e nunca reinicia.
+ RBKP_17=Tudo - configurações do roteador + dados do Reaper
+ RBKP_18=Apenas recursos do Reaper - sem reinício
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 22e2e73bad..eb2397f860 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=备份与还原
+ RBKP_16=两种工具，两种用途。完整备份是恢复出厂设置、重刷固件或更换硬件前应保留的文件：它完整记录本路由器，只能还原到同一型号，并重启一次。设置文件小巧且可移植：仅包含 Reaper 功能配置，可在路由器和固件版本之间迁移，且从不重启。
+ RBKP_17=全部内容 - 路由器设置 + Reaper 数据
+ RBKP_18=仅 Reaper 功能 - 无需重启
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 46b8c0e46a..11cf723adf 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Zálohování a obnovení
+ RBKP_16=Dva nástroje pro dvě úlohy. Úplná záloha je soubor, který si uložte před továrním resetem, přeflashováním nebo výměnou hardwaru: zachycuje celý tento router, obnoví se pouze na stejném modelu a jednou restartuje. Soubor s nastavením je malý a přenositelný: nese pouze konfiguraci funkcí Reaper, přenáší se mezi routery a verzemi firmwaru a nikdy nerestartuje.
+ RBKP_17=Vše - nastavení routeru + data Reaper
+ RBKP_18=Pouze funkce Reaper - bez restartu
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 874dfd43f9..33a26c7cbd 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Sikkerhedskopiering og gendannelse
+ RBKP_16=To værktøjer til to opgaver. Den fulde sikkerhedskopi er filen, du skal gemme før en fabriksnulstilling, en genflash eller et hardwareskift: den indfanger hele denne router, gendannes kun på samme model og genstarter én gang. Indstillingsfilen er lille og flytbar: den bærer kun Reaper-funktionskonfigurationen, kan flyttes mellem routere og firmwareversioner og genstarter aldrig.
+ RBKP_17=Alt - routerindstillinger + Reaper-data
+ RBKP_18=Kun Reaper-funktioner - ingen genstart
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index bdb7141ad3..4e5748949b 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Sichern & Wiederherstellen
+ RBKP_16=Zwei Werkzeuge für zwei Aufgaben. Das vollständige Backup ist die Datei für vor einem Werksreset, einem Neuflashen oder einem Hardwaretausch: Sie erfasst diesen Router vollständig, lässt sich nur auf demselben Modell wiederherstellen und startet einmal neu. Die Einstellungsdatei ist klein und portabel: Sie enthält nur die Reaper-Funktionskonfiguration, wandert zwischen Routern und Firmware-Versionen und startet nie neu.
+ RBKP_17=Alles - Router-Einstellungen + Reaper-Daten
+ RBKP_18=Nur Reaper-Funktionen - kein Neustart
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 1f9ed92c2d..90241d2698 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Backup & Restore
+ RBKP_16=Two tools for two jobs. The full backup is the file to keep before a factory reset, a reflash or a hardware swap: it captures this router completely, restores only to the same model, and reboots once. The settings file is small and portable: it carries only the Reaper feature configuration, moves between routers and firmware versions, and never reboots.
+ RBKP_17=Everything - router settings + Reaper data
+ RBKP_18=Reaper features only - no reboot
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 45278846f2..d8cec64261 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Copia de seguridad y restauración
+ RBKP_16=Dos herramientas para dos tareas. La copia completa es el archivo que conviene guardar antes de un restablecimiento de fábrica, un reflasheo o un cambio de hardware: captura este router por completo, solo se restaura en el mismo modelo y reinicia una vez. El archivo de ajustes es pequeño y portátil: lleva solo la configuración de las funciones de Reaper, se mueve entre routers y versiones de firmware y nunca reinicia.
+ RBKP_17=Todo - ajustes del router + datos de Reaper
+ RBKP_18=Solo funciones de Reaper - sin reinicio
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 5072453d10..f83c3356b3 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Varmuuskopiointi ja palautus
+ RBKP_16=Kaksi työkalua kahteen tehtävään. Täysi varmuuskopio on tiedosto, joka kannattaa ottaa talteen ennen tehdasnollausta, uudelleenflashausta tai laitteiston vaihtoa: se tallentaa tämän reitittimen kokonaan, palautuu vain samaan malliin ja käynnistää laitteen kerran uudelleen. Asetustiedosto on pieni ja siirrettävä: se sisältää vain Reaper-ominaisuuksien asetukset, siirtyy reitittimien ja laiteohjelmistoversioiden välillä eikä koskaan käynnistä uudelleen.
+ RBKP_17=Kaikki - reitittimen asetukset + Reaper-tiedot
+ RBKP_18=Vain Reaper-ominaisuudet - ei uudelleenkäynnistystä
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index c76dee7b73..c5a95b83d8 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Sauvegarde et restauration
+ RBKP_16=Deux outils pour deux usages. La sauvegarde complète est le fichier à conserver avant une réinitialisation d'usine, un reflashage ou un changement de matériel : elle capture ce routeur en entier, ne se restaure que sur le même modèle et redémarre une fois. Le fichier de paramètres est petit et portable : il ne contient que la configuration des fonctions Reaper, passe d'un routeur ou d'une version de firmware à l'autre et ne redémarre jamais.
+ RBKP_17=Tout - paramètres du routeur + données Reaper
+ RBKP_18=Fonctions Reaper uniquement - sans redémarrage
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index ae0371d70d..ad555acb27 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Biztonsági mentés és visszaállítás
+ RBKP_16=Két eszköz, két feladat. A teljes mentés az a fájl, amelyet gyári visszaállítás, újraflashelés vagy hardvercsere előtt érdemes elmenteni: teljes egészében rögzíti ezt a routert, csak ugyanarra a modellre állítható vissza, és egyszer újraindít. A beállításfájl kicsi és hordozható: csak a Reaper funkciók konfigurációját tartalmazza, routerek és firmware-verziók között vihető, és soha nem indít újra.
+ RBKP_17=Minden - router-beállítások + Reaper-adatok
+ RBKP_18=Csak Reaper funkciók - nincs újraindítás
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 6caf67efe7..8c98ea43c3 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Backup e ripristino
+ RBKP_16=Due strumenti per due compiti. Il backup completo è il file da conservare prima di un ripristino di fabbrica, un reflash o una sostituzione dell'hardware: cattura questo router per intero, si ripristina solo sullo stesso modello e riavvia una volta. Il file delle impostazioni è piccolo e portabile: contiene solo la configurazione delle funzioni Reaper, passa tra router e versioni firmware e non riavvia mai.
+ RBKP_17=Tutto - impostazioni del router + dati Reaper
+ RBKP_18=Solo funzioni Reaper - nessun riavvio
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 88e04ff55f..49fd371338 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=バックアップと復元
+ RBKP_16=用途の異なる 2 つのツールです。完全バックアップは、工場出荷時リセット・再フラッシュ・ハードウェア交換の前に保存しておくファイルです。このルーターを丸ごと記録し、同じモデルにのみ復元でき、復元時に一度再起動します。設定ファイルは小さく持ち運びやすく、Reaper の機能設定のみを含み、ルーターやファームウェアのバージョン間で移動でき、再起動は行いません。
+ RBKP_17=すべて - ルーター設定 + Reaper データ
+ RBKP_18=Reaper の機能のみ - 再起動なし
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 70f942cdb7..d73874a9c2 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=백업 및 복원
+ RBKP_16=용도가 다른 두 가지 도구입니다. 전체 백업은 공장 초기화, 재플래시 또는 하드웨어 교체 전에 보관해 둘 파일로, 이 라우터 전체를 담아 동일 모델에만 복원되며 한 번 재부팅합니다. 설정 파일은 작고 이동이 쉬운 파일로, Reaper 기능 설정만 담고 있어 라우터와 펌웨어 버전 간에 옮길 수 있으며 재부팅하지 않습니다.
+ RBKP_17=전체 - 라우터 설정 + Reaper 데이터
+ RBKP_18=Reaper 기능만 - 재부팅 없음
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index aa0b1bc544..675f3e8d3d 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Sandaran & Pemulihan
+ RBKP_16=Dua alat untuk dua tugas. Sandaran penuh ialah fail yang perlu disimpan sebelum tetapan semula kilang, flash semula atau pertukaran perkakasan: ia merakam penghala ini sepenuhnya, hanya boleh dipulihkan pada model yang sama, dan but semula sekali. Fail tetapan pula kecil dan mudah alih: ia hanya membawa konfigurasi ciri Reaper, boleh berpindah antara penghala dan versi perisian tegar, dan tidak pernah but semula.
+ RBKP_17=Segalanya - tetapan penghala + data Reaper
+ RBKP_18=Ciri Reaper sahaja - tiada but semula
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 473f303e94..8e5fc2998b 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Back-up en herstel
+ RBKP_16=Twee gereedschappen voor twee taken. De volledige back-up is het bestand om te bewaren vóór een fabrieksreset, een herflash of een hardwarewissel: het legt deze router volledig vast, is alleen op hetzelfde model terug te zetten en herstart één keer. Het instellingenbestand is klein en draagbaar: het bevat alleen de Reaper-functieconfiguratie, gaat mee tussen routers en firmwareversies en herstart nooit.
+ RBKP_17=Alles - routerinstellingen + Reaper-gegevens
+ RBKP_18=Alleen Reaper-functies - geen herstart
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 37c9dfc0d2..111b0eb0f8 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Sikkerhetskopiering og gjenoppretting
+ RBKP_16=To verktøy for to jobber. Den fulle sikkerhetskopien er filen du bør ta vare på før en fabrikktilbakestilling, en omflashing eller et maskinvarebytte: den fanger hele denne ruteren, gjenopprettes bare på samme modell og starter på nytt én gang. Innstillingsfilen er liten og flyttbar: den bærer bare Reaper-funksjonskonfigurasjonen, kan flyttes mellom rutere og fastvareversjoner og starter aldri på nytt.
+ RBKP_17=Alt - ruterinnstillinger + Reaper-data
+ RBKP_18=Kun Reaper-funksjoner - ingen omstart
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index e661bc5268..b8ed7c91b3 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Kopia zapasowa i przywracanie
+ RBKP_16=Dwa narzędzia do dwóch zadań. Pełna kopia zapasowa to plik, który warto zachować przed resetem fabrycznym, ponownym flashowaniem lub wymianą sprzętu: rejestruje cały router, przywraca się wyłącznie na tym samym modelu i raz uruchamia ponownie. Plik ustawień jest mały i przenośny: zawiera tylko konfigurację funkcji Reaper, przenosi się między routerami i wersjami oprogramowania i nigdy nie uruchamia ponownie.
+ RBKP_17=Wszystko - ustawienia routera + dane Reaper
+ RBKP_18=Tylko funkcje Reaper - bez ponownego uruchomienia
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index e2e5f2a8da..c4fc9f890f 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Copiere de rezervă și restaurare
+ RBKP_16=Două instrumente pentru două sarcini. Copia de rezervă completă este fișierul de păstrat înainte de o resetare din fabrică, un reflash sau o schimbare de hardware: surprinde acest router în întregime, se restaurează doar pe același model și repornește o dată. Fișierul de setări este mic și portabil: poartă doar configurația funcțiilor Reaper, trece între routere și versiuni de firmware și nu repornește niciodată.
+ RBKP_17=Tot - setările routerului + datele Reaper
+ RBKP_18=Doar funcțiile Reaper - fără repornire
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 0b3cf2193a..7eff723d34 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Резервное копирование и восстановлени
+ RBKP_16=Два инструмента для двух задач. Полная резервная копия - файл, который стоит сохранить перед сбросом к заводским настройкам, перепрошивкой или заменой оборудования: она полностью фиксирует этот роутер, восстанавливается только на той же модели и один раз перезагружает его. Файл настроек мал и переносим: он содержит только конфигурацию функций Reaper, переносится между роутерами и версиями прошивки и никогда не перезагружает.
+ RBKP_17=Всё - настройки роутера + данные Reaper
+ RBKP_18=Только функции Reaper - без перезагрузки
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index a404f5469f..c7cbb0cf7b 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -430,6 +430,30 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+     </div>
+   </div>
+ 
++  <div class="card">
++    <h2><#RFW_258#></h2>
++    <p class="note"><#RFW_259#></p>
++    <table class="rt" id="ic_tbl"><thead><tr>
++      <th><#RFW_260#></th><th><#RFW_263#></th><th><#RFW_129#></th><th><#RFW_264#></th>
++      <th><#RFW_265#></th><th><#RFW_267#></th><th><#RFW_268#></th><th></th></tr></thead><tbody></tbody></table>
++    <div class="addrow">
++      <div class="fg"><span class="fl"><#RFW_260#></span>
++        <select class="fld s" id="ic_mode"><option value="intercept"><#RFW_261#></option><option value="redirect"><#RFW_262#></option></select></div>
++      <div class="fg"><span class="fl"><#RFW_263#></span><select class="fld s" id="ic_from"></select></div>
++      <div class="fg"><span class="fl"><#RFW_129#></span>
++        <select class="fld s" id="ic_proto"><option value="udp">UDP</option><option value="tcp">TCP</option><option value="both">TCP+UDP</option></select></div>
++      <div class="fg"><span class="fl"><#RFW_264#></span><input class="fld s" id="ic_port" maxlength="24" placeholder="123"></div>
++      <div class="fg" id="ic_ipwrap"><span class="fl"><#RFW_265#></span><input class="fld s" id="ic_ip" maxlength="40" placeholder="192.168.50.10"></div>
++      <div class="fg"><span class="fl"><#RFW_266#></span><input class="fld s" id="ic_ipt" maxlength="24" placeholder="123"></div>
++      <div class="fg"><span class="fl"><#RFW_267#></span><select class="fld s" id="ic_ex"></select></div>
++      <div class="fg"><span class="fl"><#RFW_268#></span>
++        <select class="fld s" id="ic_snat"><option value="auto"><#RFW_269#></option><option value="on"><#RFW_270#></option><option value="off"><#RFW_271#></option></select></div>
++      <div class="fg"><span class="fl"><#RFW_130#></span><input class="fld s" id="ic_sched" maxlength="90" placeholder="Mon,Tue|09:00|17:00"></div>
++      <button class="btn ghost sm" id="ic_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="ic_cancel"><#CTL_Cancel#></button>
++    </div>
++    <p class="note"><#RFW_272#></p>
++  </div>
++
+   <div class="card">
+     <h2><#RFW_217#></h2>
+     <p class="note"><#RFW_218#></p>
+@@ -867,7 +891,7 @@ function rfwSave(key,rows,el){
+ function rfwRenderAll(){
+   rfwRenderObj(); rfwRenderGrp(); rfwRenderSvc();
+   rfwRenderZone(); rfwRenderZpol(); rfwRenderRules();
+-  rfwRenderEdef(); rfwRenderNat();
++  rfwRenderEdef(); rfwRenderNat(); rfwRenderIcpt();
+   rfwFillSelects();
+ }
+ /* Phase 2 egress defaults: en>object>action>sched */
+@@ -882,11 +906,18 @@ function rfwRenderEdef(){
+     tb.appendChild(tr);
+   });
+ }
+-/* Phase 3 forwards: en>proto>extport>intip>intport>srcobj>log>sched */
++/* Phase 3 forwards: en>proto>extport>intip>intport>srcobj>log>sched
++   Service Intercept (2026-08-29) appends mode>szone>exempt>snat to the SAME
++   list, because it is the same record type with a different mode. The two cards
++   therefore share RFW.nat and each renders only its own rows; `i` stays the true
++   array index (rows are skipped, not filtered out) so delete and edit still
++   address the right record. */
++function rfwIcptMode(r){ return (r[8]||'forward'); }
+ function rfwRenderNat(){
+   var tb=$('nt_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+-  if(!RFW.nat.length){rtEmpty(tb,7);return;}
++  if(!RFW.nat.some(function(r){return rfwIcptMode(r)==='forward';})){rtEmpty(tb,7);return;}
+   RFW.nat.forEach(function(r,i){
++    if(rfwIcptMode(r)!=='forward')return;   /* an intercept - the other card owns it */
+     var tr=rtRow([
+       r[1]||'', r[2]||'', r[3]||'', r[4]||'',
+       (r[5]?r[5]:`<#RFW_216#>`), rfwDash(r[7])
+@@ -897,6 +928,34 @@ function rfwRenderNat(){
+     tb.appendChild(tr);
+   });
+ }
++/* Service Intercept rows of the same list: mode/from/proto/port/target/exempt/return-path */
++function rfwRenderIcpt(){
++  var tb=$('ic_tbl');if(!tb)return;tb=tb.getElementsByTagName('tbody')[0];tb.innerHTML='';
++  if(!RFW.nat.some(function(r){return rfwIcptMode(r)!=='forward';})){rtEmpty(tb,8);return;}
++  RFW.nat.forEach(function(r,i){
++    var m=rfwIcptMode(r);
++    if(m==='forward')return;
++    var tr=rtRow([
++      (m==='redirect'?`<#RFW_262#>`:`<#RFW_261#>`), rfwDash(r[9]), r[1]||'', r[2]||'',
++      (m==='redirect'?`<#RFW_262#>`:(r[3]||'')), rfwDash(r[10]),
++      (r[11]==='on'?`<#RFW_270#>`:(r[11]==='off'?`<#RFW_271#>`:`<#RFW_269#>`))
++    ],function(){
++      if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));},
++      function(){ $('ic_mode').value=m; $('ic_from').value=r[9]||''; $('ic_proto').value=r[1]||'';
++                  $('ic_port').value=r[2]||''; $('ic_ip').value=r[3]||''; $('ic_ipt').value=r[4]||'';
++                  $('ic_ex').value=r[10]||''; $('ic_snat').value=r[11]||'auto'; $('ic_sched').value=r[7]||'';
++                  editMode('nat',i); rfwIcptSync(); rfwRenderIcpt(); });
++    if(EDIT.nat===i)tr.className='editing';
++    tb.appendChild(tr);
++  });
++}
++/* a redirect targets the router itself, so it takes no server address and no
++   return-path NAT - hide both rather than let them read as ignored settings */
++function rfwIcptSync(){
++  var red=$('ic_mode')&&$('ic_mode').value==='redirect';
++  var w=$('ic_ipwrap'); if(w)w.style.display=red?'none':'';
++  var s=$('ic_snat');   if(s)s.disabled=red;
++}
+ function rfwRenderObj(){
+   var tb=$('ob_tbl').getElementsByTagName('tbody')[0];tb.innerHTML='';
+   if(!RFW.obj.length){rtEmpty(tb,5);return;}
+@@ -1008,6 +1067,9 @@ function rfwFillSelects(){
+   /* Phase 2/3: the egress default names a device object or group; the forward's
+      source restriction is optional, so it gets the blank "anywhere" entry. */
+   fill('eg_obj',addr,false); fill('nt_src',addr,true);
++  /* Service Intercept: the source zone is required (no blank), the exemption is
++     optional and gets the blank "none" entry */
++  fill('ic_from',zones,false); fill('ic_ex',addr,true);
+ }
+ 
+ /* commit-confirm banner + countdown. The deadline is owned by the router (a cru
+@@ -1405,6 +1467,33 @@ function initRfw(){
+     rfwRenderNat();rfwSave('nat',RFW.nat,S);
+   };
+   $('nt_cancel').onclick=function(){ editCancel('nat'); $('nt_ep').value='';$('nt_ip').value='';$('nt_ipt').value='';$('nt_sched').value=''; rfwRenderNat(); };
++  /* ---- Service Intercept: same list, mode>szone>exempt>snat appended ---- */
++  if($('ic_mode')){
++    $('ic_mode').onchange=rfwIcptSync; rfwIcptSync();
++    $('ic_add').onclick=function(){
++      var md=$('ic_mode').value, fz=$('ic_from').value, p=$('ic_proto').value,
++          ep=$('ic_port').value.trim(), ip=$('ic_ip').value.trim(), ipt=$('ic_ipt').value.trim(),
++          ex=$('ic_ex').value, sn=$('ic_snat').value, sc=$('ic_sched').value.trim();
++      var red=(md==='redirect');
++      if(red){ ip=''; sn='off'; }
++      if(rfwSchedBad(sc))return bad(`<#RFW_253#>`);
++      if(!fz)return bad(`<#RFW_66#>`);
++      if(!ep||!ipt||(!red&&!ip))return bad(`<#RFW_66#>`);
++      /* mirror the generator's refusals (reaper_fw.c rfw_emit_nat) so a record
++         that would be dropped at apply time is refused here instead */
++      if(!red&&!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip))return bad(`<#RFW_67#>`);
++      if(ep.indexOf(',')>=0||ipt.indexOf(',')>=0)return bad(`<#RFW_67#>`);
++      if(!/^[0-9:-]+$/.test(ep)||!/^[0-9:-]+$/.test(ipt))return bad(`<#RFW_67#>`);
++      var ni=EDIT.nat, nen=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][0]:'1', nlog=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][6]:'0';
++      if(!editCommit('nat',[nen,p,ep,ip,ipt,'',nlog,sc.replace(/[<>]/g,''),md,fz,ex,sn],
++                     function(r){return rfwIcptMode(r)!=='forward'&&r[1]===p&&r[2]===ep&&r[9]===fz;}))return bad(`<#RFW_65#>`);
++      $('ic_port').value='';$('ic_ip').value='';$('ic_ipt').value='';$('ic_sched').value='';
++      rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,S);
++    };
++    $('ic_cancel').onclick=function(){ editCancel('nat');
++      $('ic_port').value='';$('ic_ip').value='';$('ic_ipt').value='';$('ic_sched').value='';
++      rfwIcptSync(); rfwRenderIcpt(); };
++  }
+   /* ---- backup / restore ----
+      Export is the eight draft lists as JSON. Import writes them back through the
+      same per-list save path the tabs use, so every list goes through the CGI's
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 9b2d1e9d79..b5dda17343 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Varnostno kopiranje in obnovitev
+ RBKP_16=Dve orodji za dve nalogi. Polna varnostna kopija je datoteka, ki jo shranite pred tovarniško ponastavitvijo, ponovnim flashanjem ali menjavo strojne opreme: v celoti zajame ta usmerjevalnik, obnovi se le na istem modelu in se enkrat znova zažene. Datoteka z nastavitvami je majhna in prenosljiva: nosi le konfiguracijo funkcij Reaper, prehaja med usmerjevalniki in različicami vdelane programske opreme ter se nikoli znova ne zažene.
+ RBKP_17=Vse - nastavitve usmerjevalnika + podatki Reaper
+ RBKP_18=Samo funkcije Reaper - brez ponovnega zagona
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 82229c6240..c442c042a9 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Säkerhetskopiering och återställning
+ RBKP_16=Två verktyg för två jobb. Den fullständiga säkerhetskopian är filen att spara före en fabriksåterställning, en omflashning eller ett maskinvarubyte: den fångar hela denna router, återställs bara på samma modell och startar om en gång. Inställningsfilen är liten och flyttbar: den bär bara Reaper-funktionskonfigurationen, kan flyttas mellan routrar och firmwareversioner och startar aldrig om.
+ RBKP_17=Allt - routerinställningar + Reaper-data
+ RBKP_18=Endast Reaper-funktioner - ingen omstart
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 7bb36d930b..ccdbd3628a 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=สำรองข้อมูลและกู้คืน
+ RBKP_16=เครื่องมือสองอย่างสำหรับงานสองแบบ ไฟล์สำรองข้อมูลแบบเต็มคือไฟล์ที่ควรเก็บไว้ก่อนรีเซ็ตเป็นค่าโรงงาน แฟลชเฟิร์มแวร์ใหม่ หรือเปลี่ยนฮาร์ดแวร์: บันทึกเราเตอร์นี้ทั้งหมด กู้คืนได้เฉพาะรุ่นเดียวกัน และรีบูตหนึ่งครั้ง ส่วนไฟล์การตั้งค่ามีขนาดเล็กและพกพาได้: บรรจุเฉพาะการตั้งค่าฟีเจอร์ของ Reaper ย้ายระหว่างเราเตอร์และเวอร์ชันเฟิร์มแวร์ได้ และไม่รีบูตเลย
+ RBKP_17=ทั้งหมด - การตั้งค่าเราเตอร์ + ข้อมูล Reaper
+ RBKP_18=เฉพาะฟีเจอร์ Reaper - ไม่ต้องรีบูต
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index f5a92bb389..2ffcdd2199 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Yedekleme ve Geri Yükleme
+ RBKP_16=İki iş için iki araç. Tam yedek, fabrika sıfırlaması, yeniden flaşlama veya donanım değişikliği öncesinde saklanacak dosyadır: bu yönlendiriciyi eksiksiz yakalar, yalnızca aynı modele geri yüklenir ve bir kez yeniden başlatır. Ayar dosyası ise küçük ve taşınabilirdir: yalnızca Reaper özellik yapılandırmasını taşır, yönlendiriciler ve donanım yazılımı sürümleri arasında taşınır ve hiçbir zaman yeniden başlatmaz.
+ RBKP_17=Her şey - yönlendirici ayarları + Reaper verileri
+ RBKP_18=Yalnızca Reaper özellikleri - yeniden başlatma yok
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 52171ccce3..bc65434bf5 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=備份與還原
+ RBKP_16=兩種工具，兩種用途。完整備份是恢復原廠設定、重新刷機或更換硬體前應保留的檔案：它完整記錄本路由器，只能還原到同一型號，並重新啟動一次。設定檔則小巧可攜：僅包含 Reaper 功能設定，可在路由器與韌體版本之間轉移，且從不重新啟動。
+ RBKP_17=全部內容 - 路由器設定 + Reaper 資料
+ RBKP_18=僅 Reaper 功能 - 無需重新啟動
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index b1e4b707d4..d931363c70 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6748,3 +6748,18 @@ RBKP_15=Резервне копіювання та відновлення
+ RBKP_16=Два інструменти для двох завдань. Повна резервна копія - це файл, який варто зберегти перед скиданням до заводських налаштувань, перепрошивкою або заміною обладнання: вона повністю фіксує цей маршрутизатор, відновлюється лише на тій самій моделі й один раз перезавантажує його. Файл налаштувань малий і переносний: він містить лише конфігурацію функцій Reaper, переноситься між маршрутизаторами та версіями прошивки й ніколи не перезавантажує.
+ RBKP_17=Усе - налаштування маршрутизатора + дані Reaper
+ RBKP_18=Лише функції Reaper - без перезавантаження
++RFW_258=Service Intercept
++RFW_259=Send a service to a server of your choosing, wherever the device thought it was sending it. Useful for devices that ignore what DHCP tells them and have a public server hard-coded - the classic case is time (NTP). Traffic the router itself sends is never intercepted, so the router keeps its own fallback.
++RFW_260=Mode
++RFW_261=Send to a server
++RFW_262=Send to the router
++RFW_263=From
++RFW_264=Intercept port
++RFW_265=Server
++RFW_266=Server port
++RFW_267=Exempt
++RFW_268=Return path
++RFW_269=Auto
++RFW_270=Always
++RFW_271=Never
++RFW_272=The server you send traffic to is always exempt from its own rule, so it can still reach the outside - that is what keeps a fallback working. Add an Exempt object for anything else that should be left alone. Return path: leave it on Auto. Auto adds address translation only when the server sits on the same network as the clients, which is the case where a reply would otherwise never reach them. Always adds it everywhere, which hides the client's address from your server; Never omits it.
+-- 
+2.25.1
+

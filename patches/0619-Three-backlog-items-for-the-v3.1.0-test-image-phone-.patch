@@ -1,0 +1,106 @@
+From 813d2a5beefac2a3c5ffb48a70a9b0dd651f39d5 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 13:54:24 -0400
+Subject: [PATCH] Three backlog items for the v3.1.0 test image: phone layout
+ for the shell, two label fixes
+
+reaper_shell.asp: below 680px the rail becomes a sticky, horizontally
+scrolling icon strip under the header and the stage takes the full width,
+the same treatment Main_ReaperDash already gives its rail. Framed stock
+pages keep panning sideways on the stage as they do on tablets. A
+temporary fit until the stock pages are replaced by native ones; wider
+layouts are untouched.
+
+Reaper_Conn.asp: the scheduler label always read "WRR" for a class with a
+weight, but every port has run strict priority since the classful WRR path
+was removed (v2.5.4, B-1). It now says SP.
+
+Reaper_Advisor.asp: the "Pin to one client IP" placeholder was a whole
+sentence in a narrow cell and clipped; it is a hint line under the field
+now, the box starts empty.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Advisor.asp |  6 +++++-
+ release/src/router/www/Reaper_Conn.asp    |  5 ++++-
+ release/src/router/www/reaper_shell.asp   | 24 +++++++++++++++++++++++
+ 3 files changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index f8e0101149..c51d4afe64 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -51,6 +51,7 @@ a{color:var(--bone-dim)} a:hover{color:var(--bone)}
+ .panel .sub{font-size:12.5px;color:var(--steel);margin-bottom:14px}
+ .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
+ label.fld{display:block;font-size:12px;color:var(--bone-dim);margin-bottom:5px}
++.fhint{font-size:11.5px;color:var(--steel);margin-top:5px;line-height:1.4}
+ input[type=text],input[type=password],input[type=number]{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:8px;
+   color:var(--bone);font-family:var(--body);font-size:14px;padding:9px 12px;min-width:240px}
+ input:focus{outline:none;border-color:var(--line)}
+@@ -138,7 +139,10 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+   <div class="grid2">
+     <div><label class="fld" for="port"><#RADV_23#> (1024&ndash;65535)</label><input type="number" id="port" min="1024" max="65535"></div>
+     <div><label class="fld" for="timeout"><#RADV_24#> (15&ndash;240 min)</label><input type="number" id="timeout" min="15" max="240"></div>
+-    <div><label class="fld" for="client"><#RADV_25#></label><input type="text" id="client" placeholder="<#RADV_26#>"></div>
++    <div><label class="fld" for="client"><#RADV_25#></label><input type="text" id="client" autocomplete="off" spellcheck="false">
++      <!-- v3.1.0 (backlog): the example + "blank = any host" sentence clipped as a
++           placeholder in this cell; it reads in full as a hint line instead -->
++      <div class="fhint"><#RADV_26#></div></div>
+   </div>
+   <div class="row"><button class="btn" onclick="saveSettings()"><#RADV_27#></button></div>
+   <div id="setMsg" class="msg"></div>
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index f0731e5649..e0f05f113f 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -191,7 +191,10 @@ code{font-family:var(--mono)}
+   
+   function protoName(p){ return ({6:"TCP",17:"UDP",1:"ICMP",58:"ICMPv6"})[p]||("IP"+p); }
+   function dscpName(d){ return d===46?" (EF)":d===34?" (AF41)":d===26?" (AF31)":""; }
+-  function schedFor(c){ return c.q>0?"WRR":"SP"; }
++  /* v3.1.0 (backlog): the scheduler is strict priority on every port since the
++     classful WRR path was removed (v2.5.4, B-1); a weight on the class does
++     not change what the hardware runs, so it no longer flips this label. */
++  function schedFor(c){ return "SP"; }
+   /* private / RFC1918 (+ IPv6 ULA/link-local/loopback) -> "Internal" scope */
+   function isPrivate(ip){
+     if(!ip) return false;
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 4145719c3e..fd1880facb 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -194,6 +194,30 @@ a.item.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;
+ /* tablets (iPad / Windows tablet): drop the pills so the header always fits;
+    wide framed pages pan on the stage scrollbar (width-grow JS below) */
+ @media (max-width:1180px){ .pills{display:none} .top{gap:10px;padding:12px 14px} }
++/* v3.1.0 (owner 2026-09-06): phones. The same treatment Main_ReaperDash gives its
++   rail at 680px - it becomes a sticky, horizontally scrolling icon strip under the
++   header and the stage takes the full width; framed stock pages keep panning
++   sideways on the stage scrollbar as they do on tablets. A temporary fit until
++   the stock pages are replaced by native ones; nothing here changes wider layouts. */
++@media (max-width:680px){
++  .app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}
++  .top{grid-column:1;grid-row:1;position:static;gap:8px;padding:10px 12px}
++  .top .brand img{height:28px}
++  .rail{grid-column:1;grid-row:2;position:sticky;top:0;z-index:290;height:auto;width:100%;
++    flex-direction:row;align-items:center;gap:4px;padding:6px 8px;overflow-x:auto;
++    -webkit-overflow-scrolling:touch;border-right:0;border-bottom:1px solid var(--line-soft)}
++  .railclock{padding:0 8px 0 0;text-align:left;flex:0 0 auto}
++  .railclock .rc-time{font-size:15px} .railclock .rc-date{display:none}
++  .raillang,.grp{display:none}
++  a.item{padding:0 9px;gap:0;height:38px}
++  a.item>span,a.item .chev,a.item .cnt{display:none}
++  a.item.on::before{left:8px;right:8px;top:auto;bottom:0;width:auto;height:2px}
++  .sub{flex-direction:row;gap:4px;padding-left:0;margin-left:0;border-left:0}
++  .railabout{margin-top:0;padding:0 0 0 6px;border-top:0;position:static;flex:0 0 auto;background:transparent}
++  .railabout>span:last-child{display:none}
++  .stage{grid-column:1;grid-row:3;min-height:calc(100vh - 110px)}
++  #tabbar{padding:8px 10px 0}
++}
+ </style>
+ </head>
+ <body>
+-- 
+2.25.1
+

@@ -6,9 +6,9 @@ name: Repo hygiene
 
 on:
   push:
-    branches: [main]
+    branches: [main, Dev]
   pull_request:
-    branches: [main]
+    branches: [main, Dev]
   workflow_dispatch:
 
 permissions:
@@ -75,6 +75,21 @@ jobs:
             exit 1
           fi
           echo "OK: no PII-pattern hits outside the allowlist"
+
+      - name: Hidden-character scan
+        run: |
+          set -euo pipefail
+          # The ADDED lines of every patch and overlay, plus the scripts and
+          # workflows themselves: no bidirectional overrides, zero-width or
+          # format characters, control bytes, invalid UTF-8, or look-alike
+          # letters inside identifiers. Warnings (odd spaces, eval/atob shapes,
+          # very long lines) are informational. .github/hidden-allowlist.txt
+          # downgrades vendored third-party paths. The same scan runs at cut
+          # time (cut_rung.sh step 3b) before the patches are installed.
+          python3 build-scripts/reaper_hiddencheck.py \
+            --allowlist .github/hidden-allowlist.txt --max-details 5 \
+            patches overlays build-scripts .github
+          echo "OK: hidden-character scan passed"
 
       - name: No file at GitHub's 100 MB hard limit
         run: |

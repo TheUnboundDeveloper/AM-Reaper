@@ -1,0 +1,1696 @@
+From ee76e21bcdbb8b83ccc60122ec29c35c7d18b599 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 29 Aug 2026 13:57:47 -0400
+Subject: [PATCH] first boot: retire the setup wizard, ship a real Wi-Fi key,
+ warn instead of block
+
+Factory-reset behaviour is rebuilt around a notice rather than a gate. The box
+comes up usable on admin/admin, and every admin page carries a banner that
+cannot be dismissed until BOTH the login and the Wi-Fi key are changed.
+
+WHY THE GATES GO
+Six independent gates forced Reaper_FirstBoot.asp before any page would load:
+httpd's request-path gate, get_index_page(), the login-CGI meta refresh, two
+state.js redirects, and head guards on the dashboard and the stock password
+page. Four of those existed only to plug holes in the others. That design is
+what produced the v2.1.2 dual-credential-surface dead-end, the v2.1.6 login
+refresh loop and the v2.7.3 BE92U nav flash - six gates had to agree on when
+setup was finished and never quite did. All six are gone, and with them
+reaper_fbdone, the SSH escape hatch for a gate that no longer exists.
+
+THE FACTORY WI-FI IS NO LONGER OPEN
+This is a security improvement, not a relaxation. Factory defaults were
+wl_wpa_psk="" with wl_auth_mode_x=open (owe on 6 GHz) - a factory-reset box
+broadcast an unprotected network until someone completed the wizard. It now
+ships a key on every band: psk2 on 2.4/5 GHz, sae on 6 GHz because the band is
+WPA3-only (js/asus.js:1059 deletes the psk family for 6g, and the wireless page
+rewrites psk->sae there). wl_crypto tkip+aes -> aes: TKIP is invalid for 11ax/be
+and would have capped the radio to legacy rates.
+
+THE BANNER
+Reaper_SecBanner.asp is a do_ej fragment, so its strings are resolved
+server-side into the user's language (ej.c:108/275) - twelve RSEC_* tokens,
+translated in all 25 packs, appended so no existing token's line index moves.
+The loader is injected into all four existing blocks plus a new mode 5 for the
+three top-level admin surfaces that are skip-listed and would otherwise get
+nothing (dashboard, shell, Main_Password).
+
+It cannot be dismissed because there is nothing to dismiss: no control, no
+cookie, no client state. Both conditions are recomputed per request, so a
+reload, a cleared cookie or a hand-edited DOM all bring it back on the next
+page. self!==top keeps a framed page from drawing a second copy.
+
+Never served pre-auth. Main_Login, Nologin, Captive_Portal*, blocking.asp and
+the offline/error pages are deliberately excluded - telling an unauthenticated
+visitor or a quarantined guest that this router still has factory credentials
+hands the fact to exactly the wrong person.
+
+The Wi-Fi condition is a direct PSK comparison (new ej_reaper_wifi_default),
+NOT w_Setting. w_Setting means "the wireless page was applied once", so a user
+who applied it without touching the password would clear the banner while still
+on "admin". Keying a notice's clear-condition off different state than its
+fire-condition is the exact shape of the BE92U flash. A radio with an empty key
+is not counted as factory, or a box with a radio disabled would nag forever.
+The PSK itself never reaches the page; only the boolean does.
+---
+ release/src-rt/version.conf                 |   2 +-
+ release/src/router/httpd/httpd.c            | 127 +------
+ release/src/router/httpd/reaper_inject.c    | 115 +++++-
+ release/src/router/httpd/web.c              |  77 ++--
+ release/src/router/shared/defaults.c        |  25 +-
+ release/src/router/shared/misc.c            |   9 -
+ release/src/router/www/BR.dict              |  12 +
+ release/src/router/www/CN.dict              |  12 +
+ release/src/router/www/CZ.dict              |  12 +
+ release/src/router/www/DA.dict              |  12 +
+ release/src/router/www/DE.dict              |  12 +
+ release/src/router/www/EN.dict              |  12 +
+ release/src/router/www/ES.dict              |  12 +
+ release/src/router/www/FI.dict              |  12 +
+ release/src/router/www/FR.dict              |  12 +
+ release/src/router/www/HU.dict              |  12 +
+ release/src/router/www/IT.dict              |  12 +
+ release/src/router/www/JP.dict              |  12 +
+ release/src/router/www/KR.dict              |  12 +
+ release/src/router/www/MS.dict              |  12 +
+ release/src/router/www/Main_Password.asp    |  16 -
+ release/src/router/www/Main_ReaperDash.asp  |  24 --
+ release/src/router/www/NL.dict              |  12 +
+ release/src/router/www/NO.dict              |  12 +
+ release/src/router/www/PL.dict              |  12 +
+ release/src/router/www/RO.dict              |  12 +
+ release/src/router/www/RU.dict              |  12 +
+ release/src/router/www/Reaper_FirstBoot.asp | 379 --------------------
+ release/src/router/www/Reaper_SecBanner.asp |  46 +++
+ release/src/router/www/SL.dict              |  12 +
+ release/src/router/www/SV.dict              |  12 +
+ release/src/router/www/TH.dict              |  12 +
+ release/src/router/www/TR.dict              |  12 +
+ release/src/router/www/TW.dict              |  12 +
+ release/src/router/www/UK.dict              |  12 +
+ release/src/router/www/state.js             |  43 +--
+ 36 files changed, 534 insertions(+), 629 deletions(-)
+ delete mode 100644 release/src/router/www/Reaper_FirstBoot.asp
+ create mode 100644 release/src/router/www/Reaper_SecBanner.asp
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 2b1ba37446..019165e8ac 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.9.0
++EXTENDNO=Reaper_v2.9.1
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 2cb480f8d3..12198158ec 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1292,91 +1292,15 @@ gk_mac_known(const char *mac)
+ 	return 0;
+ }
+ 
+-/* ===================================================================
+- * reaper 2026-08-11: SERVER-SIDE first-boot / factory-reset gate.
+- *
+- * Until this build, first-boot enforcement was entirely client-side: state.js
+- * redirects plus per-page <head> guards. That leaks badly - only 128 of the 245
+- * .asp pages carry a state.js <script src> at all, so typing the URL of any of
+- * the other 117 walked straight past the wizard. Worse, the credential step ended
+- * by sending the browser to Main_ReaperDash.asp, which deliberately does NOT load
+- * state.js (it carries its own credential guard instead) - so the Wi-Fi step that
+- * state.js is supposed to force was simply never reached. That is why a box could
+- * come up on a factory Wi-Fi password with the admin credentials already changed,
+- * and why this kept being reported as "still not working".
+- *
+- * Enforcement therefore moves to where it cannot be routed around. The GUI is a
+- * static page set - the only chokepoint that sees every request is httpd itself.
+- *
+- * SAFETY (this gate can lock a user out of their own router if it misfires):
+- *   - it only ever fires while the box is genuinely unconfigured, from LIVE state
+- *     (default admin password, operator-forced change, or wireless never set up);
+- *     an upgraded box that is already configured never sees it;
+- *   - it applies ONLY to .asp/.htm page loads - never to CGIs, assets, or the
+- *     polling endpoints, so the wizard, login and AiMesh onboarding keep working;
+- *   - `reaper_fbdone=1` is an unconditional escape hatch: an operator who somehow
+- *     gets stuck can clear the gate over SSH with
+- *       nvram set reaper_fbdone=1 && nvram commit
+- *     It is deliberately NOT written by the wizard - the gate opens on its own when
+- *     the live conditions clear, so there is no new write path to get wrong. */
+-static int
+-reaper_firstboot_pending(void)
+-{
+-	const char *ri = nvram_get("reaper_inject");
+-
+-	/* Reaper UI killed -> stock owns first boot; do not interfere. */
+-	if (ri && *ri && atoi(ri) == 0)
+-		return 0;
+-	/* operator escape hatch */
+-	if (nvram_match("reaper_fbdone", "1"))
+-		return 0;
+-	if (!check_if_file_exist("/www/Reaper_FirstBoot.asp"))
+-		return 0;
+-	if (nvram_get_int("force_chgpass"))
+-		return 1;
+-	if (is_passwd_default())
+-		return 1;
+-	/* Wireless never configured. w_Setting is stock's own "wireless has been set up"
+-	 * flag - factory default 0 (restored to stock by the AiMesh-node fix), auto-set
+-	 * to 1 by the stock wireless apply. Using stock's flag rather than a Reaper one
+-	 * means the gate opens through the PROVEN apply path: this box is MULTILAN_MWL,
+-	 * where the main Wi-Fi is SDN-driven, so a hand-rolled PSK write would be exactly
+-	 * the kind of change that silently does not stick.
+-	 *
+-	 * Router and AP modes only (sw_mode 1 / 3), mirroring state.js's own wireless
+-	 * gate. A repeater or media bridge does not run its own wireless config, so
+-	 * w_Setting legitimately stays 0 there - gating on it would wedge those boxes out
+-	 * of their GUI permanently, which is exactly the failure this must not cause. */
+-	{
+-		int sw = nvram_get_int("sw_mode");
+-		if ((sw == 1 || sw == 3) && nvram_match("w_Setting", "0"))
+-			return 1;
+-	}
+-	return 0;
+-}
+-
+-/* Pages that must stay reachable while the gate is closed. Substring match: the
+- * wizard itself, the login/logout surfaces it bounces through, device discovery,
+- * the stock wireless page (the wizard FRAMES it for its Wi-Fi step, so it must
+- * load), and the QIS/onboarding pages AiMesh runs framed. */
+-static int
+-reaper_firstboot_allowed(const char *u)
+-{
+-	static const char *allow[] = {
+-		"Reaper_FirstBoot.asp",
+-		"Main_Login.asp", "Logout.asp", "Nologin.asp",
+-		"find_device.asp",
+-		"Advanced_Wireless_Content.asp",
+-		"QIS_", "amas", "cfg_onboarding",
+-		NULL
+-	};
+-	int i;
+-
+-	for (i = 0; allow[i]; i++)
+-		if (strstr(u, allow[i]))
+-			return 1;
+-	return 0;
+-}
++/* reaper v2.9.1: the SERVER-SIDE first-boot gate that used to live here is GONE.
++ * It, and the five client-side gates that shadowed it, forced Reaper_FirstBoot.asp
++ * before any page could load. That design produced the login loop, the dual
++ * credential-surface dead-end and the BE92U nav flash, because six independent
++ * gates had to agree on when setup was finished and never quite did.
++ * Replaced by a non-blocking notice: the box ships on admin/admin with a WPA2/WPA3
++ * key of "admin", every admin page carries an un-dismissable banner until BOTH are
++ * changed (Reaper_SecBanner.asp), and nothing is ever blocked. reaper_fbdone, the
++ * escape hatch for a gate that no longer exists, went with it. */
+ 
+ int
+ reaper_gk_captive_check(const char *client_ip)
+@@ -1692,14 +1616,11 @@ handle_request(void)
+ 			file = "find_device.asp";
+ #endif
+ 		else {
+-			/* reaper 2026-08-06 (field: first-boot login refresh-loop, v2.1.6 reports):
+-			 * indexpage is cached ONCE at startup (main), so on a factory-default box
+-			 * it stays "Reaper_FirstBoot.asp" after the credential step - the
+-			 * credential flow never restarts httpd by design (chpass restart_httpd=0;
+-			 * restart_chpass = setup_passwd only), so "/" kept serving the wizard,
+-			 * whose done-guard bounced back to "/" -> infinite reload, GUI unusable
+-			 * until an httpd restart. Recompute per bare-"/" request; the cost is one
+-			 * nvram read + pw_dec + two stat()s. Twin recompute in web.c login_cgi. */
++			/* indexpage is cached ONCE at startup (main). The v2.1.6 refresh-loop this
++			 * recompute was added for is structurally gone with the first-boot gate
++			 * (v2.9.1) - get_index_page() now always answers Main_ReaperDash.asp on a
++			 * themed box - but it is kept: it is two stat()s, and it keeps "/" correct
++			 * for any future landing that does depend on live state. Twin in web.c. */
+ 			get_index_page(indexpage, sizeof(indexpage));
+ 			file = indexpage;
+ 		}
+@@ -1743,22 +1664,6 @@ handle_request(void)
+ 		return;
+ 	}
+ 
+-	/* reaper 2026-08-11: first-boot gate (see reaper_firstboot_pending above). Page
+-	 * loads only - CGIs, assets and the update_* pollers are untouched - and the
+-	 * cheap string tests run before any nvram read. top.location so it also escapes
+-	 * the shell frame rather than drawing the wizard inside it. */
+-	if ((strstr(url, ".asp") || strstr(url, ".htm"))
+-	    && !strstr(url, "update_networkmapd.asp")
+-	    && !strstr(url, "update_clients.asp")
+-	    && !strstr(url, "update_customList.asp")
+-	    && !reaper_firstboot_allowed(url)
+-	    && reaper_firstboot_pending()) {
+-		send_page(200, "OK", (char *)0,
+-			"<meta charset=\"utf-8\">"
+-			"<script>top.location.replace('/Reaper_FirstBoot.asp');</script>", 0);
+-		return;
+-	}
+-
+ #if !defined(RTCONFIG_HND_ROUTER)
+ 	if (!strncmp(file, "Main_Login.asp", 14) && (uptime() - flush_cache_t1) > 10 * 60) {
+ 		/* free pagecahe when login, don't do it again in 10 minutes. */
+@@ -2373,8 +2278,8 @@ int is_firsttime(void)
+ 	 * of x_Setting, whose factory default is back to stock 0 so a factory box is
+ 	 * discoverable as an AiMesh node (obd gates on x_Setting==0; see defaults.c).
+ 	 * web_hook.o (closed) links against this source definition, so blob callers
+-	 * see the same answer. Setup runs through the Reaper first-run gates instead
+-	 * (state.js -> Reaper_FirstBoot.asp / Advanced_Wireless_Content.asp). */
++	 * see the same answer. There is no setup wizard at all as of v2.9.1 - the box
++	 * is usable immediately and reports its unsecured state via the banner. */
+ 	return 0;
+ #if defined(RTAC58U) || defined(RTAC59U) || defined(RTAX58U) || defined(RTAX56U)
+ 	if (!strncmp(nvram_safe_get("territory_code"), "CX/01", 5)
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index df20c02ef3..79acd14e8b 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -208,13 +208,86 @@
+ 	"})();</script>"
+ 
+ /* stock pages: theme <link> + bounce */
+-static const char REAPER_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS;
++/* v2.9.1 unsecured-router banner. Replaces the six first-boot gates that used to
++ * block every page until Reaper_FirstBoot.asp was completed. Nothing is blocked
++ * now: the box is usable on admin/admin and simply says so, everywhere, until both
++ * the login and the Wi-Fi key have been changed.
++ *
++ * WHY IT CANNOT BE DISMISSED: there is no dismiss control and no client state to
++ * clear. Both conditions are recomputed server-side on every render (the fragment
++ * is do_ej'd per request), so a reload, a cleared cookie or a hand-edited DOM all
++ * bring it back on the next page.
++ *
++ * self!==top returns early: the shell carries the banner above its frame, so a
++ * framed page must not draw a second one.
++ *
++ * Pure logic, zero literals - every user-visible string is read out of the
++ * fragment, where do_ej has already resolved it into the user's language
++ * (standing rule 24). Same split as the backup card above.
++ *
++ * NOTE: every line must end in a backslash, comments included (see the
++ * REAPER_BOUNCE_JS note above).
++ */
++#define REAPER_SECBANNER_JS \
++	"<script>(function(){if(self!==top)return;" \
++	"var x=new XMLHttpRequest();x.open('GET','/Reaper_SecBanner.asp',true);" \
++	"x.onreadystatechange=function(){if(x.readyState!==4||x.status!==200)return;" \
++	"var h=document.createElement('div');h.innerHTML=x.responseText;" \
++	"var q=function(i){var e=h.querySelector('#'+i);return e?e.innerHTML:'';};" \
++	"var s=h.querySelector('#rsec_state');if(!s)return;" \
++	"var pw=s.getAttribute('data-pw')==='1',wf=s.getAttribute('data-wifi')==='1';" \
++	"if(!pw&&!wf)return;" \
++	"var st=document.createElement('style');st.textContent='#rsec{position:sticky;top:0;z-index:99999;" \
++	"display:flex;gap:16px;align-items:flex-start;padding:16px 20px;" \
++	"font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;" \
++	"background:linear-gradient(180deg,rgba(224,169,59,.16),rgba(224,169,59,.07)),#12100b;" \
++	"border-bottom:1px solid rgba(224,169,59,.38);box-shadow:inset 3px 0 0 #E0A93B,0 2px 10px rgba(0,0,0,.45)}" \
++	"#rsec .i{flex:0 0 auto;width:26px;height:26px;margin-top:1px;display:flex;align-items:center;" \
++	"justify-content:center;border-radius:50%;background:#E0A93B;color:#1a1206;" \
++	"font:700 17px/1 Rajdhani,system-ui,sans-serif}" \
++	"#rsec .c{flex:1 1 auto;min-width:0}" \
++	"#rsec h3{margin:0;font:700 15.5px/1.25 Rajdhani,system-ui,sans-serif;letter-spacing:.05em;" \
++	"text-transform:uppercase;color:#E0A93B}" \
++	"#rsec p{margin:5px 0 0;font-size:13px;line-height:1.5;color:#B7B1A4;max-width:62ch}" \
++	"#rsec ul{list-style:none;display:flex;flex-wrap:wrap;gap:9px;margin:12px 0 0;padding:0}" \
++	"#rsec li{display:flex;align-items:center;gap:9px;background:rgba(0,0,0,.34);" \
++	"border:1px solid rgba(224,169,59,.3);border-radius:8px;padding:7px 9px 7px 11px}" \
++	"#rsec li.d{border-color:rgba(79,178,134,.36);opacity:.72}" \
++	"#rsec .w{font-size:12.5px;color:#ECE7DB}#rsec li.d .w{color:#B7B1A4}" \
++	"#rsec .k{color:#4FB286;font-weight:700}" \
++	"#rsec a{font:600 11.5px/1 Rajdhani,system-ui,sans-serif;letter-spacing:.07em;" \
++	"text-transform:uppercase;background:#E0A93B;color:#1a1206;text-decoration:none;" \
++	"border-radius:6px;padding:7px 11px;white-space:nowrap}" \
++	"#rsec a:hover{background:#f0bd57}#rsec a:focus{outline:2px solid #ECE7DB;outline-offset:2px}" \
++	"#rsec .y{margin-top:11px;font-size:11.5px;color:#71767b}';" \
++	"var b=document.createElement('div');b.id='rsec';var rows='';" \
++	"rows+=pw?('<li><span class=\"w\">'+q('rsec_t_pw_todo')" \
++	"+'</span><a href=\"Main_Password.asp\">'+q('rsec_t_pw_cta')+'</a></li>')" \
++	":('<li class=\"d\"><span class=\"k\">&#10003;</span><span class=\"w\">'" \
++	"+q('rsec_t_pw_done')+'</span></li>');" \
++	"rows+=wf?('<li><span class=\"w\">'+q('rsec_t_wifi_todo')" \
++	"+'</span><a href=\"Advanced_Wireless_Content.asp\">'+q('rsec_t_wifi_cta')+'</a></li>')" \
++	":('<li class=\"d\"><span class=\"k\">&#10003;</span><span class=\"w\">'" \
++	"+q('rsec_t_wifi_done')+'</span></li>');" \
++	"b.innerHTML='<div class=\"i\">!</div><div class=\"c\"><h3>'" \
++	"+(pw&&wf?q('rsec_t_head_both'):q('rsec_t_head_one'))+'</h3><p>'" \
++	"+(pw&&wf?q('rsec_t_body_both'):(pw?q('rsec_t_body_pw'):q('rsec_t_body_wifi')))" \
++	"+'</p><ul>'+rows+'</ul><div class=\"y\">'+q('rsec_t_why')+'</div></div>';" \
++	"document.head.appendChild(st);document.body.insertBefore(b,document.body.firstChild);};" \
++	"x.send();})();</script>"
++
++static const char REAPER_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
+ /* the Administration backup page: the stock block + the full-backup card loader */
+-static const char REAPER_BKCARD_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_BKCARD_JS;
++static const char REAPER_BKCARD_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_BKCARD_JS REAPER_SECBANNER_JS;
+ /* reaper-native pages: bounce only, no reaper_content.css <link> (see reaper_native[]) */
+-static const char REAPER_NATIVE_BLOCK[] = REAPER_BOUNCE_JS;
++static const char REAPER_NATIVE_BLOCK[] = REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
+ /* first-run gate pages: reaper_content.css <link> only, NO bounce (see reaper_css_only[]) */
+-static const char REAPER_CSSONLY_BLOCK[] = REAPER_CSS_LINK;
++static const char REAPER_CSSONLY_BLOCK[] = REAPER_CSS_LINK REAPER_SECBANNER_JS;
++/* mode 5: the banner and nothing else. For top-level Reaper surfaces that sit in
++   reaper_skip[] because BOTH the css <link> and the bounce would be wrong for them
++   (the dashboard and the shell render their own chrome; the shell IS the bounce
++   target) but which are exactly where the banner has to appear. */
++static const char REAPER_BANNERONLY_BLOCK[] = REAPER_SECBANNER_JS;
+ 
+ #define REAPER_TAG	"</head>"
+ #define REAPER_TAGLEN	7		/* strlen("</head>") */
+@@ -224,6 +297,24 @@ static const char REAPER_CSSONLY_BLOCK[] = REAPER_CSS_LINK;
+  * redirect targets (bouncing them loops), and the login pages must not redirect.
+  * Matched on basename, case-insensitive.
+  */
++/*
++ * Top-level admin surfaces that take the banner ONLY (mode 5). Checked before
++ * reaper_skip[], which all three are also in and must stay in - they need the
++ * banner without the css <link> and without the bounce.
++ *
++ * Everything NOT listed here and still in reaper_skip[] gets nothing, which is
++ * deliberate for the pre-auth and guest-facing pages in that list: Main_Login,
++ * Nologin, Captive_Portal*, blocking.asp and the offline/error pages must never
++ * announce that this router still has factory credentials. That fact is for the
++ * authenticated operator, not for whoever is looking at the login box.
++ */
++static const char *reaper_banner_only[] = {
++	"Main_ReaperDash.asp",
++	"reaper_shell.asp",
++	"Main_Password.asp",
++	NULL
++};
++
+ static const char *reaper_skip[] = {
+ 	"Main_ReaperDash.asp",
+ 	"reaper_shell.asp",
+@@ -251,9 +342,6 @@ static const char *reaper_skip[] = {
+ 	/* NOTE: Advanced_Wireless_Content.asp (state.js gate 3) moved to
+ 	   reaper_css_only[] on 2026-08-13 - it must still stay TOP-LEVEL, but a full
+ 	   skip also cost it the theme. See the comment there. */
+-	/* Reaper first-boot credential gate: reaper-native page with its own chrome,
+-	   forced top-level by state.js on a factory-clean box (see Reaper_FirstBoot.asp). */
+-	"Reaper_FirstBoot.asp",
+ 	/* Captive_Portal* embed a </head> INSIDE a <script> splash template before
+ 	   the real </head>; injecting at the first </head> would land inside the
+ 	   script and prematurely close it. They are the only multi-</head> pages, so
+@@ -272,6 +360,9 @@ static const char *reaper_skip[] = {
+ 	/* v2.7.2: the full-backup card FRAGMENT (no <head>, fetched by the
+ 	   injected loader and inserted via innerHTML) - serve it pristine */
+ 	"Reaper_BackupCard.asp",
++	/* v2.9.1: the unsecured-router banner FRAGMENT - same deal, and it must
++	   never carry the loader itself or it would fetch itself forever. */
++	"Reaper_SecBanner.asp",
+ 	NULL
+ };
+ 
+@@ -417,6 +508,14 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 	if (v && *v && atoi(v) == 0)
+ 		return 0;
+ 
++	/* v2.9.1: the banner-only surfaces are tested BEFORE reaper_skip[] - all
++	   three are also skip-listed and must stay so (they need neither the css
++	   <link> nor the bounce), but they are the top-level admin pages where the
++	   unsecured-router banner has to appear. Signalled by return value 5. */
++	for (i = 0; reaper_banner_only[i]; i++)
++		if (strcasecmp(name, reaper_banner_only[i]) == 0)
++			return 5;
++
+ 	for (i = 0; reaper_skip[i]; i++)
+ 		if (strcasecmp(name, reaper_skip[i]) == 0)
+ 			return 0;
+@@ -507,6 +606,8 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 		block = REAPER_CSSONLY_BLOCK; blocklen = sizeof(REAPER_CSSONLY_BLOCK) - 1; break;
+ 	case 4:
+ 		block = REAPER_BKCARD_BLOCK;  blocklen = sizeof(REAPER_BKCARD_BLOCK) - 1;  break;
++	case 5:
++		block = REAPER_BANNERONLY_BLOCK; blocklen = sizeof(REAPER_BANNERONLY_BLOCK) - 1; break;
+ 	default:
+ 		block = REAPER_BLOCK;         blocklen = sizeof(REAPER_BLOCK) - 1;         break;
+ 	}
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 72749429c2..c17637833a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -27748,35 +27748,9 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 			snprintf(filename, sizeof(filename), "/www/%s", next_page);
+ 
+ 			websWrite(wp,"<HTML><HEAD>\n" );
+-#ifndef RTCONFIG_BCM_MFG
+-			if((is_passwd_default() && !nvram_match(ATE_FACTORY_MODE_STR(), "1")) || nvram_get_int("force_chgpass")) {
+-				/* reaper: the first-boot credential change is owned by the themed
+-				 * Reaper_FirstBoot.asp, NOT the stock Main_Password.asp. Shipping both
+-				 * left two credential surfaces racing on a factory box: this stock
+-				 * login redirect landed on Main_Password.asp (which does NOT load
+-				 * state.js, so the Reaper first-run gate could never reclaim it), that
+-				 * page changed the admin password, and the Reaper gate (get_index_page
+-				 * / state.js) THEN forced Reaper_FirstBoot.asp whose second chpass
+-				 * failed auth - the password was no longer default and no current
+-				 * credential was supplied -> "Could not apply credentials" dead-end
+-				 * (field report GT-BE98 v2.1.2, all models). Route straight to the
+-				 * single Reaper surface while creds are still default; fall back to the
+-				 * stock page only when the theme is off or the file is absent. */
+-				const char *ri_fb = nvram_get("reaper_inject");
+-				int reaper_on_fb = !(ri_fb && *ri_fb && atoi(ri_fb) == 0);
+-				if(reaper_on_fb && check_if_file_exist("/www/Reaper_FirstBoot.asp"))
+-					websWrite(wp, T("<meta http-equiv=\"refresh\" content=\"0; url=Reaper_FirstBoot.asp\">\r\n"));
+-				else
+-					websWrite(wp, T("<meta http-equiv=\"refresh\" content=\"0; url=Main_Password.asp\">\r\n"));
+-			}
+-			else
+-#endif
+ 			{
+-				/* reaper 2026-08-06: refresh the startup-cached index before using it.
+-				 * On a factory box the cache still says Reaper_FirstBoot.asp after the
+-				 * credential step (httpd is never restarted by that flow), which threw
+-				 * a fresh post-credential login straight back into the first-boot
+-				 * refresh-loop. Twin of the bare-"/" recompute in httpd.c. */
++				/* Refresh the startup-cached index before using it. Twin of the
++				 * bare-"/" recompute in httpd.c - see the note there. */
+ 				get_index_page(indexpage, sizeof(indexpage));
+ 
+ 				if(redirect_service_page(next_page, wp) == 0)
+@@ -38835,6 +38809,52 @@ ej_check_pw(int eid, webs_t wp, int argc, char_t **argv)
+ 		return websWrite(wp, "0");
+ }
+ 
++/*
++ * reaper v2.9.1: is ANY radio still on the factory Wi-Fi key?
++ *
++ * The banner (Reaper_SecBanner.asp) needs a Wi-Fi answer the way check_pw() gives
++ * a password answer. It deliberately does NOT reuse w_Setting: that flag means
++ * "the wireless page was applied at least once", not "the key is no longer the
++ * factory one" - a user who applies the page without touching the password would
++ * clear the banner while still on "admin". Keying a notice's clear-condition off
++ * different state than its fire-condition is what produced the v2.7.3 BE92U
++ * nav-flash, so both conditions here read the same nvram they judge.
++ *
++ * Answers 1 (still factory) if ANY radio's key equals the compiled-in default.
++ * A radio whose key is empty or absent - disabled, or an auth mode with no PSK -
++ * is NOT counted as factory: it cannot be "still admin", and counting it would
++ * hold the banner open forever on a box with a radio switched off.
++ *
++ * The PSK itself is never emitted to the page; only this boolean crosses.
++ */
++static int
++ej_reaper_wifi_default(int eid, webs_t wp, int argc, char_t **argv)
++{
++	char *def = nvram_default_get("wl_wpa_psk");
++	char key[32];
++	int unit, n;
++
++	/* No compiled-in default means nothing to compare against - report secured
++	 * rather than nagging forever about a condition that cannot be cleared. */
++	if (!def || !*def)
++		return websWrite(wp, "0");
++
++	n = num_of_wl_if();
++	if (n > MAX_NR_WL_IF)
++		n = MAX_NR_WL_IF;
++
++	for (unit = 0; unit < n; unit++) {
++		char *psk;
++
++		snprintf(key, sizeof(key), "wl%d_wpa_psk", unit);
++		psk = nvram_safe_get(key);
++		if (psk && *psk && !strcmp(psk, def))
++			return websWrite(wp, "1");
++	}
++
++	return websWrite(wp, "0");
++}
++
+ static int
+ ej_check_acpw(int eid, webs_t wp, int argc, char_t **argv)
+ {
+@@ -48496,6 +48516,7 @@ struct ej_handler ej_handlers[] = {
+ #endif
+ 	{ "nvram_clean_get", ej_nvram_clean_get},
+ 	{ "check_pw", ej_check_pw},
++	{ "reaper_wifi_default", ej_reaper_wifi_default},
+ 	{ "check_acpw", ej_check_acpw},
+ 	{ "check_acorpw", ej_check_acorpw},
+ 	{ "check_ftp_samba_anonymous", ej_check_ftp_samba_anonymous},
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 0c8cab2058..af64f7a77d 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -586,7 +586,7 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 	/* WPA parameters */
+ 	{ "wl_auth_mode", "none", CKN_STR8, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Network authentication mode (radius|none) */
+-	{ "wl_wpa_psk", "", CKN_STR64, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* WPA pre-shared key */
++	{ "wl_wpa_psk", "admin", CKN_STR64, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* WPA pre-shared key */
+ 	{ "wl_wpa_gtk_rekey", "3600", CKN_STR8, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* GTK rotation interval */
+ #ifdef RTCONFIG_HND_ROUTER_AX
+ 	{ "wl_wpa_ptk_rekey", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* PTK rotation interval */
+@@ -605,7 +605,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl_radius2_acct_key", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_radius2_acct_port", "1813", CKN_STR5, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+-	{ "wl_crypto", "tkip+aes", CKN_STR16, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* WPA data encryption */
++	{ "wl_crypto", "aes", CKN_STR16, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* WPA data encryption */
+ #if 0
+ 	{ "wl_net_reauth", "3600", CKN_STR_DEFAULT, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Network Re-auth/PMK caching duration */
+ #else
+@@ -743,20 +743,20 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl_bw", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ #endif
+-	{ "wl_auth_mode_x", "open", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl_auth_mode_x", "psk2", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* default using enhanced open authentication mode for 6G band */
+ #if defined(RTCONFIG_WIFI6E) || defined(RTCONFIG_HAS_6G)
+ #if WL_UNIT_6G == 0 || WL_UNIT_6G_2 == 0
+-	{ "wl0_auth_mode_x", "owe", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl0_auth_mode_x", "sae", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ #if WL_UNIT_6G == 1 || WL_UNIT_6G_2 == 1
+-	{ "wl1_auth_mode_x", "owe", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl1_auth_mode_x", "sae", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ #if WL_UNIT_6G == 2 || WL_UNIT_6G_2 == 2
+-	{ "wl2_auth_mode_x", "owe", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl2_auth_mode_x", "sae", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ #if WL_UNIT_6G == 3 || WL_UNIT_6G_2 == 3
+-	{ "wl3_auth_mode_x", "owe", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl3_auth_mode_x", "sae", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ #endif
+ 
+@@ -3195,11 +3195,6 @@ struct nvram_tuple router_defaults[] = {
+ 	   preload), but a PRESENT-AND-BROKEN one has no such guard. Revert is this
+ 	   one literal back to "0"; a user can also clear the toggle and reboot. */
+ 	{ "wlcsm_bindfix", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	/* reaper 2026-08-11: escape hatch for the server-side first-boot gate (httpd.c
+-	   reaper_firstboot_pending). The gate opens on its own once the live conditions
+-	   clear - this is NOT written by the wizard. It exists so an operator who gets
+-	   wedged can free the GUI over SSH: nvram set reaper_fbdone=1 && nvram commit */
+-	{ "reaper_fbdone", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "rwarden_stats_save", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = persist block statistics to /jffs/rwarden/counters across reboot/reflash */
+ 	{ "rwarden_reset", "off", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* block-statistics retention window: off | 24h | 7d | 30d | 90d */
+ 	/* reaper v1.8.8: rwatch - WAN/DNS/Warden/accelerator watchdog (rc/rwatch.c). Cron probe, no daemon; first-hop only (no phone-home); syslog transitions + /jffs/rwatch incident dumps. */
+@@ -6767,7 +6762,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl_atf", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_auth", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_auth_mode", "none", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "wl_auth_mode_x", "open", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl_auth_mode_x", "psk2", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_bcn", "100", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_bcn_rotate", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_bss_enabled", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -6789,7 +6784,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl_corerev", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_country_code", "US", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_country_rev", "634", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "wl_crypto", "tkip+aes", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl_crypto", "aes", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_dcs_csa_unicast", "1", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_dfs_bw_fallback", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_dfs_pref", "", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -6946,7 +6941,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl_wmf_ucast_upnp", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_wmf_ucigmp_query", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_wpa_gtk_rekey", "3600", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "wl_wpa_psk", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wl_wpa_psk", "admin", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_wpa_ptk_rekey", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_wps_config_state", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_wps_mode", "enabled", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 942eadd21f..01e3d8afc2 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -6384,15 +6384,6 @@ int get_index_page(char *page, int size)
+ 
+ 	if(check_if_file_exist("/www/GameDashboard.asp"))
+ 		strlcpy(page, "GameDashboard.asp", size);
+-	/* Reaper: force the first-boot credential change AHEAD of the dashboard. The
+-	 * dashboard is the post-login landing and (unlike the shell) does not load
+-	 * state.js, so without this a factory box on the default admin/admin would land
+-	 * in the UI unchallenged - stock relied on index.asp's is_passwd_default meta-
+-	 * refresh, which the direct-to-dashboard landing skips. is_passwd_default() is
+-	 * defined in this file; force_chgpass is the operator-forced re-prompt. */
+-	else if(reaper_on && check_if_file_exist("/www/Reaper_FirstBoot.asp") &&
+-	        (nvram_get_int("force_chgpass") || is_passwd_default()))
+-		strlcpy(page, "Reaper_FirstBoot.asp", size);
+ 	/* Reaper: land on the live dashboard directly (post-login redirect target)
+ 	 * instead of bouncing through index.asp; fall back to stock when killed. */
+ 	else if(reaper_on && check_if_file_exist("/www/Main_ReaperDash.asp"))
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index a43c729cf7..3eaa4cefda 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6766,3 +6766,15 @@ RFW_272=O servidor para onde você envia o tráfego fica sempre isento da própr
+ RFW_273=Suas alterações foram salvas, mas ainda NÃO estão em vigor. As edições do firewall em todas as abas ficam como rascunho até você aplicá-las juntas, na aba Regras.
+ RFW_274=Uma alteração foi aplicada e aguarda sua confirmação. Se você não fizer nada, ela será revertida sozinha.
+ RFW_275=Ir para Regras
++RSEC_1=Este roteador nao esta protegido
++RSEC_2=Falta um passo para proteger este roteador
++RSEC_3=Ele ainda usa a senha de fabrica. Qualquer pessoa que alcance esta pagina ou o seu Wi-Fi pode assumir o controle do roteador. Defina as duas e este aviso desaparece.
++RSEC_4=O seu Wi-Fi esta definido, mas o login do roteador ainda e o padrao de fabrica. Qualquer pessoa na rede pode abrir esta pagina e alterar tudo.
++RSEC_5=O login do roteador esta definido, mas o Wi-Fi ainda usa a senha de fabrica. Qualquer pessoa ao alcance pode entrar na rede.
++RSEC_6=O login do roteador ainda e admin / admin
++RSEC_7=O login do roteador foi alterado
++RSEC_8=Alterar login
++RSEC_9=A senha do Wi-Fi ainda e admin
++RSEC_10=A senha do Wi-Fi foi alterada
++RSEC_11=Alterar senha do Wi-Fi
++RSEC_12=Este aviso nao pode ser fechado. Ele desaparece sozinho quando as duas forem alteradas.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 79a250494c..2a0b787af5 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6766,3 +6766,15 @@ RFW_272=你所指定的服务器始终不受本规则约束，因此它仍能访
+ RFW_273=更改已保存，但尚未生效。所有选项卡中的防火墙修改都会暂存为草稿，直到你在"规则"选项卡中一并应用。
+ RFW_274=更改已应用，正在等待你确认保留。若不进行任何操作，它将自动还原。
+ RFW_275=前往规则
++RSEC_1=此路由器尚未受到保护
++RSEC_2=还差一步即可保护此路由器
++RSEC_3=它仍在使用出厂密码。任何能够打开此页面或连接您 Wi-Fi 的人都可以接管路由器。两项都设置后，此警告将消失。
++RSEC_4=您的 Wi-Fi 已设置，但路由器登录仍为出厂默认值。网络上的任何人都可以打开此页面并更改任何设置。
++RSEC_5=路由器登录已设置，但 Wi-Fi 仍使用出厂密码。附近范围内的任何人都可以加入网络。
++RSEC_6=路由器登录仍为 admin / admin
++RSEC_7=路由器登录已更改
++RSEC_8=更改登录
++RSEC_9=Wi-Fi 密码仍为 admin
++RSEC_10=Wi-Fi 密码已更改
++RSEC_11=更改 Wi-Fi 密码
++RSEC_12=此提示无法关闭。两项都更改后它会自动消失。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 4d78a54944..b8bdfeab96 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Server, na který provoz posíláte, je vždy vyňat z vlastního pravid
+ RFW_273=Změny jsou uloženy, ale zatím NEJSOU v platnosti. Úpravy firewallu na všech kartách se drží jako koncept, dokud je společně nepoužijete na kartě Pravidla.
+ RFW_274=Změna byla použita a čeká na vaše potvrzení. Pokud neuděláte nic, sama se vrátí zpět.
+ RFW_275=Přejít na Pravidla
++RSEC_1=Tento router neni zabezpecen
++RSEC_2=Zbyva jeden krok k zabezpeceni tohoto routeru
++RSEC_3=Stale pouziva tovarni heslo. Kdokoli, kdo se dostane na tuto stranku nebo k vasi Wi-Fi, muze router prevzit. Nastavte obe a toto varovani zmizi.
++RSEC_4=Vase Wi-Fi je nastavena, ale prihlaseni k routeru je stale tovarni. Kdokoli v siti muze otevrit tuto stranku a cokoli zmenit.
++RSEC_5=Prihlaseni k routeru je nastaveno, ale Wi-Fi stale pouziva tovarni heslo. Kdokoli v dosahu se muze pripojit k siti.
++RSEC_6=Prihlaseni k routeru je stale admin / admin
++RSEC_7=Prihlaseni k routeru bylo zmeneno
++RSEC_8=Zmenit prihlaseni
++RSEC_9=Heslo Wi-Fi je stale admin
++RSEC_10=Heslo Wi-Fi bylo zmeneno
++RSEC_11=Zmenit heslo Wi-Fi
++RSEC_12=Toto upozorneni nelze zavrit. Zmizi samo, jakmile budou zmeneny obe polozky.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 9f929271f1..794ae22517 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Serveren, du sender trafikken til, er altid undtaget fra sin egen regel,
+ RFW_273=Dine ændringer er gemt, men er endnu IKKE trådt i kraft. Firewallredigeringer på alle faner holdes som en kladde, indtil du anvender dem samlet på fanen Regler.
+ RFW_274=En ændring er anvendt og venter på, at du beholder den. Gør du intet, rulles den tilbage af sig selv.
+ RFW_275=Gå til Regler
++RSEC_1=Denne router er ikke sikret
++RSEC_2=Et skridt tilbage for at sikre denne router
++RSEC_3=Den bruger stadig fabrikskodeordet. Enhver, der kan na denne side eller dit Wi-Fi, kan overtage routeren. Saet begge, sa forsvinder denne advarsel.
++RSEC_4=Dit Wi-Fi er sat, men router-loginet er stadig fabriksstandarden. Enhver pa netvaerket kan abne denne side og aendre alt.
++RSEC_5=Router-loginet er sat, men Wi-Fi bruger stadig fabrikskodeordet. Enhver inden for raekkevidde kan koble sig pa netvaerket.
++RSEC_6=Router-login er stadig admin / admin
++RSEC_7=Router-login er blevet aendret
++RSEC_8=Skift login
++RSEC_9=Wi-Fi-kodeordet er stadig admin
++RSEC_10=Wi-Fi-kodeordet er blevet aendret
++RSEC_11=Skift Wi-Fi-kodeord
++RSEC_12=Denne meddelelse kan ikke lukkes. Den forsvinder af sig selv, nar begge er aendret.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index f37b336c04..a4f1490cf1 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Der Server, an den Sie den Verkehr senden, ist stets von seiner eigenen
+ RFW_273=Ihre Änderungen sind gespeichert, aber noch NICHT wirksam. Firewall-Änderungen aller Registerkarten werden als Entwurf gehalten, bis Sie sie gemeinsam auf der Registerkarte Regeln anwenden.
+ RFW_274=Eine Änderung wurde angewendet und wartet auf Ihre Bestätigung. Wenn Sie nichts tun, wird sie von selbst zurückgenommen.
+ RFW_275=Zu den Regeln
++RSEC_1=Dieser Router ist nicht gesichert
++RSEC_2=Noch ein Schritt, um diesen Router zu sichern
++RSEC_3=Er verwendet noch das Werkspasswort. Wer diese Seite oder Ihr WLAN erreicht, kann den Router uebernehmen. Setzen Sie beide, und diese Warnung verschwindet.
++RSEC_4=Ihr WLAN ist gesetzt, aber die Router-Anmeldung ist noch die Werkseinstellung. Jeder im Netzwerk kann diese Seite oeffnen und alles aendern.
++RSEC_5=Die Router-Anmeldung ist gesetzt, aber das WLAN nutzt noch das Werkspasswort. Jeder in Reichweite kann dem Netzwerk beitreten.
++RSEC_6=Router-Anmeldung ist noch admin / admin
++RSEC_7=Router-Anmeldung wurde geaendert
++RSEC_8=Anmeldung aendern
++RSEC_9=WLAN-Passwort ist noch admin
++RSEC_10=WLAN-Passwort wurde geaendert
++RSEC_11=WLAN-Passwort aendern
++RSEC_12=Dieser Hinweis laesst sich nicht schliessen. Er verschwindet von selbst, sobald beide geaendert sind.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index b5deefb64b..61c829c1ba 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6766,3 +6766,15 @@ RFW_272=The server you send traffic to is always exempt from its own rule, so it
+ RFW_273=Your changes are saved but NOT in effect yet. Firewall edits on every tab are held as a draft until you apply them together, on the Rules tab.
+ RFW_274=A change has been applied and is waiting for you to keep it. If you do nothing it reverts on its own.
+ RFW_275=Go to Rules
++RSEC_1=This router is not secured
++RSEC_2=One step left to secure this router
++RSEC_3=It is still using the factory password. Anyone who can reach this page or your Wi-Fi can take over the router. Set both, and this warning goes away.
++RSEC_4=Your Wi-Fi is set, but the router login is still the factory default. Anyone on the network can open this page and change anything.
++RSEC_5=Your router login is set, but the Wi-Fi is still on the factory password. Anyone in range can join the network.
++RSEC_6=Router login is still admin / admin
++RSEC_7=Router login has been changed
++RSEC_8=Change login
++RSEC_9=Wi-Fi password is still admin
++RSEC_10=Wi-Fi password has been changed
++RSEC_11=Change Wi-Fi password
++RSEC_12=This notice cannot be dismissed. It disappears on its own once both are changed.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 4d150dc997..00827be801 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6766,3 +6766,15 @@ RFW_272=El servidor al que envía el tráfico queda siempre exento de su propia
+ RFW_273=Sus cambios están guardados, pero aún NO están en vigor. Las modificaciones del firewall de todas las pestañas se mantienen como borrador hasta que las aplique conjuntamente en la pestaña Reglas.
+ RFW_274=Se ha aplicado un cambio y espera su confirmación. Si no hace nada, se revertirá por sí solo.
+ RFW_275=Ir a Reglas
++RSEC_1=Este router no esta protegido
++RSEC_2=Falta un paso para proteger este router
++RSEC_3=Todavia usa la contrasena de fabrica. Cualquiera que alcance esta pagina o su Wi-Fi puede tomar el control del router. Configure ambas y este aviso desaparecera.
++RSEC_4=Su Wi-Fi esta configurado, pero el acceso al router sigue siendo el de fabrica. Cualquiera en la red puede abrir esta pagina y cambiarlo todo.
++RSEC_5=El acceso al router esta configurado, pero el Wi-Fi sigue con la contrasena de fabrica. Cualquiera dentro del alcance puede unirse a la red.
++RSEC_6=El acceso al router sigue siendo admin / admin
++RSEC_7=El acceso al router se ha cambiado
++RSEC_8=Cambiar acceso
++RSEC_9=La contrasena del Wi-Fi sigue siendo admin
++RSEC_10=La contrasena del Wi-Fi se ha cambiado
++RSEC_11=Cambiar contrasena del Wi-Fi
++RSEC_12=Este aviso no se puede cerrar. Desaparece solo cuando ambas se hayan cambiado.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index a1676ab064..06d540e293 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Palvelin, jolle liikenne ohjataan, on aina vapautettu omasta säännöst
+ RFW_273=Muutoksesi on tallennettu, mutta ne EIVÄT ole vielä voimassa. Kaikkien välilehtien palomuurimuokkaukset säilytetään luonnoksena, kunnes otat ne käyttöön yhdessä Säännöt-välilehdellä.
+ RFW_274=Muutos on otettu käyttöön ja odottaa vahvistustasi. Jos et tee mitään, se perutaan itsestään.
+ RFW_275=Siirry Sääntöihin
++RSEC_1=Tata reititinta ei ole suojattu
++RSEC_2=Yksi askel jaljella taman reitittimen suojaamiseen
++RSEC_3=Se kayttaa yha tehdasasetusten salasanaa. Kuka tahansa, joka paasee tahan sivuun tai Wi-Fi-verkkoosi, voi ottaa reitittimen haltuunsa. Aseta molemmat, niin tama varoitus katoaa.
++RSEC_4=Wi-Fi on asetettu, mutta reitittimen kirjautuminen on yha tehdasasetus. Kuka tahansa verkossa voi avata taman sivun ja muuttaa mita tahansa.
++RSEC_5=Reitittimen kirjautuminen on asetettu, mutta Wi-Fi kayttaa yha tehdassalasanaa. Kuka tahansa kantaman sisalla voi liittya verkkoon.
++RSEC_6=Reitittimen kirjautuminen on yha admin / admin
++RSEC_7=Reitittimen kirjautuminen on vaihdettu
++RSEC_8=Vaihda kirjautuminen
++RSEC_9=Wi-Fi-salasana on yha admin
++RSEC_10=Wi-Fi-salasana on vaihdettu
++RSEC_11=Vaihda Wi-Fi-salasana
++RSEC_12=Tata ilmoitusta ei voi sulkea. Se katoaa itsestaan, kun molemmat on vaihdettu.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 976d3fd595..46429c8a12 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Le serveur vers lequel vous redirigez le trafic est toujours exempté de
+ RFW_273=Vos modifications sont enregistrées mais ne sont PAS encore actives. Les modifications du pare-feu de tous les onglets sont conservées en brouillon jusqu'à ce que vous les appliquiez ensemble, dans l'onglet Règles.
+ RFW_274=Une modification a été appliquée et attend votre confirmation. Si vous ne faites rien, elle sera annulée d'elle-même.
+ RFW_275=Aller aux Règles
++RSEC_1=Ce routeur n'est pas securise
++RSEC_2=Une etape reste pour securiser ce routeur
++RSEC_3=Il utilise encore le mot de passe d'usine. Toute personne qui atteint cette page ou votre Wi-Fi peut prendre le controle du routeur. Definissez les deux et cet avertissement disparaitra.
++RSEC_4=Votre Wi-Fi est defini, mais l'identifiant du routeur reste celui d'usine. N'importe qui sur le reseau peut ouvrir cette page et tout modifier.
++RSEC_5=L'identifiant du routeur est defini, mais le Wi-Fi utilise encore le mot de passe d'usine. Toute personne a portee peut rejoindre le reseau.
++RSEC_6=L'identifiant du routeur est encore admin / admin
++RSEC_7=L'identifiant du routeur a ete change
++RSEC_8=Changer l'identifiant
++RSEC_9=Le mot de passe Wi-Fi est encore admin
++RSEC_10=Le mot de passe Wi-Fi a ete change
++RSEC_11=Changer le mot de passe Wi-Fi
++RSEC_12=Cet avis ne peut pas etre ferme. Il disparait de lui-meme une fois les deux changes.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 6eec4ec2fc..df642f0cd8 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Az a kiszolgáló, amelyre a forgalmat küldi, mindig mentesül a saját
+ RFW_273=A módosítások mentve, de MÉG NEM lépnek életbe. Az összes lapon végzett tűzfal-módosítás piszkozatként marad, amíg együtt nem alkalmazza őket a Szabályok lapon.
+ RFW_274=Egy módosítás életbe lépett, és a megerősítésére vár. Ha nem tesz semmit, magától visszaáll.
+ RFW_275=Ugrás a Szabályokhoz
++RSEC_1=Ez a router nincs vedve
++RSEC_2=Egy lepes van hatra a router vedelmehez
++RSEC_3=Meg mindig a gyari jelszot hasznalja. Barki, aki eleri ezt az oldalt vagy a Wi-Fi halozatot, atveheti a router iranyitasat. Allitsa be mindkettot, es ez a figyelmeztetes eltunik.
++RSEC_4=A Wi-Fi be van allitva, de a router bejelentkezes meg a gyari. A halozaton barki megnyithatja ezt az oldalt es barmit megvaltoztathat.
++RSEC_5=A router bejelentkezes be van allitva, de a Wi-Fi meg a gyari jelszot hasznalja. Hatotavolsagon belul barki csatlakozhat a halozathoz.
++RSEC_6=A router bejelentkezes meg admin / admin
++RSEC_7=A router bejelentkezes megvaltozott
++RSEC_8=Bejelentkezes modositasa
++RSEC_9=A Wi-Fi jelszo meg admin
++RSEC_10=A Wi-Fi jelszo megvaltozott
++RSEC_11=Wi-Fi jelszo modositasa
++RSEC_12=Ez az ertesites nem zarhato be. Magatol eltunik, amint mindketto megvaltozott.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 797f0325ca..e9b6671ee0 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Il server a cui invii il traffico è sempre esente dalla propria regola,
+ RFW_273=Le modifiche sono salvate ma NON sono ancora attive. Le modifiche al firewall di tutte le schede restano come bozza finché non le applichi insieme, nella scheda Regole.
+ RFW_274=Una modifica è stata applicata ed è in attesa di conferma. Se non fai nulla, verrà annullata da sola.
+ RFW_275=Vai a Regole
++RSEC_1=Questo router non e protetto
++RSEC_2=Manca un passaggio per proteggere questo router
++RSEC_3=Usa ancora la password di fabbrica. Chiunque raggiunga questa pagina o il tuo Wi-Fi puo prendere il controllo del router. Impostale entrambe e questo avviso scomparira.
++RSEC_4=Il Wi-Fi e impostato, ma l'accesso al router e ancora quello di fabbrica. Chiunque sulla rete puo aprire questa pagina e modificare tutto.
++RSEC_5=L'accesso al router e impostato, ma il Wi-Fi usa ancora la password di fabbrica. Chiunque nel raggio d'azione puo entrare nella rete.
++RSEC_6=L'accesso al router e ancora admin / admin
++RSEC_7=L'accesso al router e stato modificato
++RSEC_8=Modifica accesso
++RSEC_9=La password del Wi-Fi e ancora admin
++RSEC_10=La password del Wi-Fi e stata modificata
++RSEC_11=Modifica password Wi-Fi
++RSEC_12=Questo avviso non puo essere chiuso. Scompare da solo quando entrambe sono state modificate.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index db433ba9e1..1a83e7146e 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6766,3 +6766,15 @@ RFW_272=通信の宛先に指定したサーバーは常にこのルールの対
+ RFW_273=変更は保存されましたが、まだ有効になっていません。すべてのタブのファイアウォール編集は下書きとして保持され、「ルール」タブでまとめて適用するまで反映されません。
+ RFW_274=変更が適用され、保持の確認を待っています。何もしなければ自動的に元に戻ります。
+ RFW_275=ルールへ移動
++RSEC_1=このルーターは保護されていません
++RSEC_2=このルーターを保護するにはあと 1 ステップです
++RSEC_3=工場出荷時のパスワードのままです。このページまたは Wi-Fi に到達できる人は誰でもルーターを乗っ取れます。両方を設定すると、この警告は消えます。
++RSEC_4=Wi-Fi は設定済みですが、ルーターのログインは工場出荷時のままです。ネットワーク上の誰でもこのページを開いてすべてを変更できます。
++RSEC_5=ルーターのログインは設定済みですが、Wi-Fi は工場出荷時のパスワードのままです。電波の届く範囲にいる誰でもネットワークに参加できます。
++RSEC_6=ルーターのログインは admin / admin のままです
++RSEC_7=ルーターのログインが変更されました
++RSEC_8=ログインを変更
++RSEC_9=Wi-Fi パスワードは admin のままです
++RSEC_10=Wi-Fi パスワードが変更されました
++RSEC_11=Wi-Fi パスワードを変更
++RSEC_12=この通知は閉じられません。両方を変更すると自動的に消えます。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index babe6d656d..c2c296b45c 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6766,3 +6766,15 @@ RFW_272=트래픽을 보내는 대상 서버는 언제나 자신의 규칙에서
+ RFW_273=변경 사항이 저장되었지만 아직 적용되지 않았습니다. 모든 탭의 방화벽 변경은 초안으로 보관되며, 규칙 탭에서 한꺼번에 적용해야 반영됩니다.
+ RFW_274=변경 사항이 적용되었으며 유지 확인을 기다리고 있습니다. 아무 작업도 하지 않으면 자동으로 되돌아갑니다.
+ RFW_275=규칙으로 이동
++RSEC_1=이 라우터는 보호되어 있지 않습니다
++RSEC_2=이 라우터를 보호하기까지 한 단계 남았습니다
++RSEC_3=아직 공장 출하 시 비밀번호를 사용 중입니다. 이 페이지나 Wi-Fi에 접근할 수 있는 사람은 누구나 라우터를 장악할 수 있습니다. 둘 다 설정하면 이 경고가 사라집니다.
++RSEC_4=Wi-Fi는 설정되었지만 라우터 로그인은 아직 공장 기본값입니다. 네트워크의 누구나 이 페이지를 열고 무엇이든 변경할 수 있습니다.
++RSEC_5=라우터 로그인은 설정되었지만 Wi-Fi는 아직 공장 출하 시 비밀번호입니다. 전파가 닿는 범위의 누구나 네트워크에 접속할 수 있습니다.
++RSEC_6=라우터 로그인이 아직 admin / admin 입니다
++RSEC_7=라우터 로그인이 변경되었습니다
++RSEC_8=로그인 변경
++RSEC_9=Wi-Fi 비밀번호가 아직 admin 입니다
++RSEC_10=Wi-Fi 비밀번호가 변경되었습니다
++RSEC_11=Wi-Fi 비밀번호 변경
++RSEC_12=이 알림은 닫을 수 없습니다. 둘 다 변경하면 저절로 사라집니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 65bd2cbd2a..c129936a0f 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Pelayan yang anda tuju sentiasa dikecualikan daripada peraturannya sendi
+ RFW_273=Perubahan anda telah disimpan tetapi BELUM berkuat kuasa. Suntingan tembok api pada setiap tab disimpan sebagai draf sehingga anda melaksanakannya bersama-sama, pada tab Peraturan.
+ RFW_274=Satu perubahan telah dilaksanakan dan menunggu anda mengekalkannya. Jika anda tidak berbuat apa-apa, ia akan berpatah balik dengan sendirinya.
+ RFW_275=Pergi ke Peraturan
++RSEC_1=Penghala ini tidak dilindungi
++RSEC_2=Tinggal satu langkah untuk melindungi penghala ini
++RSEC_3=Ia masih menggunakan kata laluan kilang. Sesiapa yang boleh mencapai halaman ini atau Wi-Fi anda boleh mengambil alih penghala. Tetapkan kedua-duanya dan amaran ini akan hilang.
++RSEC_4=Wi-Fi anda telah ditetapkan, tetapi log masuk penghala masih tetapan kilang. Sesiapa dalam rangkaian boleh membuka halaman ini dan mengubah apa-apa.
++RSEC_5=Log masuk penghala telah ditetapkan, tetapi Wi-Fi masih menggunakan kata laluan kilang. Sesiapa dalam liputan boleh menyertai rangkaian.
++RSEC_6=Log masuk penghala masih admin / admin
++RSEC_7=Log masuk penghala telah ditukar
++RSEC_8=Tukar log masuk
++RSEC_9=Kata laluan Wi-Fi masih admin
++RSEC_10=Kata laluan Wi-Fi telah ditukar
++RSEC_11=Tukar kata laluan Wi-Fi
++RSEC_12=Notis ini tidak boleh ditutup. Ia hilang dengan sendirinya apabila kedua-duanya ditukar.
+diff --git a/release/src/router/www/Main_Password.asp b/release/src/router/www/Main_Password.asp
+index ca5724f21a..6c2533f98c 100644
+--- a/release/src/router/www/Main_Password.asp
++++ b/release/src/router/www/Main_Password.asp
+@@ -7,22 +7,6 @@
+ <meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
+ <meta HTTP-EQUIV="Expires" CONTENT="-1">
+ <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+-<script>
+-/* reaper: first-boot credential change belongs to Reaper_FirstBoot.asp. This stock page
+-   does NOT load state.js, so the Reaper first-run gate can never bounce it - a factory box
+-   redirected here would run the stock dual-submit (chpass + saveNvram + QIS_wizard hop) and
+-   collide with the Reaper credential surface, dead-ending on "Could not apply credentials".
+-   Guard here as early as possible: on a default-password / force_chgpass box hand straight
+-   off to the single Reaper surface. Later password changes (pw already set) fall through to
+-   the normal stock page, so AiMesh / Administration re-use is unaffected. */
+-(function(){
+-	try{
+-		var pwDef = ('<% check_pw(); %>' == '1');
+-		var fchg  = ('<% nvram_get("force_chgpass"); %>' == '1');
+-		if(pwDef || fchg){ location.replace('/Reaper_FirstBoot.asp'); }
+-	}catch(e){}
+-})();
+-</script>
+ <link rel="shortcut icon" href="images/favicon.png">
+ <link rel="icon" href="images/favicon.png">
+ <title>ASUS Login</title>
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 5fcd079c46..53a3614302 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -7,30 +7,6 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <script src="/reaper_util.js"></script>
+-<script>
+-/* Reaper first-boot credential guard. The dashboard is the post-login landing but,
+-   unlike reaper_shell.asp, does NOT load state.js - so a factory box still on the
+-   default admin/admin would reach the UI unchallenged. Mirror state.js's forced-
+-   change gate here: bounce to Reaper_FirstBoot.asp until real credentials are set.
+-   Runs during head parse (location.replace) so a default-cred box never renders. */
+-(function(){
+-  var pwdef = '<% check_pw(); %>', force = '<% nvram_get("force_chgpass"); %>';
+-  /* v2.3.5: ALSO gate on the Wi-Fi step. This page is the wizard's exit target, and
+-     because it does not load state.js it was the hole through which a box reached the
+-     UI with its credentials changed but the factory Wi-Fi password intact - the Wi-Fi
+-     gate lives in state.js and simply never ran here. reaper_fbdone is the operator
+-     escape hatch (see reaper_firstboot_pending() in httpd/httpd.c). */
+-  var wifidef = '<% nvram_get("w_Setting"); %>', esc = '<% nvram_get("reaper_fbdone"); %>';
+-  /* Router (1) and AP (3) only: a repeater or media bridge runs no wireless config of
+-     its own, so w_Setting legitimately stays 0 there and gating on it would wedge
+-     those boxes out of the GUI. Mirrors state.js and reaper_firstboot_pending(). */
+-  var swm = parseInt('<% nvram_get("sw_mode"); %>', 10);
+-  var wifiGate = (wifidef == 0 && (swm == 1 || swm == 3));
+-  if(esc != 1 && (pwdef == 1 || force == 1 || wifiGate)
+-     && location.pathname.toUpperCase().indexOf('REAPER_FIRSTBOOT') < 0)
+-    location.replace('Reaper_FirstBoot.asp?nextPage=Main_ReaperDash.asp');
+-})();
+-</script>
+ <title>REAPER &mdash; <#AiProtection_title_Dashboard_title#></title>
+ <style>
+ /* self-hosted fonts (offline; no CDN) */
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 796c007c80..8cc90a99a5 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6766,3 +6766,15 @@ RFW_272=De server waar u het verkeer heen stuurt is altijd uitgezonderd van zijn
+ RFW_273=Uw wijzigingen zijn opgeslagen maar zijn nog NIET van kracht. Firewallwijzigingen op alle tabbladen worden als concept bewaard totdat u ze samen toepast, op het tabblad Regels.
+ RFW_274=Een wijziging is toegepast en wacht tot u die behoudt. Doet u niets, dan wordt die vanzelf teruggedraaid.
+ RFW_275=Ga naar Regels
++RSEC_1=Deze router is niet beveiligd
++RSEC_2=Nog een stap om deze router te beveiligen
++RSEC_3=Hij gebruikt nog het fabriekswachtwoord. Iedereen die deze pagina of uw Wi-Fi bereikt, kan de router overnemen. Stel beide in en deze waarschuwing verdwijnt.
++RSEC_4=Uw Wi-Fi is ingesteld, maar de router-login is nog de fabrieksinstelling. Iedereen op het netwerk kan deze pagina openen en alles wijzigen.
++RSEC_5=De router-login is ingesteld, maar de Wi-Fi gebruikt nog het fabriekswachtwoord. Iedereen binnen bereik kan aan het netwerk deelnemen.
++RSEC_6=Router-login is nog admin / admin
++RSEC_7=Router-login is gewijzigd
++RSEC_8=Login wijzigen
++RSEC_9=Wi-Fi-wachtwoord is nog admin
++RSEC_10=Wi-Fi-wachtwoord is gewijzigd
++RSEC_11=Wi-Fi-wachtwoord wijzigen
++RSEC_12=Deze melding kan niet worden gesloten. Hij verdwijnt vanzelf zodra beide zijn gewijzigd.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index f6e390b25a..a17cc18134 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Serveren du sender trafikken til er alltid unntatt fra sin egen regel, s
+ RFW_273=Endringene dine er lagret, men har ENNÅ ikke trådt i kraft. Brannmurendringer på alle faner holdes som et utkast til du tar dem i bruk samlet, på fanen Regler.
+ RFW_274=En endring er tatt i bruk og venter på at du beholder den. Gjør du ingenting, tilbakestilles den av seg selv.
+ RFW_275=Gå til Regler
++RSEC_1=Denne ruteren er ikke sikret
++RSEC_2=Ett steg igjen for a sikre denne ruteren
++RSEC_3=Den bruker fortsatt fabrikkpassordet. Alle som nar denne siden eller Wi-Fi-nettet ditt kan ta over ruteren. Sett begge, sa forsvinner denne advarselen.
++RSEC_4=Wi-Fi er satt, men ruterpalogging er fortsatt fabrikkstandard. Alle pa nettverket kan apne denne siden og endre alt.
++RSEC_5=Ruterpalogging er satt, men Wi-Fi bruker fortsatt fabrikkpassordet. Alle innenfor rekkevidde kan koble seg til nettverket.
++RSEC_6=Ruterpalogging er fortsatt admin / admin
++RSEC_7=Ruterpalogging er endret
++RSEC_8=Endre palogging
++RSEC_9=Wi-Fi-passordet er fortsatt admin
++RSEC_10=Wi-Fi-passordet er endret
++RSEC_11=Endre Wi-Fi-passord
++RSEC_12=Denne meldingen kan ikke lukkes. Den forsvinner av seg selv nar begge er endret.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 3d5e126914..b6d5f55e66 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Serwer, na który kierujesz ruch, jest zawsze wyłączony spod własnej
+ RFW_273=Zmiany zostały zapisane, ale NIE są jeszcze aktywne. Modyfikacje zapory ze wszystkich kart są przechowywane jako wersja robocza, dopóki nie zastosujesz ich razem na karcie Reguły.
+ RFW_274=Zmiana została zastosowana i czeka na Twoje potwierdzenie. Jeśli nic nie zrobisz, sama zostanie wycofana.
+ RFW_275=Przejdź do Reguł
++RSEC_1=Ten router nie jest zabezpieczony
++RSEC_2=Zostal jeden krok do zabezpieczenia tego routera
++RSEC_3=Nadal uzywa fabrycznego hasla. Kazdy, kto dotrze do tej strony lub do Twojego Wi-Fi, moze przejac router. Ustaw oba, a to ostrzezenie zniknie.
++RSEC_4=Wi-Fi jest ustawione, ale logowanie do routera nadal jest fabryczne. Kazdy w sieci moze otworzyc te strone i zmienic wszystko.
++RSEC_5=Logowanie do routera jest ustawione, ale Wi-Fi nadal ma fabryczne haslo. Kazdy w zasiegu moze dolaczyc do sieci.
++RSEC_6=Logowanie do routera to nadal admin / admin
++RSEC_7=Logowanie do routera zostalo zmienione
++RSEC_8=Zmien logowanie
++RSEC_9=Haslo Wi-Fi to nadal admin
++RSEC_10=Haslo Wi-Fi zostalo zmienione
++RSEC_11=Zmien haslo Wi-Fi
++RSEC_12=Tego powiadomienia nie mozna zamknac. Znika samo, gdy oba zostana zmienione.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index bf940b4db0..5537c688e0 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Serverul către care trimiteți traficul este întotdeauna exceptat de l
+ RFW_273=Modificările sunt salvate, dar ÎNCĂ nu sunt în vigoare. Modificările firewallului din toate filele sunt păstrate ca ciornă până când le aplicați împreună, în fila Reguli.
+ RFW_274=O modificare a fost aplicată și așteaptă confirmarea dumneavoastră. Dacă nu faceți nimic, se va anula singură.
+ RFW_275=Mergi la Reguli
++RSEC_1=Acest router nu este securizat
++RSEC_2=Mai este un pas pana la securizarea acestui router
++RSEC_3=Foloseste inca parola din fabrica. Oricine ajunge la aceasta pagina sau la reteaua dumneavoastra Wi-Fi poate prelua routerul. Setati-le pe amandoua si acest avertisment dispare.
++RSEC_4=Wi-Fi este setat, dar autentificarea routerului este inca cea din fabrica. Oricine din retea poate deschide aceasta pagina si poate schimba orice.
++RSEC_5=Autentificarea routerului este setata, dar Wi-Fi foloseste inca parola din fabrica. Oricine se afla in raza de acoperire se poate conecta la retea.
++RSEC_6=Autentificarea routerului este inca admin / admin
++RSEC_7=Autentificarea routerului a fost schimbata
++RSEC_8=Schimba autentificarea
++RSEC_9=Parola Wi-Fi este inca admin
++RSEC_10=Parola Wi-Fi a fost schimbata
++RSEC_11=Schimba parola Wi-Fi
++RSEC_12=Aceasta notificare nu poate fi inchisa. Dispare singura dupa ce amandoua au fost schimbate.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 04e3940fce..c45a79d9dd 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Сервер, на который вы направляете трафи
+ RFW_273=Изменения сохранены, но ещё НЕ вступили в силу. Правки брандмауэра на всех вкладках хранятся как черновик, пока вы не примените их вместе на вкладке Правила.
+ RFW_274=Изменение применено и ожидает вашего подтверждения. Если ничего не делать, оно откатится само.
+ RFW_275=Перейти к Правилам
++RSEC_1=Этот роутер не защищен
++RSEC_2=Остался один шаг до защиты этого роутера
++RSEC_3=Он до сих пор использует заводской пароль. Любой, кто получит доступ к этой странице или к вашей сети Wi-Fi, может захватить роутер. Задайте оба, и это предупреждение исчезнет.
++RSEC_4=Wi-Fi настроен, но вход в роутер остается заводским. Любой в сети может открыть эту страницу и изменить что угодно.
++RSEC_5=Вход в роутер настроен, но Wi-Fi по-прежнему использует заводской пароль. Любой в зоне действия может подключиться к сети.
++RSEC_6=Вход в роутер по-прежнему admin / admin
++RSEC_7=Вход в роутер изменен
++RSEC_8=Изменить вход
++RSEC_9=Пароль Wi-Fi по-прежнему admin
++RSEC_10=Пароль Wi-Fi изменен
++RSEC_11=Изменить пароль Wi-Fi
++RSEC_12=Это уведомление нельзя закрыть. Оно исчезнет само, когда оба будут изменены.
+diff --git a/release/src/router/www/Reaper_FirstBoot.asp b/release/src/router/www/Reaper_FirstBoot.asp
+deleted file mode 100644
+index d322ae47ed..0000000000
+--- a/release/src/router/www/Reaper_FirstBoot.asp
++++ /dev/null
+@@ -1,379 +0,0 @@
+-<!-- SPDX-License-Identifier: GPL-2.0-only
+-     Copyright (C) 2026 the Reaper project maintainer
+-     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
+-
+-     First-boot / factory-reset credential gate (CISA AA26-194A hygiene).
+-     Reaper-themed page that forces the admin username + password on a factory-clean
+-     box. state.js redirects here while the admin password is still default; after the
+-     password is set, state.js forces the (proven, stock) wireless page until a WiFi
+-     PSK exists. This page therefore only owns the credential step -- it writes NO
+-     wifi/nvram apply of its own (chpass is the same call Main_Password.asp uses). -->
+-<!DOCTYPE html>
+-<html lang="en">
+-<head>
+-<meta charset="utf-8">
+-<meta name="viewport" content="width=device-width, initial-scale=1">
+-<meta name="reaper-native" content="1">
+-<meta http-equiv="Pragma" content="no-cache">
+-<meta http-equiv="Expires" content="-1">
+-<title>REAPER &mdash; <#RFB_01#></title>
+-<link rel="shortcut icon" href="images/favicon.png">
+-<script language="JavaScript" type="text/javascript" src="/js/jquery.js"></script>
+-<script type="text/javascript" src="/js/httpApi.js"></script>
+-<style>
+-@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
+-:root{
+-  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
+-  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+-  --crimson:#E10600; --crimson-deep:#B3000C;
+-  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+-  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+-}
+-*{box-sizing:border-box}
+-html,body{margin:0;min-height:100%}
+-body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
+-  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
+-    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
+-  -webkit-font-smoothing:antialiased;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+-h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+-.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
+-.card{width:100%;max-width:460px;background:linear-gradient(180deg,var(--panel),var(--panel-2));
+-  border:1px solid var(--line);border-radius:14px;padding:30px 30px 26px;
+-  box-shadow:0 24px 60px rgba(0,0,0,.55)}
+-.brand{display:flex;align-items:center;gap:12px;margin-bottom:4px}
+-.brand .mark{font-family:var(--hdr);font-weight:700;font-size:26px;letter-spacing:.16em;color:var(--bone)}
+-.brand .mark b{color:var(--crimson)}
+-h2{font-size:20px;margin:14px 0 6px}
+-.lead{font-size:13px;line-height:1.5;margin:0 0 18px}
+-label{display:block;font-family:var(--hdr);letter-spacing:.06em;text-transform:uppercase;
+-  font-size:11px;color:var(--steel);margin:16px 0 6px}
+-input[type=text],input[type=password]{width:100%;background:#0b0b0e;border:1px solid var(--line-soft);
+-  border-radius:8px;color:var(--bone);font-family:var(--body);font-size:14px;padding:12px 12px;outline:none}
+-input:focus{border-color:var(--crimson)}
+-.hint{font-size:11px;color:var(--steel);margin-top:6px}
+-.err{display:none;margin-top:14px;padding:10px 12px;border-radius:8px;
+-  background:rgba(225,6,0,.08);border:1px solid rgba(225,6,0,.35);color:#ffb3ae;font-size:12.5px}
+-.btn{margin-top:22px;width:100%;border:0;border-radius:9px;cursor:pointer;
+-  font-family:var(--hdr);letter-spacing:.08em;text-transform:uppercase;font-size:14px;
+-  color:#fff;padding:13px 16px;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
+-.btn:disabled{opacity:.55;cursor:default}
+-.steps{display:flex;gap:6px;margin:2px 0 2px}
+-.steps span{flex:1;height:3px;border-radius:2px;background:var(--line-soft)}
+-.steps span.on{background:var(--crimson)}
+-.spin{display:none;margin-top:18px;text-align:center;font-size:12.5px;color:var(--bone-dim)}
+-/* language selector: lets a non-English user switch the wizard (and the rest of the
+-   UI) to their language before setting credentials */
+-.langbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:-8px -4px 8px}
+-.langbar .lbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.14em;font-size:9.5px;color:var(--steel)}
+-.langsel{background:#0b0b0e;color:var(--bone-dim);border:1px solid var(--line-soft);border-radius:7px;
+-  font-family:var(--body);font-size:12px;padding:5px 8px;outline:none;cursor:pointer;max-width:180px}
+-.langsel:focus{border-color:var(--crimson)}
+-.fbov{display:none;position:fixed;inset:0;z-index:50;background:rgba(4,4,5,.88);
+-  align-items:center;justify-content:center;font-family:var(--hdr);letter-spacing:.16em;
+-  text-transform:uppercase;font-size:13px;color:var(--bone)}
+-</style>
+-</head>
+-<body>
+-<div class="card">
+-  <div class="langbar"><span class="lbl"><#Reaper_c_language#></span><select class="langsel" id="fb_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+-  <div style="text-align:center;margin:0 auto 10px"><img class="reaper_hdr_anim" src="images/RT-96U_REAPER_Header_anim.png" alt="Reaper" style="width:360px;max-width:100%;height:auto;display:block;margin:0 auto"></div>
+-  <div class="brand"><div class="mark">R<b>3</b>APER</div></div>
+-  <div class="eyebrow"><#RFB_01#></div>
+-  <div class="steps"><span class="on"></span><span id="step2bar"></span></div>
+-
+-  <h2><#CTL_secure#></h2>
+-  <p class="lead"><#RFB_02#></p>
+-
+-  <form id="fbForm" onsubmit="return false;">
+-    <label for="fb_user"><#RFB_03#></label>
+-    <input type="text" id="fb_user" autocomplete="username" spellcheck="false" value="admin" maxlength="32">
+-    <div class="hint"><#RFB_04#></div>
+-
+-    <label for="fb_pw"><#RFB_05#></label>
+-    <input type="password" id="fb_pw" autocomplete="new-password" maxlength="32">
+-    <div class="hint"><#RFB_06#></div>
+-
+-    <label for="fb_pw2"><#PM_Confirm_Pwd#></label>
+-    <input type="password" id="fb_pw2" autocomplete="new-password" maxlength="32">
+-
+-    <div class="err" id="fb_err"></div>
+-    <button class="btn" id="fb_go" type="submit"><#FreeWiFi_Continue#> &rarr;</button>
+-    <div class="spin" id="fb_spin"><#RFB_14#></div>
+-  </form>
+-  <!-- v2.7.3: the guide, mentioned once where every new install starts -->
+-  <div class="hint" style="margin-top:14px"><#RABT_46#>
+-    <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md" target="_blank" rel="noopener noreferrer" style="color:#b8b3a7"><#RABT_43#></a></div>
+-</div>
+-
+-<!-- language-selector plumbing (mirrors the shell): shown_language_css emits the
+-     localized language list; the change handler applies via titleForm and reloads so
+-     the wizard re-renders in the chosen language. preferred_lang is nvram, so the
+-     choice carries through to the rest of the UI once the wizard is satisfied. -->
+-<div class="fbov" id="fb_lang_ov"><#Reaper_c_applying#></div>
+-<iframe name="fb_hidden" id="fb_hidden" style="display:none" title="hidden"></iframe>
+-<form method="post" name="titleForm" id="titleForm" action="/start_apply.htm" target="fb_hidden" style="display:none">
+-  <input type="hidden" name="next_page" value="">
+-  <input type="hidden" name="current_page" value="Reaper_FirstBoot.asp">
+-  <input type="hidden" name="action_mode" value="apply">
+-  <input type="hidden" name="action_script" value="">
+-  <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="flag" value="">
+-  <input type="hidden" name="preferred_lang" value="<% nvram_get("preferred_lang"); %>">
+-</form>
+-<span id="lang_src" style="display:none"><% shown_language_css(); %></span>
+-<span id="lang_cur_name" style="display:none"><#selected_language#></span>
+-
+-<script>
+-(function(){
+-  "use strict";
+-  /* v2.1.5 (field: "won't accept anything" credential loop): live first-boot state.
+-     Blob contract (priv_webapi.o do_chpass, disasm-verified): while the password is
+-     DEFAULT there is NO failure path at all; once it is NON-default, a chpass without
+-     current credentials fails 401 (and 402+forced logout after 5 tries) UNLESS
+-     force_chgpass==1 (operator force, auth bypassed). So if this page renders with a
+-     non-default password and no operator force it can NEVER succeed - the only ways
+-     to get here are a stale/back-nav/bfcache copy or a prior submit whose success
+-     response never reached the page. Leave instead of dead-ending. */
+-  var RFB_PW_IS_DEFAULT=('<% check_pw(); %>'==='1');
+-  var RFB_FORCE_CHG=('<% nvram_get("force_chgpass"); %>'==='1');
+-  /* v2.3.5: the wizard now owns BOTH first-boot steps. Step 2 (Wi-Fi) used to be
+-     handed off to the stock wireless page by a state.js redirect - but the
+-     credential step finished by navigating to Main_ReaperDash.asp, which does not
+-     load state.js, so the hand-off never happened and the Wi-Fi step was skipped
+-     outright. Step 2 is now driven from HERE, with the proven stock wireless page
+-     framed inside this card: one Reaper surface end to end, and the Wi-Fi apply is
+-     still the stock SDN/MWL path rather than a hand-rolled PSK write. */
+-  /* Router (1) and AP (3) only - a repeater / media bridge runs no wireless config of
+-     its own, so w_Setting legitimately stays 0 there and step 2 must not be demanded
+-     (it would strand those boxes in the wizard). Mirrors state.js and
+-     reaper_firstboot_pending() in httpd/httpd.c. */
+-  var RFB_SWM=parseInt('<% nvram_get("sw_mode"); %>',10);
+-  var RFB_WIFI_PENDING=('<% nvram_get("w_Setting"); %>'==='0' && (RFB_SWM===1||RFB_SWM===3));
+-  var RFB_ESCAPE=('<% nvram_get("reaper_fbdone"); %>'==='1');
+-  var RFB_CRED_PENDING=(RFB_PW_IS_DEFAULT||RFB_FORCE_CHG);
+-  /* v2.2.0 (field: v2.1.6 first-boot refresh-loop): leave to the DASHBOARD, never to
+-     "/". httpd's startup-cached indexpage could still say THIS page after the
+-     credential step (that flow never restarts httpd), so leaving to "/" re-served the
+-     wizard and this guard bounced it back - an infinite reload loop, GUI unusable.
+-     The dashboard never routes back here (it does not consult the index cache), so
+-     this target is structurally loop-proof; with a dead session it lands on the login
+-     page with the dashboard as the stored next page - the correct flow. The cache
+-     itself is also fixed (live recompute in httpd.c / web.c login_cgi). */
+-  /* Leave ONLY when both steps are genuinely done (or the operator escape hatch is
+-     set). Bouncing out on "credentials done" alone is what skipped the Wi-Fi step. */
+-  if(RFB_ESCAPE || (!RFB_CRED_PENDING && !RFB_WIFI_PENDING)){ location.replace("/Main_ReaperDash.asp"); }
+-  var DEFAULT_PW = "admin";  /* mirrors defaults.c http_passwd default */
+-  function $(id){return document.getElementById(id);}
+-  function showErr(m){var e=$("fb_err"); e.textContent=m; e.style.display="block";}
+-  function clrErr(){$("fb_err").style.display="none";}
+-
+-  var reUser = /^[a-zA-Z0-9][a-zA-Z0-9\-\_]{0,31}$/;
+-
+-  function validate(u,p,p2){
+-    if(!reUser.test(u)) return `<#RFB_07#>`;
+-    if(p.length < 5) return `<#RFB_08#>`;
+-    if(p.length > 32) return `<#RFB_09#>`;
+-    if(p !== p2) return `<#RFB_10#>`;
+-    if(p === u) return `<#RFB_11#>`;
+-    if(p === DEFAULT_PW) return `<#RFB_12#>`;
+-    return "";
+-  }
+-
+-  /* v1.7.1 (audit L2+L3): set the admin credential via POST so the base64
+-     password rides the request BODY, not the GET query string, AND return a
+-     checkable result (the shared httpApi.chpass defaults to GET and swallows
+-     failures). Param contract mirrors httpApi.chpass exactly (btoa user+pw).
+-     If POST fails for ANY reason (e.g. chpass.cgi is GET-only) we fall back to
+-     the metal-proven shared GET path, so this can never reintroduce the
+-     v1.6.6c lockout. Returns true only when the credential was actually set. */
+-  function reaperSetCred(u, p){
+-    try{
+-      var x=new XMLHttpRequest();
+-      var body="new_username="+encodeURIComponent(btoa(u))
+-             + "&new_passwd="+encodeURIComponent(btoa(p))
+-             + "&restart_httpd=0&defpass_enable=0"
+-             + "&http_id=" + '<% nvram_get("http_id"); %>';
+-      x.open("POST","/chpass.cgi",false);
+-      x.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
+-      x.send(body);
+-      if(x.status===200){
+-        var r=null; try{ r=JSON.parse(x.responseText); }catch(e){}
+-        if(r && String(r.statusCode)==="200") return true;
+-      }
+-    }catch(e){}
+-    /* fallback: proven shared GET path (metal-validated v1.6.6c) */
+-    var sc=httpApi.chpass({"restart_httpd":"0","new_username":u,"new_passwd":p,"defpass_enable":"0","http_id":'<% nvram_get("http_id"); %>'});
+-    return (String(sc)==="200");
+-  }
+-
+-  function submit(){
+-    clrErr();
+-    var u=$("fb_user").value.trim(), p=$("fb_pw").value, p2=$("fb_pw2").value;
+-    var msg=validate(u,p,p2);
+-    if(msg){ showErr(msg); return; }
+-
+-    $("fb_go").disabled=true; $("fb_spin").style.display="block";
+-    /* Synchronous credential set -> http_passwd/http_username are committed
+-       (pw_enc-encrypted by do_chpass) before we continue. v1.7.1 (L3): unlike
+-       the old unchecked call, reaperSetCred RETURNS success, so a failed set is
+-       caught here and shown instead of silently proceeding to a false success. */
+-    var credOK=false;
+-    try{ credOK=reaperSetCred(u,p); }catch(e){ credOK=false; }
+-    if(!credOK){
+-      /* v2.1.5: a rejected chpass while the password is still default is impossible
+-         (see blob contract above) - so probe the LIVE state before declaring failure.
+-         If the password is no longer default (our own earlier submit landed, or an
+-         older build's dual-surface race already set it) and no operator force is
+-         pending, the credential step is in fact DONE: finish the flow instead of
+-         looping "Could not apply credentials" forever. */
+-      var stillDef=true, forced=false;
+-      try{
+-        var pr=new XMLHttpRequest();
+-        pr.open("GET","/Reaper_FirstBoot.asp?probe=1",false);
+-        pr.send(null);
+-        if(pr.status===200){
+-          var md=pr.responseText.match(/var RFB_PW_IS_DEFAULT=\('([^']*)'/);
+-          var mf=pr.responseText.match(/var RFB_FORCE_CHG=\('([^']*)'/);
+-          if(md) stillDef=(md[1]==="1");
+-          if(mf) forced=(mf[1]==="1");
+-        }
+-      }catch(e){}
+-      if(!stillDef && !forced){ finishOk(); return; }
+-      showErr(`<#RFB_13#>`);
+-      $("fb_go").disabled=false; $("fb_spin").style.display="none";
+-      return;
+-    }
+-    /* v1.6.6c LOGIN-LOCKOUT FIX: mirror Main_Password.asp, which fires chpass AND a
+-       saveNvram;restart_chpass apply. Dropping that apply left two gaps that locked
+-       users out with their brand-new password after a factory reset:
+-         (1) no guaranteed nvram_commit -> the new http_passwd lived in RAM only and
+-             reverted to default on the next httpd restart/reboot;
+-         (2) /etc/passwd + /etc/shadow were never rewritten -> SSH/Samba/FTP and the
+-             V1 login path kept the OLD password.
+-       Reuse the hidden titleForm (posts to /start_apply.htm via the fb_hidden iframe,
+-       so it never navigates the page); run it AFTER chpass so restart_chpass rebuilds
+-       /etc/shadow from the just-committed nvram value. */
+-    finishOk();
+-  }
+-
+-  /* ---- STEP 2: Wi-Fi password -------------------------------------------------
+-     Swap the card over to the stock wireless page, framed. Why framed rather than
+-     re-implemented: this model is MULTILAN_MWL, so the main Wi-Fi is SDN-driven and
+-     the real apply walks sdn_rl / per-band profiles. Re-creating that here is the
+-     classic way to ship a setting that appears to save and silently does not - so
+-     the wizard drives the PROVEN page and just owns the chrome and the exit.
+-     The gate in httpd.c allow-lists Advanced_Wireless_Content.asp precisely so this
+-     frame can load; state.js's own wireless gates self-exempt that page, so the
+-     frame cannot redirect itself. */
+-  function showWifiStep(){
+-    try{
+-      var card=document.querySelector(".card");
+-      if(!card) return;
+-      var s2=$("step2bar"); if(s2) s2.className="on";
+-      var f=$("fbForm"); if(f) f.style.display="none";
+-      var h=card.querySelector("h2"); if(h) h.textContent=`<#RFB_15#>`;
+-      var l=card.querySelector(".lead"); if(l) l.textContent=`<#RFB_16#>`;
+-      card.style.maxWidth="920px";
+-      var fr=document.createElement("iframe");
+-      fr.id="fb_wifi";
+-      fr.src="/Advanced_Wireless_Content.asp?firstboot=1";
+-      fr.setAttribute("title", `<#RFB_15#>`);
+-      fr.style.cssText="width:100%;height:70vh;min-height:460px;border:1px solid var(--line-soft);"
+-                     + "border-radius:10px;background:#0b0b0e;margin-top:14px";
+-      card.appendChild(fr);
+-      /* The wireless apply restarts the radios and flips w_Setting to 1. Poll for
+-         that rather than guessing at a timeout, then leave to the dashboard. */
+-      var tries=0;
+-      var iv=setInterval(function(){
+-        tries++;
+-        var done=false;
+-        try{
+-          var nv=httpApi.nvramGet(["w_Setting"], true);
+-          done=(nv && String(nv.w_Setting)==="1");
+-        }catch(e){}
+-        if(done){ clearInterval(iv); top.location.href="/Main_ReaperDash.asp"; }
+-        else if(tries>900){ clearInterval(iv); }   /* ~30 min; user is still working */
+-      }, 2000);
+-    }catch(e){}
+-  }
+-
+-  function finishOk(){
+-    try{
+-      var tf=$("titleForm");
+-      tf.action_script.value="saveNvram;restart_chpass";
+-      tf.flag.value="";
+-      tf.next_page.value="";
+-      tf.submit();
+-    }catch(e){}
+-    /* Changing the admin password may drop this session. Head to the DASHBOARD
+-       explicitly (v2.2.0 - never "/", which the stale httpd index cache could route
+-       right back to this page; see the guard note above): with a live session it
+-       lands there directly; with a dropped one it lands on the login page with the
+-       dashboard as the stored next page. state.js still forces the Wi-Fi step on the
+-       stock pages until a PSK is set. Wait a beat longer than stock (3000ms) so the
+-       apply/commit lands before we leave. */
+-    setTimeout(function(){
+-      /* v2.3.5: continue to the Wi-Fi step instead of leaving. Going straight to the
+-         dashboard here is precisely what skipped step 2 - the dashboard does not load
+-         state.js, so nothing downstream ever forced the Wi-Fi password. */
+-      if(RFB_WIFI_PENDING){ showWifiStep(); return; }
+-      top.location.href = "/Main_ReaperDash.asp";
+-    }, 3200);
+-  }
+-
+-  document.addEventListener("DOMContentLoaded", function(){
+-    /* Credentials already set but Wi-Fi still factory (the httpd gate sent us here,
+-       or the user reloaded mid-wizard) -> open straight on step 2. */
+-    if(!RFB_ESCAPE && !RFB_CRED_PENDING && RFB_WIFI_PENDING){ showWifiStep(); return; }
+-    $("fb_go").addEventListener("click", submit);
+-    $("fbForm").addEventListener("submit", function(e){ e.preventDefault(); submit(); });
+-    $("fb_pw").addEventListener("keyup", function(e){ if(e.keyCode===13) $("fb_pw2").focus(); });
+-    $("fb_pw2").addEventListener("keyup", function(e){ if(e.keyCode===13) submit(); });
+-    $("fb_user").focus();
+-  });
+-})();
+-
+-/* language selector (self-contained; mirrors reaper_shell.asp). shown_language_css()
+-   emits <dd><a id=CODE>Name</a> for every non-current language; prepend the current one
+-   (shown_language_css omits it) so it shows selected. On change, apply set_language via
+-   titleForm and reload - the wizard then renders in the new language and preferred_lang
+-   (nvram) carries the choice into the rest of the UI after the wizard is done. */
+-(function(){
+-  /* $() from the enclosing script scope */
+-  var src=$("lang_src"), sel=$("fb_lang"); if(!src||!sel) return;
+-  var cur=""; try{ cur=document.titleForm.preferred_lang.value; }catch(e){}
+-  var curName=""; try{ curName=($("lang_cur_name").textContent||"").replace(/\s+/g," ").trim(); }catch(e){}
+-  var as=src.querySelectorAll("dd a");
+-  if(!as.length){ var bar=sel.parentNode; if(bar) bar.style.display="none"; return; }
+-  if(cur){
+-    var oc=document.createElement("option");
+-    oc.value=cur; oc.textContent=curName||cur; oc.selected=true; sel.appendChild(oc);
+-  }
+-  for(var i=0;i<as.length;i++){
+-    var code=as[i].id||""; if(!code||code===cur) continue;
+-    var o=document.createElement("option");
+-    o.value=code; o.textContent=(as[i].textContent||code).replace(/\s+/g," ").trim();
+-    sel.appendChild(o);
+-  }
+-  sel.addEventListener("change", function(){
+-    if(!this.value || this.value===cur) return;
+-    var f=document.titleForm; if(!f) return;
+-    try{
+-      f.current_page.value="Reaper_FirstBoot.asp";
+-      f.preferred_lang.value=this.value;
+-      f.flag.value="set_language";
+-      f.action_script.value="email_info";
+-      f.action="/start_apply.htm";
+-      var ov=$("fb_lang_ov"); if(ov) ov.style.display="flex";
+-      f.submit();
+-    }catch(e){ return; }
+-    setTimeout(function(){ try{ location.reload(); }catch(e){} }, 5500);
+-  });
+-})();
+-</script>
+-</body>
+-</html>
+diff --git a/release/src/router/www/Reaper_SecBanner.asp b/release/src/router/www/Reaper_SecBanner.asp
+new file mode 100644
+index 0000000000..b53476b7da
+--- /dev/null
++++ b/release/src/router/www/Reaper_SecBanner.asp
+@@ -0,0 +1,46 @@
++<!--
++	Reaper_SecBanner.asp - unsecured-router notice FRAGMENT (v2.9.1)
++
++	Not a page: no <head>, no chrome. Fetched by the injected loader
++	(REAPER_SECBANNER_JS in httpd/reaper_inject.c) and inserted at the top of
++	<body> on every top-level admin surface.
++
++	WHY A FRAGMENT AND NOT MARKUP IN EACH PAGE
++	  do_ej resolves <#TOKEN#> server-side against the language in preferred_lang
++	  (httpd/ej.c:108 kw_mark1/kw_mark2, load_dictionary at :275), so everything
++	  below arrives already translated. One definition, so the banner cannot drift
++	  between the dashboard, the shell and the stock pages.
++
++	WHY THE STRINGS SIT IN HIDDEN SPANS
++	  Scripts inside innerHTML never execute, so the loader - not this file - builds
++	  the banner. Keeping every literal here means the loader stays pure logic and
++	  carries no English (i18n standing rule 24). Same split as Reaper_BackupCard.asp.
++
++	STATE
++	  #rsec_state carries the two live conditions. Both are computed server-side on
++	  every render, which is what makes this notice un-dismissable: there is no
++	  client state to clear and no cookie to drop. data-pw is stock's own
++	  check_pw() (1 = admin password still factory); data-wifi is reaper_wifi_default()
++	  (1 = at least one radio still on the factory key).
++
++	NEVER SERVED PRE-AUTH. The loader is injected only into authenticated admin
++	surfaces - never Main_Login.asp, Captive_Portal*, blocking.asp or the offline
++	pages. Telling an unauthenticated visitor or a quarantined guest that the router
++	still has factory credentials hands the fact to exactly the wrong person.
++-->
++<div id="rsec_state" data-pw="<% check_pw(); %>" data-wifi="<% reaper_wifi_default(); %>"></div>
++
++<div id="rsec_i18n" style="display:none">
++	<span id="rsec_t_head_both"><#RSEC_1#></span>
++	<span id="rsec_t_head_one"><#RSEC_2#></span>
++	<span id="rsec_t_body_both"><#RSEC_3#></span>
++	<span id="rsec_t_body_pw"><#RSEC_4#></span>
++	<span id="rsec_t_body_wifi"><#RSEC_5#></span>
++	<span id="rsec_t_pw_todo"><#RSEC_6#></span>
++	<span id="rsec_t_pw_done"><#RSEC_7#></span>
++	<span id="rsec_t_pw_cta"><#RSEC_8#></span>
++	<span id="rsec_t_wifi_todo"><#RSEC_9#></span>
++	<span id="rsec_t_wifi_done"><#RSEC_10#></span>
++	<span id="rsec_t_wifi_cta"><#RSEC_11#></span>
++	<span id="rsec_t_why"><#RSEC_12#></span>
++</div>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 393c4f2b6e..3c1704964a 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Strežnik, na katerega pošiljate promet, je vedno izvzet iz lastnega pr
+ RFW_273=Spremembe so shranjene, vendar še NISO v veljavi. Urejanja požarnega zidu na vseh zavihkih se hranijo kot osnutek, dokler jih skupaj ne uveljavite na zavihku Pravila.
+ RFW_274=Sprememba je bila uveljavljena in čaka na vašo potrditev. Če ne storite ničesar, se sama povrne.
+ RFW_275=Pojdi na Pravila
++RSEC_1=Ta usmerjevalnik ni zasciten
++RSEC_2=Se en korak do zascite tega usmerjevalnika
++RSEC_3=Se vedno uporablja tovarnisko geslo. Kdor koli doseze to stran ali vase omrezje Wi-Fi, lahko prevzame usmerjevalnik. Nastavite oboje in to opozorilo bo izginilo.
++RSEC_4=Wi-Fi je nastavljen, prijava v usmerjevalnik pa je se vedno tovarniska. Kdor koli v omrezju lahko odpre to stran in spremeni karkoli.
++RSEC_5=Prijava v usmerjevalnik je nastavljena, Wi-Fi pa se vedno uporablja tovarnisko geslo. Kdor koli v dosegu se lahko pridruzi omrezju.
++RSEC_6=Prijava v usmerjevalnik je se vedno admin / admin
++RSEC_7=Prijava v usmerjevalnik je bila spremenjena
++RSEC_8=Spremeni prijavo
++RSEC_9=Geslo za Wi-Fi je se vedno admin
++RSEC_10=Geslo za Wi-Fi je bilo spremenjeno
++RSEC_11=Spremeni geslo za Wi-Fi
++RSEC_12=Tega obvestila ni mogoce zapreti. Izgine samo, ko sta oboje spremenjena.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 44c1b33630..569713d3b8 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Servern du skickar trafiken till är alltid undantagen från sin egen re
+ RFW_273=Dina ändringar är sparade men har ÄNNU inte trätt i kraft. Brandväggsändringar på alla flikar hålls som ett utkast tills du tillämpar dem tillsammans, på fliken Regler.
+ RFW_274=En ändring har tillämpats och väntar på att du behåller den. Gör du inget återställs den av sig själv.
+ RFW_275=Gå till Regler
++RSEC_1=Den har routern ar inte sakrad
++RSEC_2=Ett steg kvar for att sakra den har routern
++RSEC_3=Den anvander fortfarande fabrikslosenordet. Alla som nar den har sidan eller ditt Wi-Fi kan ta over routern. Stall in bada, sa forsvinner den har varningen.
++RSEC_4=Ditt Wi-Fi ar installt, men routerinloggningen ar fortfarande fabriksinstallningen. Alla i natverket kan oppna den har sidan och andra vad som helst.
++RSEC_5=Routerinloggningen ar installd, men Wi-Fi anvander fortfarande fabrikslosenordet. Alla inom rackhall kan ansluta till natverket.
++RSEC_6=Routerinloggningen ar fortfarande admin / admin
++RSEC_7=Routerinloggningen har andrats
++RSEC_8=Andra inloggning
++RSEC_9=Wi-Fi-losenordet ar fortfarande admin
++RSEC_10=Wi-Fi-losenordet har andrats
++RSEC_11=Andra Wi-Fi-losenord
++RSEC_12=Det har meddelandet gar inte att stanga. Det forsvinner av sig sjalvt nar bada har andrats.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 8eb7fa6261..27b238ed4d 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6766,3 +6766,15 @@ RFW_272=เซิร์ฟเวอร์ที่คุณส่งทราฟ
+ RFW_273=บันทึกการเปลี่ยนแปลงแล้ว แต่ยังไม่มีผลบังคับใช้ การแก้ไขไฟร์วอลล์ในทุกแท็บจะถูกเก็บเป็นฉบับร่างจนกว่าคุณจะนำไปใช้พร้อมกันที่แท็บกฎ
+ RFW_274=มีการเปลี่ยนแปลงถูกนำไปใช้แล้วและกำลังรอให้คุณยืนยันเก็บไว้ หากไม่ทำอะไร ระบบจะย้อนกลับเอง
+ RFW_275=ไปที่กฎ
++RSEC_1=เราเตอร์นี้ยังไม่ได้รับการป้องกัน
++RSEC_2=เหลืออีกหนึ่งขั้นตอนในการป้องกันเราเตอร์นี้
++RSEC_3=ยังคงใช้รหัสผ่านจากโรงงาน ใครก็ตามที่เข้าถึงหน้านี้หรือ Wi-Fi ของคุณได้สามารถยึดเราเตอร์ไปได้ ตั้งค่าทั้งสองอย่างแล้วคำเตือนนี้จะหายไป
++RSEC_4=ตั้งค่า Wi-Fi แล้ว แต่การเข้าสู่ระบบเราเตอร์ยังเป็นค่าจากโรงงาน ใครก็ตามในเครือข่ายสามารถเปิดหน้านี้และเปลี่ยนแปลงอะไรก็ได้
++RSEC_5=ตั้งค่าการเข้าสู่ระบบเราเตอร์แล้ว แต่ Wi-Fi ยังใช้รหัสผ่านจากโรงงาน ใครก็ตามที่อยู่ในระยะสัญญาณสามารถเข้าร่วมเครือข่ายได้
++RSEC_6=การเข้าสู่ระบบเราเตอร์ยังเป็น admin / admin
++RSEC_7=เปลี่ยนการเข้าสู่ระบบเราเตอร์แล้ว
++RSEC_8=เปลี่ยนการเข้าสู่ระบบ
++RSEC_9=รหัสผ่าน Wi-Fi ยังเป็น admin
++RSEC_10=เปลี่ยนรหัสผ่าน Wi-Fi แล้ว
++RSEC_11=เปลี่ยนรหัสผ่าน Wi-Fi
++RSEC_12=ประกาศนี้ไม่สามารถปิดได้ จะหายไปเองเมื่อเปลี่ยนทั้งสองอย่างแล้ว
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 27edde9dc5..51ab5f1bee 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Trafiği gönderdiğiniz sunucu kendi kuralından her zaman muaftır, b
+ RFW_273=Değişiklikleriniz kaydedildi ancak HENÜZ yürürlükte değil. Tüm sekmelerdeki güvenlik duvarı düzenlemeleri, Kurallar sekmesinde birlikte uygulayana kadar taslak olarak tutulur.
+ RFW_274=Bir değişiklik uygulandı ve saklamanızı bekliyor. Hiçbir şey yapmazsanız kendiliğinden geri alınır.
+ RFW_275=Kurallara git
++RSEC_1=Bu yonlendirici guvenli degil
++RSEC_2=Bu yonlendiriciyi guvene almak icin bir adim kaldi
++RSEC_3=Hala fabrika parolasini kullaniyor. Bu sayfaya veya Wi-Fi aginiza ulasabilen herkes yonlendiriciyi ele gecirebilir. Ikisini de ayarlayin, bu uyari kaybolsun.
++RSEC_4=Wi-Fi ayarlandi, ancak yonlendirici girisi hala fabrika varsayilani. Agdaki herkes bu sayfayi acip her seyi degistirebilir.
++RSEC_5=Yonlendirici girisi ayarlandi, ancak Wi-Fi hala fabrika parolasini kullaniyor. Kapsama alanindaki herkes aga katilabilir.
++RSEC_6=Yonlendirici girisi hala admin / admin
++RSEC_7=Yonlendirici girisi degistirildi
++RSEC_8=Girisi degistir
++RSEC_9=Wi-Fi parolasi hala admin
++RSEC_10=Wi-Fi parolasi degistirildi
++RSEC_11=Wi-Fi parolasini degistir
++RSEC_12=Bu bildirim kapatilamaz. Ikisi de degistirildiginde kendiliginden kaybolur.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index d618a58e99..9e02aeb27a 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6766,3 +6766,15 @@ RFW_272=你指定的目標伺服器一律不受本規則限制，因此仍能連
+ RFW_273=變更已儲存，但尚未生效。所有頁籤的防火牆修改都會暫存為草稿，直到你在「規則」頁籤一併套用為止。
+ RFW_274=變更已套用，正在等待你確認保留。若不做任何動作，將會自動還原。
+ RFW_275=前往規則
++RSEC_1=此路由器尚未受到保護
++RSEC_2=還差一步即可保護此路由器
++RSEC_3=它仍在使用出廠密碼。任何能夠開啟此頁面或連上您 Wi-Fi 的人都可以接管路由器。兩項都設定後，此警告將消失。
++RSEC_4=您的 Wi-Fi 已設定，但路由器登入仍為出廠預設值。網路上的任何人都可以開啟此頁面並變更任何設定。
++RSEC_5=路由器登入已設定，但 Wi-Fi 仍使用出廠密碼。附近範圍內的任何人都可以加入網路。
++RSEC_6=路由器登入仍為 admin / admin
++RSEC_7=路由器登入已變更
++RSEC_8=變更登入
++RSEC_9=Wi-Fi 密碼仍為 admin
++RSEC_10=Wi-Fi 密碼已變更
++RSEC_11=變更 Wi-Fi 密碼
++RSEC_12=此提示無法關閉。兩項都變更後它會自動消失。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 79788cdb67..d0b8c49359 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6766,3 +6766,15 @@ RFW_272=Сервер, на який ви спрямовуєте трафік, з
+ RFW_273=Зміни збережено, але вони ЩЕ НЕ діють. Правки брандмауера на всіх вкладках зберігаються як чернетка, доки ви не застосуєте їх разом на вкладці Правила.
+ RFW_274=Зміну застосовано, і вона очікує на ваше підтвердження. Якщо нічого не робити, вона скасується сама.
+ RFW_275=Перейти до Правил
++RSEC_1=Цей маршрутизатор не захищено
++RSEC_2=Залишився один крок до захисту цього маршрутизатора
++RSEC_3=Він досі використовує заводський пароль. Будь-хто, хто отримає доступ до цієї сторінки або до вашої мережі Wi-Fi, може захопити маршрутизатор. Задайте обидва, і це попередження зникне.
++RSEC_4=Wi-Fi налаштовано, але вхід до маршрутизатора досі заводський. Будь-хто в мережі може відкрити цю сторінку та змінити будь-що.
++RSEC_5=Вхід до маршрутизатора налаштовано, але Wi-Fi досі використовує заводський пароль. Будь-хто в зоні дії може приєднатися до мережі.
++RSEC_6=Вхід до маршрутизатора досі admin / admin
++RSEC_7=Вхід до маршрутизатора змінено
++RSEC_8=Змінити вхід
++RSEC_9=Пароль Wi-Fi досі admin
++RSEC_10=Пароль Wi-Fi змінено
++RSEC_11=Змінити пароль Wi-Fi
++RSEC_12=Це сповіщення неможливо закрити. Воно зникне саме, коли обидва буде змінено.
+diff --git a/release/src/router/www/state.js b/release/src/router/www/state.js
+index 8dd82de16a..0cfcc79933 100644
+--- a/release/src/router/www/state.js
++++ b/release/src/router/www/state.js
+@@ -924,45 +924,10 @@ if(based_modelid != "BRT-AC828"){
+ if(navigator.userAgent.search("asusrouter") == -1){
+ 	var notice_pw_is_default = '<% check_pw(); %>';
+ 	var force_chgpass = `<% nvram_get("force_chgpass"); %>`;
+-	// Reaper first-boot gate (CISA AA26-194A): on a factory-clean box force the admin
+-	// credentials (themed Reaper_FirstBoot.asp), then force a Wi-Fi password via the
+-	// proven stock wireless page, before any other page is reachable. Derived purely
+-	// from live state (default password / unconfigured sdn_rl) so a already-configured
+-	// box -- including one upgrading to this build -- never sees the gate.
+-	// reaper v2.3.5: honour the reaper_fbdone escape hatch here too. Without it the C
+-	// gate could be cleared over SSH while this gate still bounced every page back to
+-	// the wizard - i.e. the hatch would not actually free a wedged GUI. Setting it
+-	// requires root on the box already, so it weakens nothing that root cannot do.
+-	if(`<% nvram_get("reaper_fbdone"); %>` != '1' && (notice_pw_is_default == 1 || force_chgpass == 1) && window.location.pathname.toUpperCase().search("QIS_") < 0) //force to change http_passwd / http_username & except QIS settings
+-		location.href = 'Reaper_FirstBoot.asp?nextPage=' + window.location.pathname.substring(1 ,window.location.pathname.length);
+-	// reaper: w_Setting factory default is back to stock 0 (AiMesh node discoverability +
+-	// WPS-OOB enrollment - see defaults.c). Stock sent w_Setting==0 boxes to the retired
+-	// QIS wireless mini-wizard; route it to the same first-run wireless page as gate 3
+-	// instead (target is in reaper_inject.c reaper_skip[] - standing rule 27). Exempt the
+-	// target page itself and the QIS wizard (AiMesh add-node runs it framed).
+-	// reaper v2.3.5: both wireless gates now target the Reaper wizard, not the stock
+-	// wireless page directly. The wizard FRAMES that page for its step 2, so the apply
+-	// is still the proven SDN/MWL path - but the user only ever sees one Reaper surface,
+-	// and there is a single place that decides when first boot is finished. The frame
+-	// itself must not re-trigger these gates, hence the ADVANCED_WIRELESS_CONTENT
+-	// exemption stays. reaper_fbdone is the operator escape hatch (see httpd.c).
+-	else if(`<% nvram_get("reaper_fbdone"); %>` != '1'
+-	        && `<% nvram_get("w_Setting"); %>` == '0' && !isSwMode("RP")
+-	        && window.location.pathname.toUpperCase().search("QIS_") < 0
+-	        && window.location.pathname.toUpperCase().search("ADVANCED_WIRELESS_CONTENT") < 0
+-	        && window.location.pathname.toUpperCase().search("REAPER_FIRSTBOOT") < 0)
+-		top.location.href = '/Reaper_FirstBoot.asp';
+-	// reaper v2.7.4 (RT-BE92U field: "every nav item flashes 'Secure Your Router' and
+-	// lands back on the dashboard"): the former third gate here compared sdn_rl to its
+-	// factory default as a "Wi-Fi never configured" test. That is the wrong signal -
+-	// sdn_rl only ever changes when a guest/SDN profile is CREATED; the stock wireless
+-	// apply flips w_Setting and never touches sdn_rl. So on any box without a guest
+-	// network the test stayed true forever: every state.js page top-bounced to
+-	// Reaper_FirstBoot.asp, whose leave-guard (creds set, w_Setting==1) immediately sent
+-	// it back to the dashboard - the half-second flash - and no framed page could load.
+-	// Boxes that had a guest network (the dev units) never saw it. w_Setting is the one
+-	// signal every other gate uses (gate 2 above, Main_ReaperDash.asp, Reaper_FirstBoot.asp,
+-	// httpd reaper_firstboot_pending()); gate 2 already covers it, so gate 3 is gone.
++	// reaper v2.9.1: the two first-run redirects that lived here are GONE. Nothing
++	// blocks a page any more - an unsecured box is reported by the un-dismissable
++	// banner (Reaper_SecBanner.asp) instead. notice_pw_is_default stays: it is read
++	// by notification.js:590.
+ }
+ 
+ var allUsbStatus = "";
+-- 
+2.25.1
+

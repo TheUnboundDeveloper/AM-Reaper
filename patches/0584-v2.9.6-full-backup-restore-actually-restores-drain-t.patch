@@ -1,0 +1,357 @@
+From cdbff9ac647068465595a1667a8a8ae9f1e6d608 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 31 Aug 2026 08:10:53 -0400
+Subject: [PATCH] v2.9.6: full-backup restore actually restores - drain the
+ TLS-buffered upload tail
+
+Every metal restore from v2.7.2 to v2.9.4 answered {"ok":0,"ek":"file",
+"ec":"magic"} and did nothing. Two defects, both in our code, neither in the
+stock tail:
+
+1. do_reaper_restore_post gated each 1 KB fread() on select() of the RAW
+   socket. Under TLS the last ~16-24 KB of the body sit in SSL_pending() +
+   stdio buffers with the socket empty, so select() timed out and the loop
+   broke with bytes still owed; the old `if (want > 0) goto out` threw them
+   away. Stock do_upload_post has the identical loop but its post-loop slurp
+   keeps writing to the fifo - our copy dropped the fputc. Mirror stock:
+   drain from the FILE until the declared length is met, then judge short.
+
+2. The card's stylesheet hides #rbk_msg / #rbk_pending with display:none;
+   the injected JS un-hid them with style.display="" which only clears an
+   INLINE style. Every message - and the v2.9.3 alert() fallback - was
+   written into a div that stayed hidden. display="block" now.
+
+Also: every refusal in both halves logs its stage / ek+ec to syslog (only
+success logged before), do_upload_config stamps nvram-restored / committed /
+reboot-requested, and the reply half waits up to 15 s for rc's /tmp/reboot
+and re-requests once if it never appears.
+---
+ release/src-rt/version.conf              |   2 +-
+ release/src/router/httpd/reaper_inject.c |  14 ++-
+ release/src/router/httpd/web.c           | 115 +++++++++++++++++------
+ release/src/router/libwebapi/webapi.c    |   6 ++
+ 4 files changed, 102 insertions(+), 35 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 55d24d4b6a..bc7d73a3cb 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.9.4
++EXTENDNO=Reaper_v2.9.6
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index fc833df886..11b87aae75 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -117,13 +117,21 @@
+  * outcome of a restore was discarded with no trace, success or failure. That is
+  * why a field restore could POST, receive 200 OK and appear to do nothing, and
+  * why the per-cause ec codes never reached the operator. It now falls back to
+- * alert() + console so a result can never be swallowed again. */
++ * alert() + console so a result can never be swallowed again.
++ *
++ * reaper v2.9.6: the element was never absent - it was INVISIBLE. The fragment
++ * hides #rbk_msg and #rbk_pending with a STYLESHEET rule
++ * (`#rbk_card #rbk_msg{display:none}`), and `el.style.display=""` only clears
++ * an INLINE style, so every message from v2.7.2 to v2.9.4 was written into a
++ * div the stylesheet kept hidden - which is also why the v2.9.3 alert()
++ * fallback never fired. Un-hiding must set an explicit inline value that
++ * outranks the rule: display="block". Same for the pending-restore banner. */
+ #define REAPER_BKCARD_JS \
+ 	"<script>(function(){" \
+ 	"function t(i){var e=document.getElementById(i);return e?e.textContent:\"\";}" \
+ 	"function msg(ok,s){var m=document.getElementById(\"rbk_msg\");" \
+ 	"if(!m){try{alert(s);}catch(e){}try{console.log(\"reaper backup: \"+s);}catch(e){}return;}" \
+-	"m.style.display=\"\";m.className=ok?\"rbk_ok\":\"rbk_err\";m.textContent=s;}" \
++	"m.style.display=\"block\";m.className=ok?\"rbk_ok\":\"rbk_err\";m.textContent=s;}" \
+ 	"function wire(){" \
+ 	"var hid=t(\"rbk_hid\"),model=t(\"rbk_model\"),ver=t(\"rbk_ver\");" \
+ 	"var dl=document.getElementById(\"rbk_dl\");" \
+@@ -188,7 +196,7 @@
+ 	"var x2=new XMLHttpRequest();" \
+ 	"x2.open(\"GET\",\"/reaper_cfg.cgi?action=pending&http_id=\"+encodeURIComponent(hid)+\"&_=\"+Date.now(),true);" \
+ 	"x2.onload=function(){var j=null;try{j=JSON.parse(x2.responseText);}catch(e){}" \
+-	"if(j&&j.ok&&j.pending){var b=document.getElementById(\"rbk_pending\");if(b)b.style.display=\"\";}};" \
++	"if(j&&j.ok&&j.pending){var b=document.getElementById(\"rbk_pending\");if(b)b.style.display=\"block\";}};" \
+ 	"x2.send();" \
+ 	"var cp=document.getElementById(\"rbk_complete\");" \
+ 	"if(cp)cp.onclick=function(){cp.disabled=true;" \
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b883b05202..be7d80f916 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24904,9 +24904,14 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ {
+ 	char buf[1024];
+ 	FILE *fifo = NULL;
+-	long want;
++	long want = 0;
+ 	int ch, count;
+ 	json_object *meta = NULL, *jv;
++	/* reaper v2.9.6: which stage refused the upload. Until now every failure
++	 * in this half was silent and the reply half reported all of them as
++	 * "magic" - a field report could not tell a wrong file from a dropped
++	 * body. The stage name lands in syslog at out: whenever err stays set. */
++	const char *why = "multipart-scan";
+ 
+ 	memset(&rbk_up, 0, sizeof(rbk_up));
+ 	rbk_up.err = 1;	/* "file" until everything below succeeds */
+@@ -24934,6 +24939,7 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	if (len <= 0) goto out;
+ 
+ 	/* skip the file part's remaining headers */
++	why = "file-part-headers";
+ 	while (len > 0) {
+ 		if (!fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
+ 		len -= strlen(buf);
+@@ -24941,9 +24947,11 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	}
+ 
+ 	/* magic line, then the meta line (both short text) */
++	why = "magic";
+ 	if (len <= 0 || !fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
+ 	len -= strlen(buf);
+ 	if (strcmp(buf, RBK_MAGIC) != 0) goto out;
++	why = "meta";
+ 	if (len <= 0 || !fgets(buf, MIN(len + 1, (int)sizeof(buf)), stream)) goto out;
+ 	len -= strlen(buf);
+ 	if (strlen(buf) >= RBK_META_MAX) goto out;
+@@ -24956,6 +24964,7 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	rbk_up.cfg = json_object_object_get_ex(meta, "cfg", &jv) ? json_object_get_int64(jv) : -1;
+ 	rbk_up.rcfg = json_object_object_get_ex(meta, "rcfg", &jv) ? json_object_get_int64(jv) : -1;
+ 	rbk_up.fqdn = json_object_object_get_ex(meta, "fqdn", &jv) ? json_object_get_int64(jv) : -1;
++	why = "meta-ranges";
+ 	if (rbk_up.cfg < 8 || rbk_up.cfg > RBK_CFG_MAX ||
+ 	    rbk_up.rcfg < 2 || rbk_up.rcfg > RCFG_PENDING_MAX ||
+ 	    rbk_up.fqdn < 0 || rbk_up.fqdn > RBK_FQDN_MAX)
+@@ -24964,10 +24973,12 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 	/* stream exactly the declared bytes to the staging file */
+ 	want = rbk_up.cfg + rbk_up.rcfg + rbk_up.fqdn;
+ 	unlink(RBK_UPLOAD);
++	why = "staging-open";
+ 	{
+ 		int ufd = open(RBK_UPLOAD, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
+ 		if (ufd < 0 || (fifo = fdopen(ufd, "w")) == NULL) { if (ufd >= 0) close(ufd); goto out; }
+ 	}
++	why = "body-read";
+ 	while (len > 0 && want > 0) {
+ #ifdef RTCONFIG_HTTPS
+ 		if (do_ssl) {
+@@ -24986,11 +24997,38 @@ do_reaper_restore_post(char *url, FILE *stream, int len, char *boundary)
+ 		want -= count;
+ 		fwrite(buf, 1, count, fifo);
+ 	}
++	/* reaper v2.9.6 - THE BUG THAT MADE EVERY METAL RESTORE FAIL (v2.7.2 ..
++	 * v2.9.4). The loop above gates each fread() on waitfor() = select() on
++	 * the RAW socket. Under TLS mssl_read drains whole records while
++	 * SSL_pending() and the fopencookie FILE buffers BUFSIZ on top, so the last
++	 * ~16-24 KB of the body sit in USERSPACE buffers with the socket empty:
++	 * select() times out, the loop breaks with want > 0, and the old
++	 * `if (want > 0) goto out;` threw those bytes away and answered "magic".
++	 * Deterministic on HTTPS; plain HTTP fails the same way after the 10 s
++	 * wait. Stock do_upload_post has the IDENTICAL loop and survives only
++	 * because its post-loop slurp keeps WRITING to the fifo (fgetc -> fputc);
++	 * our copy dropped the fputc. Mirror stock: drain from the FILE, where the
++	 * bytes actually are, until the declared length is met - only then judge
++	 * short-body. */
++	if (want > 0 && len > 0) {
++		long drained = 0;
++		while (len > 0 && want > 0) {
++			if ((ch = fgetc(stream)) == EOF) break;
++			len--;
++			fputc(ch, fifo);
++			want--;
++			drained++;
++		}
++		logmessage("reaper_cfg", "full-backup restore: upload tail drained from the TLS/stdio buffer (%ld bytes, %ld still owed)", drained, want);
++	}
++	why = "short-body";
+ 	if (want > 0) goto out;	/* short body */
+ 	fclose(fifo);
+ 	fifo = NULL;
+ 	rbk_up.err = 0;
+ out:
++	if (rbk_up.err)
++		logmessage("reaper_cfg", "full-backup restore: upload REFUSED at stage %s (body left %d, bytes owed %ld)", why, len, want);
+ 	if (meta) json_object_put(meta);
+ 	if (fifo) { fclose(fifo); unlink(RBK_UPLOAD); }
+ 	/* slurp the trailing boundary + anything else */
+@@ -25045,6 +25083,15 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 	long left;
+ 	size_t n;
+ 	int ok = 0;
++/* reaper v2.9.6: every refusal below used to reach only the browser - and the
++ * browser's message div was invisible (see reaper_inject.c), so from v2.7.2 to
++ * v2.9.4 a failed restore left NO trace anywhere. Only success logged. Every
++ * refusal now lands in syslog with the same ek/ec the client receives, so a
++ * field report can quote the exact cause even when the GUI shows nothing. */
++#define RBK_FAIL(ek, ec) do { \
++	websWrite(stream, "{\"ok\":0,\"ek\":\"" ek "\",\"ec\":\"" ec "\"}"); \
++	logmessage("reaper_cfg", "full-backup restore REFUSED: %s/%s", ek, ec); \
++	goto done; } while (0)
+ 
+ 	/* same CSRF discipline as every Reaper control (the token traveled as a
+ 	 * multipart field, captured by the POST half) */
+@@ -25058,56 +25105,45 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 			goto done;
+ 		}
+ 	}
+-	if (rbk_up.err) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"magic\"}"); goto done; }
+-	if (strcmp(rbk_up.model, nvram_safe_get("productid")) != 0) {
+-		websWrite(stream, "{\"ok\":0,\"ek\":\"model\"}");
+-		goto done;
+-	}
+-	if (!rbk_jffs_ok()) { websWrite(stream, "{\"ok\":0,\"ek\":\"jffs\",\"ec\":\"jffsfull\"}"); goto done; }
++	if (rbk_up.err) RBK_FAIL("file", "magic");
++	if (strcmp(rbk_up.model, nvram_safe_get("productid")) != 0) RBK_FAIL("model", "model");
++	if (!rbk_jffs_ok()) RBK_FAIL("jffs", "jffsfull");
+ 
+-	if ((in = fopen(RBK_UPLOAD, "r")) == NULL) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"stage\"}"); goto done; }
++	if ((in = fopen(RBK_UPLOAD, "r")) == NULL) RBK_FAIL("file", "stage");
+ 
+ 	/* ---- validate everything before writing anything ---- */
+ 	/* the CFG part must itself carry the stock profile magic */
+ 	if (fread(buf, 1, 8, in) != 8 ||
+-	    (strncmp(buf, PROFILE_HEADER, 4) != 0 && strncmp(buf, PROFILE_HEADER_NEW, 4) != 0)) {
+-		websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"cfghdr\"}");
+-		goto done;
+-	}
++	    (strncmp(buf, PROFILE_HEADER, 4) != 0 && strncmp(buf, PROFILE_HEADER_NEW, 4) != 0))
++		RBK_FAIL("file", "cfghdr");
+ 	/* the Reaper JSON must parse and be ours */
+ 	if (fseek(in, rbk_up.cfg, SEEK_SET) != 0 ||
+ 	    (rcfg = malloc(rbk_up.rcfg + 1)) == NULL ||
+-	    fread(rcfg, 1, rbk_up.rcfg, in) != (size_t)rbk_up.rcfg) {
+-		websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"rcfgread\"}");
+-		goto done;
+-	}
++	    fread(rcfg, 1, rbk_up.rcfg, in) != (size_t)rbk_up.rcfg)
++		RBK_FAIL("file", "rcfgread");
+ 	rcfg[rbk_up.rcfg] = '\0';
+ 	{
+ 		json_object *jr = json_tokener_parse(rcfg), *jv;
+ 		int good = (jr && json_object_get_type(jr) == json_type_object &&
+ 			    json_object_object_get_ex(jr, "reaper_cfg", &jv));
+ 		if (jr) json_object_put(jr);
+-		if (!good) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"rcfgjson\"}"); goto done; }
++		if (!good) RBK_FAIL("file", "rcfgjson");
+ 	}
+ 	/* the fqdn part must be well-formed (set headers + add lines only) */
+ 	if (rbk_up.fqdn > 0) {
+ 		char *p, *line;
+ 		if ((fqdn = malloc(rbk_up.fqdn + 1)) == NULL ||
+-		    fread(fqdn, 1, rbk_up.fqdn, in) != (size_t)rbk_up.fqdn) {
+-			websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"fqdnread\"}");
+-			goto done;
+-		}
++		    fread(fqdn, 1, rbk_up.fqdn, in) != (size_t)rbk_up.fqdn)
++			RBK_FAIL("file", "fqdnread");
+ 		fqdn[rbk_up.fqdn] = '\0';
+ 		for (line = fqdn; line && *line; line = p ? p + 1 : NULL) {
+ 			p = strchr(line, '\n');
+ 			if (p) *p = '\0';
+ 			if (line[0] == '\0') { if (p) *p = '\n'; continue; }
+ 			if (strncmp(line, "#set ", 5) == 0) {
+-				if (!rbk_setname_ok(line + 5)) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"fqdnname\"}"); goto done; }
+-			} else if (strncmp(line, "add ", 4) != 0) {
+-				websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"fqdnline\"}");
+-				goto done;
+-			}
++				if (!rbk_setname_ok(line + 5)) RBK_FAIL("file", "fqdnname");
++			} else if (strncmp(line, "add ", 4) != 0)
++				RBK_FAIL("file", "fqdnline");
+ 			if (p) *p = '\n';
+ 		}
+ 	}
+@@ -25120,8 +25156,7 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 		int pfd = open(RCFG_PENDING, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
+ 		if (pfd < 0 || (out = fdopen(pfd, "w")) == NULL) {
+ 			if (pfd >= 0) close(pfd);
+-			websWrite(stream, "{\"ok\":0,\"ek\":\"jffs\",\"ec\":\"jffswrite\"}");
+-			goto done;
++			RBK_FAIL("jffs", "jffswrite");
+ 		}
+ 		fwrite(rcfg, 1, rbk_up.rcfg, out);
+ 		fclose(out);
+@@ -25152,17 +25187,17 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 		if (out) { fclose(out); out = NULL; }
+ 	}
+ 	/* 3. the stock CFG, staged where the stock restore path expects it */
+-	if (fseek(in, 0, SEEK_SET) != 0) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"cfgseek\"}"); goto done; }
++	if (fseek(in, 0, SEEK_SET) != 0) RBK_FAIL("file", "cfgseek");
+ 	{
+ 		FILE *cf = fopen("/tmp/settings_u.prf", "w");
+-		if (!cf) { websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"cfgtmp\"}"); goto done; }
++		if (!cf) RBK_FAIL("file", "cfgtmp");
+ 		left = rbk_up.cfg;
+ 		while (left > 0 && (n = fread(buf, 1, MIN(left, (long)sizeof(buf)), in)) > 0) {
+ 			fwrite(buf, 1, n, cf);
+ 			left -= n;
+ 		}
+ 		fclose(cf);
+-		if (left > 0) { unlink("/tmp/settings_u.prf"); websWrite(stream, "{\"ok\":0,\"ek\":\"file\",\"ec\":\"cfgshort\"}"); goto done; }
++		if (left > 0) { unlink("/tmp/settings_u.prf"); RBK_FAIL("file", "cfgshort"); }
+ 	}
+ 	/* reaper v2.9.3: DO NOT LOCK OUT THE OPERATOR PERFORMING THE RESTORE.
+ 	 * gk_enable/gk_default live in nvram and come back in THIS phase, but the
+@@ -25212,8 +25247,26 @@ done:
+ 		else
+ #endif
+ 			shutdown(fileno(stream), SHUT_RDWR);
++		logmessage("reaper_cfg", "full-backup restore: handing the CFG to the stock restore path (jffs cfgs, nvram restore, commit, reboot)");
+ 		do_upload_config();
++		/* reaper v2.9.6: the stock tail asks rc for a reboot and returns. If
++		 * that request is ever lost (rc busy, notify_rc timing out) the box
++		 * would sit restored-but-running with the pending file parked and no
++		 * word to the operator. rc writes /tmp/reboot the moment it takes the
++		 * reboot; wait for it, then re-ask once and say so. */
++		{
++			int i;
++			for (i = 0; i < 15 && !f_exists("/tmp/reboot"); i++)
++				sleep(1);
++			if (f_exists("/tmp/reboot"))
++				logmessage("reaper_cfg", "full-backup restore: reboot taken by rc after %d s", i);
++			else {
++				logmessage("reaper_cfg", "full-backup restore: rc has not taken the reboot after %d s - re-requesting", i);
++				notify_rc("reboot");
++			}
++		}
+ 	}
++#undef RBK_FAIL
+ }
+ 
+ /* ===================================================================
+diff --git a/release/src/router/libwebapi/webapi.c b/release/src/router/libwebapi/webapi.c
+index b111ff714c..82b42ab1ab 100644
+--- a/release/src/router/libwebapi/webapi.c
++++ b/release/src/router/libwebapi/webapi.c
+@@ -1377,6 +1377,10 @@ int do_upload_config(void)
+ 	logmessage("savejffs", "Restore jffs cfgs to /jffs. (return %d)", ret);
+ #endif
+ 	sys_upload("/tmp/settings_u.prf");
++	/* reaper v2.9.6: the restore tail used to run silent between "settings
++	 * staged" and the reboot; stamp each step so a restore that stalls can be
++	 * placed from syslog alone. */
++	logmessage("httpd", "settings restore: nvram restored from /tmp/settings_u.prf");
+ #if defined(RTCONFIG_NVSW_IN_JFFS)
+ 	upload_nvswid = nvram_get_int("nvswid");
+ 	if (nvswid_bk != upload_nvswid) // won't be changed if not in defaults.c, just in case
+@@ -1393,8 +1397,10 @@ int do_upload_config(void)
+ 	start_enc_nvram();
+ #endif
+ 	httpd_nvram_commit();
++	logmessage("httpd", "settings restore: nvram committed, requesting reboot");
+ 
+ 	sys_reboot();
++	logmessage("httpd", "settings restore: reboot requested from rc");
+ 
+ 	return ret;
+ }
+-- 
+2.25.1
+

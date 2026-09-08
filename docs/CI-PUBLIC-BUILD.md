@@ -1,6 +1,6 @@
 # Building the firmware yourself, in GitHub Actions
 
-> **Doc status:** current as of **v2.8.8** · 2026-08-28 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 `.github/workflows/public-build.yml` builds a Reaper firmware image from source
 in a clean room, from public inputs only. You can run it in your own fork — you
@@ -290,7 +290,7 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
-| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0563` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0620` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and
@@ -351,7 +351,7 @@ non-obvious failures that would otherwise be rediscovered.
 | `build-scripts/ci/container_build.sh` | Runs inside `ubuntu:20.04`: packages, locale, non-root `reaper` user, toolchain restore, series replay, overlay + platform archive, provenance, staged-fs digest, reproducibility comparison. |
 | `build-scripts/ci/check_overlays.py` | The overlay identity gate — asserts each overlay changes identity only, so a stale branch tip cannot ride in as a well-formed patch. |
 | `build-scripts/reaper_stale_configure.sh` | Detects (and clears) packages whose configure flags changed after they were last configured. |
-| `overlays/` | Five sibling identity overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U), the GT-BE98 platform archive, and the two u-boot rtl8372 archives — each with its SHA-256. |
+| `overlays/` | Five sibling identity overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U), the GT-BE98 platform archive, the two u-boot rtl8372 archives, and the OpenSSL 3.5 source archive (`openssl-3.5-source.tar.gz`, 53 MB, unpacked for every model after the series) — each with its SHA-256. |
 
 **Fixed — three environment defects, all the same shape**
 

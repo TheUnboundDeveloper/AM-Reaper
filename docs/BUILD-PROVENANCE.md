@@ -1,6 +1,6 @@
 # Build Provenance — from published image back to source
 
-> **Doc status:** current as of **v2.8.8** · 2026-08-28 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
 
 This document lets anyone verify, end to end, that a published Reaper firmware
 image was built from exactly the source published in this repository — with
@@ -55,6 +55,10 @@ git checkout a7ebfa133a          # 3006.102.8-beta2
 #    (use the first <patch_count> patches from provenance/manifest.json)
 git config user.email you@example.com && git config user.name you
 git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
+# The OpenSSL 3.5 source (release/src/router/openssl-3.5, 5,767 files) is not in the series - it is
+# 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
+sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
+tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
 
 # 3. Hash the corresponding source and compare to the manifest
 git rev-parse HEAD:release/src/router
@@ -117,8 +121,8 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0563` <!--@patchcount--> (v2.8.8 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
-v2.8.6 <!--@pubver-->. The RT-BE86U /
+to `0620` <!--@patchcount--> (v3.1.0 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
+v2.8.8 <!--@pubver-->. The RT-BE86U /
 RT-BE88U / GT-BE98 / GT-BE98 Pro images (published at v2.7.6, alongside the
 RT-BE92U's experimental prerelease) are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob

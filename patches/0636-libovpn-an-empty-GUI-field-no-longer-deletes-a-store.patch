@@ -1,0 +1,303 @@
+From 8cbe2ca1643a374d8ee2eb9f5e266279b5629df0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 8 Sep 2026 23:12:19 -0400
+Subject: [PATCH] libovpn: an empty GUI field no longer deletes a stored key,
+ and a lost server cert is repairable
+
+Field report 2026-09-08: an OpenVPN server stopped starting; the CA, the CA key
+and the server key were all present and the server CERTIFICATE was gone. Two
+independent defects, both inherited, both fixed here.
+
+1. An empty field was a delete instruction.
+
+set_ovpn_key() treated an empty buffer as "remove this key" and unlink()ed the
+file. httpd's VPN-server save calls it for EVERY certificate field on the page
+and ignores the return, so a single save arriving with one empty textarea
+destroyed a working certificate, silently. The empty branch now KEEPS the
+stored key and logs that it ignored the value. Deliberate clearing has not gone
+away, it just has to say so: clear_ovpn_key() is the explicit form, and the 16
+reset_ovpn_setting() call sites - the one place that genuinely means "delete" -
+now use it. Deleting a key is something a caller asks for by name.
+
+2. A partial key set could never self-heal.
+
+ovpn_write_server_keys() regenerates only when the CA, the server key AND the
+cert are ALL absent. Lose exactly one and control lands in the else branch,
+which wrote out whatever existed and discarded every return value: the runtime
+directory came out without a certificate, OpenVPN refused to start, and no GUI
+action could re-trigger generation because the CA still existed. The only
+remedy the firmware offered was wiping the server, which regenerates the CA and
+invalidates every client profile already deployed.
+
+ovpn_repair_server_cert() handles exactly that state - CA and CA key present,
+cert absent - by rebuilding ONLY the server leaf, through the firmware's own
+easy-rsa pkitool path so the result carries the same extensions and subject
+conventions as one made at first setup. Its safety properties, in order:
+
+  - the CA and CA key are only ever READ, so a failure here cannot cost the
+    user their CA and therefore cannot invalidate a deployed client;
+  - the new certificate is installed only after it verifies against that CA;
+  - regenerating the server key alongside it is harmless - clients
+    authenticate the server against the CA, they never pin the server key.
+
+The four required keys now have their return values checked and a missing one
+is named in the log, saying which is absent and whether OpenVPN can start. CRL
+and EXTRA stay unchecked: absence is normal for them, not a fault.
+
+OpenSSL 3.5 was suspected as the cause and is REFUTED - MD5 signing succeeds on
+the box's 3.5.8, tested directly. The defect is the unlink, not the crypto.
+
+Metal validation is owed: it needs a box with an OpenVPN server configured.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/libovpn/openvpn_config.c |  68 ++++++++---
+ release/src/router/libovpn/openvpn_config.h |   1 +
+ release/src/router/libovpn/openvpn_setup.c  | 118 +++++++++++++++++++-
+ 3 files changed, 166 insertions(+), 21 deletions(-)
+
+diff --git a/release/src/router/libovpn/openvpn_config.c b/release/src/router/libovpn/openvpn_config.c
+index 6136940693..2bcfeca3a2 100644
+--- a/release/src/router/libovpn/openvpn_config.c
++++ b/release/src/router/libovpn/openvpn_config.c
+@@ -106,23 +106,23 @@ void reset_ovpn_setting(ovpn_type_t type, int unit, int full){
+ 
+         if (type == OVPN_TYPE_SERVER)  // server-only files
+         {
+-		set_ovpn_key(type, unit, OVPN_SERVER_CA_KEY, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_CLIENT_CERT, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_CLIENT_KEY, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_DH, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_STATIC, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_CA, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_EXTRA, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_CERT, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_KEY, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_SERVER_CRL, NULL, NULL);
++		clear_ovpn_key(type, unit, OVPN_SERVER_CA_KEY);
++		clear_ovpn_key(type, unit, OVPN_SERVER_CLIENT_CERT);
++		clear_ovpn_key(type, unit, OVPN_SERVER_CLIENT_KEY);
++		clear_ovpn_key(type, unit, OVPN_SERVER_DH);
++		clear_ovpn_key(type, unit, OVPN_SERVER_STATIC);
++		clear_ovpn_key(type, unit, OVPN_SERVER_CA);
++		clear_ovpn_key(type, unit, OVPN_SERVER_EXTRA);
++		clear_ovpn_key(type, unit, OVPN_SERVER_CERT);
++		clear_ovpn_key(type, unit, OVPN_SERVER_KEY);
++		clear_ovpn_key(type, unit, OVPN_SERVER_CRL);
+ 	} else {
+-		set_ovpn_key(type, unit, OVPN_CLIENT_STATIC, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_CLIENT_CA, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_CLIENT_CERT, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_CLIENT_KEY, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_CLIENT_CRL, NULL, NULL);
+-		set_ovpn_key(type, unit, OVPN_CLIENT_EXTRA, NULL, NULL);
++		clear_ovpn_key(type, unit, OVPN_CLIENT_STATIC);
++		clear_ovpn_key(type, unit, OVPN_CLIENT_CA);
++		clear_ovpn_key(type, unit, OVPN_CLIENT_CERT);
++		clear_ovpn_key(type, unit, OVPN_CLIENT_KEY);
++		clear_ovpn_key(type, unit, OVPN_CLIENT_CRL);
++		clear_ovpn_key(type, unit, OVPN_CLIENT_EXTRA);
+ 	}
+ 
+ 	nvram_commit();
+@@ -238,7 +238,23 @@ int set_ovpn_key(ovpn_type_t type, int unit, ovpn_key_t key_type, char *buf, cha
+ 	if (path) {
+ 		return _set_crt_parsed(varname, path);
+ 	} else if ((!buf) || (!*buf)) {
+-		unlink(filename);
++		/* v3.1.1: an EMPTY value no longer deletes the stored key.
++		 *
++		 * httpd's VPN-server save (web.c ~4088) calls this for EVERY cert
++		 * field on the page and ignores the return, so one save arriving with
++		 * an empty certificate textarea used to unlink() a working
++		 * certificate - silently, and unrecoverably: ovpn_write_server_keys()
++		 * only regenerates when the CA, the key AND the cert are all absent,
++		 * so a partial loss can never self-heal through the GUI. That is the
++		 * field report of 2026-09-08 (CA + CA key + server key intact, cert
++		 * gone, OpenVPN dead).
++		 *
++		 * Deliberate clearing is still supported - it just has to say so, via
++		 * clear_ovpn_key(). Callers that mean it (reset_ovpn_setting) use that.
++		 */
++		if (!ovpn_crt_is_empty(varname))
++			logmessage("openvpn", "Ignoring empty value for %s - the stored key is kept "
++			                      "(use an explicit clear to remove it)", varname);
+ 		return -1;
+ 	}
+ 
+@@ -262,6 +278,24 @@ int set_ovpn_key(ovpn_type_t type, int unit, ovpn_key_t key_type, char *buf, cha
+ 	return 0;
+ }
+ 
++/* v3.1.1: the explicit clear. set_ovpn_key() used to do this for any empty
++ * value, which made an unrelated GUI save destructive; deleting a stored key is
++ * now something a caller has to ask for by name. */
++int clear_ovpn_key(ovpn_type_t type, int unit, ovpn_key_t key_type)
++{
++	char varname[64];
++	char filename[128];
++
++	get_ovpn_filename(type, unit, key_type, varname, sizeof (varname));
++	snprintf(filename, sizeof(filename), "%s/%s", OVPN_FS_PATH, varname);
++
++	if (unlink(filename) == 0)
++		return 0;
++
++	return -1;
++}
++
++
+ int _set_crt_parsed(const char *name, char *file_path)
+ {
+ 	char target_file_path[128] ={0};
+diff --git a/release/src/router/libovpn/openvpn_config.h b/release/src/router/libovpn/openvpn_config.h
+index 3862ecc3d5..0afcfa4cd9 100644
+--- a/release/src/router/libovpn/openvpn_config.h
++++ b/release/src/router/libovpn/openvpn_config.h
+@@ -199,6 +199,7 @@ typedef struct ovpn_sconf {
+ 
+ int _set_crt_parsed(const char *name, char *file_path);
+ extern int set_ovpn_key(ovpn_type_t type, int unit, ovpn_key_t key_type, char *buf, char *path);
++extern int clear_ovpn_key(ovpn_type_t type, int unit, ovpn_key_t key_type);	/* v3.1.1: explicit delete - set_ovpn_key() no longer deletes on an empty value */
+ extern char *get_ovpn_filename(ovpn_type_t type, int unit, ovpn_key_t key_type, char *buf, size_t buf_len);
+ extern char *get_ovpn_key(ovpn_type_t type, int unit, ovpn_key_t key_type, char *buf, size_t len);
+ extern char *get_parsed_crt(const char *name, char *buf, size_t buf_len);
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index 0e1c217a33..f4f79532fe 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -768,6 +768,86 @@ void ovpn_write_client_keys(ovpn_cconf_t *cconf, int unit) {
+ }
+ 
+ 
++/* v3.1.1: rebuild ONLY the server leaf from the CA that is already present.
++ *
++ * Uses the firmware's own signing path (easy-rsa pkitool, -extensions server)
++ * rather than hand-rolled openssl, so the certificate carries the same
++ * extensions and subject conventions as one generated at first setup.
++ *
++ * Safety properties, in order of importance:
++ *   - the CA and the CA key are only ever READ; a failure here can never cost
++ *     the user their CA, and therefore never invalidates a deployed client
++ *   - the new certificate is installed only after it verifies against that CA
++ *   - regenerating the server KEY alongside it is harmless: clients
++ *     authenticate the server against the CA, they never pin the server key
++ *
++ * Returns 0 when a certificate was installed, -1 otherwise. */
++static int ovpn_repair_server_cert(int unit)
++{
++	char script[64], rundir[64], buffer[8000];
++	FILE *fp;
++
++	snprintf(rundir, sizeof(rundir), "/etc/openvpn/server%d", unit);
++	mkdir(rundir, 0700);
++
++	/* stage the existing CA where pkitool expects to find it */
++	if (ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA) < 0 ||
++	    ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA_KEY) < 0) {
++		logmessage("openvpn", "Server %d: cannot stage the CA - certificate not repaired", unit);
++		return -1;
++	}
++
++	snprintf(script, sizeof(script), "/tmp/repairvpncert%d.sh", unit);
++	fp = fopen(script, "w");
++	if (!fp)
++		return -1;
++
++	fprintf(fp, "#!/bin/sh\n");
++	fprintf(fp, "export OPENSSL=\"openssl\"\n");
++	fprintf(fp, "export GREP=\"grep\"\n");
++	fprintf(fp, "export KEY_CONFIG=\"/rom/easy-rsa/openssl-1.0.0.cnf\"\n");
++	fprintf(fp, "export KEY_DIR=\"%s\"\n", rundir);
++	fprintf(fp, "export KEY_SIZE=2048\n");
++	fprintf(fp, "export KEY_EXPIRE=3650\n");
++	fprintf(fp, "export KEY_COUNTRY=\"TW\"\n");
++	fprintf(fp, "export KEY_PROVINCE=\"TW\"\n");
++	fprintf(fp, "export KEY_CITY=\"Taipei\"\n");
++	fprintf(fp, "export KEY_ORG=\"ASUS\"\n");
++	fprintf(fp, "export KEY_EMAIL=\"me@asusrouter.lan\"\n");
++	fprintf(fp, "export KEY_OU=\"Home/Office\"\n");
++	fprintf(fp, "export KEY_CN=\"\"\n");
++	/* pkitool signs through 'openssl ca', which needs the index and a serial */
++	fprintf(fp, "touch %s/index.txt\n", rundir);
++	fprintf(fp, "[ -s %s/serial ] || $OPENSSL rand -hex 16 > %s/serial\n", rundir, rundir);
++	fprintf(fp, "/rom/easy-rsa/pkitool --server server\n");
++	fclose(fp);
++	chmod(script, 0700);
++	eval(script);
++	unlink(script);
++
++	/* only adopt the result if it actually verifies against the CA we hold */
++	snprintf(buffer, sizeof(buffer),
++	         "openssl verify -CAfile %s/ca.crt %s/server.crt >/dev/null 2>&1", rundir, rundir);
++	if (system(buffer) != 0) {
++		logmessage("openvpn", "Server %d: regenerated certificate does not verify against the CA "
++		                      "- discarded, nothing changed", unit);
++		return -1;
++	}
++
++	snprintf(buffer, sizeof(buffer), "%s/server.crt", rundir);
++	if (set_ovpn_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CERT, NULL, buffer) < 0) {
++		logmessage("openvpn", "Server %d: could not store the regenerated certificate", unit);
++		return -1;
++	}
++	snprintf(buffer, sizeof(buffer), "%s/server.key", rundir);
++	set_ovpn_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_KEY, NULL, buffer);
++
++	logmessage("openvpn", "Server %d: server certificate regenerated and stored "
++	                      "(CA untouched, existing client profiles remain valid)", unit);
++	return 0;
++}
++
++
+ void ovpn_write_server_keys(ovpn_sconf_t *sconf, int unit) {
+ 	char buffer[64], buffer2[8000];
+ 	FILE *fp;
+@@ -831,10 +911,40 @@ void ovpn_write_server_keys(ovpn_sconf_t *sconf, int unit) {
+ 	}
+ 	else
+ 	{
+-		ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA_KEY);
+-		ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA);
+-		ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_KEY);
+-		ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CERT);
++		/* v3.1.1: a PARTIAL key set used to fail here in silence.
++		 *
++		 * The branch above only generates when the CA, the key AND the cert are
++		 * ALL absent. Lose just one of them - see the empty-field unlink() that
++		 * set_ovpn_key() used to do - and we land here instead, where
++		 * ovpn_write_key() returns -1 for the missing item and the return value
++		 * was discarded. The runtime directory then came out without a
++		 * certificate, OpenVPN refused to start, and no GUI action could ever
++		 * re-trigger generation because the CA still existed.
++		 *
++		 * So: repair what can be repaired, and SAY what cannot.
++		 *
++		 * The repair regenerates only the server leaf, from the CA that is
++		 * already there. It must never touch the CA itself - every deployed
++		 * client profile trusts that CA, and replacing it would lock out every
++		 * client to fix one server. */
++		if ( ovpn_key_exists(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA) &&
++		     ovpn_key_exists(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA_KEY) &&
++		    !ovpn_key_exists(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CERT) )
++		{
++			logmessage("openvpn", "Server %d: certificate is missing while the CA is intact "
++			                      "- regenerating the server certificate from the existing CA", unit);
++			ovpn_repair_server_cert(unit);
++		}
++
++		if (ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA_KEY) < 0)
++			logmessage("openvpn", "Server %d: CA key is missing", unit);
++		if (ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CA) < 0)
++			logmessage("openvpn", "Server %d: CA certificate is missing", unit);
++		if (ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_KEY) < 0)
++			logmessage("openvpn", "Server %d: server key is missing - OpenVPN will not start", unit);
++		if (ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CERT) < 0)
++			logmessage("openvpn", "Server %d: server certificate is missing - OpenVPN will not start", unit);
++		/* CRL and EXTRA are optional: absence is normal, not a fault. */
+ 		ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_CRL);
+ 		ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_EXTRA);
+ 	}
+-- 
+2.25.1
+

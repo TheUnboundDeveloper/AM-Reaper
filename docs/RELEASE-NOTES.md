@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.1.1** · 2026-09-08 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.0** <!--@treever--> — `3006.102.8_Reaper_v3.1.0`, built on RT-BE96U. The library every TLS path stands on: OpenSSL 1.1.1w (end of life since 2023) gives way to **OpenSSL 3.5.8** on every source-built consumer, a forwarding shim keeps the closed ASUS binaries on the maintained library, and a release gate names the only binaries allowed to keep the old name — the guard the withdrawn v3.0.3 attempt lacked. With it: **first boot is one box** (network name, Wi-Fi password, router login) behind a one-button security banner; a **factory reset takes the short road** and the page says how to get back; backhaul parking stays in sync with wireless restarts; phones get the full width; the update check gains an opt-in **beta channel**. The series stands at **620 patches** (0594–0602 for v3.0.1–v3.0.7, 0603–0608 for v3.0.8–v3.0.9, 0609–0620 for v3.1.0); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
+| **Current rung** | **v3.1.1** <!--@treever--> — `3006.102.8_Reaper_v3.1.1`, built on RT-BE96U. A **standby for the router's DNS list**: a health check watches the LAN resolver you name and, when it stops answering, moves it to the end of the router's upstream list and puts it back when it recovers — so a filter such as AdGuard Home or Pi-hole can be the only DNS the router hands out without its outage becoming the house's. It lives on a new **Failover** tab with the three dnsmasq switches that used to need a config file. With it: an **empty box on the VPN page no longer deletes a certificate**, and a server that already lost one rebuilds it from the authority it still has, so existing client profiles keep working; **Cancel on the firmware page cancels** an upload instead of just hiding the overlay; Gatekeeper stops calling a 6 GHz client **Wired** and stops showing a multi-link device twice or on a band it left; and a device whose name dnsmasq gave to another one is no longer **Unknown device**. The series stands at **636 patches** (0621–0636 for v3.1.1); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
@@ -19,6 +19,61 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.1.1 — a standby for the router's DNS list, and a VPN certificate that survives a save
+
+*Built on RT-BE96U. Cut as patches 0621–0636, bringing the series to 636. The RT-BE86U, RT-BE88U,
+GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+
+**Pointing every client at one filter no longer means its outage is the house's.** If you run AdGuard
+Home or Pi-hole on the LAN, the clean way to set it up is to hand out the router as the only DNS server
+and let the router forward to the filter — that way the filter cannot be bypassed, and the router can
+fall back if it dies. The catch is that dnsmasq keeps no memory of an upstream that stopped answering.
+In strict order it tries the first server again for every new name and only a client's retransmission
+moves it along, so an outage costs a timeout per new name rather than one timeout in total. The new
+**Reaper resolver health check** watches one DNS server you name with a real query every few seconds;
+after a run of misses it moves that server to the end of the router's list and reloads dnsmasq, so the
+first server tried is one that answers, and after a run of hits it puts it back first. Interval, timeout,
+both thresholds, the name queried and whether a refusal counts as alive are yours to set, and every
+switch is in the system log. It has its own **Failover** tab under Administration, with a live strip that
+lights while the server is down, next to three dnsmasq switches that used to need a config file: upstream
+order, client addresses, and turning the router's own DNS cache off. The server you watch can be IPv4 or,
+while IPv6 is on, IPv6.
+
+**An empty box on the VPN page no longer deletes a certificate.** Saving the OpenVPN server page sent
+every certificate field to the router, and the router read an empty field as an instruction to delete
+the key it held. One save with one empty box destroyed a working server certificate silently — and
+nothing could put it back, because the firmware only generates a fresh set when the authority, the
+server key and the certificate are *all* gone. Losing exactly one left a server that would not start and
+a page with no button that helped; the only way out was to wipe the VPN server, which makes a new
+certificate authority and invalidates every client profile already handed out. An empty field is now
+ignored and the stored key kept, with a line in the log; deleting a key is something the firmware has to
+ask for by name, which is what a reset does. A router found in the broken state rebuilds only the
+server's own certificate, from the authority it still has, verifies it against that authority before
+installing it, and never touches the authority — so the profiles on your phones and laptops keep
+working. A missing required key is now named in the log instead of failing in silence. This came from a
+field report; OpenSSL 3.5 was suspected and tested clean, so it is an old fault that was waiting to be
+hit.
+
+**Cancel on the firmware page cancels.** The page covers itself while an image transfers so a
+half-finished flash cannot be clicked into, and the cover's escape button used to say *Close* and only
+hide it — the transfer ran on underneath. During an upload it now says **Cancel** and stops the upload;
+the router gets an incomplete image, which cannot pass its own check, so nothing is written. It is
+offered immediately instead of after 25 seconds, and withdrawn the moment the last byte has gone,
+because from there the router may already be writing. During a download from the update server it still
+says *Close* and still only hides the cover: that download runs on the router in one piece with the
+verify and the flash, and there is nothing to interrupt. The button now says what it does.
+
+**Gatekeeper tells the truth about how a device is connected.** A Wi-Fi 7 client that uses more than one
+radio at once is listed by the router under the address of the individual link, while its lease, its
+name and its access rule are all filed under the device's real address — and nothing was reading the
+field that connects the two. So Gatekeeper kept the guess it cached at first sight and showed a 6 GHz PC
+as *Wired*, and the page listed one device twice. A band cached once and gone stale is corrected too,
+using only this router's own view, so a mesh node's second-hand report cannot overrule what the router
+saw itself. Separately, when several devices announce the same name — three phones all called *iPhone* —
+dnsmasq lets only one lease keep it and the rest went blank, which is why they sat in Gatekeeper as
+*Unknown device* and stayed that way after approval. The router now remembers the name each client
+announced, and a device that announces none falls back to its vendor label.
 
 ## What's new in v3.1.0 — OpenSSL 3.5 under every TLS path, first boot in one box, a faster factory reset
 

@@ -1,0 +1,745 @@
+From a677ae1b117fa2c58093df8e2bf81a2459c3ab4e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 7 Sep 2026 10:23:41 -0400
+Subject: [PATCH] gatekeeper/devices: a device whose hostname dnsmasq gave to
+ another one is no longer "Unknown device"
+
+Field report (owner RT-BE96U, v3.1.1, 2026-09-07): the Gatekeeper page listed
+device after device as "Unknown device", and an approved device stayed unknown.
+Every Reaper name reader - gkd's seen table, the Gatekeeper and Devices CGIs -
+took the self-reported name from /var/lib/misc/dnsmasq.leases. dnsmasq lets ONE
+lease hold a given hostname at a time (lease.c lease_set_hostname: the newest
+claimant wins and kill_name() blanks the other lease so a name maps to one
+address in DNS). Four iPhones on that LAN all announce "iPhone", so at any moment
+all but one read "*" in the lease file; dnsmasq logged "DHCPACK ... iPhone" for
+the very MAC whose lease line was "*". A device that announces no hostname at all
+(a printer, a Fire TV, a Lutron hub) never had a lease name; the stock network
+map labels those by vendor, Gatekeeper showed nothing.
+
+- shared/reaper_dhcpname.c (new, libshared): a per-MAC store of the hostname a
+  client ANNOUNCED, /var/lib/misc/reaper_hostnames (tmpfs, tab-separated, one
+  row per MAC newest last, 1024-row cap, tmp+rename under a flock). The name is
+  client input: printable ASCII only, 32 bytes - the clamp the seen table already
+  applies - and JSON-escaped again by every emitter. Reader caches on mtime/size.
+- rc/services.c dnsmasq_script_main: on every add/old event record
+  DNSMASQ_SUPPLIED_HOSTNAME (dnsmasq exports the raw option-12 value to the
+  lease-change script, untouched by the uniqueness rule), falling back to the
+  lease name; DNSMASQ_VENDOR_CLASS kept beside it. IPv4 events only.
+- gkd: scan_supplied() after the lease scan fills a host the lease files could
+  not give, so the syslog "new device" line and seen.tsv carry the name too.
+- httpd: gk_display_name() = user name > lease/seen host > announced name >
+  networkmap's own label (/jffs/nmp_cl_json.js "name": vendor class or OUI
+  vendor when there is no hostname - what the stock map shows). Used by the
+  Gatekeeper pending list and device table. The Devices page gets the same two
+  fallbacks after its seen-table pass, and a vendor-labelled row says so: src
+  "vendor", new token RDEV_96 in all 25 packs (lockstep 6894), chip on the page.
+
+Gates: reaper_static_checks 11/11; shared, gkd, rc, httpd compile and link clean
+in the warm tree (mk-% pass-through), no diagnostics in the edited regions.
+Verify markers added (libshared path literal, rc env literal, gkd/httpd import).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c                |  15 ++
+ release/src/router/httpd/web.c              |  78 ++++++-
+ release/src/router/rc/services.c            |  10 +
+ release/src/router/shared/Makefile          |   1 +
+ release/src/router/shared/reaper_dhcpname.c | 215 ++++++++++++++++++++
+ release/src/router/shared/shared.h          |   5 +
+ release/src/router/www/BR.dict              |   1 +
+ release/src/router/www/CN.dict              |   1 +
+ release/src/router/www/CZ.dict              |   1 +
+ release/src/router/www/DA.dict              |   1 +
+ release/src/router/www/DE.dict              |   1 +
+ release/src/router/www/EN.dict              |   1 +
+ release/src/router/www/ES.dict              |   1 +
+ release/src/router/www/FI.dict              |   1 +
+ release/src/router/www/FR.dict              |   1 +
+ release/src/router/www/HU.dict              |   1 +
+ release/src/router/www/IT.dict              |   1 +
+ release/src/router/www/JP.dict              |   1 +
+ release/src/router/www/KR.dict              |   1 +
+ release/src/router/www/MS.dict              |   1 +
+ release/src/router/www/NL.dict              |   1 +
+ release/src/router/www/NO.dict              |   1 +
+ release/src/router/www/PL.dict              |   1 +
+ release/src/router/www/RO.dict              |   1 +
+ release/src/router/www/RU.dict              |   1 +
+ release/src/router/www/Reaper_Devices.asp   |   2 +-
+ release/src/router/www/SL.dict              |   1 +
+ release/src/router/www/SV.dict              |   1 +
+ release/src/router/www/TH.dict              |   1 +
+ release/src/router/www/TR.dict              |   1 +
+ release/src/router/www/TW.dict              |   1 +
+ release/src/router/www/UK.dict              |   1 +
+ 32 files changed, 343 insertions(+), 8 deletions(-)
+ create mode 100644 release/src/router/shared/reaper_dhcpname.c
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 77d8c9acc8..ee98c56eb7 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -233,6 +233,20 @@ static void scan_leases(void)
+ 	closedir(dir);
+ }
+ 
++/* v3.1.1: the announced hostname (rc keeps it per MAC from the dnsmasq lease
++ * script) fills a host the lease files could not - a device that lost a
++ * hostname clash reads "*" there while dnsmasq itself logged its name. */
++static void scan_supplied(void)
++{
++	int i;
++	for (i = 0; i < ndev; i++) {
++		char h[33];
++		if (devs[i].host[0]) continue;
++		if (reaper_dhcpname_get(devs[i].mac, h, sizeof(h)))
++			snprintf(devs[i].host, sizeof(devs[i].host), "%s", h);
++	}
++}
++
+ static const char *unit_band(int unit)
+ {
+ 	char key[24];
+@@ -707,6 +721,7 @@ int main(int argc, char **argv)
+ 		scan_arp(now);
+ 		scan_ndp(now);
+ 		scan_leases();
++		scan_supplied();
+ 		if ((tick % WL_REFRESH) == 0) scan_wl();
+ 
+ 		compact_devs(now);	/* L4: evict stale entries before the table fills */
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 4dd12d9765..fb3256ef47 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23275,6 +23275,57 @@ gk_client_name(const char *mac, char *name, size_t nlen)
+ 	}
+ }
+ 
++/* v3.1.1: networkmap's own label for a MAC - /jffs/nmp_cl_json.js "name", which
++ * is the lease hostname when it has one, else the DHCP vendor class, else the OUI
++ * vendor: the name the stock network map shows for a device that announces no
++ * hostname (a printer, a Fire TV, a hub). The LAST fallback, after the user's
++ * name, the lease file and the announced-name store. The file is re-parsed only
++ * when networkmap rewrote it (mtime/size), one parse per change not per device. */
++static int
++gk_nmp_name(const char *mac, char *out, size_t n)
++{
++	static json_object *cache = NULL;
++	static time_t cmtime = 0;
++	static off_t csize = -1;
++	struct stat st;
++	json_object *ent = NULL, *nm = NULL;
++	const char *s;
++	char umac[18];
++	int i;
++
++	if (!out || n < 2) return 0;
++	out[0] = 0;
++	if (!mac || strlen(mac) != 17) return 0;
++	if (stat(NMP_CL_JSON_FILE, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
++	if (!cache || st.st_mtime != cmtime || st.st_size != csize) {
++		if (cache) json_object_put(cache);
++		cache = json_object_from_file(NMP_CL_JSON_FILE);
++		cmtime = st.st_mtime;
++		csize = st.st_size;
++		if (cache && !json_object_is_type(cache, json_type_object)) { json_object_put(cache); cache = NULL; }
++	}
++	if (!cache) return 0;
++	for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++	umac[17] = 0;
++	if (!json_object_object_get_ex(cache, umac, &ent) || !ent) return 0;
++	if (!json_object_object_get_ex(ent, "name", &nm) || !nm) return 0;
++	s = json_object_get_string(nm);
++	if (!s || !*s) return 0;
++	snprintf(out, n, "%.32s", s);
++	return 1;
++}
++
++/* the display chain for a Gatekeeper row: the user's name, the lease / seen-
++ * table hostname, the announced hostname, then networkmap's vendor label */
++static void
++gk_display_name(const char *mac, const char *host, char *name, size_t nlen)
++{
++	gk_client_name(mac, name, nlen);
++	if (!name[0] && host && host[0]) snprintf(name, nlen, "%s", host);
++	if (!name[0]) reaper_dhcpname_get(mac, name, nlen);
++	if (!name[0]) gk_nmp_name(mac, name, nlen);
++}
++
+ #define GK_SEEN_TSV "/tmp/gk/seen.tsv"
+ #define GK_SEEN_MAX 512	/* v2.6.3: was 256 - matches gkd MAX_DEV */
+ 
+@@ -23328,9 +23379,9 @@ gk_emit_seen(FILE *stream, struct gk_seen *d, int rand_flag)
+ {
+ 	char name[40];
+ 	/* unified naming: the user-assigned name (custom_clientlist) wins on every
+-	 * page; the device's self-reported DHCP hostname is only a fallback */
+-	gk_client_name(d->mac, name, sizeof(name));
+-	if (!name[0] && d->host[0]) snprintf(name, sizeof(name), "%s", d->host);
++	 * page; the device's self-reported DHCP hostname is only a fallback, and
++	 * v3.1.1 adds the announced name + networkmap's vendor label behind it */
++	gk_display_name(d->mac, d->host, name, sizeof(name));
+ 	websWrite(stream, "{\"mac\":\"%s\",\"ip\":", d->mac);
+ 	gk_json_esc(stream, d->ip);
+ 	websWrite(stream, ",\"host\":");
+@@ -23631,9 +23682,9 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 				{
+ 					char name[40];
+ 					/* unified naming: custom_clientlist first, self-reported
+-					 * hostname as fallback (matches every other page) */
+-					gk_client_name(d->mac, name, sizeof(name));
+-					if (!name[0] && d->host[0]) snprintf(name, sizeof(name), "%s", d->host);
++					 * hostname as fallback (matches every other page), then the
++					 * announced name and networkmap's vendor label (v3.1.1) */
++					gk_display_name(d->mac, d->host, name, sizeof(name));
+ 					gk_json_esc(stream, name);
+ 				}
+ 				websWrite(stream, ",\"band\":");
+@@ -26230,6 +26281,7 @@ struct rdev {
+ 	int  bandmask;		/* bands linked on: 1=2.4 2=5 4=6 */
+ 	int  node;		/* AiMesh RE node: its re_path (uplink type), 0 = not a node */
+ 	int  bh_sta;		/* this MAC is a node's BACKHAUL station, not a device - folded */
++	int  host_vendor;	/* host is networkmap's vendor label, not a hostname (v3.1.1) */
+ };
+ 
+ /* dotted-quad -> host-order u32; 0 on parse failure (0.0.0.0 is never a host) */
+@@ -26898,6 +26950,18 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", seen[i].ip);
+ 		}
+ 
++		/* 7. v3.1.1: a host the lease file could not give - the announced hostname
++		 * (a device that lost a name clash reads "*" in the leases), then
++		 * networkmap's vendor label for a device that announces no name at all.
++		 * Same chain as the Gatekeeper page; the vendor case is flagged so the
++		 * page labels its source honestly. */
++		for (i = 0; i < n; i++) {
++			if (dev[i].host[0]) continue;
++			if (reaper_dhcpname_get(dev[i].mac, dev[i].host, sizeof(dev[0].host))) continue;
++			if (gk_nmp_name(dev[i].mac, dev[i].host, sizeof(dev[0].host)))
++				dev[i].host_vendor = 1;
++		}
++
+ 		/* ---- pool / store facts + next free out-of-pool host ---- */
+ 		{
+ 			char *sl = nvram_safe_get("dhcp_staticlist");
+@@ -26960,7 +27024,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 
+ 			gk_client_name(d->mac, uname, sizeof(uname));
+ 			have_user = uname[0] ? 1 : 0;
+-			src = have_user ? "user" : (d->host[0] ? "lease" : "");
++			src = have_user ? "user" : (d->host[0] ? (d->host_vendor ? "vendor" : "lease") : "");
+ 
+ 			if (!first) websWrite(stream, ",");
+ 			first = 0;
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 1a362932cc..4d543a972f 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2535,6 +2535,16 @@ void reload_dnsmasq(void)
+ 
+ int dnsmasq_script_main(int argc, char **argv)
+ {
++	/* reaper v3.1.1: keep the hostname the client ANNOUNCED (option 12). dnsmasq
++	 * exports it here as DNSMASQ_SUPPLIED_HOSTNAME untouched by its one-lease-per-
++	 * name rule; the lease file blanks the losers of a name clash (four iPhones all
++	 * called "iPhone"), and Gatekeeper/Devices then read "Unknown device". IPv4
++	 * events only - argv[2] is a MAC there, a DUID for DHCPv6 (rejected). */
++	if (argc >= 4 && argv[1] && (!strcmp(argv[1], "add") || !strcmp(argv[1], "old"))) {
++		const char *sup = getenv("DNSMASQ_SUPPLIED_HOSTNAME");
++		reaper_dhcpname_record(argv[2], (sup && *sup) ? sup : (argc >= 5 ? argv[4] : ""),
++				       getenv("DNSMASQ_VENDOR_CLASS"));
++	}
+ 	// TODO : call function directly
+ #if defined(RTCONFIG_TR069) && !defined(RTCONFIG_TR181)
+ 	tr_lease_main(argc, argv);
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 5a8be5e92e..ee9692659d 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -223,6 +223,7 @@ OBJS += mac_name_tbl.o
+ OBJS += stun.o
+ OBJS += scripts.o
+ OBJS += gk_rl.o	# reaper v2.6.3: Gatekeeper device list store (/jffs, not nvram)
++OBJS += reaper_dhcpname.o	# reaper v3.1.1: announced DHCP hostnames, kept apart from the lease file
+ OBJS += reaper_jfile.o	# reaper v2.6.7: generic /jffs text store + Policy Routing rule list
+ OBJS += llist.o
+ ifeq ($(RTCONFIG_HNS),y)
+diff --git a/release/src/router/shared/reaper_dhcpname.c b/release/src/router/shared/reaper_dhcpname.c
+new file mode 100644
+index 0000000000..2211c1d324
+--- /dev/null
++++ b/release/src/router/shared/reaper_dhcpname.c
+@@ -0,0 +1,215 @@
++/*
++ * reaper_dhcpname.c - reaper v3.1.1: the hostname a DHCP client ANNOUNCED,
++ * kept per MAC, independent of the dnsmasq lease file.
++ *
++ * FIELD REPORT (owner RT-BE96U, v3.1.1, 2026-09-07): Gatekeeper listed device
++ * after device as "Unknown device", and an approved device stayed unknown.
++ * Every Reaper name reader (gkd's seen table, the Gatekeeper and Devices CGIs)
++ * takes the self-reported name from /var/lib/misc/dnsmasq.leases. dnsmasq lets
++ * ONE lease hold a given hostname at a time (lease.c lease_set_hostname: the
++ * newest claimant wins and kill_name() blanks the other lease, so a name maps
++ * to one address in DNS). Several iPhones on that LAN all announce "iPhone",
++ * so at any moment all but one of them read "*" in the lease file - dnsmasq
++ * logged "DHCPACK ... iPhone" for the very MAC whose lease line was "*". A
++ * device that announces no hostname at all (a printer, a Fire TV, a Lutron
++ * hub) never had a lease name; the stock network map labels those by vendor.
++ *
++ * dnsmasq hands the lease-change script (dhcp-script=/sbin/dhcpc_lease, an rc
++ * applet) the RAW option-12 value as DNSMASQ_SUPPLIED_HOSTNAME on every add/old
++ * event, untouched by the uniqueness rule. rc records it here; gkd and httpd
++ * read it as the fallback after the lease file and before the vendor label.
++ *
++ *     /var/lib/misc/reaper_hostnames    mac \t hostname \t vendor-class \t epoch
++ *
++ * tmpfs (refilled by the renewals after a boot), one row per MAC, newest last,
++ * capped at RDN_MAX rows (oldest dropped), atomic replace under a flock so the
++ * main and SDN dnsmasq instances cannot interleave. Hostnames are client-
++ * controlled input: reduced to printable ASCII (no tab), 32 bytes - the clamp
++ * gkd's seen table already applies - and JSON-escaped again on the way out.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <ctype.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <time.h>
++#include <sys/stat.h>
++#include <sys/file.h>
++#include "shared.h"
++
++#define RDN_FILE     "/var/lib/misc/reaper_hostnames"
++#define RDN_TMP      RDN_FILE ".tmp"
++#define RDN_LOCK     RDN_FILE ".lock"
++#define RDN_MAX      1024		/* rows kept; far above any real LAN */
++#define RDN_LINE     256
++#define RDN_NAME_MAX 32
++#define RDN_VC_MAX   48
++
++/* "aa:bb:cc:dd:ee:ff" in any case -> uppercase; 0 when it is not a MAC
++ * (DHCPv6 events carry a DUID in that slot and are not recorded). */
++static int rdn_norm_mac(const char *in, char *out)
++{
++	int i;
++	if (!in || strlen(in) != 17) return 0;
++	for (i = 0; i < 17; i++) {
++		unsigned char c = (unsigned char)in[i];
++		if ((i % 3) == 2) { if (c != ':') return 0; out[i] = ':'; continue; }
++		if (!isxdigit(c)) return 0;
++		out[i] = (char)toupper(c);
++	}
++	out[17] = 0;
++	return 1;
++}
++
++/* printable ASCII only (bytes outside 0x20..0x7e are dropped, so a UTF-8
++ * apostrophe simply disappears), trimmed, capped; "*" (dnsmasq's "no name")
++ * and an empty result both come back as "". */
++static void rdn_clean(const char *in, char *out, size_t cap)
++{
++	size_t n = 0;
++	char *p;
++	out[0] = 0;
++	if (!in) return;
++	while (*in && n + 1 < cap) {
++		unsigned char c = (unsigned char)*in++;
++		if (c < 0x20 || c > 0x7e) continue;
++		out[n++] = (char)c;
++	}
++	out[n] = 0;
++	while (n && out[n - 1] == ' ') out[--n] = 0;
++	for (p = out; *p == ' '; p++) ;
++	if (p != out) memmove(out, p, strlen(p) + 1);
++	if (!strcmp(out, "*")) out[0] = 0;
++}
++
++/* writer (rc, from the dnsmasq lease-change script). A field the new event
++ * lacks keeps the previous row's value - an "old" event fired by kill_name()
++ * arrives with the lease name gone but the supplied name still set; a bare
++ * renewal without option 12 must not erase what an earlier event recorded. */
++int reaper_dhcpname_record(const char *macraw, const char *host, const char *vendor)
++{
++	char mac[18], h[RDN_NAME_MAX + 1], vc[RDN_VC_MAX + 1];
++	char oldh[RDN_NAME_MAX + 1] = "", oldvc[RDN_VC_MAX + 1] = "";
++	char *lines[RDN_MAX];
++	int nl = 0, i, lf, rc = -1, start;
++	FILE *f;
++
++	if (!rdn_norm_mac(macraw, mac)) return -1;
++	rdn_clean(host, h, sizeof(h));
++	rdn_clean(vendor, vc, sizeof(vc));
++
++	lf = open(RDN_LOCK, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
++	if (lf >= 0) flock(lf, LOCK_EX);
++
++	f = fopen(RDN_FILE, "r");
++	if (f) {
++		char line[RDN_LINE];
++		while (fgets(line, sizeof(line), f)) {
++			char *tab;
++			line[strcspn(line, "\n")] = 0;
++			tab = strchr(line, '\t');
++			if (!tab) continue;
++			if ((tab - line) == 17 && !strncasecmp(line, mac, 17)) {
++				char *f2 = tab + 1, *f3 = strchr(f2, '\t');
++				if (f3) *f3 = 0;
++				snprintf(oldh, sizeof(oldh), "%s", f2);
++				if (f3) {
++					f2 = f3 + 1; f3 = strchr(f2, '\t');
++					if (f3) *f3 = 0;
++					snprintf(oldvc, sizeof(oldvc), "%s", f2);
++				}
++				continue;		/* replaced by the row appended below */
++			}
++			if (nl < RDN_MAX) {
++				char *cp = strdup(line);
++				if (cp) lines[nl++] = cp;
++			}
++		}
++		fclose(f);
++	}
++	if (!h[0]) snprintf(h, sizeof(h), "%s", oldh);
++	if (!vc[0]) snprintf(vc, sizeof(vc), "%s", oldvc);
++
++	if (!h[0] && !vc[0]) {
++		rc = 0;				/* nothing to remember, nothing to rewrite */
++	} else if ((f = fopen(RDN_TMP, "w")) != NULL) {
++		start = (nl >= RDN_MAX) ? nl - (RDN_MAX - 1) : 0;	/* keep the newest */
++		for (i = start; i < nl; i++) fprintf(f, "%s\n", lines[i]);
++		fprintf(f, "%s\t%s\t%s\t%ld\n", mac, h, vc, (long)time(NULL));
++		if (fclose(f) == 0) {
++			chmod(RDN_TMP, 0600);
++			if (rename(RDN_TMP, RDN_FILE) == 0) rc = 0;
++		}
++		if (rc != 0) unlink(RDN_TMP);
++	}
++	for (i = 0; i < nl; i++) free(lines[i]);
++	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
++	return rc;
++}
++
++/* reader (gkd once per device per tick, httpd once per device per request):
++ * the file is parsed into a MAC->name index once and re-read only when it
++ * changed (mtime or size), the same shape as httpd's custom_clientlist index.
++ * Returns 1 and the name (<= 32 bytes) when the MAC has one, else 0 and "". */
++int reaper_dhcpname_get(const char *macraw, char *out, size_t n)
++{
++	static char *buf = NULL;
++	static char **macs = NULL, **names = NULL;
++	static int nent = 0;
++	static time_t cmtime = 0;
++	static off_t csize = -1;
++	char mac[18];
++	struct stat st;
++	int i, hit = -1;
++
++	if (!out || n < 2) return 0;
++	out[0] = 0;
++	if (!rdn_norm_mac(macraw, mac)) return 0;
++	if (stat(RDN_FILE, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) return 0;
++
++	if (!buf || st.st_mtime != cmtime || st.st_size != csize) {
++		FILE *f;
++		size_t len, cap = 1;
++		char *p;
++		free(buf); free(macs); free(names);
++		buf = NULL; macs = names = NULL; nent = 0;
++		cmtime = st.st_mtime; csize = st.st_size;
++		if (st.st_size > (off_t)(RDN_MAX * RDN_LINE)) return 0;	/* not ours */
++		f = fopen(RDN_FILE, "r");
++		if (!f) return 0;
++		buf = malloc((size_t)st.st_size + 1);
++		if (!buf) { fclose(f); return 0; }
++		len = fread(buf, 1, (size_t)st.st_size, f);
++		fclose(f);
++		buf[len] = 0;
++		for (p = buf; *p; p++) if (*p == '\n') cap++;
++		macs  = malloc(cap * sizeof(*macs));
++		names = malloc(cap * sizeof(*names));
++		if (!macs || !names) {
++			free(buf); free(macs); free(names);
++			buf = NULL; macs = names = NULL;
++			return 0;
++		}
++		for (p = buf; *p; ) {
++			char *nl = strchr(p, '\n'), *next = nl ? nl + 1 : p + strlen(p), *t1, *t2;
++			if (nl) *nl = 0;
++			t1 = strchr(p, '\t');
++			if (t1 && (t1 - p) == 17 && (size_t)nent < cap) {
++				*t1 = 0;
++				t2 = strchr(t1 + 1, '\t');
++				if (t2) *t2 = 0;
++				macs[nent] = p;
++				names[nent] = t1 + 1;
++				nent++;
++			}
++			p = next;
++		}
++	}
++	for (i = 0; i < nent; i++)
++		if (!strcasecmp(macs[i], mac)) hit = i;	/* newest row last */
++	if (hit < 0 || !names[hit][0]) return 0;
++	snprintf(out, n, "%.32s", names[hit]);
++	return 1;
++}
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 7573a2ed4f..2f45a212b7 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3603,6 +3603,11 @@ extern int jffs_nvram_getall(int len_nvram, char *buf, int count);
+ extern char *gk_rl_get(void);	/* "" when empty; buffer valid until the next call */
+ extern int gk_rl_set(const char *v);	/* atomic replace; 0 ok, -1 logged failure */
+ extern void gk_rl_migrate(void);	/* one-shot nvram -> file (start_gk) */
++/* reaper v3.1.1: the hostname a DHCP client announced, per MAC, kept apart from
++ * the dnsmasq lease file (shared/reaper_dhcpname.c). rc records it from the
++ * lease-change script; gkd and httpd read it as the name fallback. */
++extern int reaper_dhcpname_record(const char *mac, const char *host, const char *vendor);	/* 0 ok, -1 not a MAC / not saved */
++extern int reaper_dhcpname_get(const char *mac, char *out, size_t n);	/* 1 + name, or 0 + "" */
+ /* reaper v2.6.7: generic durable text-value store for lists that must not live
+  * in nvram (shared/reaper_jfile.c) + the Policy Routing rule-list resolver. */
+ extern char *rjf_get(const char *path, int *exists);	/* "" when absent/empty; buffer valid until the next call */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index d319ddb902..338b795f70 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Cache DNS do roteador
+ RDHC_24=Não armazenar respostas DNS em cache no roteador
+ RDHC_25=O roteador normalmente guarda as respostas por um tempo. Com filtragem por cliente no servidor, uma resposta em cache decidida para um cliente seria entregue a outro, e o filtro não veria as consultas em cache. Desativado, o roteador apenas encaminha e o servidor DNS mantém o cache.
+ RDHC_26=A validação DNSSEC está ativa e o dnsmasq não inicia com um cache menor que o padrão enquanto valida. Com esta opção ativa o roteador mantém esse mínimo (150 entradas) em vez de nenhum.
++RDEV_96=fabricante
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 081a864770..c9c9797b7a 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=路由器 DNS 缓存
+ RDHC_24=不在路由器上缓存 DNS 应答
+ RDHC_25=路由器通常会将应答保留一段时间。上游按客户端过滤时，为某个客户端决定的缓存应答会被交给另一个客户端，且过滤器完全看不到这些缓存查询。关闭后，路由器只做转发，由 DNS 服务器保留缓存。
+ RDHC_26=DNSSEC 验证已开启，验证期间 dnsmasq 不会以小于默认值的缓存启动。开启此开关后，路由器保留该最小缓存（150 条）而不是完全不缓存。
++RDEV_96=厂商
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 63679c18df..541b50cf48 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Mezipaměť DNS routeru
+ RDHC_24=Neukládat odpovědi DNS do mezipaměti routeru
+ RDHC_25=Router si odpovědi běžně chvíli pamatuje. Při filtrování podle klienta na serveru by se odpověď rozhodnutá pro jednoho klienta vydala jinému a filtr by dotazy z mezipaměti vůbec neviděl. Vypnuto: router jen přeposílá a mezipaměť drží DNS server.
+ RDHC_26=Ověřování DNSSEC je zapnuté a dnsmasq se při ověřování nespustí s mezipamětí menší než výchozí. S touto volbou router ponechá toto minimum (150 položek) místo žádné.
++RDEV_96=vyrobce
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index bc7f3a493f..6bf68cfcd7 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Routerens DNS-cache
+ RDHC_24=Cache ikke DNS-svar på routeren
+ RDHC_25=Routeren gemmer normalt svar et stykke tid. Med filtrering pr. klient opstrøms ville et cachet svar afgjort for én klient blive givet til en anden, og filteret ville slet ikke se de cachede opslag. Slået fra videresender routeren kun, og DNS-serveren beholder cachen.
+ RDHC_26=DNSSEC-validering er slået til, og dnsmasq starter ikke med en cache mindre end standard, mens den validerer. Med denne indstilling beholder routeren det minimum (150 poster) i stedet for ingen.
++RDEV_96=producent
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index b7fa663c8a..dfe986ba07 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=DNS-Cache des Routers
+ RDHC_24=DNS-Antworten nicht auf dem Router zwischenspeichern
+ RDHC_25=Der Router behält Antworten normalerweise eine Weile. Bei Filterung pro Client auf dem Server würde eine für einen Client getroffene Antwort aus dem Cache an einen anderen ausgeliefert, und der Filter sähe die zwischengespeicherten Anfragen gar nicht. Ausgeschaltet leitet der Router nur weiter, und der DNS-Server hält den Cache.
+ RDHC_26=Die DNSSEC-Validierung ist aktiv, und dnsmasq startet beim Validieren nicht mit einem Cache unter seinem Standard. Mit diesem Schalter behält der Router dieses Minimum (150 Einträge) statt keinem Cache.
++RDEV_96=Hersteller
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 14c92ef5af..5afa881e53 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Router DNS cache
+ RDHC_24=Do not cache DNS answers on the router
+ RDHC_25=The router normally keeps answers for a while. With per-client filtering upstream, a cached answer decided for one client would be handed to another, and the filter would not see the cached lookups at all. Off, the router only forwards and the DNS server keeps the cache.
+ RDHC_26=DNSSEC validation is on, and dnsmasq will not start with a cache smaller than its default while validating. With this switch on the router keeps that minimum (150 entries) instead of none.
++RDEV_96=vendor
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 1a94611c2e..255dfff836 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Caché DNS del router
+ RDHC_24=No almacenar en caché las respuestas DNS en el router
+ RDHC_25=El router normalmente guarda las respuestas un tiempo. Con filtrado por cliente en el servidor, una respuesta en caché decidida para un cliente se entregaría a otro, y el filtro no vería las consultas en caché. Desactivado, el router solo reenvía y el servidor DNS conserva la caché.
+ RDHC_26=La validación DNSSEC está activada y dnsmasq no arranca con una caché menor que la predeterminada mientras valida. Con este interruptor activado el router conserva ese mínimo (150 entradas) en lugar de ninguna.
++RDEV_96=fabricante
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 81b3a9da05..ac2e72237c 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Reitittimen DNS-välimuisti
+ RDHC_24=Älä tallenna DNS-vastauksia reitittimen välimuistiin
+ RDHC_25=Reititin säilyttää vastauksia normaalisti jonkin aikaa. Kun suodatus tehdään asiakaskohtaisesti palvelimella, yhdelle asiakkaalle päätetty välimuistivastaus annettaisiin toiselle, eikä suodatin näkisi välimuistista vastattuja kyselyitä lainkaan. Pois päältä reititin vain välittää ja DNS-palvelin pitää välimuistin.
+ RDHC_26=DNSSEC-vahvistus on päällä, eikä dnsmasq käynnisty oletusta pienemmällä välimuistilla vahvistaessaan. Tämä kytkin päällä reititin pitää tuon vähimmäismäärän (150 merkintää) sen sijaan, ettei välimuistia olisi.
++RDEV_96=valmistaja
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index ea51301358..fd447e2dae 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Cache DNS du routeur
+ RDHC_24=Ne pas mettre en cache les réponses DNS sur le routeur
+ RDHC_25=Le routeur conserve normalement les réponses un moment. Avec un filtrage par client en amont, une réponse en cache décidée pour un client serait servie à un autre, et le filtre ne verrait pas du tout les requêtes servies depuis le cache. Désactivé, le routeur ne fait que transmettre et le serveur DNS garde le cache.
+ RDHC_26=La validation DNSSEC est active et dnsmasq ne démarre pas avec un cache inférieur à sa valeur par défaut pendant qu’il valide. Avec cet interrupteur, le routeur garde ce minimum (150 entrées) au lieu d’aucun cache.
++RDEV_96=fabricant
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index fd62f0f7b0..9969620895 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=A router DNS-gyorsítótára
+ RDHC_24=Ne gyorsítótárazza a DNS-válaszokat a routeren
+ RDHC_25=A router általában egy ideig megőrzi a válaszokat. Ügyfelenkénti szűrésnél a kiszolgálón az egyik ügyfélnek eldöntött, gyorsítótárazott válasz egy másikhoz kerülne, és a szűrő egyáltalán nem látná a gyorsítótárból kiszolgált lekérdezéseket. Kikapcsolva a router csak továbbít, a gyorsítótárat a DNS-kiszolgáló tartja.
+ RDHC_26=A DNSSEC-ellenőrzés be van kapcsolva, és a dnsmasq ellenőrzés közben nem indul el az alapértelmezettnél kisebb gyorsítótárral. Ezzel a kapcsolóval a router ezt a minimumot (150 bejegyzés) tartja meg a semmi helyett.
++RDEV_96=gyarto
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index d09ed3144d..c27036ff1f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Cache DNS del router
+ RDHC_24=Non memorizzare nella cache le risposte DNS sul router
+ RDHC_25=Il router normalmente conserva le risposte per un po'. Con il filtraggio per client a monte, una risposta in cache decisa per un client verrebbe consegnata a un altro, e il filtro non vedrebbe affatto le richieste servite dalla cache. Disattivato, il router si limita a inoltrare e il server DNS mantiene la cache.
+ RDHC_26=La convalida DNSSEC è attiva e dnsmasq non si avvia con una cache inferiore a quella predefinita mentre convalida. Con questo interruttore attivo il router mantiene quel minimo (150 voci) invece di nessuna cache.
++RDEV_96=produttore
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 3584e22ced..474836f665 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=ルーターの DNS キャッシュ
+ RDHC_24=ルーターで DNS 応答をキャッシュしない
+ RDHC_25=ルーターは通常、応答をしばらく保持します。上流でクライアントごとにフィルタリングする場合、あるクライアント向けに決定されたキャッシュ応答が別のクライアントに渡され、フィルタはキャッシュから応答した問い合わせをまったく見られません。オフにするとルーターは転送のみを行い、DNS サーバーがキャッシュを保持します。
+ RDHC_26=DNSSEC 検証が有効で、dnsmasq は検証中に既定値より小さいキャッシュでは起動しません。このスイッチをオンにすると、ルーターはキャッシュなしではなく最小値（150 件）を保持します。
++RDEV_96=メーカー
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 1e7102bb92..1f00f7322d 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=공유기 DNS 캐시
+ RDHC_24=공유기에서 DNS 응답을 캐시하지 않음
+ RDHC_25=공유기는 보통 응답을 잠시 보관합니다. 상위에서 클라이언트별로 필터링하면 한 클라이언트를 위해 결정된 캐시 응답이 다른 클라이언트에게 전달되고, 필터는 캐시된 조회를 전혀 보지 못합니다. 끄면 공유기는 전달만 하고 DNS 서버가 캐시를 유지합니다.
+ RDHC_26=DNSSEC 검증이 켜져 있으며, dnsmasq는 검증 중에 기본값보다 작은 캐시로는 시작하지 않습니다. 이 스위치를 켜면 공유기는 캐시 없음 대신 최소값(150개)을 유지합니다.
++RDEV_96=제조사
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index ee921aa643..2fb3f22249 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Cache DNS penghala
+ RDHC_24=Jangan cache jawapan DNS pada penghala
+ RDHC_25=Penghala biasanya menyimpan jawapan seketika. Dengan penapisan mengikut klien di huluan, jawapan cache yang diputuskan untuk satu klien akan diberikan kepada klien lain, dan penapis langsung tidak nampak carian yang dijawab dari cache. Dimatikan, penghala hanya memajukan dan pelayan DNS menyimpan cache.
+ RDHC_26=Pengesahan DNSSEC dihidupkan dan dnsmasq tidak akan bermula dengan cache lebih kecil daripada lalai semasa mengesahkan. Dengan suis ini dihidupkan penghala mengekalkan minimum itu (150 entri) dan bukannya tiada.
++RDEV_96=pengeluar
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 8dd6216381..0187376190 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=DNS-cache van de router
+ RDHC_24=DNS-antwoorden niet op de router cachen
+ RDHC_25=De router bewaart antwoorden normaal een tijdje. Bij filtering per client op de server zou een gecachet antwoord dat voor de ene client is bepaald aan een andere worden gegeven, en het filter zou de gecachete vragen helemaal niet zien. Uit: de router stuurt alleen door en de DNS-server houdt de cache.
+ RDHC_26=DNSSEC-validatie staat aan en dnsmasq start tijdens het valideren niet met een cache kleiner dan de standaard. Met deze schakelaar aan houdt de router dat minimum (150 items) in plaats van geen cache.
++RDEV_96=fabrikant
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index a0edbc752d..4582cb17df 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Ruterens DNS-hurtigbuffer
+ RDHC_24=Ikke hurtigbufre DNS-svar på ruteren
+ RDHC_25=Ruteren beholder normalt svar en stund. Med filtrering per klient oppstrøms ville et bufret svar avgjort for én klient bli gitt til en annen, og filteret ville ikke se de bufrede oppslagene i det hele tatt. Av: ruteren bare videresender, og DNS-serveren beholder hurtigbufferen.
+ RDHC_26=DNSSEC-validering er på, og dnsmasq starter ikke med en hurtigbuffer mindre enn standard mens den validerer. Med denne bryteren på beholder ruteren det minimumet (150 oppføringer) i stedet for ingen.
++RDEV_96=produsent
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 1180ed5a0d..b02ee206e7 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Pamięć podręczna DNS routera
+ RDHC_24=Nie buforuj odpowiedzi DNS na routerze
+ RDHC_25=Router zwykle przechowuje odpowiedzi przez pewien czas. Przy filtrowaniu według klienta na serwerze odpowiedź z bufora podjęta dla jednego klienta trafiłaby do innego, a filtr w ogóle nie widziałby zapytań obsłużonych z bufora. Wyłączone: router tylko przekazuje, a bufor prowadzi serwer DNS.
+ RDHC_26=Walidacja DNSSEC jest włączona, a dnsmasq nie uruchomi się z buforem mniejszym niż domyślny podczas walidacji. Z tym przełącznikiem router zachowuje to minimum (150 wpisów) zamiast braku bufora.
++RDEV_96=producent
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index d906ff6bc6..3ad069fbae 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Cache-ul DNS al routerului
+ RDHC_24=Nu păstra răspunsurile DNS în cache pe router
+ RDHC_25=Routerul păstrează în mod normal răspunsurile o vreme. Cu filtrare per client în amonte, un răspuns din cache decis pentru un client ar fi livrat altuia, iar filtrul nu ar vedea deloc interogările servite din cache. Dezactivat, routerul doar redirecționează, iar serverul DNS păstrează cache-ul.
+ RDHC_26=Validarea DNSSEC este pornită, iar dnsmasq nu pornește cu un cache mai mic decât cel implicit în timp ce validează. Cu acest comutator pornit routerul păstrează acel minim (150 de intrări) în loc de niciunul.
++RDEV_96=producator
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 73fc21b94a..338c340ef6 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=DNS-кэш роутера
+ RDHC_24=Не кэшировать ответы DNS на роутере
+ RDHC_25=Обычно роутер хранит ответы некоторое время. При фильтрации по клиентам на сервере ответ из кэша, принятый для одного клиента, будет выдан другому, а фильтр вовсе не увидит запросы, отвеченные из кэша. Выключено: роутер только пересылает, кэш держит DNS-сервер.
+ RDHC_26=Проверка DNSSEC включена, и dnsmasq не запускается с кэшем меньше значения по умолчанию во время проверки. С этим переключателем роутер сохраняет этот минимум (150 записей) вместо отсутствия кэша.
++RDEV_96=производитель
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 39cd7a7d1b..d867cf6447 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -497,7 +497,7 @@ function renderRows(){
+     if(!visible(d)) return;
+     var nameHtml = d.name
+       ? '<span class="dname rtip" data-i="' + i + '" title="' + esc(T('RDEV_68')) + '">' + esc(d.name) + '</span><span class="src">' + esc(d.src) + '</span>'
+-      : '<span class="dname unnamed rtip" data-i="' + i + '" title="' + esc(T('RDEV_69')) + '">' + (d.host ? esc(d.host) : esc(T('RDEV_42'))) + '</span><span class="src">' + (d.host ? esc(`<#RDEV_93#>`) : '&mdash;') + '</span>';
++      : '<span class="dname unnamed rtip" data-i="' + i + '" title="' + esc(T('RDEV_69')) + '">' + (d.host ? esc(d.host) : esc(T('RDEV_42'))) + '</span><span class="src">' + (d.host ? esc(d.src === 'vendor' ? `<#RDEV_96#>` : `<#RDEV_93#>`) : '&mdash;') + '</span>';
+     var chipsHtml = d.mlo_link
+       ? '<span class="chip pin" title="' + esc(T('RDEV_87')) + '">MLO</span>'
+       : ((d.node ? '<span class="chip node">' + esc(T('AiMesh_Node')) + '</span>' : '') +
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 6c750ffe08..b647a8c244 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Predpomnilnik DNS usmerjevalnika
+ RDHC_24=Ne shranjuj odgovorov DNS v predpomnilnik usmerjevalnika
+ RDHC_25=Usmerjevalnik običajno nekaj časa hrani odgovore. Pri filtriranju po odjemalcu na strežniku bi bil odgovor iz predpomnilnika, odločen za enega odjemalca, izročen drugemu, filter pa poizvedb iz predpomnilnika sploh ne bi videl. Izklopljeno: usmerjevalnik le posreduje, predpomnilnik hrani strežnik DNS.
+ RDHC_26=Preverjanje DNSSEC je vklopljeno in dnsmasq se med preverjanjem ne zažene s predpomnilnikom, manjšim od privzetega. S tem stikalom usmerjevalnik obdrži ta minimum (150 vnosov) namesto nobenega.
++RDEV_96=proizvajalec
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 2875d439d2..18cbd4dce2 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Routerns DNS-cache
+ RDHC_24=Cacha inte DNS-svar på routern
+ RDHC_25=Routern behåller normalt svar en stund. Med filtrering per klient uppströms skulle ett cachat svar som avgjorts för en klient lämnas till en annan, och filtret skulle inte alls se de cachade uppslagen. Av: routern vidarebefordrar bara och DNS-servern behåller cachen.
+ RDHC_26=DNSSEC-validering är på, och dnsmasq startar inte med en cache mindre än standard medan den validerar. Med den här brytaren på behåller routern det minimumet (150 poster) i stället för ingen.
++RDEV_96=tillverkare
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 3f46dedcb2..85ac9df44a 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=แคช DNS ของเราเตอร์
+ RDHC_24=ไม่แคชคำตอบ DNS บนเราเตอร์
+ RDHC_25=โดยปกติเราเตอร์จะเก็บคำตอบไว้ระยะหนึ่ง เมื่อกรองตามไคลเอนต์ที่ต้นทาง คำตอบในแคชที่ตัดสินให้ไคลเอนต์หนึ่งจะถูกส่งให้อีกเครื่อง และตัวกรองจะไม่เห็นคำถามที่ตอบจากแคชเลย เมื่อปิด เราเตอร์จะส่งต่อเท่านั้นและเซิร์ฟเวอร์ DNS เป็นผู้เก็บแคช
+ RDHC_26=การตรวจสอบ DNSSEC เปิดอยู่ และ dnsmasq จะไม่เริ่มทำงานด้วยแคชที่เล็กกว่าค่าเริ่มต้นระหว่างตรวจสอบ เมื่อเปิดสวิตช์นี้ เราเตอร์จะเก็บค่าต่ำสุดนั้นไว้ (150 รายการ) แทนที่จะไม่มีแคชเลย
++RDEV_96=ผู้ผลิต
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 4d806a5607..026f4289f1 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=Yönlendirici DNS önbelleği
+ RDHC_24=DNS yanıtlarını yönlendiricide önbelleğe alma
+ RDHC_25=Yönlendirici yanıtları normalde bir süre saklar. Üst tarafta istemci bazında filtreleme varken bir istemci için verilen önbellekteki yanıt başka bir istemciye verilir ve filtre önbellekten yanıtlanan sorguları hiç görmez. Kapalıyken yönlendirici yalnızca iletir, önbelleği DNS sunucusu tutar.
+ RDHC_26=DNSSEC doğrulaması açık ve dnsmasq doğrulama yaparken varsayılandan küçük bir önbellekle başlamaz. Bu anahtar açıkken yönlendirici hiç önbellek yerine o en düşük değeri (150 kayıt) tutar.
++RDEV_96=uretici
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index cb69844121..8da598fd9a 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=路由器 DNS 快取
+ RDHC_24=不在路由器上快取 DNS 回應
+ RDHC_25=路由器通常會將回應保留一段時間。上游依用戶端過濾時，為某個用戶端決定的快取回應會交給另一個用戶端，而過濾器完全看不到由快取回應的查詢。關閉後，路由器只做轉送，由 DNS 伺服器保留快取。
+ RDHC_26=DNSSEC 驗證已開啟，驗證期間 dnsmasq 不會以小於預設值的快取啟動。開啟此開關後，路由器保留該最小快取（150 筆）而非完全不快取。
++RDEV_96=廠商
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 6a74793947..0dd1e8df46 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6891,3 +6891,4 @@ RDHC_23=DNS-кеш маршрутизатора
+ RDHC_24=Не кешувати відповіді DNS на маршрутизаторі
+ RDHC_25=Зазвичай маршрутизатор деякий час зберігає відповіді. За фільтрації за клієнтом на сервері відповідь із кешу, ухвалена для одного клієнта, дісталася б іншому, а фільтр узагалі не бачив би запитів, на які відповіли з кешу. Вимкнено: маршрутизатор лише пересилає, кеш тримає DNS-сервер.
+ RDHC_26=Перевірка DNSSEC увімкнена, і dnsmasq не запускається з кешем, меншим за типовий, під час перевірки. З цим перемикачем маршрутизатор зберігає цей мінімум (150 записів) замість відсутності кешу.
++RDEV_96=виробник
+-- 
+2.25.1
+

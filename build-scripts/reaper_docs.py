@@ -239,8 +239,12 @@ def doc_files(root, extra):
     return out
 
 
+# patches/README.md is here for a reason: it restates the series length and the
+# rung it runs to, and it sits OUTSIDE docs/, so it was invisible to this checker
+# and drifted unnoticed from "535 patches, v1.0 -> v2.7.6" while the series grew
+# past 600. Any file that restates a fleet fact belongs in scope, wherever it lives.
 EXTRA_DOCS = ["README.md", "CONTRIBUTING.md", "SECURITY.md",
-              "build-scripts/README.md"]
+              "build-scripts/README.md", "patches/README.md"]
 
 
 def process(root, mode, facts):

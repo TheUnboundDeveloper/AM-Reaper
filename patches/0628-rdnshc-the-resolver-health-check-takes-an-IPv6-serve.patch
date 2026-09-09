@@ -1,0 +1,562 @@
+From 3e5258dbb3e168ea232a4bf734bc4ac5e9e94180 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 7 Sep 2026 10:38:26 -0400
+Subject: [PATCH] rdnshc: the resolver health check takes an IPv6 server, gated
+ on the router's IPv6 service
+
+Owner review 2026-09-07 of the v3.1.1 health check: it was IPv4-only in five
+places - the nvram field (CKN_STR15), cfg_read's AF_INET parse, the probe's
+sockaddr_in/AF_INET socket, the INET_ADDRSTRLEN buffers, and the page
+(maxlength 15, validator.ipv4_addr, the isIPAddr key filter). A LAN resolver
+reached over IPv6, or an IPv6 WAN upstream, could not be watched.
+
+- rc/rdnshc.c: the target is IPv4 or IPv6, kept in its canonical inet_ntop
+  spelling (one form in the log); the probe builds a sockaddr_storage and opens
+  a socket of the matching family; line_is_target() now compares the address
+  in a server=/nameserver line BY VALUE (parsed, #port and %zone stripped), so
+  "2001:DB8::1", "2001:db8:0:0::1" and "2001:db8::1#53" all match the one
+  server - the textual compare could miss an IPv6 upstream the firmware wrote
+  in another spelling. An IPv6 target while IPv6 is disabled on the router
+  (ipv6_enabled()) makes the check idle: no route to it and no IPv6 upstream to
+  move; one log line says so, the state reads off. Buffers sized INET6.
+- shared/defaults.c: reaper_dnshc_target CKN_STR15 -> CKN_STR64 (the CKN_STR
+  clamp would have cut an IPv6 spelling on apply).
+- Advanced_System_Content.asp: maxlength 45, a key filter that admits digits,
+  hex letters, dots and colons (rdhcKey), validation accepts IPv4 always and
+  IPv6 only while ipv6_service is not "disabled" (isLegal_ipv6, muted, with
+  the reason in the alert), and a note under the box; token RDHC_27 in all 25
+  packs (lockstep 6895).
+
+Gates: reaper_static_checks 11/11; mk-rc compiles and links clean, no
+diagnostics in rdnshc.c. Verify marker added for the idle log line.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rdnshc.c                | 103 +++++++++++++-----
+ release/src/router/shared/defaults.c          |   2 +-
+ .../router/www/Advanced_System_Content.asp    |  17 ++-
+ release/src/router/www/BR.dict                |   1 +
+ release/src/router/www/CN.dict                |   1 +
+ release/src/router/www/CZ.dict                |   1 +
+ release/src/router/www/DA.dict                |   1 +
+ release/src/router/www/DE.dict                |   1 +
+ release/src/router/www/EN.dict                |   1 +
+ release/src/router/www/ES.dict                |   1 +
+ release/src/router/www/FI.dict                |   1 +
+ release/src/router/www/FR.dict                |   1 +
+ release/src/router/www/HU.dict                |   1 +
+ release/src/router/www/IT.dict                |   1 +
+ release/src/router/www/JP.dict                |   1 +
+ release/src/router/www/KR.dict                |   1 +
+ release/src/router/www/MS.dict                |   1 +
+ release/src/router/www/NL.dict                |   1 +
+ release/src/router/www/NO.dict                |   1 +
+ release/src/router/www/PL.dict                |   1 +
+ release/src/router/www/RO.dict                |   1 +
+ release/src/router/www/RU.dict                |   1 +
+ release/src/router/www/SL.dict                |   1 +
+ release/src/router/www/SV.dict                |   1 +
+ release/src/router/www/TH.dict                |   1 +
+ release/src/router/www/TR.dict                |   1 +
+ release/src/router/www/TW.dict                |   1 +
+ release/src/router/www/UK.dict                |   1 +
+ 28 files changed, 115 insertions(+), 32 deletions(-)
+
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index e008b626c0..b6b9fa7c00 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -64,7 +64,9 @@
+ 
+ struct hc_cfg {
+ 	int enable;
+-	char target[INET_ADDRSTRLEN];
++	char target[INET6_ADDRSTRLEN];	/* canonical spelling (inet_ntop) of what the admin typed */
++	int af;			/* AF_INET / AF_INET6; 0 = no valid target */
++	int v6_off;		/* an IPv6 target while IPv6 is disabled on the router: idle */
+ 	char name[128];
+ 	int interval;		/* s */
+ 	int timeout_ms;
+@@ -91,14 +93,30 @@ static int clamp(int v, int lo, int hi, int dflt)
+ static void cfg_read(struct hc_cfg *c)
+ {
+ 	const char *p;
+-	struct in_addr a;
++	struct in_addr a4;
++	struct in6_addr a6;
+ 	size_t i;
+ 
+ 	memset(c, 0, sizeof(*c));
+ 	c->enable = nvram_get_int("reaper_dnshc_enable");
+ 	p = nvram_safe_get("reaper_dnshc_target");
+-	if (*p && inet_pton(AF_INET, p, &a) == 1)
+-		strlcpy(c->target, p, sizeof(c->target));
++	/* IPv4 or IPv6 (v3.1.1), kept in its canonical spelling so the log shows one
++	 * form and the resolver-file match (by value, line_is_target) is exact. An
++	 * IPv6 target is honoured only while IPv6 is enabled on the router: with
++	 * IPv6 off there is no route to it and the router's DNS list holds no IPv6
++	 * upstream to move, so the check idles and says so once. */
++	if (*p && inet_pton(AF_INET, p, &a4) == 1) {
++		c->af = AF_INET;
++		inet_ntop(AF_INET, &a4, c->target, sizeof(c->target));
++	} else if (*p && inet_pton(AF_INET6, p, &a6) == 1) {
++		c->af = AF_INET6;
++		inet_ntop(AF_INET6, &a6, c->target, sizeof(c->target));
++#ifdef RTCONFIG_IPV6
++		c->v6_off = ipv6_enabled() ? 0 : 1;
++#else
++		c->v6_off = 1;
++#endif
++	}
+ 	p = nvram_safe_get("reaper_dnshc_name");
+ 	strlcpy(c->name, (*p ? p : "localhost"), sizeof(c->name));
+ 	for (i = 0; c->name[i]; i++) {
+@@ -123,7 +141,8 @@ static int probe(const struct hc_cfg *c)
+ 	unsigned char pkt[512];
+ 	unsigned char *q;
+ 	const char *lab, *dot;
+-	struct sockaddr_in sa;
++	struct sockaddr_storage ss;
++	socklen_t slen;
+ 	struct timeval tv;
+ 	fd_set rf;
+ 	unsigned short id;
+@@ -150,13 +169,23 @@ static int probe(const struct hc_cfg *c)
+ 	*q++ = 0; *q++ = 1;			/* QCLASS IN */
+ 	len = (int)(q - pkt);
+ 
+-	memset(&sa, 0, sizeof(sa));
+-	sa.sin_family = AF_INET;
+-	sa.sin_port = htons(53);
+-	if (inet_pton(AF_INET, c->target, &sa.sin_addr) != 1) return 0;
++	memset(&ss, 0, sizeof(ss));
++	if (c->af == AF_INET6) {
++		struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
++		s6->sin6_family = AF_INET6;
++		s6->sin6_port = htons(53);
++		if (inet_pton(AF_INET6, c->target, &s6->sin6_addr) != 1) return 0;
++		slen = sizeof(*s6);
++	} else {
++		struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
++		s4->sin_family = AF_INET;
++		s4->sin_port = htons(53);
++		if (inet_pton(AF_INET, c->target, &s4->sin_addr) != 1) return 0;
++		slen = sizeof(*s4);
++	}
+ 
+-	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) return 0;
+-	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 || send(fd, pkt, len, 0) != len) {
++	if ((fd = socket(c->af == AF_INET6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0)) < 0) return 0;
++	if (connect(fd, (struct sockaddr *)&ss, slen) < 0 || send(fd, pkt, len, 0) != len) {
+ 		close(fd);
+ 		return 0;
+ 	}
+@@ -187,12 +216,24 @@ static int probe(const struct hc_cfg *c)
+  * that is "server=<ip>" or "server=<ip>#port" (a "server=/domain/<ip>" line
+  * is a domain route and is left where it is); for resolv.conf it is
+  * "nameserver <ip>". */
+-static int line_is_target(const char *line, const char *prefix, const char *target)
++static int line_is_target(const char *line, const char *prefix, const struct hc_cfg *c)
+ {
+-	size_t pl = strlen(prefix), tl = strlen(target);
++	size_t pl = strlen(prefix), al;
++	char addr[INET6_ADDRSTRLEN + 8];
++	unsigned char bin[16], tbin[16];
++	const char *p;
+ 	if (strncmp(line, prefix, pl) != 0) return 0;
+-	if (strncmp(line + pl, target, tl) != 0) return 0;
+-	return line[pl + tl] == 0 || line[pl + tl] == '\n' || line[pl + tl] == '#' || line[pl + tl] == ' ' || line[pl + tl] == '\t';
++	p = line + pl;
++	if (*p == '/') return 0;			/* domain route */
++	/* the address ends at a #port, a %zone, blank or end of line; compared by
++	 * VALUE so "2001:DB8::1", "2001:db8:0:0::1" and "2001:db8::1#53" are all
++	 * the one server (an IPv4 spelling has no such variants; same code) */
++	al = strcspn(p, "#% \t\r\n");
++	if (al == 0 || al >= sizeof(addr)) return 0;
++	memcpy(addr, p, al);
++	addr[al] = 0;
++	if (inet_pton(c->af, addr, bin) != 1 || inet_pton(c->af, c->target, tbin) != 1) return 0;
++	return memcmp(bin, tbin, c->af == AF_INET6 ? 16 : 4) == 0;
+ }
+ 
+ /* A plain upstream of the same kind (used to decide whether the target is
+@@ -207,7 +248,7 @@ static int line_is_upstream(const char *line, const char *prefix)
+ /* Move the target's plain-upstream line(s) to the end of the file. Returns
+  * 1 if the file was rewritten, 0 if there was nothing to do (no such line,
+  * or it is already the last upstream), -1 on error. Caller holds the lock. */
+-static int demote_file(const char *path, const char *prefix, const char *target, int *n_upstreams)
++static int demote_file(const char *path, const char *prefix, const struct hc_cfg *c, int *n_upstreams)
+ {
+ 	static char lines[HC_MAXLINES][HC_LINE];
+ 	int n = 0, i, last_other = -1, last_target = -1, first_target = -1, nup = 0;
+@@ -215,7 +256,7 @@ static int demote_file(const char *path, const char *prefix, const char *target,
+ 
+ 	if (!(fp = fopen(path, "r"))) return -1;
+ 	while (n < HC_MAXLINES && fgets(lines[n], HC_LINE, fp)) {
+-		if (line_is_target(lines[n], prefix, target)) {
++		if (line_is_target(lines[n], prefix, c)) {
+ 			if (first_target < 0) first_target = n;
+ 			last_target = n;
+ 			nup++;
+@@ -231,10 +272,10 @@ static int demote_file(const char *path, const char *prefix, const char *target,
+ 	if (last_other < first_target) return 0;	/* already last among the upstreams */
+ 	if (!(fp = fopen(path, "w"))) return -1;
+ 	for (i = 0; i < n; i++)
+-		if (!line_is_target(lines[i], prefix, target))
++		if (!line_is_target(lines[i], prefix, c))
+ 			fputs(lines[i], fp);
+ 	for (i = 0; i < n; i++)
+-		if (line_is_target(lines[i], prefix, target))
++		if (line_is_target(lines[i], prefix, c))
+ 			fputs(lines[i], fp);
+ 	fclose(fp);
+ 	(void)last_target;
+@@ -252,12 +293,12 @@ static void hc_reload(void)
+ 
+ /* returns the number of plain upstreams dnsmasq has, so the log can say when
+  * there is nothing to fall back to */
+-static int demote(const char *target, int *changed)
++static int demote(const struct hc_cfg *c, int *changed)
+ {
+ 	int lock, a, b, nup = 0;
+ 	lock = file_lock("resolv");
+-	a = demote_file(HC_DNSMASQ, "server=", target, &nup);
+-	b = demote_file(HC_RESOLV, "nameserver ", target, NULL);
++	a = demote_file(HC_DNSMASQ, "server=", c, &nup);
++	b = demote_file(HC_RESOLV, "nameserver ", c, NULL);
+ 	file_unlock(lock);
+ 	if (changed) *changed = (a == 1 || b == 1);
+ 	if (a == 1) hc_reload();
+@@ -281,8 +322,8 @@ static void state_set(const char *what, long since, int alive)
+ int rdnshc_main(int argc, char *argv[])
+ {
+ 	struct hc_cfg c;
+-	char watched[INET_ADDRSTRLEN] = "";
+-	int down = 0, misses = 0, hits = 0, last_enabled = -1, i, alive = -1;
++	char watched[INET6_ADDRSTRLEN] = "";
++	int down = 0, misses = 0, hits = 0, last_enabled = -1, i, alive = -1, v6_warned = 0;
+ 	long since = 0;
+ 	(void)argc; (void)argv;
+ 
+@@ -295,7 +336,7 @@ int rdnshc_main(int argc, char *argv[])
+ 	/* adopt a demotion a previous instance left in place (restart_rdnshc, or
+ 	 * it died): that order is ours to restore when the rules say so */
+ 	{
+-		char prev[INET_ADDRSTRLEN + 2] = "";
++		char prev[INET6_ADDRSTRLEN + 2] = "";
+ 		if (f_read_string(HC_STATE, prev, sizeof(prev)) > 0) {
+ 			char *nl = strchr(prev, '\n');
+ 			if (nl) *nl = 0;
+@@ -311,7 +352,13 @@ int rdnshc_main(int argc, char *argv[])
+ 	while (!g_stop) {
+ 		int enabled, poll;
+ 		cfg_read(&c);
+-		enabled = c.enable && *c.target;
++		enabled = c.enable && *c.target && !c.v6_off;
++		if (c.enable && *c.target && c.v6_off) {
++			if (!v6_warned)
++				logmessage(HC_TAG, "DNS Health Check: %s is an IPv6 address but IPv6 is disabled on the router - the check stays idle until IPv6 is enabled or an IPv4 server is named", c.target);
++			v6_warned = 1;
++		} else
++			v6_warned = 0;
+ 
+ 		if (enabled != last_enabled) {
+ 			if (enabled)
+@@ -345,7 +392,7 @@ int rdnshc_main(int argc, char *argv[])
+ 		if (!down && misses >= c.fail) {
+ 			int changed = 0, nup;
+ 			down = 1; since = now_s(); hits = 0;
+-			nup = demote(c.target, &changed);
++			nup = demote(&c, &changed);
+ 			f_write_string(HC_STATE, c.target, 0, 0);
+ 			if (nup <= 1)
+ 				logmessage(HC_TAG, "DNS Health Check FAILOVER: %s is down (%d misses) but it is the only upstream in the router's DNS list - nothing to fall back to, queries keep going to it", c.target, misses);
+@@ -362,7 +409,7 @@ int rdnshc_main(int argc, char *argv[])
+ 			 * files in stock order meanwhile: re-assert, quietly when there
+ 			 * was nothing to do */
+ 			int changed = 0;
+-			demote(c.target, &changed);
++			demote(&c, &changed);
+ 			if (changed)
+ 				logmessage(HC_TAG, "DNS Health Check FAILOVER re-applied: the router's DNS list was rewritten in stock order while %s is still down - moved to the end again", c.target);
+ 		}
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 368a306a1b..7dcb4c5fae 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3170,7 +3170,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "amas_bh_park", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* reaper v3.1.1: LAN resolver health check (rc/rdnshc.c) + dnsmasq strict upstream order; the System page's "Reaper resolver health check" block */
+ 	{ "reaper_dnshc_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "reaper_dnshc_target", "", CKN_STR15, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* IPv4 of the LAN resolver to watch; empty = nothing watched */
++	{ "reaper_dnshc_target", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* IPv4 or (v3.1.1) IPv6 of the LAN resolver to watch - an IPv6 address counts only while IPv6 is enabled; empty = nothing watched */
+ 	{ "reaper_dnshc_name", "localhost", CKN_STR255, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* name queried; any reply counts unless _strict */
+ 	{ "reaper_dnshc_interval", "10", CKN_STR3, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* s, 3-300 */
+ 	{ "reaper_dnshc_timeout", "1000", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* ms, 200-5000 */
+diff --git a/release/src/router/www/Advanced_System_Content.asp b/release/src/router/www/Advanced_System_Content.asp
+index 903a31d98b..5134baa645 100644
+--- a/release/src/router/www/Advanced_System_Content.asp
++++ b/release/src/router/www/Advanced_System_Content.asp
+@@ -1884,11 +1884,21 @@ function rdhcInit(){
+ 	var dn = document.getElementById("rdhc_dnssec_note");
+ 	if(dn && dn.getAttribute("data-dnssec") != "" && dn.getAttribute("data-dnssec") != "0") dn.style.display = "";
+ }
++/* the address box: digits, hex letters, dots and colons (an IPv4 or an IPv6 spelling) */
++function rdhcKey(o, event){
++	var k = event.keyCode ? event.keyCode : event.which;
++	if(validator.isFunctionButton(event)) return true;
++	return (k > 47 && k < 58) || k == 46 || k == 58 || (k > 64 && k < 71) || (k > 96 && k < 103);
++}
+ function rdhcValid(){
+ 	if(!document.form.reaper_dnshc_chk.checked) return true;
+ 	var t = document.form.reaper_dnshc_target;
+-	if(!validator.ipv4_addr(t.value)){
+-		alert(t.value + " <#JS_validip#>");
++	/* an IPv6 server is accepted only while IPv6 is enabled on the router (the
++	   daemon applies the same rule and idles otherwise) */
++	var v6el = document.getElementById("rdhc_v6_note");
++	var v6on = !!(v6el && v6el.getAttribute("data-ipv6") != "" && v6el.getAttribute("data-ipv6") != "disabled");
++	if(!validator.ipv4_addr(t.value) && !(v6on && validator.isLegal_ipv6(t, 1))){
++		alert(t.value + " <#JS_validip#>" + ((!v6on && t.value.indexOf(":") >= 0) ? "\n" + `<#RDHC_27#>` : ""));
+ 		t.focus();
+ 		return false;
+ 	}
+@@ -2940,8 +2950,9 @@ function Get_Component_reboot_schedule_ui(config){
+ 				<tr class="rdhc_row" style="display:none;">
+ 					<th><#RDHC_4#></th>
+ 					<td>
+-						<input type="text" class="input_25_table" name="reaper_dnshc_target" maxlength="15" value="<% nvram_get("reaper_dnshc_target"); %>" placeholder="192.168.50.98" onKeyPress="return validator.isIPAddr(this, event);" autocorrect="off" autocapitalize="off">
++						<input type="text" class="input_25_table" name="reaper_dnshc_target" maxlength="45" value="<% nvram_get("reaper_dnshc_target"); %>" placeholder="192.168.50.98" onKeyPress="return rdhcKey(this, event);" autocorrect="off" autocapitalize="off">
+ 						<div style="margin-top:4px;line-height:1.4;color:#ECE7DB;opacity:.7"><#RDHC_16#></div>
++						<div id="rdhc_v6_note" style="margin-top:4px;line-height:1.4;color:#ECE7DB;opacity:.7" data-ipv6="<% nvram_get("ipv6_service"); %>"><#RDHC_27#></div>
+ 					</td>
+ 				</tr>
+ 				<tr class="rdhc_row" style="display:none;">
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 338b795f70..5be8939525 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Não armazenar respostas DNS em cache no roteador
+ RDHC_25=O roteador normalmente guarda as respostas por um tempo. Com filtragem por cliente no servidor, uma resposta em cache decidida para um cliente seria entregue a outro, e o filtro não veria as consultas em cache. Desativado, o roteador apenas encaminha e o servidor DNS mantém o cache.
+ RDHC_26=A validação DNSSEC está ativa e o dnsmasq não inicia com um cache menor que o padrão enquanto valida. Com esta opção ativa o roteador mantém esse mínimo (150 entradas) em vez de nenhum.
+ RDEV_96=fabricante
++RDHC_27=Um endereco IPv6 so e aceito aqui enquanto o IPv6 estiver ativado no roteador (Configuracoes avancadas, IPv6).
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index c9c9797b7a..6f8262b710 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=不在路由器上缓存 DNS 应答
+ RDHC_25=路由器通常会将应答保留一段时间。上游按客户端过滤时，为某个客户端决定的缓存应答会被交给另一个客户端，且过滤器完全看不到这些缓存查询。关闭后，路由器只做转发，由 DNS 服务器保留缓存。
+ RDHC_26=DNSSEC 验证已开启，验证期间 dnsmasq 不会以小于默认值的缓存启动。开启此开关后，路由器保留该最小缓存（150 条）而不是完全不缓存。
+ RDEV_96=厂商
++RDHC_27=仅当路由器已启用 IPv6（高级设置 → IPv6）时，此处才接受 IPv6 地址。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 541b50cf48..bd0afb22f9 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Neukládat odpovědi DNS do mezipaměti routeru
+ RDHC_25=Router si odpovědi běžně chvíli pamatuje. Při filtrování podle klienta na serveru by se odpověď rozhodnutá pro jednoho klienta vydala jinému a filtr by dotazy z mezipaměti vůbec neviděl. Vypnuto: router jen přeposílá a mezipaměť drží DNS server.
+ RDHC_26=Ověřování DNSSEC je zapnuté a dnsmasq se při ověřování nespustí s mezipamětí menší než výchozí. S touto volbou router ponechá toto minimum (150 položek) místo žádné.
+ RDEV_96=vyrobce
++RDHC_27=Adresa IPv6 je zde prijata jen tehdy, kdyz je na routeru zapnuto IPv6 (Rozsirena nastaveni, IPv6).
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 6bf68cfcd7..72fa0b7e36 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Cache ikke DNS-svar på routeren
+ RDHC_25=Routeren gemmer normalt svar et stykke tid. Med filtrering pr. klient opstrøms ville et cachet svar afgjort for én klient blive givet til en anden, og filteret ville slet ikke se de cachede opslag. Slået fra videresender routeren kun, og DNS-serveren beholder cachen.
+ RDHC_26=DNSSEC-validering er slået til, og dnsmasq starter ikke med en cache mindre end standard, mens den validerer. Med denne indstilling beholder routeren det minimum (150 poster) i stedet for ingen.
+ RDEV_96=producent
++RDHC_27=En IPv6-adresse accepteres her kun, mens IPv6 er slaet til pa routeren (Avancerede indstillinger, IPv6).
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index dfe986ba07..4196ed2912 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=DNS-Antworten nicht auf dem Router zwischenspeichern
+ RDHC_25=Der Router behält Antworten normalerweise eine Weile. Bei Filterung pro Client auf dem Server würde eine für einen Client getroffene Antwort aus dem Cache an einen anderen ausgeliefert, und der Filter sähe die zwischengespeicherten Anfragen gar nicht. Ausgeschaltet leitet der Router nur weiter, und der DNS-Server hält den Cache.
+ RDHC_26=Die DNSSEC-Validierung ist aktiv, und dnsmasq startet beim Validieren nicht mit einem Cache unter seinem Standard. Mit diesem Schalter behält der Router dieses Minimum (150 Einträge) statt keinem Cache.
+ RDEV_96=Hersteller
++RDHC_27=Eine IPv6-Adresse wird hier nur akzeptiert, solange IPv6 auf dem Router aktiviert ist (Erweiterte Einstellungen, IPv6).
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 5afa881e53..f2ece7e11a 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Do not cache DNS answers on the router
+ RDHC_25=The router normally keeps answers for a while. With per-client filtering upstream, a cached answer decided for one client would be handed to another, and the filter would not see the cached lookups at all. Off, the router only forwards and the DNS server keeps the cache.
+ RDHC_26=DNSSEC validation is on, and dnsmasq will not start with a cache smaller than its default while validating. With this switch on the router keeps that minimum (150 entries) instead of none.
+ RDEV_96=vendor
++RDHC_27=An IPv6 address is accepted here only while IPv6 is enabled on the router (Advanced Settings, IPv6).
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 255dfff836..e1abfc5296 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=No almacenar en caché las respuestas DNS en el router
+ RDHC_25=El router normalmente guarda las respuestas un tiempo. Con filtrado por cliente en el servidor, una respuesta en caché decidida para un cliente se entregaría a otro, y el filtro no vería las consultas en caché. Desactivado, el router solo reenvía y el servidor DNS conserva la caché.
+ RDHC_26=La validación DNSSEC está activada y dnsmasq no arranca con una caché menor que la predeterminada mientras valida. Con este interruptor activado el router conserva ese mínimo (150 entradas) en lugar de ninguna.
+ RDEV_96=fabricante
++RDHC_27=Aqui solo se acepta una direccion IPv6 mientras IPv6 este activado en el router (Configuracion avanzada, IPv6).
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index ac2e72237c..62e0e580b5 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Älä tallenna DNS-vastauksia reitittimen välimuistiin
+ RDHC_25=Reititin säilyttää vastauksia normaalisti jonkin aikaa. Kun suodatus tehdään asiakaskohtaisesti palvelimella, yhdelle asiakkaalle päätetty välimuistivastaus annettaisiin toiselle, eikä suodatin näkisi välimuistista vastattuja kyselyitä lainkaan. Pois päältä reititin vain välittää ja DNS-palvelin pitää välimuistin.
+ RDHC_26=DNSSEC-vahvistus on päällä, eikä dnsmasq käynnisty oletusta pienemmällä välimuistilla vahvistaessaan. Tämä kytkin päällä reititin pitää tuon vähimmäismäärän (150 merkintää) sen sijaan, ettei välimuistia olisi.
+ RDEV_96=valmistaja
++RDHC_27=IPv6-osoite hyvaksytaan tassa vain, kun IPv6 on kaytossa reitittimessa (Lisaasetukset, IPv6).
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index fd447e2dae..e2f095b794 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Ne pas mettre en cache les réponses DNS sur le routeur
+ RDHC_25=Le routeur conserve normalement les réponses un moment. Avec un filtrage par client en amont, une réponse en cache décidée pour un client serait servie à un autre, et le filtre ne verrait pas du tout les requêtes servies depuis le cache. Désactivé, le routeur ne fait que transmettre et le serveur DNS garde le cache.
+ RDHC_26=La validation DNSSEC est active et dnsmasq ne démarre pas avec un cache inférieur à sa valeur par défaut pendant qu’il valide. Avec cet interrupteur, le routeur garde ce minimum (150 entrées) au lieu d’aucun cache.
+ RDEV_96=fabricant
++RDHC_27=Une adresse IPv6 est acceptee ici uniquement lorsque IPv6 est active sur le routeur (Parametres avances, IPv6).
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 9969620895..8977cc2906 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Ne gyorsítótárazza a DNS-válaszokat a routeren
+ RDHC_25=A router általában egy ideig megőrzi a válaszokat. Ügyfelenkénti szűrésnél a kiszolgálón az egyik ügyfélnek eldöntött, gyorsítótárazott válasz egy másikhoz kerülne, és a szűrő egyáltalán nem látná a gyorsítótárból kiszolgált lekérdezéseket. Kikapcsolva a router csak továbbít, a gyorsítótárat a DNS-kiszolgáló tartja.
+ RDHC_26=A DNSSEC-ellenőrzés be van kapcsolva, és a dnsmasq ellenőrzés közben nem indul el az alapértelmezettnél kisebb gyorsítótárral. Ezzel a kapcsolóval a router ezt a minimumot (150 bejegyzés) tartja meg a semmi helyett.
+ RDEV_96=gyarto
++RDHC_27=IPv6-cim itt csak akkor fogadhato el, amig az IPv6 be van kapcsolva a routeren (Specialis beallitasok, IPv6).
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index c27036ff1f..9ffc106bf0 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Non memorizzare nella cache le risposte DNS sul router
+ RDHC_25=Il router normalmente conserva le risposte per un po'. Con il filtraggio per client a monte, una risposta in cache decisa per un client verrebbe consegnata a un altro, e il filtro non vedrebbe affatto le richieste servite dalla cache. Disattivato, il router si limita a inoltrare e il server DNS mantiene la cache.
+ RDHC_26=La convalida DNSSEC è attiva e dnsmasq non si avvia con una cache inferiore a quella predefinita mentre convalida. Con questo interruttore attivo il router mantiene quel minimo (150 voci) invece di nessuna cache.
+ RDEV_96=produttore
++RDHC_27=Un indirizzo IPv6 viene accettato qui solo finche IPv6 e attivo sul router (Impostazioni avanzate, IPv6).
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 474836f665..f2c3a8a265 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=ルーターで DNS 応答をキャッシュしない
+ RDHC_25=ルーターは通常、応答をしばらく保持します。上流でクライアントごとにフィルタリングする場合、あるクライアント向けに決定されたキャッシュ応答が別のクライアントに渡され、フィルタはキャッシュから応答した問い合わせをまったく見られません。オフにするとルーターは転送のみを行い、DNS サーバーがキャッシュを保持します。
+ RDHC_26=DNSSEC 検証が有効で、dnsmasq は検証中に既定値より小さいキャッシュでは起動しません。このスイッチをオンにすると、ルーターはキャッシュなしではなく最小値（150 件）を保持します。
+ RDEV_96=メーカー
++RDHC_27=IPv6 アドレスは、ルーターで IPv6 が有効な間のみここで受け付けられます（詳細設定 → IPv6）。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 1f00f7322d..d24deff3a3 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=공유기에서 DNS 응답을 캐시하지 않음
+ RDHC_25=공유기는 보통 응답을 잠시 보관합니다. 상위에서 클라이언트별로 필터링하면 한 클라이언트를 위해 결정된 캐시 응답이 다른 클라이언트에게 전달되고, 필터는 캐시된 조회를 전혀 보지 못합니다. 끄면 공유기는 전달만 하고 DNS 서버가 캐시를 유지합니다.
+ RDHC_26=DNSSEC 검증이 켜져 있으며, dnsmasq는 검증 중에 기본값보다 작은 캐시로는 시작하지 않습니다. 이 스위치를 켜면 공유기는 캐시 없음 대신 최소값(150개)을 유지합니다.
+ RDEV_96=제조사
++RDHC_27=IPv6 주소는 라우터에서 IPv6가 활성화된 동안에만 여기에 입력할 수 있습니다(고급 설정 → IPv6).
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 2fb3f22249..ec04a8c6e0 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Jangan cache jawapan DNS pada penghala
+ RDHC_25=Penghala biasanya menyimpan jawapan seketika. Dengan penapisan mengikut klien di huluan, jawapan cache yang diputuskan untuk satu klien akan diberikan kepada klien lain, dan penapis langsung tidak nampak carian yang dijawab dari cache. Dimatikan, penghala hanya memajukan dan pelayan DNS menyimpan cache.
+ RDHC_26=Pengesahan DNSSEC dihidupkan dan dnsmasq tidak akan bermula dengan cache lebih kecil daripada lalai semasa mengesahkan. Dengan suis ini dihidupkan penghala mengekalkan minimum itu (150 entri) dan bukannya tiada.
+ RDEV_96=pengeluar
++RDHC_27=Alamat IPv6 hanya diterima di sini semasa IPv6 diaktifkan pada penghala (Tetapan lanjutan, IPv6).
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 0187376190..92e200751d 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=DNS-antwoorden niet op de router cachen
+ RDHC_25=De router bewaart antwoorden normaal een tijdje. Bij filtering per client op de server zou een gecachet antwoord dat voor de ene client is bepaald aan een andere worden gegeven, en het filter zou de gecachete vragen helemaal niet zien. Uit: de router stuurt alleen door en de DNS-server houdt de cache.
+ RDHC_26=DNSSEC-validatie staat aan en dnsmasq start tijdens het valideren niet met een cache kleiner dan de standaard. Met deze schakelaar aan houdt de router dat minimum (150 items) in plaats van geen cache.
+ RDEV_96=fabrikant
++RDHC_27=Een IPv6-adres wordt hier alleen geaccepteerd zolang IPv6 op de router is ingeschakeld (Geavanceerde instellingen, IPv6).
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 4582cb17df..6e51d02fe6 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Ikke hurtigbufre DNS-svar på ruteren
+ RDHC_25=Ruteren beholder normalt svar en stund. Med filtrering per klient oppstrøms ville et bufret svar avgjort for én klient bli gitt til en annen, og filteret ville ikke se de bufrede oppslagene i det hele tatt. Av: ruteren bare videresender, og DNS-serveren beholder hurtigbufferen.
+ RDHC_26=DNSSEC-validering er på, og dnsmasq starter ikke med en hurtigbuffer mindre enn standard mens den validerer. Med denne bryteren på beholder ruteren det minimumet (150 oppføringer) i stedet for ingen.
+ RDEV_96=produsent
++RDHC_27=En IPv6-adresse godtas her bare mens IPv6 er slatt pa i ruteren (Avanserte innstillinger, IPv6).
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index b02ee206e7..08f55f89ad 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Nie buforuj odpowiedzi DNS na routerze
+ RDHC_25=Router zwykle przechowuje odpowiedzi przez pewien czas. Przy filtrowaniu według klienta na serwerze odpowiedź z bufora podjęta dla jednego klienta trafiłaby do innego, a filtr w ogóle nie widziałby zapytań obsłużonych z bufora. Wyłączone: router tylko przekazuje, a bufor prowadzi serwer DNS.
+ RDHC_26=Walidacja DNSSEC jest włączona, a dnsmasq nie uruchomi się z buforem mniejszym niż domyślny podczas walidacji. Z tym przełącznikiem router zachowuje to minimum (150 wpisów) zamiast braku bufora.
+ RDEV_96=producent
++RDHC_27=Adres IPv6 jest tu akceptowany tylko wtedy, gdy IPv6 jest wlaczone w routerze (Ustawienia zaawansowane, IPv6).
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 3ad069fbae..541d795d7b 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Nu păstra răspunsurile DNS în cache pe router
+ RDHC_25=Routerul păstrează în mod normal răspunsurile o vreme. Cu filtrare per client în amonte, un răspuns din cache decis pentru un client ar fi livrat altuia, iar filtrul nu ar vedea deloc interogările servite din cache. Dezactivat, routerul doar redirecționează, iar serverul DNS păstrează cache-ul.
+ RDHC_26=Validarea DNSSEC este pornită, iar dnsmasq nu pornește cu un cache mai mic decât cel implicit în timp ce validează. Cu acest comutator pornit routerul păstrează acel minim (150 de intrări) în loc de niciunul.
+ RDEV_96=producator
++RDHC_27=O adresa IPv6 este acceptata aici doar cat timp IPv6 este activat pe router (Setari avansate, IPv6).
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 338c340ef6..f87802e14d 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Не кэшировать ответы DNS на роутере
+ RDHC_25=Обычно роутер хранит ответы некоторое время. При фильтрации по клиентам на сервере ответ из кэша, принятый для одного клиента, будет выдан другому, а фильтр вовсе не увидит запросы, отвеченные из кэша. Выключено: роутер только пересылает, кэш держит DNS-сервер.
+ RDHC_26=Проверка DNSSEC включена, и dnsmasq не запускается с кэшем меньше значения по умолчанию во время проверки. С этим переключателем роутер сохраняет этот минимум (150 записей) вместо отсутствия кэша.
+ RDEV_96=производитель
++RDHC_27=Адрес IPv6 принимается здесь только пока IPv6 включён на маршрутизаторе (Дополнительные настройки, IPv6).
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index b647a8c244..5491632f1b 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Ne shranjuj odgovorov DNS v predpomnilnik usmerjevalnika
+ RDHC_25=Usmerjevalnik običajno nekaj časa hrani odgovore. Pri filtriranju po odjemalcu na strežniku bi bil odgovor iz predpomnilnika, odločen za enega odjemalca, izročen drugemu, filter pa poizvedb iz predpomnilnika sploh ne bi videl. Izklopljeno: usmerjevalnik le posreduje, predpomnilnik hrani strežnik DNS.
+ RDHC_26=Preverjanje DNSSEC je vklopljeno in dnsmasq se med preverjanjem ne zažene s predpomnilnikom, manjšim od privzetega. S tem stikalom usmerjevalnik obdrži ta minimum (150 vnosov) namesto nobenega.
+ RDEV_96=proizvajalec
++RDHC_27=Naslov IPv6 je tu sprejet le, dokler je IPv6 na usmerjevalniku vklopljen (Napredne nastavitve, IPv6).
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 18cbd4dce2..9f5b11410b 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Cacha inte DNS-svar på routern
+ RDHC_25=Routern behåller normalt svar en stund. Med filtrering per klient uppströms skulle ett cachat svar som avgjorts för en klient lämnas till en annan, och filtret skulle inte alls se de cachade uppslagen. Av: routern vidarebefordrar bara och DNS-servern behåller cachen.
+ RDHC_26=DNSSEC-validering är på, och dnsmasq startar inte med en cache mindre än standard medan den validerar. Med den här brytaren på behåller routern det minimumet (150 poster) i stället för ingen.
+ RDEV_96=tillverkare
++RDHC_27=En IPv6-adress godtas har bara sa lange IPv6 ar aktiverat i routern (Avancerade installningar, IPv6).
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 85ac9df44a..70fd549374 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=ไม่แคชคำตอบ DNS บนเราเตอร์
+ RDHC_25=โดยปกติเราเตอร์จะเก็บคำตอบไว้ระยะหนึ่ง เมื่อกรองตามไคลเอนต์ที่ต้นทาง คำตอบในแคชที่ตัดสินให้ไคลเอนต์หนึ่งจะถูกส่งให้อีกเครื่อง และตัวกรองจะไม่เห็นคำถามที่ตอบจากแคชเลย เมื่อปิด เราเตอร์จะส่งต่อเท่านั้นและเซิร์ฟเวอร์ DNS เป็นผู้เก็บแคช
+ RDHC_26=การตรวจสอบ DNSSEC เปิดอยู่ และ dnsmasq จะไม่เริ่มทำงานด้วยแคชที่เล็กกว่าค่าเริ่มต้นระหว่างตรวจสอบ เมื่อเปิดสวิตช์นี้ เราเตอร์จะเก็บค่าต่ำสุดนั้นไว้ (150 รายการ) แทนที่จะไม่มีแคชเลย
+ RDEV_96=ผู้ผลิต
++RDHC_27=ที่นี่จะรับที่อยู่ IPv6 เฉพาะเมื่อเปิดใช้ IPv6 บนเราเตอร์เท่านั้น (การตั้งค่าขั้นสูง, IPv6)
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 026f4289f1..853c8d86ab 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=DNS yanıtlarını yönlendiricide önbelleğe alma
+ RDHC_25=Yönlendirici yanıtları normalde bir süre saklar. Üst tarafta istemci bazında filtreleme varken bir istemci için verilen önbellekteki yanıt başka bir istemciye verilir ve filtre önbellekten yanıtlanan sorguları hiç görmez. Kapalıyken yönlendirici yalnızca iletir, önbelleği DNS sunucusu tutar.
+ RDHC_26=DNSSEC doğrulaması açık ve dnsmasq doğrulama yaparken varsayılandan küçük bir önbellekle başlamaz. Bu anahtar açıkken yönlendirici hiç önbellek yerine o en düşük değeri (150 kayıt) tutar.
+ RDEV_96=uretici
++RDHC_27=Bir IPv6 adresi burada yalnizca yonlendiricide IPv6 etkinken kabul edilir (Gelismis Ayarlar, IPv6).
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 8da598fd9a..7cfb913924 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=不在路由器上快取 DNS 回應
+ RDHC_25=路由器通常會將回應保留一段時間。上游依用戶端過濾時，為某個用戶端決定的快取回應會交給另一個用戶端，而過濾器完全看不到由快取回應的查詢。關閉後，路由器只做轉送，由 DNS 伺服器保留快取。
+ RDHC_26=DNSSEC 驗證已開啟，驗證期間 dnsmasq 不會以小於預設值的快取啟動。開啟此開關後，路由器保留該最小快取（150 筆）而非完全不快取。
+ RDEV_96=廠商
++RDHC_27=僅當路由器已啟用 IPv6（進階設定 → IPv6）時，此處才接受 IPv6 位址。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 0dd1e8df46..b102c27959 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6892,3 +6892,4 @@ RDHC_24=Не кешувати відповіді DNS на маршрутизат
+ RDHC_25=Зазвичай маршрутизатор деякий час зберігає відповіді. За фільтрації за клієнтом на сервері відповідь із кешу, ухвалена для одного клієнта, дісталася б іншому, а фільтр узагалі не бачив би запитів, на які відповіли з кешу. Вимкнено: маршрутизатор лише пересилає, кеш тримає DNS-сервер.
+ RDHC_26=Перевірка DNSSEC увімкнена, і dnsmasq не запускається з кешем, меншим за типовий, під час перевірки. З цим перемикачем маршрутизатор зберігає цей мінімум (150 записів) замість відсутності кешу.
+ RDEV_96=виробник
++RDHC_27=Адреса IPv6 приймається тут лише поки IPv6 увімкнено на маршрутизаторі (Додаткові налаштування, IPv6).
+-- 
+2.25.1
+

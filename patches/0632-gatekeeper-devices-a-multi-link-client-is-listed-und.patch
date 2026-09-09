@@ -1,0 +1,304 @@
+From e8c09955209ca4edc69b665f069bc23a95158c4c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 7 Sep 2026 14:03:55 -0400
+Subject: [PATCH] gatekeeper/devices: a multi-link client is listed under its
+ LINK MAC - match mld_mac
+
+Owner, 2026-09-07: "Nates-PC is on 6Ghz but Gatekeeper shows wired". Backlog
+item #1 (Devices/Gatekeeper wrong connection method + MLO combining broken),
+open since 2026-09-05 for want of data. Root-caused on the live router.
+
+cfg_mnt keys a multi-link client in /tmp/allwclientlist.json under its per-LINK
+MAC and names the device's MLD MAC in an "mld_mac" field. Every row this
+firmware keys elsewhere - the DHCP lease, the ARP entry, gk_rl,
+custom_clientlist - uses the MLD MAC. Every reader here matched on the station
+KEY only, so a device keyed by its MLD MAC was never found in that list. Live
+proof on the owner's box: 7A:46:5C:3B:8A:27 sits under 6G_1 with
+mld_mac 78:46:5C:3B:8A:27, and 78:.. is the MAC holding the .97 lease, sitting
+in the bridge FDB on wl2.1, and carrying the name Nates-PC.
+
+Three consequences, one cause:
+- Gatekeeper. gkd derives "wireless" from `wl assoclist`, which lists only the
+  LINK MAC, so seen.tsv recorded the device wired with no band. The v3.0.9
+  override that promotes such a record from the live list could not match it,
+  and the page showed a 6 GHz PC as Wired. Fixed by gk_live_conn(), which both
+  lists (pending and devices) now run through, so a device also cannot change
+  connection type merely by being approved. The wired list still wins, so a
+  client that moved onto a cable is not dragged back to Wi-Fi.
+- rdev_scan_amesh had the same blind spot. Masked on the Devices page by the
+  bridge-FDB pass - which is why that page was mostly right and Gatekeeper,
+  which has no FDB pass, was not.
+- MLO folding asked `wl sta_info` for a "peer mld address" line. The owner's PC
+  associates PSEUDO_MLO_CAP with mlo_active 0 and prints no such line (verified:
+  the full sta_info output has none), so the fold silently stopped and the
+  client showed as two rows. It now asks the live list first, sta_info second.
+
+Verified against the router's real allwclientlist/wiredclientlist/seen.tsv by
+transcribing the patched helpers: exactly one device changes verdict -
+78:46:5C:3B:8A:27 "wired" -> "6 wifi" - and the three genuinely cabled devices
+stay wired on the cable list. 7A:.. resolves to its MLD 78:.. for the fold.
+mk-httpd clean, no diagnostics in the touched region.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 185 ++++++++++++++++++++++++++++-----
+ 1 file changed, 158 insertions(+), 27 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index fb3256ef47..ab88bee05a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23374,6 +23374,33 @@ gk_load_seen(struct gk_seen *v, int max)
+ 	return n;
+ }
+ 
++#ifdef RTCONFIG_CFGSYNC
++static int rdev_amesh_is_wired(json_object *wired, const char *mac);	/* defined with the Devices page classifier below */
++static const char *rdev_amesh_band(json_object *wl, const char *mac);	/* ditto - band from the live list, mld_mac aware */
++/* v3.1.1: correct ONE cached seen.tsv record from the live cfg_mnt lists.
++ *
++ * seen.tsv is gkd's first-sight snapshot, and gkd derives "wireless" from
++ * `wl assoclist`, which lists a multi-link client under its per-LINK MAC only.
++ * The device's row here is keyed by the MLD MAC (the lease and the ARP entry
++ * are), that MAC is in no assoclist, so gkd records it wired with no band and
++ * this page showed the owner's 6 GHz PC as Wired. rdev_amesh_band() matches the
++ * live list on the station key OR on its mld_mac, which is exactly the missing
++ * link. The wired list still wins: a client that moved onto a cable must not be
++ * dragged back to Wi-Fi by a stale wireless entry.
++ *
++ * Operates on the CALLER'S COPY - the static seen[] keeps gkd's own record. */
++static void
++gk_live_conn(struct gk_seen *d, json_object *wl, json_object *wired)
++{
++	const char *bl;
++	if (!wl || !(d->wired || !d->band[0])) return;
++	if (wired && rdev_amesh_is_wired(wired, d->mac)) return;
++	if ((bl = rdev_amesh_band(wl, d->mac)) == NULL) return;
++	snprintf(d->band, sizeof(d->band), "%s", bl);
++	d->wired = 0;
++}
++#endif
++
+ static void
+ gk_emit_seen(FILE *stream, struct gk_seen *d, int rand_flag)
+ {
+@@ -23549,9 +23576,6 @@ reaper_requester_mac(char *out, size_t n)
+ 	return got;
+ }
+ 
+-#ifdef RTCONFIG_CFGSYNC
+-static int rdev_amesh_is_wired(json_object *wired, const char *mac);	/* defined with the Devices page classifier below */
+-#endif
+ static void
+ do_reaper_gk_cgi(char *url, FILE *stream)
+ {
+@@ -23627,7 +23651,17 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 			rand_flag = (c == '2' || c == '6' || c == 'A' || c == 'E') ? 1 : 0;
+ 			if (!first) websWrite(stream, ",");
+ 			first = 0;
++#ifdef RTCONFIG_CFGSYNC
++			{
++				/* same live-list correction the device list below applies, so
++				 * a device does not change connection type when it is approved */
++				struct gk_seen pd = seen[i];
++				gk_live_conn(&pd, gk_wl, gk_wired);
++				gk_emit_seen(stream, &pd, rand_flag);
++			}
++#else
+ 			gk_emit_seen(stream, &seen[i], rand_flag);
++#endif
+ 		}
+ 		websWrite(stream, "]");
+ 
+@@ -23651,28 +23685,13 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 					d = &off;
+ 				}
+ #ifdef RTCONFIG_CFGSYNC
+-				/* v3.0.9: a live wireless signal beats the cached wired flag (see above).
+-				 * Work on a copy - `seen` is static and must keep gkd's own record. */
+-				if (gk_wl && (d->wired || !d->band[0]) && !(gk_wired && rdev_amesh_is_wired(gk_wired, mac))) {
+-					const char *bl = NULL;
+-					json_object_object_foreach(gk_wl, nodemac, bands) {
+-						(void)nodemac;
+-						if (bl || !json_object_is_type(bands, json_type_object)) continue;
+-						json_object_object_foreach(bands, bandkey, stas) {
+-							if (bl || !json_object_is_type(stas, json_type_object)) continue;
+-							if (bandkey[0] != '2' && bandkey[0] != '5' && bandkey[0] != '6') continue;
+-							json_object_object_foreach(stas, stamac, staval) {
+-								(void)staval;
+-								if (!bl && !strcasecmp(stamac, mac)) bl = bandkey[0] == '2' ? "2.4" : bandkey[0] == '5' ? "5" : "6";
+-							}
+-						}
+-					}
+-					if (bl) {
+-						if (d != &off) { off = *d; d = &off; }
+-						snprintf(d->band, sizeof(d->band), "%s", bl);
+-						d->wired = 0;
+-					}
+-				}
++				/* v3.0.9: a live wireless signal beats the cached wired flag.
++				 * v3.1.1: the match is mld_mac aware (gk_live_conn) - a multi-link
++				 * client is listed under its LINK MAC while this row is keyed by
++				 * the MLD MAC, and the key-only match could never find it.
++				 * Work on a copy - `seen` is static and keeps gkd's own record. */
++				if (d != &off) { off = *d; d = &off; }
++				gk_live_conn(d, gk_wl, gk_wired);
+ #endif
+ 				if (!first) websWrite(stream, ",");
+ 				first = 0;
+@@ -26320,6 +26339,9 @@ static int rdev_find(struct rdev *v, int *n, const char *macraw)
+  * the S6 charset guard before the name reaches popen. Sets band/wifi/online. */
+ /* rdev_is_rand() is defined below (after rdev_scan_wl) but used inside it */
+ static int rdev_is_rand(const char *mac);
++/* v3.1.1: link MAC -> MLD MAC out of the live cfg_mnt list (defined with the
++ * other cfg_mnt readers below; a stub without AiMesh sync). */
++static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n);
+ 
+ /* Read a station's MLD (Multi-Link Device) MAC from wl sta_info if it is an
+  * affiliated Wi-Fi 7 MLO link. The line is:
+@@ -26393,8 +26415,15 @@ static void rdev_scan_wl(struct rdev *v, int *n, int mlo_on)
+ 					 * randomized MACs are probed (affiliated links are locally-admin-
+ 					 * istered), and only while MLO is active; a global-MAC primary link
+ 					 * is added as itself and gains mlo + bands when a sibling groups in. */
++					/* v3.1.1: ask the live cfg_mnt list FIRST. sta_info only
++					 * prints "peer mld address" for a station the driver reports
++					 * as a true MLO; the owner's PC associates PSEUDO_MLO_CAP with
++					 * mlo_active 0 and prints no such line, so the fold silently
++					 * stopped and the device showed as two rows. cfg_mnt still
++					 * carries the mapping as mld_mac. */
+ 					if (mlo_on && rdev_is_rand(mac) &&
+-					    rdev_sta_mld(tok, mac, mld, sizeof(mld)) && mld[0] &&
++					    (rdev_amesh_mld_of(mac, mld, sizeof(mld)) ||
++					     rdev_sta_mld(tok, mac, mld, sizeof(mld))) && mld[0] &&
+ 					    strcasecmp(mld, mac) != 0) {
+ 						idx = rdev_find(v, n, mld);
+ 						if (idx < 0) continue;
+@@ -26537,6 +26566,102 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+ /* is this MAC listed as WIRED behind any node? /tmp/wiredclientlist.json is
+  * { node_brmac: { client_mac: {...} } }. Compared case-insensitively - the two
+  * cfg_mnt lists are not guaranteed to agree on MAC case. */
++/* v3.1.1: the MLD MAC a station entry belongs to, or NULL. cfg_mnt keys a
++ * multi-link client by its per-LINK MAC and puts the device's MLD MAC in
++ * "mld_mac" (seen live: 7A:..:27 under 6G_1 with mld_mac 78:..:27, the MAC that
++ * holds the lease). Guarded like every other read here: a valid-but-wrong type
++ * must not reach a string helper. */
++static const char *rdev_sta_mldmac(json_object *staval)
++{
++	json_object *m = NULL;
++	const char *v;
++	if (!staval || !json_object_is_type(staval, json_type_object)) return NULL;
++	if (!json_object_object_get_ex(staval, "mld_mac", &m) || !m) return NULL;
++	if (!json_object_is_type(m, json_type_string)) return NULL;
++	v = json_object_get_string(m);
++	return (v && strlen(v) == 17) ? v : NULL;
++}
++
++/* Band label for MAC in the live wireless client list, matched on the station
++ * key OR on its mld_mac. "2.4"/"5"/"6", or NULL when it is not listed. */
++static const char *rdev_amesh_band(json_object *wl, const char *mac)
++{
++	if (!wl || !json_object_is_type(wl, json_type_object)) return NULL;
++	json_object_object_foreach(wl, nodemac, bands) {
++		(void)nodemac;
++		if (!json_object_is_type(bands, json_type_object)) continue;
++		json_object_object_foreach(bands, bandkey, stas) {
++			const char *bl;
++			if (!json_object_is_type(stas, json_type_object)) continue;
++			/* band keys are "2G"/"5G"/"5G1"/"6G"/"6G1": the leading digit is
++			 * the band, any trailing radio index is irrelevant here */
++			switch (bandkey[0]) {
++			case '2': bl = "2.4"; break;
++			case '5': bl = "5";   break;
++			case '6': bl = "6";   break;
++			default:  continue;
++			}
++			json_object_object_foreach(stas, stamac, staval) {
++				const char *mld;
++				if (!strcasecmp(stamac, mac)) return bl;
++				mld = rdev_sta_mldmac(staval);
++				if (mld && !strcasecmp(mld, mac)) return bl;
++			}
++		}
++	}
++	return NULL;
++}
++
++/* v3.1.1: the MLD MAC that owns a per-link MAC, from the live list. Parses the
++ * file once and re-reads only when cfg_mnt rewrote it (mtime/size) - this runs
++ * once per associated station per request. 1 + the MLD MAC, or 0. */
++static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n)
++{
++	static json_object *cache = NULL;
++	static time_t cmtime = 0;
++	static off_t csize = -1;
++	struct stat st;
++	int hit = 0;
++
++	if (!out || n < 18) return 0;
++	out[0] = '\0';
++	if (!linkmac || strlen(linkmac) != 17) return 0;
++	if (stat(ALLWCLIENT_LIST_JSON_PATH, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
++	if (!cache || st.st_mtime != cmtime || st.st_size != csize) {
++		int lock = file_lock(ALLWEVENT_FILE_LOCK);
++		if (cache) json_object_put(cache);
++		cache = json_object_from_file(ALLWCLIENT_LIST_JSON_PATH);
++		file_unlock(lock);
++		cmtime = st.st_mtime;
++		csize = st.st_size;
++		if (cache && !json_object_is_type(cache, json_type_object)) {
++			json_object_put(cache);
++			cache = NULL;
++		}
++	}
++	if (!cache) return 0;
++	json_object_object_foreach(cache, nodemac, bands) {
++		(void)nodemac;
++		if (hit || !json_object_is_type(bands, json_type_object)) continue;
++		json_object_object_foreach(bands, bandkey, stas) {
++			(void)bandkey;
++			if (hit || !json_object_is_type(stas, json_type_object)) continue;
++			json_object_object_foreach(stas, stamac, staval) {
++				const char *mld;
++				if (hit || strcasecmp(stamac, linkmac) != 0) continue;
++				if ((mld = rdev_sta_mldmac(staval)) == NULL) continue;
++				snprintf(out, n, "%s", mld);
++				hit = 1;
++			}
++		}
++	}
++	if (hit) {
++		int i;
++		for (i = 0; out[i]; i++) out[i] = toupper((unsigned char)out[i]);
++	}
++	return hit;
++}
++
+ static int rdev_amesh_is_wired(json_object *wired, const char *mac)
+ {
+ 	/* The TOP level needs the same type guard the levels below it get. The
+@@ -26593,8 +26718,12 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ 			}
+ 			json_object_object_foreach(stas, stamac, staval) {
+ 				int idx;
+-				(void)staval;
++				const char *mld;
+ 				idx = rdev_lookup(v, *n, (char *)stamac);
++				/* v3.1.1: a multi-link client is listed under its LINK MAC; the
++				 * row we carry is keyed by the MLD MAC it names in mld_mac. */
++				if (idx < 0 && (mld = rdev_sta_mldmac(staval)) != NULL)
++					idx = rdev_lookup(v, *n, mld);
+ 				if (idx < 0) continue;
+ 				if (v[idx].wifi) continue;	/* our own radio already placed it */
+ 				/* listed as wired on a node too -> the wireless entry is
+@@ -26617,6 +26746,8 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ }
+ #else
+ static void rdev_scan_amesh(struct rdev *v, int *n) { (void)v; (void)n; }
++static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n)
++{ (void)linkmac; if (out && n) out[0] = '\0'; return 0; }
+ #endif	/* RTCONFIG_CFGSYNC */
+ 
+ /* reaper 2026-08-19 / 2026-08-21 (field report, twice: "the wireless AiMesh
+-- 
+2.25.1
+

@@ -1,0 +1,148 @@
+From 22173b5202daec6e762a1d57ee22413e5820c451 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 8 Sep 2026 23:12:18 -0400
+Subject: [PATCH] Firmware page: the overlay's escape hatch is a real Cancel
+ where cancelling is real
+
+Owner, 2026-09-07. The blocking overlay's escape hatch said Close and only hid
+the overlay - the transfer it was covering ran to completion regardless.
+
+Upload: the request is held in page scope (upXhr) and the hatch, now labelled
+Cancel, aborts it. The upAborting flag is load-bearing: x.onabort was wired
+straight to handed(), the one-shot that declares "the flash started" and begins
+polling for the reboot, so a naive abort() would have put the page into a fake
+install. onerror/ontimeout still hand off; only a deliberate cancel is excluded.
+Safe by construction downstream - do_upgrade_post receives a truncated
+multipart, which cannot pass verification, so nothing is written.
+
+The hatch is now offered immediately during an upload instead of after 25 s.
+That delay exists so a WRITE cannot be fumbled in its first seconds; during an
+upload there is no write yet and cancelling costs a re-upload. It is withdrawn
+the moment x.upload reports every byte sent, which is strictly earlier than the
+old retract at veilInstall(1) - between "all bytes sent" and "server answered"
+the router may already hold the image and be verifying or writing it, and an
+abort cannot recall that.
+
+Download: left saying Close, still only leaves the overlay, because there is
+nothing to abort. The generic webs_* rc dispatch handles START only, so a
+stop_webs_upgrade would be a no-op, and reaper_webs_upgrade.sh runs download ->
+verify -> flash in one process. Removing the button would trap the user behind
+a 30-minute poll, so it stays, honestly labelled. A true download cancel means
+killing a flash-adjacent path and is a separate item.
+
+The button only says Cancel when pressing it cancels something.
+
+Verified by resolving the page against all 25 dicts - every token replaced with
+that language's real value, as web_hook.o does at runtime - and compiling each
+result with node --check. 25/25 parse. That is the gate that catches a
+translated value terminating a JS literal and silently killing the IIFE, which
+on this page would mean a firmware UI that does nothing.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Firmware.asp | 56 ++++++++++++++++++++--
+ 1 file changed, 53 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 249a502b48..773674e437 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -516,9 +516,38 @@ function veilInstall(on){
+   if(on){
+     clearTimeout(veilEscH); veilEscH = 0;
+     veilEscape(false);   /* retract it if the download phase already exposed it */
++    veilCancel(false);
+   }
+ }
+ 
++/* v3.1.1 -- the hatch is a real Cancel, but only where cancelling is real.
++ *
++ * UPLOAD: the request is held in page scope so veilDismiss() can abort it. That
++ * is a TRUE cancel only while the bytes are still going out. Once x.upload
++ * reports every byte sent, the router may already hold the whole image and be
++ * verifying or writing it, and aborting the request cannot recall that -- so the
++ * offer is withdrawn at exactly that moment. A cancel is never shown once it
++ * would be a lie. Aborting mid-body is safe by construction: do_upgrade_post
++ * receives a truncated multipart, which cannot pass verification, so nothing is
++ * written.
++ *
++ * DOWNLOAD (start_webs_upgrade): there is nothing to abort from here. The
++ * generic webs_* rc dispatch handles START only (services.c ~20175), so a
++ * "stop_webs_upgrade" would be a no-op, and reaper_webs_upgrade.sh runs
++ * download -> verify -> flash in one shot on the router. The hatch still appears
++ * during that phase -- a 30-minute poll with no way out is worse than an honest
++ * exit -- but it keeps saying Close and only leaves the overlay. It does not
++ * claim to stop anything, and the router still reboots into the new firmware if
++ * the download succeeds. Giving that phase a real cancel means a stop action on
++ * a flash-adjacent path, which is not a UI change. */
++var LBL_CANCEL = `<#CTL_Cancel#>`, LBL_CLOSE = `<#CTL_close#>`;
++var upXhr = null, upAborting = 0, veilCancelable = 0;
++function veilCancel(on){
++  veilCancelable = on ? 1 : 0;
++  var b = $id('veilBtn');
++  if(b) b.textContent = on ? LBL_CANCEL : LBL_CLOSE;
++}
++
+ /* the shell owns the header + rail; dim and disable them while a flash runs so
+    the frame cannot be navigated away from at the worst possible moment (the
+    veil itself lives inside the frame and can never paint over them) */
+@@ -567,7 +596,15 @@ function veilFail(title, sub){   /* terminal state: always escapable, at once */
+   veil(title, sub, false);
+   veilEscape(true);
+ }
+-function veilDismiss(){ busy = 0; veilOff(); }
++function veilDismiss(){
++  /* cancellable == an upload whose bytes are still in flight */
++  if(veilCancelable && upXhr){
++    upAborting = 1;                 /* suppress the flash-started hand-off */
++    try{ upXhr.abort(); }catch(e){}
++    upXhr = null;
++  }
++  busy = 0; veilOff();
++}
+ function veilPct(p){ $id('veilBarI').style.width = Math.max(0, Math.min(100, p)) + '%'; }
+ function veilOff(){
+   $id('veil').style.display = 'none';
+@@ -576,6 +613,7 @@ function veilOff(){
+   clearTimeout(veilTickH); clearTimeout(veilEscH);
+   veilTickH = 0; veilEscH = 0; veilT0 = 0; veilPhase = ''; veilPolls = 0;
+   veilInstalling = 0;
++  upXhr = null; veilCancel(false);
+ }
+ /* Esc leaves the overlay, but only once the hatch is offered -- so it cannot be
+    fumbled during the first seconds of a flash. */
+@@ -753,9 +791,19 @@ function doUpload(){
+   fd.append('firmver', FIRMVER);
+   fd.append('file', f, nm);
+   var x = new XMLHttpRequest();
++  upXhr = x; upAborting = 0;
++  veilCancel(true);
++  /* Offered at once, not after VEIL_ESCAPE_MS: the 25 s delay exists so a WRITE
++     cannot be fumbled in its first seconds, and during an upload there is no
++     write yet -- cancelling early costs the user a re-upload and nothing else. */
++  veilEscape(true);
+   x.open('POST', '/upgrade.cgi', true);
+   if(x.upload) x.upload.onprogress = function(ev){
+-    if(ev.lengthComputable) veilPct(Math.round(ev.loaded / ev.total * 100));
++    if(!ev.lengthComputable) return;
++    veilPct(Math.round(ev.loaded / ev.total * 100));
++    /* every byte is out: the router may already be verifying or writing, and an
++       abort cannot recall it. Withdraw the offer rather than let it lie. */
++    if(ev.loaded >= ev.total){ veilCancel(false); veilEscape(false); }
+   };
+   /* do_upgrade_post has the image; httpd now verifies + flashes (success
+      reboots the box). Liveness decides the verdict: if the router never goes
+@@ -768,7 +816,9 @@ function doUpload(){
+     pollUpBack(0, 0);
+   });
+   x.onload = handed;
+-  x.onerror = x.ontimeout = x.onabort = handed;
++  x.onerror = x.ontimeout = handed;
++  /* a user cancel must NOT be read as 'the flash started' */
++  x.onabort = function(){ if(!upAborting) handed(); };
+   x.send(fd);
+ }
+ 
+-- 
+2.25.1
+

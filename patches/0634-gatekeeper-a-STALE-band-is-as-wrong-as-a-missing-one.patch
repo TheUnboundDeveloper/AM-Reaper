@@ -1,0 +1,104 @@
+From 6aaa015b49e0f9668e3e9226b2420fbe22496e83 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 8 Sep 2026 23:12:17 -0400
+Subject: [PATCH] gatekeeper: a STALE band is as wrong as a missing one
+
+Follow-on to e8c0995520, which taught gk_live_conn() to correct a cached
+seen.tsv record from the live cfg_mnt list. That fix only ran when the record
+was wired or had no band at all. A record that already carried a band was left
+alone, and for a multi-link client that band can be permanently wrong.
+
+gkd sets a band when it finds the MAC in a wl assoclist, and never clears it. A
+multi-link client associates under its LINK MAC, so once the MLD MAC has been
+seen on some radio the record freezes at that band and gkd can never revise it -
+the MAC is in no assoclist any more. The owner's PC read 5 GHz while associated
+on 6. The live list held the right answer and was not consulted.
+
+The v3.0.9 gate had a real reason: it stopped second-hand mesh-NODE data
+overriding what our own radios had seen first-hand. That reasoning does not
+reach an entry filed under the CAP's OWN node key, which is first-hand by
+definition. So the override is allowed, restricted to that one key:
+rdev_amesh_band() takes a selfmac, and a non-NULL selfmac skips every other
+node's entry. Passing NULL keeps the old promote-anything behaviour for the
+missing/wired case, which is unchanged.
+
+Belt and braces: an override that agrees with what is already stored returns
+without writing, so a correct record is never rewritten.
+
+Note this branch is NOT the one exercised by the 2026-09-08 metal check - that
+confirmed the missing/wired path. The stale-band path needs a deliberate repro
+(associate on one band, move to another) and is recorded as owed.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 36 +++++++++++++++++++++++++++++-----
+ 1 file changed, 31 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index ab88bee05a..ec3463741a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23376,7 +23376,7 @@ gk_load_seen(struct gk_seen *v, int max)
+ 
+ #ifdef RTCONFIG_CFGSYNC
+ static int rdev_amesh_is_wired(json_object *wired, const char *mac);	/* defined with the Devices page classifier below */
+-static const char *rdev_amesh_band(json_object *wl, const char *mac);	/* ditto - band from the live list, mld_mac aware */
++static const char *rdev_amesh_band(json_object *wl, const char *mac, const char *selfmac);	/* ditto - band from the live list, mld_mac aware; selfmac != NULL restricts the match to that node key */
+ /* v3.1.1: correct ONE cached seen.tsv record from the live cfg_mnt lists.
+  *
+  * seen.tsv is gkd's first-sight snapshot, and gkd derives "wireless" from
+@@ -23393,9 +23393,32 @@ static void
+ gk_live_conn(struct gk_seen *d, json_object *wl, json_object *wired)
+ {
+ 	const char *bl;
+-	if (!wl || !(d->wired || !d->band[0])) return;
++	if (!wl) return;
+ 	if (wired && rdev_amesh_is_wired(wired, d->mac)) return;
+-	if ((bl = rdev_amesh_band(wl, d->mac)) == NULL) return;
++
++	if (d->wired || !d->band[0]) {
++		/* missing or wired: any live entry may correct it. This is the
++		 * v3.0.9 behaviour, unchanged - the promote-what-our-radios-missed
++		 * case, where second-hand data is better than nothing. */
++		if ((bl = rdev_amesh_band(wl, d->mac, NULL)) == NULL) return;
++	} else {
++		/* v3.1.1: a STALE band is as wrong as a missing one.
++		 *
++		 * gkd sets a band when it finds the MAC in a wl assoclist and never
++		 * clears it. A multi-link client associates under its LINK MAC, so
++		 * once the MLD MAC has been seen on some radio the record is frozen
++		 * at that band: the owner's PC read 5 GHz while associated on 6, and
++		 * gkd could never revise it because that MAC is in no assoclist any
++		 * more. The live list holds the right answer and was not consulted.
++		 *
++		 * The v3.0.9 gate refused to touch a record that already had a band,
++		 * to stop second-hand mesh-NODE data overriding what our own radios
++		 * saw first-hand. That reasoning does not reach an entry under the
++		 * CAP's OWN node key, which is first-hand by definition - so only
++		 * that may override a stale band; a node's entry still may not. */
++		if ((bl = rdev_amesh_band(wl, d->mac, get_lan_hwaddr())) == NULL) return;
++		if (!strcmp(d->band, bl)) return;	/* already right - change nothing */
++	}
+ 	snprintf(d->band, sizeof(d->band), "%s", bl);
+ 	d->wired = 0;
+ }
+@@ -26584,11 +26607,14 @@ static const char *rdev_sta_mldmac(json_object *staval)
+ 
+ /* Band label for MAC in the live wireless client list, matched on the station
+  * key OR on its mld_mac. "2.4"/"5"/"6", or NULL when it is not listed. */
+-static const char *rdev_amesh_band(json_object *wl, const char *mac)
++static const char *rdev_amesh_band(json_object *wl, const char *mac, const char *selfmac)
+ {
+ 	if (!wl || !json_object_is_type(wl, json_type_object)) return NULL;
+ 	json_object_object_foreach(wl, nodemac, bands) {
+-		(void)nodemac;
++		/* selfmac != NULL: count only this node key as first-hand. The caller
++		 * passes it when OVERRIDING an existing band, where a mesh node's
++		 * entry must not win over what our own radios recorded. */
++		if (selfmac && strcasecmp(nodemac, selfmac)) continue;
+ 		if (!json_object_is_type(bands, json_type_object)) continue;
+ 		json_object_object_foreach(bands, bandkey, stas) {
+ 			const char *bl;
+-- 
+2.25.1
+

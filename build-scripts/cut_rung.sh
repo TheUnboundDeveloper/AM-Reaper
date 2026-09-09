@@ -354,6 +354,30 @@ while IFS= read -r line; do
 done < "$LEAN/.github/pii-allowlist.txt"
 [ "$missing" -eq 0 ] && echo "  pii-allowlist paths all resolve"
 
+# ------------------------------------------------- 9b. documentation claims
+# The cut is what MOVES these facts - the patch count and the rung the series
+# runs to change here and nowhere else - so the restatements are fixed here too,
+# not left for a later sweep to catch. cut_fleet.sh only *checks* (--check, and
+# it dies on a mismatch); this runs --fix, because at this point the new values
+# are known and the operator is already reviewing a diff.
+#
+# Runs AFTER the export/install steps on purpose: before them the series is
+# still the previous rung's, so a check would validate the old count and pass.
+step "9b. documentation claims"
+_dc="$LEAN/build-scripts/reaper_docs.py"
+if [ ! -f "$_dc" ]; then
+  echo "  WARN: reaper_docs.py not found - restatements NOT updated"
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo "  WARN: python3 not on PATH - restatements NOT updated"
+else
+  python3 "$_dc" --fix --root "$LEAN"; _rc=$?
+  case "$_rc" in
+    0) ;;
+    3) echo "  WARN: could not derive the fleet facts - restatements NOT updated" ;;
+    *) echo "  WARN: reaper_docs.py exited $_rc - check the output above" ;;
+  esac
+fi
+
 # -------------------------------------------------------------------- summary
 cat <<EOF
 
@@ -361,6 +385,7 @@ cat <<EOF
  RUNG $VERSION CUT - nothing committed, nothing pushed
 ======================================================================
  patches/          $made new, $count total, gapless, replay-verified
+ docs              marked restatements rewritten to match this rung
  provenance        entry added (source_tree + source_tree_from_series)
  EXPECTED_VERSION  $([ "$DO_PIN" = 1 ] && echo "$EXTEND" || echo "unchanged (--no-pin)")
 

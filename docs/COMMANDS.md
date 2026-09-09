@@ -122,7 +122,7 @@ version, the provenance and the CI, and unpicking one is real work. To test:
 
 | Command | Answers |
 |---|---|
-| `patch_count.sh <tree>` | How many patches is this tree? The single source of truth for the About page's count. `--verify <dir>` asserts tree and `patches/` agree. |
+| `patch_count.sh <tree>` | How many patches is this tree? The single source of truth for the About page's count — it counts **commits**. `--exported` subtracts the commits that ship as `overlays/` archives, giving the number of `.patch` files a cut writes; from v3.1.0 that is one lower (the OpenSSL 3.5 source drop). `--verify <dir>` asserts tree and `patches/` agree, so on a post-v3.1.0 tree compare `--exported` against `patches/` instead. |
 | `reaper_verify.sh MODEL VARIANT VERSION` | Does this staged image pass the packaging gate? Run automatically by every build. |
 | `gen_provenance.sh <tree>` | Record this build's source-tree hashes and logs into `provenance/`. |
 | `ci/check_overlays.py overlays` | Does every sibling overlay contain identity changes *only*? Run in CI before the build matrix, so a bad overlay costs seconds rather than twelve builds. |

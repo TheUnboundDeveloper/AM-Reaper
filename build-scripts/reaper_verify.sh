@@ -311,7 +311,19 @@ else
     if [ -n "$_tc" ] && [ "$_tc" != "$_pv" ]; then
       fail "provenance-stamp" "stamped $_pv patches, tree has $_tc"
     else
-      pass "provenance-stamp" "$_pv patches, version $_vv"
+      # From v3.1.0 this figure is legitimately ONE higher than the published
+      # series: the OpenSSL 3.5 source drop is a real commit that ships as
+      # overlays/openssl-3.5-source.tar.gz and so emits no .patch file. Two
+      # numbers with no explanation get re-questioned every time someone reads
+      # the log against patches/, so state the arithmetic here. --exported is
+      # absent on an older synced engine copy, which just falls back to the
+      # plain line.
+      _xc=$(bash "$_pcs" "$R" --exported 2>/dev/null)
+      if printf '%s' "$_xc" | grep -qE '^[0-9]+$' && [ "$_xc" -ne "$_pv" ] 2>/dev/null; then
+        pass "provenance-stamp" "$_pv patches, version $_vv ($_xc in the published series + $((_pv - _xc)) shipping as an overlays/ archive)"
+      else
+        pass "provenance-stamp" "$_pv patches, version $_vv"
+      fi
     fi
   else
     warn "provenance-stamp" "$_pv patches, version $_vv (patch_count.sh absent, count not cross-checked)"

@@ -166,7 +166,10 @@ Watch for:
 - [ ] Packaging/verify gate passes for every model × variant — including the
       provenance-stamp check, which fails a build whose About-page patch count is
       empty, non-numeric, stale, or disagrees with what the tree would export
-      (`build-scripts/patch_count.sh` is the single source of truth for that number)
+      (`build-scripts/patch_count.sh` is the single source of truth for that number).
+      From v3.1.0 the line reads one higher than `patches/` holds and says so
+      inline — the OpenSSL 3.5 source drop is a commit that ships as an
+      `overlays/` archive and emits no `.patch`
 
 ---
 

@@ -28,7 +28,20 @@
 # USAGE
 #   patch_count.sh <source-tree-root>              -> prints the count, e.g. 541
 #   patch_count.sh <source-tree-root> --series     -> prints the series version
+#   patch_count.sh <source-tree-root> --exported   -> the count MINUS commits that
+#                                                     ship as overlays/ archives,
+#                                                     i.e. the published .patch count
 #   patch_count.sh <source-tree-root> --verify DIR -> compare against a patches dir
+#                                                     (compares the TREE count; on a
+#                                                     post-v3.1.0 tree use --exported
+#                                                     to compare like with like)
+#
+# THE OVERLAY OFFSET (v3.1.0 onward)
+# ----------------------------------
+# The default count is COMMITS IN THE TREE. From v3.1.0 that is legitimately ONE
+# HIGHER than `ls patches/*.patch | wc -l`, because the OpenSSL 3.5 source drop
+# is a real commit whose content is too large to publish as a patch and ships as
+# a hash-pinned archive under overlays/ instead - so it emits no patch file.
 #
 # EXIT
 #   0  answer printed on stdout
@@ -48,9 +61,17 @@ set -uo pipefail
 BASE=a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3
 STRIP=48b0698465
 
+# Paths whose content is published as a hash-pinned archive under overlays/
+# rather than as a patch. cut_rung.sh step 2 excludes this path from
+# format-patch (5,767 files / 129 MB as a single patch), step 2b packs it, and
+# CI unpacks and commits it before applying the series. A commit touching ONLY
+# these paths is a real commit that emits NO patch file - the +1 that --exported
+# subtracts. Keep in step with cut_rung.sh's format-patch pathspec.
+OVERLAY_PATHS=(':(exclude)release/src/router/openssl-3.5')
+
 SRC="${1:-}"
 MODE="${2:-count}"
-[ -n "$SRC" ] || { echo "usage: patch_count.sh <source-tree-root> [--series|--verify DIR]" >&2; exit 2; }
+[ -n "$SRC" ] || { echo "usage: patch_count.sh <source-tree-root> [--exported|--series|--verify DIR]" >&2; exit 2; }
 
 git -C "$SRC" rev-parse --git-dir >/dev/null 2>&1 || exit 3
 git -C "$SRC" cat-file -e "$BASE^{commit}" 2>/dev/null || exit 3
@@ -65,10 +86,14 @@ count_patches() {
 	# format-patch would emit. The excludes drop pure-doc commits and strip doc
 	# hunks from mixed ones - a commit touching ONLY excluded paths produces no
 	# patch and correctly does not appear here.
-	local all strip_sha n
+	# With --exported, also exclude the overlay paths, which is what makes the
+	# answer equal the number of .patch files the cut writes.
+	local all strip_sha n extra=()
+	[ "${1:-}" = "--exported" ] && extra=("${OVERLAY_PATHS[@]}")
 	all=$(git -C "$SRC" log --format=%H "$BASE"..HEAD -- . \
 		':(exclude)*.md' ':(exclude)docs' ':(exclude).mailmap' \
-		':(exclude).gitattributes' ':(exclude).gitignore' 2>/dev/null) || return 1
+		':(exclude).gitattributes' ':(exclude).gitignore' \
+		${extra[@]+"${extra[@]}"} 2>/dev/null) || return 1
 	[ -n "$all" ] || return 1
 	n=$(printf '%s\n' "$all" | grep -c .)
 	strip_sha=$(git -C "$SRC" rev-parse "$STRIP" 2>/dev/null)
@@ -81,6 +106,10 @@ count_patches() {
 case "$MODE" in
 count)
 	N=$(count_patches) || exit 3
+	printf '%s\n' "$N"
+	;;
+--exported)
+	N=$(count_patches --exported) || exit 3
 	printf '%s\n' "$N"
 	;;
 --series)

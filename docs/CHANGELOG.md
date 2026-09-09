@@ -26,6 +26,26 @@ node, not only on the primary router.
 
 ---
 
+> **Note — 2026-09-09 08:49 EDT · the patch count reads one higher than `patches/` holds.**
+> Since v3.1.0 the count stamped into the build (and shown on the About page) is
+> legitimately **one more** than the number of `.patch` files in the published series:
+> v3.1.0 stamped 621 against a 620-file series, v3.1.1 stamps 637 against 636. The figure
+> is derived from the source tree's commits, and the OpenSSL 3.5 source drop is a real
+> commit that is far too large to publish as a patch — it ships as the hash-pinned archive
+> `overlays/openssl-3.5-source.tar.gz`, which CI unpacks and commits before applying the
+> series, so it produces no `.patch` file. Nothing is missing from either count.
+>
+> Because two unexplained numbers invite the same question every release, the tooling now
+> explains itself rather than leaving it to be re-derived: `build-scripts/patch_count.sh`
+> gained an `--exported` mode (the tree count minus commits that ship as `overlays/`
+> archives, i.e. exactly what a cut writes), and the build's `provenance-stamp` line spells
+> out the arithmetic — `637 patches, version v3.1.1 (636 in the published series + 1
+> shipping as an overlays/ archive)`. Note that `patch_count.sh --verify <dir>` compares the
+> **tree** count against `patches/`, so on a post-v3.1.0 tree it reports a mismatch by
+> design; compare `--exported` instead.
+
+---
+
 ## v3.1.1 — a standby for the router's DNS list, and an OpenVPN certificate that survives a save *(built RT-BE96U)*
 
 - **A health check for the LAN resolver, and a strict-order switch.** dnsmasq keeps no memory of an

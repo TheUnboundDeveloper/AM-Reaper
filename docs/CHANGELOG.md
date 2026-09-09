@@ -71,7 +71,13 @@ node, not only on the primary router.
   be an IPv4 or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the matching
   family and the server is matched in the router's list by value, whatever spelling the list uses; an
   IPv6 server is refused by the page while IPv6 is off, and a daemon that meets one that way idles with one
-  log line rather than pretending to watch. Marked for the verify markers.
+  log line rather than pretending to watch. The help text for that switch had itself claimed that
+  with it on, AdGuard Home "still shows **and filters** per client". The Pi-hole half of that was
+  right and the AdGuard half was not — AdGuard Home resolves a client by ClientID, source address,
+  CIDR or MAC and only *logs* the client subnet, so with the router forwarding, its per-client rules
+  stay inactive however the switch is set. The wording is corrected in all 25 language packs, the
+  upstream refusals are cited beside the code that emits the option (AdGuardHome #4383, #6104), and
+  the old claim is now a forbidden string so it cannot come back. Marked for the verify markers.
 - **The dashboard clock shows its seconds in red again.** The seconds have their own colour, and on
   the dashboard they had quietly gone back to the same bone as the rest of the time, while every other
   page still showed them correctly. A tidy-up in v3.0.9 removed the rule that colours them after a check
